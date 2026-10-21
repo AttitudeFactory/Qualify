@@ -136,8 +136,10 @@ def list_comments_for_thread(
     search: str | None = None,
     cursor: CommentListCursor | None = None,
     limit: int = DEFAULT_COMMENT_PAGE_SIZE,
+    commercial_intent: AnalysisVersion | None = None,
 ) -> tuple[AnalyzedComment, ...]:
-    """QUA-93's published read seam for the Reel detail view."""
+    """QUA-93's published read seam for the Reel detail view. `commercial_intent`
+    (m-24789644) narrows it to the comments commercial under that intent version."""
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     return production_sentiment_service().list_comments_for_thread(
         tenant_id=tenant_id,
@@ -147,4 +149,5 @@ def list_comments_for_thread(
         search=search,
         cursor=cursor,
         limit=limit,
+        commercial_intent=commercial_intent,
     )

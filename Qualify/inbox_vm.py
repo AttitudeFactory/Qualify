@@ -13,7 +13,7 @@ test, same convention as `publishing_vm.py`/`connections_vm.py`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 from qualify_api.inbox.media_type import MediaType, known_media_type
@@ -95,6 +95,19 @@ def media_format_label(media_product_type: str | None, media_type: str | None) -
 
 
 @dataclass(frozen=True)
+class IntentChipVM:
+    """One intent class of one comment, as the Interacciones screen shows it
+    (m-24789644, B3). `label` is the Spanish name (`INTENT_CLASS_LABELS`); `commercial`
+    picks the chip's tone (a commercial class vs «Comentario general»); `reliable` is
+    `False` when the committed golden-set measurement for the current version does not
+    back the class — the page then marks it «no fiable» instead of hiding it."""
+
+    label: str
+    commercial: bool
+    reliable: bool
+
+
+@dataclass(frozen=True)
 class CommentVM:
     """Display-ready projection of one `qualify_api.sentiment.repository.AnalyzedComment`
     (QUA-92) — a synced comment (channel `comment`) plus its CURRENT-version sentiment,
@@ -117,6 +130,11 @@ class CommentVM:
     external_thread_id: str
     sentiment_label: str
     score_display: str
+    # m-24789644 (B3): `False` = no intent signal under the current version yet (the
+    # page says «Intención sin analizar»). The chips are the signal's classes, highest
+    # confidence first; empty exactly when `intent_analyzed` is `False`.
+    intent_analyzed: bool = False
+    intent_chips: list[IntentChipVM] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -250,3 +268,16 @@ class AnalysisSummaryVM:
     comments_checked: int
     new_results: int
     skipped_empty: int
+
+
+@dataclass(frozen=True)
+class IntentAnalysisSummaryVM:
+    """Display-ready projection of one "Analizar intención" click (m-24789644) —
+    `qualify_api.intent.IntentAnalysisSummary` field-for-field. `unclassified` counts
+    the comments the model gave no usable answer for; they stay pending for the next
+    click, so the toast says so instead of hiding them."""
+
+    comments_checked: int
+    new_results: int
+    skipped_empty: int
+    unclassified: int

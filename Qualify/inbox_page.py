@@ -61,13 +61,14 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .inbox_state import FILTER_ALL, InboxState
+from .inbox_state import FILTER_ALL, FILTER_COMMERCIAL, InboxState
 from .inbox_vm import (
     MONITORING_ACTIVE,
     MONITORING_EXPIRED,
     MONITORING_PENDING,
     CandidateMediaVM,
     CommentVM,
+    IntentChipVM,
     ReelSummaryVM,
 )
 from .publishing_vm import ConnectionOptionVM
@@ -328,6 +329,42 @@ def _body() -> rx.Component:
 # ------------------------------------------------------------------------------------
 
 
+def _intent_chip(chip: IntentChipVM) -> rx.Component:
+    """One intent class (m-24789644, B3). A class the golden-set measurement does not
+    back is still shown — hiding it would hide the comment's best guess — but in the
+    warning tone and suffixed «no fiable», with the reason on hover."""
+    return rx.cond(
+        chip.reliable,
+        rx.cond(chip.commercial, tone_badge(chip.label, "info"), tone_badge(chip.label, "neutral")),
+        rx.tooltip(
+            tone_badge(chip.label + " · no fiable", "warn"),
+            content=(
+                "Esta clase todavía no alcanza la precisión mínima medida; "
+                "revísala antes de actuar."
+            ),
+        ),
+    )
+
+
+def _comment_intent(comment: CommentVM) -> rx.Component:
+    return rx.cond(
+        comment.intent_analyzed,
+        rx.hstack(
+            rx.icon("target", size=13, color=T.TEXT_FAINT),
+            rx.foreach(comment.intent_chips, _intent_chip),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+        ),
+        rx.hstack(
+            rx.icon("target", size=13, color=T.TEXT_FAINT),
+            rx.text("Intención sin analizar", size="1", color=T.TEXT_MUTED),
+            spacing="2",
+            align="center",
+        ),
+    )
+
+
 def _comment_card(comment: CommentVM) -> rx.Component:
     return card(
         rx.vstack(
@@ -354,6 +391,7 @@ def _comment_card(comment: CommentVM) -> rx.Component:
                 rx.cond(comment.text != "", comment.text, "Sin texto"),
                 size="2",
             ),
+            _comment_intent(comment),
             rx.hstack(
                 rx.icon("clock", size=13, color=T.TEXT_FAINT),
                 rx.text(comment.posted_at, size="1", color=T.TEXT_MUTED),
@@ -679,6 +717,26 @@ def _sentiment_filter_select() -> rx.Component:
     )
 
 
+# m-24789644: «Requiere atención comercial» = the comments whose intent signal under the
+# current version is commercial. Same "ALL means no filter" convention as above.
+_INTENT_FILTER_OPTIONS = [
+    (FILTER_ALL, "Toda intención"),
+    (FILTER_COMMERCIAL, "Requiere atención comercial"),
+]
+
+
+def _intent_filter_select() -> rx.Component:
+    return rx.select.root(
+        rx.select.trigger(width="240px"),
+        rx.select.content(
+            *[_sentiment_filter_item(value, label) for value, label in _INTENT_FILTER_OPTIONS]
+        ),
+        value=InboxState.intent_filter,
+        on_change=InboxState.set_intent_filter,
+        size="2",
+    )
+
+
 def _comment_search_input() -> rx.Component:
     return rx.input(
         rx.input.slot(rx.icon("search", size=T.ICON_SM)),
@@ -694,7 +752,7 @@ def _thread_comments_empty_state() -> rx.Component:
     return empty_state(
         "message-circle",
         "Sin comentarios para este filtro",
-        "Prueba con otro filtro de sentimiento o borra la búsqueda.",
+        "Prueba con otro filtro de sentimiento o de intención, o borra la búsqueda.",
     )
 
 
@@ -750,6 +808,7 @@ def _reel_detail_view() -> rx.Component:
         _reel_detail_header(),
         rx.hstack(
             _sentiment_filter_select(),
+            _intent_filter_select(),
             _comment_search_input(),
             spacing="3",
             align="center",
@@ -781,6 +840,31 @@ def _analyze_now_button() -> rx.Component:
     )
 
 
+def _analyze_intent_button() -> rx.Component:
+    """m-24789644: the manual trigger of the commercial-intent pass — its own control
+    for the same reason `_analyze_now_button` is not merged into the sync button."""
+    return rx.button(
+        rx.cond(
+            InboxState.is_analyzing_intent,
+            loading_spinner("sm"),
+            rx.icon("target", size=16),
+        ),
+        rx.cond(InboxState.is_analyzing_intent, "Clasificando...", "Analizar intención"),
+        on_click=InboxState.analyze_intent,
+        disabled=~InboxState.can_analyze_intent,
+        size="2",
+        variant="soft",
+    )
+
+
+def _analyze_intent_error_block() -> rx.Component:
+    return rx.cond(
+        InboxState.analyze_intent_error != "",
+        callout(InboxState.analyze_intent_error, "error"),
+        rx.fragment(),
+    )
+
+
 def _analyze_error_block() -> rx.Component:
     # The success side (`analyze_result`) has no render block here on purpose — it is a
     # transient `rx.toast.success`, dispatched by `InboxState.analyze_sentiment` itself
@@ -797,15 +881,17 @@ def _comments_section() -> rx.Component:
     return section(
         "Comentarios",
         _analyze_error_block(),
+        _analyze_intent_error_block(),
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
             "Comentarios sincronizados, agrupados por Reel o publicación, con el sentimiento "
-            "ya analizado cuando existe. Cada uno se monitorea 14 días desde que se "
+            "y la intención comercial ya analizados cuando existen. Cada uno se monitorea "
+            "14 días desde que se "
             "publicó; al vencer deja de sincronizarse, pero su caption y sus comentarios "
             'se conservan, marcado como "No monitoreado · vencido".'
         ),
-        actions=[_analyze_now_button()],
+        actions=[_analyze_now_button(), _analyze_intent_button()],
     )
 
 

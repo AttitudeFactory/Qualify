@@ -711,7 +711,11 @@ def test_thread_comments_page_passes_through_a_real_filter_and_search() -> None:
 
 
 def test_thread_comments_page_shows_pending_as_empty_label_never_neu() -> None:
-    with _patched(_list_comments_for_thread=lambda **kwargs: (_comment(),)):
+    with _patched(
+        _list_comments_for_thread=lambda **kwargs: (_comment(),),
+        # m-24789644: the page's intent read — none recorded, and never a database here.
+        _current_signals=lambda **kwargs: {},
+    ):
         (vm,) = inbox_provider.thread_comments_page(
             tenant_id=_TENANT,
             connection_id=_CONNECTION,

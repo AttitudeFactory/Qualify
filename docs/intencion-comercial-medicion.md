@@ -98,3 +98,9 @@ uv run --no-sync python -m qualify_api.intent.eval --golden packages/api/eval_da
 - Con `--from-predictions archivo.jsonl --model-id … --detector-version …` se puntúan las predicciones de otro modelo sin llamar a Claude.
 
 Necesita `QUALIFY_ANTHROPIC_API_KEY`. Si el SDK la toma de `ANTHROPIC_BASE_URL` o `ANTHROPIC_AUTH_TOKEN` del entorno, esas variables se imponen sobre la clave explícita; hay que quitarlas antes de medir.
+
+## Cómo lo usa la pantalla de Interacciones
+
+- **«Analizar intención»** clasifica los comentarios pendientes de la cuenta con la versión vigente (`intent-claude-v2`). Es manual, como el análisis de sentimiento, y no lo dispara la sincronización. Si el modelo no responde algo usable para un comentario, ese comentario queda pendiente y se reintenta en el siguiente clic.
+- **Cada comentario muestra sus clases**, de mayor a menor confianza. Una clase que el informe de `test` no respalda (por debajo de los umbrales o con menos de 8 ejemplos) se muestra igual, pero en ámbar y con «no fiable». No se oculta, porque es la mejor pista que hay; se marca para que se revise antes de actuar.
+- **El filtro «Requiere atención comercial»** deja solo los comentarios con intención comercial bajo la versión vigente. Se combina con el filtro de sentimiento, la búsqueda y la paginación, porque es la misma consulta con una condición más.
