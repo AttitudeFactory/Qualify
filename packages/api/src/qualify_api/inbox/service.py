@@ -35,6 +35,17 @@ again, there is nothing here that sleeps or polls on its own.
   truncated or errored walk never reconciles — it has not seen enough of Meta's current
   state to prove anything absent.
 
+## Story comments (m-24789644), behind a capability that is off by default
+
+`InboxService(story_comments=True)` adds `STORY` to the monitorable surfaces: the
+picker also reads `MediaClient.list_recent_stories` (stories never appear on `/media`),
+a story can be activated like a Reel, and from then on it is an ordinary monitored media
+— `sync_comments` reads its comments through the same `/comments` edge, so sentiment and
+intent reach them with no change of their own. Off (the default, and production's until
+R1 is confirmed — see `docs/conversaciones-limitaciones-meta.md`), nothing changes:
+`/stories` is never called and a story id is still `unsupported_surface`. A failed
+`/stories` read never sinks the picker: the Reels and posts are still returned.
+
 All three take already-constructed `MediaClient`/`CommentsClient` — this service does not
 build them and does not resolve credentials. Composition (which client for which
 connection) lives in `composition.py`; `sync_comments`'s real caller is `qualify_api.
@@ -79,6 +90,9 @@ _LOGGER = logging.getLogger(__name__)
 # (image, video, carousel, or one Meta adds later). Never `STORY` or `AD`; a media whose
 # surface Meta did not report is not offered either (fail closed).
 MONITORABLE_MEDIA_PRODUCT_TYPES: Final = frozenset({"REELS", "FEED"})
+
+# m-24789644: the surface the `story_comments` capability adds to the set above.
+STORY_MEDIA_PRODUCT_TYPE: Final = "STORY"
 
 # `reference/meta-instagram-platform/ACCESS-MODEL.md:56` — "rate-limited to 200
 # calls/hour per page-app pair" in development mode. QUA-20's own cited floor; QUA-88
@@ -288,6 +302,14 @@ def _classify_metadata_error(exc: MediaReadError) -> MetadataFetchError:
     return MetadataFetchError.UNKNOWN
 
 
+def _merge_by_id(
+    first: tuple[MediaSummary, ...], second: tuple[MediaSummary, ...]
+) -> tuple[MediaSummary, ...]:
+    """`first` then whatever of `second` it does not already hold, by id."""
+    seen = {media.id for media in first}
+    return first + tuple(media for media in second if media.id not in seen)
+
+
 def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
     """Default for callers (mostly tests) that do not care about QUA-90's auth-error
     path — production composition always injects the real one."""
@@ -303,6 +325,7 @@ class InboxService:
         media_client: MediaClient,
         granted_scopes: frozenset[str] = frozenset(),
         connection_degrader: ConnectionDegrader | None = None,
+        story_comments: bool = False,
     ) -> None:
         self._repository = repository
         self._comments_client = comments_client
@@ -313,6 +336,13 @@ class InboxService:
         # opt-in rather than default.
         self._granted_scopes = granted_scopes
         self._degrade = connection_degrader or _no_op_degrader
+        # m-24789644: off unless the caller opts in — see "Story comments" above.
+        self._story_comments = story_comments
+        self._monitorable = (
+            MONITORABLE_MEDIA_PRODUCT_TYPES | {STORY_MEDIA_PRODUCT_TYPE}
+            if story_comments
+            else MONITORABLE_MEDIA_PRODUCT_TYPES
+        )
 
     async def list_candidate_media(
         self, *, tenant_id: UUID, connection_id: UUID, ig_user_id: str, now: datetime | None = None
@@ -321,6 +351,8 @@ class InboxService:
         recent = await self._media_client.list_recent_media(
             ig_user_id=ig_user_id, since=reference_now - MONITORING_WINDOW
         )
+        if self._story_comments:
+            recent = _merge_by_id(recent, await self._recent_stories(ig_user_id))
         monitored_ids = self._repository.list_monitored_media_ids(
             tenant_id=tenant_id, connection_id=connection_id
         )
@@ -337,8 +369,22 @@ class InboxService:
                 media_url=media.media_url,
             )
             for media in recent
-            if media.media_product_type in MONITORABLE_MEDIA_PRODUCT_TYPES
+            if media.media_product_type in self._monitorable
         )
+
+    async def _recent_stories(self, ig_user_id: str) -> tuple[MediaSummary, ...]:
+        """The `/stories` read, best effort: a failure is logged (status and Meta codes
+        only) and the picker still shows the Reels and posts it already has."""
+        try:
+            return await self._media_client.list_recent_stories(ig_user_id=ig_user_id)
+        except MediaReadError as exc:
+            _LOGGER.warning(
+                "inbox.stories.read_failed status=%s code=%s subcode=%s",
+                exc.http_status,
+                exc.platform_code,
+                exc.platform_subcode,
+            )
+            return ()
 
     async def set_media_monitored(
         self,
@@ -360,7 +406,7 @@ class InboxService:
                 raise MediaNotEligible(
                     external_media_id, reason="not_found_or_inaccessible"
                 ) from exc
-            if media.media_product_type not in MONITORABLE_MEDIA_PRODUCT_TYPES:
+            if media.media_product_type not in self._monitorable:
                 # QUA-146: same rule as the candidate list, re-enforced on a direct call.
                 raise MediaNotEligible(external_media_id, reason="unsupported_surface")
             reference_now = now if now is not None else datetime.now(UTC)

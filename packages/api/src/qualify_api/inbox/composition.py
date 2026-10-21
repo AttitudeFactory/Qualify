@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable
 from uuid import UUID, uuid4
 
@@ -50,6 +51,16 @@ from qualify_api.inbox.service import CandidateMedia, InboxService, SyncSummary
 from qualify_api.inbox.sync_guard import Lease, SyncAlreadyRunning, SyncGuard, wall_clock
 
 _LOGGER = logging.getLogger(__name__)
+
+#: m-24789644: the `story_comments` capability. Exactly `on` (any case) turns it on for
+#: this deployment; anything else — unset included — leaves it off, so stories stay out
+#: of monitoring until R1 confirms Meta serves their comments
+#: (`docs/conversaciones-limitaciones-meta.md`).
+STORY_COMMENTS_ENV = "QUALIFY_STORY_COMMENTS"
+
+
+def story_comments_enabled() -> bool:
+    return os.environ.get(STORY_COMMENTS_ENV, "").strip().lower() == "on"
 
 
 class UnknownInboxConnection(Exception):
@@ -142,6 +153,7 @@ async def production_inbox_service_for(*, tenant_id: UUID, connection_id: UUID) 
         media_client=HttpMediaClient(graph_client=graph_client, graph_url=settings.graph_url),
         granted_scopes=frozenset(scopes or ()),
         connection_degrader=degrade_connection_on_auth_error,
+        story_comments=story_comments_enabled(),
     )
 
 
