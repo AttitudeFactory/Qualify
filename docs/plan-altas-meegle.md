@@ -50,7 +50,7 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 | Campo | Tipo | Quién lo pone |
 |---|---|---|
 | Estado Qualify | select: `pendiente · invitada · entregada · abierta · rebotó · registrada · vencida · error` | Qualify |
-| Enlace de invitación | link | Qualify, al invitar (sirve para mandarlo a mano por WhatsApp) |
+| Enlace de invitación | link | Qualify, al invitar (sirve para mandarlo a mano por WhatsApp). Forma `/registro?invitacion=<token>` desde el 2026-10-21; los enlaces viejos `/signup?invite=` siguen abriendo |
 | Vence | date | Qualify |
 | Registrada el | date | Qualify |
 | Tenant | text | Qualify, al registrarse |

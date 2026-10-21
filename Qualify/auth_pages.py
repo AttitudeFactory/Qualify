@@ -10,6 +10,7 @@ the eye toggle only flips the input's `type`, it never swaps the element."""
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.auth import SIGNUP_ROUTE
 
 from .auth_state import AuthState
 from .ui import brand_mark, callout, card, loading_spinner
@@ -145,7 +146,7 @@ def login_index() -> rx.Component:
         ),
         rx.cond(
             AuthState.signup_open,
-            _footer_link("¿Negocio nuevo?", "Regístralo aquí", "/signup"),
+            _footer_link("¿Negocio nuevo?", "Regístralo aquí", SIGNUP_ROUTE),
             rx.text(
                 "¿Aún no tienes cuenta? Qualify es solo por invitación.",
                 size="2",
@@ -330,7 +331,7 @@ def brand_start_index() -> rx.Component:
 
 
 def _invite_only() -> rx.Component:
-    """/signup without a usable invite (MVP, founder decision 2026-10-14): no form."""
+    """/registro without a usable invite (MVP, founder decision 2026-10-14): no form."""
     return rx.vstack(
         rx.heading("Qualify es solo por invitación", size="4"),
         rx.cond(

@@ -14,6 +14,10 @@ from qualify_api.auth.drafts import (
 )
 from qualify_api.auth.fake import FakeAuthProvider
 from qualify_api.auth.invites import (
+    INVITE_PARAM,
+    LEGACY_INVITE_PARAM,
+    LEGACY_SIGNUP_ROUTE,
+    SIGNUP_ROUTE,
     CreatedInvite,
     InviteView,
     SignupNotAllowed,
@@ -58,7 +62,11 @@ from qualify_api.auth.throttle import (
 )
 
 __all__ = [
+    "INVITE_PARAM",
+    "LEGACY_INVITE_PARAM",
+    "LEGACY_SIGNUP_ROUTE",
     "MIN_PASSWORD_LENGTH",
+    "SIGNUP_ROUTE",
     "AttemptThrottle",
     "AuthNotConfigured",
     "AuthProvider",

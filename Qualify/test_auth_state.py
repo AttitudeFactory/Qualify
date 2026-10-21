@@ -181,7 +181,7 @@ def _draft(tenant: str = _DRAFT):
 
 @pytest.mark.parametrize(
     ("destination"),
-    ["/signup", "/brand/connect", "/brand/manual", "/brand"],
+    ["/registro", "/brand/connect", "/brand/manual", "/brand"],
 )
 async def test_the_email_lands_where_the_draft_stands(monkeypatch, destination: str) -> None:
     """Finished kit → signup; halfway → back into its wizard; nothing → the start."""
@@ -197,7 +197,7 @@ def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
     from . import brand_finish
 
     cases = [
-        (brand_finish.KitStatus(True, {"completed": True, "flow": "connect"}), "/signup"),
+        (brand_finish.KitStatus(True, {"completed": True, "flow": "connect"}), "/registro"),
         (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand/connect"),
         (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand/manual"),
         (brand_finish.KitStatus(False, None), "/brand"),
@@ -687,6 +687,31 @@ async def test_an_invite_for_another_email_is_refused(monkeypatch) -> None:
     async for _ in AuthState.handle_signup.fn(state, form):
         raise AssertionError("a refused signup must not navigate")
     assert "cliente@negocio.com" in state.auth_error
+
+
+@pytest.mark.parametrize(
+    ("query", "token"),
+    [
+        ({"invitacion": "tok-es"}, "tok-es"),  # what emails carry since 2026-10-21
+        ({"invite": "tok-en"}, "tok-en"),  # a link sent before, still within its days
+        ({"invitacion": "tok-es", "invite": "tok-en"}, "tok-es"),
+        ({"invitacion": "", "invite": "tok-en"}, "tok-en"),
+        ({}, ""),
+    ],
+)
+def test_the_signup_reads_the_invite_under_either_name(query: dict, token: str) -> None:
+    assert auth_state_module.invite_token_from_query(query) == token
+
+
+def test_the_signup_is_served_at_registro_and_at_the_old_signup() -> None:
+    from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
+
+    assert (SIGNUP_ROUTE, LEGACY_SIGNUP_ROUTE) == ("/registro", "/signup")
+    source = (_QUALIFY_DIR / "Qualify.py").read_text(encoding="utf-8")
+    start = source.index("for _signup_route in (SIGNUP_ROUTE, LEGACY_SIGNUP_ROUTE):")
+    block = source[start : source.index(")", source.index("on_load", start)) + 1]
+    assert "signup_index" in block and "route=_signup_route" in block
+    assert "AuthState.enter_signup" in block
 
 
 def test_invite_token_is_backend_only() -> None:

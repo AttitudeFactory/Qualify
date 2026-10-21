@@ -3,7 +3,7 @@
 The MVP is **invite-only**. `create_invite` stores the SHA-256 of a random token
 (migration 0063) together with who it is for — the person's name, the business and an
 optional personal note from whoever invites — and `send_invite_email` mails the link
-`/signup?invite=<token>` (template: `invite_email`). The invite opens signup only for ITS
+`/registro?invitacion=<token>` (template: `invite_email`). The invite opens signup only for ITS
 email, once, until it expires. Because the link reaches only that inbox, an invited
 signup also proves the email is the registrant's.
 
@@ -45,7 +45,14 @@ from qualify_api.mail import Mailer
 from qualify_api.tenancy.models import SignupInvite
 
 DEFAULT_INVITE_DAYS = 7
-SIGNUP_ROUTE = "/signup"
+#: The signup page and its invite parameter, in Spanish: the client reads this link in the
+#: email and in the address bar (founder rule 2026-10-21: nothing client-facing in English).
+SIGNUP_ROUTE = "/registro"
+INVITE_PARAM = "invitacion"
+#: The English spelling the page had until 2026-10-21. Still served, and its `invite`
+#: parameter still read, because links already sent stay valid for `DEFAULT_INVITE_DAYS`.
+LEGACY_SIGNUP_ROUTE = "/signup"
+LEGACY_INVITE_PARAM = "invite"
 _NOTE_MAX = 600
 _NAME_MAX = 120
 
@@ -72,7 +79,7 @@ class CreatedInvite:
     id: UUID | None = None  # the row's id (`signup_invites.id`), minted on create
 
     def link(self, base_url: str) -> str:
-        return f"{base_url.rstrip('/')}{SIGNUP_ROUTE}?invite={self.token}"
+        return f"{base_url.rstrip('/')}{SIGNUP_ROUTE}?{INVITE_PARAM}={self.token}"
 
 
 @dataclass(frozen=True)

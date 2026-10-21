@@ -160,7 +160,7 @@ Qué hace `deploy/deploy.sh deploy`:
 3. `docker compose run --rm migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod` + `python -m qualify_api.connections.platform_app`, que registra `QUALIFY_META_APP_ID` en `platform_apps` de forma idempotente; levanta `postgres` antes) y, **sólo si terminó bien**, `docker compose up -d`. `migrate` es un paso explícito con perfil propio, no una dependencia de `api`/`reflex`. Un deploy sin cambios de imagen no recrea ningún contenedor, así que no hay ventana de 502. Mientras `migrate` corre, el release anterior sigue atendiendo, igual que antes de este cambio. Por eso toda migración tiene que ser compatible con el código anterior (expandir → contraer en dos deploys, §7). Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
 4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **303** hacia `/connections?connect=invalid_state` (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
 
-Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/signup`, o por consola:
+Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/registro` (antes `/signup`, que sigue sirviendo), o por consola:
 
 ```bash
 ssh -t deploy@<IP> 'cd /opt/qualify/current && docker compose --env-file /opt/qualify/.env.prod \
@@ -297,7 +297,7 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 2. *App settings → Basic → App Domains*: `qualify.attitudefactory.co` (y `attitudefactory.co`).
 3. *App settings → Basic → Add platform → Website → Site URL*: `https://qualify.attitudefactory.co/`.
 4. En la misma página: Privacy Policy URL y User Data Deletion (URL de instrucciones) — App Review los exige; deben ser páginas públicas (pueden vivir en `attitudefactory.co`).
-5. Para los revisores de App Review: crear un usuario de prueba con `/signup` y darles esas credenciales en las instrucciones de la revisión.
+5. Para los revisores de App Review: crear un usuario de prueba con `/registro` y darles esas credenciales en las instrucciones de la revisión.
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
 

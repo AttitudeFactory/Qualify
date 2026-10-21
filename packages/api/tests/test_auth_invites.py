@@ -107,12 +107,20 @@ def test_invite_email_is_personal_when_it_knows_who() -> None:
     assert mail.subject == "Herwin te invitó a crear la cuenta de Arepera La Nona en Qualify"
     assert "Hola, María:" in mail.text and "Hola, María:" in mail.html
     assert "Herwin Rey te invitó" in mail.text
-    assert "https://qualify.example/signup?invite=tok123" in mail.text
-    assert 'href="https://qualify.example/signup?invite=tok123"' in mail.html
+    assert "https://qualify.example/registro?invitacion=tok123" in mail.text
+    assert 'href="https://qualify.example/registro?invitacion=tok123"' in mail.html
+    assert "signup" not in mail.text and "invite=" not in mail.html  # no English path
     assert "El viernes revisamos tu campaña." in mail.text
     assert "Como hablamos hoy.<br>El viernes" in mail.html  # the note keeps its lines
     assert "14 de octubre" in mail.text  # Spanish date, market time (Caracas)
     assert 'src="https://qualify.example/qualify-mark-email.png"' in mail.html
+
+
+def test_the_invite_link_is_spelled_in_spanish() -> None:
+    """Founder rule 2026-10-21: the client reads this path, so no English in it."""
+    link = _full_invite().link("https://qualify.example/")
+    assert link == "https://qualify.example/registro?invitacion=tok123"
+    assert invites_module.LEGACY_SIGNUP_ROUTE == "/signup"  # still served: links already sent
 
 
 def test_invite_email_degrades_to_qualify_without_names() -> None:
