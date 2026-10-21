@@ -2773,6 +2773,18 @@ def _palette_line(kit: BrandKit) -> str:
     return f"Use the brand colors as accents where natural: {colors}." if colors else ""
 
 
+def _typography_line(kit: BrandKit) -> str:
+    """The Brand Kit's type face as a style cue — the media are never asked for letters
+    (`_NO_TEXT`), so the face only says what the brand's look feels like. "" when the
+    kit declares none."""
+    if not kit.typeface:
+        return ""
+    return (
+        f"The brand's typeface is {_quoted(kit.typeface)}: let the visual style match its "
+        "personality, without drawing any letters."
+    )
+
+
 #: How much of the operator's topic (no stored cap: `content_briefs.topic` is TEXT) goes
 #: into an image prompt — the gist is enough, and with the scene at its own cap of 600
 #: the prompt stays near 2,100 of the vendor's 3,000 characters.
@@ -2837,6 +2849,7 @@ def ad_scene_prompt(
         "headline and a button are laid over them afterwards."
     )
     lines.append(_palette_line(kit))
+    lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
     return " ".join(line for line in lines if line)
 
@@ -2885,6 +2898,7 @@ def carousel_scene_prompt(
             "a headline or a button is laid over them afterwards."
         )
     lines.append(_palette_line(kit))
+    lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
     return " ".join(line for line in lines if line)
 
@@ -2959,6 +2973,7 @@ def first_frame_prompt(
     lines.append(f'The video is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(_palette_line(kit))
+    lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
     return " ".join(line for line in lines if line)
 
@@ -3085,6 +3100,7 @@ def clip_prompt(
         lines.append("It starts on the opening frame and brings it to life.")
     lines.append(_facts_line(brief, _FACTS_IN_CLIP))
     lines.append(_palette_line(kit))
+    lines.append(_typography_line(kit))
     lines.append("No text on screen.")
     return " ".join(line for line in lines if line)
 

@@ -134,9 +134,44 @@ def test_an_empty_kit_still_makes_a_valid_short_prompt() -> None:
 
 
 def test_long_kit_texts_are_capped() -> None:
-    inputs = ba.avatar_inputs(_kit(positioning="x" * 2000))
+    inputs = ba.avatar_inputs(_kit(positioning="x" * 2000, font_heading="F" * 500))
     assert len(inputs.positioning) <= 180
+    assert len(inputs.typeface) <= 60
     assert len(ba.build_avatar_prompt(inputs)) < 3000  # the adapter's hard cap
+
+
+def test_the_brand_typeface_shapes_the_mascot_and_the_character() -> None:
+    """§ request 2026-10-21: the Brand Kit's one type face reaches both avatar prompts as
+    a style cue (never letters) — the headline face of a kit that held two; a kit without
+    one writes them as before."""
+    inputs = ba.avatar_inputs(_kit(font_heading="  Baloo   2 ", font_body="Nunito"))
+    assert inputs.typeface == "Baloo 2"
+    prompt = ba.build_avatar_prompt(inputs)
+    assert 'typeface is "Baloo 2"' in prompt and "Nunito" not in prompt
+    assert prompt.endswith("No text, no letters, no logos, no watermark.")
+    character = ba.describe_character(inputs)
+    assert 'brand\'s typeface, "Baloo 2"' in character
+    plain = ba.avatar_inputs(_kit())
+    assert "typeface" not in ba.build_avatar_prompt(plain)
+    assert "typeface" not in ba.describe_character(plain)
+
+
+def test_a_long_character_is_cut_before_its_no_text_rule() -> None:
+    """Review 2026-10-21: the 600-character cut used to fall on the closing «No text, no
+    logos.», the one instruction the video model must always get."""
+    inputs = ba.AvatarInputs(
+        brand_name="B" * 80,
+        sector="S " * 90,
+        palette=("#AAAAAA", "#BBBBBB", "#CCCCCC"),
+        tone=(80, 80, 20, 50),
+        style="E " * 90,
+        typeface="F" * 60,
+    )
+    character = ba.describe_character(inputs)
+    assert len(character) <= ba.CHARACTER_MAX_CHARS
+    assert character.endswith("… No text, no logos.")
+    short = ba.describe_character(ba.AvatarInputs(brand_name="Burger Lab"))
+    assert short.endswith("No text, no logos.") and "…" not in short
 
 
 # ---------------------------------------------------------------------------------------
@@ -263,4 +298,5 @@ def test_the_animated_avatar_videos_character_is_described_from_the_kit() -> Non
     assert "background" not in text and len(text) <= ba.CHARACTER_MAX_CHARS
     assert "Style" not in ba.describe_character(ba.AvatarInputs(brand_name="x", style="a"))
     long = ba.describe_character(ba.AvatarInputs(brand_name="x", style="y " * 400))
-    assert len(long) <= ba.CHARACTER_MAX_CHARS and long.endswith("…")
+    # the description is cut, never its closing rule (review 2026-10-21)
+    assert len(long) <= ba.CHARACTER_MAX_CHARS and long.endswith("… No text, no logos.")

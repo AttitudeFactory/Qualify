@@ -98,6 +98,15 @@ def test_the_model_gets_the_text_the_facts_and_the_brand() -> None:
     assert "BRAND KIT: (no hay)" in render_request(_input(), None)
 
 
+def test_the_brand_typeface_is_in_the_brand_kit_lines() -> None:
+    """§ request 2026-10-21: the Brand Kit's one type face reaches «Potenciar con IA»
+    too — the headline face of a kit that held two; no line at all without one."""
+    two = _kit().model_copy(update={"font_heading": "Baloo 2", "font_body": "Nunito"})
+    message = render_request(_input(), two)
+    assert "- Tipografía de la marca: Baloo 2\n" in message and "Nunito" not in message
+    assert "Tipografía" not in render_request(_input(), _kit())
+
+
 def test_the_rewrite_comes_back_with_what_the_model_added() -> None:
     client = FakeClient([_answer("Quiero mostrar la smash doble…", ["2x1"])])
     proposal = enhance_context(_input(), _kit(), client_factory=lambda key: client)

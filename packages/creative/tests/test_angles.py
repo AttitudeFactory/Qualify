@@ -113,6 +113,15 @@ def test_without_a_catalog_price_the_prompt_forbids_any_figure() -> None:
     assert "$" not in text
 
 
+def test_the_prompt_carries_the_brand_typeface() -> None:
+    """§ request 2026-10-21: the Brand Kit's one type face, beside the palette."""
+    from dataclasses import replace
+
+    text = angles_user_prompt(PRODUCT, replace(BRAND, typeface="Baloo 2"), PRESETS[0])
+    assert "Tipografía: Baloo 2\n" in text
+    assert "Tipografía: (sin tipografía)" in angles_user_prompt(PRODUCT, BRAND, PRESETS[0])
+
+
 def test_a_top_up_prompt_lists_the_angles_to_avoid() -> None:
     existing = parse_angles(payload(3))
     text = angles_user_prompt(PRODUCT, BRAND, PRESETS[0], count=7, avoid=existing)

@@ -224,6 +224,7 @@ def _stable_prefix(
         f" pattern verbatim: {_listing(kit.cta_patterns)}",
         "== Visual identity ==\n"
         f"Palette (RGB): {_listing(kit.palette_rgb)}\n"
+        f"Typeface: {kit.typeface or _NONE}\n"
         # § 2026-10-06: whether the files exist, not their storage keys — the model
         # cannot open a key, it only cost tokens
         f"Logo: {'on file' if kit.logo_asset_key else _NONE}\n"
