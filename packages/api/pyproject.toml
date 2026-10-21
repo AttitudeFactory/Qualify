@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "qualify-shared",
     "qualify-creative",
-    "fastapi>=0.142.2",
+    "fastapi>=0.143.0",
     "httpx>=0.28.1",
     "redis>=5.2.0",
     "sqlalchemy>=2.0.36",

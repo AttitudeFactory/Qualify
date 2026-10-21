@@ -1159,7 +1159,8 @@ def test_the_shown_cards_are_cut_after_the_filters() -> None:
     # every card stays on the backend: the browser only ever receives `reels`
     from .discover_reels import DiscoverReelsState
 
-    assert "_cards" in DiscoverReelsState.backend_vars
+    assert "_cards" in DiscoverReelsState.get_fields()
+    assert "_cards" not in DiscoverReelsState.vars
     deps = DiscoverReelsState.computed_vars["reels"]._deps(objclass=DiscoverReelsState)
     assert "_cards" in deps[DiscoverReelsState.get_full_name()]  # it recomputes on a read
 

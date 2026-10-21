@@ -6,3 +6,5 @@
 95d066c7bf6bccec56715208241bc0a28c9a1c69:packages/api/src/qualify_api/connections/crypto.py:generic-api-key:22
 # A local e2e persona password (fake-auth test account) in a file since deleted from main.
 8cc309d9c5f04cfb6eac04e35734841ce2ec8367:tests/e2e/personas.py:generic-api-key:62
+# `api_key=key` in an eval runner: a keyword argument fed from an env var, not a literal.
+234b85ae765b532936c1dce34a98f033ed8e2983:packages/api/evals/scenes_ai/run_experiment.py:generic-api-key:83
