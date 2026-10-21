@@ -61,6 +61,7 @@ from qualify_creative.angles import (
     preset_by_key,
     preset_problem,
     price_conflicts,
+    price_problem,
 )
 from qualify_creative.enums import DraftStatus, FailureReason
 from qualify_creative.providers import PricingTable
@@ -72,7 +73,13 @@ from ..catalog.service import ProductRecord, UnknownProduct
 from ..claude_tools import CallStats, ClaudeToolError, MissingAPIKey
 from . import models as orm
 from .angles_ai import AnglesProviderError
-from .service import BrandNotReady, BrandService, DraftDetail, RouteBlockedByPolicy
+from .service import (
+    ApprovalBlocked,
+    BrandNotReady,
+    BrandService,
+    DraftDetail,
+    RouteBlockedByPolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +98,10 @@ ANGLE_APPROVED = "approved"
 
 #: The draft statuses after which an angle may be generated again.
 _RETRYABLE_DRAFT_STATUSES = frozenset({DraftStatus.FAILED.value, DraftStatus.REJECTED.value})
+#: A draft in one of these was approved — in the gallery or in `/drafts/{id}`.
+_APPROVED_DRAFT_STATUSES = frozenset(
+    {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
+)
 #: The name the set's campaign gets: the product, then the count.
 CAMPAIGN_NAME_MAX = 60
 #: How long a reservation may stay open before it is treated as abandoned. Creating a
@@ -218,7 +229,8 @@ class AngleSetWrite:
 class AngleView:
     """One angle as the gallery shows it: the proposal, its status and — once a draft
     exists — the draft's own status, preview and words. `price_conflicts` lists any
-    figure the copy quotes that is not the catalog's."""
+    figure the copy quotes that is not the catalog's, `price_problem` says why that
+    blocks the approval, and `warnings` what the composition had to leave out."""
 
     angle: AngleRecord
     draft_status: str | None = None
@@ -231,6 +243,8 @@ class AngleView:
     caption: str = ""
     cta: str = ""
     price_conflicts: tuple[str, ...] = ()
+    price_problem: str | None = None
+    warnings: tuple[str, ...] = ()
 
     @property
     def can_retry(self) -> bool:
@@ -886,9 +900,21 @@ class AngleSetService:
         drafts = self._drafts.get_drafts(
             tenant_id=tenant_id, draft_ids=[a.draft_id for a in angles if a.draft_id]
         )
-        views = tuple(self._view(record, angle, drafts) for angle in angles)
+        views = tuple(
+            self._approved_elsewhere(tenant_id, self._view(record, angle, drafts))
+            for angle in angles
+        )
         record = self._settle(tenant_id, record, views)
         return AngleSetDetail(set=record, angles=views)
+
+    def _approved_elsewhere(self, tenant_id: UUID, view: AngleView) -> AngleView:
+        """An angle whose piece was approved outside the gallery (`/drafts/{id}`, which
+        the content service owns) is recorded as approved here, like `approve_angle`
+        would have — the angle's status never lags behind its draft's."""
+        if view.angle.status != ANGLE_QUEUED or view.draft_status not in _APPROVED_DRAFT_STATUSES:
+            return view
+        self._repo.update_angle(tenant_id=tenant_id, angle_id=view.angle.id, status=ANGLE_APPROVED)
+        return replace(view, angle=replace(view.angle, status=ANGLE_APPROVED))
 
     def _settle(
         self, tenant_id: UUID, record: AngleSetRecord, views: Sequence[AngleView]
@@ -917,6 +943,7 @@ class AngleSetService:
         variant = _variant(detail)
         copy: Mapping[str, object] = (variant.edited_copy or variant.copy) if variant else {}
         hook, caption, cta = (str(copy.get(k) or "") for k in ("hook", "caption", "cta"))
+        texts = (hook, caption, cta)
         return AngleView(
             angle=angle,
             draft_status=detail.status,
@@ -929,7 +956,9 @@ class AngleSetService:
             hook=hook,
             caption=caption,
             cta=cta,
-            price_conflicts=price_conflicts((hook, caption, cta), record.price_label),
+            price_conflicts=price_conflicts(texts, record.price_label),
+            price_problem=price_problem(texts, record.price_label),
+            warnings=tuple(w.detail for w in detail.warnings),
         )
 
     # -- angles ----------------------------------------------------------------------------
@@ -1069,17 +1098,11 @@ class AngleSetService:
             raise AngleNotActionable("La pieza todavía no está lista para aprobarse.")
         variant = _variant(detail)
         assert variant is not None  # detail.variants is not empty
-        copy: Mapping[str, object] = variant.edited_copy or variant.copy
-        conflicts = price_conflicts(
-            (str(copy.get(k) or "") for k in ("hook", "caption", "cta")), record.price_label
+        problem = price_problem(
+            _copy_texts(variant.edited_copy or variant.copy), record.price_label
         )
-        if conflicts:
-            shown = ", ".join(conflicts)
-            raise AngleNotActionable(
-                f"El texto menciona {shown}, que no es el precio del catálogo"
-                f"{f' ({record.price_label})' if record.price_label else ''}. "
-                "Corrígelo antes de aprobar."
-            )
+        if problem is not None:
+            raise AngleNotActionable(problem)
         self._drafts.approve(
             tenant_id=tenant_id, draft_id=angle.draft_id, variant_id=variant.id, user_id=user_id
         )
@@ -1293,6 +1316,42 @@ class AngleSetService:
         return angle
 
 
+class AnglePriceGuard:
+    """The content service's approval guard for the variations sets' pieces: a draft
+    that is an angle's piece may only be approved with a copy that quotes the set's
+    catalog price or none (`price_problem`). Every other draft passes untouched — the
+    generator's own pieces have no catalog price to hold them to. `lookup` (draft →
+    the set's price label, None when the draft is no angle's) is injectable for tests."""
+
+    def __init__(self, lookup: Callable[[UUID, UUID], str | None] | None = None) -> None:
+        self._lookup = lookup or set_price_label_for_draft
+
+    def check(self, *, tenant_id: UUID, draft_id: UUID, copy: Mapping[str, object]) -> None:
+        price_label = self._lookup(tenant_id, draft_id)
+        if price_label is None:
+            return
+        problem = price_problem(_copy_texts(copy), price_label)
+        if problem is not None:
+            raise ApprovalBlocked(problem)
+
+
+def set_price_label_for_draft(tenant_id: UUID, draft_id: UUID) -> str | None:
+    """The catalog price label frozen on the set whose angle produced `draft_id` ("" when
+    the product had none); None when no angle of this tenant points at the draft."""
+    with tenant_session(tenant_id) as session:
+        return session.scalar(
+            select(orm.CreativeAngleSet.price_label)
+            .join(orm.CreativeAngle, orm.CreativeAngle.set_id == orm.CreativeAngleSet.id)
+            .where(orm.CreativeAngle.draft_id == draft_id)
+            .limit(1)
+        )
+
+
+def _copy_texts(copy: Mapping[str, object]) -> tuple[str, ...]:
+    """The words of a copy variant the price guard reads — what a piece prints or posts."""
+    return tuple(str(copy.get(k) or "") for k in ("hook", "caption", "cta"))
+
+
 class _Unresolved(Exception):
     """Draft creation failed and the lookup by key failed too: the angle stays reserved
     until `_recover` settles it."""
@@ -1333,6 +1392,7 @@ def _sum_stats(a: CallStats, b: CallStats) -> CallStats:
 
 __all__ = [
     "ANGLE_APPROVED",
+    "AnglePriceGuard",
     "ANGLE_DISCARDED",
     "ANGLE_FAILED",
     "ANGLE_PROPOSED",

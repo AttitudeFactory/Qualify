@@ -50,13 +50,23 @@ from qualify_api.creative.fsm import (
     GENERATED,
     InvalidTransition,
 )
-from qualify_api.creative.media import MediaOutcome, MediaUsage, MediaWrite
+from qualify_api.creative.media import (
+    PRICE_NOT_PRINTED,
+    PRICE_NOT_PRINTED_TEXT,
+    MediaOutcome,
+    MediaUsage,
+    MediaWarning,
+    MediaWrite,
+)
 from qualify_api.creative.service import (
+    COMPOSITION_WARNINGS_PARAM,
+    ApprovalBlocked,
     BrandNotReady,
     BudgetState,
     ContentService,
     DraftBundle,
     DraftRecord,
+    DraftWarning,
     DuplicateDraftRequest,
     ImageRecord,
     RouteBlockedByPolicy,
@@ -65,6 +75,7 @@ from qualify_api.creative.service import (
     VariantRecord,
     VariantWrite,
     preview_of,
+    with_composition_warnings,
 )
 
 TENANT_ID = uuid4()
@@ -1610,3 +1621,220 @@ def test_get_drafts_of_nothing_reads_nothing(monkeypatch: pytest.MonkeyPatch) ->
     service, _, _ = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
     assert service.get_drafts(tenant_id=TENANT_ID, draft_ids=[]) == {}
     assert repo.batch_calls == [] and reaped == []
+
+
+# ---------------------------------------------------------------------------
+# ticket 24803289: the composition's warnings live with the media, and the approval
+# guard holds a variations piece to the catalog price on every approval path
+
+
+PRICE_WARNING = MediaWarning(
+    code=PRICE_NOT_PRINTED,
+    detail=PRICE_NOT_PRINTED_TEXT,
+    fields={"price": "$1.234.567.890,00 COP", "reason": "too_long"},
+)
+SECOND_SLIDE = replace(FLYER_MEDIA, position=1, media_url="generated/t/d/slide-2.png")
+
+
+def test_composition_warnings_ride_on_the_cover_only() -> None:
+    media = with_composition_warnings((SECOND_SLIDE, FLYER_MEDIA), (PRICE_WARNING,))
+    by_position = {item.position: item for item in media}
+    assert by_position[0].params[COMPOSITION_WARNINGS_PARAM] == [
+        {
+            "code": PRICE_NOT_PRINTED,
+            "detail": PRICE_NOT_PRINTED_TEXT,
+            "fields": PRICE_WARNING.fields,
+        }
+    ]
+    assert COMPOSITION_WARNINGS_PARAM not in by_position[1].params
+    # nothing to warn about, or nothing to attach it to: untouched
+    assert with_composition_warnings((FLYER_MEDIA,), ()) == (FLYER_MEDIA,)
+    assert with_composition_warnings((), (PRICE_WARNING,)) == ()
+
+
+def test_a_price_not_printed_is_kept_on_the_draft_without_touching_the_spend() -> None:
+    usage = MediaUsage(
+        provider="seedream",
+        model_id="seedream-5",
+        unit="image",
+        quantity=1,
+        cost_usd=Decimal("0.035"),
+    )
+    seen = []
+    for warnings in ((), (PRICE_WARNING,)):
+        media = FakeMedia(
+            MediaOutcome(media=(FLYER_MEDIA, SECOND_SLIDE), usage=(usage,), warnings=warnings)
+        )
+        router = FakeRouter([ok_outcome(copy_dict())])
+        service, repo, _ = make_service(
+            router=router, kit=make_kit(), voice=make_voice(), media=media
+        )
+        draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.STATIC_FLYER))
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+        detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+        assert detail is not None and detail.status == GENERATED
+        seen.append((detail, list(repo.usage), repo.spend_added))
+    (plain, plain_usage, plain_spent), (warned, warned_usage, warned_spent) = seen
+    assert plain.warnings == ()
+    assert warned.warnings == (DraftWarning(PRICE_NOT_PRINTED, PRICE_NOT_PRINTED_TEXT),)
+    # the warning changes what is shown, never what was paid or recorded
+    assert [(u.provider, u.cost_usd) for u in warned_usage] == [
+        (u.provider, u.cost_usd) for u in plain_usage
+    ]
+    assert warned_spent == plain_spent
+
+
+def test_a_regeneration_that_prints_the_price_drops_the_old_warning() -> None:
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,), warnings=(PRICE_WARNING,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.STATIC_FLYER))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    first = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert first is not None and len(first.warnings) == 1
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(media=(FLYER_MEDIA,))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    again = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert again is not None and again.warnings == ()
+
+
+def test_a_failed_regeneration_keeps_the_previous_version_and_its_warning() -> None:
+    """m-24828909 (#195) keeps the version a draft shows when its regeneration fails:
+    no new media is written, so the composition warning that rides on that version's
+    cover stays with it — and the failed attempt's own warning is never shown."""
+    from qualify_api.creative.service import KEPT_PREVIOUS_PREFIX
+
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,), warnings=(PRICE_WARNING,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.STATIC_FLYER))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    other = MediaWarning(code="other_warning", detail="no debería verse")
+    media.outcome = MediaOutcome(failure="provider_error", detail="boom", warnings=(other,))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.status == GENERATED
+    assert (detail.failure_detail or "").startswith(KEPT_PREVIOUS_PREFIX)
+    assert detail.warnings == (DraftWarning(PRICE_NOT_PRINTED, PRICE_NOT_PRINTED_TEXT),)
+
+
+def test_draft_warnings_tolerate_foreign_or_malformed_params() -> None:
+    """A template's assets carry the render service's own `warnings` — never mistaken
+    for the composition's — and a malformed row cannot break the screen."""
+    from qualify_api.creative.service import DraftDetail
+
+    params = (
+        {"warnings": ["render: font fallback"]},
+        {COMPOSITION_WARNINGS_PARAM: "not a list"},
+        {COMPOSITION_WARNINGS_PARAM: [{"detail": "sin código"}, "x"]},
+        {COMPOSITION_WARNINGS_PARAM: [{"code": PRICE_NOT_PRINTED, "detail": "a"}]},
+        {COMPOSITION_WARNINGS_PARAM: [{"code": PRICE_NOT_PRINTED, "detail": "a"}]},
+        None,
+    )
+    detail = DraftDetail(
+        id=uuid4(),
+        brand_id=BRAND_ID,
+        brief_id=uuid4(),
+        status=GENERATED,
+        failure_reason=None,
+        selected_variant_id=None,
+        voice_profile_version=1,
+        pipeline_version="creative-v1",
+        requires_ai_disclosure=False,
+        approved_by=None,
+        approved_at=None,
+        created_at=datetime.now(UTC),
+        variants=(),
+        image=None,
+        media=tuple(
+            ImageRecord(
+                id=uuid4(),
+                media_url=f"m/{i}.png",
+                width=None,
+                height=None,
+                aspect_ratio=None,
+                position=i,
+                params=item,
+            )
+            for i, item in enumerate(params)
+        ),
+    )
+    assert detail.warnings == (DraftWarning(PRICE_NOT_PRINTED, "a"),)
+
+
+class RecordingGuard:
+    """An approval guard that refuses with `refuse` (when set) and records each check."""
+
+    def __init__(self, refuse: str | None = None) -> None:
+        self.refuse = refuse
+        self.checks: list[tuple[UUID, UUID, dict]] = []
+
+    def check(self, *, tenant_id: UUID, draft_id: UUID, copy) -> None:  # noqa: ANN001
+        self.checks.append((tenant_id, draft_id, dict(copy)))
+        if self.refuse is not None:
+            raise ApprovalBlocked(self.refuse)
+
+
+def _guarded_service(guard: RecordingGuard) -> tuple[ContentService, InMemoryRepository]:
+    repo = InMemoryRepository()
+    service = ContentService(
+        router=FakeRouter([ok_outcome(copy_dict())]),  # type: ignore[arg-type]
+        pricing=FakePricing(),
+        credentials=StaticKeyResolver(),
+        voice_service=FakeVoice(make_voice()),
+        brand_service=FakeBrand(make_kit()),
+        repository=repo,
+        dispatcher=RecordingDispatcher(),
+        approval_guard=guard,
+    )
+    return service, repo
+
+
+def test_a_refusing_guard_blocks_the_approval_and_writes_nothing() -> None:
+    guard = RecordingGuard(refuse="El texto menciona $9.900, que no es el precio del catálogo.")
+    service, repo = _guarded_service(guard)
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+
+    with pytest.raises(ApprovalBlocked) as blocked:
+        service.approve(
+            tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID
+        )
+    assert "$9.900" in blocked.value.detail
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.selected_variant_id is None
+    assert [(t, d) for t, d, _ in guard.checks] == [(TENANT_ID, draft_id)]
+
+
+def test_the_guard_reads_the_operators_edit_not_the_models_copy() -> None:
+    guard = RecordingGuard()
+    service, repo = _guarded_service(guard)
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+    edited = CopyPayload.model_validate(copy_dict("Hook corregido"))
+    assert not service.edit_variant(
+        tenant_id=TENANT_ID, variant_id=variant_id, copy=edited, user_id=USER_ID
+    )
+
+    detail = service.approve(
+        tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID
+    )
+    assert detail.status == APPROVED
+    ((_, _, checked),) = guard.checks
+    assert checked["hook"] == "Hook corregido"
+
+
+def test_an_unknown_variant_is_refused_before_the_guard_is_asked() -> None:
+    guard = RecordingGuard(refuse="no")
+    service, repo = _guarded_service(guard)
+    draft_id, _ = _generated_draft_with_variant(service, repo)
+    with pytest.raises(UnknownVariant):
+        service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=uuid4(), user_id=USER_ID)
+    assert guard.checks == []

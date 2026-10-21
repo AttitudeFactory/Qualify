@@ -910,6 +910,9 @@ class DraftVM:
     has_script: bool = False
     #: Why it failed, in the operator's words — never a vendor, model or cost.
     failure_detail: str = ""
+    #: What the composition had to leave out (ticket 24803289: a catalog price that
+    #: could not be printed whole), in the operator's words.
+    warnings: tuple[str, ...] = ()
     #: The copy may be edited (the FSM's `edit` edge exists from this status).
     can_edit: bool = False
     #: «Descargar todo» (m-24828908): the backend path of the piece's `.zip` and its file
@@ -948,6 +951,7 @@ def build_draft_vm(
     kind: str = "static_flyer",
     media: Sequence[MediaVM] = (),
     failure_detail: str | None = None,
+    warnings: Sequence[str] = (),
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
@@ -990,6 +994,7 @@ def build_draft_vm(
         has_video=any(item.media_type == "video" for item in media),
         has_script=kind in ("creator_script", "avatar_video", "animated_avatar_video"),
         failure_detail=failure_detail or "",
+        warnings=tuple(warnings),
         can_edit=status in EDITABLE_DRAFT_STATUSES,
     )
 

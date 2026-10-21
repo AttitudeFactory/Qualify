@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
@@ -81,6 +81,7 @@ from qualify_api.creative.fsm import (
 )
 from qualify_api.creative.media import (
     MediaProducer,
+    MediaWarning,
     MediaWrite,
     TemplateRunWrite,
     ai_generated_media,
@@ -102,6 +103,11 @@ PIPELINE_VERSION = "creative-v1"
 COPY_CHAIN: tuple[str, ...] = ("anthropic",)
 
 _MTOK = Decimal(1_000_000)
+
+#: The `image_assets.params` key a generation's composition warnings are kept under
+#: (ticket 24803289: a catalog price that could not be printed whole). Not `warnings`,
+#: which a template's assets already use for the render service's own.
+COMPOSITION_WARNINGS_PARAM = "composition_warnings"
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +139,16 @@ class UnknownDraft(Exception):
 
 class UnknownVariant(Exception):
     """No such variant visible in this tenant, or it belongs to another draft."""
+
+
+class ApprovalBlocked(Exception):
+    """An approval guard refused the copy about to be approved (ticket 24803289: a draft
+    of a variations set quoting a price that is not the catalog's). Raised before any
+    write; `detail` is the operator's Spanish."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
 class DuplicateDraftRequest(Exception):
@@ -234,6 +250,52 @@ class DraftDetail:
     approved_revision: int | None = None
     failure_detail: str | None = None
 
+    @property
+    def warnings(self) -> tuple[DraftWarning, ...]:
+        """What the composition of the current media had to leave out (ticket 24803289)
+        — kept in `image_assets.params`, so a regeneration that replaces the media
+        replaces them too. Each one once, in order."""
+        seen: dict[tuple[str, str], DraftWarning] = {}
+        for item in self.media:
+            raw = (item.params or {}).get(COMPOSITION_WARNINGS_PARAM) or ()
+            for entry in raw if isinstance(raw, (list, tuple)) else ():
+                if not isinstance(entry, Mapping):
+                    continue
+                warning = DraftWarning(
+                    code=str(entry.get("code") or ""), detail=str(entry.get("detail") or "")
+                )
+                if warning.code:
+                    seen.setdefault((warning.code, warning.detail), warning)
+        return tuple(seen.values())
+
+
+@dataclass(frozen=True)
+class DraftWarning:
+    """One composition warning as the review screens show it: `code` to key on
+    (`media.PRICE_NOT_PRINTED`), `detail` in the operator's Spanish."""
+
+    code: str
+    detail: str
+
+
+def with_composition_warnings(
+    media: tuple[MediaWrite, ...], warnings: Sequence[MediaWarning]
+) -> tuple[MediaWrite, ...]:
+    """`media` with the generation's composition warnings on its first item (the
+    piece's cover — what lists and the gallery preview), so they are written with the
+    media, in the same transaction, and live exactly as long as it. No media, nothing
+    to attach to: a piece that was not made has nothing to warn about."""
+    if not warnings or not media:
+        return media
+    first = min(media, key=lambda item: item.position)
+    entries = [{"code": w.code, "detail": w.detail, "fields": dict(w.fields)} for w in warnings]
+    return tuple(
+        replace(item, params={**item.params, COMPOSITION_WARNINGS_PARAM: entries})
+        if item is first
+        else item
+        for item in media
+    )
+
 
 @dataclass(frozen=True)
 class VariantWrite:
@@ -296,6 +358,14 @@ class BrandContextReader(Protocol):
     competitors — `None` when there is nothing."""
 
     def context(self, *, tenant_id: UUID, brand_id: UUID) -> BrandContext | None: ...
+
+
+class ApprovalGuard(Protocol):
+    """A check the copy about to be approved must pass (ticket 24803289: the variations
+    sets' catalog price). Raises `ApprovalBlocked`; a draft the guard knows nothing
+    about passes."""
+
+    def check(self, *, tenant_id: UUID, draft_id: UUID, copy: Mapping[str, object]) -> None: ...
 
 
 class VoiceService(Protocol):
@@ -1054,8 +1124,10 @@ class ContentService:
         copy_chain: tuple[str, ...] = COPY_CHAIN,
         media: MediaProducer | None = None,
         context_reader: BrandContextReader | None = None,
+        approval_guard: ApprovalGuard | None = None,
     ) -> None:
         self._media = media
+        self._approval_guard = approval_guard
         self._router = router
         self._pricing = pricing
         self._credentials = credentials
@@ -1452,7 +1524,7 @@ class ContentService:
                 )
                 for item in outcome.usage
             )
-            media_writes = outcome.media
+            media_writes = with_composition_warnings(outcome.media, outcome.warnings)
             media_failure = outcome.failure
             template_run = outcome.template_run
             # A failed run says why; a run with a sibling output missing says which
@@ -1758,11 +1830,17 @@ class ContentService:
         self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID
     ) -> DraftDetail:
         """HITL #2 approval, through the FSM's guarded ``approve`` edge (a variant must
-        be picked — the guard makes 'approved without a choice' unrepresentable)."""
+        be picked — the guard makes 'approved without a choice' unrepresentable). The
+        copy approved (the operator's edit when there is one) must pass the approval
+        guard first — `ApprovalBlocked`, nothing written."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
+        if self._approval_guard is not None:
+            self._approval_guard.check(
+                tenant_id=tenant_id, draft_id=draft_id, copy=variant.edited_copy or variant.copy
+            )
         new_status = apply_transition(
             record.status, DraftTrigger.APPROVE, selected_variant_id=variant_id
         )
