@@ -302,11 +302,18 @@ class SentimentRepository(Protocol):
         search: str | None,
         cursor: CommentListCursor | None,
         limit: int = DEFAULT_COMMENT_PAGE_SIZE,
+        commercial_intent: AnalysisVersion | None = None,
     ) -> tuple[AnalyzedComment, ...]:
         """One Reel's comments, newest first, optionally filtered by sentiment state
         (`"POS"`/`"NEG"`/`"NEU"`/`SENTIMENT_FILTER_PENDING`/`None` for all) and/or a
         case-insensitive text search. Bounded to `thread_id` — never touches another
-        Reel's comments."""
+        Reel's comments.
+
+        `commercial_intent` (m-24789644) keeps only the comments whose intent signal
+        under THAT version is commercial (`comment_intent_results.commercial_intent`).
+        The version is the caller's — the intent module's `CURRENT_INTENT_VERSION` —
+        never this module's sentiment version; `None` (the default) applies no intent
+        filter at all, so every pre-existing caller reads exactly what it read before."""
         ...
 
 
@@ -341,6 +348,10 @@ class MemorySentimentRepository:
             tuple[UUID, str],
             tuple[datetime | None, str | None, str | None, str | None, str | None],
         ] = {}
+        # (message_id, intent version key) of every comment whose intent signal is
+        # commercial — mirrors `comment_intent_results.commercial_intent` (m-24789644),
+        # read only by `list_comments_for_thread`'s `commercial_intent` filter.
+        self._commercial: set[tuple[UUID, str, str, str, str]] = set()
 
     def seed_monitored_media(
         self,
@@ -445,6 +456,19 @@ class MemorySentimentRepository:
         self._recorded.add(key)
         self._results[key] = (label, score)
         return True
+
+    def seed_commercial_intent(self, *, message_id: UUID, version: AnalysisVersion) -> None:
+        """Test-only helper: in Postgres the row comes from the intent module's own
+        `record_intent_result`, which this module never writes."""
+        self._commercial.add(
+            (
+                message_id,
+                version.detector_version,
+                version.pipeline_version,
+                version.model_id,
+                version.model_revision or "",
+            )
+        )
 
     def _label_for(self, message_id: UUID, version: AnalysisVersion) -> str | None:
         key = (
@@ -584,6 +608,7 @@ class MemorySentimentRepository:
         search: str | None,
         cursor: CommentListCursor | None,
         limit: int = DEFAULT_COMMENT_PAGE_SIZE,
+        commercial_intent: AnalysisVersion | None = None,
     ) -> tuple[AnalyzedComment, ...]:
         rows = []
         for message_id, (
@@ -605,6 +630,18 @@ class MemorySentimentRepository:
             if sentiment_filter == SENTIMENT_FILTER_PENDING and label is not None:
                 continue
             if sentiment_filter in ("POS", "NEG", "NEU") and label != sentiment_filter:
+                continue
+            if (
+                commercial_intent is not None
+                and (
+                    message_id,
+                    commercial_intent.detector_version,
+                    commercial_intent.pipeline_version,
+                    commercial_intent.model_id,
+                    commercial_intent.model_revision or "",
+                )
+                not in self._commercial
+            ):
                 continue
             if search and (
                 comment_text is None
@@ -929,6 +966,7 @@ class PostgresSentimentRepository:
         search: str | None,
         cursor: CommentListCursor | None,
         limit: int = DEFAULT_COMMENT_PAGE_SIZE,
+        commercial_intent: AnalysisVersion | None = None,
     ) -> tuple[AnalyzedComment, ...]:
         if sentiment_filter is not None and sentiment_filter not in _VALID_SENTIMENT_FILTERS:
             raise ValueError(f"invalid sentiment_filter: {sentiment_filter!r}")
@@ -978,6 +1016,26 @@ class PostgresSentimentRepository:
         elif sentiment_filter is not None:
             sql += " AND csr.label = :sentiment_filter"
             params["sentiment_filter"] = sentiment_filter
+        if commercial_intent is not None:
+            # m-24789644: one message_id-correlated probe per row, served by 0069's
+            # `ix_comment_intent_message` — bounded to this Reel's rows like every other
+            # predicate here. `cir.tenant_id` is the same redundant-with-RLS planner hint
+            # the sentiment LATERAL above carries.
+            sql += """
+              AND EXISTS (
+                SELECT 1 FROM comment_intent_results cir
+                WHERE cir.message_id = m.id
+                  AND cir.tenant_id = :tenant_id
+                  AND cir.commercial_intent
+                  AND cir.detector_version = :idv AND cir.pipeline_version = :ipv
+                  AND cir.model_id = :imid
+                  AND COALESCE(cir.model_revision, '') = COALESCE(:imrev, '')
+              )
+            """
+            params["idv"] = commercial_intent.detector_version
+            params["ipv"] = commercial_intent.pipeline_version
+            params["imid"] = commercial_intent.model_id
+            params["imrev"] = commercial_intent.model_revision
         if search:
             # Accent- and case-insensitive: fold both sides (message text via SQL
             # `translate(lower(...))`, the search term via `_normalize_for_search`)

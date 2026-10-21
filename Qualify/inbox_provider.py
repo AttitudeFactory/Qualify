@@ -68,6 +68,16 @@ longer synced (`expired`). `is_monitored` (QUA-94) is still forwarded as the raw
 `analyze_sentiment_now` (QUA-92) is the manual "Analizar sentimiento" button's transport.
 It adds no analysis logic of its own and is never called from `sync_now`/`InboxState.
 sync_comments` in either direction — QUA-21 stays exactly as manual as it already was.
+
+**Commercial intent (m-24789644, PR 4b).** `thread_comments_page` decorates each comment
+with its intent signal under `CURRENT_INTENT_VERSION` — ONE extra `current_signals` read
+for the page's ids, never one per comment — and marks every class the committed golden-set
+report does not back as «no fiable» (`class_reliability`, fail-closed). Its
+`intent_filter` (`INTENT_FILTER_COMMERCIAL`) narrows the SAME paginated query to the
+comments whose signal is commercial, so the cursor, the sentiment filter and the search
+all keep working together. `analyze_intent_now` is the "Analizar intención" button's
+transport over `qualify_api.intent.analyze_pending_intents`; like sentiment's, it is
+manual-only and independent of sync in both directions.
 """
 
 from __future__ import annotations
@@ -87,6 +97,16 @@ from qualify_api.inbox import (
 )
 from qualify_api.inbox.monitoring import MonitoringState, effective_state
 from qualify_api.inbox.service import CandidateMedia
+from qualify_api.intent import (
+    COMMERCIAL_CLASSES,
+    CURRENT_INTENT_VERSION,
+    INTENT_CLASS_LABELS,
+    IntentClass,
+    IntentSignal,
+    analyze_pending_intents,
+    class_reliability,
+)
+from qualify_api.intent import current_signals as _current_signals
 from qualify_api.sentiment import analyze_pending_comments
 from qualify_api.sentiment import global_sentiment_summary as _global_sentiment_summary
 from qualify_api.sentiment import list_comments_for_thread as _list_comments_for_thread
@@ -113,6 +133,8 @@ from .inbox_vm import (
     CommentPageCursorVM,
     CommentVM,
     GlobalSentimentSummaryVM,
+    IntentAnalysisSummaryVM,
+    IntentChipVM,
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
@@ -193,7 +215,31 @@ async def toggle_monitoring(
     )
 
 
-def _to_comment_vm(comment: AnalyzedComment) -> CommentVM:
+#: The intent filter's one real value; anything else (`"ALL"`, `""`) means no filter.
+INTENT_FILTER_COMMERCIAL = "COMMERCIAL"
+
+
+def _intent_chips(signal: IntentSignal, reliable: dict[IntentClass, bool]) -> list[IntentChipVM]:
+    """The signal's classes, highest confidence first (ties by label, so the order is
+    stable across reloads)."""
+    ranked = sorted(
+        signal.classes.items(), key=lambda item: (-item[1], INTENT_CLASS_LABELS[item[0]])
+    )
+    return [
+        IntentChipVM(
+            label=INTENT_CLASS_LABELS[intent_class],
+            commercial=intent_class in COMMERCIAL_CLASSES,
+            reliable=reliable.get(intent_class, False),
+        )
+        for intent_class, _confidence in ranked
+    ]
+
+
+def _to_comment_vm(
+    comment: AnalyzedComment,
+    signal: IntentSignal | None = None,
+    reliable: dict[IntentClass, bool] | None = None,
+) -> CommentVM:
     return CommentVM(
         message_id=str(comment.message_id),
         text=comment.text or "",
@@ -202,6 +248,8 @@ def _to_comment_vm(comment: AnalyzedComment) -> CommentVM:
         external_thread_id=comment.external_thread_id,
         sentiment_label=comment.label or "",
         score_display=f"{comment.score:.2f}" if comment.score is not None else "",
+        intent_analyzed=signal is not None,
+        intent_chips=_intent_chips(signal, reliable or {}) if signal is not None else [],
     )
 
 
@@ -323,12 +371,18 @@ def thread_comments_page(
     sentiment_filter: str,
     search: str,
     cursor: CommentPageCursorVM | None,
+    intent_filter: str = "",
 ) -> tuple[list[CommentVM], CommentPageCursorVM | None, bool]:
     """QUA-93: one page of ONE Reel's comments — the detail view's read seam. `""`/`"ALL"`
     for `sentiment_filter` means no filter; any other value is passed straight through to
     `qualify_api.sentiment.repository.SENTIMENT_FILTER_PENDING`/`"POS"`/`"NEG"`/`"NEU"`
     (the UI's filter values already match those constants exactly, no translation table).
-    Blank/whitespace `search` means no search.
+    Blank/whitespace `search` means no search. `intent_filter == INTENT_FILTER_COMMERCIAL`
+    keeps only the comments commercial under `CURRENT_INTENT_VERSION`; any other value
+    means no intent filter.
+
+    Each comment carries its intent signal (m-24789644): one `current_signals` read for
+    the whole page, skipped when the page is empty.
 
     Blocking DB call, same posture as `reel_summaries_page`. Raises
     `UnknownSentimentConnection` if the connection is not visible to this tenant.
@@ -343,8 +397,17 @@ def thread_comments_page(
         search=repo_search,
         cursor=_comment_cursor_from_vm(cursor),
         limit=DEFAULT_COMMENT_PAGE_SIZE,
+        commercial_intent=(
+            CURRENT_INTENT_VERSION if intent_filter == INTENT_FILTER_COMMERCIAL else None
+        ),
     )
-    items = [_to_comment_vm(c) for c in page]
+    signals = (
+        _current_signals(tenant_id=tenant_id, message_ids=[c.message_id for c in page])
+        if page
+        else {}
+    )
+    reliable = class_reliability(CURRENT_INTENT_VERSION.detector_version) if signals else {}
+    items = [_to_comment_vm(c, signals.get(c.message_id), reliable) for c in page]
     next_cursor = None
     if page:
         last = page[-1]
@@ -417,4 +480,23 @@ async def analyze_sentiment_now(*, tenant_id: UUID, connection_id: UUID) -> Anal
         comments_checked=summary.comments_checked,
         new_results=summary.new_results,
         skipped_empty=summary.skipped_empty,
+    )
+
+
+async def analyze_intent_now(*, tenant_id: UUID, connection_id: UUID) -> IntentAnalysisSummaryVM:
+    """One commercial-intent pass (m-24789644), in process, for the session's tenant —
+    `qualify_api.intent.analyze_pending_intents`, the one intent engine. Off the event
+    loop: the seam is synchronous (Postgres + the Claude call).
+
+    Propagates `UnknownIntentConnection` and `IntentModelUnavailable` (no
+    `QUALIFY_ANTHROPIC_API_KEY` in this deployment) for `InboxState` to map.
+    """
+    summary = await asyncio.to_thread(
+        analyze_pending_intents, tenant_id=tenant_id, connection_id=connection_id
+    )
+    return IntentAnalysisSummaryVM(
+        comments_checked=summary.comments_checked,
+        new_results=summary.new_results,
+        skipped_empty=summary.skipped_empty,
+        unclassified=summary.unclassified,
     )
