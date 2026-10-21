@@ -1,0 +1,125 @@
+{
+  "model_id": "claude-haiku-5-5",
+  "detector_version": "intent-claude-v2",
+  "golden_sha256": "be2ca06e476d9358e83b82fcafea6dd19bb4b5e308e4be093686c0832c4a0739",
+  "comments": 205,
+  "unanswered": 0,
+  "exact_match": 0.8682926829268293,
+  "thresholds": {
+    "min_precision": 0.8,
+    "min_recall": 0.7,
+    "min_support": 8
+  },
+  "commercial_intent": {
+    "support": 111,
+    "true_positives": 109,
+    "false_positives": 5,
+    "false_negatives": 2,
+    "precision": 0.956140350877193,
+    "recall": 0.9819819819819819,
+    "reliable": true
+  },
+  "per_class": {
+    "product": {
+      "support": 7,
+      "true_positives": 7,
+      "false_positives": 14,
+      "false_negatives": 0,
+      "precision": 0.3333333333333333,
+      "recall": 1.0,
+      "reliable": false
+    },
+    "price": {
+      "support": 52,
+      "true_positives": 52,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "reliable": true
+    },
+    "availability": {
+      "support": 16,
+      "true_positives": 14,
+      "false_positives": 2,
+      "false_negatives": 2,
+      "precision": 0.875,
+      "recall": 0.875,
+      "reliable": true
+    },
+    "models": {
+      "support": 3,
+      "true_positives": 1,
+      "false_positives": 2,
+      "false_negatives": 2,
+      "precision": 0.3333333333333333,
+      "recall": 0.3333333333333333,
+      "reliable": false
+    },
+    "variants": {
+      "support": 9,
+      "true_positives": 6,
+      "false_positives": 1,
+      "false_negatives": 3,
+      "precision": 0.8571428571428571,
+      "recall": 0.6666666666666666,
+      "reliable": false
+    },
+    "quantities": {
+      "support": 7,
+      "true_positives": 6,
+      "false_positives": 2,
+      "false_negatives": 1,
+      "precision": 0.75,
+      "recall": 0.8571428571428571,
+      "reliable": false
+    },
+    "store": {
+      "support": 12,
+      "true_positives": 11,
+      "false_positives": 4,
+      "false_negatives": 1,
+      "precision": 0.7333333333333333,
+      "recall": 0.9166666666666666,
+      "reliable": false
+    },
+    "location": {
+      "support": 16,
+      "true_positives": 14,
+      "false_positives": 0,
+      "false_negatives": 2,
+      "precision": 1.0,
+      "recall": 0.875,
+      "reliable": true
+    },
+    "hours": {
+      "support": 3,
+      "true_positives": 3,
+      "false_positives": 1,
+      "false_negatives": 0,
+      "precision": 0.75,
+      "recall": 1.0,
+      "reliable": false
+    },
+    "other_commercial": {
+      "support": 10,
+      "true_positives": 10,
+      "false_positives": 3,
+      "false_negatives": 0,
+      "precision": 0.7692307692307693,
+      "recall": 1.0,
+      "reliable": false
+    },
+    "general": {
+      "support": 94,
+      "true_positives": 89,
+      "false_positives": 2,
+      "false_negatives": 5,
+      "precision": 0.978021978021978,
+      "recall": 0.9468085106382979,
+      "reliable": true
+    }
+  },
+  "split": "test",
+  "cost_usd": 0.004013
+}

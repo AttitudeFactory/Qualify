@@ -142,10 +142,11 @@ class BrandVoiceProfile(Base):
 
 
 class BrandVoiceClone(Base):
-    """The brand's own voice cloned in HeyGen (0032): one per brand, replaced on a new
-    clone. Manual, with the operator's recorded consent (`consent_by`/`consent_at`).
-    `heygen_voice_id` works anywhere a HeyGen `voice_id` does once `status` is
-    `complete`."""
+    """The brand's own cloned voice (0032; vendor-neutral since 0066): one per brand,
+    replaced on a new clone. Manual, with the operator's recorded consent
+    (`consent_by`/`consent_at`/`consent_text`). `provider` says where it lives —
+    `seed_speech` since 2026-10-16, `heygen` for rows made before — and
+    `external_voice_id` is its id there (Seed Speech: our own post-paid `qlf-…`)."""
 
     __tablename__ = "brand_voice_clones"
     __table_args__ = (
@@ -162,13 +163,20 @@ class BrandVoiceClone(Base):
     brand_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
     )
-    heygen_voice_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="heygen")
+    external_voice_id: Mapped[str] = mapped_column(Text, nullable=False)
+    #: History only (0066): the HeyGen id of a voice cloned before the move to Seed Speech.
+    heygen_voice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="processing")
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str | None] = mapped_column(Text, nullable=True)
     gender: Mapped[str | None] = mapped_column(Text, nullable=True)
     preview_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consent_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consent_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -399,6 +407,8 @@ class ContentDraft(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Staging state; both cleared together on the `stage_expired` edge.
     staged_container_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # the caller's idempotency key (0070): the same key never creates a second draft
+    request_key: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     staged_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -525,7 +535,9 @@ class TemplateRun(Base):
 
     __tablename__ = "template_runs"
     __table_args__ = (
-        CheckConstraint("engine IN ('remotion','heygen','ugc')", name="ck_template_runs_engine"),
+        CheckConstraint(
+            "engine IN ('remotion','heygen','omnihuman','ugc')", name="ck_template_runs_engine"
+        ),
         CheckConstraint(
             "status IN ('pending','generating','completed','failed','cancelled')",
             name="ck_template_runs_status",
@@ -649,6 +661,141 @@ class CreativeEngineConfig(Base):
     max_regenerations_per_draft: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("3")
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+# `creative_angle_sets` / `creative_angles` vocabularies (0070, ticket 24803289). Strings
+# with CHECK constraints, same contract style as `template_runs`.
+ANGLE_SET_STATUSES: tuple[str, ...] = (
+    "drafting",
+    "angles_ready",
+    "generating",
+    "completed",
+    "failed",
+)
+ANGLE_STATUSES: tuple[str, ...] = (
+    "proposed",
+    "discarded",
+    "reserved",
+    "queued",
+    "failed",
+    "approved",
+)
+
+
+class CreativeAngleSet(Base):
+    """One «10 variaciones» request (0070): the catalog product, the preset, the price the
+    catalog had then, the campaign the pieces group in, and the provenance and cost of
+    the angles call. The pieces themselves are `content_drafts`, one per angle."""
+
+    __tablename__ = "creative_angle_sets"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('drafting','angles_ready','generating','completed','failed')",
+            name="ck_creative_angle_sets_status",
+        ),
+        CheckConstraint("requested_count BETWEEN 1 AND 12", name="ck_creative_angle_sets_count"),
+        Index(
+            "ix_creative_angle_sets_brand_created",
+            "tenant_id",
+            "brand_id",
+            text("created_at DESC"),
+        ),
+        Index("ix_creative_angle_sets_product", "product_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    product_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brand_products.id", ondelete="RESTRICT"), nullable=False
+    )
+    campaign_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True
+    )
+    preset_key: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="drafting")
+    product_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    price_label: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    price_missing: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    model_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    brand_kit_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, server_default="0")
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class CreativeAngle(Base):
+    """One visual angle of a set (0070): the structured proposal, its own status and the
+    draft it became. The draft's generation status lives on the draft."""
+
+    __tablename__ = "creative_angles"
+    __table_args__ = (
+        UniqueConstraint("set_id", "position", name="uq_creative_angles_set_position"),
+        CheckConstraint(
+            "status IN ('proposed','discarded','reserved','queued','failed','approved')",
+            name="ck_creative_angles_status",
+        ),
+        CheckConstraint("position BETWEEN 1 AND 12", name="ck_creative_angles_position"),
+        Index("ix_creative_angles_tenant", "tenant_id"),
+        Index("ix_creative_angles_draft", "draft_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    set_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("creative_angle_sets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    scene: Mapped[str] = mapped_column(Text, nullable=False)
+    composition: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    hook: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    cta: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="proposed")
+    draft_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="SET NULL"), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    request_key: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    brief: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

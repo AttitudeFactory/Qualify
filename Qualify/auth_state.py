@@ -28,10 +28,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Mapping
 from urllib.parse import parse_qs
 
 import reflex as rx
 from qualify_api.auth import (
+    INVITE_PARAM,
+    LEGACY_INVITE_PARAM,
+    SIGNUP_ROUTE,
     AuthNotConfigured,
     AuthProviderError,
     DraftEmailInvalid,
@@ -121,6 +125,16 @@ def _signup_blocking(
     )
 
 
+def invite_token_from_query(params: Mapping[str, object]) -> str:
+    """The invite token of the signup URL: `?invitacion=` (what emails carry since
+    2026-10-21) or the old `?invite=` of links sent before, still within their days."""
+    for name in (INVITE_PARAM, LEGACY_INVITE_PARAM):
+        token = str(params.get(name, "") or "")
+        if token:
+            return token
+    return ""
+
+
 def _invite_blocking(token: str) -> tuple[str, str]:
     """(email, business) of a still-usable invite; ("", "") when the link is
     unknown, used or expired."""
@@ -175,7 +189,7 @@ def _draft_destination_blocking(tenant_id) -> str:
 
     status = tenant_kit_status(tenant_id)
     if status.completed:
-        return "/signup"
+        return SIGNUP_ROUTE
     return status.resume_route or "/brand"
 
 
@@ -244,7 +258,7 @@ class AuthState(rx.State):
     # The recovery link's token while /reset is open. Backend-only, like the above:
     # it can set the account's password, so it never goes back to the browser.
     _recovery_token: str = ""
-    # The invite link's token while /signup is open. Backend-only: it is a credential.
+    # The invite link's token while the signup page is open. Backend-only: it is a credential.
     _invite_token: str = ""
 
     @rx.var
@@ -296,7 +310,7 @@ class AuthState(rx.State):
 
     @rx.event
     def redirect_if_authenticated(self) -> rx.event.EventSpec | None:
-        """`on_load` of /login, /signup and /forgot: an authenticated session skips
+        """`on_load` of /login, the signup and /forgot: an authenticated session skips
         them; otherwise each opens clean (no error or eye state left by another)."""
         self.auth_error = ""
         self.show_password = False
@@ -308,15 +322,15 @@ class AuthState(rx.State):
 
     @rx.event
     async def enter_signup(self):
-        """`on_load` of /signup: bounce a session and read the invite link. Without a
-        valid invite the page says Qualify is invite-only (unless dev opened signup).
-        The token leaves the URL right away."""
+        """`on_load` of the signup (/registro and its old alias /signup): bounce a
+        session and read the invite link. Without a valid invite the page says Qualify
+        is invite-only (unless dev opened signup). The token leaves the URL right away."""
         if self.session_tenant_id:
             return rx.redirect("/")
         self.auth_error = ""
         self.show_password = False
         self.signup_open = signup_open()
-        token = str(self.router.url.query_parameters.get("invite", "") or "")
+        token = invite_token_from_query(self.router.url.query_parameters)
         if not token:
             if not self._invite_token:  # a reload after the URL was cleaned keeps it
                 self.invite_state = ""
@@ -787,6 +801,7 @@ class AuthState(rx.State):
             from .conversations_state import ConversationsState
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
+            from .discover_reels import DiscoverReelsState
             from .gallery_state import GalleryState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
@@ -816,6 +831,8 @@ class AuthState(rx.State):
                 PublishHubState,
                 DashboardState,
                 CreativeState,
+                # «Descubrir reels» (2026-10-15): the brand's referentes' reels
+                DiscoverReelsState,
                 # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step,
                 # chosen plan, staged logo, the connect flow's read profile. None of
                 # this lives in `CreativeState`, so it was never covered by the reset

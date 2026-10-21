@@ -1,5 +1,7 @@
 # ADR 32 — Motor de Ángulos: la pata de creativo como *wedge de insight*, no como generador
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Estado:** `[APROBADO]` — **firmado por el fundador 2026-08-10 (en chat).** Fila foldeada a `docs/arquitectura.md` §6. Backlog seedeado en Linear (equipo `Qualify-market`).
 **Fecha:** 2026-08-10 · **Fase:** 5 (GTM activation) · **Depende de:** Fase 1 Parte 3 (plano analítico earned media) + capa de señales (Fase 3).
 **Documentos hermanos:** `docs/comparativa-apis-creativo-motor-angulos.md` (evidencia de vendors/precios), `docs/brief-decisiones-motor-angulos.md` (las 16 decisiones atómicas), `docs/ingenieria-reversa-otimify.md` (el contraejemplo que motiva la disciplina).

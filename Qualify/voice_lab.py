@@ -10,11 +10,13 @@ Two independent actions on one recording of the brand's voice:
   Claude place the brand on the four tone axes (`qualify_api.creative.voice_analysis`);
   the result pre-fills the sliders, which the operator can still move — nothing is
   saved until the kit is.
-- **Clonar** (manual, with consent): upload it to HeyGen and clone it
-  (`HeyGenAvatarVideoAdapter.clone_voice`), recorded per brand in `brand_voice_clones`.
-  The finished clone is offered first among the voices of the avatar videos on /create.
+- **Clonar** (manual, with consent): clone it in BytePlus Seed Speech (§ request
+  2026-10-16, HeyGen retired — `qualify_creative.adapters.byteplus_speech`), recorded per
+  brand in `brand_voice_clones` with the sample kept in R2. The finished clone is offered
+  first among the voices of the avatar videos on /create, and OmniHuman lip-syncs the
+  presenter to it.
 
-The HeyGen calls are synchronous (`httpx`), so every one runs in a thread."""
+The vendor calls are synchronous (`httpx`), so every one runs in a thread."""
 
 from __future__ import annotations
 
@@ -40,15 +42,28 @@ from qualify_api.creative.voice_clone import (
     COMPLETE,
     FAILED,
     PROCESSING,
+    SEED_SPEECH,
     VoiceClone,
     VoiceCloneService,
 )
+from qualify_creative.adapters.byteplus_speech import (
+    API_KEY_ENV as SPEECH_KEY_ENV,
+)
+from qualify_creative.adapters.byteplus_speech import (
+    SeedSpeechClient,
+    SeedSpeechError,
+    SeedSpeechNotConfigured,
+    language_code,
+    new_speaker_id,
+)
+from qualify_shared import observability
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
-from .creative_provider import HEYGEN_KEY_ENV, HeyGenNotConfigured, default_brand_id
+from .creative_provider import default_brand_id
 from .creative_state import CreativeState
+from .r2_media import BACKEND_BASE
 from .tenant import tenant_uuid
 from .ui import (
     callout,
@@ -66,7 +81,8 @@ logger = logging.getLogger(__name__)
 
 VOICE_UPLOAD_ID = "brand_voice_sample"
 _AUDIO_ACCEPT = {"audio/*": [".mp3", ".wav", ".m4a", ".ogg", ".webm", ".aac", ".flac"]}
-#: How long the clone is polled after it is requested (HeyGen: "in minutes").
+#: How long the clone is polled after it is requested (Seed Speech trains in seconds to
+#: a few minutes).
 _CLONE_POLL_SECONDS = 4.0
 _CLONE_POLL_TIMEOUT_SECONDS = 300.0
 
@@ -81,11 +97,13 @@ _TOO_SHORT = (
 )
 _ANALYSIS_FAILED = "No pudimos analizar la grabación. Inténtalo de nuevo en un momento."
 # § request 2026-10-08: no vendor names in what the operator reads
-_HEYGEN_OFF = "La clonación de voz no está disponible ahora mismo."
+_CLONE_OFF = "La clonación de voz no está disponible ahora mismo."
 _CLONE_FAILED = "No pudimos clonar la voz. Prueba con una grabación más limpia."
 _CLONE_DOWN = "No pudimos pedir la clonación. Inténtalo de nuevo en un momento."
-_CLONE_LIMIT = "Se alcanzó el límite de voces clonadas."
-_CLONE_PLAN = "Clonar voces requiere un plan de pago de HeyGen."
+_CLONE_PROTECTED = "Esa voz se parece demasiado a una voz protegida. Usa tu propia voz."
+_CLONE_REJECTED = "La grabación no pasó la revisión. Prueba con otra, hablando tú."
+#: Seed Speech's clone error codes (voicereplication-v3-error-code-reference), by meaning.
+_CLONE_ERRORS = {45001104: _CLONE_PROTECTED, 45001127: _CLONE_REJECTED}
 _DB_ERROR = "No se pudo leer la base de datos."
 #: The microphone recorder, shipped INSIDE the `rx.call_script` that starts it: the
 #: app's `head_components` scripts go through react-helmet, which on Reflex < 0.9.9
@@ -111,13 +129,11 @@ _RECORDER_PROBLEMS = {
 # The work, off the event loop
 
 
-def _heygen() -> tuple[Any, str]:
-    from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
-
-    key = os.environ.get(HEYGEN_KEY_ENV, "").strip()
+def _seed_speech() -> tuple[SeedSpeechClient, str]:
+    key = os.environ.get(SPEECH_KEY_ENV, "").strip()
     if not key:
-        raise HeyGenNotConfigured(f"{HEYGEN_KEY_ENV} is not set")
-    return HeyGenAvatarVideoAdapter(), key
+        raise SeedSpeechNotConfigured(f"{SPEECH_KEY_ENV} is not set")
+    return SeedSpeechClient(), key
 
 
 #: Override the local Whisper checkpoint: a `faster-whisper` model (its own names —
@@ -155,9 +171,36 @@ def _whisper() -> Any:
         return _local_whisper
 
 
+def _audio_seconds(path: Path) -> float | None:
+    """The recording's length, for the trace's usage — PyAV reads only the header. None
+    when it cannot tell (the transcription itself is unaffected)."""
+    try:
+        import av  # noqa: PLC0415 — the `media` extra / `ml` group, present where Whisper is
+
+        with av.open(str(path)) as container:
+            return container.duration / 1_000_000 if container.duration else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _transcribe_locally(path: Path) -> str:
-    """Whisper on this machine; the model loads once per process."""
-    text, _language = _whisper().transcribe(path)
+    """Whisper on this machine; the model loads once per process. Traced in Langfuse as
+    a zero-cost generation with the audio's length — never the audio, nor its file name
+    (it can carry a person's name)."""
+    provider = _whisper()
+    model = str(getattr(provider, "model_id", None) or "whisper")
+    with observability.generation(
+        "whisper", model=model, input={"format": path.suffix.lower().lstrip(".")}
+    ) as observation:
+        text, language = provider.transcribe(path)
+        seconds = _audio_seconds(path)
+        observation.finish(
+            output=text,
+            model=model,
+            usage={"audio_seconds": round(seconds)} if seconds else None,
+            cost={"audio": 0.0},
+            metadata={"language": language, "local": True},
+        )
     return text
 
 
@@ -190,98 +233,169 @@ def analyze_voice_sample(path: Path) -> ToneSuggestion:
     return analyze_recording(path, transcriber=_transcribe_locally, api_key=api_key)
 
 
-#: What goes to HeyGen as is; anything else (a browser recording is webm/ogg, a phone
-#: one m4a) is re-encoded to WAV first — HeyGen's clone docs name mp3/wav, not webm.
-_CLONE_AS_IS = {".mp3": "audio/mpeg", ".wav": "audio/wav"}
-_CLONE_RATE = 44_100
-_CLONE_MAX_SECONDS = 300.0
+#: The sample Seed Speech is sent (§ 2026-10-16): WAV, mono, 24 kHz, 16-bit — what its
+#: clone API takes under 10 MB; it suggests 10-15 s, the recording is cut at 30 s.
+_CLONE_RATE = 24_000
+_CLONE_MAX_SECONDS = 30.0
+_CONSENT_TEXT = "Es mi voz, o tengo permiso de su dueño para clonarla."
 
 
-def _decode_for_clone(path: Path) -> Any:
-    """The recording as mono float32 samples at `_CLONE_RATE` — PyAV, through the `ml`
-    group's `qualify_models` (lazy: only a recording that is not mp3/wav needs it)."""
-    from qualify_models.providers import decode_audio
-
-    return decode_audio(path, sampling_rate=_CLONE_RATE, max_seconds=_CLONE_MAX_SECONDS)
-
-
-def clone_audio(path: Path) -> tuple[bytes, str, str]:
-    """(bytes, filename, content type) of the recording, ready for HeyGen."""
-    suffix = path.suffix.lower()
-    if suffix in _CLONE_AS_IS:
-        return path.read_bytes(), path.name, _CLONE_AS_IS[suffix]
+def clone_audio(path: Path) -> bytes:
+    """The recording as the WAV Seed Speech is sent: decoded and resampled with PyAV (the
+    `media` extra — no `ffmpeg` binary, which neither Windows nor the image has), mono
+    16-bit at `_CLONE_RATE`, at most `_CLONE_MAX_SECONDS`."""
     import io
     import wave
 
-    import numpy as np
+    import av  # noqa: PLC0415
 
-    samples = _decode_for_clone(path)
-    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    pcm = bytearray()
+    limit = int(_CLONE_RATE * _CLONE_MAX_SECONDS) * 2  # 16-bit mono
+    with av.open(str(path)) as container:
+        if not container.streams.audio:
+            raise ValueError("the recording has no audio")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=_CLONE_RATE)
+        for frame in container.decode(audio=0):
+            for out in resampler.resample(frame):
+                pcm.extend(bytes(out.planes[0])[: out.samples * 2])
+            if len(pcm) >= limit:
+                break
+        for out in resampler.resample(None):
+            pcm.extend(bytes(out.planes[0])[: out.samples * 2])
+    if not pcm:
+        raise ValueError("the recording decoded to silence")
     buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(_CLONE_RATE)
-        out.writeframes(pcm)
-    return buffer.getvalue(), f"{path.stem}.wav", "audio/wav"
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(_CLONE_RATE)
+        wav.writeframes(bytes(pcm[:limit]))
+    return buffer.getvalue()
+
+
+def _voice_prefix(tenant_id: UUID, brand_id: UUID) -> str:
+    return f"t/{tenant_id}/brand/{brand_id}/voice/"
+
+
+def _keep_in_r2(tenant_id: UUID, key: str, data: bytes, content_type: str) -> None:
+    import io
+
+    from .r2_media import _gate  # the app's one ObjectGate over R2
+
+    _gate().put_media(tenant_id, key, io.BytesIO(data), content_type)
 
 
 def start_voice_clone(
-    tenant_id: UUID, brand_id: UUID, user_id: UUID, path: Path, name: str
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID,
+    path: Path,
+    name: str,
+    regional_variant: str = "es-CO",
 ) -> VoiceClone | None:
-    """Upload the recording to HeyGen, request the clone and record it for the brand
-    (consent: `user_id`, now). A clone it replaces is deleted in HeyGen, best effort."""
-    adapter, key = _heygen()
-    data, filename, content_type = clone_audio(path)
-    asset = adapter.upload_asset(
-        api_key=key, file_bytes=data, filename=filename, content_type=content_type
-    )
-    voice_id = adapter.clone_voice(
-        api_key=key, name=name, audio_asset_id=str(asset["asset_id"]), language="es"
-    )
+    """Clone the recording in Seed Speech and record it for the brand (consent: `user_id`
+    and `_CONSENT_TEXT`, now). The sample is kept in R2 first (provenance: Seed Speech
+    exports nothing). A voice that was cloned but NEVER used is retrained under the same
+    id (the vendor allows 15 trainings and charges only on the first real synthesis); an
+    activated one cannot be retrained, so the new clone gets a new id — and the old one
+    stays in the account: Seed Speech has no delete API."""
+    client, key = _seed_speech()
     service = VoiceCloneService()
+    current = service.current(tenant_id=tenant_id, brand_id=brand_id)
+    reuse = current is not None and current.provider == SEED_SPEECH and not current.activated_at
+    voice_id = current.voice_id if reuse and current else new_speaker_id()
+    audio = clone_audio(path)
+    sample_key = f"{_voice_prefix(tenant_id, brand_id)}sample-{voice_id}-{uuid4().hex[:8]}.wav"
+    _keep_in_r2(tenant_id, sample_key, audio, "audio/wav")
+    client.clone_voice(
+        api_key=key,
+        speaker_id=voice_id,
+        audio=audio,
+        language=language_code(regional_variant),
+        audio_format="wav",
+    )
     replaced = service.record(
         tenant_id=tenant_id,
         brand_id=brand_id,
-        heygen_voice_id=voice_id,
+        voice_id=voice_id,
         name=name,
         consent_by=user_id,
-        language="es",
+        consent_text=_CONSENT_TEXT,
+        provider=SEED_SPEECH,
+        language=regional_variant,
+        sample_object_key=sample_key,
     )
     if replaced:
-        try:
-            adapter.delete_voice(api_key=key, voice_id=replaced)
-        except Exception as exc:  # the new clone stands either way
-            logger.warning("voice clone %s not deleted in HeyGen: %s", replaced, exc)
+        # no delete API: an unused voice is deleted by BytePlus after 7 days
+        logger.info("brand voice replaced; the old voice stays in Seed Speech: %s", replaced)
     return service.current(tenant_id=tenant_id, brand_id=brand_id)
 
 
 def refresh_voice_clone(tenant_id: UUID, brand_id: UUID) -> VoiceClone | None:
-    """The brand's clone, asking HeyGen for news while it is still processing."""
+    """The brand's clone, asking Seed Speech for news while it is still processing. A
+    ready voice's demo clip is copied to R2 (its URL lives one hour)."""
     service = VoiceCloneService()
     clone = service.current(tenant_id=tenant_id, brand_id=brand_id)
-    if clone is None or clone.status != PROCESSING:
+    if clone is None or clone.status != PROCESSING or clone.provider != SEED_SPEECH:
         return clone
-    adapter, key = _heygen()
-    data = adapter.get_voice(api_key=key, voice_id=clone.heygen_voice_id)
-    status = str(data.get("status") or PROCESSING)
-    if status not in (PROCESSING, COMPLETE, FAILED):
-        status = PROCESSING
+    client, key = _seed_speech()
+    status = client.get_voice(api_key=key, speaker_id=clone.voice_id)
+    if status.failed:
+        updated = service.update_status(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            voice_id=clone.voice_id,
+            status=FAILED,
+            failure_message=_CLONE_FAILED,
+        )
+        return updated or clone
+    if not status.ready:
+        return clone
+    preview_key = None
+    if status.demo_audio_url.startswith("https://"):
+        try:
+            demo = _download_demo(status.demo_audio_url)
+            preview_key = f"{_voice_prefix(tenant_id, brand_id)}demo-{clone.voice_id}.mp3"
+            _keep_in_r2(tenant_id, preview_key, demo, "audio/mpeg")
+        except Exception as exc:  # the voice is ready either way; only the demo is missing
+            logger.warning("voice demo not kept: %s", type(exc).__name__)
+            preview_key = None
     updated = service.update_status(
         tenant_id=tenant_id,
         brand_id=brand_id,
-        heygen_voice_id=clone.heygen_voice_id,
-        status=status,
-        failure_message=str(data.get("failure_message") or "") or None,
-        language=str(data.get("language") or "") or None,
-        gender=str(data.get("gender") or "") or None,
-        preview_audio_url=str(data.get("preview_audio_url") or "") or None,
+        voice_id=clone.voice_id,
+        status=COMPLETE,
+        preview_object_key=preview_key,
     )
     return updated or clone
 
 
+def _download_demo(url: str) -> bytes:
+    """The vendor's demo clip (≤ 5 MB): https only, no redirects to elsewhere trusted."""
+    import httpx  # noqa: PLC0415
+
+    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        if len(response.content) > 5 * 1024 * 1024:
+            raise ValueError("demo clip too large")
+        return response.content
+
+
 def brand_voice_clone(tenant_id: UUID, brand_id: UUID) -> VoiceClone | None:
     return VoiceCloneService().current(tenant_id=tenant_id, brand_id=brand_id)
+
+
+def preview_view(tenant_id: UUID, clone: VoiceClone | None) -> str:
+    """`/r2media/<token>` for the voice's demo clip ("" without one)."""
+    if clone is None or not clone.preview_object_key:
+        return ""
+    from .r2_media import issue_view_path
+
+    try:
+        return issue_view_path(tenant_id, clone.preview_object_key, "audio", "audio/mpeg")
+    except Exception:  # noqa: BLE001 — Redis down: no preview, the voice still works
+        return ""
 
 
 # ---------------------------------------------------------------------------------------
@@ -341,10 +455,14 @@ class VoiceLabState(rx.State):
             return None
         return tenant_id, brand_id, user_id
 
-    def _show_clone(self, clone: VoiceClone | None) -> None:
+    def _show_clone(self, clone: VoiceClone | None, preview: str = "") -> None:
+        # a voice cloned in HeyGen before 2026-10-16 no longer reads anywhere: shown as
+        # nothing, so the operator clones it again
+        if clone is not None and clone.provider != SEED_SPEECH:
+            clone = None
         self.clone_status = clone.status if clone else ""
         self.clone_name = clone.name if clone else ""
-        self.clone_preview = clone.preview_audio_url if clone else ""
+        self.clone_preview = preview if clone else ""
         self.clone_failure = clone.failure_message if clone else ""
 
     # -- the recording ----------------------------------------------------------------
@@ -508,13 +626,13 @@ class VoiceLabState(rx.State):
 
     @rx.event(background=True)
     async def load_clone(self) -> None:
-        """On load: the brand's clone, refreshed if HeyGen was still processing it."""
+        """On load: the brand's clone, refreshed if Seed Speech was still training it."""
         ids = await self._ids()
         if ids is None:
             return
         try:
             clone = await asyncio.to_thread(refresh_voice_clone, ids[0], ids[1])
-        except HeyGenNotConfigured:
+        except SeedSpeechNotConfigured:
             clone = await asyncio.to_thread(brand_voice_clone, ids[0], ids[1])
         except SQLAlchemyError:
             async with self:
@@ -523,9 +641,10 @@ class VoiceLabState(rx.State):
         except Exception as exc:
             logger.warning("voice clone refresh failed: %s", exc)
             clone = await asyncio.to_thread(brand_voice_clone, ids[0], ids[1])
+        preview = await asyncio.to_thread(preview_view, ids[0], clone)
         async with self:
-            self._show_clone(clone)
-        if clone is not None and clone.status == PROCESSING:
+            self._show_clone(clone, preview)
+        if clone is not None and clone.status == PROCESSING and clone.provider == SEED_SPEECH:
             await self._poll_clone(ids)
 
     @rx.event(background=True)
@@ -544,6 +663,7 @@ class VoiceLabState(rx.State):
             path = rx.get_upload_dir() / self.sample_key
             creative = await self.get_state(CreativeState)
             brand_name = creative.kit_positioning.split(".")[0][:40].strip()
+            variant = creative.kit_regional_variant or "es-CO"
         ids = await self._ids()
         if ids is None:
             async with self:
@@ -554,18 +674,17 @@ class VoiceLabState(rx.State):
         error = ""
         clone: VoiceClone | None = None
         try:
-            clone = await asyncio.to_thread(start_voice_clone, *ids, path, name)
-        except HeyGenNotConfigured:
-            error = _HEYGEN_OFF
+            clone = await asyncio.to_thread(start_voice_clone, *ids, path, name, variant)
+        except SeedSpeechNotConfigured:
+            error = _CLONE_OFF
         except SQLAlchemyError:
             error = _DB_ERROR
-        except Exception as exc:
-            code = getattr(exc, "code", None)
-            error = {
-                "resource_limit_reached": _CLONE_LIMIT,
-                "plan_upgrade_required": _CLONE_PLAN,
-            }.get(str(code), _CLONE_DOWN)
+        except SeedSpeechError as exc:
+            error = _CLONE_ERRORS.get(exc.code or 0, _CLONE_DOWN)
             logger.warning("voice clone request failed: %s", exc)
+        except Exception as exc:  # R2, the decoder
+            logger.warning("voice clone request failed: %s", type(exc).__name__)
+            error = _CLONE_DOWN
         async with self:
             self.cloning = False
             if clone is None:
@@ -582,11 +701,12 @@ class VoiceLabState(rx.State):
             waited += _CLONE_POLL_SECONDS
             try:
                 clone = await asyncio.to_thread(refresh_voice_clone, ids[0], ids[1])
+                preview = await asyncio.to_thread(preview_view, ids[0], clone)
             except Exception as exc:
                 logger.warning("voice clone poll failed: %s", exc)
                 continue
             async with self:
-                self._show_clone(clone)
+                self._show_clone(clone, preview)
                 if clone is not None and clone.status == FAILED and not self.clone_failure:
                     self.clone_failure = _CLONE_FAILED
             if clone is None or clone.status != PROCESSING:
@@ -628,7 +748,7 @@ def _clone_block() -> rx.Component:
                 PROCESSING,
                 rx.hstack(
                     loading_spinner("sm"),
-                    rx.text("Clonando tu voz en HeyGen…", size="2", color=T.TEXT_MUTED),
+                    rx.text("Clonando tu voz…", size="2", color=T.TEXT_MUTED),
                     spacing="2",
                     align="center",
                 ),
@@ -639,7 +759,11 @@ def _clone_block() -> rx.Component:
                     signal_pill(VoiceLabState.clone_name, "ok"),
                     rx.cond(
                         VoiceLabState.clone_preview != "",
-                        rx.el.audio(src=VoiceLabState.clone_preview, controls=True, width="100%"),
+                        rx.el.audio(
+                            src=BACKEND_BASE + VoiceLabState.clone_preview,
+                            controls=True,
+                            width="100%",
+                        ),
                     ),
                     spacing="2",
                     width="100%",

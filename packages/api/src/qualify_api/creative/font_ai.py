@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any
 
+from qualify_shared import observability
+
 from ..claude_tools import (
     CallStats,
     ClaudeToolError,
@@ -168,6 +170,7 @@ def parse_guess(payload: Any) -> FontGuess:
     )
 
 
+@observability.traced("identificar tipografía", tags=("brand_kit",))
 def identify_fonts(
     files: Sequence[tuple[str, bytes]],
     *,

@@ -3,9 +3,10 @@
 Same shape as `inbox/client.py`, `connections/meta_oauth.py` and `publishing/client.py`:
 a `Protocol`, a real HTTP implementation, one `_parse_*` function per endpoint marked
 `[V]`, and the credential arriving pre-authenticated via `AuthenticatedClient` — this
-module never sees a token. Two endpoints, both on `graph.facebook.com`:
+module never sees a token. Three endpoints, all on `graph.facebook.com`:
 
     GET /{ig-user-id}/media    — list_recent_media, for the "pick what to monitor" UI
+    GET /{ig-user-id}/stories  — list_recent_stories, the same UI's stories (m-24789644)
     GET /{media-id}            — get_media, for validating a toggle request
 
 Deliberately NOT in `inbox/client.py`: that module's own docstring states it has exactly
@@ -67,6 +68,17 @@ flagged for copyright, which then falls back to the generic frame.
 window rule it sits beside, not here: this module stays a faithful mirror of what Meta
 returns, same separation of concerns the module docstring above already draws between
 this file and the window/eligibility rules.
+
+## Stories live on their own edge (m-24789644)
+
+`/media` never returns stories; `GET /{ig-user-id}/stories` (`ig-user/stories.md`) does —
+the same IG Media nodes, `media_product_type == "STORY"`, so the same `MEDIA_FIELDS` and
+the same parser apply. Its documented limits shape the call: only the last 24 hours
+(Meta's own window — no `since` to send), no Live stories, no reshared stories. Its
+documented permissions are `instagram_basic` + `pages_read_engagement` (plus `ads_read`/
+`ads_management` when the Page role came through Business Manager) — a token without
+them gets a `MediaReadError` like any other failed read. Only called while the
+`story_comments` capability is on (`service.InboxService`, off by default).
 
 ## Token discipline
 
@@ -144,6 +156,8 @@ class MediaClient(Protocol):
     ) -> tuple[MediaSummary, ...]: ...
 
     async def get_media(self, *, media_id: str) -> MediaSummary: ...
+
+    async def list_recent_stories(self, *, ig_user_id: str) -> tuple[MediaSummary, ...]: ...
 
 
 # --- [V] response parsing. One function per endpoint; the only place reality lands. ---
@@ -235,16 +249,10 @@ class HttpMediaClient:
             raise MediaReadError(f"GET {path} returned JSON that is not an object")
         return payload
 
-    async def list_recent_media(
-        self, *, ig_user_id: str, since: datetime
-    ) -> tuple[MediaSummary, ...]:
-        params: dict[str, str] = {
-            "fields": MEDIA_FIELDS,
-            "since": str(int(since.timestamp())),
-        }
+    async def _list_edge(self, path: str, params: dict[str, str]) -> tuple[MediaSummary, ...]:
         results: list[MediaSummary] = []
         while True:
-            payload = await self._get(f"/{ig_user_id}/media", params)
+            payload = await self._get(path, params)
             page = _parse_media_list_response(payload)
             results.extend(page)
             cursor = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
@@ -252,6 +260,20 @@ class HttpMediaClient:
                 break
             params = {**params, "after": cursor}
         return tuple(results)
+
+    async def list_recent_media(
+        self, *, ig_user_id: str, since: datetime
+    ) -> tuple[MediaSummary, ...]:
+        return await self._list_edge(
+            f"/{ig_user_id}/media",
+            {"fields": MEDIA_FIELDS, "since": str(int(since.timestamp()))},
+        )
+
+    async def list_recent_stories(self, *, ig_user_id: str) -> tuple[MediaSummary, ...]:
+        """[V] `ig-user/stories.md`: `{"data": [{"id": ...}, ...], "paging": {...}}` —
+        the same shape as `/media`. No `since`: the edge itself returns only the last 24
+        hours (see "Stories live on their own edge" in the module docstring)."""
+        return await self._list_edge(f"/{ig_user_id}/stories", {"fields": MEDIA_FIELDS})
 
     async def get_media(self, *, media_id: str) -> MediaSummary:
         return _parse_media_summary(await self._get(f"/{media_id}", {"fields": MEDIA_FIELDS}))

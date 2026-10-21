@@ -13,7 +13,7 @@ test, same convention as `publishing_vm.py`/`connections_vm.py`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 from qualify_api.inbox.media_type import MediaType, known_media_type
@@ -52,6 +52,8 @@ class CandidateMediaVM:
 # does not know yet (`inbox.media_type`) still reads as a feed post, never as an error.
 REEL_LABEL: Final = "Reel"
 FEED_POST_LABEL: Final = "Publicación"
+# m-24789644: a story's comments, once `story_comments` is enabled (never offered today).
+STORY_LABEL: Final = "Historia"
 _FEED_FORMAT_LABELS: Final = {
     MediaType.IMAGE: "Foto",
     MediaType.VIDEO: "Video",
@@ -79,14 +81,30 @@ def candidate_picture_url(
 
 
 def media_format_label(media_product_type: str | None, media_type: str | None) -> str:
-    """The candidate row's format label, or `""` for a surface the picker never offers
-    (the service filters to Reels and feed posts — `MONITORABLE_MEDIA_PRODUCT_TYPES`)."""
+    """The media's format label, or `""` when the surface is unknown (a legacy row whose
+    metadata was never read). Stories are not monitorable yet (`MONITORABLE_MEDIA_
+    PRODUCT_TYPES`); their label is here so the cards need no change when they are."""
     if media_product_type == "REELS":
         return REEL_LABEL
+    if media_product_type == "STORY":
+        return STORY_LABEL
     if media_product_type == "FEED":
         known = known_media_type(media_type)
         return _FEED_FORMAT_LABELS[known] if known is not None else FEED_POST_LABEL
     return ""
+
+
+@dataclass(frozen=True)
+class IntentChipVM:
+    """One intent class of one comment, as the Interacciones screen shows it
+    (m-24789644, B3). `label` is the Spanish name (`INTENT_CLASS_LABELS`); `commercial`
+    picks the chip's tone (a commercial class vs «Comentario general»); `reliable` is
+    `False` when the committed golden-set measurement for the current version does not
+    back the class — the page then marks it «no fiable» instead of hiding it."""
+
+    label: str
+    commercial: bool
+    reliable: bool
 
 
 @dataclass(frozen=True)
@@ -112,6 +130,11 @@ class CommentVM:
     external_thread_id: str
     sentiment_label: str
     score_display: str
+    # m-24789644 (B3): `False` = no intent signal under the current version yet (the
+    # page says «Intención sin analizar»). The chips are the signal's classes, highest
+    # confidence first; empty exactly when `intent_analyzed` is `False`.
+    intent_analyzed: bool = False
+    intent_chips: list[IntentChipVM] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -190,6 +213,9 @@ class ReelSummaryVM:
     permalink: str
     is_monitored: bool
     monitoring_state: str = MONITORING_INACTIVE
+    # m-24789644 (B2): "Reel", "Foto", "Video", "Carrusel", "Publicación" or "Historia"
+    # (`media_format_label`); `""` when the type is unknown and the card shows none.
+    format_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -242,3 +268,16 @@ class AnalysisSummaryVM:
     comments_checked: int
     new_results: int
     skipped_empty: int
+
+
+@dataclass(frozen=True)
+class IntentAnalysisSummaryVM:
+    """Display-ready projection of one "Analizar intención" click (m-24789644) —
+    `qualify_api.intent.IntentAnalysisSummary` field-for-field. `unclassified` counts
+    the comments the model gave no usable answer for; they stay pending for the next
+    click, so the toast says so instead of hiding them."""
+
+    comments_checked: int
+    new_results: int
+    skipped_empty: int
+    unclassified: int

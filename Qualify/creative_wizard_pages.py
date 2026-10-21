@@ -53,6 +53,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.auth import SIGNUP_ROUTE
 from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_creative.brand import fonts as brand_fonts
@@ -1104,7 +1105,7 @@ def _choice_card(
 #: 2026-10-05: "que el botón de mejorar tu perfil vaya al registro directamente"): the
 #: signup, prefilled with the draft's email — creating the account with it adopts the kit
 #: just saved. It used to go to Señales (a placeholder page) for a logged-in session.
-_SIGNUP_ROUTE = "/signup"
+_SIGNUP_ROUTE = SIGNUP_ROUTE
 #: A session that already has an account has nothing to sign up for: it goes into the
 #: app (the signup page would send it there anyway, `redirect_if_authenticated`).
 _APP_HOME_ROUTE = "/"

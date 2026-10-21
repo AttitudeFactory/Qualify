@@ -25,12 +25,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import reflex as rx
+from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
 from . import tokens as T
 from .state import NavState
 
-LANDING_URL = "https://attitudefactory.co/qualify"
+LANDING_URL = "https://qualify.la"
 
 # An item is (label, lucide icon, route, enabled). Enabled items navigate; disabled ones
 # show a "pronto" badge. The active item is derived from the current route, never
@@ -56,9 +57,10 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "Escuchas",
         [
             ("Menciones", MENTION_ICON, "/", True),
-            ("Contenido", "film", "/inbox", True),
+            # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
+            ("Interacciones", "film", "/inbox", True),
             # QUA-226: the private inbox of the connected accounts. Founder's placement
-            # (2026-10-16): inside Escuchas, after Contenido, before Creadores.
+            # (2026-10-16): inside Escuchas, after Interacciones, before Creadores.
             ("Conversaciones", "messages-square", "/conversations", True),
             ("Creadores", "users", "#", False),
             ("Señales", "bell", "#", False),
@@ -72,7 +74,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # before the login and edited from Negocio → Brand Kit. The guest rail
             # keeps "Marca" as the entry to make it.
             ("Crear pieza", "wand-sparkles", "/create", True),
-            ("Borradores", "layout-list", "/drafts", True),
+            ("Piezas", "layout-list", "/drafts", True),
             ("Planificador", "calendar-days", "/planner", True),
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
             ("Publicar", "upload", "/publish", True),
@@ -430,7 +432,7 @@ def _guest_islands() -> rx.Component:
             _zone_head("Negocio", "business"),
             _nav_item("Brand Kit", "swatch-book", "/brand/kit", True),
             rx.divider(margin="0.15rem 0"),
-            _nav_item("Crear cuenta", "user-plus", "/signup", True),
+            _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True),
             _nav_item("Iniciar sesión", "log-in", "/login", True),
             rx.divider(margin="0.15rem 0"),
             rx.el.button(

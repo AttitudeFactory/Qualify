@@ -13,10 +13,11 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
     "boto3>=1.35.0",
     "botocore>=1.35.0",
+    "langfuse>=4.17,<5",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.23,<0.13.0"]
+requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.ruff]

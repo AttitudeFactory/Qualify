@@ -1,0 +1,87 @@
+{
+  "dataset": "copy-briefs-piloto-2",
+  "variants": 2,
+  "runs": {
+    "opus-5.5@medium": {
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "items": 2,
+      "means": {
+        "costo_usd": 0.0328,
+        "diversidad": 0.5165,
+        "errores": 0.0,
+        "esquema_ok": 1.0,
+        "largos_ok": 0.75,
+        "latencia_s": 7.99,
+        "puertas_ok": 0.75,
+        "reglas_ok": 1.0,
+        "restricciones_ok": 1.0
+      },
+      "run": {
+        "tasa_puertas": 0.75,
+        "costo_por_pieza_usd": 0.03275,
+        "latencia_p95_s": 10.82,
+        "errores_total": 0.0
+      },
+      "url": "http://localhost:3100/project/qualify/datasets/cmv79rhwt0005ml2zozz43fxj/runs/7e93df31feabd0e7",
+      "notes": {
+        "hel-02": 1.0,
+        "hel-01": 0.5
+      }
+    },
+    "opus-5.5@low": {
+      "model": "claude-opus-5-5",
+      "effort": "low",
+      "items": 2,
+      "means": {
+        "costo_usd": 0.0323,
+        "diversidad": 0.4775,
+        "errores": 0.0,
+        "esquema_ok": 1.0,
+        "largos_ok": 0.75,
+        "latencia_s": 5.115,
+        "puertas_ok": 0.75,
+        "reglas_ok": 1.0,
+        "restricciones_ok": 1.0
+      },
+      "run": {
+        "tasa_puertas": 0.75,
+        "costo_por_pieza_usd": 0.03226,
+        "latencia_p95_s": 5.44,
+        "errores_total": 0.0
+      },
+      "url": "http://localhost:3100/project/qualify/datasets/cmv79rhwt0005ml2zozz43fxj/runs/dcfe209a7251ab89",
+      "notes": {
+        "hel-02": 0.5,
+        "hel-01": 1.0
+      }
+    },
+    "sonnet-5.5@medium": {
+      "model": "claude-sonnet-5-5",
+      "effort": "medium",
+      "items": 2,
+      "means": {
+        "costo_usd": 0.0159,
+        "diversidad": 0.7575,
+        "errores": 0.0,
+        "esquema_ok": 1.0,
+        "largos_ok": 1.0,
+        "latencia_s": 3.965,
+        "puertas_ok": 1.0,
+        "reglas_ok": 1.0,
+        "restricciones_ok": 1.0
+      },
+      "run": {
+        "tasa_puertas": 1.0,
+        "costo_por_pieza_usd": 0.0159,
+        "latencia_p95_s": 4.14,
+        "errores_total": 0.0
+      },
+      "url": "http://localhost:3100/project/qualify/datasets/cmv79rhwt0005ml2zozz43fxj/runs/af8c404268a92699",
+      "notes": {
+        "hel-02": 1.0,
+        "hel-01": 1.0
+      }
+    }
+  }
+}

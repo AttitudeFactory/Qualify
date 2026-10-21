@@ -1,7 +1,8 @@
 """`qualify_api.creative.media.MediaProducer` without the network: what each content kind
-turns a brief and its copy into (§ request 2026-09-25). HeyGen is a scripted fake that
-is both the `GenerationProvider` the real `CreativeRouter` runs and the upload / prompt
-avatar tools; pricing is the real v2 table, so the recorded costs are the real rates."""
+turns a brief and its copy into (§ request 2026-09-25). The real `CreativeRouter` runs
+spy vendors; pricing is the real v2 table, so the recorded costs are the real rates. The
+talking presenter (OmniHuman + Seed Speech, since HeyGen's retirement on 2026-10-16) is
+tested in `test_creative_media_byteplus.py`, next to Seedream and Seedance."""
 
 from __future__ import annotations
 
@@ -13,7 +14,6 @@ from uuid import UUID, uuid4
 import pytest
 from PIL import Image
 from qualify_creative.enums import (
-    AvatarSource,
     BriefObjective,
     ContentFormat,
     ContentKind,
@@ -29,14 +29,13 @@ from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload, MediaI
 
 from qualify_api.creative import media as media_module
 from qualify_api.creative.media import (
-    ANIMATED_STYLE,
-    HUMAN_STYLE,
+    RETIRED_ENGINE_TEXT,
     LocalMediaStore,
     MediaProducer,
     MediaWrite,
+    avatar_failure_text,
     generated_key,
     generated_object_key,
-    heygen_failure_text,
     owned_by,
     template_port,
 )
@@ -71,56 +70,24 @@ class MemoryStore:
         self.files[key] = data
 
 
-class FakeHeyGen:
-    """The provider the router runs AND the non-render tools."""
+class SpyVendor:
+    """A vendor that records every call — the refusal tests assert it was never reached
+    (HeyGen's double until 2026-10-16; the talking presenter's own tests live in
+    `test_creative_media_byteplus.py`, next to Seedream's and Seedance's)."""
 
-    name = "heygen"
-    supports = frozenset({GenerationTask.AVATAR_VIDEO})
+    name = "seedream"
+    supports = frozenset({GenerationTask.PRODUCT_IMAGE, GenerationTask.AVATAR_VIDEO})
 
-    def __init__(self, *, fail_render: bool = False, estimate: Decimal = Decimal("1")) -> None:
-        self.fail_render = fail_render
-        self.estimate = estimate
-        self.uploads: list[tuple[str, str]] = []
-        self.prompts: list[str] = []
-        self.waited: list[str] = []
+    def __init__(self) -> None:
         self.requests: list[GenerationRequest] = []
-        self.keys: list[str] = []
-
-    def upload_asset(self, *, api_key: str, file_bytes: bytes, filename: str, **_: Any) -> dict:
-        self.keys.append(api_key)
-        self.uploads.append((filename, f"as_{len(self.uploads) + 1}"))
-        return {"asset_id": f"as_{len(self.uploads)}"}
-
-    def create_prompt_avatar(self, *, api_key: str, name: str, prompt: str, **_: Any) -> str:
-        self.prompts.append(prompt)
-        return "lk_generated"
-
-    def wait_for_look(self, look_id: str, *, api_key: str) -> dict:
-        self.waited.append(look_id)
-        return {"id": look_id, "status": "completed"}
+        self.uploads: list[str] = []
 
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
-        self.keys.append(api_key)
         self.requests.append(request)
-        if self.fail_render:
-            raise RuntimeError("render failed")
-        image = "image_asset_id" in request.params
-        return GenerationResult(
-            payload={
-                "video_id": "v_1",
-                "video_url": "https://heygen/v_1.mp4",
-                "thumbnail_url": "https://heygen/v_1.jpg",
-                "duration_seconds": "12.5",
-            },
-            model_id="heygen_image" if image else "heygen_avatar_iv",
-            provider="heygen",
-            usage=Usage(pieces=1, media_seconds=Decimal("12.5")),
-            model_revision=None if image else "avatar_iv",
-            media_url="https://heygen/v_1.mp4",
-        )
+        raise RuntimeError("a refused piece must never reach a vendor")
 
     def estimate_cost_usd(self, request: GenerationRequest, pricing: Any, **_: Any) -> Decimal:
-        return self.estimate
+        return Decimal("0")
 
 
 class KeysByProvider:
@@ -154,12 +121,11 @@ def _brief(kind: ContentKind, fmt: ContentFormat | None = None, **media: object)
 
 def _producer(
     store: MemoryStore,
-    heygen: FakeHeyGen | None,
+    vendor: SpyVendor | None = None,
     downloads: dict[str, bytes] | None = None,
-    voice_guard: Any = None,
 ) -> MediaProducer:
     pricing = JsonPricingTable("v2")
-    providers = {"heygen": heygen} if heygen is not None else {}
+    providers = {vendor.name: vendor} if vendor is not None else {}
     router = CreativeRouter(providers, pricing, KeysByProvider())  # type: ignore[arg-type]
 
     def download(url: str) -> bytes:
@@ -172,9 +138,7 @@ def _producer(
         router=router,
         credentials=KeysByProvider(),
         pricing=pricing,
-        heygen=heygen,
         download=download,
-        voice_guard=voice_guard,
     )
 
 
@@ -189,7 +153,7 @@ def _produce(producer: MediaProducer, brief: ContentBrief, draft_id: UUID) -> An
 
 def test_a_creator_script_has_no_media_and_costs_nothing() -> None:
     outcome = _produce(
-        _producer(MemoryStore(), FakeHeyGen()), _brief(ContentKind.CREATOR_SCRIPT), uuid4()
+        _producer(MemoryStore(), SpyVendor()), _brief(ContentKind.CREATOR_SCRIPT), uuid4()
     )
     assert outcome.media == () and outcome.usage == () and outcome.failure is None
 
@@ -235,160 +199,6 @@ def test_a_carousel_stores_its_slides_in_order() -> None:
     )
 
 
-def test_an_avatar_video_composes_the_scene_renders_and_keeps_the_file() -> None:
-    store = MemoryStore(
-        {
-            f"uploads/{TENANT_ID}/p1.png": _png(),
-            f"uploads/{TENANT_ID}/bg.png": _png((0, 90, 0, 255)),
-        }
-    )
-    heygen = FakeHeyGen()
-    draft_id = uuid4()
-    brief = _brief(
-        ContentKind.AVATAR_VIDEO,
-        avatar_look_id="lk_stock",
-        voice_id="vo_es",
-        product_keys=(f"uploads/{TENANT_ID}/p1.png",),
-        background_key=f"uploads/{TENANT_ID}/bg.png",
-    )
-    outcome = _produce(_producer(store, heygen), brief, draft_id)
-
-    assert outcome.failure is None
-    # background + product composed into ONE image, uploaded as a HeyGen asset
-    assert heygen.uploads == [("scene.png", "as_1")]
-    (request,) = heygen.requests
-    params = request.params
-    assert params["avatar_id"] == "lk_stock" and params["voice_id"] == "vo_es"
-    assert params["background_image_asset_id"] == "as_1"
-    assert params["script"] == COPY.script
-    assert (params["aspect_ratio"], params["resolution"]) == ("9:16", "1080p")
-    assert set(heygen.keys) == {"key-heygen"}  # HeyGen's key, never Anthropic's
-
-    (video,) = outcome.media
-    assert video.media_type == "video" and video.aspect_ratio == "9:16"
-    assert video.content_type == "video/mp4"  # the Planificador refuses a NULL type
-    assert store.files[generated_key(TENANT_ID, draft_id, "video.mp4")] == b"mp4-bytes"
-    assert video.params["thumbnail_key"] == generated_key(TENANT_ID, draft_id, "thumbnail.jpg")
-    assert video.params["background_composed"] is True
-
-    (usage,) = outcome.usage
-    # 12.5 s × $0.0667/s (v2 heygen_avatar_iv 1080p), per second
-    assert (usage.unit, usage.quantity) == ("second", 13)
-    assert usage.cost_usd == Decimal("0.833750")
-
-
-def test_an_avatar_video_without_images_keeps_the_avatars_own_background() -> None:
-    heygen = FakeHeyGen()
-    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
-    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
-    assert outcome.failure is None and heygen.uploads == []
-    assert "background_image_asset_id" not in heygen.requests[0].params
-
-
-def test_an_ai_animated_avatar_is_generated_waited_for_and_paid_for() -> None:
-    heygen = FakeHeyGen()
-    brief = _brief(
-        ContentKind.ANIMATED_AVATAR_VIDEO,
-        voice_id="vo",
-        avatar_source=AvatarSource.AI,
-        avatar_prompt="Una hamburguesa sonriente con gorra roja",
-    )
-    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
-
-    assert outcome.failure is None
-    assert heygen.prompts == [ANIMATED_STYLE + "Una hamburguesa sonriente con gorra roja"]
-    assert heygen.waited == ["lk_generated"]
-    assert heygen.requests[0].params["avatar_id"] == "lk_generated"
-    models = [(u.model_id, u.unit, u.cost_usd) for u in outcome.usage]
-    assert models[0] == ("heygen_prompt_avatar", "piece", Decimal("0.50"))
-    assert models[1][0] == "heygen_avatar_iv"
-    assert outcome.spent_usd == Decimal("0.50") + Decimal("0.833750")
-
-
-def test_a_custom_human_avatar_is_a_photoreal_prompt_avatar() -> None:
-    heygen = FakeHeyGen()
-    brief = _brief(
-        ContentKind.AVATAR_VIDEO,
-        voice_id="vo",
-        avatar_source=AvatarSource.AI,
-        avatar_prompt="Mujer de unos 30 años, pelo rizado, blusa verde",
-    )
-    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
-
-    assert outcome.failure is None
-    # the human style, not the animated one
-    assert heygen.prompts == [HUMAN_STYLE + "Mujer de unos 30 años, pelo rizado, blusa verde"]
-    assert heygen.waited == ["lk_generated"]
-    assert heygen.requests[0].params["avatar_id"] == "lk_generated"
-    assert outcome.usage[0].model_id == "heygen_prompt_avatar"
-
-
-def test_an_animated_avatar_from_an_image_animates_the_upload() -> None:
-    store = MemoryStore({f"uploads/{TENANT_ID}/mascota.png": _png((250, 200, 0, 255))})
-    heygen = FakeHeyGen()
-    brief = _brief(
-        ContentKind.ANIMATED_AVATAR_VIDEO,
-        voice_id="vo",
-        avatar_source=AvatarSource.IMAGE,
-        avatar_image_key=f"uploads/{TENANT_ID}/mascota.png",
-        avatar_rights_confirmed=True,
-    )
-    outcome = _produce(_producer(store, heygen), brief, uuid4())
-
-    assert outcome.failure is None
-    assert heygen.uploads == [("avatar.png", "as_1")]
-    params = heygen.requests[0].params
-    assert params["image_asset_id"] == "as_1" and "avatar_id" not in params
-    assert outcome.usage[0].model_id == "heygen_image"
-    assert outcome.usage[0].cost_usd == Decimal("0.625000")  # 12.5 s × $0.05
-    assert outcome.media[0].params["subject"] == "image"
-
-
-def test_without_heygen_a_video_fails_with_a_reason_and_nothing_spent() -> None:
-    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
-    outcome = _produce(_producer(MemoryStore(), None), brief, uuid4())
-    assert outcome.failure == "provider_error"
-    assert outcome.detail == "La generación no está disponible ahora mismo. Avisa al equipo."
-    assert outcome.usage == ()
-
-
-def test_a_render_over_budget_is_blocked_before_heygen_renders() -> None:
-    heygen = FakeHeyGen(estimate=Decimal("5"))
-    producer = _producer(MemoryStore(), heygen)
-    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
-    outcome = producer.produce(
-        tenant_id=TENANT_ID,
-        draft_id=uuid4(),
-        brief=brief,
-        kit=_kit(),
-        copy=COPY,
-        budget=BudgetContext(remaining_usd=Decimal("1"), hard_stop=True),
-    )
-    assert outcome.failure == "budget_exceeded" and heygen.requests == []
-
-
-def test_a_failed_render_is_a_provider_error_and_keeps_the_prompt_avatars_cost() -> None:
-    heygen = FakeHeyGen(fail_render=True)
-    brief = _brief(
-        ContentKind.ANIMATED_AVATAR_VIDEO,
-        voice_id="vo",
-        avatar_source=AvatarSource.AI,
-        avatar_prompt="Un chef bigotón",
-    )
-    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
-    assert outcome.failure == "provider_error"
-    assert [u.model_id for u in outcome.usage] == ["heygen_prompt_avatar"]  # money spent
-    assert outcome.media == ()
-
-
-def test_a_video_that_cannot_be_downloaded_fails_but_its_render_is_billed() -> None:
-    heygen = FakeHeyGen()
-    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
-    outcome = _produce(_producer(MemoryStore(), heygen, downloads={}), brief, uuid4())
-    assert outcome.failure == "provider_error" and outcome.media == ()
-    assert [u.model_id for u in outcome.usage] == ["heygen_avatar_iv"]
-
-
 def test_a_missing_upload_fails_the_flyer_with_a_reason() -> None:
     brief = _brief(ContentKind.STATIC_FLYER, product_keys=(f"uploads/{TENANT_ID}/gone.png",))
     outcome = _produce(_producer(MemoryStore(), None), brief, uuid4())
@@ -415,20 +225,49 @@ def test_the_chosen_format_sizes_the_flyer_and_the_video() -> None:
     (image,) = _produce(_producer(store, None), square, uuid4()).media
     assert (image.width, image.height, image.aspect_ratio) == (1080, 1080, "1:1")
 
-    heygen = FakeHeyGen()
-    story = _brief(
-        ContentKind.AVATAR_VIDEO, ContentFormat.STORY_9_16, avatar_look_id="lk", voice_id="vo"
-    )
-    (video,) = _produce(_producer(MemoryStore(), heygen), story, uuid4()).media
-    assert heygen.requests[0].params["aspect_ratio"] == "9:16"
-    assert video.aspect_ratio == "9:16"
 
-    feed = _brief(
-        ContentKind.AVATAR_VIDEO, ContentFormat.FEED_4_5, avatar_look_id="lk", voice_id="vo"
-    )
-    heygen = FakeHeyGen()
-    _produce(_producer(MemoryStore(), heygen), feed, uuid4())
-    assert heygen.requests[0].params["aspect_ratio"] == "4:5"
+# --------------------------------------------------------------------------------------
+# HeyGen, retired 2026-10-16: an old brief is refused, never rendered
+# --------------------------------------------------------------------------------------
+
+
+def test_a_brief_stored_with_heygen_is_refused_without_spending() -> None:
+    vendor = SpyVendor()
+    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
+    assert brief.media.video_engine.value == "heygen"  # what an old stored brief reads as
+    outcome = _produce(_producer(MemoryStore(), vendor), brief, uuid4())
+    assert outcome.failure == "provider_error" and outcome.detail == RETIRED_ENGINE_TEXT
+    assert outcome.usage == () and vendor.requests == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "SeedSpeechNotConfigured: QUALIFY_BYTEPLUS_SPEECH_API_KEY is not set",
+            "no está disponible",
+        ),
+        ("MissingPlatformKey: QUALIFY_BYTEPLUS_CV_API_KEY", "no está disponible"),
+        (
+            "OmniHumanError: OmniHuman answered HTTP 200 code 50510: pre-filter",
+            "filtro de contenido",
+        ),
+        (
+            "OmniHumanError: OmniHuman answered HTTP 200 code 50400: Access Denied",
+            "no está disponible",
+        ),
+        ("SeedSpeechError: code 45000000: speaker permission denied", "no está disponible"),
+        ("OmniHumanTimeout: task 7392 still rendering after 2400s", "tardando más de lo normal"),
+        ("quota exceeded for types: concurrency", "muchas generaciones en curso"),
+        ("something else entirely", "No se pudo generar la pieza. Inténtalo de nuevo."),
+    ],
+)
+def test_the_presenters_failures_are_explained_in_spanish(raw: str, expected: str) -> None:
+    text = avatar_failure_text(raw)
+    assert expected in text
+    # the vendor's raw error and any vendor / env var name stay in the log
+    for word in ("OmniHuman", "Seed", "QUALIFY_", "BytePlus", "USD"):
+        assert word not in text
 
 
 # --------------------------------------------------------------------------------------
@@ -436,102 +275,7 @@ def test_the_chosen_format_sizes_the_flyer_and_the_video() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_the_operators_own_script_is_read_word_for_word_on_the_chosen_engine() -> None:
-    heygen = FakeHeyGen()
-    brief = _brief(
-        ContentKind.AVATAR_VIDEO,
-        avatar_look_id="lk",
-        voice_id="vo",
-        own_script="Hola, soy Doña Rosa y hoy hay torta de tres leches.",
-        engine="avatar_iii",
-    )
-    _produce(_producer(MemoryStore(), heygen), brief, uuid4())
-    params = heygen.requests[0].params
-    assert params["script"] == "Hola, soy Doña Rosa y hoy hay torta de tres leches."
-    assert params["engine"] == "avatar_iii"
-
-
-def test_an_image_subject_carries_no_engine() -> None:
-    store = MemoryStore({f"uploads/{TENANT_ID}/m.png": _png()})
-    heygen = FakeHeyGen()
-    brief = _brief(
-        ContentKind.ANIMATED_AVATAR_VIDEO,
-        voice_id="vo",
-        avatar_source=AvatarSource.IMAGE,
-        avatar_image_key=f"uploads/{TENANT_ID}/m.png",
-        avatar_rights_confirmed=True,
-        engine="avatar_iii",
-    )
-    _produce(_producer(store, heygen), brief, uuid4())
-    assert "engine" not in heygen.requests[0].params  # HeyGen's image mode is Avatar IV
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (
-            "HeyGenAPIError: HTTP 402 insufficient_credit: Insufficient credit",
-            "no está disponible ahora mismo",
-        ),
-        ("HeyGenRenderTimeout: render v_1 still running after 480s", "tardando más de lo normal"),
-        ("HeyGenRenderFailed: HeyGen render v_1 failed: moderation_failed", "filtro de contenido"),
-        ("HeyGenRenderFailed: HeyGen render v_1 failed: boom", "No se pudo generar la pieza"),
-        ("HeyGenAPIError: HTTP 401 unauthorized", "no está disponible ahora mismo"),
-        ("HeyGenAPIError: HTTP 429 too many", "muchas generaciones en curso"),
-        ("no HeyGen key: QUALIFY_HEYGEN_API_KEY unset", "no está disponible ahora mismo"),
-        ("something else entirely", "No se pudo generar la pieza. Inténtalo de nuevo."),
-    ],
-)
-def test_heygen_failures_are_explained_in_spanish(raw: str, expected: str) -> None:
-    text = heygen_failure_text(raw)
-    assert expected in text
-    # the vendor's raw error and any vendor / env var name stay in the log
-    assert raw[:40] not in text
-    for word in ("HeyGen", "QUALIFY_", "créditos", "USD"):
-        assert word not in text
-
-
-def test_a_failed_render_says_why_in_the_outcome() -> None:
-    heygen = FakeHeyGen(fail_render=True)
-    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
-    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
-    assert outcome.failure == "provider_error"
-    assert outcome.detail == "No se pudo generar la pieza. Inténtalo de nuevo."
-    assert "render failed" not in outcome.detail and "HeyGen" not in outcome.detail
-
-
 # -- the voice guard (§ request 2026-10-05) -----------------------------------------------------
-
-
-def test_a_voice_the_guard_refuses_is_a_policy_failure_that_spends_nothing() -> None:
-    """Another brand's cloned voice (or a made-up id) never reaches HeyGen: refused before
-    any upload or render, as `route_blocked_by_policy`, with nothing billed."""
-    seen: list[tuple[UUID, UUID, str, str]] = []
-
-    def guard(*, tenant_id: UUID, brand_id: UUID, voice_id: str, api_key: str) -> bool:
-        seen.append((tenant_id, brand_id, voice_id, api_key))
-        return voice_id == "vo_mine"
-
-    heygen = FakeHeyGen()
-    producer = _producer(MemoryStore(), heygen, voice_guard=guard)
-    refused = _produce(
-        producer,
-        _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo_theirs"),
-        uuid4(),
-    )
-    assert refused.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
-    assert "no está disponible para esta marca" in (refused.detail or "")
-    assert refused.media == () and refused.usage == () and refused.spent_usd == 0
-    assert heygen.requests == [] and heygen.uploads == []
-    assert seen == [(TENANT_ID, BRAND_ID, "vo_theirs", "key-heygen")]
-
-    allowed = _produce(
-        producer,
-        _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo_mine"),
-        uuid4(),
-    )
-    assert allowed.failure is None and len(heygen.requests) == 1
-    assert heygen.requests[0].params["voice_id"] == "vo_mine"
 
 
 # --------------------------------------------------------------------------------------
@@ -583,6 +327,75 @@ _PROMO = TemplateManifest.model_validate(
 )
 
 
+def _is_video(port: str) -> bool:
+    return port == "reel" or port.endswith("-video")
+
+
+#: promo_producto v2's outputs (2026-10-13): the 4:5 / 1:1 videos and the 1:1 still.
+_PROMO_V2 = TemplateManifest.model_validate(
+    {
+        **_PROMO.model_dump(mode="json", by_alias=True),
+        "version": 2,
+        "outputs": {
+            port: {
+                "kind": kind,
+                "width": 1080,
+                "height": height,
+                "composition": f"promo-producto-v2--{port}",
+            }
+            for port, kind, height in (
+                ("reel", "video", 1920),
+                ("feed-video", "video", 1350),
+                ("square-video", "video", 1080),
+                ("feed", "still", 1350),
+                ("square", "still", 1080),
+                ("story", "still", 1920),
+            )
+        },
+    }
+)
+
+
+@pytest.mark.parametrize(
+    ("fmt", "video", "port"),
+    [
+        (ContentFormat.REELS_9_16, None, "reel"),
+        (ContentFormat.REELS_9_16, True, "reel"),
+        (ContentFormat.STORY_9_16, True, "reel"),  # a Story video is the 9:16 one
+        (ContentFormat.FEED_4_5, True, "feed-video"),
+        (ContentFormat.FEED_1_1, True, "square-video"),
+        (ContentFormat.FEED_4_5, None, "feed"),
+        (ContentFormat.FEED_1_1, False, "square"),
+        (ContentFormat.STORY_9_16, None, "story"),
+    ],
+)
+def test_the_template_port_follows_the_format_and_video_or_still(
+    fmt: ContentFormat, video: bool | None, port: str
+) -> None:
+    assert template_port(_PROMO_V2, fmt, video=video) == port
+
+
+def test_an_ad_video_in_the_feed_renders_the_templates_4_5_video() -> None:
+    """§ 2026-10-13: «Video publicitario» as a Post 4:5 is the template's 4:5 video."""
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
+    remotion = FakeRemotion()
+    draft_id = uuid4()
+    brief = _template_brief(
+        ContentFormat.FEED_4_5,
+        product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg"),
+        template_video=True,
+    )
+    outcome = _produce(
+        _template_producer(store, remotion, registry=TemplateRegistry([_PROMO_V2])),
+        brief,
+        draft_id,
+    )
+    assert outcome.failure is None
+    (piece,) = outcome.media
+    assert piece.output_port == "feed-video" and piece.media_type == "video"
+    assert remotion.requests[0].params["outputs"] == ["feed-video"]
+
+
 class FakeRemotion:
     """Stands in for `RemotionTemplateAdapter`: records the request, answers like the
     adapter does (bytes per completed port, typed reasons for the failed ones)."""
@@ -604,12 +417,14 @@ class FakeRemotion:
             p: {
                 # the render service answers a still with real PNG bytes (with alpha:
                 # the stored JPEG must flatten it), a video with its MP4
-                "bytes": f"{p}-bytes".encode() if p == "reel" else _png((10, 120, 60, 128)),
-                "mime_type": "video/mp4" if p == "reel" else "image/png",
+                "bytes": f"{p}-bytes".encode() if _is_video(p) else _png((10, 120, 60, 128)),
+                "mime_type": "video/mp4" if _is_video(p) else "image/png",
                 "width": 1080,
-                "height": 1350 if p == "feed" else 1920,
-                "duration_sec": 12.5 if p == "reel" else None,
-                "kind": "video" if p == "reel" else "still",
+                "height": {"feed": 1350, "feed-video": 1350}.get(
+                    p, 1080 if p.startswith("square") else 1920
+                ),
+                "duration_sec": 12.5 if _is_video(p) else None,
+                "kind": "video" if _is_video(p) else "still",
             }
             for p in ports
             if p not in self.fail_ports
@@ -656,7 +471,6 @@ def _template_producer(
         router=router,
         credentials=KeysByProvider(),
         pricing=pricing,
-        heygen=None,
         remotion=remotion,  # type: ignore[arg-type]
         templates=registry if registry is not None else TemplateRegistry([_PROMO]),
         brand_names=lambda *, tenant_id, brand_id: "Bianki",
@@ -741,7 +555,7 @@ def test_a_template_without_that_format_fails_with_a_reason() -> None:
         uuid4(),
     )
     assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
-    assert "no tiene salida feed_4_5" in outcome.detail and remotion.requests == []
+    assert "no tiene imagen en feed_4_5" in outcome.detail and remotion.requests == []
 
 
 def test_a_template_whose_output_failed_keeps_the_runs_evidence() -> None:
@@ -864,20 +678,6 @@ def test_without_the_render_service_a_template_fails_with_a_reason() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_a_chosen_logo_is_composed_into_the_avatars_scene() -> None:
-    """With nothing else to compose, the logo alone is enough for a branded scene."""
-    logo_key = f"t/{TENANT_ID}/brand/iso.png"
-    store = MemoryStore({logo_key: _png((200, 30, 30, 255))})
-    heygen = FakeHeyGen()
-    brief = _brief(
-        ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo", brand_logo_key=logo_key
-    )
-    outcome = _produce(_producer(store, heygen), brief, uuid4())
-    assert outcome.failure is None
-    assert heygen.uploads == [("scene.png", "as_1")]  # a scene WAS composed, for the logo
-    assert heygen.requests[0].params["background_image_asset_id"] == "as_1"
-
-
 def test_the_chosen_logo_takes_the_templates_logo_slot() -> None:
     logo_key = f"t/{TENANT_ID}/brand/iso.png"
     store = MemoryStore(
@@ -958,19 +758,6 @@ def test_a_piece_r2_refuses_fails_and_says_so() -> None:
     assert set(store.files) == {f"uploads/{TENANT_ID}/p1.png"} and store.kept == {}
 
 
-def test_an_avatar_video_and_its_poster_live_in_r2() -> None:
-    store = R2Store()
-    draft_id = uuid4()
-    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
-    (video,) = _produce_revision(_producer(store, FakeHeyGen()), brief, draft_id, 3).media
-    key = generated_object_key(TENANT_ID, draft_id, 3, "video.mp4")
-    assert (video.media_url, video.object_key) == (key, key)
-    assert store.kept[key] == (b"mp4-bytes", "video/mp4")
-    poster = generated_object_key(TENANT_ID, draft_id, 3, "thumbnail.jpg")
-    assert video.params["thumbnail_key"] == poster and store.kept[poster][1] == "image/jpeg"
-    assert store.files == {}  # nothing on the disk
-
-
 def test_a_template_output_keeps_its_r2_copy() -> None:
     store = R2Store({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     draft_id = uuid4()
@@ -992,32 +779,93 @@ def test_a_template_output_keeps_its_r2_copy() -> None:
     assert store.kept[reel.object_key] == (b"reel-bytes", "video/mp4")
 
 
-def test_the_r2_store_keeps_through_the_gate_and_never_raises() -> None:
-    import io as _io
+class _Gate:
+    """`ObjectGate.put_media` that raises `errors` in order before it succeeds."""
+
+    def __init__(self, *errors: Exception) -> None:
+        self.puts: list[tuple[UUID, str, bytes, str]] = []
+        self.attempts = 0
+        self._errors = list(errors)
+
+    def put_media(self, tenant_id: UUID, key: str, fileobj: io.BytesIO, ctype: str) -> None:
+        self.attempts += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        self.puts.append((tenant_id, key, fileobj.read(), ctype))
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The retries' waits, recorded instead of slept."""
+    from qualify_api.creative import media as media_module
+
+    slept: list[float] = []
+    monkeypatch.setattr(media_module.time, "sleep", slept.append)
+    return slept
+
+
+R2_KEY = f"t/{TENANT_ID}/generated/d/r1/video.mp4"
+
+
+def test_the_r2_store_keeps_through_the_gate_and_never_raises(waits: list[float]) -> None:
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _Gate()
+    store = R2ReadingMediaStore(MemoryStore(), gate)
+    assert store.keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4") is True
+    assert gate.puts == [(TENANT_ID, R2_KEY, b"mp4", "video/mp4")]
+    down = _Gate(*(RuntimeError("R2 down") for _ in range(5)))
+    assert (
+        R2ReadingMediaStore(MemoryStore(), down).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
+        is False
+    )
+
+
+def test_a_passing_r2_error_is_retried(waits: list[float]) -> None:
+    """m-24828909: a regenerated clip, already paid for, failed on ONE refused write."""
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _Gate(ConnectionError("reset"), TimeoutError("slow"))
+    assert R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
+    assert gate.attempts == 3 and gate.puts == [(TENANT_ID, R2_KEY, b"mp4", "video/mp4")]
+    assert waits == [0.5, 1.0]
+
+
+def test_r2_gives_up_after_three_attempts_and_logs_why(
+    waits: list[float], caplog: pytest.LogCaptureFixture
+) -> None:
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _Gate(*(ConnectionError(f"reset {n}") for n in range(5)))
+    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"x", "video/mp4")
+    assert gate.attempts == 3 and waits == [0.5, 1.0]
+    # the error's own message reaches the log, not only its type
+    assert "ConnectionError: reset 2" in caplog.text and "after 3 attempts" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "size",
+        "prefix",
+        "config",
+    ],
+)
+def test_a_refusal_that_cannot_change_is_not_retried(error: str, waits: list[float]) -> None:
+    from qualify_shared.objects.config import R2ConfigurationError
+    from qualify_shared.objects.gate import ObjectSizeExceeded
+    from qualify_shared.objects.keys import TenantPrefixViolation
 
     from qualify_api.creative.media import R2ReadingMediaStore
 
-    class Gate:
-        def __init__(self, fail: bool = False) -> None:
-            self.puts: list[tuple[UUID, str, bytes, str]] = []
-            self.fail = fail
-
-        def put_media(self, tenant_id: UUID, key: str, fileobj: _io.BytesIO, ctype: str):
-            if self.fail:
-                raise RuntimeError("R2 down")
-            self.puts.append((tenant_id, key, fileobj.read(), ctype))
-
-    gate = Gate()
-    store = R2ReadingMediaStore(MemoryStore(), gate)
-    key = f"t/{TENANT_ID}/generated/d/r1/video.mp4"
-    assert store.keep(TENANT_ID, key, b"mp4", "video/mp4") is True
-    assert gate.puts == [(TENANT_ID, key, b"mp4", "video/mp4")]
-    assert (
-        R2ReadingMediaStore(MemoryStore(), Gate(fail=True)).keep(
-            TENANT_ID, key, b"mp4", "video/mp4"
-        )
-        is False
-    )
+    exc = {
+        "size": ObjectSizeExceeded("too big"),
+        "prefix": TenantPrefixViolation("foreign"),
+        "config": R2ConfigurationError("no bucket"),
+    }[error]
+    gate = _Gate(exc, exc, exc)
+    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"x", "video/mp4")
+    assert gate.attempts == 1 and waits == []
 
 
 def test_the_posts_preview_is_the_key_the_app_shows() -> None:
@@ -1118,16 +966,16 @@ def test_another_brands_file_is_refused_before_any_read_or_spend(media: dict) ->
     """A key in a brief can come from the browser: one of another brand never reaches
     the store, the vendor or the budget — the piece fails saying why."""
     store = _CountingStore({f"uploads/{TENANT_ID}/a.jpg": b"a"})
-    heygen = FakeHeyGen()
+    vendor = SpyVendor()
     outcome = _produce(
-        _producer(store, heygen),
+        _producer(store, vendor),
         _brief(ContentKind.STATIC_FLYER, **media),
         uuid4(),
     )
     assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
     assert outcome.detail == "Uno de los archivos de la pieza no es de tu marca."
     assert store.reads == [] and outcome.spent_usd == 0
-    assert heygen.requests == [] and heygen.uploads == []
+    assert vendor.requests == []
 
 
 @pytest.mark.parametrize(
@@ -1144,7 +992,7 @@ def test_a_malformed_own_key_is_refused_as_a_bad_path_not_as_another_brands(key:
     reported — to the operator or in the log — as another brand's file."""
     store = _CountingStore()
     outcome = _produce(
-        _producer(store, FakeHeyGen()),
+        _producer(store, SpyVendor()),
         _brief(ContentKind.STATIC_FLYER, background_key=key),
         uuid4(),
     )
@@ -1166,3 +1014,112 @@ def test_the_local_store_reads_a_key_that_differs_from_its_directory_only_in_cas
     store = LocalMediaStore(tmp_path)
     store.write(f"uploads/{TENANT_ID}/a.jpg", b"a")
     assert store.read(f"Uploads/{str(TENANT_ID).upper()}/a.jpg") == b"a"
+
+
+# -- stock (plan-integracion-stock §5.2, R2 2026-10-16) -----------------------------------------
+
+STOCK_KEY = f"t/{TENANT_ID}/stock/pixabay/8434113/abcdef0123456789.jpg"
+
+
+def test_a_stock_product_photo_goes_whatever_the_product_source() -> None:
+    """2026-10-19: «Inspiración» feeds every slot, the product photos included, so the
+    guard no longer reads `product_source` (a flag the client sets is not a permission):
+    the flyer goes ahead with a stock product photo either way."""
+    store = MemoryStore({STOCK_KEY: _png()})
+    for source in ("catalog", "stock"):
+        brief = _brief(ContentKind.STATIC_FLYER, product_keys=(STOCK_KEY,), product_source=source)
+        outcome = _produce(_producer(store, None), brief, uuid4())
+        assert outcome.failure is None and len(outcome.media) == 1
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"avatar_image_key": STOCK_KEY, "avatar_rights_confirmed": True},
+        {"brand_logo_key": STOCK_KEY},
+        {"brand_element_keys": (STOCK_KEY,)},
+    ],
+)
+def test_stock_never_goes_where_the_brand_or_a_real_file_belongs(media: dict[str, object]) -> None:
+    vendor = SpyVendor()
+    brief = _brief(ContentKind.STATIC_FLYER, product_source="stock", **media)
+    outcome = _produce(_producer(MemoryStore({STOCK_KEY: _png()}), vendor), brief, uuid4())
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert vendor.requests == []
+
+
+def test_a_clip_made_only_of_stock_is_refused() -> None:
+    from qualify_api.stock.guard import STOCK_ONLY_CLIP_TEXT, stock_problems
+
+    only_stock = _brief(ContentKind.CLIP, clip_image_keys=(STOCK_KEY,), clip_image_roles=("place",))
+    assert stock_problems(only_stock) == STOCK_ONLY_CLIP_TEXT
+    mixed = _brief(
+        ContentKind.CLIP,
+        clip_image_keys=(STOCK_KEY, f"uploads/{TENANT_ID}/p1.png"),
+        clip_image_roles=("place", "product"),
+    )
+    assert stock_problems(mixed) is None
+    as_product = _brief(ContentKind.CLIP, clip_image_keys=(STOCK_KEY, f"uploads/{TENANT_ID}/p.png"))
+    assert stock_problems(as_product) is None  # stock in the product role, beside a real file
+
+
+def test_the_ai_flag_off_keeps_stock_away_from_every_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.stock.guard import OFF_TEXT, stock_problems
+
+    brief = _brief(ContentKind.STATIC_FLYER, background_key=STOCK_KEY)
+    assert stock_problems(brief) is None
+    monkeypatch.setenv("QUALIFY_STOCK_AI_REFERENCE", "off")
+    assert stock_problems(brief) == OFF_TEXT
+    unknown_bank = _brief(
+        ContentKind.STATIC_FLYER,
+        background_key=f"t/{TENANT_ID}/stock/vecteezy/1/abcdef0123456789.jpg",
+    )
+    monkeypatch.setenv("QUALIFY_STOCK_AI_REFERENCE", "on")
+    assert stock_problems(unknown_bank) == OFF_TEXT
+
+
+def test_an_animated_slide_takes_a_motion_reference_stock_included() -> None:
+    """§ request 2026-10-19: «en la galería los videos solo para referencia» — only an
+    animated slide carries a reference video, and the licence guard lets a stock one go
+    there (it is followed, never shown)."""
+    from qualify_creative.enums import SlideSource
+    from qualify_creative.schemas import CarouselSlide
+
+    from qualify_api.stock.guard import stock_problems
+
+    video = f"t/{TENANT_ID}/stock/pixabay/video-1/abcdef0123456789.mp4"
+    with pytest.raises(ValueError):
+        CarouselSlide(source=SlideSource.GENERATED, reference_video_key=video)
+    slide = CarouselSlide(source=SlideSource.ANIMATED, reference_video_key=video)
+    brief = _brief(
+        ContentKind.CAROUSEL, slides=(slide, CarouselSlide(source=SlideSource.GENERATED))
+    )
+    assert stock_problems(brief) is None
+
+
+def test_a_gallery_reference_without_a_public_url_fails_before_any_scene_is_paid() -> None:
+    """Draft of 2026-10-20: a gallery whose last slide followed a reference video paid for
+    every scene, then failed on that slide — no public URL for ModelArk to fetch it.
+    It is refused up front now, before the first Seedream call."""
+    from qualify_creative.enums import SlideSource
+    from qualify_creative.schemas import CarouselSlide
+
+    from qualify_api.creative.media import CLIP_NO_PUBLIC_URL
+
+    video = f"uploads/{TENANT_ID}/ref.mp4"
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.ANIMATED, reference_video_key=video),
+        ),
+    )
+    vendor = SpyVendor()
+    outcome = _produce(_producer(MemoryStore({video: b"mp4"}), vendor), brief, uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == CLIP_NO_PUBLIC_URL
+    assert vendor.requests == [] and outcome.usage == ()

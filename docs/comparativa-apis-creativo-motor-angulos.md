@@ -1,5 +1,7 @@
 # Comparativa de APIs de creativo para Qualify
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 *Motor de Contenido/Ángulos — Fase 5. Orquestación de APIs de terceros detrás de un agregador + adaptadores, con cadenas de fallback configurables por presupuesto de cuenta. Datos a agosto 2026.*
 
 > **Convención de etiquetas:** (DATO) = verificado en fuente; (inferencia) = estimación o dato no confirmado. Precios en USD. Cuando un precio depende del proveedor upstream (agregador), se marca porque **fluctúa** — el motor debe cachear una tabla de precios versionada, nunca hardcodear.

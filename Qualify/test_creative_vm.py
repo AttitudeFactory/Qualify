@@ -550,8 +550,8 @@ def test_recipe_cards_carry_engine_cost_eta_outputs_and_the_suggestion() -> None
     from .creative_vm import build_recipe_options
 
     cards = build_recipe_options(_recipes(photo_count=3))
-    assert [c.key for c in cards] == ["remotion", "heygen", "ugc"]
-    remotion, heygen, ugc = cards
+    assert [c.key for c in cards] == ["remotion", "omnihuman", "ugc"]
+    remotion, presenter, ugc = cards
 
     assert remotion.suggested and remotion.rule == 2  # ≥2 photos, no video
     assert remotion.selectable and remotion.available
@@ -563,12 +563,12 @@ def test_recipe_cards_carry_engine_cost_eta_outputs_and_the_suggestion() -> None
     assert remotion.eta_label == "~38 s"
     assert remotion.outputs_label == "Reel · Feed · Historia"
 
-    assert not heygen.suggested and not heygen.available and not heygen.selectable
-    assert heygen.reason == "el negocio no tiene avatar configurado"
-    assert (heygen.engine_label, heygen.engine_tone) == ("HeyGen", "info")
-    assert heygen.cost_label == "USD 0.50 a 2.00"
-    assert heygen.eta_label == ""
-    assert heygen.outputs_label == "Reel"
+    assert not presenter.suggested and not presenter.available and not presenter.selectable
+    assert presenter.reason == "el negocio no tiene avatar configurado"
+    assert (presenter.engine_label, presenter.engine_tone) == ("Avatar", "info")
+    assert presenter.cost_label == "USD 1.80 a 3.70"
+    assert presenter.eta_label == ""
+    assert presenter.outputs_label == "Reel"
 
     assert ugc.engine_label == "UGC" and not ugc.selectable
     assert "solo cotiza" in ugc.reason
@@ -642,3 +642,96 @@ def test_cta_list_splits_and_formats() -> None:
     assert format_ctas(["A", "B"]) == "A · B"
     assert seen_label(0) == "" and seen_label(1) == "visto 1 vez en publicaciones reales"
     assert seen_label(1200) == "visto 1.2k veces en publicaciones reales"
+
+
+def test_draft_vm_carries_what_the_composition_left_out() -> None:
+    """Ticket 24803289: a catalog price too long to print whole is told on /drafts/{id};
+    a draft without warnings shows none."""
+    common = dict(
+        draft_id="d-9",
+        status="generated",
+        failure_reason=None,
+        variants=[_variant("v-1", 0, True)],
+        image_url=None,
+        total_cost_usd=None,
+        voice_profile_version=1,
+        model_ids=[],
+        requires_ai_disclosure=False,
+        created_label="hoy",
+    )
+    warned = build_draft_vm(**common, warnings=["El precio no cabe completo."])
+    assert warned.warnings == ("El precio no cabe completo.",)
+    assert warned.can_approve  # a warning informs; the price guard is what refuses
+    assert build_draft_vm(**common).warnings == ()
+
+
+def test_the_draft_screen_reads_the_composition_warnings_of_the_draft(monkeypatch) -> None:
+    """The provider turns `DraftDetail.warnings` (kept in `image_assets.params`) into the
+    sentences /drafts/{id} shows — the stored ones, not a guess from the brief."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from qualify_api.creative.service import COMPOSITION_WARNINGS_PARAM, DraftDetail, ImageRecord
+
+    from . import creative_provider
+
+    monkeypatch.setattr(creative_provider, "_draft_costs", lambda t, d: (None, ()))
+    # «Descargar todo» (m-24828908) mints its own token: kept off the real Redis here
+    monkeypatch.setattr(creative_provider, "issue_download_path", lambda t, d: "/piece-download/t")
+    monkeypatch.setattr(creative_provider, "_brand_name", lambda t: "Marca")
+    cover = ImageRecord(
+        id=uuid4(),
+        media_url="generated/t/d/slide-1.png",
+        width=1080,
+        height=1350,
+        aspect_ratio="4:5",
+        params={
+            COMPOSITION_WARNINGS_PARAM: [
+                {"code": "price_not_printed", "detail": "El precio no cabe completo."}
+            ]
+        },
+    )
+    detail = DraftDetail(
+        id=uuid4(),
+        brand_id=uuid4(),
+        brief_id=uuid4(),
+        status="generated",
+        failure_reason=None,
+        selected_variant_id=None,
+        voice_profile_version=1,
+        pipeline_version="creative-v1",
+        requires_ai_disclosure=False,
+        approved_by=None,
+        approved_at=None,
+        created_at=datetime.now(UTC),
+        variants=(),
+        image=cover,
+        media=(cover,),
+    )
+    vm = creative_provider._detail_to_vm(uuid4(), detail)
+    assert vm.warnings == ("El precio no cabe completo.",)
+
+
+def test_the_draft_page_shows_each_composition_warning_as_a_warn_callout() -> None:
+    """Ticket 24803289: /drafts/{id} renders `draft.warnings` — one `warn` callout each
+    (design-system tone, never a raw colour) — so a price left out of the piece is seen
+    before approving, not discovered after publishing."""
+    import reflex as rx
+
+    from .creative_pages import draft_detail_index
+    from .ui import tokens as T
+
+    def walk(component):  # noqa: ANN001, ANN202
+        yield component
+        for child in getattr(component, "children", None) or ():
+            yield from walk(child)
+
+    (loop,) = [
+        c
+        for c in walk(draft_detail_index())
+        if type(c).__name__ == "Foreach" and '["warnings"]' in str(c.iterable)
+    ]
+    tile = loop.render_fn(rx.Var("w", _var_type=str))
+    rendered = str(tile.render())
+    assert "Callout" in rendered
+    assert all(str(value) in rendered for value in T.tone_scheme("warn").values())

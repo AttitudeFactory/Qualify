@@ -379,6 +379,9 @@ def test_a_draft_with_r2_only_media_opens(backend, monkeypatch) -> None:
     from qualify_api.creative.service import ImageRecord
 
     monkeypatch.setattr(creative_provider, "_draft_costs", lambda t, d: (None, ()))
+    # «Descargar todo» (m-24828908) mints its own token: kept off the real Redis here
+    monkeypatch.setattr(creative_provider, "issue_download_path", lambda t, d: "/piece-download/t")
+    monkeypatch.setattr(creative_provider, "_brand_name", lambda t: "Marca")
     record = ImageRecord(
         id=uuid4(),
         media_url=None,
@@ -400,10 +403,13 @@ def test_a_draft_with_r2_only_media_opens(backend, monkeypatch) -> None:
         kind="video",
         media=(record,),
         failure_detail=None,
+        title="Reel",
+        warnings=(),
     )
     vm = creative_provider._detail_to_vm(TENANT_A, detail)
     assert vm.media[0].key == KEY_A
     assert vm.media[0].url.startswith("/r2media/")
+    assert (vm.download_path, vm.download_name) == ("/piece-download/t", "marca-reel.zip")
 
 
 def test_ranged_reads_run_off_the_event_loop(backend, monkeypatch) -> None:

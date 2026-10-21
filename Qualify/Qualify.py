@@ -3,6 +3,7 @@ import contextlib
 import logging
 
 import reflex as rx
+from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.planner.embedded import calendar_worker
 
 from .auth_pages import (
@@ -46,6 +47,7 @@ from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
 from .leads_state import LeadsState
+from .piece_download import router as piece_download_router
 from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publish_hub_state import PublishHubState
@@ -86,6 +88,8 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
 # avatar proxy already mounts through `api_transformer`.
 avatar_api.include_router(r2_media_router)
+# «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
+avatar_api.include_router(piece_download_router)
 
 
 def index() -> rx.Component:
@@ -167,12 +171,16 @@ app.add_page(
     on_load=AuthState.redirect_if_authenticated,
     title="Qualify · Entrar",
 )
-app.add_page(
-    signup_index,
-    route="/signup",
-    on_load=AuthState.enter_signup,
-    title="Qualify · Registrar negocio",
-)
+# The signup lives at /registro (founder rule 2026-10-21: no English a client sees, and the
+# invite link shows this path). /signup stays as an alias of the same page: invite links
+# already emailed with it are valid for 7 days, and `enter_signup` reads both parameters.
+for _signup_route in (SIGNUP_ROUTE, LEGACY_SIGNUP_ROUTE):
+    app.add_page(
+        signup_index,
+        route=_signup_route,
+        on_load=AuthState.enter_signup,
+        title="Qualify · Registrar negocio",
+    )
 # Forgotten password (2026-10-06): /forgot mails the provider's recovery link, which
 # lands on /reset (that URL must be in Supabase's Redirect URLs allow list). /reset is
 # NOT bounced for a logged-in session: the link may be opened in a browser that is in.
@@ -242,7 +250,7 @@ app.add_page(
     inbox_index,
     route="/inbox",
     on_load=[AuthState.require_login, InboxState.load_screen],
-    title="Qualify · Contenido",
+    title="Qualify · Interacciones",
 )
 # QUA-226: the private inbox of the connected accounts (Instagram Direct first).
 app.add_page(
@@ -340,7 +348,7 @@ app.add_page(
         CreativeState.load_brand,
         CreativeState.load_voice,
         BrandWizardState.resume,
-        # Tu voz: the brand's HeyGen clone, if any
+        # Tu voz: the brand's cloned voice (Seed Speech), if any
         VoiceLabState.load_clone,
         # the saved brandboard and logo brief (§ 2026-10-01)
         BrandWizardState.load_saved_assets,
@@ -392,14 +400,18 @@ app.add_page(
 app.add_page(
     create_index,
     route="/create",
-    on_load=[AuthState.require_login, CreativeState.load_create],
+    on_load=[
+        AuthState.require_login,
+        CreativeState.load_create,
+        CreativeState.load_catalog_products,
+    ],
     title="Qualify · Crear pieza",
 )
 app.add_page(
     drafts_index,
     route="/drafts",
     on_load=[AuthState.require_login, GalleryState.load],
-    title="Qualify · Borradores",
+    title="Qualify · Piezas",
 )
 app.add_page(
     draft_detail_index,

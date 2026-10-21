@@ -6,6 +6,6 @@ provable in unit tests rather than observable in production.
 """
 
 from qualify_creative.brand.fidelity import check_hard_rules, check_route_allowed
-from qualify_creative.brand.render import render_prompt
+from qualify_creative.brand.render import printed_limits, render_prompt
 
-__all__ = ["check_hard_rules", "check_route_allowed", "render_prompt"]
+__all__ = ["check_hard_rules", "check_route_allowed", "printed_limits", "render_prompt"]

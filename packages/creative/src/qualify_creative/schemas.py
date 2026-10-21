@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from qualify_creative.enums import (
     AdImageMode,
@@ -48,8 +48,8 @@ HOOK_MAX = 60
 PRINTED_HOOK_MAX = 50
 PRINTED_CTA_MAX = 32
 
-#: HeyGen reads at most 5,000 characters per video (`heygen_video.MAX_SCRIPT_CHARS`); a
-#: script is capped well below it so a 60-second piece never gets near the vendor limit.
+#: A script is capped well below what the voice vendor reads in one request (Seed Speech
+#: `byteplus_speech.MAX_TEXT_CHARS`), so a 60-second piece never gets near its limit.
 SCRIPT_MAX = 2000
 #: Target lengths a video / script can be asked for, in seconds.
 DURATIONS_SECONDS = (15, 30, 45, 60)
@@ -61,6 +61,9 @@ AVATAR_PROMPT_MAX = 600
 #: The scene an advertising image asks the image model for ("a hand holding the glass,
 #: the bar blurred behind").
 SCENE_PROMPT_MAX = 600
+#: The price a composition prints (`MediaInputs.price_line`, ticket 24803289) — the
+#: catalog's label, short enough for a pill or the template's `price_line` port.
+PRICE_LINE_MAX = 40
 #: HeyGen's avatar engines: IV is the more natural, III costs about a third for stock
 #: avatars (pricing_data v2) — the operator picks per piece.
 AVATAR_ENGINES = ("avatar_iv", "avatar_iii")
@@ -129,6 +132,10 @@ class ImagePolicy(BaseModel):
         return self.blocked_reason.get(route, "No habilitada para esta marca.")
 
 
+#: The longest type face name a prompt carries — a family name is short (`BrandKit.typeface`).
+TYPEFACE_MAX = 60
+
+
 class BrandKit(BaseModel):
     """What the operator declares about their brand. One per tenant (D14)."""
 
@@ -156,6 +163,18 @@ class BrandKit(BaseModel):
     template_asset_key: str | None = None
     reference_image_keys: tuple[str, ...] = Field(default=(), max_length=14)
     image_policy: ImagePolicy = ImagePolicy()
+
+    @property
+    def typeface(self) -> str:
+        """The brand's ONE type face, as every generation prompt names it ("" = none).
+        The Brand Kit asks a single family and stores it in both columns
+        (`set_kit_font_heading`); a kit saved when it asked two keeps its headline face.
+        One line, at most `TYPEFACE_MAX` characters: the kit stores no cap."""
+        for face in (self.font_heading, self.font_body):
+            name = " ".join(face.split())[:TYPEFACE_MAX].strip()
+            if name:
+                return name
+        return ""
 
 
 class VoiceSource(BaseModel):
@@ -296,12 +315,38 @@ class CopyPayload(BaseModel):
         return "\n\n".join(block for block in blocks if block)
 
 
+#: What a clip's reference image is for (§ request 2026-10-14): the client's real
+#: product, the client's real place, or a look (light, framing, mood) to borrow.
+CLIP_IMAGE_ROLES = ("product", "place", "style")
+
+#: «Datos clave» (§ request 2026-10-14): how many facts a brief carries, and how long
+#: a fact's name and value may be.
+HIGHLIGHTS_MAX = 12
+HIGHLIGHT_KEY_MAX = 40
+HIGHLIGHT_VALUE_MAX = 200
+
+
 class BriefConstraints(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     must_mention: tuple[str, ...] = ()
     must_avoid: tuple[str, ...] = ()
     max_caption_chars: int | None = None
+    #: «Datos clave»: facts the piece must feature exactly as the operator wrote them —
+    #: the price, a discount, a date… — as (name, value) pairs, in the operator's order.
+    highlights: tuple[tuple[str, str], ...] = ()
+
+    @field_validator("highlights")
+    @classmethod
+    def _highlights_fit(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+        if len(value) > HIGHLIGHTS_MAX:
+            raise ValueError(f"at most {HIGHLIGHTS_MAX} highlights")
+        for name, fact in value:
+            if not name.strip() or not fact.strip():
+                raise ValueError("a highlight needs a name and a value")
+            if len(name) > HIGHLIGHT_KEY_MAX or len(fact) > HIGHLIGHT_VALUE_MAX:
+                raise ValueError("highlight too long")
+        return value
 
 
 class TextOverlay(BaseModel):
@@ -349,19 +394,45 @@ class CarouselSlide(BaseModel):
     text: SlideText = SlideText.NONE
     seconds: int = 5
     object_key: str | None = None
+    #: An animated slide's motion reference (§ request 2026-10-19: «en la galería los
+    #: videos solo para referencia»): a video whose camera and rhythm Seedance follows
+    #: — never shown itself. Upload-store, piece or stock key.
+    reference_video_key: str | None = None
 
     @model_validator(mode="after")
     def _source_has_its_inputs(self) -> CarouselSlide:
+        if self.reference_video_key and self.source is not SlideSource.ANIMATED:
+            raise ValueError("only an animated slide takes a reference video")
         if self.source is SlideSource.EXISTING:
             if not self.object_key:
                 raise ValueError("an existing slide needs the piece's file")
             if self.text is not SlideText.NONE or self.scene_prompt.strip():
                 raise ValueError("an existing slide is reused as it is: no text, no scene")
+        elif self.source is SlideSource.STOCK:
+            if not self.object_key:
+                raise ValueError("a stock slide needs the stock video's file")
+            if self.text is SlideText.NONE:
+                # the words (and the logo) are what make it a new work, not stock alone
+                raise ValueError("a stock slide always carries the hook or the CTA")
+            if self.scene_prompt.strip():
+                raise ValueError("a stock slide has no scene to describe")
         elif self.object_key:
             raise ValueError("only an existing slide points at a piece's file")
         if self.seconds not in SLIDE_SECONDS:
             raise ValueError(f"an animated slide lasts one of {SLIDE_SECONDS} seconds")
         return self
+
+
+#: A clip's references (§ request 2026-10-14) — Seedance 2.x takes up to 9 images (the
+#: frames count among them once there are references), 3 videos and 3 audio files.
+CLIP_MAX_IMAGES = 9
+CLIP_MAX_VIDEOS = 3
+CLIP_MAX_AUDIOS = 3
+
+
+PRODUCT_SOURCE_CATALOG = "catalog"
+PRODUCT_SOURCE_STOCK = "stock"
+PRODUCT_SOURCES = (PRODUCT_SOURCE_CATALOG, PRODUCT_SOURCE_STOCK)
 
 
 class MediaInputs(BaseModel):
@@ -373,11 +444,18 @@ class MediaInputs(BaseModel):
 
     background_key: str | None = None
     product_keys: tuple[str, ...] = Field(default=(), max_length=MAX_PRODUCT_IMAGES)
+    #: Where the product's photos come from (stock plan R2, 2026-10-16): the brand's own
+    #: (`catalog`: the catalog or an upload), or a stock image the operator chose to
+    #: ILLUSTRATE the product (`stock`). Provenance only since 2026-10-19: the licence
+    #: guard lets a `t/{tenant}/stock/…` key into `product_keys` either way.
+    product_source: str = PRODUCT_SOURCE_CATALOG
     #: Flyer only: one slide per product instead of a single composed image.
     carousel: bool = False
     #: Target length of a script / video.
     duration_seconds: int = 30
-    #: Avatar video: the HeyGen library look and the voice that reads the script.
+    #: Avatar video: the voice that reads the script — `"brand"` (the brand's own cloned
+    #: voice, resolved server-side) or a public Seed Speech voice id (§ 2026-10-16).
+    #: `avatar_look_id` is the retired HeyGen library look, kept so old briefs still read.
     avatar_look_id: str | None = None
     voice_id: str | None = None
     #: Animated avatar: generated from `avatar_prompt`, or animated from
@@ -390,29 +468,61 @@ class MediaInputs(BaseModel):
     avatar_rights_confirmed: bool = False
     #: The operator's own script for a video — read word for word instead of Claude's.
     own_script: str = Field(default="", max_length=SCRIPT_MAX)
-    #: HeyGen engine for an avatar subject (an image subject always runs Avatar IV).
+    #: The retired HeyGen avatar engine (avatar_iv/iii) — kept so old briefs still read.
     engine: str = "avatar_iv"
-    #: Which vendor renders the avatar kinds (§ request 2026-10-07). HeyGen is the
-    #: default so a brief stored before Seedance regenerates exactly as it was asked;
-    #: the generator sends the platform's engine (`QUALIFY_VIDEO_ENGINE`) explicitly.
-    #: With Seedance there is no library look and no voice: the presenter is described
-    #: (`avatar_prompt`) or animated from `avatar_image_key`, and Seedream composes it
-    #: with the products and the background into the video's first frame.
+    #: Which vendor renders the avatar kinds (§ request 2026-10-07; OmniHuman since
+    #: 2026-10-16). HeyGen stays the default so a brief stored before then reads exactly
+    #: as it was asked — and is refused as retired; the generator always sends the
+    #: platform's engine (`QUALIFY_VIDEO_ENGINE`). With Seedance and OmniHuman there is no
+    #: library look: the presenter is described (`avatar_prompt`) or animated from
+    #: `avatar_image_key`, and Seedream composes it with the products and the background.
     video_engine: VideoEngine = VideoEngine.HEYGEN
     #: Advertising image only: what it is built from, and the scene the image model is
     #: asked for — Seedream renders it with those photos as references (2026-10-07).
     ad_mode: AdImageMode | None = None
     scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
+    #: The price the composition PRINTS (a pill on the advertising image, the template's
+    #: `price_line`) — ticket 24803289: always the catalog's label, set by the caller,
+    #: never a model's words. "" prints nothing.
+    price_line: str = Field(default="", max_length=PRICE_LINE_MAX)
     #: Template kind: the recipe the operator picked when they overrode the router's
     #: suggestion (plan-mvp-plantillas-remotion.md §3). Empty = let the router choose.
     template_id: str | None = None
     template_version: int | None = Field(default=None, ge=1)
+    #: Template kind: render the template's VIDEO in the brief's format («Video
+    #: publicitario», § 2026-10-13) rather than its still («Con plantilla»). A Reel is
+    #: always the video, so a brief stored before this field existed reads the same.
+    template_video: bool = False
     #: Resources of the Brand Kit chosen for THIS piece (§ request 2026-10-06) — apart
     #: from the background and the products: the logo goes where the brand mark goes (the
     #: template's and the flyer's logo slot, a corner of the avatar's scene), and each
     #: element is used as its own usage note says. R2 keys of the brand's assets.
     brand_logo_key: str | None = None
     brand_element_keys: tuple[str, ...] = Field(default=(), max_length=MAX_BRAND_ELEMENTS)
+    #: Clip and Ad (§ request 2026-10-14): a video the operator gives as the piece's
+    #: reference — its pace, framing and structure to follow. An upload-store key; kept
+    #: on the brief so the draft records it. No engine reads it yet (Seedance 1.0 takes
+    #: only a first frame; HeyGen, a look), so it changes nothing rendered today.
+    reference_video_key: str | None = None
+    #: Clip (§ request 2026-10-14): the frame the video starts on and the one it ends
+    #: on, and what it follows — images, videos and audio. Upload-store or catalog keys.
+    #: With any reference the clip goes to a Seedance 2.x model, which takes the frames
+    #: only as described references (the API does not mix `first_frame` with them);
+    #: with frames alone Seedance animates from the first towards the last.
+    clip_first_frame_key: str | None = None
+    clip_last_frame_key: str | None = None
+    clip_image_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
+    #: What each of `clip_image_keys` is (§ request 2026-10-14), in the same order:
+    #: `CLIP_IMAGE_ROLES` — the client's product, its place, or a look to borrow. Empty
+    #: means every one is the product (a brief from before the roles).
+    clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
+    clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
+    clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
+
+    @property
+    def clip_has_references(self) -> bool:
+        return bool(self.clip_image_keys or self.clip_video_keys or self.clip_audio_keys)
+
     #: Carousel kind (§ request 2026-10-09): the slides in order, and whether a closing
     #: slide with the CTA on the brand gradient ends it (it counts toward the ten).
     slides: tuple[CarouselSlide, ...] = Field(default=(), max_length=CAROUSEL_MAX_SLIDES)
@@ -420,6 +530,8 @@ class MediaInputs(BaseModel):
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
+        if self.product_source not in PRODUCT_SOURCES:
+            raise ValueError(f"product_source must be one of {PRODUCT_SOURCES}")
         if self.duration_seconds not in DURATIONS_SECONDS:
             raise ValueError(f"duration_seconds must be one of {DURATIONS_SECONDS}")
         if self.engine not in AVATAR_ENGINES:
@@ -469,6 +581,28 @@ class ContentBrief(BaseModel):
             # a template with zero real photos is a generated image, which is the one
             # thing this kind exists not to be.
             raise ValueError("a template needs at least one product photo")
+        if media.template_video and self.kind is not ContentKind.TEMPLATE:
+            raise ValueError("only a template renders a template video")
+        clip_inputs = (
+            media.clip_first_frame_key or media.clip_last_frame_key or media.clip_has_references
+        )
+        if clip_inputs and self.kind is not ContentKind.CLIP:
+            raise ValueError("frames and references are for a clip")
+        if self.kind is ContentKind.CLIP:
+            if media.clip_last_frame_key and not media.clip_first_frame_key:
+                raise ValueError("a clip's closing frame needs its opening frame")
+            if media.clip_image_roles and len(media.clip_image_roles) != len(media.clip_image_keys):
+                raise ValueError("a clip's image roles must match its images, one each")
+            if any(role not in CLIP_IMAGE_ROLES for role in media.clip_image_roles):
+                raise ValueError(f"a clip image's role is one of {CLIP_IMAGE_ROLES}")
+            if media.clip_has_references:
+                frames = int(bool(media.clip_first_frame_key)) + int(
+                    bool(media.clip_last_frame_key)
+                )
+                if len(media.clip_image_keys) + frames > CLIP_MAX_IMAGES:
+                    raise ValueError(
+                        f"a clip takes at most {CLIP_MAX_IMAGES} images, frames included"
+                    )
         heygen = media.video_engine is VideoEngine.HEYGEN
         if self.kind is ContentKind.AVATAR_VIDEO:
             if heygen and not media.voice_id:
@@ -482,8 +616,8 @@ class ContentBrief(BaseModel):
                 if not media.avatar_prompt.strip():
                     raise ValueError("a custom human avatar needs a description")
             elif not heygen:
-                # no library on Seedance: the presenter is always described
-                raise ValueError("a Seedance avatar video needs the presenter's description")
+                # no library on Seedance nor OmniHuman: the presenter is always described
+                raise ValueError("an avatar video needs the presenter's description")
             elif not media.avatar_look_id:
                 raise ValueError("an avatar video needs an avatar look and a voice")
         if self.kind is ContentKind.ANIMATED_AVATAR_VIDEO:
@@ -501,8 +635,12 @@ class ContentBrief(BaseModel):
         if media.carousel and self.kind is not ContentKind.STATIC_FLYER:
             raise ValueError("only a flyer can be a carousel")
         if self.kind is not ContentKind.STATIC_FLYER:
-            if media.ad_mode is not None or media.scene_prompt.strip():
-                raise ValueError("an ad mode and a scene are for the advertising image")
+            if media.ad_mode is not None:
+                raise ValueError("an ad mode is for the advertising image")
+            # ticket 24803289: a template may also start from a generated scene (the
+            # angle's), which becomes its first photo; any other kind has no scene
+            if media.scene_prompt.strip() and self.kind is not ContentKind.TEMPLATE:
+                raise ValueError("a scene is for the advertising image or a template")
         elif media.ad_mode is not None:
             if media.ad_mode.needs_product and not media.product_keys:
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a product photo")
@@ -529,6 +667,12 @@ class ContentBrief(BaseModel):
         if self.format not in self.kind.formats:
             raise ValueError(f"format {self.format} is not offered for {self.kind}")
         return self
+
+    @property
+    def wants_template_video(self) -> bool:
+        """A template brief asks for the template's video: a Reel always does, any other
+        format when `template_video` says so."""
+        return self.format is ContentFormat.REELS_9_16 or self.media.template_video
 
     @property
     def requires_ai_disclosure(self) -> bool:

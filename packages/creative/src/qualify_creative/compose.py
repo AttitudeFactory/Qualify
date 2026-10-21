@@ -59,6 +59,9 @@ def _printable(text: str) -> str:
 class FlyerText:
     hook: str = ""
     cta: str = ""
+    #: The price as the catalog formats it (ticket 24803289) — printed as a pill above
+    #: the CTA; "" prints none. Never a model's words: the caller passes the catalog's.
+    price: str = ""
 
 
 def _font(px: int, *, bold: bool) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -284,6 +287,74 @@ def _cta_pill(canvas: Image.Image, text: str, center_y: int, accent: tuple[int, 
         y += line_h
 
 
+#: The price pill's type: its size as a share of the canvas height, and the smallest it
+#: may shrink to and still be read on a phone — a share of the WIDTH, which is what a
+#: phone shows at one scale (≈32 px at 1080, the same on a feed post and on a story).
+_PRICE_SHARE = 0.034
+_PRICE_MIN_WIDTH_SHARE = 0.03
+#: The widest the pill's figure may run, as a share of the canvas width.
+_PRICE_MAX_WIDTH_SHARE = 0.5
+
+
+def _price_px(label: str, size: tuple[int, int]) -> int | None:
+    """The type size the WHOLE label fits at, shrinking from the pill's own size down to
+    the legible floor; None when it does not fit even there. A price is never cut — a
+    shortened figure is a different price (ticket 24803289, requirement 8)."""
+    width, height = size
+    max_w = round(width * _PRICE_MAX_WIDTH_SHARE)
+    draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    px, floor = round(height * _PRICE_SHARE), round(width * _PRICE_MIN_WIDTH_SHARE)
+    while px >= floor:
+        if draw.textlength(label, font=_font(px, bold=True)) <= max_w:
+            return px
+        px -= 1
+    return None
+
+
+def price_fits(text: str, size: tuple[int, int] = FEED_SIZE) -> bool:
+    """Whether `text` prints whole on a `size` canvas's price pill. An empty price
+    "fits" (nothing is printed); callers check this to warn instead of losing it."""
+    label = _printable(text)
+    return not label or _price_px(label, size) is not None
+
+
+def _price_pill(canvas: Image.Image, text: str, accent: tuple[int, int, int]) -> None:
+    """The catalog's price as a pill on the right, just above the CTA band (ticket
+    24803289): light card, dark figure, an accent rule under it — so it reads as a fact
+    of the offer, not as a second button. One line, whole: the type shrinks to the
+    legible floor and, if the label still does not fit, nothing is printed — never a
+    truncated figure (the caller warns, see `price_fits`)."""
+    label = _printable(text)
+    if not label:
+        return
+    width, height = canvas.size
+    px = _price_px(label, canvas.size)
+    if px is None:
+        return
+    draw = ImageDraw.Draw(canvas)
+    font = _font(px, bold=True)
+    text_w = round(draw.textlength(label, font=font))
+    pad_x, pad_y = round(px * 0.9), round(px * 0.55)
+    box_w, box_h = text_w + pad_x * 2, px + pad_y * 2
+    right = width - round(width * 0.05)
+    bottom = round(height * 0.89) - round(height * 0.036 * 1.2) - round(px * 0.9)
+    left, top = right - box_w, bottom - box_h
+    radius = box_h // 2
+    draw.rounded_rectangle((left, top, right, bottom), radius, fill=(255, 255, 255, 235))
+    draw.rounded_rectangle(
+        (left + radius, bottom - round(px * 0.22), right - radius, bottom),
+        round(px * 0.11),
+        fill=(*accent, 255),
+    )
+    draw.text(
+        ((left + right) // 2, top + box_h // 2),
+        label,
+        font=font,
+        fill=(17, 24, 39, 255),
+        anchor="mm",
+    )
+
+
 #: The logo's width as a share of the canvas: on its own in the top band, or sharing it
 #: with a headline (smaller, so the headline keeps room under it — 2026-10-09: "el logo
 #: tapa el texto").
@@ -348,14 +419,18 @@ def _slide(
     cta: str,
     logo: bytes | None,
     closing: bool = False,
+    price: str = "",
 ) -> bytes:
     """One image. `closing` is a carousel's last slide: no product, the hook (the CTA
-    line) large and centred, the CTA pill under it."""
+    line) large and centred, the CTA pill under it. `price` (the catalog's label) is
+    printed as its own pill above the CTA band, whole; "" — or a price too long to print
+    whole — prints none, and the slide is exactly the one without a price."""
     width, height = size
     hook, cta = _printable(hook), _printable(cta)
+    price = price if price_fits(price, size) else ""
     canvas = _background(size, background, base)
     photographic = background is not None
-    if photographic and (hook.strip() or cta.strip()):
+    if photographic and (hook.strip() or cta.strip() or price.strip()):
         _scrim(canvas)  # only where words go: a slide without text keeps its photo
     dark_text = not photographic and _luminance(base) > 0.6
     has_text_top = bool(hook.strip())
@@ -370,6 +445,8 @@ def _slide(
     under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if shares_band else _LOGO_SHARE)
     _headline(canvas, hook, _headline_box(size, under=under, closing=closing), dark_text=dark_text)
     _cta_pill(canvas, cta, round(height * 0.89), accent)
+    if not closing:
+        _price_pill(canvas, price, accent)
     return _png(canvas)
 
 
@@ -391,9 +468,9 @@ def render_flyer(
     base, accent = _palette(palette)
     common = {"size": size, "background": background, "base": base, "accent": accent, "logo": logo}
     if not carousel:
-        return [_slide(products=products, hook=text.hook, cta=text.cta, **common)]
+        return [_slide(products=products, hook=text.hook, cta=text.cta, price=text.price, **common)]
     items = list(products)[:9]
-    slides = [_slide(products=items[:1], hook=text.hook, cta="", **common)]
+    slides = [_slide(products=items[:1], hook=text.hook, cta="", price=text.price, **common)]
     slides.extend(_slide(products=[item], hook="", cta="", **common) for item in items[1:])
     closing_line = text.cta or text.hook
     slides.append(_slide(products=[], hook=closing_line, cta="", closing=True, **common))
@@ -418,8 +495,10 @@ def render_ad_slides(
     base, accent = _palette(palette)
     common = {"size": size, "base": base, "accent": accent, "logo": logo, "products": ()}
     if not carousel:
-        return [_slide(background=scenes[0], hook=text.hook, cta=text.cta, **common)]
-    slides = [_slide(background=scenes[0], hook=text.hook, cta="", **common)]
+        return [
+            _slide(background=scenes[0], hook=text.hook, cta=text.cta, price=text.price, **common)
+        ]
+    slides = [_slide(background=scenes[0], hook=text.hook, cta="", price=text.price, **common)]
     slides.extend(_slide(background=scene, hook="", cta="", **common) for scene in scenes[1:])
     closing_line = text.cta or text.hook
     slides.append(_slide(background=None, hook=closing_line, cta="", closing=True, **common))

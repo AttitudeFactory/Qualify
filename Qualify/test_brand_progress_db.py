@@ -66,7 +66,7 @@ def test_the_email_lands_where_the_draft_stands(tmp_path: Path) -> None:
     assert _kit_complete_blocking(ids[0]) is False  # a login here is sent to the Brand Kit
 
     _save(ids, step=19, completed=True, upload_dir=tmp_path)
-    assert _draft_destination_blocking(ids[0]) == "/signup"  # finished: create the account
+    assert _draft_destination_blocking(ids[0]) == "/registro"  # finished: create the account
     assert _kit_complete_blocking(ids[0]) is True
 
 

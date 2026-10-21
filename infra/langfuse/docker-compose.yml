@@ -1,0 +1,201 @@
+# Langfuse, self-hosted, for model-test observability — stage A: this machine
+# (docs/plan-observabilidad-langfuse.md §3). Adapted from Langfuse's official
+# docker-compose.yml (v4, read 2026-10-13); the changes, and why:
+#
+# - Its OWN compose project (`qualify-langfuse`), apart from the app's docker-compose.yml,
+#   so `just down` (which drops the app's volumes) never touches the traces.
+# - Only two host ports, both bound to 127.0.0.1: the UI on 3100 (3000 is Reflex) and
+#   MinIO on 9190 (presigned media links for the browser). Postgres, ClickHouse and Redis
+#   publish nothing: the app already holds 5432 and 6379, and nothing outside this
+#   project needs them.
+# - Its own Postgres: Langfuse's migrations never meet the app's (ADR 27).
+# - No default secrets: every one comes from infra/langfuse/.env, which
+#   `just langfuse-init` generates (infra/langfuse/init_env.py). A missing one stops
+#   `docker compose` with a message instead of starting on a known password.
+# - Exact image versions; Langfuse telemetry off; Docker log rotation (the guide's
+#   warning: the default json-file driver fills the disk).
+# - The worker starts once the web is healthy (the web runs the migrations).
+#
+# Langfuse v4 runs in `events_only` write mode: traces arrive ONLY over OpenTelemetry
+# (`/api/public/otel/v1/traces`, which the Python SDK v4 uses); the legacy batch endpoint
+# `/api/public/ingestion` takes scores only, and traces are read through
+# `/api/public/v2/observations`.
+#
+# Run it through the justfile: `just langfuse-up`, `just langfuse-down`, `just langfuse-logs`.
+
+name: qualify-langfuse
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-langfuse-env: &langfuse-env
+  NEXTAUTH_URL: http://localhost:3100
+  DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?run `just langfuse-init`}@postgres:5432/postgres
+  SALT: ${SALT:?run `just langfuse-init`}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run `just langfuse-init`}
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?run `just langfuse-init`}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run `just langfuse-init`}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run `just langfuse-init`}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${REDIS_AUTH:?run `just langfuse-init`}
+
+services:
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4.58.0
+    restart: unless-stopped
+    logging: *logging
+    depends_on: &langfuse-depends-on
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:3100:3000
+    # The image has none. The server binds to the container's own name ($HOSTNAME, set by
+    # Docker), not to localhost — measured 2026-10-13; `$$` keeps compose from
+    # interpolating it. The start period covers the migrations of a first start.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://$$HOSTNAME:3000/api/public/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?run `just langfuse-init`}
+      # the browser follows presigned media links: the host side of MinIO
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9190
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
+      # headless initialization: the organization, the project, its API keys and the
+      # first user exist from the first start (infra/langfuse/.env)
+      LANGFUSE_INIT_ORG_ID: qualify
+      LANGFUSE_INIT_ORG_NAME: Qualify
+      LANGFUSE_INIT_PROJECT_ID: qualify
+      LANGFUSE_INIT_PROJECT_NAME: Qualify
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?run `just langfuse-init`}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?run `just langfuse-init`}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?run `just langfuse-init`}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-Qualify}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?run `just langfuse-init`}
+      # nobody else signs up: the one user above is created at start
+      AUTH_DISABLE_SIGNUP: "true"
+
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4.58.0
+    restart: unless-stopped
+    logging: *logging
+    # After the web is healthy, not beside it: the web runs the Postgres migrations on
+    # start, and a worker racing it fails to seed the default dashboards ("column
+    # `filters` does not exist", seen on the first start of 2026-10-13).
+    depends_on:
+      <<: *langfuse-depends-on
+      langfuse-web:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-env
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    restart: unless-stopped
+    logging: *logging
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?run `just langfuse-init`}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    restart: unless-stopped
+    logging: *logging
+    entrypoint: sh
+    # creates the 'langfuse' bucket before starting the server
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run `just langfuse-init`}
+    ports:
+      - 127.0.0.1:9190:9000
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+
+  redis:
+    image: docker.io/redis:7
+    restart: unless-stopped
+    logging: *logging
+    command: >
+      --requirepass ${REDIS_AUTH:?run `just langfuse-init`}
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_AUTH}", "--no-auth-warning", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+  postgres:
+    image: docker.io/postgres:17
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run `just langfuse-init`}
+      POSTGRES_DB: postgres
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  clickhouse_logs:
+  minio_data:
+  redis_data:

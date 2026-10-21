@@ -8,6 +8,9 @@ differ between the real space and a test space. Only the **display names** are a
 - `field_key("Correo")` → the key, from `POST /field/all` (one call per process, cached);
 - `select_value("Estado Qualify", "invitada")` → the option value for that label (or the
   label itself when the field is not a select, so a `text` "Estado Qualify" still works);
+  `select_field_value(...)` wraps it in what a WRITE takes — `{"value", "label"}` for a
+  select, since a bare option value is `20006 Invalid Param` (measured on the real space,
+  2026-10-21: the first production sign-up failed on exactly this);
 - `node_id(work_item_id, "Registrada")` / `node_name(work_item_id, "state_2")` → from the
   item's workflow. Node ids are template-level (`state_0`, `started`, …: the same for every
   item of the type), so the map is cached per work item TYPE; a miss re-reads the workflow
@@ -83,6 +86,13 @@ class SchemaResolver:
         if value is None:
             raise MeegleSchemaError(f"field {name!r} has no option labelled {label!r}")
         return value
+
+    def select_field_value(self, name: str, label: str) -> str | dict[str, str]:
+        """The `field_value` that SETS `name` to `label` through `update_fields`."""
+        value = self.select_value(name, label)
+        if not self.field(name).options:
+            return value
+        return {"value": value, "label": label}
 
     # -- nodes -----------------------------------------------------------------------
 

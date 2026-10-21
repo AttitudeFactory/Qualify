@@ -45,6 +45,7 @@ The fix, for every account and not just the ones seen that day:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -52,8 +53,9 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 from fastapi import FastAPI, Response
@@ -429,7 +431,105 @@ def warm_avatars_in_background(
     task.add_done_callback(_background_tasks.discard)
 
 
+# -- Reel covers («Descubrir reels», § request 2026-10-15) --------------------------------
+# The same problem as a profile picture — a signed vendor URL that dies within days, and
+# an Instagram CDN that does not serve other sites' pages reliably — so the same answer:
+# the backend fetches the cover once, keeps it on disk and serves its own copy. Keyed by
+# the reel, not the account; no paid last resort (a dead cover just shows the placeholder
+# until the next read of the referente brings a fresh URL).
+
+#: Under `/avatar` on purpose: production's Caddy already sends `/avatar/*` to the Reflex
+#: backend (`deploy/Caddyfile`), and the extra segment keeps it apart from a profile.
+REEL_COVER_ROUTE = AVATAR_ROUTE + "/reel"
+_REEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_reel_misses: dict[tuple[str, str], float] = {}
+#: Development fallback only; every real environment sets QUALIFY_OAUTH_STATE_SECRET
+#: (`deploy/docker-compose.prod.yml` refuses to start without it).
+_DEV_COVER_SECRET = "qualify-dev-reel-cover"
+
+
+def _cover_key() -> bytes:
+    """The key cover paths are signed with: derived from the server's state secret, so
+    every backend worker agrees on it and it is never the state secret itself."""
+    secret = os.environ.get("QUALIFY_OAUTH_STATE_SECRET") or _DEV_COVER_SECRET
+    return hmac.new(secret.encode("utf-8"), b"qualify/reel-cover/v1", sha256).digest()
+
+
+def reel_cover_signature(network: str, reel_id: str, vendor_url: str) -> str:
+    message = f"{network}\n{reel_id}\n{vendor_url}".encode()
+    return hmac.new(_cover_key(), message, sha256).hexdigest()[:32]
+
+
+def reel_cover_path(network: str, reel_id: str, vendor_url: str) -> str:
+    """The signed path the card asks for a reel's cover with. Signed because the route
+    is public (an `<img>` carries no session): unsigned, anyone could pin any allowed
+    image under any reel id, or fill the disk with made-up ids."""
+    return (
+        f"{REEL_COVER_ROUTE}/{network}/{quote(reel_id, safe='')}"
+        f"?u={quote(vendor_url, safe='')}"
+        f"&s={reel_cover_signature(network, reel_id, vendor_url)}"
+    )
+
+
+def reel_cover_dir(directory: Path = AVATAR_DIR) -> Path:
+    return directory / "reels"
+
+
+async def resolve_reel_cover(
+    network: str,
+    reel_id: str,
+    vendor_url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    directory: Path = AVATAR_DIR,
+    now: float | None = None,
+) -> tuple[bytes, str] | None:
+    """One reel's cover: disk first, then the vendor URL (unless its signature already
+    expired), else None — a miss remembered for `_MISS_TTL_SECONDS`."""
+    if network not in _NETWORKS or not _REEL_ID_RE.match(reel_id):
+        return None
+    folder = reel_cover_dir(directory)
+    stem = f"{network}_{reel_id}"
+    for suffix in _TYPES.values():
+        cached = folder / f"{stem}{suffix}"
+        if cached.is_file():
+            return cached.read_bytes(), _media_type(cached)
+    moment = now if now is not None else time.time()
+    key = (network, reel_id)
+    if _reel_misses.get(key, 0.0) > moment:
+        return None
+    if not vendor_url or signature_expired(vendor_url, now=moment):
+        _reel_misses[key] = moment + _MISS_TTL_SECONDS
+        return None
+    found = await _fetch(client or _shared(), vendor_url, now=moment)
+    if found is None:
+        _reel_misses[key] = moment + _MISS_TTL_SECONDS
+        return None
+    content, media_type = found
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{stem}{_TYPES[media_type]}").write_bytes(content)
+    except OSError as exc:
+        logger.warning("reel cover cache write failed: %s", type(exc).__name__)
+    return found
+
+
 avatar_api = FastAPI()
+
+
+@avatar_api.get(REEL_COVER_ROUTE + "/{network}/{reel_id}")
+async def reel_cover(network: str, reel_id: str, u: str = "", s: str = "") -> Response:
+    """`GET /avatar/reel/<network>/<reel id>?u=<vendor url>&s=<signature>` → the cover,
+    or 404 — also for a path `reel_cover_path` did not sign."""
+    network = network.lower()
+    expected = reel_cover_signature(network, reel_id, u)
+    if not s.isascii() or not hmac.compare_digest(s, expected):
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+    found = await resolve_reel_cover(network, reel_id, u)
+    if found is None:
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+    content, media_type = found
+    return Response(content=content, media_type=media_type, headers=_CACHE_HEADERS)
 
 
 @avatar_api.get(AVATAR_ROUTE + "/{network}/{handle}")

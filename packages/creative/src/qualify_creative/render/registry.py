@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -73,11 +74,18 @@ class TemplateRegistry:
         return [m for m in self.latest() if m.serves(angle) and m.fits_niche(niche)]
 
 
+_MANIFEST_NAME = re.compile(r"^manifest(\.v\d+)?\.json$")
+
+
 def _load_manifests(root: Path) -> list[TemplateManifest]:
     if not root.is_dir():
         return []
     out: list[TemplateManifest] = []
-    for path in sorted(root.glob("*/manifest.json")):
+    # `manifest.json` is the latest; an older published version is kept beside it as
+    # `manifest.v<N>.json` (CONTRACT §1) so a run pinned to it still resolves
+    for path in sorted(root.glob("*/manifest*.json")):
+        if not _MANIFEST_NAME.match(path.name):
+            continue
         raw = json.loads(path.read_text(encoding="utf-8"))
         manifest = TemplateManifest.model_validate(raw)
         if manifest.id != path.parent.name:

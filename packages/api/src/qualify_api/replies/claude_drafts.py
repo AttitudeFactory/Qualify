@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from qualify_shared import observability
+
 from qualify_api.claude_tools import (
     ClaudeToolError,
     ClientFactory,
@@ -27,6 +29,7 @@ from qualify_api.claude_tools import (
     ModelConfig,
     api_key_from_env,
     default_client,
+    messages_create,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,7 @@ class ClaudeReplyDraftProvider:
             self._client = self._client_factory(self._api_key or api_key_from_env())
         return self._client
 
+    @observability.traced("respuesta inbox", tags=("inbox",))
     def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
         from qualify_models.providers import REPLY_SYSTEM_PROMPT  # noqa: PLC0415
 
@@ -73,7 +77,7 @@ class ClaudeReplyDraftProvider:
         }
         if self._config.effort:
             kwargs["output_config"] = {"effort": self._config.effort}
-        response = self._get_client().messages.create(**kwargs)
+        response = messages_create(self._get_client(), self._config, **kwargs)
 
         meter = Meter(self._config)
         meter.add(response)

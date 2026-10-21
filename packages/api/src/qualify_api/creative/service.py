@@ -22,15 +22,20 @@ yet — when the brand kit has no ``template_asset_key`` there is nothing to ren
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
-from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
+from qualify_creative.brand import (
+    check_hard_rules,
+    check_route_allowed,
+    printed_limits,
+    render_prompt,
+)
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.brand.render import VARIANT_ANGLES
 from qualify_creative.enums import (
@@ -59,11 +64,13 @@ from qualify_creative.schemas import (
     CopyPayload,
     HardFailure,
 )
+from qualify_shared import observability
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from qualify_api.creative import models as orm
-from qualify_api.creative import trace
+from qualify_api.creative import review, trace
 from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
 from qualify_api.creative.fsm import (
     DRAFT_STATUSES,
@@ -74,6 +81,7 @@ from qualify_api.creative.fsm import (
 )
 from qualify_api.creative.media import (
     MediaProducer,
+    MediaWarning,
     MediaWrite,
     TemplateRunWrite,
     ai_generated_media,
@@ -95,6 +103,11 @@ PIPELINE_VERSION = "creative-v1"
 COPY_CHAIN: tuple[str, ...] = ("anthropic",)
 
 _MTOK = Decimal(1_000_000)
+
+#: The `image_assets.params` key a generation's composition warnings are kept under
+#: (ticket 24803289: a catalog price that could not be printed whole). Not `warnings`,
+#: which a template's assets already use for the render service's own.
+COMPOSITION_WARNINGS_PARAM = "composition_warnings"
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +139,26 @@ class UnknownDraft(Exception):
 
 class UnknownVariant(Exception):
     """No such variant visible in this tenant, or it belongs to another draft."""
+
+
+class ApprovalBlocked(Exception):
+    """An approval guard refused the copy about to be approved (ticket 24803289: a draft
+    of a variations set quoting a price that is not the catalog's). Raised before any
+    write; `detail` is the operator's Spanish."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class DuplicateDraftRequest(Exception):
+    """A draft with this `request_key` already exists (a concurrent create won the
+    unique index): `draft_id` is that draft. Raised by the repository, absorbed by
+    `ContentService.create_draft`, which returns it without dispatching again."""
+
+    def __init__(self, draft_id: UUID) -> None:
+        super().__init__(f"draft {draft_id} already holds this request key")
+        self.draft_id = draft_id
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +250,52 @@ class DraftDetail:
     approved_revision: int | None = None
     failure_detail: str | None = None
 
+    @property
+    def warnings(self) -> tuple[DraftWarning, ...]:
+        """What the composition of the current media had to leave out (ticket 24803289)
+        — kept in `image_assets.params`, so a regeneration that replaces the media
+        replaces them too. Each one once, in order."""
+        seen: dict[tuple[str, str], DraftWarning] = {}
+        for item in self.media:
+            raw = (item.params or {}).get(COMPOSITION_WARNINGS_PARAM) or ()
+            for entry in raw if isinstance(raw, (list, tuple)) else ():
+                if not isinstance(entry, Mapping):
+                    continue
+                warning = DraftWarning(
+                    code=str(entry.get("code") or ""), detail=str(entry.get("detail") or "")
+                )
+                if warning.code:
+                    seen.setdefault((warning.code, warning.detail), warning)
+        return tuple(seen.values())
+
+
+@dataclass(frozen=True)
+class DraftWarning:
+    """One composition warning as the review screens show it: `code` to key on
+    (`media.PRICE_NOT_PRINTED`), `detail` in the operator's Spanish."""
+
+    code: str
+    detail: str
+
+
+def with_composition_warnings(
+    media: tuple[MediaWrite, ...], warnings: Sequence[MediaWarning]
+) -> tuple[MediaWrite, ...]:
+    """`media` with the generation's composition warnings on its first item (the
+    piece's cover — what lists and the gallery preview), so they are written with the
+    media, in the same transaction, and live exactly as long as it. No media, nothing
+    to attach to: a piece that was not made has nothing to warn about."""
+    if not warnings or not media:
+        return media
+    first = min(media, key=lambda item: item.position)
+    entries = [{"code": w.code, "detail": w.detail, "fields": dict(w.fields)} for w in warnings]
+    return tuple(
+        replace(item, params={**item.params, COMPOSITION_WARNINGS_PARAM: entries})
+        if item is first
+        else item
+        for item in media
+    )
+
 
 @dataclass(frozen=True)
 class VariantWrite:
@@ -256,6 +335,10 @@ class BudgetState:
 #: generation for a brand provisioned before the config UI existed.
 _UNLIMITED_BUDGET = BudgetState(remaining_usd=Decimal("1000000000"), hard_stop=False)
 
+#: How the note of a regeneration that did not come out starts (m-24828909): the draft
+#: keeps showing its previous version, and the operator reads why the new one is missing.
+KEPT_PREVIOUS_PREFIX = "La nueva versión no se pudo generar:"
+
 
 # ---------------------------------------------------------------------------
 # Collaborator seams
@@ -275,6 +358,14 @@ class BrandContextReader(Protocol):
     competitors — `None` when there is nothing."""
 
     def context(self, *, tenant_id: UUID, brand_id: UUID) -> BrandContext | None: ...
+
+
+class ApprovalGuard(Protocol):
+    """A check the copy about to be approved must pass (ticket 24803289: the variations
+    sets' catalog price). Raises `ApprovalBlocked`; a draft the guard knows nothing
+    about passes."""
+
+    def check(self, *, tenant_id: UUID, draft_id: UUID, copy: Mapping[str, object]) -> None: ...
 
 
 class VoiceService(Protocol):
@@ -301,6 +392,17 @@ def _openings(copies: object) -> tuple[str, ...]:
     return tuple(seen)
 
 
+@dataclass(frozen=True)
+class DraftBundle:
+    """Everything `DraftDetail` is made of for one draft, read in a batch."""
+
+    record: DraftRecord
+    variants: tuple[VariantRecord, ...]
+    image: ImageRecord | None
+    media: tuple[ImageRecord, ...]
+    kind: str | None
+
+
 class ContentRepository(Protocol):
     """Persistence seam, same pattern as ``PublishAttemptRepository``: the service holds
     the FSM and the money math; the repository holds the transactions. Pure tests
@@ -315,7 +417,10 @@ class ContentRepository(Protocol):
         brief: ContentBrief,
         voice_profile_version: int,
         pipeline_version: str,
+        request_key: UUID | None = None,
     ) -> UUID: ...
+
+    def draft_id_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None: ...
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None: ...
 
@@ -394,6 +499,10 @@ class ContentRepository(Protocol):
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
 
+    def details_for(
+        self, *, tenant_id: UUID, draft_ids: Sequence[UUID]
+    ) -> dict[UUID, DraftBundle]: ...
+
     def get_variant(self, *, tenant_id: UUID, variant_id: UUID) -> VariantRecord | None: ...
 
     def set_edited_copy(
@@ -456,6 +565,37 @@ def _image_record(row: orm.ImageAsset) -> ImageRecord:
     )
 
 
+def _detail(bundle: DraftBundle) -> DraftDetail:
+    """The read model of one draft — the single place `get_draft` and `get_drafts`
+    build it from what the repository returned."""
+    record = bundle.record
+    return DraftDetail(
+        id=record.id,
+        brand_id=record.brand_id,
+        brief_id=record.brief_id,
+        status=record.status,
+        failure_reason=record.failure_reason,
+        selected_variant_id=record.selected_variant_id,
+        voice_profile_version=record.voice_profile_version,
+        pipeline_version=record.pipeline_version,
+        requires_ai_disclosure=record.requires_ai_disclosure,
+        approved_by=record.approved_by,
+        approved_at=record.approved_at,
+        created_at=record.created_at,
+        variants=bundle.variants,
+        image=bundle.image,
+        media=bundle.media,
+        kind=bundle.kind or ContentKind.STATIC_FLYER.value,
+        title=record.title,
+        category=record.category,
+        reuse_type=record.reuse_type,
+        preview_key=record.preview_key,
+        revision=record.revision,
+        approved_revision=record.approved_revision,
+        failure_detail=record.failure_detail,
+    )
+
+
 class PostgresContentRepository:
     """The real repository. Every method is one ``tenant_session`` transaction; RLS is
     the isolation, the explicit ``tenant_id`` argument is the identity discipline."""
@@ -468,6 +608,42 @@ class PostgresContentRepository:
         brief: ContentBrief,
         voice_profile_version: int,
         pipeline_version: str,
+        request_key: UUID | None = None,
+    ) -> UUID:
+        try:
+            return self._insert_brief_and_draft(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                brief=brief,
+                voice_profile_version=voice_profile_version,
+                pipeline_version=pipeline_version,
+                request_key=request_key,
+            )
+        except IntegrityError:
+            # the whole transaction (brief + draft) rolled back; if the key is why, the
+            # winner's draft is the answer
+            if request_key is None:
+                raise
+            existing = self.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+            if existing is None:
+                raise
+            raise DuplicateDraftRequest(existing) from None
+
+    def draft_id_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
+        with tenant_session(tenant_id) as session:
+            return session.scalar(
+                select(orm.ContentDraft.id).where(orm.ContentDraft.request_key == request_key)
+            )
+
+    def _insert_brief_and_draft(
+        self,
+        *,
+        tenant_id: UUID,
+        user_id: UUID,
+        brief: ContentBrief,
+        voice_profile_version: int,
+        pipeline_version: str,
+        request_key: UUID | None,
     ) -> UUID:
         with tenant_session(tenant_id) as session:
             brief_row = orm.ContentBrief(
@@ -502,6 +678,7 @@ class PostgresContentRepository:
                 title=brief.topic[:TITLE_MAX],
                 category=default_category(brief.kind, brief.format).value,
                 revision=1,
+                request_key=request_key,
             )
             session.add(draft_row)
             session.flush()
@@ -541,6 +718,48 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentBrief, brief_id)
             return None if row is None else row.kind
+
+    def details_for(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftBundle]:
+        """The drafts of `draft_ids` (those visible in this tenant) with their variants,
+        media and brief kind: three statements in one session, whatever the count —
+        the same rows `get_draft` + `variants_for` + `image_for` + `media_for` +
+        `brief_kind` read one draft at a time."""
+        ids = list(dict.fromkeys(draft_ids))
+        if not ids:
+            return {}
+        with tenant_session(tenant_id) as session:
+            drafts = session.execute(
+                select(orm.ContentDraft, orm.ContentBrief.kind)
+                .outerjoin(orm.ContentBrief, orm.ContentBrief.id == orm.ContentDraft.brief_id)
+                .where(orm.ContentDraft.id.in_(ids))
+            ).all()
+            variants: dict[UUID, list[VariantRecord]] = {}
+            for row in session.scalars(
+                select(orm.CopyVariant)
+                .where(orm.CopyVariant.draft_id.in_(ids))
+                .order_by(orm.CopyVariant.draft_id, orm.CopyVariant.ordinal)
+            ):
+                variants.setdefault(row.draft_id, []).append(_variant_record(row))
+            assets: dict[UUID, list[orm.ImageAsset]] = {}
+            for row in session.scalars(
+                select(orm.ImageAsset)
+                .where(orm.ImageAsset.draft_id.in_(ids))
+                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+            ):
+                assets.setdefault(row.draft_id, []).append(row)
+            bundles: dict[UUID, DraftBundle] = {}
+            for draft, kind in drafts:
+                rows = assets.get(draft.id, [])
+                # `image_for` is the earliest asset; `media_for` all of them in order
+                first = min(rows, key=lambda a: a.created_at) if rows else None
+                bundles[draft.id] = DraftBundle(
+                    record=_draft_record(draft),
+                    variants=tuple(variants.get(draft.id, ())),
+                    image=_image_record(first) if first is not None else None,
+                    media=tuple(_image_record(a) for a in rows),
+                    kind=kind,
+                )
+            return bundles
 
     def budget_state(self, *, tenant_id: UUID, brand_id: UUID) -> BudgetState | None:
         with tenant_session(tenant_id) as session:
@@ -905,8 +1124,10 @@ class ContentService:
         copy_chain: tuple[str, ...] = COPY_CHAIN,
         media: MediaProducer | None = None,
         context_reader: BrandContextReader | None = None,
+        approval_guard: ApprovalGuard | None = None,
     ) -> None:
         self._media = media
+        self._approval_guard = approval_guard
         self._router = router
         self._pricing = pricing
         self._credentials = credentials
@@ -920,16 +1141,31 @@ class ContentService:
     # -- create -------------------------------------------------------------
 
     def create_draft(
-        self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief, user_id: UUID
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        brief: ContentBrief,
+        user_id: UUID,
+        request_key: UUID | None = None,
     ) -> UUID:
         """Persist brief + draft in ``DRAFTING`` (one transaction), dispatch generation,
         return the draft id immediately — generation runs out of band (§7.4).
 
         Readiness and the image-route policy are checked BEFORE any row exists:
         ``BrandNotReady`` / ``RouteBlockedByPolicy`` leave nothing behind to reap.
+
+        ``request_key`` makes it idempotent (ticket 24803289): a key that already has a
+        draft returns that draft and dispatches nothing — its generation, which is what
+        costs money, runs once whatever retries or concurrent calls the caller makes.
+        Without a key nothing changes.
         """
         if brief.brand_id != brand_id:
             raise ValueError("brief.brand_id does not match brand_id")
+        if request_key is not None:
+            existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+            if existing is not None:
+                return existing
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
         voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
         missing = tuple(
@@ -946,16 +1182,30 @@ class ContentService:
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
 
-        draft_id = self._repo.insert_brief_and_draft(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            brief=brief,
-            voice_profile_version=voice.version,
-            pipeline_version=PIPELINE_VERSION,
-        )
+        # the key only reaches repositories that know it (every other caller sends none)
+        keyed: dict[str, UUID] = {"request_key": request_key} if request_key else {}
+        try:
+            draft_id = self._repo.insert_brief_and_draft(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                brief=brief,
+                voice_profile_version=voice.version,
+                pipeline_version=PIPELINE_VERSION,
+                **keyed,
+            )
+        except DuplicateDraftRequest as duplicate:
+            # a concurrent call with the same key won the unique index: its draft is
+            # ours, and its generation is already dispatched — never a second one
+            return duplicate.draft_id
         if self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return draft_id
+
+    def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
+        """The draft created with `request_key`, if any — how a caller whose create was
+        interrupted learns, without guessing, whether the draft (and its paid
+        generation) exists."""
+        return self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
 
     def preview_prompt(self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief) -> bool:
         """Print the copy prompt this brief would send (`trace.copy_prompt`), before any
@@ -1070,6 +1320,33 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft.id} has no readable brief")
+        # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
+        # draft is the session, so its regenerations sit together; every vendor call the
+        # router makes inside is nested here (`observed.TracedProvider`). A no-op unless
+        # LANGFUSE_* keys are set.
+        with observability.trace(
+            f"generar {brief.kind.value}",
+            session_id=str(draft.id),
+            tags=(brief.kind.value, brief.format.value),
+            metadata={
+                "tenant_id": tenant_id,
+                "brand_id": draft.brand_id,
+                "draft_id": draft.id,
+                "revision": draft.revision,
+                "kind": brief.kind.value,
+                "format": brief.format.value,
+                "pipeline_version": draft.pipeline_version,
+                "voice_version": draft.voice_profile_version,
+                # what a reviewer in the annotation queue opens to see the media
+                "borrador": review.draft_url(draft.id),
+            },
+            input={"topic": brief.topic, "kind": brief.kind.value, "format": brief.format.value},
+            # deterministic, so approving or rejecting it later scores this very trace
+            trace_seed=review.trace_seed(draft.id, draft.revision),
+        ):
+            self._generate_brief(tenant_id=tenant_id, draft=draft, brief=brief)
+
+    def _generate_brief(self, *, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief) -> None:
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id)
         voice = self._voice.active(tenant_id=tenant_id, brand_id=draft.brand_id)
         if kit is None or voice is None:
@@ -1096,9 +1373,15 @@ class ContentService:
             angle_offset=draft.id.int % len(VARIANT_ANGLES),
         )
         schema = CopyPayload.model_json_schema()
+        limits = printed_limits(brief.kind)
         requests = tuple(
             GenerationRequest(
-                task=GenerationTask.COPY, rendered_prompt=prompt, output_schema=schema
+                task=GenerationTask.COPY,
+                rendered_prompt=prompt,
+                output_schema=schema,
+                # the printed hook/CTA limits the prompt asks for, which the adapter holds
+                # the answer to (2026-10-13) — {} for a kind whose words are not printed
+                params={"max_lengths": limits} if limits else {},
             )
             for prompt in prompts
         )
@@ -1157,11 +1440,16 @@ class ContentService:
         if failure is not None:
             # Usage for the calls that DID succeed is persisted anyway: the money was
             # spent, and the budget cap is enforced over facts.
+            self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure)
+            self._trace_spend(draft, brief, usage_writes, spent, budget, failure)
+            if self._keeps_previous_version(tenant_id=tenant_id, draft=draft, kind=brief.kind):
+                self._keep_previous_version(
+                    tenant_id=tenant_id, draft=draft, usage=usage_writes, spent=spent
+                )
+                return
             new_status = apply_transition(
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure
             )
-            self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure)
-            self._trace_spend(draft, brief, usage_writes, spent, budget, failure)
             self._repo.finish_generation(
                 tenant_id=tenant_id,
                 draft_id=draft.id,
@@ -1236,7 +1524,7 @@ class ContentService:
                 )
                 for item in outcome.usage
             )
-            media_writes = outcome.media
+            media_writes = with_composition_warnings(outcome.media, outcome.warnings)
             media_failure = outcome.failure
             template_run = outcome.template_run
             # A failed run says why; a run with a sibling output missing says which
@@ -1262,6 +1550,18 @@ class ContentService:
             )
         self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure_reason)
         self._trace_spend(draft, brief, usage_writes, spent, budget, failure_reason)
+        if failure_reason is not None and self._keeps_previous_version(
+            tenant_id=tenant_id, draft=draft, kind=brief.kind
+        ):
+            self._keep_previous_version(
+                tenant_id=tenant_id,
+                draft=draft,
+                usage=usage_writes,
+                spent=spent,
+                detail=media_detail,
+                template_run=template_run,
+            )
+            return
         self._repo.finish_generation(
             tenant_id=tenant_id,
             draft_id=draft.id,
@@ -1279,6 +1579,57 @@ class ContentService:
             # and a regeneration may change the vendor.
             requires_ai_disclosure=brief.requires_ai_disclosure or ai_generated_media(media_writes),
         )
+        # an image or a video made by a model under test goes to the human review queue
+        review.queue_media_for_review(
+            draft_id=draft.id,
+            revision=draft.revision,
+            providers={write.provider for write in media_writes},
+        )
+
+    def _keeps_previous_version(
+        self, *, tenant_id: UUID, draft: DraftRecord, kind: ContentKind
+    ) -> bool:
+        """A failed REGENERATION over a draft that still shows a version (its copy and,
+        for a kind with media, its files): that version stays instead of an empty piece
+        (m-24828909). A first generation, or a draft whose previous run also failed, has
+        nothing to keep and fails as before."""
+        if draft.revision <= 1:
+            return False
+        if not self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id):
+            return False
+        return kind is ContentKind.CREATOR_SCRIPT or bool(
+            self._repo.media_for(tenant_id=tenant_id, draft_id=draft.id)
+        )
+
+    def _keep_previous_version(
+        self,
+        *,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        usage: list[UsageWrite],
+        spent: Decimal,
+        detail: str = "",
+        template_run: TemplateRunWrite | None = None,
+    ) -> None:
+        """Settle a failed regeneration on the version the draft already shows: no new
+        copy or media is written (so neither replaces the old rows — this revision's text
+        over the previous revision's files would lie), the spend is recorded, and the
+        draft is `generated` again with a note saying the new version did not come out."""
+        reason = detail.rstrip(". ") if detail else "algo falló al generarla"
+        note = f"{KEPT_PREVIOUS_PREFIX} {reason}. Se mantiene la versión anterior."
+        self._repo.finish_generation(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            brand_id=draft.brand_id,
+            new_status=apply_transition(DRAFTING, DraftTrigger.GENERATE_OK),
+            failure_reason=None,
+            variants=(),
+            usage=tuple(usage),
+            spent_usd=spent,
+            failure_detail=note[:500],
+            template_run=template_run,
+        )
+        logger.warning("draft %s: regeneration failed, previous version kept", draft.id)
 
     @staticmethod
     def _trace_spend(
@@ -1378,32 +1729,26 @@ class ContentService:
         record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
             return None
-        return DraftDetail(
-            id=record.id,
-            brand_id=record.brand_id,
-            brief_id=record.brief_id,
-            status=record.status,
-            failure_reason=record.failure_reason,
-            selected_variant_id=record.selected_variant_id,
-            voice_profile_version=record.voice_profile_version,
-            pipeline_version=record.pipeline_version,
-            requires_ai_disclosure=record.requires_ai_disclosure,
-            approved_by=record.approved_by,
-            approved_at=record.approved_at,
-            created_at=record.created_at,
-            variants=self._repo.variants_for(tenant_id=tenant_id, draft_id=draft_id),
-            image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
-            media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
-            kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id)
-            or ContentKind.STATIC_FLYER.value,
-            title=record.title,
-            category=record.category,
-            reuse_type=record.reuse_type,
-            preview_key=record.preview_key,
-            revision=record.revision,
-            approved_revision=record.approved_revision,
-            failure_detail=record.failure_detail,
+        return _detail(
+            DraftBundle(
+                record=record,
+                variants=self._repo.variants_for(tenant_id=tenant_id, draft_id=draft_id),
+                image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
+                media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
+                kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
+            )
         )
+
+    def get_drafts(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftDetail]:
+        """Several drafts at once, by id — what a gallery polling N pieces reads, in a
+        constant number of statements instead of five per draft. Ids not visible in this
+        tenant are absent. The reaper runs first, as on listing (§7.4), so a draft
+        orphaned by a dead process shows as failed, never as an eternal spinner."""
+        if not draft_ids:
+            return {}
+        reap_stale_drafts(tenant_id=tenant_id)
+        bundles = self._repo.details_for(tenant_id=tenant_id, draft_ids=draft_ids)
+        return {draft_id: _detail(bundle) for draft_id, bundle in bundles.items()}
 
     def list_drafts(
         self,
@@ -1485,11 +1830,17 @@ class ContentService:
         self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID
     ) -> DraftDetail:
         """HITL #2 approval, through the FSM's guarded ``approve`` edge (a variant must
-        be picked — the guard makes 'approved without a choice' unrepresentable)."""
+        be picked — the guard makes 'approved without a choice' unrepresentable). The
+        copy approved (the operator's edit when there is one) must pass the approval
+        guard first — `ApprovalBlocked`, nothing written."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
+        if self._approval_guard is not None:
+            self._approval_guard.check(
+                tenant_id=tenant_id, draft_id=draft_id, copy=variant.edited_copy or variant.copy
+            )
         new_status = apply_transition(
             record.status, DraftTrigger.APPROVE, selected_variant_id=variant_id
         )
@@ -1500,6 +1851,14 @@ class ContentService:
             variant_id=variant_id,
             user_id=user_id,
             approved_at=datetime.now(UTC),
+        )
+        # the operator's verdict, on the generation's Langfuse trace (plan §8)
+        review.score_approval(
+            draft_id=draft_id,
+            revision=record.revision,
+            ordinal=variant.ordinal,
+            copy=variant.copy,
+            edited_copy=variant.edited_copy,
         )
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
@@ -1530,6 +1889,8 @@ class ContentService:
             tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
         )
         logger.info("draft %s rejected by user %s: %s", draft_id, user_id, reason)
+        # scored on the rejected generation's trace, before a regeneration bumps it
+        review.score_rejection(draft_id=draft_id, revision=record.revision, reason=reason)
         if regenerate:
             self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
         if regenerate and self.dispatcher is not None:

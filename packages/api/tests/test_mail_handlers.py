@@ -395,11 +395,11 @@ def engine() -> tuple[OnboardingEngine, FakeMeegleApi]:
 def test_mark_delivered_sets_entregada_and_completes_invitada(engine) -> None:  # noqa: ANN001
     eng, api = engine
     eng.mark_delivered(ITEM)
-    assert api.updates == [{"f_status": "opt_2"}]
+    assert api.updates == [{"f_status": {"value": "opt_2", "label": "entregada"}}]
     assert api.operations == [("state_0", {"action": "confirm"})]
     # The open arrived first: the status stays `abierta`, the node is still completed.
     eng.mark_delivered(ITEM, already_opened=True)
-    assert api.updates == [{"f_status": "opt_2"}]
+    assert api.updates == [{"f_status": {"value": "opt_2", "label": "entregada"}}]
     assert len(api.operations) == 2
 
 
@@ -407,15 +407,21 @@ def test_mark_delivered_tolerates_an_already_completed_node(engine) -> None:  # 
     eng, api = engine
     api.refuse_confirm = True
     eng.mark_delivered(ITEM)  # no raise
-    assert api.updates == [{"f_status": "opt_2"}] and len(api.operations) == 1
+    assert (
+        api.updates == [{"f_status": {"value": "opt_2", "label": "entregada"}}]
+        and len(api.operations) == 1
+    )
 
 
 def test_mark_opened_and_bounced(engine) -> None:  # noqa: ANN001
     eng, api = engine
     eng.mark_opened(ITEM)
-    assert api.updates == [{"f_status": "opt_3"}] and api.operations == []
+    assert (
+        api.updates == [{"f_status": {"value": "opt_3", "label": "abierta"}}]
+        and api.operations == []
+    )
     eng.mark_bounced(ITEM, "Mailbox   does not\nexist (Permanent)")
-    assert api.updates[-1] == {"f_status": "opt_4"}
+    assert api.updates[-1] == {"f_status": {"value": "opt_4", "label": "rebotó"}}
     (comment,) = api.comments
     assert comment.startswith("El correo de invitación rebotó: Mailbox does not exist (Permanent)")
     assert "«Correo»" in comment and "«Datos»" in comment

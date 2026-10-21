@@ -113,6 +113,42 @@ start no runner on PRs that do not touch their inputs); `just merge <pr> --admin
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 
+### Every PR carries its Meegle ticket number
+
+**Rule (2026-10-20): every PR names the Meegle ticket it delivers as `m-<work item id>`** — the
+id is the number in the ticket URL (`…/issue/detail/24789646` → `m-24789646`; Cmd+Shift+C on the
+ticket copies it). It goes in three places:
+
+- **branch**: `<type>/m-<id>-<slug>` (`feat/m-24789646-dm-propuesto`);
+- **PR title**, at the end: `feat(conversations): DM drafts from comment intents (m-24789646)`;
+- **PR description**: `Resolves m-24789646` — the keyword is what lets the merge move the ticket.
+
+Meegle is the only tracker (Linear is retired); no ticket → create or find one first, never open
+the PR without it. **Create it with `/meegle-ticket`** (`.claude/skills/meegle-ticket/`, project skill:
+every Claude Code session on this repo has it), in the format of `docs/formato-tickets-meegle.md`. Several tickets: `Resolves m-111, m-222`. Agents follow the same rule.
+
+Why it matters: the Meegle **GitHub plugin** (Space configuration → Plug-ins → GitHub) receives
+this repo's `pull_request`/`push` webhooks. `m-<id>` (or `f-<id>`, any case, anywhere in branch,
+commit, title or description) **links** the PR to the ticket — it shows under the ticket's GitHub
+tab. A completion rule is configured — **PR opened → `RESOLVED`** (review; planned rename «To Be
+Reviewed») and **PR merged → `Done`**, the latter meant to be driven by `close|fix|resolve` (+ `-s`,
+`-d`, `-ing`) followed by `m-<id>` — **but as of 2026-10-20 no completion rule moves anything**.
+Measured on PRs #168, #169 and #170: the PR linked to the ticket and Meegle received every event
+with 200, yet nothing moved — not Issues (rule on statuses; ticket in Backlog or In Progress; with
+`m-<id>` or a bare number) and not Features (rule «PR merged → complete Backend Development» on the
+node-driven Product Feature Request template, two test Features sitting in that node, with the
+custom link pattern `[0-9]+` and again after setting it to `m-[0-9]+`; per-item «Upgrade Template»
+changed nothing visible). Until Meegle fixes or explains it, **move the ticket by hand** (In
+Progress → review → Done) when the PR opens and merges. The custom link pattern is now `m-[0-9]+`,
+matching the documented syntax. Branch and commit links cannot be edited afterwards, so get the id right
+before the first push. Reference: https://meegle.com/b/helpcenter/product/integration-github
+
+The other direction is a GitHub **autolink** (repo Settings → Autolink references, id `18004011`):
+every `m-<id>` in a PR title, description, comment or commit renders as a link to
+`https://project.larksuite.com/5h2wsx/issue/detail/<id>`. It only resolves **Issues** (Features
+live under `/story/detail/`), and GitHub offers autolinks on private repos only on paid plans, so
+it may stop rendering once the org is back on GitHub Free (2026-11) — the Meegle side keeps working.
+
 ### Commands
 
 A `justfile` is the entry point for everything backend. Prefer it over ad-hoc commands — the recipes encode ordering that is easy to get wrong (e.g. `dev` = `up` → `migrate` → `seed`):
@@ -165,7 +201,7 @@ Triggered by `pull_request` → `main` (never on drafts) and `workflow_dispatch`
 | `ci` / `test` | every non-draft PR event (not on main) | ONE runner, ONE `uv sync`: `ruff check --output-format=github` (inline annotations) + `ruff format --check` → gitleaks over the PR's own commits → `pytest -m "not integration and not db and not slow"` + `--cov` per package (artifact, step summary, sticky PR comment via `.github/scripts/coverage_summary.py`) → Postgres 16 + Redis 7 service containers: `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head` → `pytest -m db` | **yes** (coverage % informs only; reversibility is a gate, ADR 27; gitleaks fails on a real secret) |
 | `images` / `docker-deploy` | PR touching what the **build** depends on (`deploy/**`, `.dockerignore`, `pyproject.toml`/`uv.lock`/member manifests, `rxconfig.py`, `reflex.lock/**`) — **not** plain code PRs (`Qualify/**`, `packages/*/src/**`: `test` covers the code, and a build that breaks in `deploy` keeps the previous release live) and **not** on main | builds `deploy/Dockerfile` `web` + `app` (`push: false`, GHA cache), validates both Caddyfiles, then smoke: Reflex backend `/ping` 200 and Caddy serving `/`, `/login`, a dynamic route | **yes, when it ran** |
 | `render` / `node-render` + `docker-render` | PR or main touching `packages/render/**` | `npm ci` + `npm run typecheck` (Node 22); `docker build` with `push: false` | **yes, when they ran** |
-| `deploy` / `resolve` → `images` → `deploy` → `notify` | manual (`workflow_dispatch`), plus on its own per the repo variable `QUALIFY_AUTO_DEPLOY`: `merge` (or `true`) = every push to main; `daily` = 07:23 UTC, the tip of main only if GHCR has no image for it yet; anything else = manual only. Set to per-merge until **2026-11-12**, then `daily` | builds + pushes `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>` (arm64), ssh with a forced-command key that can only send `deploy <sha>` → `deploy/server-deploy.sh` (pull; migrate → up) + external smoke; `notify` posts the result to Cliq #devops (`CLIQ_DEVOPS_WEBHOOK_URL`) | n/a (deploys, does not gate) |
+| `deploy` / `resolve` → `images` → `deploy` → `notify` | manual (`workflow_dispatch`), plus on its own per the repo variable `QUALIFY_AUTO_DEPLOY`: `merge` (or `true`) = every push to main; `daily` = 07:23 UTC, the tip of main only if GHCR has no image for it yet; anything else = manual only. Set to per-merge until **2026-11-12**, then `daily` | builds + pushes `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>` (arm64), ssh with a forced-command key that can only send `deploy <sha>` → `deploy/server-deploy.sh` (pull; migrate → up) + external smoke; `notify` posts a Lark card (outcome, commit/PR/author, trigger, stage durations, failed step) to Qualify-devs (`DEVOPS_WEBHOOK_URL`, optional `DEVOPS_WEBHOOK_SECRET`; `.github/scripts/deploy_notify.py`) | n/a (deploys, does not gate) |
 | `security` / `sast`, `deps`, `repo` | weekly (Mon 06:17 UTC) on main, manual, and PRs touching dependencies, workflows, `deploy/**`, `infra/**`, Dockerfiles | semgrep + bandit (medium+); `pip-audit` over `uv export` (never `ml`) + `npm audit` high+; `trivy fs` + `gitleaks git` over the **full** history | trivy/semgrep/bandit/audits no (summary + artifact); **gitleaks yes** (redacted — rotate, then purge or allowlist in `.gitleaks.toml`) |
 | `review` / `Claude auto-review` | **on demand only**: add the label `claude-review` to the PR (remove + re-add for another pass); `@claude` in a comment for anything else | review by Claude | no |
 | `sonar` / `scan main` | push to main, only with the repo variable `SONAR_ENABLED=true` | SonarQube Community Build | no |

@@ -72,6 +72,7 @@ from qualify_api.publishing.client import (
     MEDIA_TYPE_VIDEO,
 )
 from qualify_api.publishing.service import MAX_CAROUSEL_ITEMS, MEDIA_TYPE_CAROUSEL
+from qualify_api.stock.keys import is_stock_key
 
 R = UnpublishableReason
 
@@ -93,10 +94,18 @@ _NEVER_PUBLISHED: frozenset[str] = frozenset({PostCategory.TIKTOK_VIDEO.value})
 OUTPUT_PORT_REEL = "reel"
 OUTPUT_PORT_FEED = "feed"
 OUTPUT_PORT_STORY = "story"
+#: promo_producto v2 (2026-10-13): the 1:1 still is a feed post, and the 4:5 / 1:1
+#: videos are Reels (Instagram shows a feed video at its own shape, as a Reel).
+OUTPUT_PORT_SQUARE = "square"
+OUTPUT_PORT_FEED_VIDEO = "feed-video"
+OUTPUT_PORT_SQUARE_VIDEO = "square-video"
 _PORT_PRODUCT_TYPE: dict[str, tuple[str, frozenset[str]]] = {
     OUTPUT_PORT_REEL: (MEDIA_TYPE_REELS, frozenset({MEDIA_TYPE_VIDEO})),
     OUTPUT_PORT_FEED: (MEDIA_TYPE_IMAGE, frozenset({MEDIA_TYPE_IMAGE})),
     OUTPUT_PORT_STORY: (MEDIA_TYPE_STORIES, frozenset({MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO})),
+    OUTPUT_PORT_SQUARE: (MEDIA_TYPE_IMAGE, frozenset({MEDIA_TYPE_IMAGE})),
+    OUTPUT_PORT_FEED_VIDEO: (MEDIA_TYPE_REELS, frozenset({MEDIA_TYPE_VIDEO})),
+    OUTPUT_PORT_SQUARE_VIDEO: (MEDIA_TYPE_REELS, frozenset({MEDIA_TYPE_VIDEO})),
 }
 OUTPUT_PORTS: tuple[str, ...] = tuple(_PORT_PRODUCT_TYPE)
 
@@ -125,6 +134,7 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.DESTINATION_NOT_SUPPORTED: "Instagram no publica este contenido en el destino elegido.",
     R.IMAGE_RATIO_NOT_ALLOWED: "Instagram solo acepta en una publicación imágenes entre 4:5 "
     "(vertical) y 1.91:1 (horizontal).",
+    R.STOCK_NOT_PUBLISHABLE: "Una imagen de stock no se publica sola: úsala dentro de una pieza.",
 }
 
 # ---------------------------------------------------------------------------
@@ -454,6 +464,10 @@ def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
             require_tenant_prefix(candidate.tenant_id, item.object_key)
         except TenantPrefixViolation:
             return _refuse(candidate, R.MEDIA_NOT_IN_R2, f"position {item.position}")
+        if is_stock_key(item.object_key):
+            # unreachable today (only `image_assets` rows are published): defence in depth
+            # should a route ever copy an input to its output
+            return _refuse(candidate, R.STOCK_NOT_PUBLISHABLE, f"position {item.position}")
         if not item.content_type:
             return _refuse(candidate, R.CONTENT_TYPE_MISSING, f"position {item.position}")
         if item.content_type not in _ALLOWED_CONTENT_TYPES[publisher_type]:

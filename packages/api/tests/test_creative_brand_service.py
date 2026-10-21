@@ -370,56 +370,101 @@ def test_the_database_refuses_a_second_active_voice(
 def test_the_voice_clone_is_one_per_brand_and_tenant_isolated(
     seeded: tuple[UUID, UUID, UUID, UUID, UUID],
 ) -> None:
-    from qualify_api.creative.voice_clone import COMPLETE, PROCESSING, VoiceCloneService
+    """Seed Speech since 2026-10-16 (migration 0067): the voice's id at its provider,
+    the consent sentence, the sample and demo in R2, and the first real synthesis."""
+    from qualify_api.creative.voice_clone import (
+        COMPLETE,
+        PROCESSING,
+        SEED_SPEECH,
+        VoiceCloneService,
+    )
 
     tenant_a, _, user_a, tenant_b, _ = seeded
     brand = _fresh_brand(tenant_a)
     clones = VoiceCloneService()
     assert clones.current(tenant_id=tenant_a, brand_id=brand) is None
 
+    sample = f"t/{tenant_a}/brand/{brand}/voice/sample-qlf-1.wav"
     assert (
         clones.record(
             tenant_id=tenant_a,
             brand_id=brand,
-            heygen_voice_id="vc_1",
+            voice_id="qlf-1",
             name="Voz",
             consent_by=user_a,
+            consent_text="Es mi voz.",
+            language="es-MX",
+            sample_object_key=sample,
         )
         is None
     )
     clone = clones.current(tenant_id=tenant_a, brand_id=brand)
     assert clone is not None and clone.status == PROCESSING and not clone.is_ready
+    assert (clone.provider, clone.voice_id, clone.language) == (SEED_SPEECH, "qlf-1", "es-MX")
+    assert clone.sample_object_key == sample and clone.activated_at is None
 
+    demo = f"t/{tenant_a}/brand/{brand}/voice/demo-qlf-1.mp3"
     done = clones.update_status(
         tenant_id=tenant_a,
         brand_id=brand,
-        heygen_voice_id="vc_1",
+        voice_id="qlf-1",
         status=COMPLETE,
-        gender="female",
-        preview_audio_url="https://files.heygen.ai/p.mp3",
+        preview_object_key=demo,
     )
-    assert done is not None and done.is_ready and done.gender == "female"
+    assert done is not None and done.is_ready and done.preview_object_key == demo
 
-    # a new clone replaces it and hands back the old HeyGen id to delete there
+    # the first real synthesis stamps it, once
+    clones.mark_activated(tenant_id=tenant_a, brand_id=brand, voice_id="qlf-1")
+    first = clones.current(tenant_id=tenant_a, brand_id=brand)
+    assert first is not None and first.activated_at is not None
+    clones.mark_activated(tenant_id=tenant_a, brand_id=brand, voice_id="qlf-1")
+    again = clones.current(tenant_id=tenant_a, brand_id=brand)
+    assert again is not None and again.activated_at == first.activated_at
+
+    # a new clone replaces it and hands back the old id (Seed Speech has no delete API:
+    # the caller only logs it)
     assert (
         clones.record(
             tenant_id=tenant_a,
             brand_id=brand,
-            heygen_voice_id="vc_2",
+            voice_id="qlf-2",
             name="Voz",
             consent_by=user_a,
+            consent_text="Es mi voz.",
         )
-        == "vc_1"
+        == "qlf-1"
     )
     # a late poll of the old clone changes nothing
     assert (
-        clones.update_status(
-            tenant_id=tenant_a, brand_id=brand, heygen_voice_id="vc_1", status=COMPLETE
-        )
+        clones.update_status(tenant_id=tenant_a, brand_id=brand, voice_id="qlf-1", status=COMPLETE)
         is None
     )
     current = clones.current(tenant_id=tenant_a, brand_id=brand)
-    assert current is not None and current.heygen_voice_id == "vc_2"
-    assert current.status == PROCESSING and current.gender == ""
+    assert current is not None and current.voice_id == "qlf-2"
+    assert current.status == PROCESSING and current.activated_at is None
+    assert current.preview_object_key == "" and current.gender == ""
     # another tenant sees nothing
     assert clones.current(tenant_id=tenant_b, brand_id=brand) is None
+
+
+def test_a_heygen_clone_of_before_the_migration_reads_but_is_never_ready(
+    seeded: tuple[UUID, UUID, UUID, UUID, UUID],
+) -> None:
+    from qualify_api.creative.voice_clone import COMPLETE, HEYGEN, VoiceCloneService
+
+    tenant_a, _, user_a, _, _ = seeded
+    brand = _fresh_brand(tenant_a)
+    clones = VoiceCloneService()
+    clones.record(
+        tenant_id=tenant_a,
+        brand_id=brand,
+        voice_id="vc_old",
+        name="Voz",
+        consent_by=user_a,
+        consent_text="",
+        provider=HEYGEN,
+    )
+    clones.update_status(tenant_id=tenant_a, brand_id=brand, voice_id="vc_old", status=COMPLETE)
+    old = clones.current(tenant_id=tenant_a, brand_id=brand)
+    assert old is not None and old.provider == HEYGEN and old.status == COMPLETE
+    assert not old.is_ready  # HeyGen is retired: it cannot read a script anywhere

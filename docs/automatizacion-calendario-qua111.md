@@ -77,6 +77,12 @@ Leer o escribir el latido nunca lanza: si Redis falla, el tick sigue y la pantal
 
 **Caída y reinicio:** el primer tick corre al arrancar. Un evento vencido sigue vencido (`scheduled_at <= now`) y se ejecuta en ese tick. Un evento en `publishing` se reanuda o se avanza. Si el intento ya existía, se vuelve a enlazar por su clave de idempotencia y nunca se envía dos veces. Lo cubre el test `test_a_worker_restart_mid_publication_resumes_without_publishing_twice`.
 
+### Enmienda 2026-10-21 — en producción el worker no corría (m-24828928)
+
+**Problema observado:** en PROD se aprobó y programó una publicación; llegó su hora y no salió. Es el mismo síntoma de la enmienda del 2026-09-29, ahora en el servidor: en `deploy/docker-compose.prod.yml` el worker embebido de `reflex` está forzado a `off` y el servicio `calendar-worker` estaba detrás del perfil `calendar-worker`, que **nunca se activó** en `.env.prod` (`COMPOSE_PROFILES=` vacío). Ningún proceso ejecutaba el tick.
+
+**Cambio:** `calendar-worker` deja de ser un perfil y queda **siempre activo**, como `whatsapp-worker` y `conversations-worker`. El argumento para el perfil era que un despliegue no debía empezar a publicar como efecto secundario, pero este worker sólo publica lo que una persona **aprobó y programó**, igual que los otros workers sólo envían lo que alguien aprobó. Un perfil que hay que acordarse de activar es lo que dejó el Planificador sin funcionar en producción. Al arrancar, el primer tick publica lo aprobado y vencido dentro de la ventana de 24 h (`rules.EXECUTION_WINDOW`); lo más viejo expira en lugar de salir tarde.
+
 ---
 
 ## 2. Cómo se ejecuta
@@ -84,7 +90,7 @@ Leer o escribir el latido nunca lanza: si Redis falla, el tick sigue y la pantal
 | Entorno | Comando | Alcance |
 |---|---|---|
 | Local / desarrollo | `just calendar-worker --tenant <uuid>` o `just calendar-tick --tenant <uuid>` | **Solo ese tenant.** Obligatorio en local: la base de desarrollo tiene tenants de prueba sobre los que un tick de producción actuaría |
-| Producción, proceso siempre vivo | `python -m qualify_api.planner.worker --all-tenants` bajo el supervisor del host (systemd, contenedor con reinicio, etc.) | Todos los tenants con trabajo |
+| Producción, proceso siempre vivo | `python -m qualify_api.planner.worker --all-tenants` en el servicio `calendar-worker` de `deploy/docker-compose.prod.yml`, **siempre activo** (antes era un perfil opcional; ver la enmienda 2026-10-21) | Todos los tenants con trabajo |
 | Producción con cron | `* * * * * python -m qualify_api.planner.worker --once --all-tenants` | Todos los tenants con trabajo |
 
 - **El alcance es obligatorio:** `--tenant <uuid>` (repetible) o `--all-tenants`. No hay un valor por defecto que signifique "todos".

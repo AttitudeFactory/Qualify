@@ -556,6 +556,9 @@ def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
         "media_posted_at": "datetime | None",
         "caption": "str | None",
         "permalink": "str | None",
+        # m-24789644 (B2): the media's surface and format — scalars about the media.
+        "media_product_type": "str | None",
+        "media_type": "str | None",
     }
 
 

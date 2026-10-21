@@ -260,6 +260,12 @@ def test_a_traversal_key_is_not_in_r2() -> None:
     assert _reason(_post(_image(object_key=f"t/{TENANT}/../x.jpg"))) is R.MEDIA_NOT_IN_R2
 
 
+def test_a_stock_file_is_never_published_as_is() -> None:
+    # stock plan §5.2: an input of a piece, never the piece (both licences)
+    stock = _image(object_key=f"t/{TENANT}/stock/pixabay/8434113/abcdef0123456789.jpg")
+    assert _reason(_post(stock)) is R.STOCK_NOT_PUBLISHABLE
+
+
 def test_a_null_content_type_is_not_publishable() -> None:
     assert _reason(_post(_image(content_type=None))) is R.CONTENT_TYPE_MISSING
 
@@ -491,3 +497,22 @@ def test_a_feed_image_outside_metas_range_is_refused_only_as_a_post() -> None:
     unknown = _post(_image())  # no recorded size: Meta is the one to say
     assert evaluate(replace(unknown, destination="post")).media_product_type == MEDIA_TYPE_IMAGE
     assert REASON_TEXT[R.IMAGE_RATIO_NOT_ALLOWED] and REASON_TEXT[R.DESTINATION_NOT_SUPPORTED]
+
+
+@pytest.mark.parametrize(
+    ("port", "media_type", "expected"),
+    [
+        ("square", "IMAGE", "IMAGE"),
+        ("feed-video", "VIDEO", "REELS"),
+        ("square-video", "VIDEO", "REELS"),
+        ("feed-video", "IMAGE", None),
+    ],
+)
+def test_the_template_v2_ports_publish_as_their_shape(
+    port: str, media_type: str, expected: str | None
+) -> None:
+    """promo_producto v2 (2026-10-13): the 1:1 still is a feed post, the 4:5 / 1:1 videos
+    are Reels — never an unknown port the planner refuses."""
+    from qualify_api.planner.publishable import _shape_product_type
+
+    assert _shape_product_type("plantilla", (media_type,), port) == expected

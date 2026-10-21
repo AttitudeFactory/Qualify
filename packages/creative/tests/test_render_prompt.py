@@ -136,6 +136,8 @@ KIT_MUTATIONS: tuple[dict[str, object], ...] = (
     {"cta_patterns": ("Pide el tuyo hoy",)},
     {"length_targets": LengthTargets(caption_min_chars=10, caption_max_chars=100)},
     {"palette_rgb": ("#FFAA00",)},
+    {"font_heading": "Baloo 2"},
+    {"font_body": "Nunito"},  # a kit with only the body face still names one
     {"logo_asset_key": "assets/logo.png"},
     {"template_asset_key": "assets/template.png"},
     {"reference_image_keys": ("assets/ref-1.jpg",)},
@@ -445,3 +447,59 @@ def test_a_video_says_what_is_on_screen() -> None:
 def test_a_creators_script_has_no_on_screen_line() -> None:
     suffix = render(brief=make_brief(kind=ContentKind.CREATOR_SCRIPT)).volatile_suffix
     assert "On screen:" not in suffix
+
+
+def test_datos_clave_reach_the_prompt_exactly_as_written() -> None:
+    """§ request 2026-10-14: the operator's facts (price, discount…) are in the
+    assignment, verbatim; a brief without any renders as before."""
+    with_facts = render(
+        brief=make_brief(
+            constraints=BriefConstraints(highlights=(("precio", "$18.900"), ("descuento", "20 %")))
+        )
+    )
+    text = with_facts.stable_prefix + with_facts.volatile_suffix
+    assert '{"precio": "$18.900", "descuento": "20 %"}' in text  # as JSON
+    assert "never change, round or invent" in text
+    plain = render(brief=make_brief())
+    assert "Key facts" not in plain.stable_prefix + plain.volatile_suffix
+
+
+@pytest.mark.parametrize(
+    ("heading", "body", "typeface"),
+    [
+        ("Baloo 2", "Baloo 2", "Baloo 2"),  # today's Brand Kit: one face, in both columns
+        ("Baloo 2", "Nunito", "Baloo 2"),  # a kit saved when it asked two: its headline face
+        ("", "Nunito", "Nunito"),
+        ("   ", "Nunito", "Nunito"),  # blank is not declared
+        ("  Baloo \n  2 ", "", "Baloo 2"),  # one line, single-spaced
+        ("F" * 500, "", "F" * 60),  # the kit stores no cap; the prompt does
+        ("", "", ""),
+    ],
+)
+def test_the_kit_names_one_typeface(heading: str, body: str, typeface: str) -> None:
+    """§ request 2026-10-21: the Brand Kit accepts ONE type face now; older kits hold
+    two, and the prompts take the headline one."""
+    assert make_kit(font_heading=heading, font_body=body).typeface == typeface
+
+
+def test_the_brand_typeface_is_part_of_the_visual_identity() -> None:
+    """§ request 2026-10-21: the Brand Kit's type face reaches the copy prompt, beside the
+    palette; an undeclared face reads «(none)», like every other empty field."""
+    kit = make_kit(font_heading="Baloo 2", font_body="Nunito")
+    prefix = render(kit=kit).stable_prefix
+    assert "Typeface: Baloo 2\n" in prefix and "Nunito" not in prefix
+    assert prefix.index("Palette (RGB):") < prefix.index("Typeface:") < prefix.index("Logo:")
+    assert "Typeface: (none)\n" in render().stable_prefix
+
+
+def test_a_clip_copy_writes_its_story_in_three_shots() -> None:
+    """§ request 2026-10-14: the clip tells a story — the copy writes it, on its own
+    hook: three shots (hook, development, payoff) the video prompt then follows."""
+    from qualify_creative.enums import ContentKind
+
+    rendered = render(
+        brief=make_brief(kind=ContentKind.CLIP, format=ContentKind.CLIP.default_format)
+    )
+    text = rendered.stable_prefix + rendered.volatile_suffix
+    assert "exactly 3 objects" in text and "the hook, the development, the payoff" in text
+    assert "tells a story" in text

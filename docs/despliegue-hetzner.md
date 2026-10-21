@@ -1,5 +1,7 @@
 # Despliegue de Qualify en Hetzner — `qualify.attitudefactory.co`
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Estado:** `[LISTO PARA EJECUTAR 2026-10-05]` — el repo ya es desplegable; lo que falta lo hace el fundador (crear el servidor, el registro DNS, el `.env.prod` y los ajustes de Meta). Cierra la bifurcación de host de [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-subdominio.md) §4: **Hetzner**.
 **Para qué:** que Meta App Review tenga una URL pública estable donde iniciar sesión, y que el callback OAuth de Meta tenga un redirect URI fijo (`https://qualify.attitudefactory.co/api/connections/callback`) en vez del túnel `cloudflared` efímero.
 **Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, `deploy/bootstrap-claude.sh` + `deploy/claude-server.md` (§13), y las recetas `just deploy*`.
@@ -24,7 +26,8 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
 
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
   paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles + registro de la app de Meta)
-  opcionales (perfil, apagados):         calendar-worker (PUBLICA DE VERDAD) · render (Remotion)
+  workers siempre activos:               webhook-worker · whatsapp-worker · conversations-worker · calendar-worker (PUBLICA DE VERDAD lo aprobado y programado)
+  opcionales (perfil, apagados):         render (Remotion)
 ```
 
 | Ruta | Destino | Qué es |
@@ -158,7 +161,7 @@ Qué hace `deploy/deploy.sh deploy`:
 3. `docker compose run --rm migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod` + `python -m qualify_api.connections.platform_app`, que registra `QUALIFY_META_APP_ID` en `platform_apps` de forma idempotente; levanta `postgres` antes) y, **sólo si terminó bien**, `docker compose up -d`. `migrate` es un paso explícito con perfil propio, no una dependencia de `api`/`reflex`. Un deploy sin cambios de imagen no recrea ningún contenedor, así que no hay ventana de 502. Mientras `migrate` corre, el release anterior sigue atendiendo, igual que antes de este cambio. Por eso toda migración tiene que ser compatible con el código anterior (expandir → contraer en dos deploys, §7). Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
 4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **303** hacia `/connections?connect=invalid_state` (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
 
-Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/signup`, o por consola:
+Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/registro` (antes `/signup`, que sigue sirviendo), o por consola:
 
 ```bash
 ssh -t deploy@<IP> 'cd /opt/qualify/current && docker compose --env-file /opt/qualify/.env.prod \
@@ -236,7 +239,7 @@ Montaje (una vez):
    | `QUALIFY_DEPLOY_SSH_KNOWN_HOSTS` | salida de `ssh-keyscan -t ed25519 <IP>`, después de comparar su huella con `ssh deploy@<IP> ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` |
 
 6. **Primer deploy manual:** *Actions → deploy → Run workflow* (ref `main`). Debe terminar con los tres chequeos `ok` en el servidor y el smoke externo en verde.
-7. **Aviso en `#devops` (Zoho Cliq):** el job `notify` publica en `#devops` el resultado de cada deploy intentado (✅/❌, en qué etapa falló, commit y link a la corrida). Para activarlo, en Cliq: *perfil → Bots & Tools → Webhook Tokens → Generate New Token*. En GitHub, secreto `CLIQ_DEVOPS_WEBHOOK_URL` = `https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>`. Sin el secreto el job sólo deja un aviso, y un fallo de Cliq nunca falla el deploy.
+7. **Aviso en el grupo `Qualify-devs` (Lark):** el job `notify` publica una tarjeta por cada deploy intentado (`.github/scripts/deploy_notify.py`): resultado (✅/❌ y en qué etapa), commit con su PR y autor, quién lo disparó (merge, manual o diario), acción (deploy/rollback), duración de `resolve` → `images` → `deploy` con el paso que falló, y botones a la corrida y a la app. Solo habla Lark (bot personalizado; ya no hay respaldo de Cliq). Para activarlo: en Lark, grupo *Qualify-devs → ⚙ Configuración → Bots → Añadir bot → Bot personalizado*, nombre «Qualify deploy»; en *Configuración de seguridad* marcar **Palabras clave personalizadas** = `Deploy` (todos los títulos la llevan) o **Verificación de firma** y copiar el secreto; copiar la URL del webhook. En GitHub, secreto `DEVOPS_WEBHOOK_URL` = `https://open.larksuite.com/open-apis/bot/v2/hook/<token>` y, si se eligió firma, `DEVOPS_WEBHOOK_SECRET`. Sin `DEVOPS_WEBHOOK_URL` el job sólo deja un aviso; un fallo o rechazo de Lark (responde 200 con `code ≠ 0`) deja un *warning* y nunca falla el deploy. El secreto `CLIQ_DEVOPS_WEBHOOK_URL` ya no se lee: borrarlo.
 8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY`. Con `merge` (o `true`) despliega cada push a `main`, es decir, cada merge. Con `daily` despliega una vez al día (07:23 UTC), solo si `main` cambió. Con cualquier otro valor no despliega solo. Comandos y calendario en el README, sección «Operación en producción».
 
 Operación:
@@ -251,7 +254,7 @@ Operación:
 
 Límites:
 - **Perfil `render`:** el CD se niega si `COMPOSE_PROFILES` incluye `render`, porque su imagen todavía no se publica (punto 6 del plan). Mientras tanto, ese caso se despliega con `just deploy`.
-- **`calendar-worker`:** el CD no lo toca. Los perfiles salen sólo de `.env.prod`.
+- **`calendar-worker`:** siempre activo desde 2026-10-21 (m-24828928); cada despliegue lo recrea como a los demás workers. Los perfiles (hoy sólo `render`) salen sólo de `.env.prod`.
 
 ## 8. Respaldos de Postgres
 
@@ -295,7 +298,7 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 2. *App settings → Basic → App Domains*: `qualify.attitudefactory.co` (y `attitudefactory.co`).
 3. *App settings → Basic → Add platform → Website → Site URL*: `https://qualify.attitudefactory.co/`.
 4. En la misma página: Privacy Policy URL y User Data Deletion (URL de instrucciones) — App Review los exige; deben ser páginas públicas (pueden vivir en `attitudefactory.co`).
-5. Para los revisores de App Review: crear un usuario de prueba con `/signup` y darles esas credenciales en las instrucciones de la revisión.
+5. Para los revisores de App Review: crear un usuario de prueba con `/registro` y darles esas credenciales en las instrucciones de la revisión.
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
 
@@ -347,7 +350,8 @@ Luego actualizar [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-sub
 
 Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`.
 
-- **`calendar-worker`** — el ejecutor del Planificador (QUA-111). **Publica de verdad** en las cuentas conectadas. En el servicio `reflex` el worker embebido está **forzado a `off`**, así que sin este perfil nada programado sale. Alcance por defecto `--all-tenants`; para limitarlo: `QUALIFY_CALENDAR_WORKER_SCOPE=--tenant=<uuid>`. Nota: la pantalla del Planificador informa el estado del worker *embebido* (apagado) aunque este servicio esté corriendo.
+> **`calendar-worker` ya no es opcional (2026-10-21, m-24828928).** Era un perfil que nunca se activó en el servidor, y como el worker embebido de `reflex` está **forzado a `off`**, ninguna publicación programada salía en producción. Ahora es un servicio siempre activo, como `whatsapp-worker`: el ejecutor del Planificador (QUA-111) **publica de verdad**, pero sólo lo que una persona aprobó y programó. Al arrancar, su primer tick publica lo aprobado y vencido que siga dentro de la ventana de 24 h (`EXECUTION_WINDOW`); lo más viejo expira. Alcance por defecto `--all-tenants`; para limitarlo: `QUALIFY_CALENDAR_WORKER_SCOPE=--tenant=<uuid>`. Cada tick deja un latido en Redis que el Planificador lee (QUA-118), así que la pantalla muestra el servicio como disponible.
+
 - **`render`** — servicio Remotion (Node + Chromium headless) para el generador por plantillas. Pide ~1 GB de RAM al renderizar: en un CX23 hay riesgo de quedarse sin memoria; usar CX33. Sin él, el generador por plantillas falla con error claro; el resto de la app no se entera.
 
 ## 11. Pendientes conocidos (no bloquean el despliegue)
@@ -385,7 +389,7 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | Puertos publicados | Sólo Caddy; `postgres`/`redis`/`api`/`reflex` sin puertos en el host |
 | Falta `QUALIFY_DEV_FERNET_KEY` | `docker compose` se niega a arrancar (error de interpolación) |
 | Worker embebido en `reflex` | Log `calendar.embedded.off` |
-| Perfil `calendar-worker` | Arranca `--all-tenants`, primer tick `tenants=0` |
+| `calendar-worker` | Arranca `--all-tenants`, primer tick `tenants=0` |
 | `backup-db.sh` + restauración de §8 | Dump + globals escritos; `DROP/CREATE DATABASE` + `pg_restore` recupera una fila testigo, `alembic_version = 0040` y las 48 políticas RLS |
 | `caddy validate` con el dominio real | `Valid configuration` |
 | Contraseñas crudas de BD dentro de `api`/`reflex` | Vacías (sólo llegan los DSN por rol; la del dueño superusuario no la tiene ningún proceso que sirve tráfico) |

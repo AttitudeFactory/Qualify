@@ -15,6 +15,11 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 from qualify_creative.adapters.byteplus_ark import MAX_PROMPT_CHARS
+from qualify_creative.adapters.byteplus_speech import (
+    CLONE_RESOURCE,
+    PUBLIC_RESOURCE,
+    PUBLIC_SPANISH_VOICES,
+)
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
@@ -46,11 +51,15 @@ from qualify_creative.schemas import (
 from qualify_creative.video import FittedVideo
 
 from qualify_api.creative.media import (
+    AVATAR_NO_PUBLIC_URL,
+    AVATAR_SCRIPT_TOO_LONG,
+    FILTERED_TEXT,
     MediaProducer,
     ai_generated_media,
     ark_failure_text,
     generated_key,
 )
+from qualify_api.creative.voice_access import BrandVoiceResolver
 
 TENANT_ID = UUID("7e7e0000-0000-4000-8000-000000000011")
 BRAND_ID = UUID("7e7e0000-0000-4000-8000-000000000012")
@@ -199,7 +208,6 @@ def _producer(
         router=router,
         credentials=KeysByProvider(),
         pricing=pricing,
-        heygen=None,
         download=download,
         generated_ad_images=True,
     )
@@ -275,6 +283,32 @@ def test_an_old_flyer_without_ad_mode_is_still_seedream_imagery() -> None:
     assert slide.provider == "seedream" and slide.params["ad_mode"] == "product"
     assert slide.ai_generated is True
     assert ai_generated_media(outcome.media) is True
+
+
+def test_an_ad_without_photos_is_the_described_scene_alone() -> None:
+    """§ 2026-10-12: the product and the background are optional. With neither, Seedream
+    gets no reference image and is told to compose the scene from the words."""
+    store, seedream, draft_id = _store(), FakeSeedream(), uuid4()
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        ad_mode=AdImageMode.SCENE,
+        scene_prompt="Una hamburguesa sobre una mesa de madera, luz cálida",
+    )
+    outcome = _produce(_producer(store, seedream=seedream), brief, draft_id)
+
+    assert outcome.failure is None
+    (request,) = seedream.requests
+    assert request.params["images"] == []
+    prompt = str(request.params["prompt"])
+    assert "no reference images" in prompt
+    assert "Una hamburguesa sobre una mesa de madera" in prompt
+    (slide,) = outcome.media
+    assert slide.params["ad_mode"] == "scene" and slide.params["products"] == 0
+    assert slide.params["background"] is False and slide.ai_generated is True
+    # a brief stored without a mode and without photos is inferred as the scene alone
+    old = _brief(ContentKind.STATIC_FLYER, scene_prompt="Una hamburguesa")
+    outcome = _produce(_producer(store, seedream=FakeSeedream()), old, uuid4())
+    assert outcome.failure is None and outcome.media[0].params["ad_mode"] == "scene"
 
 
 def test_a_product_only_ad_does_not_send_the_background() -> None:
@@ -512,7 +546,7 @@ def test_a_seedance_brief_needs_no_voice_but_a_described_presenter() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("ArkAPIError: HTTP 404 ModelNotOpen: x", "no está disponible ahora mismo"),
+        ("ArkAPIError: HTTP 404 ModelNotOpen: x", "no está activado todavía"),
         ("HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation", "personas reales"),
         ("HTTP 400 OutputVideoSensitiveContentDetected", "filtro de contenido"),
         ("HTTP 403 AccountOverdueError", "no está disponible ahora mismo"),
@@ -637,8 +671,11 @@ class FakeFitter:
         size: tuple[int, int],
         overlay: bytes | None = None,
         max_seconds: float = 60.0,
+        keep_audio: bool = False,
     ) -> FittedVideo:
-        self.calls.append({"data": data, "size": size, "overlay": overlay})
+        self.calls.append(
+            {"data": data, "size": size, "overlay": overlay, "keep_audio": keep_audio}
+        )
         return FittedVideo(
             data=b"fitted-" + data,
             width=size[0],
@@ -646,6 +683,46 @@ class FakeFitter:
             duration_sec=5.0,
             poster=_image((1, 2, 3), size),
         )
+
+    def animate_still(
+        self, image: bytes, *, size: tuple[int, int], seconds: float = 6.0
+    ) -> FittedVideo:
+        self.calls.append({"still": image, "size": size, "seconds": seconds})
+        return FittedVideo(
+            data=b"animated-still",
+            width=size[0],
+            height=size[1],
+            duration_sec=seconds,
+            poster=image,
+        )
+
+
+def test_an_ad_image_as_a_reel_is_its_composed_image_animated() -> None:
+    """§ 2026-10-13: Instagram publishes only a video as a Reel, so the ad image in the
+    Reel format is the composed 9:16 image (words and logo on it) animated — one
+    Seedream call, never a second generation."""
+    store, seedream, fitter, draft_id = _store(), FakeSeedream(), FakeFitter(), uuid4()
+    producer = _producer(store, seedream=seedream)
+    producer._fitter = fitter
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        ContentFormat.REELS_9_16,
+        ad_mode=AdImageMode.SCENE,
+        scene_prompt="Una hamburguesa sobre una mesa de madera",
+    )
+    outcome = _produce(producer, brief, draft_id)
+
+    assert outcome.failure is None and len(seedream.requests) == 1
+    assert seedream.requests[0].params["size"] == "1440x2560"  # the 9:16 scene
+    (call,) = fitter.calls
+    assert call["size"] == (1080, 1920) and call["still"][:3] == b"\x89PN"  # the composed PNG
+    (reel,) = outcome.media
+    assert reel.media_type == "video" and reel.content_type == "video/mp4"
+    assert reel.media_url == generated_key(TENANT_ID, draft_id, "reel.mp4")
+    assert store.files[reel.media_url] == b"animated-still"
+    assert reel.params["animated_still"] is True and reel.params["duration_seconds"] == 6.0
+    assert reel.params["thumbnail_key"].endswith("reel-poster.jpg")
+    assert reel.ai_generated is True and brief.requires_ai_disclosure
 
 
 def _carousel_producer(
@@ -793,3 +870,439 @@ def test_a_carousel_key_outside_the_tenant_is_refused_before_any_read() -> None:
         _carousel_producer(_store(), FakeSeedream(), FakeSeedance(), FakeFitter()), brief, uuid4()
     )
     assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+
+
+# -- a «Video de stock» gallery slide (§ request 2026-10-16) -------------------------------
+
+STOCK_VIDEO = f"t/{TENANT_ID}/stock/pixabay/video-199545/abcdef0123456789.mp4"
+
+
+def test_a_stock_slide_is_fitted_with_the_words_and_logo_and_costs_nothing() -> None:
+    store, seedream, seedance, fitter = (
+        _carousel_store(),
+        FakeSeedream(),
+        FakeSeedance(),
+        FakeFitter(),
+    )
+    store.files[STOCK_VIDEO] = b"stock-bytes"
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.STOCK, object_key=STOCK_VIDEO, text=SlideText.HOOK),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=PIECE_IMAGE),
+        ),
+    )
+    draft_id = uuid4()
+    outcome = _produce(_carousel_producer(store, seedream, seedance, fitter), brief, draft_id)
+
+    assert outcome.failure is None
+    stock, _ = outcome.media
+    (call,) = fitter.calls
+    # never as it is: the slide's words are laid over every frame
+    assert call["data"] == b"stock-bytes" and call["overlay"] is not None
+    assert stock.media_type == "video" and str(draft_id) in stock.object_key
+    assert stock.params["source"] == "stock" and stock.params["from_key"] == STOCK_VIDEO
+    assert stock.ai_generated is False and stock.params["thumbnail_key"]
+    # composed here: no model, nothing paid
+    assert seedream.requests == [] and seedance.requests == [] and outcome.usage == ()
+
+
+def test_a_stock_slide_whose_video_is_gone_fails_before_anything_is_paid() -> None:
+    store, seedream, seedance, fitter = (
+        _carousel_store(),
+        FakeSeedream(),
+        FakeSeedance(),
+        FakeFitter(),
+    )
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        product_keys=(f"uploads/{TENANT_ID}/p1.jpg",),
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED, product_index=0, text=SlideText.HOOK),
+            CarouselSlide(source=SlideSource.STOCK, object_key=STOCK_VIDEO, text=SlideText.CTA),
+        ),
+    )
+    outcome = _produce(_carousel_producer(store, seedream, seedance, fitter), brief, uuid4())
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert "video de stock de la diapositiva 2" in outcome.detail
+    assert seedream.requests == [] and outcome.usage == ()
+
+
+def test_a_stock_slide_always_carries_words_and_only_a_stock_video() -> None:
+    from qualify_api.stock.guard import MISPLACED_TEXT, stock_problems
+
+    with pytest.raises(ValueError):
+        CarouselSlide(source=SlideSource.STOCK, object_key=STOCK_VIDEO)  # no words
+    with pytest.raises(ValueError):
+        CarouselSlide(source=SlideSource.STOCK, text=SlideText.HOOK)  # no video
+    not_stock = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.STOCK, object_key=PIECE_VIDEO, text=SlideText.CTA),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=PIECE_IMAGE),
+        ),
+    )
+    assert stock_problems(not_stock) == MISPLACED_TEXT
+    # a stock file reused «as it is» would be published standalone
+    as_is = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.EXISTING, object_key=STOCK_VIDEO),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=PIECE_IMAGE),
+        ),
+    )
+    assert stock_problems(as_is) == MISPLACED_TEXT
+    fine = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.STOCK, object_key=STOCK_VIDEO, text=SlideText.CTA),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=PIECE_IMAGE),
+        ),
+    )
+    assert stock_problems(fine) is None
+
+
+# --------------------------------------------------------------------------------------
+# The talking presenter over ByteDance (§ request 2026-10-16, HeyGen retired): Seedream
+# composes the presenter, Seed Speech reads the script in the chosen voice and OmniHuman
+# makes the presenter say it, lips in sync.
+# --------------------------------------------------------------------------------------
+
+PUBLIC_VOICE = PUBLIC_SPANISH_VOICES[0]["id"]
+
+
+class FakeSpeech:
+    name = "seed_speech"
+    supports = frozenset({GenerationTask.VOICEOVER})
+
+    def __init__(self) -> None:
+        self.requests: list[GenerationRequest] = []
+
+    def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
+        self.requests.append(request)
+        return GenerationResult(
+            payload=b"ID3-mp3-bytes",
+            model_id=str(request.params["resource_id"]),
+            provider="seed_speech",
+            usage=Usage(pieces=1, input_tokens=len(str(request.params["text"]))),
+        )
+
+    def estimate_cost_usd(self, request: GenerationRequest, pricing: Any, **_: Any) -> Decimal:
+        return Decimal("0.01")
+
+
+class FakeOmniHuman:
+    name = "omnihuman"
+    supports = frozenset({GenerationTask.AVATAR_VIDEO})
+
+    def __init__(self, *, fail: str | None = None) -> None:
+        self.requests: list[GenerationRequest] = []
+        self.fail = fail
+
+    def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
+        self.requests.append(request)
+        if self.fail:
+            raise RuntimeError(self.fail)
+        return GenerationResult(
+            payload={
+                "task_id": "7392",
+                "req_key": "realman_avatar_picture_omni15_cv",
+                "resolution": 720,
+            },
+            model_id="omnihuman-1-5",
+            provider="omnihuman",
+            usage=Usage(pieces=1, media_seconds=Decimal(str(request.params["audio_seconds"]))),
+            model_revision="realman_avatar_picture_omni15_cv",
+            media_url="https://cdn/omni.mp4",
+        )
+
+    def estimate_cost_usd(self, request: GenerationRequest, pricing: Any, **_: Any) -> Decimal:
+        return Decimal("1")
+
+
+class FakeLinks:
+    """The public-media token links OmniHuman fetches the photo and the voice from."""
+
+    def __init__(self) -> None:
+        self.served: list[tuple[str, str]] = []
+
+    def __call__(self, *, tenant_id: UUID, key: str, data: bytes, content_type: str) -> str:
+        self.served.append((key, content_type))
+        return f"https://qualify.test/public/{len(self.served)}"
+
+
+def _presenter(
+    store: MemoryStore,
+    *,
+    seedream: FakeSeedream | None = None,
+    speech: FakeSpeech | None = None,
+    omni: FakeOmniHuman | None = None,
+    links: FakeLinks | None = None,
+    clone: tuple[str, str, bool] | None = None,
+    max_seconds: float = 59.0,
+    activated: list[tuple[UUID, UUID, str]] | None = None,
+) -> MediaProducer:
+    pricing = JsonPricingTable("v5")
+    providers: dict[str, Any] = {
+        vendor.name: vendor for vendor in (seedream, speech, omni) if vendor is not None
+    }
+    router = CreativeRouter(providers, pricing, KeysByProvider())
+
+    def stamp(tenant_id: UUID, brand_id: UUID, voice: str) -> None:
+        if activated is not None:
+            activated.append((tenant_id, brand_id, voice))
+
+    return MediaProducer(
+        store=store,
+        router=router,
+        credentials=KeysByProvider(),
+        pricing=pricing,
+        download=lambda url: b"omni-mp4",
+        voices=BrandVoiceResolver(clone_lookup=lambda tenant_id, brand_id: clone),
+        on_brand_voice_used=stamp,
+        omnihuman_max_seconds=max_seconds,
+        reference_links=links,
+    )
+
+
+def _presenter_brief(**media: object) -> ContentBrief:
+    return _brief(
+        ContentKind.AVATAR_VIDEO,
+        video_engine=VideoEngine.OMNIHUMAN,
+        avatar_source=AvatarSource.AI,
+        avatar_prompt="Mujer latina de unos 30 años, sonriente",
+        **media,
+    )
+
+
+def test_the_presenter_is_composed_voiced_and_animated_with_a_public_voice() -> None:
+    store, seedream, speech, omni, links = (
+        _store(),
+        FakeSeedream(),
+        FakeSpeech(),
+        FakeOmniHuman(),
+        FakeLinks(),
+    )
+    draft_id = uuid4()
+    product = f"uploads/{TENANT_ID}/p1.jpg"
+    outcome = _produce(
+        _presenter(store, seedream=seedream, speech=speech, omni=omni, links=links),
+        _presenter_brief(voice_id=PUBLIC_VOICE, product_keys=(product,)),
+        draft_id,
+    )
+    assert outcome.failure is None, outcome.detail
+    # 1. Seedream composes the presenter, the product as a reference
+    (scene,) = seedream.requests
+    assert len(scene.params["images"]) == 1
+    # 2. Seed Speech reads the exact script in the public voice
+    (voice,) = speech.requests
+    assert voice.params["text"] == COPY.script
+    assert voice.params["speaker"] == PUBLIC_VOICE
+    assert voice.params["resource_id"] == PUBLIC_RESOURCE
+    # 3. OmniHuman gets the photo and the voice as public https links
+    (render,) = omni.requests
+    assert render.params["image_url"].startswith("https://")
+    assert render.params["audio_url"].startswith("https://")
+    assert [content_type for _, content_type in links.served] == ["image/jpeg", "audio/mpeg"]
+    assert render.params["resolution"] == 720 and render.params["audio_seconds"] > 0
+
+    (video,) = outcome.media
+    assert video.media_type == "video" and video.ai_generated and video.provider == "omnihuman"
+    assert store.files[video.object_key] == b"omni-mp4"
+    assert video.params["voice"] == "public" and video.params["voice_id"] == PUBLIC_VOICE
+    assert video.params["thumbnail_key"] == generated_key(TENANT_ID, draft_id, "presenter.jpg")
+    assert store.files[generated_key(TENANT_ID, draft_id, "voice.mp3")] == b"ID3-mp3-bytes"
+    assert [(u.provider, u.unit) for u in outcome.usage] == [
+        ("seedream", "piece"),
+        ("seed_speech", "character"),
+        ("omnihuman", "second"),
+    ]
+    # the real v5 rate: USD 30 per million characters
+    expected = Decimal(len(COPY.script)) * Decimal(30) / Decimal(1_000_000)
+    assert outcome.usage[1].cost_usd == expected.quantize(Decimal("0.000001"))
+
+
+def test_the_brands_own_voice_is_resolved_server_side_and_stamped() -> None:
+    speech, activated = FakeSpeech(), []
+    outcome = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=speech,
+            omni=FakeOmniHuman(),
+            links=FakeLinks(),
+            clone=("qlf-abc", "es-MX", True),
+            activated=activated,
+        ),
+        _presenter_brief(voice_id="brand"),
+        uuid4(),
+    )
+    assert outcome.failure is None, outcome.detail
+    params = speech.requests[0].params
+    assert params["speaker"] == "qlf-abc" and params["resource_id"] == CLONE_RESOURCE
+    assert params["language"] == "es-mx"
+    assert activated == [(TENANT_ID, BRAND_ID, "qlf-abc")]
+    assert outcome.media[0].params["voice"] == "brand"
+    assert outcome.media[0].params["voice_id"] is None  # the clone's id is never exposed
+    # its first real synthesis: BytePlus charges the clone's USD 2 slot, recorded too
+    slot = [u for u in outcome.usage if u.model_id == "seed-icl-2.0-slot"]
+    assert [(u.provider, u.unit, u.quantity, u.cost_usd) for u in slot] == [
+        ("seed_speech", "piece", 1, Decimal("2.00"))
+    ]
+
+
+def test_a_brand_voice_already_used_charges_no_slot_again() -> None:
+    outcome = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=FakeSpeech(),
+            omni=FakeOmniHuman(),
+            links=FakeLinks(),
+            clone=("qlf-abc", "es-MX", False),
+        ),
+        _presenter_brief(voice_id="brand"),
+        uuid4(),
+    )
+    assert outcome.failure is None
+    assert not any(u.model_id == "seed-icl-2.0-slot" for u in outcome.usage)
+
+
+@pytest.mark.parametrize(
+    ("voice_id", "clone", "words"),
+    [
+        ("brand", None, "no está lista"),  # never cloned, or not ready yet
+        ("qlf-another-brand", ("qlf-mine", "es", False), "no está disponible para esta marca"),
+        ("made-up", None, "no está disponible para esta marca"),
+    ],
+)
+def test_a_voice_the_brand_may_not_use_is_refused_before_any_spend(
+    voice_id: str, clone: tuple[str, str, bool] | None, words: str
+) -> None:
+    seedream, speech, omni = FakeSeedream(), FakeSpeech(), FakeOmniHuman()
+    outcome = _produce(
+        _presenter(
+            _store(), seedream=seedream, speech=speech, omni=omni, links=FakeLinks(), clone=clone
+        ),
+        _presenter_brief(voice_id=voice_id),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert words in outcome.detail
+    assert seedream.requests == speech.requests == omni.requests == []
+    assert outcome.usage == ()
+
+
+def test_without_a_public_url_the_presenter_fails_before_any_spend() -> None:
+    seedream = FakeSeedream()
+    outcome = _produce(
+        _presenter(_store(), seedream=seedream, speech=FakeSpeech(), omni=FakeOmniHuman()),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == AVATAR_NO_PUBLIC_URL
+    assert seedream.requests == [] and outcome.usage == ()
+
+
+def test_a_voice_track_too_long_for_omnihuman_stops_before_the_render() -> None:
+    omni = FakeOmniHuman()
+    outcome = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=FakeSpeech(),
+            omni=omni,
+            links=FakeLinks(),
+            max_seconds=1.0,
+        ),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == AVATAR_SCRIPT_TOO_LONG and omni.requests == []
+    # what was already made is billed: the presenter and the voice
+    assert [u.provider for u in outcome.usage] == ["seedream", "seed_speech"]
+
+
+def test_an_omnihuman_refusal_reads_as_the_content_filter() -> None:
+    outcome = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=FakeSpeech(),
+            omni=FakeOmniHuman(fail="OmniHumanError: OmniHuman answered HTTP 200 code 50510"),
+            links=FakeLinks(),
+        ),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.PROVIDER_ERROR.value
+    assert outcome.detail == FILTERED_TEXT
+    assert [u.provider for u in outcome.usage] == ["seedream", "seed_speech"]
+
+
+def test_an_animated_character_from_an_image_leads_the_references() -> None:
+    store, seedream = _store(), FakeSeedream()
+    character, product = f"uploads/{TENANT_ID}/mascota.png", f"uploads/{TENANT_ID}/p1.jpg"
+    outcome = _produce(
+        _presenter(
+            store, seedream=seedream, speech=FakeSpeech(), omni=FakeOmniHuman(), links=FakeLinks()
+        ),
+        _brief(
+            ContentKind.ANIMATED_AVATAR_VIDEO,
+            video_engine=VideoEngine.OMNIHUMAN,
+            voice_id=PUBLIC_VOICE,
+            avatar_source=AvatarSource.IMAGE,
+            avatar_image_key=character,
+            avatar_rights_confirmed=True,
+            product_keys=(product,),
+        ),
+        uuid4(),
+    )
+    assert outcome.failure is None, outcome.detail
+    (scene,) = seedream.requests
+    assert len(scene.params["images"]) == 2  # the character first, then the product
+    assert outcome.media[0].params["avatar_source"] == "image"
+
+
+class NotReadyLinks(FakeLinks):
+    """The production linker without a public base URL (a local run, no tunnel)."""
+
+    def ready(self) -> bool:
+        return False
+
+
+def test_without_a_reachable_public_url_nothing_is_paid_for() -> None:
+    seedream, speech, omni = FakeSeedream(), FakeSpeech(), FakeOmniHuman()
+    outcome = _produce(
+        _presenter(_store(), seedream=seedream, speech=speech, omni=omni, links=NotReadyLinks()),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    assert outcome.detail == AVATAR_NO_PUBLIC_URL
+    assert seedream.requests == speech.requests == omni.requests == []
+    assert outcome.usage == ()
+
+
+def test_an_omnihuman_timeout_still_records_the_render_it_will_bill() -> None:
+    outcome = _produce(
+        _presenter(
+            _store(),
+            seedream=FakeSeedream(),
+            speech=FakeSpeech(),
+            omni=FakeOmniHuman(fail="OmniHumanTimeout: task 7392 still rendering after 2400s"),
+            links=FakeLinks(),
+        ),
+        _presenter_brief(voice_id=PUBLIC_VOICE),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.PROVIDER_ERROR.value
+    assert "tardando" in outcome.detail
+    render = outcome.usage[-1]
+    assert (render.provider, render.model_id, render.unit) == (
+        "omnihuman",
+        "omnihuman-1-5",
+        "second",
+    )
+    assert render.cost_usd > 0

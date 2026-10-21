@@ -8,7 +8,9 @@ the brandboard's files and the wizards' own answers.
   `brand_kits.logo_asset_key` at the main logo.
 - **Details** (`brand_kit_details`): `logo_brief`, `connect` and `profile`, each a JSON
   document. `save_details` writes only the documents it is given, so a screen that
-  never saw the connect flow (the manual wizard) cannot erase what it saved."""
+  never saw the connect flow (the manual wizard) cannot erase what it saved.
+- **Avatar** (`load_avatar` / `save_avatar`): the generated brand avatar's record, a
+  reserved key inside `logo_brief` that the wizards' saves carry over untouched."""
 
 from __future__ import annotations
 
@@ -42,6 +44,27 @@ MAIN_LOGO_ORDER: tuple[tuple[str, str], ...] = (
     (LOGO_VERSION, "isotipo"),
 )
 DETAIL_DOCUMENTS = ("logo_brief", "connect", "profile")
+#: The brand's generated avatar (`creative.brand_avatar`, docs/brand-kit-avatar-animado.md):
+#: its record rides as ONE reserved key of the `logo_brief` document — the brand's image,
+#: next to the logo it is drawn from — so no migration is needed. The wizards rewrite
+#: `logo_brief` whole on every save, which is why `save_details` carries this key over.
+AVATAR_DOCUMENT = "logo_brief"
+AVATAR_KEY = "brand_avatar"
+#: Keys a document keeps across `save_details` unless the caller writes them itself:
+#: they are written by another path (a background generation), not by the wizards.
+RESERVED_DETAIL_KEYS: dict[str, tuple[str, ...]] = {AVATAR_DOCUMENT: (AVATAR_KEY,)}
+
+
+def carry_reserved(
+    name: str, stored: Mapping[str, Any] | None, document: Mapping[str, Any]
+) -> dict[str, Any]:
+    """`document` as it will be written over `stored`: every reserved key of `name` the
+    caller did not send keeps its stored value."""
+    out = dict(document)
+    for key in RESERVED_DETAIL_KEYS.get(name, ()):
+        if key not in out and stored and key in stored:
+            out[key] = stored[key]
+    return out
 
 
 @dataclass(frozen=True)
@@ -178,7 +201,40 @@ class BrandKitStore:
                 )
                 session.add(row)
             for name, document in documents.items():
-                setattr(row, name, dict(document))
+                setattr(row, name, carry_reserved(name, getattr(row, name), document))
             row.updated_by = user_id
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+
+    def load_avatar(self, *, tenant_id: UUID, brand_id: UUID) -> dict[str, Any] | None:
+        """The brand avatar's stored record (`creative.brand_avatar.BrandAvatar`), or None."""
+        with tenant_session(tenant_id) as session:
+            row = session.get(DetailsRow, brand_id)
+            record = (getattr(row, AVATAR_DOCUMENT) or {}).get(AVATAR_KEY) if row else None
+            return dict(record) if isinstance(record, dict) else None
+
+    def save_avatar(
+        self, *, tenant_id: UUID, brand_id: UUID, record: Mapping[str, Any] | None
+    ) -> None:
+        """Write (or, with None, drop) the avatar's record; the rest of its document stays."""
+        if record is not None and record.get("object_key"):
+            require_tenant_prefix(tenant_id, str(record["object_key"]))
+        with tenant_session(tenant_id) as session:
+            row = session.get(DetailsRow, brand_id)
+            if row is None:
+                row = DetailsRow(
+                    brand_id=brand_id,
+                    tenant_id=tenant_id,
+                    logo_brief={},
+                    connect={},
+                    profile={},
+                )
+                session.add(row)
+            document = {
+                k: v for k, v in (getattr(row, AVATAR_DOCUMENT) or {}).items() if k != AVATAR_KEY
+            }
+            if record is not None:
+                document[AVATAR_KEY] = dict(record)
+            setattr(row, AVATAR_DOCUMENT, document)
             row.updated_at = datetime.now(UTC)
             session.flush()

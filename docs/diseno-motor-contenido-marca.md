@@ -1,5 +1,7 @@
 # Diseño técnico — Motor de Contenido de Marca (MVP)
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Fecha:** 2026-08-16 · **Estado:** `[DISEÑO — para revisión antes de codear]`
 **Backlog que implementa:** [`docs/backlog-motor-contenido-marca.md`](backlog-motor-contenido-marca.md)
 **Decisión rectora:** [ADR 32](adr-32-motor-angulos-creativo.md) + el ADR 34 pendiente (`MC-00`)

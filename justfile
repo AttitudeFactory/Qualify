@@ -40,7 +40,7 @@ invite email name="" business="" note="":
         --name "{{name}}" --business "{{business}}" --note "{{note}}"
 
 # QUA-66: register a new business (assigns a tenant_id automatically) — same service
-# the /signup page uses. Prompts for the password. Example:
+# the /registro page uses. Prompts for the password. Example:
 #   just register-business "Polet Bubble Tea" hlrd1993+polet@gmail.com VE America/Caracas USD
 register-business name email country timezone currency:
     uv run python -m qualify_api.auth.provision register \
@@ -163,6 +163,13 @@ conversations-sync *args:
 conversations-seed *args:
     uv run --no-sync python -m qualify_api.conversations.devseed {{args}}
 
+# m-24789644 (R1): does Meta serve a story's comments? Read-only probe for one REAL
+# connection, with `story_comments` still off; prints a JSON report (no tokens, no comment
+# text). Steps and how to record the result: docs/conversaciones-limitaciones-meta.md.
+#   just story-probe --tenant <uuid> --connection <uuid>
+story-probe *args:
+    uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main
@@ -279,6 +286,67 @@ render-logs:
 # End-to-end smoke test against the running render service (uploads, renders, downloads).
 render-smoke base="http://127.0.0.1:3200":
     packages/render/scripts/smoke.sh {{base}}
+
+# --- Langfuse autoalojado (docs/plan-observabilidad-langfuse.md §3, etapa A) ----------
+# Its own compose project: `just down` never touches the traces. UI on http://localhost:3100.
+langfuse := "docker compose -f infra/langfuse/docker-compose.yml"
+
+# Writes infra/langfuse/.env with random secrets, the first user and the project keys.
+# Never overwrites an existing one (its secrets encrypt Langfuse's data).
+langfuse-init:
+    uv run --no-sync python infra/langfuse/init_env.py
+
+# Starts Langfuse and waits until its API answers.
+langfuse-up: langfuse-init
+    {{langfuse}} up -d --wait
+    for i in $(seq 1 90); do curl -fsS http://localhost:3100/api/public/health >/dev/null 2>&1 && { echo "Langfuse listo: http://localhost:3100"; exit 0; }; sleep 2; done; echo "Langfuse no respondió en 3 minutos: just langfuse-logs" >&2; exit 1
+
+# Stops Langfuse and KEEPS its data (no -v).
+langfuse-down:
+    {{langfuse}} down
+
+langfuse-logs *args:
+    {{langfuse}} logs -f {{args}}
+
+# Drops Langfuse's volumes: every trace, dataset and score. infra/langfuse/.env stays.
+langfuse-reset:
+    {{langfuse}} down -v
+
+# Score configs + the «Revisión de imagen y video» annotation queue (plan §8). Once per
+# Langfuse server; idempotent.
+langfuse-setup:
+    PYTHONUTF8=1 uv run --no-sync --env-file .env python -c "from qualify_api.creative.review import main; raise SystemExit(main())"
+
+# Model experiments in Langfuse (docs/plan-observabilidad-langfuse.md §7). They SPEND REAL
+# MONEY (Claude calls) and need `just langfuse-up`; never part of CI.
+# `just eval-copy --limit 3` is a pilot; `--configs opus-5.5@low` runs one config.
+eval-copy *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/copy_ai/run_experiment.py {{args}}
+
+eval-hashtags *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/hashtag_ai/run_experiment.py {{args}}
+
+# Fase 6 (plan §7): referentes (real labelled accounts), Brand Kit documents (fictional),
+# ad-image scenes (Seedream, images go to the review queue) and local Whisper (needs `ml`).
+eval-referentes *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/referentes_ai/run_experiment.py {{args}}
+
+eval-documentos *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/brief_ai/run_experiment.py {{args}}
+
+eval-escenas *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/run_experiment.py {{args}}
+
+# The scene images from Langfuse to packages/api/evals/scenes_ai/imagenes/ (git-ignored).
+eval-escenas-imagenes:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/export_images.py
+
+eval-voz *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
+
+# Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
+eval-voz-audio:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
 
 # --- Puerta de merge (infra/github/README.md) ---------------------------------------
 # Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:

@@ -7,8 +7,9 @@ counterpart, for someone watching the `reflex run` console while testing /create
 
 - the COPY prompt exactly as the Anthropic adapter sends it — the system block (the
   cached brand prefix) and the user message (this brief);
-- what goes to HeyGen (script, voice, avatar) and to the template engine (template and
-  the texts it will print) — the "prompt" of a media call;
+- what goes to the media vendors (Seedream's scene, Seed Speech's script and voice,
+  OmniHuman's gestures) and to the template engine (template and the texts it will
+  print) — the "prompt" of a media call;
 - the spend: every vendor call with its tokens/units and cost, the total of the draft
   and what is left of the monthly budget.
 
@@ -103,8 +104,8 @@ def prompt_unavailable(*, kind: str, missing: tuple[str, ...]) -> None:
 
 
 def media_request(*, draft_id: UUID, provider: str, what: str, fields: Mapping[str, Any]) -> None:
-    """What a media call sends: HeyGen's script/voice/avatar, a prompt avatar's
-    description, the template engine's props. Asset ids and keys are left out."""
+    """What a media call sends: the presenter's script and voice, a scene's prompt, the
+    template engine's props. Asset ids and keys are left out."""
     lines = [_RULE, f"PROMPT → {provider} ({what})  draft={draft_id}", _RULE]
     for name, value in fields.items():
         if value in (None, "", (), [], {}):

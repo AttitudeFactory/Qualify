@@ -11,6 +11,7 @@ GENERATED with variants persisted → approve → `approved_creative` returns th
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -49,12 +50,24 @@ from qualify_api.creative.fsm import (
     GENERATED,
     InvalidTransition,
 )
-from qualify_api.creative.media import MediaOutcome, MediaUsage, MediaWrite
+from qualify_api.creative.media import (
+    PRICE_NOT_PRINTED,
+    PRICE_NOT_PRINTED_TEXT,
+    MediaOutcome,
+    MediaUsage,
+    MediaWarning,
+    MediaWrite,
+)
 from qualify_api.creative.service import (
+    COMPOSITION_WARNINGS_PARAM,
+    ApprovalBlocked,
     BrandNotReady,
     BudgetState,
     ContentService,
+    DraftBundle,
     DraftRecord,
+    DraftWarning,
+    DuplicateDraftRequest,
     ImageRecord,
     RouteBlockedByPolicy,
     UnknownVariant,
@@ -62,6 +75,7 @@ from qualify_api.creative.service import (
     VariantRecord,
     VariantWrite,
     preview_of,
+    with_composition_warnings,
 )
 
 TENANT_ID = uuid4()
@@ -1049,28 +1063,68 @@ def test_a_regeneration_relabels_the_draft_from_the_media_it_made() -> None:
     assert draft.requires_ai_disclosure is True
 
 
-def test_a_failed_regeneration_does_not_keep_the_previous_revisions_media() -> None:
-    """PR #100 review (finding 3): new copy came out, the media did not — the draft is
-    FAILED with the new text and NO images, not the previous revision's."""
+def test_a_failed_regeneration_keeps_the_previous_version_whole() -> None:
+    """m-24828909: new copy came out, the media did not — the draft keeps showing its
+    previous version, text AND files together (PR #100 review, finding 3: never this
+    revision's text over the previous revision's images), is `generated` again, says
+    the new version did not come out, and the money spent is recorded."""
     router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
     media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))
     service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
     draft_id = repo.seed_draft(_old_flyer_brief())
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert repo.drafts[draft_id].preview_key == FLYER_MEDIA.media_url
+    first = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert first is not None and repo.drafts[draft_id].preview_key == FLYER_MEDIA.media_url
 
     service.reject(
         tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
     )
-    media.outcome = MediaOutcome(failure="provider_error", detail="boom")
+    media.outcome = MediaOutcome(failure="provider_error", detail="No pudimos guardar la pieza.")
+    usage_before = len(repo.usage)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.failure_reason is None
+    assert draft.failure_detail == (
+        "La nueva versión no se pudo generar: No pudimos guardar la pieza. "
+        "Se mantiene la versión anterior."
+    )
+    assert draft.preview_key == FLYER_MEDIA.media_url
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.media == first.media
+    assert [v.copy["hook"] for v in detail.variants] == [v.copy["hook"] for v in first.variants]
+    assert "Otro hook" not in [v.copy["hook"] for v in detail.variants]
+    assert len(repo.usage) > usage_before  # the regeneration's copy was paid for
+
+
+def test_a_failed_first_generation_still_fails() -> None:
+    """m-24828909: with no previous version there is nothing to keep — the draft fails
+    as before, with the new text kept (the script is worth reading)."""
+    router = FakeRouter([ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(failure="provider_error", detail="boom"))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
 
     draft = repo.drafts[draft_id]
     assert draft.status == FAILED and draft.failure_reason == "provider_error"
-    assert draft.preview_key is None
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and list(detail.media) == []
     assert [v.copy["hook"] for v in detail.variants] == ["Otro hook"]
+
+
+def test_a_failed_regeneration_over_a_failed_draft_still_fails() -> None:
+    """m-24828909: a regeneration whose previous run also failed (no media to show) has
+    nothing to keep: it fails as before."""
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(failure="provider_error", detail="boom"))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == FAILED
+    repo.drafts[draft_id] = replace(repo.drafts[draft_id], status=DRAFTING, revision=2)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == FAILED
 
 
 def test_a_failed_video_fails_the_draft_but_keeps_the_script_and_the_money_spent() -> None:
@@ -1376,3 +1430,411 @@ def test_a_failed_generation_still_logs_what_it_spent(caplog: pytest.LogCaptureF
     # the first call's money was spent and is accounted for; the outcome says why it failed
     assert len(totals) == 1 and "calls=1 cost_usd=0.017500" in totals[0]
     assert "outcome=ok" not in totals[0]
+
+
+# ---------------------------------------------------------------------------
+# Langfuse (docs/plan-observabilidad-langfuse.md §4): one trace per generation
+
+
+def test_a_generation_is_one_langfuse_trace_whose_session_is_the_draft() -> None:
+    import json as _json
+
+    from qualify_shared import observability
+
+    with observability.capture_spans() as exporter:
+        router = FakeRouter([ok_outcome(copy_dict("Hook uno"))])
+        service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+        brief = make_brief(variants=1)
+        draft_id = repo.seed_draft(brief)
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+        observability.flush()
+
+    (root,) = exporter.get_finished_spans()
+    attrs = dict(root.attributes)
+    assert root.name == f"generar {brief.kind.value}"
+    assert attrs["session.id"] == str(draft_id)
+    assert set(attrs["langfuse.trace.tags"]) == {brief.kind.value, brief.format.value}
+    assert attrs["langfuse.trace.metadata.tenant_id"] == str(TENANT_ID)
+    assert _json.loads(attrs["langfuse.observation.input"])["topic"] == brief.topic
+    assert repo.drafts[draft_id].status == GENERATED  # tracing changed nothing
+
+
+def test_a_printed_kind_sends_its_printed_limits_and_a_spoken_one_none() -> None:
+    """2026-10-13: the copy adapter holds the answer to the printed hook/CTA limits the
+    prompt asks for — the service tells it which, per kind."""
+    from qualify_creative.enums import ContentKind
+
+    for kind, expected in (
+        (ContentKind.STATIC_FLYER, {"max_lengths": {"hook": 50, "cta": 32}}),
+        (ContentKind.CREATOR_SCRIPT, {}),
+    ):
+        router = FakeRouter([ok_outcome(copy_dict("Hook uno"))])
+        service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+        brief = make_brief(variants=1).model_copy(
+            update={"kind": kind, "format": kind.default_format}
+        )
+        draft_id = repo.seed_draft(brief)
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+        (request,) = router.requests
+        assert dict(request.params) == expected, kind
+
+
+# ---------------------------------------------------------------------------
+# request_key (ticket 24803289): the same key never creates nor pays a second draft
+
+
+class KeyedRepository(InMemoryRepository):
+    """The in-memory repository with `content_drafts.request_key` and its unique index:
+    `race_winner` makes the next keyed insert lose to a concurrent create."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.by_key: dict[UUID, UUID] = {}
+        self.race_winner: UUID | None = None
+
+    def draft_id_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
+        return self.by_key.get(request_key)
+
+    def insert_brief_and_draft(  # type: ignore[override]
+        self,
+        *,
+        tenant_id: UUID,
+        user_id: UUID,
+        brief: ContentBrief,
+        voice_profile_version: int,
+        pipeline_version: str,
+        request_key: UUID | None = None,
+    ) -> UUID:
+        if request_key is not None and self.race_winner is not None:
+            # another call inserted this key between our lookup and our insert
+            self.by_key[request_key] = self.race_winner
+            raise DuplicateDraftRequest(self.race_winner)
+        draft_id = super().insert_brief_and_draft(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            brief=brief,
+            voice_profile_version=voice_profile_version,
+            pipeline_version=pipeline_version,
+        )
+        if request_key is not None:
+            self.by_key[request_key] = draft_id
+        return draft_id
+
+
+def test_a_request_key_creates_one_draft_and_dispatches_it_once() -> None:
+    repo = KeyedRepository()
+    service, _, dispatcher = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    key = uuid4()
+    first = service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID, request_key=key
+    )
+    again = service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID, request_key=key
+    )
+    assert again == first and len(repo.drafts) == 1
+    assert len(dispatcher.calls) == 1  # the paid generation runs once
+    assert service.draft_for_request(tenant_id=TENANT_ID, request_key=key) == first
+    assert service.draft_for_request(tenant_id=TENANT_ID, request_key=uuid4()) is None
+
+
+def test_a_concurrent_create_with_the_same_key_returns_the_winner_without_dispatching() -> None:
+    repo = KeyedRepository()
+    service, _, dispatcher = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    repo.race_winner = uuid4()
+    draft_id = service.create_draft(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        brief=make_brief(),
+        user_id=USER_ID,
+        request_key=uuid4(),
+    )
+    assert draft_id == repo.race_winner and dispatcher.calls == []
+
+
+def test_without_a_key_every_call_is_a_new_draft_as_before() -> None:
+    # the plain InMemoryRepository has no notion of keys: callers that send none are
+    # untouched by the change
+    service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
+    for _ in range(2):
+        service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID
+        )
+    assert len(repo.drafts) == 2 and len(dispatcher.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_drafts (ticket 24803289, PR 4): N drafts in one repository read
+
+
+class BatchRepository(InMemoryRepository):
+    """The in-memory repository with `details_for`, built from its own single reads so
+    a mismatch with `get_draft` can only come from the service."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_calls: list[tuple[UUID, ...]] = []
+
+    def details_for(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftBundle]:
+        self.batch_calls.append(tuple(draft_ids))
+        out: dict[UUID, DraftBundle] = {}
+        for draft_id in draft_ids:
+            record = self.drafts.get(draft_id)
+            if record is None:
+                continue
+            out[draft_id] = DraftBundle(
+                record=record,
+                variants=self.variants_for(tenant_id=tenant_id, draft_id=draft_id),
+                image=self.image_for(tenant_id=tenant_id, draft_id=draft_id),
+                media=self.media_for(tenant_id=tenant_id, draft_id=draft_id),
+                kind=self.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
+            )
+        return out
+
+
+def test_get_drafts_equals_get_draft_per_id_in_one_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    import qualify_api.creative.service as service_module
+
+    reaped: list[UUID] = []
+    monkeypatch.setattr(
+        service_module, "reap_stale_drafts", lambda *, tenant_id: reaped.append(tenant_id) or 0
+    )
+    repo = BatchRepository()
+    service, _, _ = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    ids = [repo.seed_draft(make_brief()) for _ in range(3)]
+    unknown = uuid4()
+    batch = service.get_drafts(tenant_id=TENANT_ID, draft_ids=[*ids, unknown])
+    assert set(batch) == set(ids)  # an id not visible is simply absent
+    for draft_id in ids:
+        assert batch[draft_id] == service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.batch_calls == [(*ids, unknown)]  # ONE repository read for all
+    assert reaped == [TENANT_ID]  # stale drafts are failed first, as on listing
+
+
+def test_get_drafts_of_nothing_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import qualify_api.creative.service as service_module
+
+    reaped: list[UUID] = []
+    monkeypatch.setattr(
+        service_module, "reap_stale_drafts", lambda *, tenant_id: reaped.append(tenant_id) or 0
+    )
+    repo = BatchRepository()
+    service, _, _ = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    assert service.get_drafts(tenant_id=TENANT_ID, draft_ids=[]) == {}
+    assert repo.batch_calls == [] and reaped == []
+
+
+# ---------------------------------------------------------------------------
+# ticket 24803289: the composition's warnings live with the media, and the approval
+# guard holds a variations piece to the catalog price on every approval path
+
+
+PRICE_WARNING = MediaWarning(
+    code=PRICE_NOT_PRINTED,
+    detail=PRICE_NOT_PRINTED_TEXT,
+    fields={"price": "$1.234.567.890,00 COP", "reason": "too_long"},
+)
+SECOND_SLIDE = replace(FLYER_MEDIA, position=1, media_url="generated/t/d/slide-2.png")
+
+
+def test_composition_warnings_ride_on_the_cover_only() -> None:
+    media = with_composition_warnings((SECOND_SLIDE, FLYER_MEDIA), (PRICE_WARNING,))
+    by_position = {item.position: item for item in media}
+    assert by_position[0].params[COMPOSITION_WARNINGS_PARAM] == [
+        {
+            "code": PRICE_NOT_PRINTED,
+            "detail": PRICE_NOT_PRINTED_TEXT,
+            "fields": PRICE_WARNING.fields,
+        }
+    ]
+    assert COMPOSITION_WARNINGS_PARAM not in by_position[1].params
+    # nothing to warn about, or nothing to attach it to: untouched
+    assert with_composition_warnings((FLYER_MEDIA,), ()) == (FLYER_MEDIA,)
+    assert with_composition_warnings((), (PRICE_WARNING,)) == ()
+
+
+def test_a_price_not_printed_is_kept_on_the_draft_without_touching_the_spend() -> None:
+    usage = MediaUsage(
+        provider="seedream",
+        model_id="seedream-5",
+        unit="image",
+        quantity=1,
+        cost_usd=Decimal("0.035"),
+    )
+    seen = []
+    for warnings in ((), (PRICE_WARNING,)):
+        media = FakeMedia(
+            MediaOutcome(media=(FLYER_MEDIA, SECOND_SLIDE), usage=(usage,), warnings=warnings)
+        )
+        router = FakeRouter([ok_outcome(copy_dict())])
+        service, repo, _ = make_service(
+            router=router, kit=make_kit(), voice=make_voice(), media=media
+        )
+        draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.STATIC_FLYER))
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+        detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+        assert detail is not None and detail.status == GENERATED
+        seen.append((detail, list(repo.usage), repo.spend_added))
+    (plain, plain_usage, plain_spent), (warned, warned_usage, warned_spent) = seen
+    assert plain.warnings == ()
+    assert warned.warnings == (DraftWarning(PRICE_NOT_PRINTED, PRICE_NOT_PRINTED_TEXT),)
+    # the warning changes what is shown, never what was paid or recorded
+    assert [(u.provider, u.cost_usd) for u in warned_usage] == [
+        (u.provider, u.cost_usd) for u in plain_usage
+    ]
+    assert warned_spent == plain_spent
+
+
+def test_a_regeneration_that_prints_the_price_drops_the_old_warning() -> None:
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,), warnings=(PRICE_WARNING,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.STATIC_FLYER))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    first = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert first is not None and len(first.warnings) == 1
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(media=(FLYER_MEDIA,))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    again = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert again is not None and again.warnings == ()
+
+
+def test_a_failed_regeneration_keeps_the_previous_version_and_its_warning() -> None:
+    """m-24828909 (#195) keeps the version a draft shows when its regeneration fails:
+    no new media is written, so the composition warning that rides on that version's
+    cover stays with it — and the failed attempt's own warning is never shown."""
+    from qualify_api.creative.service import KEPT_PREVIOUS_PREFIX
+
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,), warnings=(PRICE_WARNING,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.STATIC_FLYER))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    other = MediaWarning(code="other_warning", detail="no debería verse")
+    media.outcome = MediaOutcome(failure="provider_error", detail="boom", warnings=(other,))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.status == GENERATED
+    assert (detail.failure_detail or "").startswith(KEPT_PREVIOUS_PREFIX)
+    assert detail.warnings == (DraftWarning(PRICE_NOT_PRINTED, PRICE_NOT_PRINTED_TEXT),)
+
+
+def test_draft_warnings_tolerate_foreign_or_malformed_params() -> None:
+    """A template's assets carry the render service's own `warnings` — never mistaken
+    for the composition's — and a malformed row cannot break the screen."""
+    from qualify_api.creative.service import DraftDetail
+
+    params = (
+        {"warnings": ["render: font fallback"]},
+        {COMPOSITION_WARNINGS_PARAM: "not a list"},
+        {COMPOSITION_WARNINGS_PARAM: [{"detail": "sin código"}, "x"]},
+        {COMPOSITION_WARNINGS_PARAM: [{"code": PRICE_NOT_PRINTED, "detail": "a"}]},
+        {COMPOSITION_WARNINGS_PARAM: [{"code": PRICE_NOT_PRINTED, "detail": "a"}]},
+        None,
+    )
+    detail = DraftDetail(
+        id=uuid4(),
+        brand_id=BRAND_ID,
+        brief_id=uuid4(),
+        status=GENERATED,
+        failure_reason=None,
+        selected_variant_id=None,
+        voice_profile_version=1,
+        pipeline_version="creative-v1",
+        requires_ai_disclosure=False,
+        approved_by=None,
+        approved_at=None,
+        created_at=datetime.now(UTC),
+        variants=(),
+        image=None,
+        media=tuple(
+            ImageRecord(
+                id=uuid4(),
+                media_url=f"m/{i}.png",
+                width=None,
+                height=None,
+                aspect_ratio=None,
+                position=i,
+                params=item,
+            )
+            for i, item in enumerate(params)
+        ),
+    )
+    assert detail.warnings == (DraftWarning(PRICE_NOT_PRINTED, "a"),)
+
+
+class RecordingGuard:
+    """An approval guard that refuses with `refuse` (when set) and records each check."""
+
+    def __init__(self, refuse: str | None = None) -> None:
+        self.refuse = refuse
+        self.checks: list[tuple[UUID, UUID, dict]] = []
+
+    def check(self, *, tenant_id: UUID, draft_id: UUID, copy) -> None:  # noqa: ANN001
+        self.checks.append((tenant_id, draft_id, dict(copy)))
+        if self.refuse is not None:
+            raise ApprovalBlocked(self.refuse)
+
+
+def _guarded_service(guard: RecordingGuard) -> tuple[ContentService, InMemoryRepository]:
+    repo = InMemoryRepository()
+    service = ContentService(
+        router=FakeRouter([ok_outcome(copy_dict())]),  # type: ignore[arg-type]
+        pricing=FakePricing(),
+        credentials=StaticKeyResolver(),
+        voice_service=FakeVoice(make_voice()),
+        brand_service=FakeBrand(make_kit()),
+        repository=repo,
+        dispatcher=RecordingDispatcher(),
+        approval_guard=guard,
+    )
+    return service, repo
+
+
+def test_a_refusing_guard_blocks_the_approval_and_writes_nothing() -> None:
+    guard = RecordingGuard(refuse="El texto menciona $9.900, que no es el precio del catálogo.")
+    service, repo = _guarded_service(guard)
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+
+    with pytest.raises(ApprovalBlocked) as blocked:
+        service.approve(
+            tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID
+        )
+    assert "$9.900" in blocked.value.detail
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.selected_variant_id is None
+    assert [(t, d) for t, d, _ in guard.checks] == [(TENANT_ID, draft_id)]
+
+
+def test_the_guard_reads_the_operators_edit_not_the_models_copy() -> None:
+    guard = RecordingGuard()
+    service, repo = _guarded_service(guard)
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+    edited = CopyPayload.model_validate(copy_dict("Hook corregido"))
+    assert not service.edit_variant(
+        tenant_id=TENANT_ID, variant_id=variant_id, copy=edited, user_id=USER_ID
+    )
+
+    detail = service.approve(
+        tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID
+    )
+    assert detail.status == APPROVED
+    ((_, _, checked),) = guard.checks
+    assert checked["hook"] == "Hook corregido"
+
+
+def test_an_unknown_variant_is_refused_before_the_guard_is_asked() -> None:
+    guard = RecordingGuard(refuse="no")
+    service, repo = _guarded_service(guard)
+    draft_id, _ = _generated_draft_with_variant(service, repo)
+    with pytest.raises(UnknownVariant):
+        service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=uuid4(), user_id=USER_ID)
+    assert guard.checks == []

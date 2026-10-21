@@ -34,6 +34,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from qualify_shared import observability
+
 from ..claude_tools import (
     API_KEY_ENV,
     PRICES,
@@ -319,6 +321,7 @@ def _brand_message(
 # --------------------------------------------------------------------------------------
 
 
+@observability.traced("clasificar hashtags", tags=("brand_kit",))
 def classify_hashtags(
     tags: Sequence[str],
     niches: Mapping[str, str],
@@ -398,6 +401,7 @@ def _same_word(slug: str, others: set[str]) -> bool:
     return any(slug == other or key == _unplural(other) for other in others)
 
 
+@observability.traced("elegir hashtags", tags=("brand_kit",))
 def select_hashtags(
     brand: BrandProfile,
     catalog: CatalogSearch,

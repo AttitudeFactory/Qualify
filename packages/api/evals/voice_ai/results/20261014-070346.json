@@ -1,0 +1,36 @@
+{
+  "runs": {
+    "large-v3-turbo": {
+      "run": {
+        "wer_medio": 0.0,
+        "rtf_medio": 0.809,
+        "casos_con_referencia_humana": 0.0,
+        "casos": 1.0
+      },
+      "items": {
+        "muestra-tiktok": {
+          "wer": 0.0,
+          "rtf": 0.809,
+          "texto": "¡Suscríbete al canal! ¡Suscríbete al canal! ¡Suscríbete al canal!",
+          "fuente_referencia": "modelo"
+        }
+      }
+    },
+    "small": {
+      "run": {
+        "wer_medio": 16.3333,
+        "rtf_medio": 0.708,
+        "casos_con_referencia_humana": 0.0,
+        "casos": 1.0
+      },
+      "items": {
+        "muestra-tiktok": {
+          "wer": 16.3333,
+          "rtf": 0.708,
+          "texto": "Estamos aquí hoy. La Madonna con la profesión tiktok launch. ¿Cómo te ha sido la Madonna fan? Creo que era de 6 o 7 cuando descubrí Madonna. Soy una vida longa de Madonna. 30 años. ¿No eres de los años? 45. No, no, no. Ella está riendo, riendo. Espero que se vea más. ¿Qué es Madonna's most iconica momento? Estás jugando Britney Spears. ¿Qué es Britney Spears? La Blonde Ambición Tour. La Blonde Ambición Tour. Un milion de momentos. La Bra, la con. Sí, me gustó el paio. Es como... ¿Qué fue el paio que te ha caído en una era de Madonna? El poder de la buena era mi momento de vida. Mi padre adoró Madonna y tenía su primera canción de Madonna para su pérdida. He sido literalmente traído en Madonna. Entonces, cada era es solo para mí. ¿Qué es Madonna's most iconica?",
+          "fuente_referencia": "modelo"
+        }
+      }
+    }
+  }
+}

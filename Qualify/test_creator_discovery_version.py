@@ -57,6 +57,8 @@ _NOT_ALGORITHM = frozenset(
         "PhasedDiscovery",
         "phase_signature",
         # avatars and card presentation
+        "compact_count",
+        "_compact",
         "_tiktok_avatar",
         "_RENDERABLE_EXTENSIONS",
         "_renderable_url",

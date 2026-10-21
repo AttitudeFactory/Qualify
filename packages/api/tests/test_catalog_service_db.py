@@ -62,23 +62,25 @@ def _jpeg() -> bytes:
 def test_catalog_roundtrip_and_isolation(seeded, tmp_path: Path) -> None:
     tenant_a, brand_a, user_a, tenant_b, brand_b = seeded
     service = CatalogService(store=LocalMediaStore(tmp_path))
+    # the seeded tenants outlive a run: a fresh name keeps the slug check re-runnable
+    run = uuid4().hex[:8]
 
     product_id = service.create_product(
         tenant_id=tenant_a,
         brand_id=brand_a,
         user_id=user_a,
-        name="Shawarma mixto",
+        name=f"Shawarma mixto {run}",
         price_amount=Decimal("5.00"),
         price_currency="usd",
         category="shawarma",
         tags=("picante", ""),
     )
     twin = service.create_product(
-        tenant_id=tenant_a, brand_id=brand_a, user_id=user_a, name="Shawarma mixto"
+        tenant_id=tenant_a, brand_id=brand_a, user_id=user_a, name=f"Shawarma mixto {run}"
     )
     products = service.list_products(tenant_id=tenant_a, brand_id=brand_a)
     slugs = {p.slug for p in products}
-    assert {"shawarma-mixto", "shawarma-mixto-2"} <= slugs
+    assert {f"shawarma-mixto-{run}", f"shawarma-mixto-{run}-2"} <= slugs
     first = next(p for p in products if p.id == product_id)
     assert (
         first.price_label == "$5" and first.price_currency == "USD" and first.tags == ("picante",)

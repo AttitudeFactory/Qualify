@@ -13,7 +13,8 @@
 #   secrets   QUALIFY_DEPLOY_SSH_KEY          private half of the restricted deploy key
 #             QUALIFY_DEPLOY_SSH_TARGET       e.g. deploy@203.0.113.10
 #             QUALIFY_DEPLOY_SSH_KNOWN_HOSTS  `ssh-keyscan -t ed25519 <ip>` output, verified
-#             CLIQ_DEVOPS_WEBHOOK_URL         optional: #devops notice per deploy (job `notify`)
+#             DEVOPS_WEBHOOK_URL              optional: deploy card in Lark Qualify-devs (job `notify`)
+#             DEVOPS_WEBHOOK_SECRET           optional: the custom bot's signature secret
 #   variable  QUALIFY_AUTO_DEPLOY             when to deploy on its own (manual always works):
 #               merge (or true)  every push to main = every merge (the PR already passed `ci`)
 #               daily            the tip of main once a day, only if it changed
@@ -31,8 +32,8 @@
 # Rollback: run this workflow by hand with an older sha of main (its images are still in
 # GHCR). Across a migration, tick `skip_migrate`: the older image cannot run `alembic upgrade`
 # on a newer database.
-# The calendar-worker profile is never touched here: profiles come from the server's
-# .env.prod only.
+# Profiles (today only `render`) come from the server's .env.prod only. calendar-worker is
+# no longer a profile (m-24828928): every deploy recreates it like the other workers.
 name: deploy
 
 on:
@@ -213,10 +214,18 @@ jobs:
           done
           echo "Deployed $SHA" >> "$GITHUB_STEP_SUMMARY"
 
-  # Tell #devops (Zoho Cliq) how every deploy that was attempted ended — success or failure,
-  # and at which stage. Skipped when auto-deploy is off and nothing was attempted. A missing
-  # webhook or an unreachable Cliq never fails the deploy: it is a notice, not a gate.
-  #   secret  CLIQ_DEVOPS_WEBHOOK_URL   https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>
+  # Tell the Lark group Qualify-devs how every deploy that was attempted ended — one
+  # interactive card: outcome, commit + PR + author, who triggered it, every stage with its
+  # duration and the failed step, links. Built by .github/scripts/deploy_notify.py from the
+  # job results plus the GitHub REST API (hence `actions: read`). Skipped when auto-deploy is
+  # off and nothing was attempted. A missing webhook or an unreachable Lark never fails the
+  # deploy: it is a notice, not a gate. Lark answers HTTP 200 even when it rejects a message
+  # (keyword / signature), so the script checks its `code` too.
+  #   secret  DEVOPS_WEBHOOK_URL     the custom bot's webhook:
+  #                                  https://open.larksuite.com/open-apis/bot/v2/hook/<token>
+  #           DEVOPS_WEBHOOK_SECRET  optional: the bot's "signature verification" secret
+  #                                  (every card title contains "Deploy" for the "custom
+  #                                  keywords" option instead)
   notify:
     needs: [resolve, images, deploy]
     if: >-
@@ -224,36 +233,22 @@ jobs:
       (needs.resolve.result == 'failure' || needs.resolve.outputs.go == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    permissions:
+      contents: read # the commit's subject, author and PR
+      actions: read # this run's jobs: durations and the failed step
     steps:
-      - name: Post the result to #devops
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+      - name: Post the deploy card to Lark Qualify-devs
         env:
-          WEBHOOK: ${{ secrets.CLIQ_DEVOPS_WEBHOOK_URL }}
-          RESOLVE: ${{ needs.resolve.result }}
-          IMAGES: ${{ needs.images.result }}
-          DEPLOY: ${{ needs.deploy.result }}
+          DEVOPS_WEBHOOK_URL: ${{ secrets.DEVOPS_WEBHOOK_URL }}
+          DEVOPS_WEBHOOK_SECRET: ${{ secrets.DEVOPS_WEBHOOK_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RESULT_RESOLVE: ${{ needs.resolve.result }}
+          RESULT_IMAGES: ${{ needs.images.result }}
+          RESULT_DEPLOY: ${{ needs.deploy.result }}
           SHA: ${{ needs.resolve.outputs.sha || inputs.ref || 'main' }}
-          TRIGGER: ${{ github.event_name == 'workflow_dispatch' && format('manual, by {0}', github.actor) || (github.event_name == 'push' && 'auto, merge to main' || 'auto, daily tip of main') }}
-          ACTION: ${{ inputs.skip_migrate && 'rollback (no migrate)' || 'deploy' }}
+          ACTION: ${{ inputs.skip_migrate && 'rollback (sin migrate)' || 'deploy' }}
           PUBLIC_URL: ${{ vars.QUALIFY_PUBLIC_URL || 'https://qualify.attitudefactory.co' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/
-        run: |
-          if [ -z "$WEBHOOK" ]; then
-            echo "::notice::CLIQ_DEVOPS_WEBHOOK_URL is not set; no #devops notice."
-            exit 0
-          fi
-          if [ "$DEPLOY" = success ]; then
-            head="✅ Producción actualizada"
-          elif [ "$RESOLVE" = failure ]; then
-            head="❌ Deploy rechazado (el commit no está en main)"
-          elif [ "$IMAGES" != success ]; then
-            head="❌ Deploy falló construyendo las imágenes — producción sin cambios"
-          else
-            head="❌ Deploy falló en el servidor o en el smoke test — revisar"
-          fi
-          text=$(printf '%s\n%s %s · %s\nCommit: %s%s\nRun: %s\n%s' \
-            "$head" "$ACTION" "${SHA:0:7}" "$TRIGGER" "$COMMIT_URL" "$SHA" "$RUN_URL" "$PUBLIC_URL")
-          jq -n --arg text "$text" '{text: $text}' |
-            curl -sS --fail --max-time 15 -H 'Content-Type: application/json' \
-              --data @- "$WEBHOOK" >/dev/null ||
-            echo "::warning::Could not post to #devops (Cliq); the deploy result stands."
+        run: python3 .github/scripts/deploy_notify.py

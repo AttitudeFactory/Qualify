@@ -291,7 +291,7 @@ Tres reglas que sostienen esto:
 
 ### 4.3 Reglas de página
 
-1. Toda página de negocio lleva el sidebar completo y el toggle de modo en el header. Solo `/login`, `/signup` y el wizard del Brand Kit (`rail=False`) no llevan sidebar.
+1. Toda página de negocio lleva el sidebar completo y el toggle de modo en el header. Solo `/login`, `/registro` y el wizard del Brand Kit (`rail=False`) no llevan sidebar.
 2. El header no scrollea con contenido pesado — y ahora literalmente: es sticky. Lo que "vive" arriba son controles de página (selector de cuenta, botón de actualizar), no contenido.
 3. Densidad: tablas para listas homogéneas y comparables (leads, menciones); tarjetas para entidades con estados y acciones propias (conexiones, reels). No mezclar en la misma lista.
 4. Responsive: el gutter baja a 1rem y el aire entre islas a 6px por debajo de 900px; grids usan `rx.breakpoints(…)`; tablas envuelven en `overflow_x="auto"`; por debajo de 640px el sidebar es drawer (§4.2).
@@ -380,7 +380,7 @@ El skin es el `lq-button` del kit sobre `.rt-Button`/`.rt-IconButton`: radio 14 
 ### 5.6 Formularios (Radix directo, con el skin del kit)
 
 - Campos, text areas y el trigger del select tienen el look `lq-field`: un **pozo de vidrio hundido** (`--q-field-fill`, radio 12 px, hairline interior) que se aclara al foco con el anillo del acento (`accent-a8` + halo `accent-a3` de 4 px). El switch encendido es un degradado del acento con el pulgar flotando (`lq-switch`); el segmented control, una pista hundida con una pestaña de vidrio (`lq-segmented`, radio 15/11 px) — sustituye a cualquier `q-flow-switch` casero.
-- Etiqueta visible encima (`rx.text size=2 weight=medium`), ayuda debajo en `size=1 TEXT_MUTED`. Placeholder = ejemplo, no etiqueta (excepción documentada: `/login` y `/signup`, donde interferir con el autocompletado del navegador está prohibido por el fallo firmado §6.1 — allí el placeholder es la etiqueta y así se queda).
+- Etiqueta visible encima (`rx.text size=2 weight=medium`), ayuda debajo en `size=1 TEXT_MUTED`. Placeholder = ejemplo, no etiqueta (excepción documentada: `/login` y `/registro`, donde interferir con el autocompletado del navegador está prohibido por el fallo firmado §6.1 — allí el placeholder es la etiqueta y así se queda).
 - `name`, `type` y `required` nativos: el navegador valida y autocompleta.
 - Error de envío en `callout("error")` **encima del formulario**, no como toast.
 - Selects para elegir entre entidades del tenant (cuentas conectadas); switches para monitorear/activar; búsquedas con `rx.input.slot(rx.icon("search"))`.

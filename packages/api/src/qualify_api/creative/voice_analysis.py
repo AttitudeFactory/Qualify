@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from qualify_creative.schemas import ToneAxes
+from qualify_shared import observability
 
 from qualify_api.claude_tools import (
     MAX_NON_STREAMING_TOKENS,
@@ -158,6 +159,7 @@ def parse_suggestion(raw: dict[str, Any], transcript: str) -> ToneSuggestion:
     return ToneSuggestion(axes=ToneAxes(**values), reasons=reasons, transcript=transcript)
 
 
+@observability.traced("sugerir tono", tags=("brand_kit",))
 def suggest_tone(
     transcript: str,
     *,
@@ -206,6 +208,7 @@ def suggest_tone(
     raise ClaudeToolError(f"{config.model_id} did not call {TONE_TOOL}")
 
 
+@observability.traced("analizar voz", tags=("brand_kit",))
 def analyze_recording(
     path: Path,
     *,

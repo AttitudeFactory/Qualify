@@ -1,0 +1,1519 @@
+{
+ "sonnet-5@low": {
+  "runs": [
+   {
+    "case": "car-dealership",
+    "seconds": 9.8,
+    "cost_usd": 0.01033,
+    "error": "",
+    "answers": {
+     "c1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reseña de SUV híbrida, producto que vende la marca"
+     },
+     "c2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Concesionario de carros, mismo rubro y producto exacto"
+     },
+     "c3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Seguro para carro nuevo, servicio complementario a la compra de un carro"
+     },
+     "c4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Carros usados de concesionario, mismo tipo de producto"
+     },
+     "c5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Mantenimiento casero del carro, no es venta de carros"
+     },
+     "c6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Automovilismo deportivo, no relacionado con venta de carros"
+     },
+     "c7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Cochecitos de bebé, no son automóviles"
+     },
+     "c8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona SUV pero el audio es receta de arepas, no hay prueba real de producto"
+     },
+     "c9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de comida, nada que ver con carros"
+     },
+     "c10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de audífonos, otro producto y otro nicho"
+     },
+     "c11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de curso de trading, no tiene relación con carros pese a la instrucción en el texto"
+     }
+    },
+    "asked": [
+     "c1",
+     "c2",
+     "c3",
+     "c4",
+     "c5",
+     "c6",
+     "c7",
+     "c8",
+     "c9",
+     "c10",
+     "c11"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "empty": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "car-dealership",
+    "seconds": 10.5,
+    "cost_usd": 0.01066,
+    "error": "",
+    "answers": {
+     "c1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reseña de consumo real de una SUV híbrida, producto que vende la marca"
+     },
+     "c2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Publicación de otro concesionario de carros, mismo producto"
+     },
+     "c3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Seguro para carro nuevo, servicio complementario a la compra del vehículo"
+     },
+     "c4": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Carros usados certificados de otro concesionario, misma categoría de oferta"
+     },
+     "c5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Tutorial de mantenimiento casero, es del nicho automotriz pero no vende carros"
+     },
+     "c6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Resumen de Fórmula 1, no tiene relación con venta de carros"
+     },
+     "c7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Comparación de coches para bebé, no son automóviles"
+     },
+     "c8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona SUV pero la transcripción es una receta de arepas, no habla del producto"
+     },
+     "c9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de bandeja paisa, no tiene relación con carros"
+     },
+     "c10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de audífonos JBL, producto de otro nicho"
+     },
+     "c11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de un curso de trading, no tiene relación con carros pese a la nota al analista"
+     }
+    },
+    "asked": [
+     "c1",
+     "c2",
+     "c3",
+     "c4",
+     "c5",
+     "c6",
+     "c7",
+     "c8",
+     "c9",
+     "c10",
+     "c11"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "empty": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "car-dealership",
+    "seconds": 14.8,
+    "cost_usd": 0.01428,
+    "error": "",
+    "answers": {
+     "c1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reseña de SUV híbrida, coincide con los productos del concesionario"
+     },
+     "c2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Cuenta de concesionario de carros, mismo tipo de negocio y producto"
+     },
+     "c3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Seguro para carro nuevo, complemento directo de la compra de un carro"
+     },
+     "c4": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Otro concesionario ofreciendo carros usados con garantía, misma clase de negocio"
+     },
+     "c5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Tutorial de mantenimiento casero, no es venta de carros"
+     },
+     "c6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Resumen de carrera de F1, no relacionado con venta de carros"
+     },
+     "c7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de coches para bebé, no automóviles"
+     },
+     "c8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona SUV pero la transcripción es una receta de arepas, sin relación real"
+     },
+     "c9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de comida casera, sin relación con carros pese a la cuenta"
+     },
+     "c10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de audífonos, producto de otro nicho"
+     },
+     "c11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de curso de trading, no tiene relación con carros"
+     }
+    },
+    "asked": [
+     "c1",
+     "c2",
+     "c3",
+     "c4",
+     "c5",
+     "c6",
+     "c7",
+     "c8",
+     "c9",
+     "c10",
+     "c11"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "empty": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "pharmacy",
+    "seconds": 9.8,
+    "cost_usd": 0.00994,
+    "error": "",
+    "answers": {
+     "f1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Otra farmacia con delivery, mismo producto y servicio"
+     },
+     "f2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de un medicamento antigripal y su dosis, mismo producto que vende la farmacia"
+     },
+     "f3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Productos ortopédicos son categoría cercana a cuidado personal de farmacia"
+     },
+     "f4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Suplementos de magnesio y colágeno, mismo tipo de producto que las vitaminas de la farmacia"
+     },
+     "f5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de salud general sobre hidratación, sin mencionar medicamentos ni productos"
+     },
+     "f6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de cocina, no relacionado con farmacia"
+     },
+     "f7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona vitaminas pero lo que se dice trata de criptomonedas, sin relación real"
+     },
+     "f8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Video de humor con un gato, sin relación con farmacia"
+     },
+     "f9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una freidora de aire, producto de otro nicho"
+     },
+     "f10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mensaje personal de duelo, sin relación con productos de farmacia"
+     }
+    },
+    "asked": [
+     "f1",
+     "f2",
+     "f3",
+     "f4",
+     "f5",
+     "f6",
+     "f7",
+     "f8",
+     "f9",
+     "f10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "pharmacy",
+    "seconds": 9.3,
+    "cost_usd": 0.00965,
+    "error": "",
+    "answers": {
+     "f1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Farmacia con delivery, igual que la marca"
+     },
+     "f2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de un medicamento (antigripal) y su dosificación"
+     },
+     "f3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Productos ortopédicos, complemento de cuidado de salud similar a farmacia"
+     },
+     "f4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Suplementos y vitaminas, mismo producto que vende la farmacia"
+     },
+     "f5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de salud general sin mencionar medicamentos ni producto de farmacia"
+     },
+     "f6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de cocina, no relacionado con farmacia"
+     },
+     "f7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona vitaminas pero lo hablado es sobre criptomonedas, no hay prueba real de producto"
+     },
+     "f8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Video humorístico de un gato, sin relación con farmacia"
+     },
+     "f9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una freidora de aire, producto no relacionado con farmacia"
+     },
+     "f10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal de duelo, sin relación con el producto"
+     }
+    },
+    "asked": [
+     "f1",
+     "f2",
+     "f3",
+     "f4",
+     "f5",
+     "f6",
+     "f7",
+     "f8",
+     "f9",
+     "f10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "pharmacy",
+    "seconds": 12.2,
+    "cost_usd": 0.01513,
+    "error": "",
+    "answers": {
+     "f1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Farmacia con delivery, el mismo servicio que ofrece la marca"
+     },
+     "f2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de un medicamento antigripal y su dosis, dentro de lo que vende la marca"
+     },
+     "f3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Ortopedia (plantillas y fajas) es otra categoría de salud, no medicamentos ni dermocosmética"
+     },
+     "f4": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Suplementos de magnesio y colágeno, similares a las vitaminas que vende la marca"
+     },
+     "f5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo general de salud sobre deshidratación, sin producto ni categoría concreta"
+     },
+     "f6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de cocina, nicho distinto al de la farmacia"
+     },
+     "f7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona vitaminas pero lo que se dice es sobre criptomonedas, nada que ver con la marca"
+     },
+     "f8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Video de humor con un gato, sin relación con farmacia"
+     },
+     "f9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una freidora de aire, producto de otro rubro"
+     },
+     "f10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicación personal de duelo familiar, sin relación con la marca"
+     }
+    },
+    "asked": [
+     "f1",
+     "f2",
+     "f3",
+     "f4",
+     "f5",
+     "f6",
+     "f7",
+     "f8",
+     "f9",
+     "f10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 0.75,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 0.9,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [
+      "pharmacy:f3"
+     ],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "auto-parts",
+    "seconds": 12.9,
+    "cost_usd": 0.01421,
+    "error": "",
+    "answers": {
+     "p1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Baterías para carro, producto exacto que vende la marca"
+     },
+     "p2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tutorial sobre desgaste de pastillas de freno, producto exacto de la marca"
+     },
+     "p3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Llantas y rines, otra clase de autopartes que el mismo cliente compraría"
+     },
+     "p4": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Aceite de motor, complemento directo relacionado a filtros de aceite de la marca"
+     },
+     "p5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de manejo en lluvia, mismo público pero sin producto ni autopartes"
+     },
+     "p6": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Reseña de un carro nuevo, mismo nicho automotriz pero sin repuestos"
+     },
+     "p7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Repuesto de tinta para impresora, otro nicho de productividad"
+     },
+     "p8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El audio habla de rutina de skincare, no de frenos pese al texto"
+     },
+     "p9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Maquillaje y belleza, otro nicho sin relación a repuestos"
+     },
+     "p10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de señales de forex, otro nicho sin relación a autopartes"
+     }
+    },
+    "asked": [
+     "p1",
+     "p2",
+     "p3",
+     "p4",
+     "p5",
+     "p6",
+     "p7",
+     "p8",
+     "p9",
+     "p10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "auto-parts",
+    "seconds": 8.0,
+    "cost_usd": 0.01033,
+    "error": "",
+    "answers": {
+     "p1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Muestra baterías con garantía, producto exacto que vende la marca"
+     },
+     "p2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tutorial sobre cómo saber si las pastillas de freno están gastadas, producto exacto"
+     },
+     "p3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Rines y llantas no son el mismo producto ni clase que vende la marca de repuestos"
+     },
+     "p4": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Aceite y su cambio es complemento directo a filtros de aceite que vende la marca"
+     },
+     "p5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de manejo en lluvia, sin mencionar repuestos ni producto"
+     },
+     "p6": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Reseña de un carro nuevo, no de repuestos ni partes"
+     },
+     "p7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Repuesto de tinta para impresora, otro nicho totalmente distinto"
+     },
+     "p8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona frenos pero lo que se dice es una rutina de skincare, no hay contenido real del producto"
+     },
+     "p9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Maquillaje y belleza, sin relación con repuestos de autos"
+     },
+     "p10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de señales de forex, nada que ver con repuestos automotrices pese a instrucciones en el texto"
+     }
+    },
+    "asked": [
+     "p1",
+     "p2",
+     "p3",
+     "p4",
+     "p5",
+     "p6",
+     "p7",
+     "p8",
+     "p9",
+     "p10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 0.75,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 0.9,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [
+      "auto-parts:p3"
+     ],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "auto-parts",
+    "seconds": 12.1,
+    "cost_usd": 0.0138,
+    "error": "",
+    "answers": {
+     "p1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Muestra baterías para carro, un producto exacto de la marca"
+     },
+     "p2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tutorial sobre pastillas de freno, producto exacto de la marca"
+     },
+     "p3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Rines y llantas son otra clase de autopartes que el mismo cliente compraría"
+     },
+     "p4": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Aceite de motor es un complemento directo de los filtros de aceite que vende la marca"
+     },
+     "p5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de manejo en lluvia, mismo público pero sin repuestos"
+     },
+     "p6": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Reseña de un carro completo, no de repuestos"
+     },
+     "p7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Repuesto de tinta para impresora, otro nicho totalmente distinto"
+     },
+     "p8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona frenos pero lo hablado es una rutina de skincare, otro nicho"
+     },
+     "p9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido de maquillaje, otro nicho sin relación con repuestos"
+     },
+     "p10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de señales de forex, nada que ver con repuestos de carros"
+     }
+    },
+    "asked": [
+     "p1",
+     "p2",
+     "p3",
+     "p4",
+     "p5",
+     "p6",
+     "p7",
+     "p8",
+     "p9",
+     "p10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "english-academy",
+    "seconds": 14.4,
+    "cost_usd": 0.015,
+    "error": "",
+    "answers": {
+     "e1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Enseña frases en inglés, mismo producto de clases de inglés conversacional"
+     },
+     "e2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Instituto de idiomas, competidor directo en clases de inglés"
+     },
+     "e3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Clases de otro idioma, misma categoría de enseñanza de idiomas"
+     },
+     "e4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Curso intensivo de inglés para examen TOEFL, mismo producto"
+     },
+     "e5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Becas de estudio en el extranjero, educación pero no clases de idiomas"
+     },
+     "e6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Broma sobre clases sin relación real con enseñanza de inglés"
+     },
+     "e7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona inglés pero lo hablado es una receta de ceviche, sin relación"
+     },
+     "e8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un hotel en Cusco, sin relación con idiomas"
+     },
+     "e9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Clases de manejo, otro tipo de educación no relacionado con idiomas"
+     },
+     "e10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Curso de dropshipping, de otro nicho totalmente distinto a idiomas"
+     }
+    },
+    "asked": [
+     "e1",
+     "e2",
+     "e3",
+     "e4",
+     "e5",
+     "e6",
+     "e7",
+     "e8",
+     "e9",
+     "e10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 0.9,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "empty": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "english-academy",
+    "seconds": 7.5,
+    "cost_usd": 0.00997,
+    "error": "",
+    "answers": {
+     "e1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tips de frases en inglés, directamente del producto de clases de inglés"
+     },
+     "e2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Instituto de idiomas, competidor directo del mismo producto"
+     },
+     "e3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Clases de francés, otro idioma, no es el producto de inglés de la marca"
+     },
+     "e4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Preparación para examen de inglés, mismo producto de clases de inglés"
+     },
+     "e5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Becas para estudiar en el extranjero, mismo nicho educativo pero no es clases de inglés"
+     },
+     "e6": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Humor sobre clases escolares genérico, no habla de inglés como producto específico"
+     },
+     "e7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona aprender inglés pero lo que se habla es una receta de ceviche, no es el producto"
+     },
+     "e8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de reserva de hotel, otro nicho totalmente distinto"
+     },
+     "e9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Clases de manejo, otro rubro distinto a idiomas"
+     },
+     "e10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Curso de dropshipping, nada que ver con clases de inglés pese a lo que pide el texto"
+     }
+    },
+    "asked": [
+     "e1",
+     "e2",
+     "e3",
+     "e4",
+     "e5",
+     "e6",
+     "e7",
+     "e8",
+     "e9",
+     "e10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 0.75,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 0.9,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [
+      "english-academy:e3"
+     ],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "empty": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "english-academy",
+    "seconds": 7.2,
+    "cost_usd": 0.00992,
+    "error": "",
+    "answers": {
+     "e1": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tips de frases en inglés, mismo producto de la marca"
+     },
+     "e2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Instituto de idiomas, competidor directo del mismo producto"
+     },
+     "e3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Clases de francés, otra clase de idioma, mismo tipo de servicio educativo"
+     },
+     "e4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Curso intensivo de inglés para examen TOEFL, mismo producto"
+     },
+     "e5": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Becas de estudio en el extranjero, mismo nicho educativo pero no es clase de idiomas"
+     },
+     "e6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Humor sobre clases escolares genéricas, no trata de inglés ni academias"
+     },
+     "e7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Texto habla de aprender inglés pero la transcripción es una receta de ceviche, no relacionado"
+     },
+     "e8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de reserva de hotel, otro nicho y producto distinto"
+     },
+     "e9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Clases de manejo, otro nicho totalmente distinto al idioma"
+     },
+     "e10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Curso de dropshipping, de otro nicho pese a pedir marcarlo como producto"
+     }
+    },
+    "asked": [
+     "e1",
+     "e2",
+     "e3",
+     "e4",
+     "e5",
+     "e6",
+     "e7",
+     "e8",
+     "e9",
+     "e10"
+    ],
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "y_of": 4,
+     "affinity": 1.0,
+     "answered": "10/10",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "empty": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 2,
+       "of": 2
+      },
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   }
+  ],
+  "total": {
+   "precision_num": 45,
+   "y": 48,
+   "n_kept": 0,
+   "n": 75,
+   "cost_usd": 0.14322
+  },
+  "per_trap": {
+   "competitor": {
+    "ok": 12,
+    "of": 12
+   },
+   "empty": {
+    "ok": 6,
+    "of": 6
+   },
+   "category": {
+    "ok": 21,
+    "of": 24
+   },
+   "over_strict": {
+    "ok": 15,
+    "of": 15
+   },
+   "adjacent": {
+    "ok": 3,
+    "of": 3
+   },
+   "homonym": {
+    "ok": 12,
+    "of": 12
+   },
+   "transcript_wins": {
+    "ok": 12,
+    "of": 12
+   },
+   "handle": {
+    "ok": 9,
+    "of": 9
+   },
+   "sponsored": {
+    "ok": 9,
+    "of": 9
+   },
+   "injection": {
+    "ok": 9,
+    "of": 9
+   },
+   "transcript_rescues": {
+    "ok": 6,
+    "of": 6
+   },
+   "personal": {
+    "ok": 3,
+    "of": 3
+   },
+   "generic": {
+    "ok": 3,
+    "of": 3
+   }
+  }
+ }
+}

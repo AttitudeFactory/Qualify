@@ -82,11 +82,14 @@ from qualify_api.inbox import (
     SyncBudgetExhausted,
     UnknownInboxConnection,
 )
+from qualify_api.intent import IntentModelUnavailable, UnknownIntentConnection
 from qualify_api.sentiment import SentimentModelUnavailable, UnknownSentimentConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .inbox_provider import (
+    INTENT_FILTER_COMMERCIAL,
+    analyze_intent_now,
     analyze_sentiment_now,
     candidate_media,
     global_summary_vm,
@@ -105,6 +108,7 @@ from .inbox_vm import (
     CommentPageCursorVM,
     CommentVM,
     GlobalSentimentSummaryVM,
+    IntentAnalysisSummaryVM,
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
@@ -176,6 +180,11 @@ _ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."
 # The local model's runtime (`ml` group) is not installed in this deployment — not a
 # transient failure, so "intenta de nuevo" would be a lie.
 _ANALYZE_UNAVAILABLE = "El análisis de sentimiento todavía no está disponible en este entorno."
+# m-24789644: same two cases for the intent pass. Unavailable = no Anthropic key here.
+_ANALYZE_INTENT_FAILED = "No se pudo analizar la intención. Intenta de nuevo."
+_ANALYZE_INTENT_UNAVAILABLE = (
+    "La clasificación de intención todavía no está disponible en este entorno."
+)
 # QUA-93 — each of the three new sections has its own load error, same "independent
 # §6.1 lifecycle per section" posture the design doc documents.
 _REEL_SUMMARIES_LOAD_FAILED = "No se pudieron cargar los Reels con comentarios. Intenta de nuevo."
@@ -194,6 +203,8 @@ _MIN_TOGGLE_ANIMATION_SECONDS = 0.5
 # QUA-93: the sentiment filter's "no filter" value — never sent to the repository as a
 # real filter (`inbox_provider.thread_comments_page` maps it to `None`).
 FILTER_ALL = "ALL"
+# m-24789644: the intent filter's one real value, re-exported for the page.
+FILTER_COMMERCIAL = INTENT_FILTER_COMMERCIAL
 
 # Bug fix (2026-08-25): a successful sync/analysis pass used to render its confirmation
 # as a persistent `callout` — the same primitive `_sync_error_block`/`_analyze_error_
@@ -208,8 +219,9 @@ _RESULT_TOAST_DURATION_MS = 6000
 
 
 class InboxState(rx.State):
-    """State for the "Contenido" screen: pick an Instagram connection, see its Reels
-    from the last 2 weeks, toggle which ones are monitored, and browse their comments'
+    """State for the "Interacciones" screen (formerly "Contenido"): pick an Instagram
+    connection, see its Reels from the last 2 weeks, toggle which ones are monitored, and
+    browse their comments'
     sentiment two levels deep (Reel summary list -> one Reel's comments)."""
 
     connections: list[ConnectionOptionVM] = []
@@ -246,6 +258,11 @@ class InboxState(rx.State):
     is_analyzing: bool = False
     analyze_error: str = ""
     analyze_result: AnalysisSummaryVM | None = None
+    # m-24789644: the "Analizar intención" pass — its own guard, independent of both
+    # sync and sentiment analysis, same as those two are of each other.
+    is_analyzing_intent: bool = False
+    analyze_intent_error: str = ""
+    analyze_intent_result: IntentAnalysisSummaryVM | None = None
 
     # QUA-93 — the Reel summary-card list (top level of "Comentarios"). Never holds more
     # than one page; `load_more_reels` appends, it never re-fetches everything.
@@ -275,6 +292,8 @@ class InboxState(rx.State):
     has_more_thread_comments: bool = False
     is_loading_more_thread_comments: bool = False
     sentiment_filter: str = FILTER_ALL
+    # m-24789644: `FILTER_ALL` or `FILTER_COMMERCIAL` («Requiere atención comercial»).
+    intent_filter: str = FILTER_ALL
     search_query: str = ""
 
     @rx.var
@@ -288,6 +307,10 @@ class InboxState(rx.State):
     @rx.var
     def can_analyze(self) -> bool:
         return bool(self.selected_connection_id) and not self.is_analyzing
+
+    @rx.var
+    def can_analyze_intent(self) -> bool:
+        return bool(self.selected_connection_id) and not self.is_analyzing_intent
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -467,6 +490,7 @@ class InboxState(rx.State):
             thread_id = self.selected_thread_id
             connection_id = self.selected_connection_id
             sentiment_filter = self.sentiment_filter
+            intent_filter = self.intent_filter
             search_query = self.search_query
 
         resolved_connection = _try_uuid(connection_id)
@@ -487,6 +511,7 @@ class InboxState(rx.State):
                 sentiment_filter=sentiment_filter,
                 search=search_query,
                 cursor=None,
+                intent_filter=intent_filter,
             )
         except UnknownSentimentConnection:
             async with self:
@@ -503,10 +528,11 @@ class InboxState(rx.State):
         async with self:
             # Guard against the operator navigating away or changing filter/search
             # again while this was in flight — same race-guard shape every loader in
-            # this file already uses, just against three fields instead of one.
+            # this file already uses, just against four fields instead of one.
             if (
                 thread_id == self.selected_thread_id
                 and sentiment_filter == self.sentiment_filter
+                and intent_filter == self.intent_filter
                 and search_query == self.search_query
             ):
                 self.thread_comments = items
@@ -981,6 +1007,61 @@ class InboxState(rx.State):
         return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
+    async def analyze_intent(self) -> rx.event.EventSpec | None:
+        """The "Analizar intención" button (m-24789644): one pass of
+        `inbox_provider.analyze_intent_now` over the connection's pending comments. Same
+        double-click guard, `finally` reset, success-only refresh and toast as
+        `analyze_sentiment`; never triggers sync or sentiment, and neither of them
+        triggers it."""
+        async with self:
+            if self.is_analyzing_intent:
+                return
+            self.is_analyzing_intent = True
+            self.analyze_intent_error = ""
+            self.analyze_intent_result = None
+            connection_id = self.selected_connection_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        tenant_id = tenant_uuid(session_tenant_id)
+        resolved_connection = _try_uuid(connection_id)
+
+        if tenant_id is None or resolved_connection is None:
+            async with self:
+                self.is_analyzing_intent = False
+                self.analyze_intent_error = (
+                    _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
+                )
+            return
+
+        try:
+            result = await analyze_intent_now(
+                tenant_id=tenant_id, connection_id=resolved_connection
+            )
+        except UnknownIntentConnection:
+            async with self:
+                self.analyze_intent_error = _UNKNOWN_CONNECTION
+            return
+        except IntentModelUnavailable:
+            async with self:
+                self.analyze_intent_error = _ANALYZE_INTENT_UNAVAILABLE
+            return
+        except Exception as exc:
+            logger.error("analyze_intent_now failed: %s", type(exc).__name__)
+            async with self:
+                self.analyze_intent_error = _ANALYZE_INTENT_FAILED
+            return
+        else:
+            async with self:
+                self.analyze_intent_result = result
+        finally:
+            async with self:
+                self.is_analyzing_intent = False
+
+        await self._refresh_after_write(tenant_id, connection_id)
+        return rx.toast.success(_intent_result_message(result), duration=_RESULT_TOAST_DURATION_MS)
+
+    @rx.event(background=True)
     async def select_reel(self, thread_id: str) -> None:
         """QUA-93: enter the Reel detail view. Always resets to a clean first page —
         filter "Todos", no search, no cursor — a detail view never opens mid-scroll of
@@ -995,6 +1076,7 @@ class InboxState(rx.State):
             self.thread_comments_cursor = None
             self.has_more_thread_comments = False
             self.sentiment_filter = FILTER_ALL
+            self.intent_filter = FILTER_ALL
             self.search_query = ""
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
@@ -1017,6 +1099,18 @@ class InboxState(rx.State):
             if value == self.sentiment_filter:
                 return
             self.sentiment_filter = value
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event(background=True)
+    async def set_intent_filter(self, value: str) -> None:
+        """m-24789644: the intent filter (Todas / Requiere atención comercial). Same
+        no-op-if-unchanged + fresh-first-page shape as `set_sentiment_filter`."""
+        async with self:
+            if value == self.intent_filter:
+                return
+            self.intent_filter = value
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
         await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
@@ -1093,6 +1187,7 @@ class InboxState(rx.State):
             thread_id = self.selected_thread_id
             connection_id = self.selected_connection_id
             sentiment_filter = self.sentiment_filter
+            intent_filter = self.intent_filter
             search_query = self.search_query
             cursor = self.thread_comments_cursor
             auth = await self.get_state(AuthState)
@@ -1115,6 +1210,7 @@ class InboxState(rx.State):
                 sentiment_filter=sentiment_filter,
                 search=search_query,
                 cursor=cursor,
+                intent_filter=intent_filter,
             )
         except Exception as exc:
             logger.error("load_more_thread_comments failed: %s", type(exc).__name__)
@@ -1127,12 +1223,30 @@ class InboxState(rx.State):
             if (
                 thread_id == self.selected_thread_id
                 and sentiment_filter == self.sentiment_filter
+                and intent_filter == self.intent_filter
                 and search_query == self.search_query
             ):
                 self.thread_comments.extend(items)
                 self.thread_comments_cursor = next_cursor
                 self.has_more_thread_comments = has_more
             self.is_loading_more_thread_comments = False
+
+
+def _intent_result_message(result: IntentAnalysisSummaryVM) -> str:
+    """The "Analizar intención" toast. Unclassified comments stay pending, so the
+    message says the next click retries them rather than counting them as done."""
+    if result.comments_checked == 0:
+        return "No hay comentarios pendientes de clasificar."
+    message = (
+        f"Comentarios revisados: {result.comments_checked} · "
+        f"Clasificados: {result.new_results} · Vacíos omitidos: {result.skipped_empty}"
+    )
+    if result.unclassified:
+        message += (
+            f" · Sin respuesta del modelo: {result.unclassified} "
+            "(se reintentan en el próximo análisis)"
+        )
+    return message
 
 
 def _try_uuid(value: str) -> UUID | None:

@@ -249,8 +249,6 @@ def test_prod_compose_runs_the_whatsapp_worker_always_on_over_all_tenants() -> N
     assert "--all-tenants" in command and "--interval" in command and "--once" not in command
     assert "ports" not in service and "volumes" not in service
     assert service["depends_on"]["postgres"]["condition"] == "service_healthy"
-    # Adding it did not move the publisher out from behind its profile.
-    assert compose["services"]["calendar-worker"]["profiles"] == ["calendar-worker"]
 
 
 def test_claude_md_documents_both_recipes() -> None:

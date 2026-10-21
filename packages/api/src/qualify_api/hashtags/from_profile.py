@@ -26,6 +26,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from qualify_shared import observability
+
 from ..claude_tools import (
     CallStats,
     ClaudeToolError,
@@ -186,6 +188,7 @@ def _clean(raw: Any, max_tags: int) -> tuple[ProposedTag, ...]:
     return tuple(out)
 
 
+@observability.traced("rubro desde la cuenta", tags=("brand_kit",))
 def generate(
     account: AccountText,
     *,

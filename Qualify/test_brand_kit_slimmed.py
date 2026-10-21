@@ -205,7 +205,7 @@ async def test_mejorar_tu_perfil_goes_to_the_signup() -> None:
         async def get_state(self, _cls: type) -> Any:
             return auth
 
-    assert await wiz._finish_route(Holder()) == "/signup"  # a pre-login draft
+    assert await wiz._finish_route(Holder()) == "/registro"  # a pre-login draft
     auth.session_tenant_id = "00000000-0000-4000-8000-000000000001"
     assert await wiz._finish_route(Holder()) == "/"  # an account has nothing to sign up for
 

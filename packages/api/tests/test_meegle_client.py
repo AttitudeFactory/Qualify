@@ -307,3 +307,51 @@ def test_logs_never_carry_the_token_or_the_secret(
     assert TOKEN not in text
     assert "plugin-s3cret-value" not in text
     assert "renewed" in caplog.text  # the token lifecycle IS logged, by event only
+
+
+def test_item_calls_take_another_work_item_type(client: MeegleClient, fake: FakeMeegle) -> None:
+    fake.answers["/open_api/proj/work_item/issue/query"] = {
+        "err_code": 0,
+        "data": [
+            {
+                "id": 7,
+                "name": "Bug",
+                "work_item_type_key": "issue",
+                "work_item_status": {"state_key": "CLOSED", "updated_by": "u"},
+                "current_nodes": [{"id": "started", "name": "Start"}],
+                "fields": [],
+            }
+        ],
+    }
+    fake.answers["/open_api/proj/field/all"] = {"err_code": 0, "data": []}
+    fake.answers["/open_api/proj/work_item/story/9/workflow/query"] = {
+        "err_code": 0,
+        "data": {"workflow_nodes": []},
+    }
+    [item] = client.query([7], work_item_type="issue")
+    assert item.status_key == "CLOSED"
+    assert item.work_item_type_key == "issue"
+    assert item.current_node_names == ("Start",)
+    client.fields_meta(work_item_type="story")
+    client.workflow(9, work_item_type="story")
+    paths = [r.url.path for r in fake.requests if r.url.path != TOKEN_PATH]
+    assert paths == [
+        "/open_api/proj/work_item/issue/query",
+        "/open_api/proj/field/all",
+        "/open_api/proj/work_item/story/9/workflow/query",
+    ]
+    assert json.loads(fake.requests[2].content) == {"work_item_type_key": "story"}
+    # the default stays the configured type
+    client.query([1])
+    assert fake.requests[-1].url.path == "/open_api/proj/work_item/alta/query"
+
+
+def test_space_simple_name_reads_projects_detail(client: MeegleClient, fake: FakeMeegle) -> None:
+    fake.answers["/open_api/projects/detail"] = {
+        "err_code": 0,
+        "data": {"proj": {"project_key": "proj", "name": "Qualify", "simple_name": "5h2wsx"}},
+    }
+    assert client.space_simple_name() == "5h2wsx"
+    assert json.loads(fake.requests[-1].content) == {"project_keys": ["proj"]}
+    fake.answers["/open_api/projects/detail"] = {"err_code": 0, "data": {}}
+    assert client.space_simple_name() == ""
