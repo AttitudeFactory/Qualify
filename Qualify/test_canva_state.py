@@ -35,7 +35,8 @@ def test_connect_keeps_the_pkce_verifier_and_state_server_side(
     assert state.connect() is not None  # a redirect to Canva's consent page
     assert state._oauth_state and state._pkce_verifier
     # backend-only: never part of what the browser receives
-    assert "_pkce_verifier" in CanvaState.backend_vars
+    assert "_pkce_verifier" in CanvaState.get_fields()
+    assert "_pkce_verifier" not in CanvaState.vars
 
 
 def test_a_link_reopens_with_its_correlation_state() -> None:
