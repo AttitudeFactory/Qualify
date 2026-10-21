@@ -13,9 +13,15 @@ deciding the same followup cannot both win. Opening is idempotent per interactio
 automatic path (an intent analysis) and the manual one («Responder por DM») return the
 same row, and the first one to open it keeps its `trigger`.
 
-Approving here does NOT send. It records the decision next to the outbox row that
-`ConversationService` queued with the person's `HumanApproval` (ADR 21c) — the one path
-to a send stays the outbox, whose `approved_by_user_id` is NOT NULL.
+Approving here does NOT send. It records the decision next to the outbox row queued
+with the person's `HumanApproval` (ADR 21c) — the one path to a send stays the outbox,
+whose `approved_by_user_id` is NOT NULL. `approve` accepts the caller's open session so
+the outbox insert and this guarded transition commit together or not at all: a lost race
+(two approvals, or an approval against a discard) rolls the queued send back with it.
+
+A comment's followup has no DM thread until it is approved (`dm_thread_id` is None):
+the thread is created only when a person decides to write, never just because a
+followup was opened.
 """
 
 from __future__ import annotations
@@ -75,13 +81,14 @@ class Followup:
     origin_kind: OriginKind
     # The comment, or the DM that replied to a story (`messages.id`).
     origin_message_id: UUID
-    # The author's private thread in Conversaciones (channel `dm`).
-    dm_thread_id: UUID
     trigger: FollowupTrigger
     status: FollowupStatus
     notice_status: NoticeStatus
     created_at: datetime
     updated_at: datetime
+    # The author's private thread in Conversaciones (channel `dm`): a story reply's from
+    # the start, a comment's only once a send is approved.
+    dm_thread_id: UUID | None = None
     # The versioned analysis that raised it (`comment_intent_results.id`); None if manual.
     intent_result_id: UUID | None = None
     send_route: SendRoute | None = None
@@ -125,15 +132,18 @@ def new_followup(
     connection_id: UUID,
     origin_kind: OriginKind,
     origin_message_id: UUID,
-    dm_thread_id: UUID,
     trigger: FollowupTrigger,
+    dm_thread_id: UUID | None = None,
     intent_result_id: UUID | None = None,
     now: datetime | None = None,
 ) -> Followup:
     """A fresh `open` followup — the only constructor callers should use. An
-    intent-triggered followup must name its analysis; a manual one must not."""
+    intent-triggered followup must name its analysis; a manual one must not. A story
+    reply carries its DM thread from the start."""
     if (trigger is FollowupTrigger.INTENT) != (intent_result_id is not None):
         raise ValueError("an intent followup needs its intent_result_id, a manual one none")
+    if origin_kind is OriginKind.STORY_REPLY and dm_thread_id is None:
+        raise ValueError("a story reply is already a DM: its thread is required")
     created_at = now or _utcnow()
     return Followup(
         id=uuid4(),
@@ -156,15 +166,19 @@ def approve_followup(
     *,
     outbox_id: UUID,
     send_route: SendRoute,
+    dm_thread_id: UUID,
     decided_by_user_id: UUID,
     now: datetime,
     notice_text: str | None = None,
 ) -> Followup:
-    """`open -> approved`. A private reply and a public notice both need a public comment
-    to hang from, so a story reply admits neither. A non-empty `notice_text` leaves the
+    """`open -> approved`, recording the DM thread the send went to. A private reply
+    and a public notice both need a public comment to hang from, so a story reply admits
+    neither. A non-empty `notice_text` leaves the
     notice `pending` — it still waits for the CONFIRMED send of the private message."""
     if followup.status is not FollowupStatus.OPEN:
         raise InvalidFollowupTransition(f"followup {followup.id} is {followup.status}, not open")
+    if followup.dm_thread_id is not None and followup.dm_thread_id != dm_thread_id:
+        raise InvalidFollowupTransition("a story reply is answered in its own thread")
     is_comment = followup.origin_kind is OriginKind.COMMENT
     if send_route is SendRoute.PRIVATE_REPLY and not is_comment:
         raise InvalidFollowupTransition("a private reply answers a comment, not a story reply")
@@ -176,6 +190,7 @@ def approve_followup(
         status=FollowupStatus.APPROVED,
         send_route=send_route,
         outbox_id=outbox_id,
+        dm_thread_id=dm_thread_id,
         decided_at=now,
         decided_by_user_id=decided_by_user_id,
         notice_status=NoticeStatus.PENDING if notice is not None else followup.notice_status,
@@ -220,10 +235,15 @@ class FollowupRepository(Protocol):
         followup_id: UUID,
         outbox_id: UUID,
         send_route: SendRoute,
+        dm_thread_id: UUID,
         decided_by_user_id: UUID,
         now: datetime,
         notice_text: str | None = None,
-    ) -> Followup: ...
+        session: Any = None,
+    ) -> Followup:
+        """`open -> approved`. With `session` (the caller's open transaction, e.g. the
+        outbox insert's) the guarded write joins it, so both commit or neither does."""
+        ...
 
     def discard(
         self, *, tenant_id: UUID, followup_id: UUID, decided_by_user_id: UUID, now: datetime
@@ -278,14 +298,17 @@ class MemoryFollowupRepository:
         followup_id: UUID,
         outbox_id: UUID,
         send_route: SendRoute,
+        dm_thread_id: UUID,
         decided_by_user_id: UUID,
         now: datetime,
         notice_text: str | None = None,
+        session: Any = None,
     ) -> Followup:
         approved = approve_followup(
             self._require(tenant_id, followup_id),
             outbox_id=outbox_id,
             send_route=send_route,
+            dm_thread_id=dm_thread_id,
             decided_by_user_id=decided_by_user_id,
             now=now,
             notice_text=notice_text,
@@ -353,7 +376,7 @@ _APPROVE = text(
     """
     UPDATE interaction_followups
        SET status = 'approved', send_route = :send_route, outbox_id = :outbox_id,
-           decided_at = :now, decided_by_user_id = :user_id,
+           dm_thread_id = :dm_thread_id, decided_at = :now, decided_by_user_id = :user_id,
            notice_status = :notice_status, notice_text = :notice_text, updated_at = :now
      WHERE id = :id AND status = 'open'
     """
@@ -449,14 +472,17 @@ class PostgresFollowupRepository:
         followup_id: UUID,
         outbox_id: UUID,
         send_route: SendRoute,
+        dm_thread_id: UUID,
         decided_by_user_id: UUID,
         now: datetime,
         notice_text: str | None = None,
+        session: Any = None,
     ) -> Followup:
         approved = approve_followup(
             self._require(tenant_id, followup_id),
             outbox_id=outbox_id,
             send_route=send_route,
+            dm_thread_id=dm_thread_id,
             decided_by_user_id=decided_by_user_id,
             now=now,
             notice_text=notice_text,
@@ -468,11 +494,13 @@ class PostgresFollowupRepository:
                 "id": followup_id,
                 "send_route": approved.send_route.value if approved.send_route else None,
                 "outbox_id": outbox_id,
+                "dm_thread_id": dm_thread_id,
                 "now": now,
                 "user_id": decided_by_user_id,
                 "notice_status": approved.notice_status.value,
                 "notice_text": approved.notice_text,
             },
+            session=session,
         )
         return approved
 
@@ -494,7 +522,15 @@ class PostgresFollowupRepository:
         return row
 
     @staticmethod
-    def _write(tenant_id: UUID, statement: Any, params: dict[str, Any]) -> None:
-        with tenant_session(tenant_id) as session:
+    def _write(
+        tenant_id: UUID, statement: Any, params: dict[str, Any], *, session: Any = None
+    ) -> None:
+        """The guarded write: exactly one `open` row must change. Inside the caller's
+        `session` when given (raising rolls the caller's whole transaction back)."""
+        if session is not None:
             if session.execute(statement, params).rowcount != 1:
+                raise InvalidFollowupTransition(f"followup {params['id']} was decided concurrently")
+            return
+        with tenant_session(tenant_id) as own:
+            if own.execute(statement, params).rowcount != 1:
                 raise InvalidFollowupTransition(f"followup {params['id']} was decided concurrently")
