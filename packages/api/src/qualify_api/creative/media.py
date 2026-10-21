@@ -51,7 +51,7 @@ import logging
 import math
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -69,6 +69,7 @@ from qualify_creative.adapters.byteplus_omnihuman import MODEL_IDS, omnihuman_co
 from qualify_creative.adapters.byteplus_speech import VOICE_SLOT_MODEL, speech_cost_usd
 from qualify_creative.compose import (
     FlyerText,
+    price_fits,
     render_ad_slides,
     render_carousel_slide,
     render_closing_slide,
@@ -104,11 +105,12 @@ from qualify_creative.render.adapter import MODEL_ID as REMOTION_MODEL
 from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.client import RenderServiceError
 from qualify_creative.render.manifest import TemplateManifest
-from qualify_creative.render.props import ProductFacts, PropsProblem, fit_text
+from qualify_creative.render.props import ProductFacts, PropsProblem, RenderProps, fit_text
 from qualify_creative.render.recipes import Engine
 from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
 from qualify_creative.schemas import (
+    MAX_PRODUCT_IMAGES,
     SCRIPT_MAX,
     BrandKit,
     CarouselSlide,
@@ -238,6 +240,25 @@ class MediaUsage:
 
 
 @dataclass(frozen=True)
+class MediaWarning:
+    """Something the piece left out on purpose — produced, but not as asked. `code` is
+    stable for the UI to key on, `detail` is the operator's Spanish, `fields` the facts
+    (ticket 24803289: a catalog price too long to print whole is not printed at all)."""
+
+    code: str
+    detail: str
+    fields: dict[str, Any] = field(default_factory=dict)
+
+
+#: `MediaWarning.code` when the catalog's price was not printed (it is never printed cut).
+PRICE_NOT_PRINTED = "price_not_printed"
+PRICE_NOT_PRINTED_TEXT = (
+    "El precio del catálogo no cabe completo en esta pieza, así que no se imprimió: "
+    "un precio recortado sería otro precio."
+)
+
+
+@dataclass(frozen=True)
 class MediaOutcome:
     media: tuple[MediaWrite, ...] = ()
     usage: tuple[MediaUsage, ...] = ()
@@ -248,6 +269,7 @@ class MediaOutcome:
     #: evidence) and the outputs that did NOT render while others did.
     template_run: TemplateRunWrite | None = None
     partial_failures: dict[str, dict[str, Any]] = field(default_factory=dict)
+    warnings: tuple[MediaWarning, ...] = ()
 
     @property
     def spent_usd(self) -> Decimal:
@@ -912,6 +934,9 @@ class MediaProducer:
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=CLIP_NO_PUBLIC_URL
             )
         save = _Saver(self._store, tenant_id, draft_id, revision)
+        warnings: list[MediaWarning] = []
+        if brief.kind is ContentKind.STATIC_FLYER:
+            brief = _printable_price(draft_id, brief, warnings)
         try:
             if brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images:
                 media = self._ad_image(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
@@ -933,7 +958,10 @@ class MediaProducer:
                     raw=f"retired video engine {brief.media.video_engine}",
                 )
             elif brief.kind is ContentKind.TEMPLATE:
-                return self._template(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
+                outcome = self._template(
+                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, warnings
+                )
+                return replace(outcome, warnings=tuple(warnings))
             elif brief.kind is ContentKind.CAROUSEL:
                 media = self._carousel(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             elif brief.kind is ContentKind.CLIP:
@@ -949,6 +977,7 @@ class MediaProducer:
                 failure=exc.failure,
                 detail=exc.detail,
                 template_run=exc.template_run,
+                warnings=tuple(warnings),
             )
         except Exception as exc:  # a vendor error, a missing upload, a bad image file
             logger.warning("creative media for draft %s failed: %s", draft_id, exc)
@@ -958,8 +987,9 @@ class MediaProducer:
                 usage=tuple(usage),
                 failure=FailureReason.PROVIDER_ERROR.value,
                 detail=avatar_failure_text(raw) if presenter else ark_failure_text(raw),
+                warnings=tuple(warnings),
             )
-        return MediaOutcome(media=tuple(media), usage=tuple(usage))
+        return MediaOutcome(media=tuple(media), usage=tuple(usage), warnings=tuple(warnings))
 
     # -- inputs ------------------------------------------------------------------------
 
@@ -1001,7 +1031,9 @@ class MediaProducer:
         self, save: _Saver, brief: ContentBrief, kit: BrandKit, copy: CopyPayload
     ) -> list[MediaWrite]:
         slides = render_flyer(
-            text=FlyerText(hook=copy.hook, cta=copy.cta),
+            # the price is the catalog's label the brief carries (ticket 24803289),
+            # printed as is — never a figure the copy model wrote
+            text=FlyerText(hook=copy.hook, cta=copy.cta, price=brief.media.price_line),
             products=self._products(brief),
             background=self._read(brief.media.background_key),
             palette=kit.palette_rgb,
@@ -1204,7 +1236,7 @@ class MediaProducer:
             )
         slides = render_ad_slides(
             scenes=scenes,
-            text=FlyerText(hook=copy.hook, cta=copy.cta),
+            text=FlyerText(hook=copy.hook, cta=copy.cta, price=media.price_line),
             palette=kit.palette_rgb,
             logo=self._logo(kit, media.brand_logo_key),
             carousel=media.carousel,
@@ -2087,6 +2119,7 @@ class MediaProducer:
         budget: BudgetContext,
         usage: list[MediaUsage],
         save: _Saver,
+        warnings: list[MediaWarning],
     ) -> MediaOutcome:
         """One run, several outputs (plan §2.2). The recipe router picks the template
         unless the operator pinned one; the props are validated against the manifest
@@ -2106,7 +2139,14 @@ class MediaProducer:
             if self._catalog is not None
             else ()
         )
-        manifest, rule = self._pick_template(brief, products, budget)
+        # ticket 24803289: the angle's scene, photographed by Seedream with the real product
+        # as reference, becomes the template's FIRST photo. Everything that can refuse the
+        # piece for free — the template, its output, its props, the render's budget — is
+        # decided first with the scene's slot held by a placeholder (it counts as a photo),
+        # so Seedream is paid only for a render that will actually be asked for
+        wants_scene = bool(brief.media.scene_prompt.strip())
+        planned = _with_scene_photo(brief, _PENDING_SCENE_KEY) if wants_scene else brief
+        manifest, rule = self._pick_template(planned, products, budget)
         port = template_port(manifest, brief.format, video=brief.wants_template_video)
         if port is None:
             raise _MediaFailed(
@@ -2118,20 +2158,33 @@ class MediaProducer:
         if brief.media.brand_logo_key:
             # the logo the piece was given (§ 2026-10-06) takes the template's logo slot
             kit = kit.model_copy(update={"logo_asset_key": brief.media.brand_logo_key})
-        props = build_props(
-            manifest=manifest,
-            brief=brief,
-            copy=copy,
-            kit=kit,
-            brand_name=(
-                self._brand_names(tenant_id=tenant_id, brand_id=brief.brand_id)
-                if self._brand_names is not None
-                else ""
-            ),
-            products=products,
-            tenant_id=tenant_id,
-            draft_id=draft_id,
+        # the catalog's price the brief carries wins over the name-matched product's
+        # (ticket 24803289) — whole or not at all: "" keeps the template from printing
+        # any price (None would let it fall back to the name-matched product's)
+        price_line = _template_price(draft_id, manifest, brief, warnings)
+        brand_name = (
+            self._brand_names(tenant_id=tenant_id, brand_id=brief.brand_id)
+            if self._brand_names is not None
+            else ""
         )
+
+        def props_for(source: ContentBrief) -> RenderProps:
+            return build_props(
+                manifest=manifest,
+                brief=source,
+                copy=copy,
+                kit=kit,
+                brand_name=brand_name,
+                products=products,
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                price_line=price_line,
+            )
+
+        props = props_for(planned)
+        # the run row is evidence: before the scene exists it records the real photos
+        # only, never the placeholder holding the scene's slot
+        recorded = props_for(brief) if wants_scene else props
         job_id = _template_job_id(draft_id, manifest)
         eta = manifest.cost_model.eta_seconds(selected, _expected_duration(manifest, props))
         per_render = self._pricing.unit_price(model_id=REMOTION_MODEL, unit="per_render")
@@ -2147,7 +2200,7 @@ class MediaProducer:
                 name: {"kind": out.kind.value, "status": "pending"}
                 for name, out in selected.items()
             },
-            props=props.to_payload(),
+            props=recorded.to_payload(),
             estimated_eta_sec=Decimal(str(eta)),
             estimated_cost_usd=estimated_cost,
         )
@@ -2163,14 +2216,36 @@ class MediaProducer:
                 ),
                 raw=detail,
             )
-        if budget.hard_stop and estimated_cost > budget.remaining_usd:
-            detail = f"template render would cost {estimated_cost} with {budget.remaining_usd} left"
+        left = self._remaining(budget, usage)
+        if left.hard_stop and estimated_cost > left.remaining_usd:
+            detail = f"template render would cost {estimated_cost} with {left.remaining_usd} left"
             raise _MediaFailed(
                 FailureReason.BUDGET_EXCEEDED.value,
                 BUDGET_TEXT,
                 template_run=_finished(run, "failed", FailureReason.BUDGET_EXCEEDED.value, detail),
                 raw=detail,
             )
+        if wants_scene:
+            # the scene is pre-flighted against what is left AFTER the render it feeds, so
+            # a budget that fits the scene but not both refuses before anything is paid.
+            # From `budget`, not `left`: `_run` takes what was already spent off itself
+            scene_budget = BudgetContext(
+                remaining_usd=budget.remaining_usd - estimated_cost, hard_stop=budget.hard_stop
+            )
+            try:
+                scene_key = self._template_scene(
+                    tenant_id, draft_id, brief, kit, scene_budget, usage, save
+                )
+            except _MediaFailed as exc:
+                raise _MediaFailed(
+                    exc.failure,
+                    exc.detail,
+                    template_run=_finished(run, "failed", exc.failure, exc.raw or exc.detail),
+                    raw=exc.raw,
+                ) from exc
+            brief = _with_scene_photo(brief, scene_key)
+            props = props_for(brief)
+            run = TemplateRunWrite(**{**run.__dict__, "props": props.to_payload()})
 
         request = GenerationRequest(
             task=GenerationTask.TEMPLATE_RENDER,
@@ -2304,6 +2379,43 @@ class MediaProducer:
             partial_failures=failed,
             detail=detail,
         )
+
+    def _template_scene(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+    ) -> str:
+        """The key of the template's generated scene (ticket 24803289): Seedream
+        photographs the product (the brief's photos as references) in
+        `media.scene_prompt` and the JPEG is kept under the draft like any slide. The
+        caller leads `product_keys` with it (`_with_scene_photo`), so the template's
+        photo port shows it first."""
+        references = self._products(brief)
+        prompt = ad_scene_prompt(
+            brief=brief,
+            kit=kit,
+            brand=self._brand_name(tenant_id, brief.brand_id),
+            mode=AdImageMode.PRODUCT if references else AdImageMode.SCENE,
+            products=len(references),
+            has_background=False,
+        )
+        scene = self._scene_image(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brand_id=brief.brand_id,
+            prompt=prompt,
+            references=references,
+            ratio=brief.format.aspect_ratio,
+            budget=budget,
+            usage=usage,
+            what="escena de la plantilla",
+        )
+        return save("scene.jpg", to_meta_jpeg(scene), JPEG)
 
     def _pick_template(
         self, brief: ContentBrief, products: tuple[ProductFacts, ...], budget: BudgetContext
@@ -3014,6 +3126,70 @@ def _expected_duration(manifest: TemplateManifest, props: Any) -> float:
     photos = len(getattr(props, "photos", ()))
     guess = 2.5 * max(photos, 1) + 3.0
     return float(min(max(guess, manifest.duration.min_sec), manifest.duration.max_sec))
+
+
+#: Holds the generated scene's slot while the template is chosen and its props validated
+#: (ticket 24803289) — counted as a photo, never read, never sent to the render service.
+_PENDING_SCENE_KEY = "pending/scene.jpg"
+
+
+def _with_scene_photo(brief: ContentBrief, scene_key: str) -> ContentBrief:
+    """`brief` with `scene_key` leading its product photos, capped like any upload."""
+    photos = (scene_key, *brief.media.product_keys)[:MAX_PRODUCT_IMAGES]
+    return brief.model_copy(
+        update={"media": brief.media.model_copy(update={"product_keys": photos})}
+    )
+
+
+def _price_warning(draft_id: UUID, price: str, reason: str, **fields: Any) -> MediaWarning:
+    logger.warning(
+        "creative media for draft %s: price %r not printed (%s) %s", draft_id, price, reason, fields
+    )
+    return MediaWarning(
+        code=PRICE_NOT_PRINTED,
+        detail=PRICE_NOT_PRINTED_TEXT,
+        fields={"price": price, "reason": reason, **fields},
+    )
+
+
+def _printable_price(
+    draft_id: UUID, brief: ContentBrief, warnings: list[MediaWarning]
+) -> ContentBrief:
+    """`brief` as a locally composed piece may print it (ticket 24803289): its catalog
+    price kept whole, or dropped with a warning when even the smallest legible type
+    cannot hold it — never cut."""
+    price = brief.media.price_line
+    if price_fits(price, brief.format.dimensions):
+        return brief
+    warnings.append(
+        _price_warning(draft_id, price, "too_long", where="flyer", format=brief.format.value)
+    )
+    return brief.model_copy(update={"media": brief.media.model_copy(update={"price_line": ""})})
+
+
+def _template_price(
+    draft_id: UUID,
+    manifest: TemplateManifest,
+    brief: ContentBrief,
+    warnings: list[MediaWarning],
+) -> str | None:
+    """The `price_line` a template is given: None (no catalog price on the brief — the
+    template resolves its own, as before), the catalog's label whole, or "" — printed
+    nowhere, with a warning — when the template's slot cannot hold it whole or the
+    template has no price slot at all."""
+    price = brief.media.price_line.strip()
+    if not price:
+        return None
+    port = manifest.inputs.get("price_line")
+    if port is None:
+        warnings.append(_price_warning(draft_id, price, "no_price_slot", template=manifest.id))
+        return ""
+    if port.max is not None and len(price) > port.max:
+        warnings.append(
+            _price_warning(draft_id, price, "too_long", template=manifest.id, max_chars=port.max)
+        )
+        return ""
+    return price
 
 
 def _finished(
