@@ -47,6 +47,7 @@ from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
 from .leads_state import LeadsState
+from .piece_download import router as piece_download_router
 from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publish_hub_state import PublishHubState
@@ -87,6 +88,8 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
 # avatar proxy already mounts through `api_transformer`.
 avatar_api.include_router(r2_media_router)
+# «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
+avatar_api.include_router(piece_download_router)
 
 
 def index() -> rx.Component:

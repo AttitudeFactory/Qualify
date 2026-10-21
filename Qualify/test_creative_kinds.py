@@ -479,12 +479,17 @@ ALL_FORMATS = ["reels_9_16", "story_9_16", "feed_4_5", "feed_1_1"]
 
 def test_each_kind_offers_its_formats_and_starts_on_its_default() -> None:
     """§ request 2026-10-13: every kind in every Instagram format that suits it — the
-    ad image gains the Reel, the ad video the Story and the feed posts, the template the
-    square post; a carousel stays in the feed, where Instagram takes it."""
+    ad video the Story and the feed posts, the template the square post; a carousel stays
+    in the feed, where Instagram takes it. § request 2026-10-21: the Flyer is an image and
+    no longer offers the Reel (it animated the still into a video)."""
     state = CreativeState()
     state.choose_kind("static_flyer")
-    assert _formats(state) == ["feed_4_5", "feed_1_1", "story_9_16", "reels_9_16"]
+    assert _formats(state) == ["feed_4_5", "feed_1_1", "story_9_16"]
     assert state.effective_format == "feed_4_5"
+    # a Reel picked under another kind, or forced, never reaches a flyer's brief
+    state.set_brief_format("reels_9_16")
+    assert state.effective_format == "feed_4_5"
+    assert state._generator_form()["content_format"] == "feed_4_5"
     state.choose_kind("avatar_video")
     assert state.effective_format == "reels_9_16"
     assert ["feed_1_1", "Post cuadrado 1:1"] in state.format_options

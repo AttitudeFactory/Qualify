@@ -35,6 +35,7 @@ from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
     _script_on_mount,
 )
 from .discover_reels import discover_view
+from .download_buttons import piece_download_button
 from .media_carousel import media_carousel
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
@@ -4077,14 +4078,16 @@ def _download(key: rx.Var[str], label: str = "Descargar") -> rx.Component:
     )
 
 
-def _item_download(item: rx.Var, label: str = "Descargar") -> rx.Component:
-    return rx.link(
-        rx.hstack(rx.icon("download", size=14), rx.text(label, size="2"), spacing="1"),
-        href=rx.cond(
+def _item_download(item: rx.Var) -> rx.Component:
+    """§ request 2026-10-21: the ONE «Descargar» — the whole piece (its files and its
+    words, m-24828908); the file alone only when the .zip link could not be minted."""
+    return piece_download_button(
+        CreativeState.gen_draft.download_path,
+        CreativeState.gen_draft.download_name,
+        file_url=rx.cond(
             item.url != "", BACKEND_BASE + item.url + "?download=1", rx.get_upload_url(item.key)
-        ),
-        is_external=True,
-        download=True,
+        ).to(str),
+        file_name=rx.cond(item.media_type == "video", "qualify-video.mp4", "qualify-imagen.jpg"),
     )
 
 
@@ -4130,15 +4133,24 @@ def _script_result() -> rx.Component:
                 width="100%",
             ),
         ),
-        rx.button(
-            rx.icon("copy", size=14),
-            rx.cond(has_shots, "Copiar guion y tomas", "Copiar guion"),
-            variant="soft",
-            size="1",
-            on_click=[
-                rx.set_clipboard(variant.script_clipboard),
-                rx.toast.success("Guion copiado"),
-            ],
+        rx.hstack(
+            rx.button(
+                rx.icon("copy", size=14),
+                rx.cond(has_shots, "Copiar guion y tomas", "Copiar guion"),
+                variant="soft",
+                size="1",
+                on_click=[
+                    rx.set_clipboard(variant.script_clipboard),
+                    rx.toast.success("Guion copiado"),
+                ],
+            ),
+            # a script has no file: its «Descargar» is the .zip of its words (m-24828908)
+            piece_download_button(
+                CreativeState.gen_draft.download_path, CreativeState.gen_draft.download_name
+            ),
+            spacing="2",
+            align="center",
+            wrap="wrap",
         ),
         rx.divider(),
         _copy_block("Descripción del post", variant.description, "Descripción copiada"),

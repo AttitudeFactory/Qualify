@@ -303,6 +303,11 @@ _TEMPLATE_FORMATS = {
     # «Con plantilla»: the still, in the feed and story — a Reel is a video, not this
     "template": (ContentFormat.FEED_4_5, ContentFormat.FEED_1_1, ContentFormat.STORY_9_16),
 }
+#: The Flyer is an image (§ request 2026-10-21, «me genera un video cuando selecciono
+#: reel»): the feed and the story, never a Reel — which would animate the still into a
+#: video (`MediaProducer._ad_reel`, added 2026-10-13). The kind still accepts a Reel, so
+#: a flyer stored that way opens and regenerates as it was asked.
+_FLYER_FORMATS = (ContentFormat.FEED_4_5, ContentFormat.FEED_1_1, ContentFormat.STORY_9_16)
 #: Copy options per piece (§ request 2026-10-08): only a real creator's script offers
 #: several — it has no media made from one of them; every other kind asks for ONE until
 #: the angles engine exists.
@@ -1563,11 +1568,12 @@ class CreativeState(rx.State):
             kind = ContentKind(self.brief_kind)
         except ValueError:
             return []
-        formats = (
-            _TEMPLATE_FORMATS["video" if self.gen_category == "ad" else "template"]
-            if kind is ContentKind.TEMPLATE
-            else kind.formats
-        )
+        if kind is ContentKind.TEMPLATE:
+            formats = _TEMPLATE_FORMATS["video" if self.gen_category == "ad" else "template"]
+        elif kind is ContentKind.STATIC_FLYER:
+            formats = _FLYER_FORMATS
+        else:
+            formats = kind.formats
         return [[fmt.value, _FORMAT_LABELS[fmt.value]] for fmt in formats]
 
     @rx.var

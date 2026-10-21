@@ -912,6 +912,18 @@ class DraftVM:
     failure_detail: str = ""
     #: The copy may be edited (the FSM's `edit` edge exists from this status).
     can_edit: bool = False
+    #: «Descargar todo» (m-24828908): the backend path of the piece's `.zip` and its file
+    #: name — "" while there is nothing to download (a draft still generating).
+    download_path: str = ""
+    download_name: str = ""
+
+
+def draft_kind_label(kind: str, *, has_video: bool) -> str:
+    """What the piece is called: a template that rendered its Reel is the Video
+    publicitario (§ 2026-10-06), every other kind its own name."""
+    if kind == "template" and has_video:
+        return VIDEO_TYPE_LABELS["ad_video"]
+    return KIND_LABELS.get(kind, "")
 
 
 # Mirrors `qualify_api.creative.fsm.EDITABLE_STATUSES` (pinned equal by a test): editing is
@@ -971,11 +983,8 @@ def build_draft_vm(
         is_drafting=status == DraftStatus.DRAFTING.value,
         is_failed=status == DraftStatus.FAILED.value,
         kind=kind,
-        # a template that rendered its Reel is the Video publicitario (§ 2026-10-06)
-        kind_label=(
-            VIDEO_TYPE_LABELS["ad_video"]
-            if kind == "template" and any(item.media_type == "video" for item in media)
-            else KIND_LABELS.get(kind, "")
+        kind_label=draft_kind_label(
+            kind, has_video=any(item.media_type == "video" for item in media)
         ),
         media=tuple(media),
         has_video=any(item.media_type == "video" for item in media),
