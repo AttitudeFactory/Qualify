@@ -109,3 +109,93 @@ def test_mismatched_lengths_are_refused() -> None:
 
 def test_without_a_committed_report_every_class_is_unreliable() -> None:
     assert class_reliability("no-such-version") == {c: False for c in IntentClass}
+
+
+# --- the CLI: splits, external predictions, the reliability guard ---------------------
+
+GOLDEN_LINES = [
+    '{"text": "¿precio?", "labels": ["price"], "split": "dev"}',
+    '{"text": "¿horario?", "labels": ["hours"], "split": "test"}',
+    '{"text": "¡lindo!", "labels": ["general"], "split": "test"}',
+]
+
+
+def test_parse_golden_reads_the_split() -> None:
+    assert [item.split for item in parse_golden(GOLDEN_LINES)] == ["dev", "test", "test"]
+
+
+def _write(tmp_path, name: str, lines: list[str]):  # type: ignore[no-untyped-def]
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_cli_scores_external_predictions_on_one_split(tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    from qualify_api.intent.eval import _run
+
+    golden = _write(tmp_path, "golden.jsonl", GOLDEN_LINES)
+    preds = _write(
+        tmp_path,
+        "preds.jsonl",
+        [
+            '{"text": "¿horario?", "predicted": {"hours": 0.9}}',
+            '{"text": "¡lindo!", "predicted": {"general": 0.8}}',
+        ],
+    )
+
+    assert (
+        _run(
+            [
+                "--golden",
+                str(golden),
+                "--split",
+                "test",
+                "--from-predictions",
+                str(preds),
+                "--model-id",
+                "other-model",
+                "--detector-version",
+                "other-v1",
+            ]
+        )
+        == 0
+    )
+
+    import json
+
+    report = json.loads(capsys.readouterr().out)
+    assert (report["model_id"], report["detector_version"]) == ("other-model", "other-v1")
+    assert (report["split"], report["comments"], report["exact_match"]) == ("test", 2, 1.0)
+    assert report["cost_usd"] == 0
+
+
+def test_cli_refuses_predictions_that_do_not_match_the_split(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from qualify_api.intent.eval import _run
+
+    golden = _write(tmp_path, "golden.jsonl", GOLDEN_LINES)
+    preds = _write(tmp_path, "preds.jsonl", ['{"text": "¿precio?", "predicted": {"price": 1}}'])
+
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "--golden",
+                str(golden),
+                "--split",
+                "test",
+                "--from-predictions",
+                str(preds),
+                "--model-id",
+                "m",
+            ]
+        )
+
+
+@pytest.mark.parametrize("split", [None, "dev"])
+def test_cli_never_writes_reliability_from_tuned_data(tmp_path, split: str | None) -> None:  # type: ignore[no-untyped-def]
+    from qualify_api.intent.eval import _run
+
+    golden = _write(tmp_path, "golden.jsonl", GOLDEN_LINES)
+    argv = ["--golden", str(golden), "--write-reliability"] + (["--split", split] if split else [])
+
+    with pytest.raises(SystemExit):
+        _run(argv)
