@@ -67,6 +67,7 @@ from qualify_creative.schemas import (
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
@@ -132,6 +133,16 @@ class UnknownDraft(Exception):
 
 class UnknownVariant(Exception):
     """No such variant visible in this tenant, or it belongs to another draft."""
+
+
+class DuplicateDraftRequest(Exception):
+    """A draft with this `request_key` already exists (a concurrent create won the
+    unique index): `draft_id` is that draft. Raised by the repository, absorbed by
+    `ContentService.create_draft`, which returns it without dispatching again."""
+
+    def __init__(self, draft_id: UUID) -> None:
+        super().__init__(f"draft {draft_id} already holds this request key")
+        self.draft_id = draft_id
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +332,10 @@ class ContentRepository(Protocol):
         brief: ContentBrief,
         voice_profile_version: int,
         pipeline_version: str,
+        request_key: UUID | None = None,
     ) -> UUID: ...
+
+    def draft_id_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None: ...
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None: ...
 
@@ -474,6 +488,42 @@ class PostgresContentRepository:
         brief: ContentBrief,
         voice_profile_version: int,
         pipeline_version: str,
+        request_key: UUID | None = None,
+    ) -> UUID:
+        try:
+            return self._insert_brief_and_draft(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                brief=brief,
+                voice_profile_version=voice_profile_version,
+                pipeline_version=pipeline_version,
+                request_key=request_key,
+            )
+        except IntegrityError:
+            # the whole transaction (brief + draft) rolled back; if the key is why, the
+            # winner's draft is the answer
+            if request_key is None:
+                raise
+            existing = self.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+            if existing is None:
+                raise
+            raise DuplicateDraftRequest(existing) from None
+
+    def draft_id_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
+        with tenant_session(tenant_id) as session:
+            return session.scalar(
+                select(orm.ContentDraft.id).where(orm.ContentDraft.request_key == request_key)
+            )
+
+    def _insert_brief_and_draft(
+        self,
+        *,
+        tenant_id: UUID,
+        user_id: UUID,
+        brief: ContentBrief,
+        voice_profile_version: int,
+        pipeline_version: str,
+        request_key: UUID | None,
     ) -> UUID:
         with tenant_session(tenant_id) as session:
             brief_row = orm.ContentBrief(
@@ -508,6 +558,7 @@ class PostgresContentRepository:
                 title=brief.topic[:TITLE_MAX],
                 category=default_category(brief.kind, brief.format).value,
                 revision=1,
+                request_key=request_key,
             )
             session.add(draft_row)
             session.flush()
@@ -926,16 +977,31 @@ class ContentService:
     # -- create -------------------------------------------------------------
 
     def create_draft(
-        self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief, user_id: UUID
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        brief: ContentBrief,
+        user_id: UUID,
+        request_key: UUID | None = None,
     ) -> UUID:
         """Persist brief + draft in ``DRAFTING`` (one transaction), dispatch generation,
         return the draft id immediately — generation runs out of band (§7.4).
 
         Readiness and the image-route policy are checked BEFORE any row exists:
         ``BrandNotReady`` / ``RouteBlockedByPolicy`` leave nothing behind to reap.
+
+        ``request_key`` makes it idempotent (ticket 24803289): a key that already has a
+        draft returns that draft and dispatches nothing — its generation, which is what
+        costs money, runs once whatever retries or concurrent calls the caller makes.
+        Without a key nothing changes.
         """
         if brief.brand_id != brand_id:
             raise ValueError("brief.brand_id does not match brand_id")
+        if request_key is not None:
+            existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
+            if existing is not None:
+                return existing
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
         voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
         missing = tuple(
@@ -952,16 +1018,30 @@ class ContentService:
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
 
-        draft_id = self._repo.insert_brief_and_draft(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            brief=brief,
-            voice_profile_version=voice.version,
-            pipeline_version=PIPELINE_VERSION,
-        )
+        # the key only reaches repositories that know it (every other caller sends none)
+        keyed: dict[str, UUID] = {"request_key": request_key} if request_key else {}
+        try:
+            draft_id = self._repo.insert_brief_and_draft(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                brief=brief,
+                voice_profile_version=voice.version,
+                pipeline_version=PIPELINE_VERSION,
+                **keyed,
+            )
+        except DuplicateDraftRequest as duplicate:
+            # a concurrent call with the same key won the unique index: its draft is
+            # ours, and its generation is already dispatched — never a second one
+            return duplicate.draft_id
         if self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return draft_id
+
+    def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
+        """The draft created with `request_key`, if any — how a caller whose create was
+        interrupted learns, without guessing, whether the draft (and its paid
+        generation) exists."""
+        return self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
 
     def preview_prompt(self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief) -> bool:
         """Print the copy prompt this brief would send (`trace.copy_prompt`), before any
