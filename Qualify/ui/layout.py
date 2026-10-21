@@ -31,7 +31,7 @@ from ..auth_state import AuthState
 from . import tokens as T
 from .state import NavState
 
-LANDING_URL = "https://attitudefactory.co/qualify"
+LANDING_URL = "https://qualify.la"
 
 # An item is (label, lucide icon, route, enabled). Enabled items navigate; disabled ones
 # show a "pronto" badge. The active item is derived from the current route, never
