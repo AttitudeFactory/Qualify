@@ -16,7 +16,7 @@ What this file pins:
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -37,6 +37,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.conversations.models import ConversationOutboxItem
 from qualify_api.followups import (
+    Followup,
     FollowupStatus,
     FollowupTrigger,
     InvalidFollowupTransition,
@@ -133,10 +134,15 @@ def test_other_roles_have_nothing(engines, role: str, sql: str) -> None:
 
 @pytest.fixture
 def seeded() -> dict[str, UUID]:
+    return seed_world(TENANT, OTHER)
+
+
+def seed_world(tenant: UUID, other: UUID) -> dict[str, UUID]:
     """A comment with its intent analysis, the author's DM thread, a story reply and a
-    queued send — everything a followup can point at, in TENANT."""
+    queued send — everything a followup can point at, in `tenant` (`other` exists too,
+    empty, for the isolation checks)."""
     with admin_session() as session:
-        for tenant_id, name in ((TENANT, "followups"), (OTHER, "followups-other")):
+        for tenant_id, name in ((tenant, f"followups-{tenant}"), (other, f"followups-{other}")):
             if session.get(Tenant, tenant_id) is None:
                 session.add(
                     Tenant(
@@ -149,15 +155,15 @@ def seeded() -> dict[str, UUID]:
                 )
                 session.flush()
         app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
-        user = User(tenant_id=TENANT, email=f"u-{uuid4()}@followups.co", display_name="U")
+        user = User(tenant_id=tenant, email=f"u-{uuid4()}@followups.co", display_name="U")
         session.add_all([app, user])
         session.flush()
         app_id, user_id = app.id, user.id
 
     igsid = f"igsid-{uuid4().hex[:8]}"
-    with tenant_session(TENANT) as session:
+    with tenant_session(tenant) as session:
         connection = SocialConnection(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             platform_app_id=app_id,
             platform="instagram",
             account_type="business",
@@ -172,14 +178,14 @@ def seeded() -> dict[str, UUID]:
         session.add(connection)
         session.flush()
         comment_thread = Thread(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             connection_id=connection.id,
             channel="comment",
             external_thread_id=f"media-{uuid4().hex[:8]}",
             status="open",
         )
         dm_thread = Thread(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             connection_id=connection.id,
             channel="dm",
             external_thread_id=igsid,
@@ -188,7 +194,7 @@ def seeded() -> dict[str, UUID]:
         session.add_all([comment_thread, dm_thread])
         session.flush()
         comment = Message(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             thread_id=comment_thread.id,
             connection_id=connection.id,
             external_message_id=f"c-{uuid4().hex[:10]}",
@@ -199,7 +205,7 @@ def seeded() -> dict[str, UUID]:
             shape_version="test",
         )
         story_reply = Message(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             thread_id=dm_thread.id,
             connection_id=connection.id,
             external_message_id=f"mid-{uuid4().hex[:10]}",
@@ -212,7 +218,7 @@ def seeded() -> dict[str, UUID]:
         session.add_all([comment, story_reply])
         session.flush()
         intent = CommentIntentResult(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             connection_id=connection.id,
             message_id=comment.id,
             source_id=comment.external_message_id,
@@ -223,7 +229,7 @@ def seeded() -> dict[str, UUID]:
             commercial_intent=True,
         )
         outbox = ConversationOutboxItem(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             connection_id=connection.id,
             thread_id=dm_thread.id,
             channel="dm",
@@ -245,13 +251,13 @@ def seeded() -> dict[str, UUID]:
         }
 
 
-def _row(seeded: dict[str, UUID], **overrides) -> InteractionFollowup:
-    values = dict(
+def _row(seeded: dict[str, UUID], **overrides: object) -> InteractionFollowup:
+    values: dict[str, object] = dict(
         tenant_id=TENANT,
         connection_id=seeded["connection"],
         origin_kind="comment",
         origin_message_id=seeded["comment"],
-        dm_thread_id=seeded["dm_thread"],
+        # A comment's followup has no DM thread until a send is approved.
         trigger="intent",
         intent_result_id=seeded["intent"],
         notice_status="not_requested",
@@ -260,11 +266,12 @@ def _row(seeded: dict[str, UUID], **overrides) -> InteractionFollowup:
     return InteractionFollowup(**values)
 
 
-def _approved(seeded: dict[str, UUID], **overrides) -> InteractionFollowup:
-    values = dict(
+def _approved(seeded: dict[str, UUID], **overrides: object) -> InteractionFollowup:
+    values: dict[str, object] = dict(
         status="approved",
         send_route="private_reply",
         outbox_id=seeded["outbox"],
+        dm_thread_id=seeded["dm_thread"],
         decided_by_user_id=seeded["user"],
         decided_at=NOW,
     )
@@ -272,7 +279,11 @@ def _approved(seeded: dict[str, UUID], **overrides) -> InteractionFollowup:
     return _row(seeded, **values)
 
 
-def _expect(exc_type, row_factory, tenant_id: UUID = TENANT) -> None:
+def _expect(
+    exc_type: type[Exception],
+    row_factory: Callable[[], InteractionFollowup],
+    tenant_id: UUID = TENANT,
+) -> None:
     with pytest.raises(IntegrityError) as exc, tenant_session(tenant_id) as session:
         session.add(row_factory())
         session.flush()
@@ -292,6 +303,7 @@ def test_valid_rows_are_accepted(seeded) -> None:
             seeded,
             origin_kind="story_reply",
             origin_message_id=seeded["story_reply"],
+            dm_thread_id=seeded["dm_thread"],
             trigger="manual",
             intent_result_id=None,
             notice_status="not_applicable",
@@ -313,6 +325,12 @@ def test_valid_rows_are_accepted(seeded) -> None:
         {"trigger": "manual"},
         # a story reply has no public comment for a notice
         {"origin_kind": "story_reply", "origin_message_id": None, "notice_status": "pending"},
+        # a story reply is already a DM: its thread is known from the start
+        {
+            "origin_kind": "story_reply",
+            "origin_message_id": None,
+            "notice_status": "not_applicable",
+        },
         # «posted» ⇔ Meta's id of the public reply
         {"notice_status": "posted"},
         {"notice_external_id": "17890000000000001"},
@@ -320,13 +338,15 @@ def test_valid_rows_are_accepted(seeded) -> None:
         {"status": "discarded"},
     ],
 )
-def test_checks(seeded, overrides) -> None:
+def test_checks(seeded: dict[str, UUID], overrides: dict[str, object]) -> None:
     if overrides.get("origin_message_id", "") is None:
         overrides = {**overrides, "origin_message_id": seeded["story_reply"]}
     _expect(CheckViolation, lambda: _row(seeded, **overrides))
 
 
-@pytest.mark.parametrize("missing", ["outbox_id", "send_route", "decided_by_user_id", "decided_at"])
+@pytest.mark.parametrize(
+    "missing", ["outbox_id", "send_route", "dm_thread_id", "decided_by_user_id", "decided_at"]
+)
 def test_an_approved_row_is_complete(seeded, missing: str) -> None:
     _expect(CheckViolation, lambda: _approved(seeded, **{missing: None}))
 
@@ -353,7 +373,7 @@ def test_one_followup_per_interaction(seeded) -> None:
 
 
 @pytest.mark.parametrize("column", ["origin_message_id", "dm_thread_id", "intent_result_id"])
-def test_pointers_must_exist(seeded, column: str) -> None:
+def test_pointers_must_exist(seeded: dict[str, UUID], column: str) -> None:
     _expect(ForeignKeyViolation, lambda: _row(seeded, **{column: uuid4()}))
 
 
@@ -376,13 +396,12 @@ def test_a_row_under_another_tenant_fails_and_is_invisible(seeded) -> None:
 # --- PostgresFollowupRepository --------------------------------------------------------
 
 
-def _new(seeded: dict[str, UUID], trigger: FollowupTrigger = FollowupTrigger.INTENT):
+def _new(seeded: dict[str, UUID], trigger: FollowupTrigger = FollowupTrigger.INTENT) -> Followup:
     return new_followup(
         tenant_id=TENANT,
         connection_id=seeded["connection"],
         origin_kind=OriginKind.COMMENT,
         origin_message_id=seeded["comment"],
-        dm_thread_id=seeded["dm_thread"],
         trigger=trigger,
         intent_result_id=seeded["intent"] if trigger is FollowupTrigger.INTENT else None,
         now=NOW,
@@ -415,6 +434,7 @@ def test_repository_approves_once_and_round_trips(seeded) -> None:
         followup_id=followup.id,
         outbox_id=seeded["outbox"],
         send_route=SendRoute.PRIVATE_REPLY,
+        dm_thread_id=seeded["dm_thread"],
         decided_by_user_id=seeded["user"],
         now=NOW,
         notice_text="Te enviamos la información por DM 💬",
@@ -423,6 +443,7 @@ def test_repository_approves_once_and_round_trips(seeded) -> None:
     assert stored is not None
     assert stored.status is FollowupStatus.APPROVED
     assert (stored.outbox_id, stored.send_route) == (seeded["outbox"], SendRoute.PRIVATE_REPLY)
+    assert stored.dm_thread_id == seeded["dm_thread"]
     assert stored.notice_status is NoticeStatus.PENDING
     assert stored.notice_text == approved.notice_text
     assert followup.id not in {f.id for f in repo.list_open(tenant_id=TENANT)}
@@ -441,3 +462,34 @@ def test_repository_discards(seeded) -> None:
     stored = repo.get(tenant_id=TENANT, followup_id=followup.id)
     assert stored is not None and stored.status is FollowupStatus.DISCARDED
     assert stored.decided_by_user_id == seeded["user"]
+
+
+def test_an_approval_joins_the_callers_transaction(seeded: dict[str, UUID]) -> None:
+    """The outbox insert and the guarded transition commit together: if the caller's
+    transaction fails after `approve`, the followup is still open; a lost race inside it
+    raises and so takes the caller's insert down with it."""
+    repo = PostgresFollowupRepository()
+    followup = repo.open(_new(seeded)).followup
+
+    def approve(session: object) -> Followup:
+        return repo.approve(
+            tenant_id=TENANT,
+            followup_id=followup.id,
+            outbox_id=seeded["outbox"],
+            send_route=SendRoute.PRIVATE_REPLY,
+            dm_thread_id=seeded["dm_thread"],
+            decided_by_user_id=seeded["user"],
+            now=NOW,
+            session=session,
+        )
+
+    with pytest.raises(RuntimeError), tenant_session(TENANT) as session:
+        approve(session)
+        raise RuntimeError("the outbox insert failed after the approval")
+    stored = repo.get(tenant_id=TENANT, followup_id=followup.id)
+    assert stored is not None and stored.status is FollowupStatus.OPEN
+
+    with tenant_session(TENANT) as session:
+        approve(session)
+    with pytest.raises(InvalidFollowupTransition), tenant_session(TENANT) as session:
+        approve(session)

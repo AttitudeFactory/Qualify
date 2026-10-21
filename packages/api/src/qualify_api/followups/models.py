@@ -60,7 +60,7 @@ class InteractionFollowup(Base):
     connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     origin_kind: Mapped[str] = mapped_column(Text, nullable=False)
     origin_message_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    dm_thread_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    dm_thread_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     trigger: Mapped[str] = mapped_column(Text, nullable=False)
     intent_result_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="open")

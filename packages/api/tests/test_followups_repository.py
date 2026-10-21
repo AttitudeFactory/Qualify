@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_api.followups import (
+    Followup,
     FollowupStatus,
     FollowupTrigger,
     InvalidFollowupTransition,
@@ -27,6 +28,7 @@ TENANT = UUID("a0000000-0000-4000-8000-0000000000f1")
 OTHER = UUID("a0000000-0000-4000-8000-0000000000f2")
 CONNECTION = uuid4()
 USER = uuid4()
+THREAD = uuid4()
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
 
 
@@ -37,13 +39,14 @@ def _followup(
     tenant_id: UUID = TENANT,
     message_id: UUID | None = None,
     now: datetime = NOW,
-):
+) -> Followup:
     return new_followup(
         tenant_id=tenant_id,
         connection_id=CONNECTION,
         origin_kind=origin_kind,
         origin_message_id=message_id or uuid4(),
-        dm_thread_id=uuid4(),
+        # A story reply is already a DM; a comment gets its thread when approved.
+        dm_thread_id=uuid4() if origin_kind is OriginKind.STORY_REPLY else None,
         trigger=trigger,
         intent_result_id=uuid4() if trigger is FollowupTrigger.INTENT else None,
         now=now,
@@ -73,13 +76,24 @@ def test_an_intent_followup_names_its_analysis_and_a_manual_one_does_not() -> No
         connection_id=CONNECTION,
         origin_kind=OriginKind.COMMENT,
         origin_message_id=uuid4(),
-        dm_thread_id=uuid4(),
     )
     with pytest.raises(ValueError):
         new_followup(**common, trigger=FollowupTrigger.INTENT)
     with pytest.raises(ValueError):
         new_followup(**common, trigger=FollowupTrigger.MANUAL, intent_result_id=uuid4())
     assert new_followup(**common, trigger=FollowupTrigger.MANUAL).intent_result_id is None
+
+
+def test_a_comment_opens_without_a_thread_and_a_story_reply_needs_its_own() -> None:
+    assert _followup().dm_thread_id is None
+    with pytest.raises(ValueError):
+        new_followup(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            origin_kind=OriginKind.STORY_REPLY,
+            origin_message_id=uuid4(),
+            trigger=FollowupTrigger.MANUAL,
+        )
 
 
 # --- transitions --------------------------------------------------------------------------
@@ -92,12 +106,14 @@ def test_approve_records_the_person_the_route_and_the_queued_send() -> None:
         _followup(),
         outbox_id=outbox_id,
         send_route=SendRoute.PRIVATE_REPLY,
+        dm_thread_id=THREAD,
         decided_by_user_id=USER,
         now=later,
     )
     assert approved.status is FollowupStatus.APPROVED
     assert approved.outbox_id == outbox_id
     assert approved.send_route is SendRoute.PRIVATE_REPLY
+    assert approved.dm_thread_id == THREAD
     assert (approved.decided_by_user_id, approved.decided_at, approved.updated_at) == (
         USER,
         later,
@@ -113,6 +129,7 @@ def test_approve_with_a_notice_leaves_it_pending_for_the_confirmed_send() -> Non
         _followup(),
         outbox_id=uuid4(),
         send_route=SendRoute.DM,
+        dm_thread_id=THREAD,
         decided_by_user_id=USER,
         now=NOW,
         notice_text="  Te enviamos la información por DM 💬  ",
@@ -126,6 +143,7 @@ def test_a_blank_notice_is_no_notice() -> None:
         _followup(),
         outbox_id=uuid4(),
         send_route=SendRoute.DM,
+        dm_thread_id=THREAD,
         decided_by_user_id=USER,
         now=NOW,
         notice_text="   ",
@@ -136,11 +154,14 @@ def test_a_blank_notice_is_no_notice() -> None:
 
 def test_a_story_reply_admits_neither_a_private_reply_nor_a_notice() -> None:
     story = _followup(origin_kind=OriginKind.STORY_REPLY)
+    own = story.dm_thread_id
+    assert own is not None
     with pytest.raises(InvalidFollowupTransition):
         approve_followup(
             story,
             outbox_id=uuid4(),
             send_route=SendRoute.PRIVATE_REPLY,
+            dm_thread_id=own,
             decided_by_user_id=USER,
             now=NOW,
         )
@@ -149,14 +170,32 @@ def test_a_story_reply_admits_neither_a_private_reply_nor_a_notice() -> None:
             story,
             outbox_id=uuid4(),
             send_route=SendRoute.DM,
+            dm_thread_id=own,
             decided_by_user_id=USER,
             now=NOW,
             notice_text="Te enviamos la información por DM 💬",
         )
     approved = approve_followup(
-        story, outbox_id=uuid4(), send_route=SendRoute.DM, decided_by_user_id=USER, now=NOW
+        story,
+        outbox_id=uuid4(),
+        send_route=SendRoute.DM,
+        dm_thread_id=own,
+        decided_by_user_id=USER,
+        now=NOW,
     )
     assert approved.notice_status is NoticeStatus.NOT_APPLICABLE
+
+
+def test_a_story_reply_is_answered_in_its_own_thread() -> None:
+    with pytest.raises(InvalidFollowupTransition):
+        approve_followup(
+            _followup(origin_kind=OriginKind.STORY_REPLY),
+            outbox_id=uuid4(),
+            send_route=SendRoute.DM,
+            dm_thread_id=uuid4(),
+            decided_by_user_id=USER,
+            now=NOW,
+        )
 
 
 def test_only_an_open_followup_can_be_decided() -> None:
@@ -170,6 +209,7 @@ def test_only_an_open_followup_can_be_decided() -> None:
             discarded,
             outbox_id=uuid4(),
             send_route=SendRoute.DM,
+            dm_thread_id=THREAD,
             decided_by_user_id=USER,
             now=NOW,
         )
@@ -233,6 +273,7 @@ def test_the_store_applies_the_same_transitions() -> None:
         followup_id=followup.id,
         outbox_id=uuid4(),
         send_route=SendRoute.PRIVATE_REPLY,
+        dm_thread_id=THREAD,
         decided_by_user_id=USER,
         now=NOW,
     )
