@@ -281,3 +281,5 @@ class IntentAnalysisSummaryVM:
     new_results: int
     skipped_empty: int
     unclassified: int
+    # m-24789646 (B1): commercial queries this pass sent to Conversaciones.
+    followups_opened: int = 0

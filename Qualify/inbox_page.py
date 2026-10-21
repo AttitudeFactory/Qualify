@@ -365,6 +365,20 @@ def _comment_intent(comment: CommentVM) -> rx.Component:
     )
 
 
+def _reply_by_dm_button(comment: CommentVM) -> rx.Component:
+    """m-24789646: continue this comment in private — opens its query in Conversaciones
+    with a draft; nothing is sent from here."""
+    return rx.button(
+        rx.icon("send", size=T.ICON_SM),
+        "Responder por DM",
+        variant="soft",
+        size="1",
+        loading=InboxState.replying_dm_id == comment.message_id,
+        disabled=InboxState.replying_dm_id != "",
+        on_click=InboxState.reply_by_dm(comment.message_id),
+    )
+
+
 def _comment_card(comment: CommentVM) -> rx.Component:
     return card(
         rx.vstack(
@@ -397,8 +411,11 @@ def _comment_card(comment: CommentVM) -> rx.Component:
                 rx.text(comment.posted_at, size="1", color=T.TEXT_MUTED),
                 rx.icon("film", size=13, color=T.TEXT_FAINT),
                 mono(comment.external_thread_id, size="1"),
+                rx.spacer(),
+                _reply_by_dm_button(comment),
                 spacing="2",
                 align="center",
+                width="100%",
             ),
             spacing="2",
             align_items="start",

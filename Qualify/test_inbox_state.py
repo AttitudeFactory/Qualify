@@ -280,16 +280,17 @@ def test_sync_comments_has_no_recurring_loop_of_its_own() -> None:
     assert "asyncio.sleep" not in source
 
 
-def test_background_event_handler_count_is_twelve_after_m_24789644() -> None:
+def test_background_event_handler_count_is_thirteen_after_m_24789646() -> None:
     """QUA-89 added automatic polling without adding any new server-side background
     handler (stayed at 4 through that ticket). QUA-92 added `analyze_sentiment` (5).
     QUA-93 adds five more real handlers — `select_reel`, `set_sentiment_filter`,
     `set_search_query`, `load_more_reels`, `load_more_thread_comments` — for 10 total.
-    m-24789644 adds `set_intent_filter` and `analyze_intent` — 12.
+    m-24789644 adds `set_intent_filter` and `analyze_intent` — 12. m-24789646 adds
+    `reply_by_dm` («Responder por DM», which opens the query in Conversaciones) — 13.
     `back_to_reel_list` is deliberately a plain (non-background) `@rx.event`: it does no
     I/O, so it does not count here — see its own docstring for why."""
     source = inspect.getsource(inbox_state)
-    assert source.count("@rx.event(background=True)") == 12
+    assert source.count("@rx.event(background=True)") == 13
 
 
 def test_reel_summaries_state_never_holds_a_comment_list() -> None:

@@ -802,6 +802,7 @@ class AuthState(rx.State):
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
             from .discover_reels import DiscoverReelsState
+            from .followups_state import FollowupsState
             from .gallery_state import GalleryState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
@@ -868,6 +869,8 @@ class AuthState(rx.State):
                 # QUA-226: the private inbox — accounts, access state, threads, the open
                 # conversation, the reply draft and the acting user's id
                 ConversationsState,
+                # m-24789646: «Consultas desde comentarios» (cards, drafts being edited)
+                FollowupsState,
                 # WA-16: the number's menus, the open editor draft and the preview chat
                 WhatsAppMenuState,
                 # WA-18: templates, opt-ins, campaigns and the Conexión metrics block

@@ -192,8 +192,16 @@ class DraftGenerator(Protocol):
     def version(self) -> str: ...
 
     def propose(
-        self, *, grounding: Grounding, messages: Sequence[MessageRecord], counterpart: str
-    ) -> Proposal: ...
+        self,
+        *,
+        grounding: Grounding,
+        messages: Sequence[MessageRecord],
+        counterpart: str,
+        context: str | None = None,
+    ) -> Proposal:
+        """`context`: what the model must know about where the reply goes that the
+        messages do not say (m-24789646: «this answers a public comment, by DM»)."""
+        ...
 
 
 def transcript(messages: Sequence[MessageRecord], counterpart: str, business: str) -> str:
@@ -245,11 +253,18 @@ class ClaudeDraftGenerator:
         return self._client
 
     def propose(
-        self, *, grounding: Grounding, messages: Sequence[MessageRecord], counterpart: str
+        self,
+        *,
+        grounding: Grounding,
+        messages: Sequence[MessageRecord],
+        counterpart: str,
+        context: str | None = None,
     ) -> Proposal:
         business = grounding.business_name or "Negocio"
+        situation = f"CONTEXTO\n{context.strip()}\n\n" if context and context.strip() else ""
         user_content = (
             f"HECHOS VALIDADOS\n{grounding.as_prompt()}\n\n"
+            f"{situation}"
             f"CONVERSACIÓN (la última línea es la que respondes)\n"
             f"{transcript(messages, counterpart, business)}"
         )

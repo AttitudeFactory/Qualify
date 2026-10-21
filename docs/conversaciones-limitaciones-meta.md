@@ -222,3 +222,12 @@ El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: Q
 4. Resultado esperado: la fila del outbox queda `sent`, con `recipient_external_id` igual al `external_thread_id` del hilo DM (sin `recipient_mismatch` en el log), y el tester ve el mensaje en Instagram con el enlace a la publicación.
 5. Pegar aquí la fecha, el código de respuesta y la comprobación del destinatario (sin tokens ni textos). Con eso, la capacidad pasa a **verificada** en `followups/capabilities.py`.
 
+### Consultas desde comentarios (PR 3)
+
+- **Apertura automática (B1).** Al pulsar «Analizar intención» en Interacciones, cada comentario con intención comercial de los **últimos 7 días** que aún no tiene consulta se abre en Conversaciones → «Consultas desde comentarios», con su borrador. Los más antiguos no se abren solos (ya no admiten respuesta privada), pero se pueden abrir a mano. El análisis no se deshace si la apertura falla: se reintenta en el siguiente.
+- **Apertura a mano.** «Responder por DM» en cada comentario de Interacciones abre (o reutiliza) su consulta y lleva a `/conversations?consulta=<id>`, con la tarjeta primero y resaltada.
+- **El borrador** lo escribe el mismo generador que «Sugerir respuesta» (Claude Haiku), con contexto: que es un DM que responde a un comentario público, en qué publicación y qué intención se detectó. Solo usa los datos validados del negocio; si falta uno, marca «Requiere revisión» y lista lo que hay que confirmar. Si el borrador falla, la tarjeta ofrece «Generar borrador».
+- **Decidir.** Editar, «Regenerar» (el borrador anterior queda descartado), «Descartar» la consulta o «Aprobar y enviar». Al aprobar, el mensaje entra al outbox con la aprobación de la persona y el borrador queda `accepted` (enviado tal cual) o `edited` (con el texto enviado): `generated_text` frente a `final_text` es el diff guardado (B2).
+- **Cuándo no se puede enviar**, la tarjeta lo dice por cada vía: el DM, si la persona no escribió en 24 h; la respuesta privada, si pasaron 7 días o si la capacidad está apagada («Por verificar», con su variable).
+- **Límite conocido:** la lista muestra las consultas de todas las cuentas del negocio, no solo la elegida en el selector de cuenta.
+

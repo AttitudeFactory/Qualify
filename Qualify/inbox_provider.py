@@ -83,6 +83,7 @@ manual-only and independent of sync in both directions.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -142,6 +143,8 @@ from .inbox_vm import (
     media_format_label,
 )
 from .publishing_vm import ConnectionOptionVM
+
+logger = logging.getLogger(__name__)
 
 
 def instagram_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
@@ -499,4 +502,30 @@ async def analyze_intent_now(*, tenant_id: UUID, connection_id: UUID) -> IntentA
         new_results=summary.new_results,
         skipped_empty=summary.skipped_empty,
         unclassified=summary.unclassified,
+        followups_opened=await _open_followups(tenant_id, connection_id),
     )
+
+
+async def _open_followups(tenant_id: UUID, connection_id: UUID) -> int:
+    """m-24789646 (B1): every recent commercial comment without a followup becomes a
+    query in Conversaciones, with its draft. Best effort: the analysis already landed, so
+    a failure here is logged and the next analysis retries it (it is idempotent)."""
+    from .followups_provider import gateway as followups_gateway  # noqa: PLC0415
+
+    try:
+        opened = await asyncio.to_thread(
+            followups_gateway().open_from_intents, tenant_id, connection_id
+        )
+    except Exception as exc:  # noqa: BLE001 — never undo the analysis the person saw
+        logger.error("open_from_intents failed: %s", type(exc).__name__)
+        return 0
+    return opened.opened
+
+
+async def reply_by_dm(*, tenant_id: UUID, message_id: UUID) -> str:
+    """«Responder por DM» (m-24789646): the comment's followup — opened now, or the one
+    it already has — with a draft. Returns its id for the Conversaciones deep link.
+    Propagates `UnknownOrigin` / `OriginNotSupported`."""
+    from .followups_provider import gateway as followups_gateway  # noqa: PLC0415
+
+    return await asyncio.to_thread(followups_gateway().open_manual, tenant_id, message_id)

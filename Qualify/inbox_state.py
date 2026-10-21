@@ -72,6 +72,7 @@ from typing import Final
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.followups.service import OriginNotSupported, UnknownOrigin
 from qualify_api.inbox import (
     CommentsAuthExpired,
     CommentsPermissionMissing,
@@ -95,6 +96,7 @@ from .inbox_provider import (
     global_summary_vm,
     instagram_connections,
     reel_summaries_page,
+    reply_by_dm,
     seconds_since_last_sync,
     sync_now,
     sync_still_running,
@@ -181,6 +183,10 @@ _ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."
 # transient failure, so "intenta de nuevo" would be a lie.
 _ANALYZE_UNAVAILABLE = "El análisis de sentimiento todavía no está disponible en este entorno."
 # m-24789644: same two cases for the intent pass. Unavailable = no Anthropic key here.
+_REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
+_REPLY_BY_DM_FAILED = (
+    "No se pudo abrir la consulta en Conversaciones. Vuelve a intentarlo en un momento."
+)
 _ANALYZE_INTENT_FAILED = "No se pudo analizar la intención. Intenta de nuevo."
 _ANALYZE_INTENT_UNAVAILABLE = (
     "La clasificación de intención todavía no está disponible en este entorno."
@@ -261,6 +267,8 @@ class InboxState(rx.State):
     # m-24789644: the "Analizar intención" pass — its own guard, independent of both
     # sync and sentiment analysis, same as those two are of each other.
     is_analyzing_intent: bool = False
+    # m-24789646: the comment whose «Responder por DM» is opening its query ("" = none).
+    replying_dm_id: str = ""
     analyze_intent_error: str = ""
     analyze_intent_result: IntentAnalysisSummaryVM | None = None
 
@@ -1062,6 +1070,38 @@ class InboxState(rx.State):
         return rx.toast.success(_intent_result_message(result), duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
+    async def reply_by_dm(self, message_id: str) -> rx.event.EventSpec | None:
+        """«Responder por DM» (m-24789646): open (or reuse) the comment's query, with
+        its draft, and land on it in Conversaciones. Only a comment the page has loaded
+        is accepted; a comment that cannot be continued in private says why."""
+        async with self:
+            if self.replying_dm_id:
+                return None
+            if message_id not in {c.message_id for c in self.thread_comments}:
+                return None  # arrived over the wire; refuse an id the page does not hold
+            self.replying_dm_id = message_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id)
+        resolved = _try_uuid(message_id)
+        try:
+            if tenant_id is None or resolved is None:
+                return rx.toast.error(_SESSION_EXPIRED, duration=_RESULT_TOAST_DURATION_MS)
+            try:
+                followup_id = await reply_by_dm(tenant_id=tenant_id, message_id=resolved)
+            except OriginNotSupported as exc:
+                return rx.toast.warning(exc.reason, duration=_RESULT_TOAST_DURATION_MS)
+            except UnknownOrigin:
+                return rx.toast.warning(_REPLY_BY_DM_GONE, duration=_RESULT_TOAST_DURATION_MS)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("reply_by_dm failed: %s", type(exc).__name__)
+                return rx.toast.error(_REPLY_BY_DM_FAILED, duration=_RESULT_TOAST_DURATION_MS)
+            return rx.redirect(f"/conversations?consulta={followup_id}")
+        finally:
+            async with self:
+                self.replying_dm_id = ""
+
+    @rx.event(background=True)
     async def select_reel(self, thread_id: str) -> None:
         """QUA-93: enter the Reel detail view. Always resets to a clean first page —
         filter "Todos", no search, no cursor — a detail view never opens mid-scroll of
@@ -1246,6 +1286,8 @@ def _intent_result_message(result: IntentAnalysisSummaryVM) -> str:
             f" · Sin respuesta del modelo: {result.unclassified} "
             "(se reintentan en el próximo análisis)"
         )
+    if result.followups_opened:
+        message += f" · Consultas nuevas en Conversaciones: {result.followups_opened}"
     return message
 
 

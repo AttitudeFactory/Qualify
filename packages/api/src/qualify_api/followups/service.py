@@ -227,20 +227,25 @@ class FollowupService:
         followup = self._followup(tenant_id, followup_id)
         origin = self._origin(tenant_id, followup.origin_message_id)
         thread = self._dm_thread(followup, origin)
-        return self._options(followup, origin, thread, self._clock())
+        return self._options(
+            followup, origin, thread.last_inbound_at if thread else None, self._clock()
+        )
+
+    def options_from_origin(
+        self, followup: Followup, origin: OriginMessage, now: datetime
+    ) -> SendOptions:
+        """The routes for a card, from an origin read with its DM window
+        (`OriginReader.get_many`) — no read of its own, for a whole page of cards."""
+        return self._options(followup, origin, origin.dm_last_inbound_at, now)
 
     def _options(
         self,
         followup: Followup,
         origin: OriginMessage,
-        thread: ThreadRecord | None,
+        last_inbound_at: datetime | None,
         now: datetime,
     ) -> SendOptions:
-        dm = _option(
-            SendRoute.DM,
-            window_state(thread.last_inbound_at if thread else None, now),
-            REASON_DM_WINDOW_CLOSED,
-        )
+        dm = _option(SendRoute.DM, window_state(last_inbound_at, now), REASON_DM_WINDOW_CLOSED)
         return SendOptions(dm=dm, private_reply=self._private_reply_option(followup, origin, now))
 
     def _private_reply_option(
@@ -291,7 +296,7 @@ class FollowupService:
         now = self._clock()
         origin = self._origin(tenant_id, followup.origin_message_id)
         thread = self._dm_thread(followup, origin)
-        options = self._options(followup, origin, thread, now)
+        options = self._options(followup, origin, thread.last_inbound_at if thread else None, now)
         chosen = options.chosen
         if chosen is None:
             raise RouteUnavailable(options)
