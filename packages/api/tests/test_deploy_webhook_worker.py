@@ -1,8 +1,8 @@
 """Static guards on `deploy/docker-compose.prod.yml` for the QUA-147 webhook processor.
 
 The receiver only RECORDS Meta webhooks; without a running processor every mention stays
-`pending`. These checks pin that production runs it by default, and that adding it did not
-touch the `calendar-worker`, which publishes for real and must stay behind its profile.
+`pending`. These checks pin that production runs it by default and that it publishes nothing.
+The calendar-worker's own guards live in `test_deploy_calendar_worker.py`.
 """
 
 from __future__ import annotations
@@ -36,7 +36,3 @@ def test_webhook_worker_publishes_nothing_and_exposes_nothing() -> None:
     assert "volumes" not in worker
     assert not any("planner" in str(part) for part in worker["command"])
     assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
-
-
-def test_calendar_worker_is_still_behind_its_profile() -> None:
-    assert SERVICES["calendar-worker"]["profiles"] == ["calendar-worker"]

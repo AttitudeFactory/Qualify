@@ -17,11 +17,11 @@
 # Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
 # Meta webhooks; read-only toward Meta, never publishes), whatsapp-worker (WA-08: sends
 # what was explicitly enqueued in `whatsapp_outbox`, nothing else) and conversations-worker
-# (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct). `migrate` is a one-shot
-# (below).
+# (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct),
+# and calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
+# in the Planificador). `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
-#   calendar-worker  QUA-111 executor — PUBLISHES FOR REAL to connected accounts.
 #   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load).
 
 name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
@@ -207,8 +207,9 @@ services:
     restart: unless-stopped
     environment:
       <<: *app-env
-      # The embedded calendar worker (QUA-111) is FORCED off here: a deploy must never start
-      # publishing as a side effect. Publishing runs only in the `calendar-worker` profile.
+      # The embedded calendar worker (QUA-111) is FORCED off here: publishing runs in the
+      # dedicated `calendar-worker` service, and a second copy inside the UI process would
+      # only add load to the one Reflex worker.
       QUALIFY_CALENDAR_WORKER: "off"
       # One worker process with Reflex's default (disk) state manager. Per-tab state —
       # including the login, which lives only in backend state (Qualify/auth_state.py) — is
@@ -332,13 +333,17 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- optional -------------------------------------------------------------------------
-
-  # QUA-111 calendar executor. PUBLISHES FOR REAL. Enable deliberately:
-  #   COMPOSE_PROFILES=calendar-worker   (in .env.prod), then `just deploy` / `up -d`.
+  # QUA-111 calendar executor. PUBLISHES FOR REAL to connected accounts — but only what a
+  # person approved and scheduled in the Planificador (an event must be `scheduled` AND
+  # approved), never on its own initiative, so like whatsapp-worker it is always on. It was
+  # behind an opt-in profile until 2026-10-21 (m-24828928); nobody ever enabled it on the
+  # server, so no scheduled post was ever published in production. On start the first tick
+  # publishes whatever approved event is overdue but still inside the 24 h execution window
+  # (planner/rules.py EXECUTION_WINDOW); older ones expire instead of publishing late.
+  # Several instances at once are safe (claim CAS, advisory locks, idempotency key), one is
+  # enough. Every tick leaves a heartbeat in Redis that the Planificador reads (QUA-118).
   calendar-worker:
     <<: [*app-image, *app-env-file, *logging]
-    profiles: ["calendar-worker"]
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -358,6 +363,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # --- optional -------------------------------------------------------------------------
 
   # Remotion render service (packages/render). Needed only by the template generator.
   render:
