@@ -2,9 +2,10 @@
 DM thread, say which ways of writing to them are available right now, and queue the one a
 person approved.
 
-**Opening** a followup reads its origin (a comment, or a DM that replied to a story),
-creates or reuses the author's DM thread — keyed by their IGSID, which a comment's
-`from.id` already is — and stores the link, idempotently per interaction. Nothing is sent.
+**Opening** a followup reads its origin (a comment, or a DM that replied to a story)
+and stores the link, idempotently per interaction. Nothing is sent and nothing appears in
+Conversaciones: a comment author's DM thread — keyed by their IGSID, which a comment's
+`from.id` already is — is found or created only when a person approves a send.
 
 **Routes**, decided at read time and again at approval (never stored as «expired»):
 
@@ -38,7 +39,7 @@ from qualify_api.conversations.outbox import (
     HumanApproval,
     PrivateReplyTarget,
 )
-from qualify_api.conversations.repository import ConversationRepository
+from qualify_api.conversations.repository import ConversationRepository, ThreadRecord
 from qualify_api.conversations.service import MAX_REPLY_CHARS
 from qualify_api.conversations.window import (
     WindowState,
@@ -165,26 +166,19 @@ class FollowupService:
         trigger: FollowupTrigger,
         intent_result_id: UUID | None = None,
     ) -> FollowupOpening:
-        """Open (or return) the followup of one interaction, with the author's DM thread
-        created or reused. Raises `UnknownOrigin` or `OriginNotSupported`."""
+        """Open (or return) the followup of one interaction. Nothing is created in
+        Conversaciones: a comment author's DM thread is created only when a person
+        approves a send. Raises `UnknownOrigin` or `OriginNotSupported`."""
         origin = self._origin(tenant_id, origin_message_id)
         origin_kind = self._origin_kind(origin)
-        if origin_kind is OriginKind.STORY_REPLY:
-            dm_thread_id = origin.thread_id
-        else:
-            dm_thread_id = self._conversations.upsert_thread(
-                tenant_id=tenant_id,
-                connection_id=origin.connection_id,
-                channel=CHANNEL_DM,
-                counterpart_external_id=origin.author_external_id or "",
-            ).thread_id
         return self._followups.open(
             new_followup(
                 tenant_id=tenant_id,
                 connection_id=origin.connection_id,
                 origin_kind=origin_kind,
                 origin_message_id=origin.id,
-                dm_thread_id=dm_thread_id,
+                # A story reply already IS a DM: its thread is the conversation.
+                dm_thread_id=origin.thread_id if origin_kind is OriginKind.STORY_REPLY else None,
                 trigger=trigger,
                 intent_result_id=intent_result_id,
                 now=self._clock(),
@@ -213,31 +207,51 @@ class FollowupService:
             return OriginKind.STORY_REPLY
         raise OriginNotSupported("Este canal no se puede continuar en privado.")
 
+    def _dm_thread(self, followup: Followup, origin: OriginMessage) -> ThreadRecord | None:
+        """The author's DM thread if it exists — never created here. A comment author
+        who already wrote to the business has one, keyed by the same IGSID."""
+        if followup.dm_thread_id is not None:
+            return self._conversations.get_thread(
+                tenant_id=followup.tenant_id, thread_id=followup.dm_thread_id
+            )
+        return self._conversations.find_thread(
+            tenant_id=followup.tenant_id,
+            connection_id=followup.connection_id,
+            channel=CHANNEL_DM,
+            counterpart_external_id=origin.author_external_id or "",
+        )
+
     # -- routes -------------------------------------------------------------------------
 
     def send_options(self, *, tenant_id: UUID, followup_id: UUID) -> SendOptions:
         followup = self._followup(tenant_id, followup_id)
-        return self._options(followup, self._clock())
+        origin = self._origin(tenant_id, followup.origin_message_id)
+        thread = self._dm_thread(followup, origin)
+        return self._options(followup, origin, thread, self._clock())
 
-    def _options(self, followup: Followup, now: datetime) -> SendOptions:
-        thread = self._conversations.get_thread(
-            tenant_id=followup.tenant_id, thread_id=followup.dm_thread_id
-        )
+    def _options(
+        self,
+        followup: Followup,
+        origin: OriginMessage,
+        thread: ThreadRecord | None,
+        now: datetime,
+    ) -> SendOptions:
         dm = _option(
             SendRoute.DM,
             window_state(thread.last_inbound_at if thread else None, now),
             REASON_DM_WINDOW_CLOSED,
         )
-        return SendOptions(dm=dm, private_reply=self._private_reply_option(followup, now))
+        return SendOptions(dm=dm, private_reply=self._private_reply_option(followup, origin, now))
 
-    def _private_reply_option(self, followup: Followup, now: datetime) -> RouteOption:
+    def _private_reply_option(
+        self, followup: Followup, origin: OriginMessage, now: datetime
+    ) -> RouteOption:
         route = SendRoute.PRIVATE_REPLY
         if followup.origin_kind is not OriginKind.COMMENT:
             return RouteOption(route, False, None, REASON_PRIVATE_REPLY_NOT_A_COMMENT)
         availability = self._capabilities.availability(Capability.COMMENT_PRIVATE_REPLY)
         if not availability.enabled:
             return RouteOption(route, False, None, availability.reason)
-        origin = self._origin(followup.tenant_id, followup.origin_message_id)
         return _option(
             route, private_reply_window(origin.posted_at, now), REASON_PRIVATE_REPLY_EXPIRED
         )
@@ -253,9 +267,12 @@ class FollowupService:
         approval: HumanApproval,
         notice_text: str | None = None,
     ) -> Followup:
-        """Queue the approved text on the route available now and record the decision.
-        Raises `ApprovalRequired`, `ValueError` (empty / too long), `UnknownFollowup`,
-        `InvalidFollowupTransition` (not open), `CapabilityUnavailable` (a notice while
+        """Queue the approved text on the route available now and record the decision,
+        in ONE transaction: the outbox insert and the followup's guarded `open ->
+        approved` commit together, so a lost race (a second approval, a discard) rolls
+        the queued send back and nothing goes out twice. Raises `ApprovalRequired`,
+        `ValueError` (empty / too long), `UnknownFollowup`, `InvalidFollowupTransition`
+        (not open, or decided concurrently), `CapabilityUnavailable` (a notice while
         `public_notice` is off), `RouteUnavailable` or `PrivateReplyExists`."""
         if not isinstance(approval, HumanApproval):
             raise ApprovalRequired("a private message needs a human approval")
@@ -272,24 +289,24 @@ class FollowupService:
         if followup.status is not FollowupStatus.OPEN:
             raise InvalidFollowupTransition(f"followup {followup.id} is {followup.status}")
         now = self._clock()
-        options = self._options(followup, now)
+        origin = self._origin(tenant_id, followup.origin_message_id)
+        thread = self._dm_thread(followup, origin)
+        options = self._options(followup, origin, thread, now)
         chosen = options.chosen
         if chosen is None:
             raise RouteUnavailable(options)
 
         sender = self._registry.sender_for(CHANNEL_DM)
-        thread = self._conversations.get_thread(
-            tenant_id=tenant_id, thread_id=followup.dm_thread_id
-        )
-        if thread is None:
-            raise UnknownFollowup(str(followup_id))
         if chosen.route is SendRoute.DM:
+            # An open DM window implies the thread exists (the person wrote in it).
+            if thread is None:
+                raise RouteUnavailable(options)
+            thread_id = thread.id
             payload = sender.build_payload(
                 recipient_external_id=thread.counterpart_external_id, text=body
             )
             target = None
         else:
-            origin = self._origin(tenant_id, followup.origin_message_id)
             if origin.posted_at is None:  # unreachable: an open 7-day window implies it
                 raise RouteUnavailable(options)
             payload = sender.build_private_reply_payload(
@@ -299,24 +316,46 @@ class FollowupService:
                 comment_id=origin.external_message_id,
                 deadline=private_reply_deadline(origin.posted_at),
             )
-        outbox_id = self._outbox.enqueue(
+            # Only now, with a person's decision, does the author get a DM thread.
+            thread_id = (
+                thread.id
+                if thread is not None
+                else self._conversations.upsert_thread(
+                    tenant_id=tenant_id,
+                    connection_id=followup.connection_id,
+                    channel=CHANNEL_DM,
+                    counterpart_external_id=origin.author_external_id or "",
+                ).thread_id
+            )
+
+        approved: list[Followup] = []
+
+        def record_decision(session: object, outbox_id: UUID) -> None:
+            approved.append(
+                self._followups.approve(
+                    tenant_id=tenant_id,
+                    followup_id=followup_id,
+                    outbox_id=outbox_id,
+                    send_route=chosen.route,
+                    dm_thread_id=thread_id,
+                    decided_by_user_id=approval.user_id,
+                    now=now,
+                    notice_text=notice_text,
+                    session=session,
+                )
+            )
+
+        self._outbox.enqueue(
             tenant_id=tenant_id,
-            connection_id=thread.connection_id,
-            thread_id=thread.id,
+            connection_id=followup.connection_id,
+            thread_id=thread_id,
             channel=CHANNEL_DM,
             payload=payload,
             approval=approval,
             private_reply=target,
+            on_enqueued=record_decision,
         )
-        return self._followups.approve(
-            tenant_id=tenant_id,
-            followup_id=followup_id,
-            outbox_id=outbox_id,
-            send_route=chosen.route,
-            decided_by_user_id=approval.user_id,
-            now=now,
-            notice_text=notice_text,
-        )
+        return approved[0]
 
     def discard(self, *, tenant_id: UUID, followup_id: UUID, user_id: UUID) -> Followup:
         return self._followups.discard(

@@ -12,6 +12,9 @@ row written by `mark_sent` under the channel's own message id). What this module
 - **A private reply** (m-24789646) has no 24 h window — the person may never have
   written — but Meta's own limit: its `reply_deadline` (the comment + 7 days) is
   revalidated the same way, and a row past it is `failed` with `private_reply_expired`.
+  Private replies go out only while this sender was built with them enabled (the
+  `comment_private_reply` capability, read by the composition): switching it off stops
+  rows already queued too — they are `failed` with `private_reply_disabled`.
   The `recipient_id` Meta answers is recorded on the row; when it is not the thread's
   counterpart (the thread was chosen up front from the comment's `from.id`) the send is
   kept and `conversations.sender.recipient_mismatch` is logged — R1's evidence.
@@ -58,6 +61,7 @@ logger = logging.getLogger("qualify_api.conversations.sender")
 
 ERROR_WINDOW_CLOSED: Final = "window_closed"
 ERROR_PRIVATE_REPLY_EXPIRED: Final = "private_reply_expired"
+ERROR_PRIVATE_REPLY_DISABLED: Final = "private_reply_disabled"
 ERROR_NO_SENDER: Final = "no_sender"
 ERROR_THREAD_MISSING: Final = "thread_missing"
 ERROR_CONNECTION_MISSING: Final = "connection_missing"
@@ -134,6 +138,7 @@ class ConversationOutboxSender:
         connections: ConnectionReader,
         degrade: ConnectionDegrader | None = None,
         media_linker: MediaLinker | None = None,
+        private_replies: bool = False,
         worker_id: str,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
@@ -143,6 +148,7 @@ class ConversationOutboxSender:
         self._connections = connections
         self._degrade = degrade
         self._media_linker = media_linker
+        self._private_replies = private_replies
         self._worker_id = worker_id
         self._clock = clock
 
@@ -190,6 +196,9 @@ class ConversationOutboxSender:
             self._fail(item, ERROR_THREAD_MISSING, report)
             return
         if item.kind == KIND_PRIVATE_REPLY:
+            if not self._private_replies:
+                self._fail(item, ERROR_PRIVATE_REPLY_DISABLED, report)
+                return
             if item.reply_deadline is None or self._clock() >= item.reply_deadline:
                 self._fail(item, ERROR_PRIVATE_REPLY_EXPIRED, report)
                 return
@@ -307,6 +316,7 @@ __all__ = [
     "ERROR_MAX_ATTEMPTS",
     "ERROR_NO_MEDIA_LINKER",
     "ERROR_NO_SENDER",
+    "ERROR_PRIVATE_REPLY_DISABLED",
     "ERROR_PRIVATE_REPLY_EXPIRED",
     "ERROR_SEND_AMBIGUOUS",
     "ERROR_THREAD_MISSING",

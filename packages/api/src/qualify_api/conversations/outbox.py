@@ -27,6 +27,11 @@ approval, same settles; it also carries the comment and the 7-day deadline the s
 revalidates, and there is at most one live row per comment (`PrivateReplyExists`).
 `mark_sent` records, for every send, whom the channel says it reached.
 
+`enqueue(..., on_enqueued=)` lets the caller write its own record of the decision in the
+SAME transaction as the insert (Fase C's followup): the callback gets the open session
+and the new row's id, and if it raises, the row is never queued. This module stays the
+only writer of the queue; the callback writes only its own table.
+
 No user text in logs: ids, statuses and codes only.
 """
 
@@ -77,6 +82,11 @@ def payload_text(payload: Mapping[str, Any]) -> str | None:
 
 class ApprovalRequired(PermissionError):
     """A send was requested without a human approval. There is no code path around it."""
+
+
+#: Called inside `enqueue`'s transaction with `(session, item_id)` — `session` is None
+#: for the in-memory repository. Raising aborts the enqueue.
+OnEnqueued = Callable[[Any, UUID], None]
 
 
 class PrivateReplyExists(ValueError):
@@ -197,6 +207,7 @@ class ConversationOutboxRepository(Protocol):
         approval: HumanApproval,
         media: OutboxMedia | None = None,
         private_reply: PrivateReplyTarget | None = None,
+        on_enqueued: OnEnqueued | None = None,
     ) -> UUID: ...
 
     def claim(
@@ -383,6 +394,7 @@ class PostgresConversationOutboxRepository:
         approval: HumanApproval,
         media: OutboxMedia | None = None,
         private_reply: PrivateReplyTarget | None = None,
+        on_enqueued: OnEnqueued | None = None,
     ) -> UUID:
         _validate_enqueue(channel, payload, thread_id, approval, private_reply)
         item_id = uuid4()
@@ -408,8 +420,11 @@ class PostgresConversationOutboxRepository:
                         "reply_deadline": private_reply.deadline if private_reply else None,
                     },
                 )
+                if on_enqueued is not None:
+                    on_enqueued(session, item_id)
         except IntegrityError as exc:
-            if private_reply is not None and "uq_conv_outbox_private_reply" in str(exc.orig):
+            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            if private_reply is not None and constraint == "uq_conv_outbox_private_reply":
                 raise PrivateReplyExists(private_reply.comment_id) from exc
             raise
         return item_id
@@ -636,6 +651,7 @@ class MemoryConversationOutboxRepository:
         approval: HumanApproval,
         media: OutboxMedia | None = None,
         private_reply: PrivateReplyTarget | None = None,
+        on_enqueued: OnEnqueued | None = None,
     ) -> UUID:
         _validate_enqueue(channel, payload, thread_id, approval, private_reply)
         if private_reply is not None and any(
@@ -665,6 +681,8 @@ class MemoryConversationOutboxRepository:
             comment_id=private_reply.comment_id if private_reply else None,
             reply_deadline=private_reply.deadline if private_reply else None,
         )
+        if on_enqueued is not None:
+            on_enqueued(None, row.id)  # raising leaves nothing queued, like a rollback
         self.rows[row.id] = row
         return row.id
 
@@ -823,6 +841,7 @@ __all__ = [
     "MAX_ATTEMPTS",
     "OUTBOX_KINDS",
     "OUTBOX_SHAPE_VERSION",
+    "OnEnqueued",
     "STALE_AFTER",
     "ApprovalRequired",
     "ClaimedOutboxItem",

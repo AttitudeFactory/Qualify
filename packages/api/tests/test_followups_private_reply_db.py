@@ -30,16 +30,29 @@ from qualify_api.followups import (
     FollowupService,
     FollowupStatus,
     FollowupTrigger,
+    InvalidFollowupTransition,
+    OriginKind,
     PostgresFollowupRepository,
     PostgresOriginReader,
     SendRoute,
+    new_followup,
 )
 
-from .test_followups_schema_db import NOW, OTHER, TENANT, seeded  # noqa: F401 — fixture
+from .test_followups_schema_db import NOW, seed_world
 
 pytestmark = pytest.mark.db
 
+# A tenant of its own: the claims below take every due row of the tenant, and must not
+# take (and flip to `sending`) the rows other test modules seeded.
+TENANT = UUID("a0000000-0000-4000-8000-0000000000d1")
+OTHER = UUID("a0000000-0000-4000-8000-0000000000d2")
+
 DEADLINE = NOW + timedelta(days=7)
+
+
+@pytest.fixture
+def seeded() -> dict[str, UUID]:
+    return seed_world(TENANT, OTHER)
 
 
 def _due() -> datetime:
@@ -48,7 +61,7 @@ def _due() -> datetime:
     return datetime.now(UTC) + timedelta(hours=1)
 
 
-def _row(seeded: dict[str, UUID], **overrides) -> ConversationOutboxItem:  # noqa: F811
+def _row(seeded: dict[str, UUID], **overrides: object) -> ConversationOutboxItem:
     values = dict(
         tenant_id=TENANT,
         connection_id=seeded["connection"],
@@ -75,8 +88,8 @@ def _row(seeded: dict[str, UUID], **overrides) -> ConversationOutboxItem:  # noq
     ],
 )
 def test_a_private_reply_row_is_complete_and_only_a_private_reply_has_one(
-    seeded,  # noqa: F811
-    overrides,
+    seeded: dict[str, UUID],
+    overrides: dict[str, object],
 ) -> None:
     with pytest.raises(IntegrityError) as exc, tenant_session(TENANT) as session:
         session.add(_row(seeded, **overrides))
@@ -84,7 +97,9 @@ def test_a_private_reply_row_is_complete_and_only_a_private_reply_has_one(
     assert isinstance(exc.value.orig, CheckViolation)
 
 
-def _enqueue(outbox, seeded, comment_id: str) -> UUID:  # noqa: F811
+def _enqueue(
+    outbox: PostgresConversationOutboxRepository, seeded: dict[str, UUID], comment_id: str
+) -> UUID:
     return outbox.enqueue(
         tenant_id=TENANT,
         connection_id=seeded["connection"],
@@ -96,7 +111,7 @@ def _enqueue(outbox, seeded, comment_id: str) -> UUID:  # noqa: F811
     )
 
 
-def test_postgres_outbox_round_trips_a_private_reply(seeded) -> None:  # noqa: F811
+def test_postgres_outbox_round_trips_a_private_reply(seeded: dict[str, UUID]) -> None:
     outbox = PostgresConversationOutboxRepository()
     comment_id = f"c-{uuid4().hex[:8]}"
     item_id = _enqueue(outbox, seeded, comment_id)
@@ -132,7 +147,7 @@ def test_postgres_outbox_round_trips_a_private_reply(seeded) -> None:  # noqa: F
         _enqueue(outbox, seeded, comment_id)
 
 
-def test_a_failed_private_reply_does_not_block_another(seeded) -> None:  # noqa: F811
+def test_a_failed_private_reply_does_not_block_another(seeded: dict[str, UUID]) -> None:
     outbox = PostgresConversationOutboxRepository()
     comment_id = f"c-{uuid4().hex[:8]}"
     item_id = _enqueue(outbox, seeded, comment_id)
@@ -141,7 +156,7 @@ def test_a_failed_private_reply_does_not_block_another(seeded) -> None:  # noqa:
     assert _enqueue(outbox, seeded, comment_id) != item_id
 
 
-def test_the_origin_reader_reads_a_comment_with_its_channel(seeded) -> None:  # noqa: F811
+def test_the_origin_reader_reads_a_comment_with_its_channel(seeded: dict[str, UUID]) -> None:
     origin = PostgresOriginReader().get(tenant_id=TENANT, message_id=seeded["comment"])
     assert origin is not None
     assert (origin.channel, origin.direction, origin.deleted) == ("comment", "inbound", False)
@@ -150,7 +165,7 @@ def test_the_origin_reader_reads_a_comment_with_its_channel(seeded) -> None:  # 
     assert PostgresOriginReader().get(tenant_id=OTHER, message_id=seeded["comment"]) is None
 
 
-def test_the_service_opens_and_queues_a_private_reply_in_postgres(seeded) -> None:  # noqa: F811
+def test_the_service_opens_and_queues_a_private_reply_in_postgres(seeded: dict[str, UUID]) -> None:
     registry = ChannelRegistry()
     registry.register(sender=MemoryConversationSender())
     service = FollowupService(
@@ -168,8 +183,7 @@ def test_the_service_opens_and_queues_a_private_reply_in_postgres(seeded) -> Non
         trigger=FollowupTrigger.INTENT,
         intent_result_id=seeded["intent"],
     )
-    # The author already had a DM thread (keyed by the comment's `from.id`): it is reused.
-    assert opening.followup.dm_thread_id == seeded["dm_thread"]
+    assert opening.followup.dm_thread_id is None  # nothing created before a decision
     approved = service.approve_and_queue(
         tenant_id=TENANT,
         followup_id=opening.followup.id,
@@ -178,8 +192,11 @@ def test_the_service_opens_and_queues_a_private_reply_in_postgres(seeded) -> Non
     )
     assert approved.status is FollowupStatus.APPROVED
     assert approved.send_route is SendRoute.PRIVATE_REPLY
+    # The author already had a DM thread (keyed by the comment's `from.id`): it is reused.
+    assert approved.dm_thread_id == seeded["dm_thread"]
     stored = PostgresFollowupRepository().get(tenant_id=TENANT, followup_id=approved.id)
     assert stored is not None and stored.outbox_id == approved.outbox_id
+    assert stored.dm_thread_id == seeded["dm_thread"]
     [record] = [
         r
         for r in PostgresConversationOutboxRepository().list_for_thread(
@@ -190,3 +207,53 @@ def test_the_service_opens_and_queues_a_private_reply_in_postgres(seeded) -> Non
     assert record.kind == KIND_PRIVATE_REPLY
     assert record.reply_deadline == DEADLINE
     assert record.payload["recipient"]["comment_id"] == record.comment_id
+
+
+def test_a_lost_race_rolls_the_queued_send_back(seeded: dict[str, UUID]) -> None:
+    """The guarded transition runs inside the outbox insert's transaction: when it loses
+    (the followup was decided meanwhile), the insert is rolled back with it."""
+    outbox = PostgresConversationOutboxRepository()
+    followups = PostgresFollowupRepository()
+    followup = followups.open(
+        new_followup(
+            tenant_id=TENANT,
+            connection_id=seeded["connection"],
+            origin_kind=OriginKind.COMMENT,
+            origin_message_id=seeded["comment"],
+            trigger=FollowupTrigger.MANUAL,
+            now=NOW,
+        )
+    ).followup
+    followups.discard(
+        tenant_id=TENANT, followup_id=followup.id, decided_by_user_id=seeded["user"], now=NOW
+    )
+    comment_id = f"c-{uuid4().hex[:8]}"
+
+    def approve(session: object, outbox_id: UUID) -> None:
+        followups.approve(
+            tenant_id=TENANT,
+            followup_id=followup.id,
+            outbox_id=outbox_id,
+            send_route=SendRoute.PRIVATE_REPLY,
+            dm_thread_id=seeded["dm_thread"],
+            decided_by_user_id=seeded["user"],
+            now=NOW,
+            session=session,
+        )
+
+    with pytest.raises(InvalidFollowupTransition):
+        outbox.enqueue(
+            tenant_id=TENANT,
+            connection_id=seeded["connection"],
+            thread_id=seeded["dm_thread"],
+            channel=CHANNEL_DM,
+            payload={"recipient": {"comment_id": comment_id}, "message": {"text": "hola"}},
+            approval=HumanApproval(user_id=seeded["user"], approved_at=NOW),
+            private_reply=PrivateReplyTarget(comment_id, DEADLINE),
+            on_enqueued=approve,
+        )
+    assert not [
+        r
+        for r in outbox.list_for_thread(tenant_id=TENANT, thread_id=seeded["dm_thread"])
+        if r.comment_id == comment_id
+    ]

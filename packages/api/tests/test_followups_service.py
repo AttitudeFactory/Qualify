@@ -1,5 +1,6 @@
-"""Continuing a comment in private (m-24789646, PR 2), offline: opening a followup creates
-or reuses the author's DM thread; the route is the DM while the person's 24 h window is
+"""Continuing a comment in private (m-24789646, PR 2), offline: opening a followup leaves
+Conversaciones untouched and the author's DM thread is found or created only on approval;
+the route is the DM while the person's 24 h window is
 open, else Meta's private reply to the comment (within 7 days, only with
 `comment_private_reply` on); approving queues exactly one outbox row with the person's
 approval and nothing else (B3); the sender revalidates the 7-day deadline and records whom
@@ -9,6 +10,7 @@ Meta reached.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -27,6 +29,7 @@ from qualify_api.conversations.outbox import (
 )
 from qualify_api.conversations.repository import MemoryConversationRepository
 from qualify_api.conversations.sender import (
+    ERROR_PRIVATE_REPLY_DISABLED,
     ERROR_PRIVATE_REPLY_EXPIRED,
     ConversationOutboxSender,
 )
@@ -34,6 +37,8 @@ from qualify_api.followups import (
     Capabilities,
     Capability,
     CapabilityUnavailable,
+    Followup,
+    FollowupOpening,
     FollowupService,
     FollowupStatus,
     FollowupTrigger,
@@ -113,7 +118,11 @@ class World:
             )
         )
 
-    def open(self, message_id: UUID | None = None, trigger=FollowupTrigger.MANUAL):
+    def open(
+        self,
+        message_id: UUID | None = None,
+        trigger: FollowupTrigger = FollowupTrigger.MANUAL,
+    ) -> FollowupOpening:
         return self.service.open_for_interaction(
             tenant_id=TENANT,
             origin_message_id=message_id or self.comment.id,
@@ -124,22 +133,41 @@ class World:
     def approval(self) -> HumanApproval:
         return HumanApproval(user_id=USER, approved_at=self.clock())
 
-    def approve(self, followup_id: UUID, text: str = "Hola Ana, cuesta 50.000", **kw):
+    def approve(
+        self, followup_id: UUID, text: str = "Hola Ana, cuesta 50.000", **kw: str
+    ) -> Followup:
         return self.service.approve_and_queue(
             tenant_id=TENANT, followup_id=followup_id, text=text, approval=self.approval(), **kw
         )
 
-    def person_wrote(self, thread_id: UUID, at: datetime) -> None:
+    def author_thread(self) -> UUID:
+        return self.conversations.upsert_thread(
+            tenant_id=TENANT,
+            connection_id=CONNECTION_ID,
+            channel=CHANNEL_DM,
+            counterpart_external_id=AUTHOR,
+        ).thread_id
+
+    def author_wrote(self, at: datetime) -> UUID:
+        """The comment's author also messaged the business by DM at `at`."""
+        thread_id = self.author_thread()
         self.conversations.bump_thread_activity(
             tenant_id=TENANT, thread_id=thread_id, last_inbound_at=at, last_message_at=at
         )
+        return thread_id
 
-    def sender_loop(self) -> ConversationOutboxSender:
+    def dm_threads(self) -> list[UUID]:
+        return [
+            t.id for t in self.conversations.list_threads(tenant_id=TENANT, channels=[CHANNEL_DM])
+        ]
+
+    def sender_loop(self, *, private_replies: bool = True) -> ConversationOutboxSender:
         return ConversationOutboxSender(
             outbox=self.outbox,
             repository=self.conversations,
             registry=self.registry,
             connections=lambda _t, _c: CONNECTION,
+            private_replies=private_replies,
             worker_id="test",
             clock=self.clock,
         )
@@ -148,7 +176,7 @@ class World:
 # --- opening ------------------------------------------------------------------------------
 
 
-def test_opening_a_comment_creates_the_authors_dm_thread_once() -> None:
+def test_opening_a_comment_touches_nothing_in_conversaciones() -> None:
     world = World()
     opening = world.open(trigger=FollowupTrigger.INTENT)
     followup = opening.followup
@@ -156,27 +184,30 @@ def test_opening_a_comment_creates_the_authors_dm_thread_once() -> None:
     assert followup.origin_kind is OriginKind.COMMENT
     assert followup.trigger is FollowupTrigger.INTENT
     assert followup.notice_status is NoticeStatus.NOT_REQUESTED
-    thread = world.conversations.get_thread(tenant_id=TENANT, thread_id=followup.dm_thread_id)
-    assert thread is not None
-    assert (thread.channel, thread.counterpart_external_id) == (CHANNEL_DM, AUTHOR)
+    assert followup.dm_thread_id is None
+    assert world.dm_threads() == []
     again = world.open()
     assert again.created is False and again.followup.id == followup.id
 
 
-def test_opening_reuses_an_existing_dm_thread_with_the_author() -> None:
+def test_approving_creates_the_authors_dm_thread() -> None:
     world = World()
-    existing = world.conversations.upsert_thread(
-        tenant_id=TENANT,
-        connection_id=CONNECTION_ID,
-        channel=CHANNEL_DM,
-        counterpart_external_id=AUTHOR,
-    ).thread_id
-    assert world.open().followup.dm_thread_id == existing
+    approved = world.approve(world.open().followup.id)
+    assert world.dm_threads() == [approved.dm_thread_id]
+    thread = world.conversations.get_thread(tenant_id=TENANT, thread_id=approved.dm_thread_id)
+    assert thread is not None
+    assert (thread.channel, thread.counterpart_external_id) == (CHANNEL_DM, AUTHOR)
 
 
-def _variant(world: World, **changes) -> UUID:
-    from dataclasses import replace
+def test_approving_reuses_an_existing_dm_thread_with_the_author() -> None:
+    world = World()
+    existing = world.author_thread()
+    approved = world.approve(world.open().followup.id)
+    assert approved.dm_thread_id == existing
+    assert world.dm_threads() == [existing]
 
+
+def _variant(world: World, **changes: object) -> UUID:
     return world.origins.add(replace(world.comment, id=uuid4(), **changes)).id
 
 
@@ -191,7 +222,9 @@ def _variant(world: World, **changes) -> UUID:
         {"channel": CHANNEL_DM},
     ],
 )
-def test_what_cannot_be_continued_in_private_is_refused_with_a_reason(changes) -> None:
+def test_what_cannot_be_continued_in_private_is_refused_with_a_reason(
+    changes: dict[str, object],
+) -> None:
     world = World()
     with pytest.raises(OriginNotSupported) as exc:
         world.open(_variant(world, **changes))
@@ -224,7 +257,7 @@ def test_a_comment_inside_7_days_is_answered_by_a_private_reply() -> None:
 def test_the_dm_wins_while_the_persons_window_is_open() -> None:
     world = World()
     followup = world.open().followup
-    world.person_wrote(followup.dm_thread_id, world.clock() - timedelta(minutes=10))
+    world.author_wrote(world.clock() - timedelta(minutes=10))
     options = world.service.send_options(tenant_id=TENANT, followup_id=followup.id)
     assert options.dm.available is True
     assert options.dm.closes_at == world.clock() - timedelta(minutes=10) + timedelta(hours=24)
@@ -273,15 +306,16 @@ def test_approving_queues_one_private_reply_addressed_to_the_comment() -> None:
         "message": {"text": "Hola Ana, cuesta 50.000"},
     }
     assert (row.comment_id, row.reply_deadline) == (COMMENT_ID, T0 + timedelta(days=7))
-    assert (row.thread_id, row.approved_by_user_id) == (followup.dm_thread_id, USER)
+    assert (row.thread_id, row.approved_by_user_id) == (approved.dm_thread_id, USER)
 
 
 def test_approving_with_the_window_open_queues_a_normal_dm() -> None:
     world = World()
     followup = world.open().followup
-    world.person_wrote(followup.dm_thread_id, world.clock() - timedelta(minutes=1))
+    thread_id = world.author_wrote(world.clock() - timedelta(minutes=1))
     approved = world.approve(followup.id)
     assert approved.send_route is SendRoute.DM
+    assert approved.dm_thread_id == thread_id
     [row] = world.outbox.rows.values()
     assert row.kind == KIND_REPLY
     assert row.payload["recipient"] == {"id": AUTHOR}
@@ -327,6 +361,25 @@ def test_a_followup_is_approved_once() -> None:
     assert len(world.outbox.rows) == 1
 
 
+def test_a_lost_race_queues_nothing() -> None:
+    """Someone discards the followup between this approval's checks and its write: the
+    guarded transition fails inside the enqueue, so no send is left in the queue."""
+    world = World()
+    followup = world.open().followup
+    original = world.followups.approve
+
+    def discarded_meanwhile(**kwargs: object) -> Followup:
+        world.followups.discard(
+            tenant_id=TENANT, followup_id=followup.id, decided_by_user_id=uuid4(), now=T0
+        )
+        return original(**kwargs)  # type: ignore[arg-type]
+
+    world.followups.approve = discarded_meanwhile  # type: ignore[method-assign]
+    with pytest.raises(InvalidFollowupTransition):
+        world.approve(followup.id)
+    assert world.outbox.rows == {}
+
+
 def test_a_discarded_followup_cannot_be_approved() -> None:
     world = World()
     followup = world.open().followup
@@ -352,7 +405,7 @@ def _private_reply(world: World, thread_id: UUID) -> UUID:
 
 def test_a_comment_has_at_most_one_live_private_reply() -> None:
     world = World()
-    thread_id = world.open().followup.dm_thread_id
+    thread_id = world.author_thread()
     first = _private_reply(world, thread_id)
     with pytest.raises(PrivateReplyExists):
         _private_reply(world, thread_id)
@@ -377,7 +430,9 @@ def test_a_comment_has_at_most_one_live_private_reply() -> None:
         ),
     ],
 )
-def test_the_body_and_the_target_must_agree(payload, target) -> None:
+def test_the_body_and_the_target_must_agree(
+    payload: dict[str, object], target: PrivateReplyTarget | None
+) -> None:
     world = World()
     with pytest.raises(ValueError):
         world.outbox.enqueue(
@@ -397,7 +452,7 @@ def test_the_body_and_the_target_must_agree(payload, target) -> None:
 async def test_the_sender_ships_a_private_reply_without_a_24h_window() -> None:
     world = World()
     followup = world.open().followup
-    world.approve(followup.id)
+    approved = world.approve(followup.id)
     report = await world.sender_loop().run_once(TENANT)
     assert report.sent == 1
     [sent] = world.channel.sent
@@ -406,7 +461,17 @@ async def test_the_sender_ships_a_private_reply_without_a_24h_window() -> None:
     assert row.status == "sent"
     assert row.recipient_external_id == AUTHOR
     [message] = world.outbox.messages
-    assert message.thread_id == followup.dm_thread_id
+    assert message.thread_id == approved.dm_thread_id
+
+
+async def test_the_sender_holds_back_private_replies_while_the_capability_is_off() -> None:
+    world = World()
+    world.approve(world.open().followup.id)
+    report = await world.sender_loop(private_replies=False).run_once(TENANT)
+    assert (report.sent, report.failed) == (0, 1)
+    assert world.channel.sent == []
+    [row] = world.outbox.rows.values()
+    assert (row.status, row.error_code) == ("failed", ERROR_PRIVATE_REPLY_DISABLED)
 
 
 async def test_the_sender_refuses_a_private_reply_past_its_deadline() -> None:
