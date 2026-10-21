@@ -104,22 +104,62 @@ def _full_invite(**overrides) -> CreatedInvite:
 
 def test_invite_email_is_personal_when_it_knows_who() -> None:
     mail = invite_email(_full_invite(), "https://qualify.example/", signer="Herwin Rey")
-    assert mail.subject == "Herwin te invitó a crear la cuenta de Arepera La Nona en Qualify"
-    assert "Hola, María:" in mail.text and "Hola, María:" in mail.html
-    assert "Herwin Rey te invitó" in mail.text
+    assert mail.subject == "María, Herwin te invitó a Qualify"
+    assert "¡Hola, María!" in mail.text and "¡Hola, María!" in mail.html
+    assert "Herwin Rey te invitó a Qualify para que abras la cuenta de Arepera La Nona." in (
+        mail.text
+    )
     assert "https://qualify.example/signup?invite=tok123" in mail.text
     assert 'href="https://qualify.example/signup?invite=tok123"' in mail.html
     assert "El viernes revisamos tu campaña." in mail.text
     assert "Como hablamos hoy.<br>El viernes" in mail.html  # the note keeps its lines
     assert "14 de octubre" in mail.text  # Spanish date, market time (Caracas)
-    assert 'src="https://qualify.example/qualify-mark-email.png"' in mail.html
+    assert 'src="https://qualify.example/qualify-icon-email.png"' in mail.html
+
+
+def test_invite_email_speaks_the_design_system() -> None:
+    """Light inline (the theme every client keeps), dark re-mapped by role in `<style>`
+    for the clients that honour it, one solid action, identifiers in Plex Mono."""
+    html = invite_email(_full_invite(), "https://qualify.example").html
+    assert '<meta name="color-scheme" content="light dark">' in html
+    assert "@media (prefers-color-scheme: dark)" in html
+    assert html.count('bgcolor="#008573"') == 1  # the one solid button, teal 11 (AA)
+    assert "IBM Plex Sans" in html and "IBM Plex Mono" in html
+    assert "maria@arepera.com</span>" in html  # the email reads as an identifier (P6)
+
+
+def test_invite_email_shows_the_three_landing_scenes_light_with_a_dark_swap() -> None:
+    mail = invite_email(_full_invite(), "https://qualify.example/")
+    for n in (1, 2, 3):
+        assert f'src="https://qualify.example/qualify-paso{n}-light.gif"' in mail.html
+        assert (
+            f'<source srcset="https://qualify.example/qualify-paso{n}-dark.gif" '
+            'media="(prefers-color-scheme: dark)">' in mail.html
+        )
+    # the customer's words, not the product's — and never English (founder, 2026-10-21)
+    for jargon in ("Brand Kit", "post"):
+        assert jargon not in mail.html and jargon not in mail.text
+
+
+def test_invite_email_links_the_brands() -> None:
+    html = invite_email(_full_invite(), "https://qualify.example/").html
+    assert html.count('href="https://qualify.la"') == 4  # icon + wordmark, header and footer
+    assert 'Desarrollado por <a class="q-muted" href="https://attitudefactory.co"' in html
+    assert 'align="center" class="q-btn-table"' in html  # the button sits centred
+
+
+def test_invite_button_shines_where_the_client_allows_it() -> None:
+    html = invite_email(_full_invite(), "http://x").html
+    assert '<span class="q-shine" style="display:none;"></span>' in html  # off without <style>
+    assert "@keyframes q-shine" in html and "prefers-reduced-motion" in html
 
 
 def test_invite_email_degrades_to_qualify_without_names() -> None:
     bare = CreatedInvite(email="a@b.co", token="t", expires_at=_EXPIRES)
     mail = invite_email(bare, "http://x")
-    assert mail.subject == "Tu invitación a Qualify"
-    assert "Hola:" in mail.text and "Te invitamos a crear la cuenta de tu negocio" in mail.text
+    assert mail.subject == "Tienes una invitación a Qualify"
+    assert "¡Hola!" in mail.text
+    assert "Te invitamos a Qualify para que abras la cuenta de tu negocio." in mail.text
     assert "Responde este correo" not in mail.text  # no Reply-To, no promise
     assert "Responde este correo" in invite_email(bare, "http://x", can_reply=True).text
 
