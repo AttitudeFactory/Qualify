@@ -26,7 +26,8 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
 
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
   paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles + registro de la app de Meta)
-  opcionales (perfil, apagados):         calendar-worker (PUBLICA DE VERDAD) · render (Remotion)
+  workers siempre activos:               webhook-worker · whatsapp-worker · conversations-worker · calendar-worker (PUBLICA DE VERDAD lo aprobado y programado)
+  opcionales (perfil, apagados):         render (Remotion)
 ```
 
 | Ruta | Destino | Qué es |
@@ -253,7 +254,7 @@ Operación:
 
 Límites:
 - **Perfil `render`:** el CD se niega si `COMPOSE_PROFILES` incluye `render`, porque su imagen todavía no se publica (punto 6 del plan). Mientras tanto, ese caso se despliega con `just deploy`.
-- **`calendar-worker`:** el CD no lo toca. Los perfiles salen sólo de `.env.prod`.
+- **`calendar-worker`:** siempre activo desde 2026-10-21 (m-24828928); cada despliegue lo recrea como a los demás workers. Los perfiles (hoy sólo `render`) salen sólo de `.env.prod`.
 
 ## 8. Respaldos de Postgres
 
@@ -349,7 +350,8 @@ Luego actualizar [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-sub
 
 Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`.
 
-- **`calendar-worker`** — el ejecutor del Planificador (QUA-111). **Publica de verdad** en las cuentas conectadas. En el servicio `reflex` el worker embebido está **forzado a `off`**, así que sin este perfil nada programado sale. Alcance por defecto `--all-tenants`; para limitarlo: `QUALIFY_CALENDAR_WORKER_SCOPE=--tenant=<uuid>`. Nota: la pantalla del Planificador informa el estado del worker *embebido* (apagado) aunque este servicio esté corriendo.
+> **`calendar-worker` ya no es opcional (2026-10-21, m-24828928).** Era un perfil que nunca se activó en el servidor, y como el worker embebido de `reflex` está **forzado a `off`**, ninguna publicación programada salía en producción. Ahora es un servicio siempre activo, como `whatsapp-worker`: el ejecutor del Planificador (QUA-111) **publica de verdad**, pero sólo lo que una persona aprobó y programó. Al arrancar, su primer tick publica lo aprobado y vencido que siga dentro de la ventana de 24 h (`EXECUTION_WINDOW`); lo más viejo expira. Alcance por defecto `--all-tenants`; para limitarlo: `QUALIFY_CALENDAR_WORKER_SCOPE=--tenant=<uuid>`. Cada tick deja un latido en Redis que el Planificador lee (QUA-118), así que la pantalla muestra el servicio como disponible.
+
 - **`render`** — servicio Remotion (Node + Chromium headless) para el generador por plantillas. Pide ~1 GB de RAM al renderizar: en un CX23 hay riesgo de quedarse sin memoria; usar CX33. Sin él, el generador por plantillas falla con error claro; el resto de la app no se entera.
 
 ## 11. Pendientes conocidos (no bloquean el despliegue)
@@ -387,7 +389,7 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | Puertos publicados | Sólo Caddy; `postgres`/`redis`/`api`/`reflex` sin puertos en el host |
 | Falta `QUALIFY_DEV_FERNET_KEY` | `docker compose` se niega a arrancar (error de interpolación) |
 | Worker embebido en `reflex` | Log `calendar.embedded.off` |
-| Perfil `calendar-worker` | Arranca `--all-tenants`, primer tick `tenants=0` |
+| `calendar-worker` | Arranca `--all-tenants`, primer tick `tenants=0` |
 | `backup-db.sh` + restauración de §8 | Dump + globals escritos; `DROP/CREATE DATABASE` + `pg_restore` recupera una fila testigo, `alembic_version = 0040` y las 48 políticas RLS |
 | `caddy validate` con el dominio real | `Valid configuration` |
 | Contraseñas crudas de BD dentro de `api`/`reflex` | Vacías (sólo llegan los DSN por rol; la del dueño superusuario no la tiene ningún proceso que sirve tráfico) |

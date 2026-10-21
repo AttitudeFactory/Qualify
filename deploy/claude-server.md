@@ -20,8 +20,10 @@ data lives here. Act like an on-call engineer, not like a developer on a laptop.
 - **Never add `ports:` to `postgres` or `redis`.** Docker's iptables bypass `ufw`; only Caddy
   is published, and that is the only reason the firewall holds.
 - **Never build on this server.** Images come from GHCR, built by GitHub Actions.
-- The optional `calendar-worker` profile **publishes for real** to customers' social accounts.
-  Do not start it, and do not change `COMPOSE_PROFILES`, without an explicit request.
+- `calendar-worker` **publishes for real** to customers' social accounts — what a person
+  approved and scheduled in the Planificador. It is always on (since 2026-10-21, m-24828928):
+  stopping it means no scheduled post goes out. Do not stop it, and do not change
+  `COMPOSE_PROFILES`, without an explicit request.
 - Report outcomes faithfully: if a health check fails, say so with the output.
 
 ## Layout
@@ -37,8 +39,9 @@ data lives here. Act like an on-call engineer, not like a developer on a laptop.
 
 Services (`qdc config --services`): `caddy` (only thing on 80/443), `api` (FastAPI), `reflex`
 (Reflex backend + websocket), `postgres` (pgvector/pg16), `redis`, `webhook-worker` (QUA-147:
-settles recorded Meta webhooks, read-only toward Meta, never publishes), `migrate` (one-shot), and
-the optional profiles `calendar-worker` and `render`.
+settles recorded Meta webhooks, read-only toward Meta, never publishes), `whatsapp-worker`,
+`conversations-worker`, `calendar-worker` (QUA-111: publishes what was approved and scheduled),
+`migrate` (one-shot), and the optional profile `render`.
 
 ## Commands
 

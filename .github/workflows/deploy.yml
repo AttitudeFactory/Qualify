@@ -32,8 +32,8 @@
 # Rollback: run this workflow by hand with an older sha of main (its images are still in
 # GHCR). Across a migration, tick `skip_migrate`: the older image cannot run `alembic upgrade`
 # on a newer database.
-# The calendar-worker profile is never touched here: profiles come from the server's
-# .env.prod only.
+# Profiles (today only `render`) come from the server's .env.prod only. calendar-worker is
+# no longer a profile (m-24828928): every deploy recreates it like the other workers.
 name: deploy
 
 on:
