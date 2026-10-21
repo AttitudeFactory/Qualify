@@ -34,13 +34,23 @@ The pipeline, all blocking (the state runs it in a thread):
 The result is remembered in memory per brand for `CACHE_TTL_SECONDS` — every read of
 the vendor costs credits and every review a model call — and «Actualizar» skips it. A
 read whose check could not reach the model is NOT remembered.
+
+**Depth** (§ m-24820844, 2026-10-20): the default read covers `MONTH_DAYS` — the week and
+month tabs. The «90 días» tab is a SEPARATE, deeper read (`QUARTER_DAYS`, more pages per
+account), made only when the operator asks for it after being told it has an extra
+charge, and remembered on its own. The platform and referente filters are
+the view's: they cut the cards already read and never call the vendor or the model —
+which is why step 4 also checks the top reels of EACH account (`PER_ACCOUNT_REVIEWED`),
+not only the brand-wide top, so a quiet referente still has reels to filter down to.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -60,15 +70,25 @@ logger = logging.getLogger(__name__)
 
 WEEK_DAYS = 7
 MONTH_DAYS = 30
+QUARTER_DAYS = 90
 _DAY = 24 * 3600
 
-#: Accounts read per brand — a bound on credits (each costs one to `REEL_MAX_PAGES`).
+#: The windows a read of `days` fills (`DiscoveredReels.week/month/quarter`): the default
+#: read stops at the month, the deep one adds the 90 days.
+WINDOW_DAYS = {"week": WEEK_DAYS, "month": MONTH_DAYS, "quarter": QUARTER_DAYS}
+#: How deep a read may go.
+DEPTHS = (MONTH_DAYS, QUARTER_DAYS)
+
+#: Accounts read per brand — a bound on credits (each costs one to `reel_pages(days)`).
 MAX_REFERENTES = 12
-#: Reels each window shows.
+#: Reels each window shows, after the view's filters.
 SHOWN_PER_WINDOW = 24
 #: The most viewed reels sent to the rubro check: everything a window could show, plus
 #: room for the ones the check drops.
 REVIEWED_PER_WINDOW = 32
+#: …plus each account's own most viewed in the window, so filtering to one referente
+#: (or one network) still finds its checked reels when none of them made the brand top.
+PER_ACCOUNT_REVIEWED = 3
 #: What a card keeps of a transcript, and of a caption.
 TRANSCRIPT_CARD_CHARS = 1200
 CAPTION_CARD_CHARS = 160
@@ -100,16 +120,24 @@ class Referente:
 
 @dataclass
 class DiscoveredReels:
-    """What «Descubrir reels» shows: the two windows' cards, newest read first."""
+    """What «Descubrir reels» shows: each window's checked cards, most viewed first —
+    every one the check kept; the view filters and cuts them to `SHOWN_PER_WINDOW`."""
 
     week: list[dict[str, str]] = field(default_factory=list)
     month: list[dict[str, str]] = field(default_factory=list)
+    #: Only in a `QUARTER_DAYS` read.
+    quarter: list[dict[str, str]] = field(default_factory=list)
+    #: How many days back this read went (`DEPTHS`).
+    days: int = MONTH_DAYS
     fetched_at: float = 0.0
-    #: Accounts read, reels found in the month, and the handles that could not be read
+    #: Accounts read, reels found in `days`, and the handles that could not be read
     #: (private, gone, vendor error).
     referentes: int = 0
     read: int = 0
     failed: list[str] = field(default_factory=list)
+    #: The accounts read, in influence order (`account_option`) — the referente filter's
+    #: options.
+    accounts: list[dict[str, str]] = field(default_factory=list)
     #: Reels the check judged and left out, whether it ran, and why not when it did not
     #: (`CHECK_*`): without the check NOTHING is shown.
     dropped: int = 0
@@ -258,10 +286,17 @@ def brand_brief(
 FetchFn = Callable[..., list[dict[str, Any]]]
 
 
+def reel_pages(days: int) -> int:
+    """Pages a walk over `days` may read per account: `REEL_MAX_PAGES` covers a month of
+    a daily poster, so the 90 days get three times that."""
+    return math.ceil(scrapecreators_client.REEL_MAX_PAGES * days / MONTH_DAYS)
+
+
 def read_reels(
     referentes: Sequence[Referente],
     *,
     since: float,
+    max_pages: int = scrapecreators_client.REEL_MAX_PAGES,
     fetch: FetchFn = scrapecreators_client.fetch_reels,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Every reel of `referentes` since `since`, and the handles that could not be read.
@@ -271,7 +306,8 @@ def read_reels(
 
     def one(ref: Referente) -> tuple[Referente, list[dict[str, Any]] | None]:
         try:
-            return ref, fetch(ref.network, ref.handle, since=since, client=client)
+            found = fetch(ref.network, ref.handle, since=since, client=client, max_pages=max_pages)
+            return ref, found
         except (scrapecreators_client.ScrapeCreatorsError, ValueError) as exc:
             logger.warning("reels of %s/%s unreadable: %s", ref.network, ref.handle, exc)
             return ref, None
@@ -289,6 +325,20 @@ def read_reels(
     return reels, failed
 
 
+def account_key(network: str, handle: str) -> str:
+    """How a card and a filter option name the same account: `instagram:handle`."""
+    return f"{network}:{handle.lstrip('@')}"
+
+
+def account_option(ref: Referente) -> dict[str, str]:
+    """One account of the referente filter: its key, network and handle."""
+    return {
+        "key": account_key(ref.network, ref.handle),
+        "network": ref.network,
+        "handle": f"@{ref.handle}",
+    }
+
+
 # --------------------------------------------------------------------------------------
 # 3. what they say
 # --------------------------------------------------------------------------------------
@@ -299,10 +349,43 @@ TranscribeFn = Callable[[dict[str, Any], httpx.Client], str]
 #: life of the process, so «Actualizar» never pays for one twice.
 _transcripts: dict[str, str] = {}
 _transcripts_guard = threading.Lock()
+#: reel key → the event its in-flight fetch sets when done: the month and the 90-day reads
+#: may run at once, and the second to ask for a reel waits for the first instead of paying
+#: the vendor for the same transcript again.
+_transcripts_inflight: dict[str, threading.Event] = {}
 
 
 def _reel_key(reel: dict[str, Any]) -> str:
     return f"{reel['network']}:{reel['id']}"
+
+
+def _transcript_once(
+    reel: dict[str, Any], client: httpx.Client, fetch: TranscribeFn
+) -> tuple[str, bool]:
+    """`reel`'s transcript, fetched at most once at a time across reads: from memory, or
+    after waiting for a fetch already in flight, or fetched here and remembered. Returns
+    `(text, fetched_here)`; raises like `fetch` (and then remembers nothing). A fetch that
+    failed elsewhere is retried here."""
+    key = _reel_key(reel)
+    while True:
+        with _transcripts_guard:
+            known = _transcripts.get(key)
+            if known is not None:
+                return known, False
+            running = _transcripts_inflight.get(key)
+            if running is None:
+                mine = _transcripts_inflight[key] = threading.Event()
+                break
+        running.wait(scrapecreators_client.TRANSCRIPT_TIMEOUT_SECONDS)
+    try:
+        text = " ".join(fetch(reel, client).split())
+        with _transcripts_guard:
+            _transcripts[key] = text
+        return text, True
+    finally:
+        with _transcripts_guard:
+            _transcripts_inflight.pop(key, None)
+        mine.set()
 
 
 def transcribe_one(reel: dict[str, Any], client: httpx.Client) -> str:
@@ -329,8 +412,9 @@ def transcribe(
     subtitles), and up to `MAX_PAID_TRANSCRIPTS` Instagram ones per call (`reels` comes
     most viewed first, so the ceiling cuts the least likely to be shown). A reel that
     cannot be transcribed is left with "" and NOT remembered, so a later read retries.
-    Returns `(fetched, paid)`: transcripts actually read, and how many of them were
-    Instagram ones (a failed call is in neither)."""
+    Returns `(fetched, paid)`: transcripts actually read by this call, and how many of
+    them were Instagram ones (a failed call, or one another read fetched meanwhile, is in
+    neither)."""
     todo: list[dict[str, Any]] = []
     instagram = 0
     for reel in reels:
@@ -352,14 +436,12 @@ def transcribe(
 
     def one(reel: dict[str, Any]) -> bool:
         try:
-            text = " ".join(fetch(reel, client).split())
+            text, fetched_here = _transcript_once(reel, client, fetch)
         except (scrapecreators_client.ScrapeCreatorsError, httpx.HTTPError) as exc:
             logger.info("transcript of %s unavailable: %s", _reel_key(reel), exc)
             return False
         reel["transcript"] = text
-        with _transcripts_guard:
-            _transcripts[_reel_key(reel)] = text
-        return True
+        return fetched_here
 
     with httpx.Client(timeout=scrapecreators_client.TRANSCRIPT_TIMEOUT_SECONDS) as client:
         with ThreadPoolExecutor(max_workers=_TRANSCRIPT_WORKERS) as pool:
@@ -388,10 +470,9 @@ def transcript_for(reel: dict[str, Any], *, fetch: TranscribeFn = transcribe_one
     if known is not None:
         return known
     with httpx.Client(timeout=scrapecreators_client.TRANSCRIPT_TIMEOUT_SECONDS) as client:
-        text = " ".join(fetch(reel, client).split())
-    with _transcripts_guard:
-        _transcripts[key] = text
-    logger.info("reel transcript fetched on demand: %s (%d chars)", key, len(text))
+        text, fetched_here = _transcript_once(reel, client, fetch)
+    if fetched_here:
+        logger.info("reel transcript fetched on demand: %s (%d chars)", key, len(text))
     return text
 
 
@@ -446,9 +527,41 @@ def _views_rank(reel: dict[str, Any]) -> tuple[int, int]:
     return (reel.get("views") or 0, reel.get("likes") or 0)
 
 
-def _top(reels: Sequence[dict[str, Any]], since: float, count: int) -> list[dict[str, Any]]:
+def _top(
+    reels: Sequence[dict[str, Any]], since: float, count: int | None = None
+) -> list[dict[str, Any]]:
     inside = [r for r in reels if r["takenAt"] >= since]
     return sorted(inside, key=_views_rank, reverse=True)[:count]
+
+
+def _candidates(
+    reels: Sequence[dict[str, Any]], since: float, *, per_account: bool
+) -> list[dict[str, Any]]:
+    """What the rubro check reads of one window: its `REVIEWED_PER_WINDOW` most viewed,
+    plus — with `per_account`, only for the read's widest window, so a read pays for them
+    once and not per tab — the `PER_ACCOUNT_REVIEWED` most viewed of every account in it
+    (the ones already in the top count among them, so a big account adds nothing)."""
+    ranked = _top(reels, since)
+    picked = ranked[:REVIEWED_PER_WINDOW]
+    if not per_account:
+        return picked
+    per_account_seen: dict[tuple[str, str], int] = {}
+    for reel in ranked:
+        account = (reel["network"], reel["handle"])
+        per_account_seen[account] = per_account_seen.get(account, 0) + 1
+        if per_account_seen[account] <= PER_ACCOUNT_REVIEWED:
+            picked.append(reel)
+    return picked
+
+
+#: (brief, reel as the model saw it) → its verdict. The same reel judged against the same
+#: brief with the same text, sound and transcript gets the same answer, so the 90-day read
+#: does not pay again for the month's reels, nor «Actualizar» for unchanged ones. A new
+#: transcript or an edited Brand Kit is a new key. Bounded: the oldest go first.
+_VerdictKey = tuple[review_ai.BrandBrief, reels_ai.ReelToReview]
+_verdicts: OrderedDict[_VerdictKey, reels_ai.ReelReview] = OrderedDict()
+_verdicts_guard = threading.Lock()
+MAX_REMEMBERED_VERDICTS = 5000
 
 
 def check_rubro(
@@ -460,11 +573,12 @@ def check_rubro(
     config: ModelConfig | None = None,
 ) -> dict[str, reels_ai.ReelReview]:
     """The rubro check of `reels`, as parallel calls of `_REVIEW_BATCH` to Anthropic:
-    reel key → verdict. Raises `ReelCheckUnavailable` (with the last failure's reason)
-    when every call fails; a batch that fails alone is left unreviewed. § 2026-10-19:
-    Anthropic only — the OmniRoute gateway path was reverted."""
+    reel key → verdict. A reel already judged against this brief, as it is now, is
+    answered from `_verdicts` without a call. Raises `ReelCheckUnavailable` (with the last
+    failure's reason) when every call fails; a batch that fails alone is left unreviewed.
+    § 2026-10-19: Anthropic only — the OmniRoute gateway path was reverted."""
     model = config or ModelConfig(reels_ai.REVIEW_MODEL, reels_ai.REVIEW_EFFORT)
-    items = [
+    every = [
         reels_ai.ReelToReview(
             id=_reel_key(r),
             network=r["network"],
@@ -477,6 +591,17 @@ def check_rubro(
         )
         for r in reels
     ]
+    known: dict[str, reels_ai.ReelReview] = {}
+    items: list[reels_ai.ReelToReview] = []
+    with _verdicts_guard:
+        for item in every:
+            verdict = _verdicts.get((brief, item))
+            if verdict is None:
+                items.append(item)
+            else:
+                known[item.id] = verdict
+    if not items:
+        return known
     batches = [items[i : i + _REVIEW_BATCH] for i in range(0, len(items), _REVIEW_BATCH)]
     failures: list[BaseException] = []
 
@@ -500,15 +625,23 @@ def check_rubro(
         )
         return answers
 
-    if not batches:
-        return {}
     with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as pool:
         answered = list(pool.map(one, batches))
-    if all(a is None for a in answered):
+    # every call failed: unavailable — unless some reels were judged before, which then
+    # stand alone like the survivors of a batch that failed by itself
+    if all(a is None for a in answered) and not known:
         last = failures[-1] if failures else None
         reason = check_failure_reason(last) if last else "sin respuesta del modelo de IA"
         raise ReelCheckUnavailable(reason) from last
-    return {r.id: r for answers in answered if answers for r in answers}
+    fresh = {r.id: r for answers in answered if answers for r in answers}
+    by_id = {item.id: item for item in items}
+    with _verdicts_guard:
+        for reel_id, verdict in fresh.items():
+            if reel_id in by_id:
+                _verdicts[(brief, by_id[reel_id])] = verdict
+        while len(_verdicts) > MAX_REMEMBERED_VERDICTS:
+            _verdicts.popitem(last=False)
+    return {**known, **fresh}
 
 
 # --------------------------------------------------------------------------------------
@@ -629,6 +762,8 @@ def reel_card(
         "network": reel["network"],
         "network_label": NETWORK_LABELS.get(reel["network"], reel["network"]),
         "handle": f"@{reel['handle']}",
+        # what the referente filter matches (`account_option`)
+        "account": account_key(reel["network"], reel["handle"]),
         "url": str(reel.get("url") or ""),
         "embed": embed_url(reel),
         "caption": _clip_text(str(reel.get("caption") or ""), CAPTION_CARD_CHARS),
@@ -695,20 +830,27 @@ def discover(
     kit_form: KitLoader | None = None,
     products: ProductsLoader | None = None,
     transcribe_fetch: TranscribeFn = transcribe_one,
+    days: int = MONTH_DAYS,
 ) -> DiscoveredReels:
-    """Steps 1-5 for one brand (see the module docstring)."""
+    """Steps 1-5 for one brand over the last `days` (`DEPTHS`; see the module
+    docstring): the month read fills the week and the month, the 90-day one the
+    quarter too."""
+    if days not in DEPTHS:
+        raise ValueError(f"unsupported depth: {days}")
     moment = now if now is not None else time.time()
     referentes = brand_referentes(tenant_id, brand_id, repository=repository)
-    result = DiscoveredReels(fetched_at=moment, referentes=len(referentes))
-    reels, result.failed = read_reels(referentes, since=moment - MONTH_DAYS * _DAY, fetch=fetch)
+    result = DiscoveredReels(fetched_at=moment, referentes=len(referentes), days=days)
+    reels, result.failed = read_reels(
+        referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
+    )
     result.read = len(reels)
-    week_since = moment - WEEK_DAYS * _DAY
+    result.accounts = [account_option(ref) for ref in referentes]
+    windows = {name: moment - span * _DAY for name, span in WINDOW_DAYS.items() if span <= days}
+    widest = moment - days * _DAY
     candidates = {
         _reel_key(r): r
-        for r in (
-            *_top(reels, week_since, REVIEWED_PER_WINDOW),
-            *_top(reels, moment - MONTH_DAYS * _DAY, REVIEWED_PER_WINDOW),
-        )
+        for since in windows.values()
+        for r in _candidates(reels, since, per_account=since == widest)
     }
     # what the candidates SAY, before the rubro check (§ 2026-10-15, restored the same
     # day: without it the check judges a new reel by its caption alone and the filter
@@ -745,7 +887,8 @@ def discover(
     lifts = account_lifts(reels)  # over every reel read, not only the candidates
 
     def cards(since: float) -> list[dict[str, str]]:
-        top = _top(kept, since, SHOWN_PER_WINDOW)
+        # every kept reel, not `SHOWN_PER_WINDOW`: the view's filters cut afterwards
+        top = _top(kept, since)
         return [
             reel_card(
                 r,
@@ -757,8 +900,8 @@ def discover(
             for n, r in enumerate(top, 1)
         ]
 
-    result.week = cards(week_since)
-    result.month = cards(moment - MONTH_DAYS * _DAY)
+    for name, since in windows.items():
+        setattr(result, name, cards(since))
     return result
 
 
@@ -770,23 +913,48 @@ def _env_key() -> str | None:
         return None
 
 
-_cache: dict[tuple[str, str], DiscoveredReels] = {}
+#: Keyed by (tenant, brand, days): the month read and the 90-day one are remembered
+#: apart — refreshing the week never throws away a 90-day read that was paid for.
+_cache: dict[tuple[str, str, int], DiscoveredReels] = {}
 _cache_guard = threading.Lock()
-#: One lock per brand: two loads of the same brand at once (two tabs, a double click on
-#: «Actualizar») wait for one read instead of paying ScrapeCreators and Claude twice.
-_brand_locks: dict[tuple[str, str], threading.Lock] = {}
-#: Reads finished per brand — how a load that waited knows one finished meanwhile.
-_reads: dict[tuple[str, str], int] = {}
+#: One lock per brand and depth: two loads of the same read at once (two tabs, a double
+#: click on «Actualizar») wait for one read instead of paying ScrapeCreators and Claude
+#: twice.
+_brand_locks: dict[tuple[str, str, int], threading.Lock] = {}
+#: Reads finished per brand and depth — how a load that waited knows one finished
+#: meanwhile.
+_reads: dict[tuple[str, str, int], int] = {}
+
+
+def _cache_key(tenant_id: UUID, brand_id: UUID, days: int) -> tuple[str, str, int]:
+    return (str(tenant_id), str(brand_id), days)
+
+
+def remembered(
+    tenant_id: UUID, brand_id: UUID, *, days: int = MONTH_DAYS
+) -> DiscoveredReels | None:
+    """The brand's read of `days` while it is fresh, or None — never reads anything (the
+    view asks it on mount whether the 90 days were already read, so their tab shows them)."""
+    with _cache_guard:
+        hit = _cache.get(_cache_key(tenant_id, brand_id, days))
+    if hit is not None and time.time() - hit.fetched_at < CACHE_TTL_SECONDS:
+        return hit
+    return None
 
 
 def cached_discover(
-    tenant_id: UUID, brand_id: UUID, *, refresh: bool = False, **kwargs: Any
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    refresh: bool = False,
+    days: int = MONTH_DAYS,
+    **kwargs: Any,
 ) -> DiscoveredReels:
-    """`discover`, remembered per brand for `CACHE_TTL_SECONDS` (memory only: a restart
-    reads again). `refresh=True` reads again now — unless another load of the same brand
-    finished a read while this one waited for it, which is then as fresh as asked. A
-    fresh hit is answered at once, even while another load of the brand is reading."""
-    key = (str(tenant_id), str(brand_id))
+    """`discover` over `days`, remembered per brand and depth for `CACHE_TTL_SECONDS`
+    (memory only: a restart reads again). `refresh=True` reads again now — unless another
+    load of the same read finished while this one waited for it, which is then as fresh
+    as asked. A fresh hit is answered at once, even while another load is reading."""
+    key = _cache_key(tenant_id, brand_id, days)
     with _cache_guard:
         brand_lock = _brand_locks.setdefault(key, threading.Lock())
         reads_before = _reads.get(key, 0)
@@ -801,7 +969,7 @@ def cached_discover(
             fresh = time.time() - hit.fetched_at < CACHE_TTL_SECONDS
             if read_meanwhile or (fresh and not refresh):
                 return hit
-        found = discover(tenant_id, brand_id, **kwargs)
+        found = discover(tenant_id, brand_id, days=days, **kwargs)
         with _cache_guard:
             _reads[key] = _reads.get(key, 0) + 1
             # a read whose check could not run is not remembered: the next load (or
@@ -818,9 +986,11 @@ __all__ = [
     "CHECK_NO_BRIEF",
     "CHECK_UNAVAILABLE",
     "MONTH_DAYS",
+    "QUARTER_DAYS",
     "WEEK_DAYS",
     "DiscoveredReels",
     "Referente",
+    "account_key",
     "brand_brief",
     "brand_referentes",
     "cached_discover",
@@ -829,4 +999,5 @@ __all__ = [
     "discover",
     "read_reels",
     "reel_card",
+    "remembered",
 ]

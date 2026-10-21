@@ -2,7 +2,7 @@
 
 `[IMPLEMENTADO 2026-10-15, sin commitear · sin prueba en vivo de punta a punta]`
 
-En `/create`, la opción **«Descubrir reels»** muestra los reels con más vistas de los referentes de la marca en dos pestañas, **Esta semana** y **Este mes**. Solo entran los reels **del producto de la marca**, los publique quien los publique: una hamburguesería que sigue a un creador de comida recibe sus hamburguesas, no su receta de pollo ni su reel de maquillaje (regla del fundador, 2026-10-15 noche: «si es hamburguesas que solo traiga hamburguesas»).
+En `/create`, la opción **«Descubrir reels»** muestra los reels con más vistas de los referentes de la marca en tres pestañas, **Esta semana**, **Este mes** y **90 días** (esta última, bajo demanda: ver el punto 6), con filtros por plataforma y por referente. Solo entran los reels **del producto de la marca**, los publique quien los publique: una hamburguesería que sigue a un creador de comida recibe sus hamburguesas, no su receta de pollo ni su reel de maquillaje (regla del fundador, 2026-10-15 noche: «si es hamburguesas que solo traiga hamburguesas»).
 
 ## 1. Cómo funciona
 
@@ -26,15 +26,21 @@ referentes de la marca ──► ScrapeCreators (1 lectura por cuenta, 30 días)
    - Las etiquetadas como *competencia* o *detractor* no entran.
 2. **Sus reels** (`scrapecreators_client.fetch_reels`): **una sola lectura por cuenta de los últimos 30 días** alimenta las dos pestañas, porque la semana son los días más recientes del mes.
 3. **Solo el producto** (`qualify_api.referentes.reels_ai.review_reels`):
-   - Que una cuenta encaje no garantiza que encaje cada video. Por eso los reels más vistos (32 por ventana) se revisan uno a uno con Claude: herramienta `revisar_reels`, modelo `claude-sonnet-5`, effort bajo, lotes de 20 en paralelo.
+   - Que una cuenta encaje no garantiza que encaje cada video. Por eso los reels más vistos (32 por ventana, **más los 3 más vistos de cada cuenta en la ventana más amplia de la lectura** —el mes o los 90 días—, para que el filtro por referente encuentre algo aunque la cuenta no llegue al top de la marca) se revisan uno a uno con Claude: herramienta `revisar_reels`, modelo `claude-sonnet-5`, effort bajo, lotes de 20 en paralelo.
    - Claude lee el texto, el sonido y qué es la cuenta.
    - El brief de la marca es el mismo que usa la revisión de referentes: se reconstruye desde la semilla de su búsqueda (rubro en palabras del operador, nicho, hashtags y ubicación).
    - **Si no hay API key, la marca nunca hizo la búsqueda o la revisión falla:** los reels se muestran sin revisar y la pantalla avisa.
-4. **Ranking:** por vistas (los likes desempatan), con 24 por pestaña.
+4. **Ranking:** por vistas (los likes desempatan), con 24 por pestaña **después de aplicar los filtros** (la lectura entrega todos los reels que pasaron la revisión).
 5. **Memoria:**
-   - El resultado se recuerda **6 horas por marca**, solo en memoria del proceso; «Actualizar» vuelve a leer.
+   - El resultado se recuerda **6 horas por marca y por profundidad** (30 o 90 días), solo en memoria del proceso; «Actualizar» vuelve a leer.
+   - **Los veredictos de Claude se recuerdan** por reel y brief mientras el proceso vive (`reels_discovery._verdicts`, máximo 5.000): la lectura de 90 días y «Actualizar» no vuelven a pagar por un reel ya juzgado. Si cambia lo que el modelo leería (texto, sonido, transcripción o el Brand Kit), se vuelve a preguntar.
+   - Una transcripción de Instagram se descarga **una sola vez aunque las lecturas del mes y de 90 días corran a la vez**: la segunda espera a la primera.
    - Si el proceso se reinicia, la siguiente apertura vuelve a leer y a pagar.
    - Una caché en Postgres necesitaría una migración (`creator_profile_cache` solo admite `kind='snapshot'`). Queda pendiente.
+6. **Filtros y 90 días** (m-24820844, 2026-10-20):
+   - **Plataforma** (Todas / Instagram / TikTok, solo si los referentes están en las dos redes) y **referente** (uno concreto o todos). Recortan las tarjetas ya leídas en el estado de la vista: **no llaman al proveedor ni a Claude**, no gastan créditos.
+   - **90 días** es una lectura aparte y más profunda: hasta 12 páginas por cuenta (el triple del mes). La pestaña **no lee nada al abrirse**: primero avisa que tiene un **cargo extra** y espera al botón «Leer». Por decisión del fundador (2026-10-20), no se muestran créditos ni dólares en pantalla. Orden de magnitud con 8 referentes: unos 60 créditos, como mucho ~140 (≈0,26 USD).
+   - Queda en caché aparte: «Actualizar» en Semana o Mes vuelve a leer 30 días y **no** tira la lectura de 90 que ya se pagó. Volver a la pestaña de 90 días dentro de las 6 horas no cuesta nada.
 
 **Cada tarjeta muestra:**
 - la portada 9:16 con el puesto, la red, las vistas y la duración;
@@ -59,7 +65,7 @@ referentes de la marca ──► ScrapeCreators (1 lectura por cuenta, 30 días)
   - «Abrir en …».
   - Sustituye al panel flotante que aparecía al pasar el ratón (descartado el mismo día).
 - **«Replicar con mi marca»** (desactivado, «muy pronto»).
-- La barra superior dice qué se leyó: «De 8 referentes · 153 reels del mes · 18 de otro producto · actualizado hace 2 minutos». La edad la calcula el navegador (`rx.moment`), sin latido al servidor.
+- La barra superior solo dice cuándo se leyó: «Actualizado hace 2 minutos» (el fundador quitó los conteos de referentes, reels y descartados el 2026-10-20). La edad la calcula el navegador (`rx.moment`), sin latido al servidor.
 
 **El filtro, y cómo cambió el 2026-10-15.** El modelo devuelve una **afinidad** con tres valores:
 - `producto`: el mismo producto o servicio que vende la marca, sea de quien sea (la hamburguesa de otro local, un creador que la reseña) → se muestra con la etiqueta «Tu producto»;

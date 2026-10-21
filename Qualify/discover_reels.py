@@ -1,10 +1,16 @@
 """«Descubrir reels» in /create (§ request 2026-10-15): the most viewed reels of the
-brand's referentes — only the ones of its own product — in two tabs, «Esta semana» and «Este
-mes». The pipeline is `reels_discovery`; this module is its state and its view.
+brand's referentes — only the ones of its own product — in three tabs, «Esta semana»,
+«Este mes» and «90 días». The pipeline is `reels_discovery`; this module is its state and
+its view.
 
 Reading is scraping (a paid vendor read per referente plus a model check), so it shows a
 spinner beside the sentence that says so (`docs/design-system.md` §5.4), and the result
 is remembered per brand (`reels_discovery.cached_discover`) — «Actualizar» reads again.
+
+§ m-24820844 (2026-10-20): the week and the month come from ONE month read; the 90 days
+are a deeper read of their own, made only after the tab shows what it costs, and then
+remembered too. The platform and referente filters only cut the cards already read: no
+vendor call, no model call.
 """
 
 from __future__ import annotations
@@ -39,43 +45,121 @@ def _failure_hint(exc: BaseException) -> str:
     return f"error inesperado: {name}"
 
 
-WINDOWS = (("week", "Esta semana"), ("month", "Este mes"))
+WINDOWS = (("week", "Esta semana"), ("month", "Este mes"), ("quarter", "90 días"))
+#: The filters' «everything» value (a Radix select item cannot be "").
+ALL = "all"
+NETWORK_FILTERS = ((ALL, "Todas"), *reels_discovery.NETWORK_LABELS.items())
+
+
+#: What the 90-day tab says before reading (§ founder 2026-10-20: a plain «cargo extra»,
+#: no credits or dollars on screen).
+QUARTER_NOTE = (
+    "Ver los reels de los últimos 90 días tiene un cargo extra. Una vez leídos quedan "
+    "guardados 6 horas: volver a esta pestaña no se cobra de nuevo."
+)
+QUARTER_REFRESH_TITLE = "Vuelve a leer los 90 días (tiene un cargo extra)"
+
+
+#: Which read a window shows: the week and the month come from the month read.
+READ_OF_WINDOW = {"week": "month", "month": "month", "quarter": "quarter"}
 
 
 class DiscoverReelsState(rx.State):
-    """What the «Descubrir reels» view shows. Cards are `reels_discovery.reel_card`."""
+    """What the «Descubrir reels» view shows. Cards are `reels_discovery.reel_card`.
+
+    Every card of a read stays on the backend (`_cards`, by window, and `_reads`, what
+    each read said besides its cards — keyed `"month"` / `"quarter"`): the browser only
+    receives `reels`, the window's cut through the filters, at most `SHOWN_PER_WINDOW`
+    — a read can hold some 70 checked cards per window, transcripts included. The 90-day
+    read is loaded only on demand (`load_quarter`)."""
 
     window: str = "week"
-    loading: bool = False
-    error: str = ""
-    week: list[dict[str, str]] = []
-    month: list[dict[str, str]] = []
+    #: The filters (`ALL` or a network / an `account_key`): they cut the read's cards.
+    network: str = ALL
+    account: str = ALL
+    #: The accounts read (`reels_discovery.account_option`), in influence order.
+    accounts: list[dict[str, str]] = []
+    #: Referentes the last month read had — 0 says «Aún no tienes referentes».
     referentes: int = 0
-    read: int = 0
-    failed: list[str] = []
-    dropped: int = 0
-    reviewed: bool = True
-    #: Why the product check did not run (`reels_discovery.CHECK_*`), "" when it did.
-    check: str = ""
-    #: Why it did not run, in a few words (`DiscoveredReels.check_detail`), "" if unknown.
-    check_detail: str = ""
-    fetched_at: float = 0.0
-    #: `fetched_at` as the browser renders it («actualizado hace 3 minutos», `rx.moment`
-    #: ages it client-side — no server round trip just to move a label).
-    fetched_iso: str = ""
-    #: Whether a read finished once this session (an empty result is a result).
-    loaded: bool = False
+    #: A read in progress, and why a whole read failed (before it gave any result).
+    loading: bool = False
+    quarter_loading: bool = False
+    error: str = ""
+    quarter_error: str = ""
     #: The reel playing inside its own card (its `key`), "" when none — one at a time,
     #: so starting another stops the previous (its iframe unmounts).
     playing_key: str = ""
 
+    #: window → every card the check kept (backend only).
+    _cards: dict[str, list[dict[str, str]]] = {}
+    #: read → `check`, `check_detail`, `fetched_iso` (`rx.moment` ages it client-side, no
+    #: round trip just to move «hace 3 minutos») and `failed` (handles, comma-joined).
+    _reads: dict[str, dict[str, str]] = {}
+
+    def _read(self) -> dict[str, str]:
+        return self._reads.get(READ_OF_WINDOW.get(self.window, "month"), {})
+
+    def _window_cards(self) -> list[dict[str, str]]:
+        """The window's cards — only the ones the check called the brand's PRODUCT or
+        category: a card from an older read (another rule, or kept while a new read loads
+        or fails) never shows a reel of another product."""
+        cards = self._cards.get(self.window, [])
+        return [c for c in cards if c.get("affinity") in reels_ai.FITS]
+
     @rx.var
     def reels(self) -> list[dict[str, str]]:
-        """The window's cards — only the ones the check called the brand's PRODUCT: a
-        card from an older read (another rule, or kept while a new read loads or fails)
-        never shows a reel of another product."""
-        cards = self.week if self.window == "week" else self.month
-        return [c for c in cards if c.get("affinity") in reels_ai.FITS]
+        """The window's cards through the filters, the most viewed `SHOWN_PER_WINDOW`."""
+        shown = [
+            c
+            for c in self._window_cards()
+            if self.network in (ALL, c.get("network")) and self.account in (ALL, c.get("account"))
+        ]
+        return shown[: reels_discovery.SHOWN_PER_WINDOW]
+
+    @rx.var
+    def filtered_out(self) -> bool:
+        """The window has reels, but none passes the filters."""
+        return bool(self._window_cards()) and not self.reels
+
+    @rx.var
+    def loaded(self) -> bool:
+        """Whether the month read finished once this session (an empty one counts)."""
+        return "month" in self._reads
+
+    @rx.var
+    def quarter_loaded(self) -> bool:
+        return "quarter" in self._reads
+
+    @rx.var
+    def filtering(self) -> bool:
+        return self.network != ALL or self.account != ALL
+
+    @rx.var
+    def networks(self) -> list[str]:
+        """The networks of the accounts read — the platform filter shows only with two."""
+        return list(dict.fromkeys(a["network"] for a in self.accounts))
+
+    @rx.var
+    def network_options(self) -> list[list[str]]:
+        present = set(self.networks)
+        return [[v, label] for v, label in NETWORK_FILTERS if v == ALL or v in present]
+
+    @rx.var
+    def account_options(self) -> list[list[str]]:
+        """`[key, label]` of the referente filter, of the chosen network only."""
+        multi = len(self.networks) > 1
+        return [
+            [a["key"], f"{a['handle']} · {reels_discovery.NETWORK_LABELS[a['network']]}"]
+            if multi and self.network == ALL
+            else [a["key"], a["handle"]]
+            for a in self.accounts
+            if self.network in (ALL, a["network"])
+        ]
+
+    @rx.var
+    def shown_check(self) -> str:
+        """Why the window's read could not check its reels (`reels_discovery.CHECK_*`)."""
+        return self._read().get("check", "")
 
     @rx.var
     def unchecked_note(self) -> str:
@@ -83,9 +167,79 @@ class DiscoverReelsState(rx.State):
         base = (
             "El servicio que comprueba que cada reel sea de tu producto o tu categoría no respondió"
         )
-        if self.check_detail:
-            return f"{base}: {self.check_detail}. Inténtalo más tarde."
+        detail = self._read().get("check_detail", "")
+        if detail:
+            return f"{base}: {detail}. Inténtalo más tarde."
         return f"{base}. Inténtalo más tarde."
+
+    @rx.var
+    def shown_iso(self) -> str:
+        """When the read on screen was made — the toolbar says only that, «Actualizado
+        hace 2 minutos» (§ founder 2026-10-20: no counts). "" until that read exists."""
+        return self._read().get("fetched_iso", "")
+
+    @rx.var
+    def failed_note(self) -> str:
+        failed = self._read().get("failed", "")
+        if not failed:
+            return ""
+        return f"No pudimos leer {failed} (privada, sin reels o no existe)."
+
+    @rx.var
+    def shown_error(self) -> str:
+        return self.quarter_error if self.window == "quarter" else self.error
+
+    @rx.event
+    def set_window(self, value: str | list[str]) -> None:
+        if isinstance(value, str) and value in dict(WINDOWS):
+            self.window = value
+
+    @rx.event
+    def set_network(self, value: str | list[str]) -> None:
+        """Pick a platform; a referente of another one is let go. No read."""
+        if not isinstance(value, str) or value not in dict(NETWORK_FILTERS):
+            return
+        self.network = value
+        if value != ALL and not self.account.startswith(f"{value}:"):
+            self.account = ALL
+
+    @rx.event
+    def set_account(self, value: str) -> None:
+        """Pick a referente (or `ALL`). No read."""
+        if value == ALL or any(a["key"] == value for a in self.accounts):
+            self.account = value
+
+    @rx.event
+    def clear_filters(self) -> None:
+        self.network = ALL
+        self.account = ALL
+
+    def _keep_valid_filters(self) -> None:
+        """After a read: a filter on a network or a referente the brand no longer has
+        would hide every card behind a control that is not on screen any more."""
+        if self.network != ALL and self.network not in {a["network"] for a in self.accounts}:
+            self.network = ALL
+        if self.account != ALL and not any(a["key"] == self.account for a in self.accounts):
+            self.account = ALL
+
+    def _store(self, depth: str, found: reels_discovery.DiscoveredReels) -> None:
+        """Keep the read `found` (`"month"` or `"quarter"`) on the backend, for its windows."""
+        windows = ("quarter",) if depth == "quarter" else ("week", "month")
+        self._cards = {**self._cards, **{w: getattr(found, w) for w in windows}}
+        self._reads = {
+            **self._reads,
+            depth: {
+                "check": found.check,
+                "check_detail": found.check_detail,
+                "fetched_iso": datetime.fromtimestamp(found.fetched_at, tz=UTC).isoformat(),
+                "failed": ", ".join(found.failed),
+            },
+        }
+        if depth == "month" or not self.accounts:
+            self.accounts = found.accounts
+            self._keep_valid_filters()
+        if depth == "month":
+            self.referentes = found.referentes
 
     @rx.event
     def play(self, key: str) -> None:
@@ -120,20 +274,19 @@ class DiscoverReelsState(rx.State):
     transcript_error: str = ""
 
     def _card(self, key: str) -> dict[str, str] | None:
-        return next((c for c in [*self.week, *self.month] if c.get("key") == key), None)
+        cards = (c for window in self._cards.values() for c in window)
+        return next((c for c in cards if c.get("key") == key), None)
 
     def _set_transcript(self, key: str, text: str) -> None:
-        """Write the transcript into the card in both windows — a reel can be in both."""
+        """Write the transcript into the card in every window — a reel can be in all."""
         state = "said" if text else "none"
-
-        def update(cards: list[dict[str, str]]) -> list[dict[str, str]]:
-            return [
+        self._cards = {
+            window: [
                 {**c, "transcript": text, "transcript_state": state} if c.get("key") == key else c
                 for c in cards
             ]
-
-        self.week = update(self.week)
-        self.month = update(self.month)
+            for window, cards in self._cards.items()
+        }
 
     @rx.event(background=True)
     async def load_transcript(self, key: str) -> None:
@@ -157,30 +310,42 @@ class DiscoverReelsState(rx.State):
             self._set_transcript(key, text)
             self.transcript_loading = ""
 
-    @rx.var
-    def summary(self) -> str:
-        """«De 8 referentes · 153 reels del mes · 47 de otro producto»; the toolbar
-        appends «actualizado hace …» from `fetched_iso`."""
-        if not self.fetched_at:
-            return ""
-        noun = "referente" if self.referentes == 1 else "referentes"
-        parts = [f"De {self.referentes} {noun}"]
-        if self.read:
-            parts.append(f"{self.read} reels del mes")
-        if self.dropped:
-            parts.append(f"{self.dropped} de otro producto")
-        return " · ".join(parts)
-
-    @rx.var
-    def failed_note(self) -> str:
-        if not self.failed:
-            return ""
-        return "No pudimos leer " + ", ".join(self.failed) + " (privada, sin reels o no existe)."
-
-    @rx.event
-    def set_window(self, value: str | list[str]) -> None:
-        if isinstance(value, str) and value in dict(WINDOWS):
-            self.window = value
+    @rx.event(background=True)
+    async def load_quarter(self, refresh: bool = False) -> None:
+        """Read the 90 days (§ m-24820844) — only when asked, after the tab said it has
+        an extra charge — or take the remembered read. A second call while one runs is
+        dropped."""
+        async with self:
+            if self.quarter_loading:
+                return
+            self.quarter_loading = True
+            self.quarter_error = ""
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        try:
+            tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+            brand_id = await asyncio.to_thread(default_brand_id, tenant_id) if tenant_id else None
+            if tenant_id is None or brand_id is None:
+                raise LookupError("no brand in this session")
+            found = await asyncio.to_thread(
+                reels_discovery.cached_discover,
+                tenant_id,
+                brand_id,
+                refresh=bool(refresh),
+                days=reels_discovery.QUARTER_DAYS,
+            )
+        except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
+            logger.warning("90-day reel read failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
+            async with self:
+                self.quarter_loading = False
+                self.quarter_error = (
+                    "No pudimos leer los 90 días de tus referentes "
+                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
+                )
+            return
+        async with self:
+            self._store("quarter", found)
+            self.quarter_loading = False
 
     @rx.event(background=True)
     async def load(self, refresh: bool = False) -> None:
@@ -202,6 +367,10 @@ class DiscoverReelsState(rx.State):
             found = await asyncio.to_thread(
                 reels_discovery.cached_discover, tenant_id, brand_id, refresh=bool(refresh)
             )
+            # a 90-day read already paid for shows at once on its tab — never a new read
+            deep = reels_discovery.remembered(
+                tenant_id, brand_id, days=reels_discovery.QUARTER_DAYS
+            )
         except Exception as exc:  # noqa: BLE001 — the view says it, the log keeps why
             logger.warning("reel discovery failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
             async with self:
@@ -212,18 +381,9 @@ class DiscoverReelsState(rx.State):
                 )
             return
         async with self:
-            self.week = found.week
-            self.month = found.month
-            self.referentes = found.referentes
-            self.read = found.read
-            self.failed = found.failed
-            self.dropped = found.dropped
-            self.reviewed = found.reviewed
-            self.check = found.check
-            self.check_detail = found.check_detail
-            self.fetched_at = found.fetched_at
-            self.fetched_iso = datetime.fromtimestamp(found.fetched_at, tz=UTC).isoformat()
-            self.loaded = True
+            self._store("month", found)
+            if deep is not None and not self.quarter_loading:
+                self._store("quarter", deep)
             self.loading = False
 
 
@@ -560,33 +720,34 @@ def _toolbar() -> rx.Component:
             size="2",
             aria_label="Periodo",
         ),
-        rx.text(
-            DiscoverReelsState.summary,
-            rx.cond(
-                DiscoverReelsState.fetched_iso != "",
-                rx.fragment(
-                    " · actualizado ",
-                    # «hace 3 minutos», aged by the browser itself (react-moment re-renders
-                    # every minute); nothing reaches the server for it
-                    rx.moment(date=DiscoverReelsState.fetched_iso, from_now=True, locale="es"),
-                ),
+        rx.cond(
+            DiscoverReelsState.shown_iso != "",
+            rx.text(
+                "Actualizado ",
+                # «hace 3 minutos», aged by the browser itself (react-moment re-renders
+                # every minute); nothing reaches the server for it
+                rx.moment(date=DiscoverReelsState.shown_iso, from_now=True, locale="es"),
+                size="1",
+                color=T.TEXT_MUTED,
             ),
-            size="1",
-            color=T.TEXT_MUTED,
         ),
         rx.spacer(),
-        rx.button(
+        rx.cond(
+            DiscoverReelsState.window == "quarter",
+            # the 90 days refresh only once read, and say again that a new read is charged
             rx.cond(
-                DiscoverReelsState.loading,
-                loading_spinner("sm"),
-                rx.icon("refresh-cw", size=14),
+                DiscoverReelsState.quarter_loaded,
+                _refresh_button(
+                    DiscoverReelsState.quarter_loading,
+                    DiscoverReelsState.load_quarter(True),
+                    QUARTER_REFRESH_TITLE,
+                ),
             ),
-            "Actualizar",
-            variant="soft",
-            color_scheme="gray",
-            size="2",
-            on_click=DiscoverReelsState.load(True),
-            disabled=DiscoverReelsState.loading,
+            _refresh_button(
+                DiscoverReelsState.loading,
+                DiscoverReelsState.load(True),
+                "Vuelve a leer el último mes de tus referentes",
+            ),
         ),
         width="100%",
         align="center",
@@ -595,9 +756,81 @@ def _toolbar() -> rx.Component:
     )
 
 
+def _refresh_button(
+    busy: rx.Var[bool], on_click: rx.EventSpec, title: str | rx.Var[str]
+) -> rx.Component:
+    return rx.button(
+        rx.cond(busy, loading_spinner("sm"), rx.icon("refresh-cw", size=14)),
+        "Actualizar",
+        variant="soft",
+        color_scheme="gray",
+        size="2",
+        on_click=on_click,
+        disabled=busy,
+        title=title,
+    )
+
+
+def _filters() -> rx.Component:
+    """Platform and referente (§ m-24820844): they cut the cards already read — no
+    vendor read, no model call. The platform shows only when the referentes are on two
+    networks; nothing shows before the first read."""
+    platform = rx.cond(
+        DiscoverReelsState.networks.length() > 1,
+        rx.segmented_control.root(
+            rx.foreach(
+                DiscoverReelsState.network_options,
+                lambda option: rx.segmented_control.item(option[1], value=option[0]),
+            ),
+            value=DiscoverReelsState.network,
+            on_change=DiscoverReelsState.set_network,
+            size="1",
+            aria_label="Plataforma",
+        ),
+    )
+    referente = rx.select.root(
+        rx.select.trigger(placeholder="Todos los referentes", aria_label="Referente"),
+        rx.select.content(
+            rx.select.item("Todos los referentes", value=ALL),
+            rx.foreach(
+                DiscoverReelsState.account_options,
+                lambda option: rx.select.item(option[1], value=option[0]),
+            ),
+        ),
+        value=DiscoverReelsState.account,
+        on_change=DiscoverReelsState.set_account,
+        size="1",
+    )
+    clear = rx.cond(
+        DiscoverReelsState.filtering,
+        rx.button(
+            rx.icon("x", size=13),
+            "Quitar filtros",
+            variant="ghost",
+            color_scheme="gray",
+            size="1",
+            on_click=DiscoverReelsState.clear_filters,
+        ),
+    )
+    return rx.cond(
+        DiscoverReelsState.accounts.length() > 0,
+        rx.hstack(
+            platform,
+            referente,
+            clear,
+            spacing="2",
+            align="center",
+            flex_wrap="wrap",
+            width="100%",
+        ),
+    )
+
+
 def _notices() -> rx.Component:
     return rx.vstack(
-        rx.cond(DiscoverReelsState.error != "", callout(DiscoverReelsState.error, "error")),
+        rx.cond(
+            DiscoverReelsState.shown_error != "", callout(DiscoverReelsState.shown_error, "error")
+        ),
         rx.cond(
             DiscoverReelsState.failed_note != "", callout(DiscoverReelsState.failed_note, "info")
         ),
@@ -606,19 +839,26 @@ def _notices() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    loading = rx.hstack(
-        loading_spinner("sm"),
-        rx.text(
-            "Buscando los reels de tus referentes y comprobando que sean de tu producto…",
-            size="2",
-            color=T.TEXT_MUTED,
+def _waiting(text: str) -> rx.Component:
+    """A read in progress, in the middle of the view (§ founder 2026-10-20: «céntrame el
+    loader»): the spinner over the sentence that says what is happening, both centred in
+    the card's free height, like `empty_state`."""
+    return rx.center(
+        rx.vstack(
+            loading_spinner("md"),
+            rx.text(text, size="2", color=T.TEXT_MUTED, text_align="center", max_width="440px"),
+            spacing="3",
+            align="center",
         ),
-        spacing="2",
-        align="center",
-        padding_y="2rem",
-        justify="center",
+        padding=T.PAD_EMPTY,
         width="100%",
+        flex="1",
+    )
+
+
+def _body() -> rx.Component:
+    loading = _waiting(
+        "Buscando los reels de tus referentes y comprobando que sean de tu producto…"
     )
     no_referentes = empty_state(
         "users",
@@ -627,23 +867,70 @@ def _body() -> rx.Component:
         "sus reels con más vistas.",
         rx.link(rx.button("Ir a mi Brand Kit", variant="soft"), href="/brand/kit"),
     )
+    window = DiscoverReelsState.window
     no_reels = empty_state(
         "film",
-        rx.cond(
-            DiscoverReelsState.window == "week",
-            "Esta semana tus referentes no publicaron reels de tu producto",
-            "Este mes tus referentes no publicaron reels de tu producto",
+        rx.match(
+            window,
+            ("week", "Esta semana tus referentes no publicaron reels de tu producto"),
+            ("month", "Este mes tus referentes no publicaron reels de tu producto"),
+            "En 90 días tus referentes no publicaron reels de tu producto",
         ),
-        rx.cond(
-            DiscoverReelsState.window == "week",
-            "Mira los del mes, o vuelve en unos días.",
+        rx.match(
+            window,
+            ("week", "Mira los del mes, o vuelve en unos días."),
             "Agrega más referentes en tu Brand Kit para ver más reels.",
         ),
     )
+    filtered_out = empty_state(
+        "filter",
+        "Ningún reel de tu producto con estos filtros",
+        "Prueba con otro referente u otra plataforma, o mira otro periodo.",
+        rx.button(
+            rx.icon("x", size=14),
+            "Quitar filtros",
+            variant="soft",
+            on_click=DiscoverReelsState.clear_filters,
+        ),
+    )
+    # § m-24820844: the 90 days are a read of their own — the tab says it is charged
+    # before anything is read, and reads only on the click
+    quarter_ask = empty_state(
+        "calendar-range",
+        "Los reels de los últimos 90 días",
+        QUARTER_NOTE,
+        rx.button(
+            rx.icon("download", size=14),
+            "Leer",
+            variant="soft",
+            on_click=DiscoverReelsState.load_quarter(False),
+            disabled=DiscoverReelsState.quarter_loading,
+        ),
+    )
+    quarter_loading = _waiting(
+        "Leyendo 90 días de reels de tus referentes y comprobando que sean de tu "
+        "producto… es la lectura más larga, puede tardar un par de minutos."
+    )
     # § founder 2026-10-16: without the product check NOTHING is shown — never a list of
     # unchecked reels where another product's promo can slip through
+    retry_label = (rx.icon("refresh-cw", size=14), "Intentar de nuevo")
+    retry = rx.cond(
+        window == "quarter",
+        rx.button(
+            *retry_label,
+            variant="soft",
+            on_click=DiscoverReelsState.load_quarter(True),
+            disabled=DiscoverReelsState.quarter_loading,
+        ),
+        rx.button(
+            *retry_label,
+            variant="soft",
+            on_click=DiscoverReelsState.load(True),
+            disabled=DiscoverReelsState.loading,
+        ),
+    )
     unchecked = rx.cond(
-        DiscoverReelsState.check == reels_discovery.CHECK_NO_BRIEF,
+        DiscoverReelsState.shown_check == reels_discovery.CHECK_NO_BRIEF,
         empty_state(
             "search",
             "Aún no sabemos qué vende tu marca",
@@ -655,13 +942,7 @@ def _body() -> rx.Component:
             "clock",
             "No pudimos filtrar los reels ahora mismo",
             DiscoverReelsState.unchecked_note,
-            rx.button(
-                rx.icon("refresh-cw", size=14),
-                "Intentar de nuevo",
-                variant="soft",
-                on_click=DiscoverReelsState.load(True),
-                disabled=DiscoverReelsState.loading,
-            ),
+            retry,
         ),
     )
     grid = rx.box(
@@ -670,23 +951,39 @@ def _body() -> rx.Component:
         role="list",
         aria_label="Reels de tus referentes",
     )
-    return rx.cond(
-        DiscoverReelsState.loading & (DiscoverReelsState.reels.length() == 0),
-        loading,
+    # what a finished read shows, whichever window: its cards, or why there are none
+    results = rx.cond(
+        DiscoverReelsState.loaded & (DiscoverReelsState.referentes == 0),
+        no_referentes,
         rx.cond(
-            DiscoverReelsState.loaded & (DiscoverReelsState.referentes == 0),
-            no_referentes,
+            DiscoverReelsState.reels.length() > 0,
+            grid,
             rx.cond(
-                DiscoverReelsState.reels.length() > 0,
-                grid,
-                rx.cond(
-                    DiscoverReelsState.loaded,
-                    rx.cond(DiscoverReelsState.check != "", unchecked, no_reels),
-                    loading,
-                ),
+                DiscoverReelsState.filtered_out,
+                filtered_out,
+                rx.cond(DiscoverReelsState.shown_check != "", unchecked, no_reels),
             ),
         ),
     )
+    quarter = rx.cond(
+        DiscoverReelsState.quarter_loading & (DiscoverReelsState.reels.length() == 0),
+        quarter_loading,
+        rx.cond(
+            DiscoverReelsState.quarter_loaded,
+            results,
+            rx.cond(
+                DiscoverReelsState.loaded & (DiscoverReelsState.referentes == 0),
+                no_referentes,
+                quarter_ask,
+            ),
+        ),
+    )
+    month_read = rx.cond(
+        DiscoverReelsState.loading & (DiscoverReelsState.reels.length() == 0),
+        loading,
+        rx.cond(DiscoverReelsState.loaded, results, loading),
+    )
+    return rx.cond(window == "quarter", quarter, month_read)
 
 
 def discover_view() -> rx.Component:
@@ -695,6 +992,7 @@ def discover_view() -> rx.Component:
     return card(
         rx.vstack(
             _toolbar(),
+            _filters(),
             _notices(),
             _body(),
             spacing="4",
