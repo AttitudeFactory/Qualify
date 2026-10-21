@@ -13,11 +13,11 @@ from .ui.layout import NAV_ITEMS, NAV_ZONES
 _HERE = Path(__file__).parent
 
 
-def test_nav_item_sits_in_escuchas_after_contenido_before_creadores() -> None:
+def test_nav_item_sits_in_escuchas_after_interacciones_before_creadores() -> None:
     assert ("Conversaciones", "messages-square", "/conversations", True) in NAV_ITEMS
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
     listen = zones["listen"]
-    assert listen.index("Conversaciones") == listen.index("Contenido") + 1
+    assert listen.index("Conversaciones") == listen.index("Interacciones") + 1
     assert listen.index("Creadores") == listen.index("Conversaciones") + 1
     assert "Conversaciones" not in zones["publish"]
 

@@ -57,9 +57,10 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "Escuchas",
         [
             ("Menciones", MENTION_ICON, "/", True),
-            ("Contenido", "film", "/inbox", True),
+            # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
+            ("Interacciones", "film", "/inbox", True),
             # QUA-226: the private inbox of the connected accounts. Founder's placement
-            # (2026-10-16): inside Escuchas, after Contenido, before Creadores.
+            # (2026-10-16): inside Escuchas, after Interacciones, before Creadores.
             ("Conversaciones", "messages-square", "/conversations", True),
             ("Creadores", "users", "#", False),
             ("Señales", "bell", "#", False),

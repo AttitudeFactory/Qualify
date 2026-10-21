@@ -54,7 +54,9 @@ def test_an_unknown_or_missing_feed_format_still_reads_as_a_feed_post(
     assert media_format_label("FEED", media_type) == FEED_POST_LABEL == "Publicación"
 
 
-@pytest.mark.parametrize("surface", ["STORY", "AD", None, "FUTURE_SURFACE"])
+# STORY has a label since m-24789644 ("Historia", ready for `story_comments`); it is still
+# never offered by the picker (`MONITORABLE_MEDIA_PRODUCT_TYPES`).
+@pytest.mark.parametrize("surface", ["AD", None, "FUTURE_SURFACE"])
 def test_a_surface_the_picker_never_offers_has_no_label(surface: str | None) -> None:
     assert media_format_label(surface, "IMAGE") == ""
 
