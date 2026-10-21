@@ -760,6 +760,47 @@ def test_the_set_records_which_brand_kit_facts_the_angles_were_asked_with() -> N
     assert brand_fingerprint(AngleBrand(name="Bianki", positioning="otro")) != stored
 
 
+def test_the_fingerprint_counts_the_typeface_only_when_the_kit_declares_it() -> None:
+    """§ request 2026-10-21: the type face is now in the prompt, so it is in its
+    provenance — but a kit without one keeps the fingerprint it always had."""
+    import hashlib
+
+    plain = AngleBrand(name="Bianki", palette=("#C4622D",))
+    before = hashlib.sha256(b"Bianki\n\n\n\n\n#C4622D").hexdigest()[:16]
+    assert brand_fingerprint(plain) == before
+    baloo = brand_fingerprint(AngleBrand(name="Bianki", palette=("#C4622D",), typeface="Baloo 2"))
+    assert baloo != before
+    assert baloo != brand_fingerprint(
+        AngleBrand(name="Bianki", palette=("#C4622D",), typeface="Nunito")
+    )
+
+
+def test_the_brand_facts_carry_the_kits_one_typeface() -> None:
+    """Review 2026-10-21: the production wiring hands the kit's type face to the angles —
+    the headline face of a kit saved when the Brand Kit asked two."""
+    from qualify_api.creative.composition import _DbBrandFacts
+
+    kit = BrandKit(
+        brand_id=uuid4(),
+        positioning="Shawarma al carbón",
+        audience="Oficinistas",
+        tone_axes=ToneAxes(
+            formal_casual=60, sober_enthusiastic=60, technical_plain=60, brief_elaborate=40
+        ),
+        palette_rgb=("#C4622D",),
+        font_heading="Baloo 2",
+        font_body="Nunito",
+    )
+    facts = object.__new__(_DbBrandFacts)
+    facts._names = lambda *, tenant_id, brand_id: "Bianki"  # type: ignore[attr-defined]
+    facts._kits = SimpleNamespace(kit=lambda *, tenant_id, brand_id: kit)  # type: ignore[attr-defined]
+    facts._context = SimpleNamespace(context=lambda *, tenant_id, brand_id: None)  # type: ignore[attr-defined]
+    brand = facts(tenant_id=uuid4(), brand_id=kit.brand_id)
+    assert (brand.name, brand.palette, brand.typeface) == ("Bianki", ("#C4622D",), "Baloo 2")
+    facts._kits = SimpleNamespace(kit=lambda *, tenant_id, brand_id: None)  # type: ignore[attr-defined]
+    assert facts(tenant_id=uuid4(), brand_id=kit.brand_id).typeface == ""
+
+
 def test_a_double_click_creates_one_draft_per_angle_not_two() -> None:
     # defect 6: a second generate_pieces arriving while the first is mid-way
     service, repo, drafts, campaigns, *_ = _clocked(generator=FakeGenerator(_angles(3)))

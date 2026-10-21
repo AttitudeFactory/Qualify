@@ -650,7 +650,8 @@ def campaign_name(product_name: str, count: int, set_id: UUID | None = None) -> 
 
 def brand_fingerprint(brand: AngleBrand) -> str:
     """Which brand kit facts the angles were asked with (provenance — `brand_kits` has
-    no version column): the facts the prompt carries, hashed."""
+    no version column): the facts the prompt carries, hashed. The type face joins only
+    when declared, so a kit without one keeps the fingerprint it always had."""
     facts = "\n".join(
         (
             brand.name,
@@ -659,6 +660,7 @@ def brand_fingerprint(brand: AngleBrand) -> str:
             brand.sector,
             brand.location,
             ",".join(brand.palette),
+            *((brand.typeface,) if brand.typeface else ()),
         )
     )
     return hashlib.sha256(facts.encode()).hexdigest()[:16]

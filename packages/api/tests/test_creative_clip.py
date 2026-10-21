@@ -282,6 +282,80 @@ def test_a_clip_image_role_is_checked() -> None:
         )
 
 
+def test_the_brand_typeface_reaches_every_media_prompt_with_the_palette() -> None:
+    """§ request 2026-10-21: the Brand Kit's type face goes wherever the palette goes —
+    the image, the carousel slide, the avatar's frame, the clip — as a style cue that
+    never asks for letters; a kit without them writes the prompts as before."""
+    from qualify_creative.enums import AdImageMode
+
+    from qualify_api.creative.media import (
+        ad_scene_prompt,
+        carousel_motion_prompt,
+        carousel_scene_prompt,
+        first_frame_prompt,
+        motion_prompt,
+    )
+
+    def prompts(kit: Any) -> list[str]:
+        flyer, avatar, clip = (
+            _brief(ContentKind.STATIC_FLYER),
+            _brief(ContentKind.STATIC_FLYER),
+            _brief(ContentKind.CLIP),
+        )
+        return [
+            ad_scene_prompt(
+                brief=flyer,
+                kit=kit,
+                brand="Smash",
+                mode=AdImageMode.PRODUCT,
+                products=1,
+                has_background=False,
+            ),
+            carousel_scene_prompt(
+                brief=flyer,
+                kit=kit,
+                brand="Smash",
+                scene="",
+                ratio="4:5",
+                has_product=True,
+                has_background=False,
+                has_text=True,
+            ),
+            first_frame_prompt(
+                brief=avatar, kit=kit, has_character_image=False, products=1, has_background=False
+            ),
+            clip_prompt(
+                brief=clip,
+                kit=kit,
+                copy=_copy(),
+                first_frame=False,
+                last_frame=False,
+                images=0,
+                videos=0,
+                audios=0,
+            ),
+        ]
+
+    # one face (today's Brand Kit), or the headline one of a kit that held two
+    for kit in (
+        _kit().model_copy(update={"font_heading": "Baloo 2", "font_body": "Baloo 2"}),
+        _kit().model_copy(update={"font_heading": "Baloo 2", "font_body": "Nunito"}),
+    ):
+        for prompt in prompts(kit):
+            assert "The brand's typeface is Baloo 2:" in prompt, prompt[:80]
+            assert "without drawing any letters" in prompt and "Nunito" not in prompt
+    for prompt in prompts(_kit()):
+        assert "typeface" not in prompt
+    # the motion prompts read no kit: no palette, no typeface
+    flyer = _brief(ContentKind.STATIC_FLYER)  # the motion prompts only read its facts
+    for prompt in (carousel_motion_prompt(flyer), motion_prompt(brief=flyer, products=1)):
+        assert "typeface" not in prompt
+    # a kit stores no cap on a face's name: the prompt does, under the vendor's 3,000
+    long = _kit().model_copy(update={"font_heading": "F" * 500})
+    for prompt in prompts(long):
+        assert "F" * 61 not in prompt and len(prompt) < 3000
+
+
 def test_datos_clave_reach_every_media_prompt() -> None:
     """«quiero añadir los datos claves a los prompts (todos)»: the image, the carousel
     slide and its motion, the avatar's frame and motion, the clip — each as JSON, each

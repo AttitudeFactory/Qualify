@@ -132,6 +132,10 @@ class ImagePolicy(BaseModel):
         return self.blocked_reason.get(route, "No habilitada para esta marca.")
 
 
+#: The longest type face name a prompt carries — a family name is short (`BrandKit.typeface`).
+TYPEFACE_MAX = 60
+
+
 class BrandKit(BaseModel):
     """What the operator declares about their brand. One per tenant (D14)."""
 
@@ -159,6 +163,18 @@ class BrandKit(BaseModel):
     template_asset_key: str | None = None
     reference_image_keys: tuple[str, ...] = Field(default=(), max_length=14)
     image_policy: ImagePolicy = ImagePolicy()
+
+    @property
+    def typeface(self) -> str:
+        """The brand's ONE type face, as every generation prompt names it ("" = none).
+        The Brand Kit asks a single family and stores it in both columns
+        (`set_kit_font_heading`); a kit saved when it asked two keeps its headline face.
+        One line, at most `TYPEFACE_MAX` characters: the kit stores no cap."""
+        for face in (self.font_heading, self.font_body):
+            name = " ".join(face.split())[:TYPEFACE_MAX].strip()
+            if name:
+                return name
+        return ""
 
 
 class VoiceSource(BaseModel):

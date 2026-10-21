@@ -116,6 +116,8 @@ def _brand_lines(kit: BrandKit | None) -> list[str]:
         f"- Público: {kit.audience.strip() or '-'}",
         f"- Variante del español: {kit.regional_variant}",
     ]
+    if kit.typeface:
+        lines.append(f"- Tipografía de la marca: {kit.typeface}")
     axes = kit.tone_axes
     lines.append(
         "- Tono (0-100): formal→casual "

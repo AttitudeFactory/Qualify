@@ -212,6 +212,8 @@ class AngleBrand:
     sector: str = ""
     location: str = ""
     palette: tuple[str, ...] = ()
+    #: The Brand Kit's one type face (`BrandKit.typeface`; "" = not declared).
+    typeface: str = ""
 
 
 # -- the angle ---------------------------------------------------------------------------
@@ -444,6 +446,7 @@ def angles_user_prompt(
         f"Posicionamiento: {brand.positioning or '(sin posicionamiento)'}",
         f"Público: {brand.audience or '(sin público definido)'}",
         f"Paleta: {', '.join(brand.palette[:4]) if brand.palette else '(sin paleta)'}",
+        f"Tipografía: {brand.typeface or '(sin tipografía)'}",
         "",
         "== Preset creativo ==",
         f"{preset.name}: {preset.description}",

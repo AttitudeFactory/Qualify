@@ -129,6 +129,8 @@ class AvatarInputs:
     style: str = ""
     #: The brand's main logo in R2 (`brand_kits.logo_asset_key`), sent as a reference.
     logo_key: str | None = None
+    #: The Brand Kit's one type face (`BrandKit.typeface`; "" = not declared).
+    typeface: str = ""
 
 
 def _line(value: object, limit: int = _FIELD_CHARS) -> str:
@@ -173,6 +175,7 @@ def avatar_inputs(
         feeling=_line(brief.get("feeling")),
         style=_line(brief.get("style")),
         logo_key=kit.logo_asset_key or None,
+        typeface=kit.typeface,
     )
 
 
@@ -239,6 +242,11 @@ def build_avatar_prompt(inputs: AvatarInputs) -> str:
         parts.append(f'The brand wants to make people feel: "{inputs.feeling}".')
     if inputs.style:
         parts.append(f'Visual style the brand likes: "{inputs.style}".')
+    if inputs.typeface:
+        parts.append(
+            f'The brand\'s typeface is "{inputs.typeface}": echo its personality in the '
+            "character's shapes, without drawing any letters."
+        )
     if inputs.logo_key:
         parts.append(
             "The reference image is the brand's logo: echo its shapes and colours in the "
@@ -250,13 +258,16 @@ def build_avatar_prompt(inputs: AvatarInputs) -> str:
 
 #: The animated avatar's described character fits its field (`schemas.AVATAR_PROMPT_MAX`).
 CHARACTER_MAX_CHARS = 600
+#: How the character description always ends, whatever was cut before it.
+_NO_TEXT_CHARACTER = "No text, no logos."
 
 
 def describe_character(inputs: AvatarInputs) -> str:
     """The brand's mascot as a CHARACTER description for the «Avatar animado» video (§
     request 2026-10-20: «que se obtenga desde el brandkit»), used while the kit has no
     drawn avatar: who the character is, never a framing or a background — the video
-    composes those. Same inputs as `build_avatar_prompt`, at most `CHARACTER_MAX_CHARS`."""
+    composes those. Same inputs as `build_avatar_prompt`, at most `CHARACTER_MAX_CHARS` —
+    the description is what gets shortened, never its closing «No text, no logos.»."""
     parts = ["A friendly animated mascot character in a modern 3D animated-film style"]
     if inputs.brand_name:
         parts[0] += f', the official mascot of "{inputs.brand_name}"'
@@ -272,11 +283,13 @@ def describe_character(inputs: AvatarInputs) -> str:
         parts.append("Personality: " + "; ".join(tone) + ".")
     if len(inputs.style) >= 3:  # a stray letter in the logo brief is not a style
         parts.append(f'Style the brand likes: "{inputs.style}".')
-    parts.append("No text, no logos.")
+    if inputs.typeface:
+        parts.append(f'Its shapes echo the brand\'s typeface, "{inputs.typeface}".')
     text = " ".join(parts)
-    if len(text) <= CHARACTER_MAX_CHARS:
-        return text
-    return text[: CHARACTER_MAX_CHARS - 1].rsplit(" ", 1)[0] + "…"
+    room = CHARACTER_MAX_CHARS - len(_NO_TEXT_CHARACTER) - 1
+    if len(text) > room:
+        text = text[: room - 1].rsplit(" ", 1)[0] + "…"
+    return f"{text} {_NO_TEXT_CHARACTER}"
 
 
 # ---------------------------------------------------------------------------------------

@@ -381,8 +381,8 @@ def production_content_service() -> ContentService:
 
 
 class _DbBrandFacts:
-    """The brand as the angles prompt needs it: its name (tenancy), its positioning and
-    audience and palette (the kit), its rubro and location (the context)."""
+    """The brand as the angles prompt needs it: its name (tenancy), its positioning,
+    audience, palette and type face (the kit), its rubro and location (the context)."""
 
     def __init__(self) -> None:
         self._names = DbBrandNames()
@@ -403,6 +403,7 @@ class _DbBrandFacts:
             sector=context.sector if context is not None else "",
             location=context.location if context is not None else "",
             palette=tuple(kit.palette_rgb) if kit is not None else (),
+            typeface=kit.typeface if kit is not None else "",
         )
 
 
