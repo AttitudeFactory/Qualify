@@ -867,6 +867,16 @@ def test_both_screens_show_a_carousel_with_arrows_dots_and_a_counter() -> None:
         assert f"{prefix}_slide_auto" in rendered and "10000" in rendered  # the autoplay
 
 
+def test_the_review_screen_says_when_a_regeneration_kept_the_previous_version() -> None:
+    """m-24828909: a regeneration that did not come out leaves the draft `generated` with
+    its previous version and a note — shown above the review, not only when it failed."""
+    from .creative_pages import _failed_panel, draft_detail_index
+
+    detail_var = "failure_detail"
+    in_failed_panel = str(_failed_panel()).count(detail_var)
+    assert str(draft_detail_index()).count(detail_var) > in_failed_panel
+
+
 def test_the_viewer_arrows_are_centred_without_a_transform() -> None:
     """2026-10-09: the kit lifts a solid button on hover with `transform`, which replaced
     the centring `translateY(-50%)` and made the arrow jump away from the pointer."""

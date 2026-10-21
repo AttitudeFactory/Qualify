@@ -85,6 +85,30 @@ def test_frames_alone_animate_from_the_opening_to_the_closing_frame() -> None:
     assert video.params["thumbnail_key"] == generated_key(TENANT_ID, draft_id, "first-frame.jpg")
 
 
+def test_a_thumbnail_r2_refuses_leaves_the_paid_clip_without_it() -> None:
+    """m-24828909: a regenerated clip already paid for failed on its thumbnail — now the
+    clip is kept, without a thumbnail; the clip itself refused still fails the piece."""
+    from .test_creative_media import R2Store
+
+    class ThumbnailRefused(R2Store):
+        def keep(self, tenant_id: Any, key: str, data: bytes, content_type: str) -> bool:
+            return not key.endswith("first-frame.jpg") and super().keep(
+                tenant_id, key, data, content_type
+            )
+
+    store, draft_id = ThumbnailRefused(dict(_clip_store().files)), uuid4()
+    brief = _brief(ContentKind.CLIP, clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg")
+    outcome = _produce(_clip_producer(store, FakeSeedance()), brief, draft_id)
+
+    assert outcome.failure is None
+    (video,) = outcome.media
+    assert video.object_key.endswith("/r1/clip.mp4") and video.object_key in store.kept
+    assert video.params["thumbnail_key"] is None
+    refused = R2Store(dict(_clip_store().files), up=False)
+    failed = _produce(_clip_producer(refused, FakeSeedance()), brief, uuid4())
+    assert failed.media == () and "No pudimos guardar la pieza en R2" in failed.detail
+
+
 def test_references_go_to_the_2x_model_with_the_frames_named_first() -> None:
     store, seedance, links = _clip_store(), FakeSeedance(), RecordingLinks()
     brief = _brief(

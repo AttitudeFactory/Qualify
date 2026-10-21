@@ -50,6 +50,7 @@ import json
 import logging
 import math
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -394,6 +395,12 @@ def _key_problems(
     return malformed, foreign
 
 
+#: How many times a generated file is put in R2 before the piece fails, and the wait
+#: before the n-th retry (`n * _KEEP_WAIT_SECONDS`).
+_KEEP_ATTEMPTS = 3
+_KEEP_WAIT_SECONDS = 0.5
+
+
 class R2ReadingMediaStore:
     """`LocalMediaStore` plus R2 (§ 2026-10-01, 2026-10-06): a key under a tenant's R2
     prefix (`t/{tenant}/…` — the Brand Kit's files, a generated piece's durable copy) is
@@ -428,14 +435,52 @@ class R2ReadingMediaStore:
 
     def keep(self, tenant_id: UUID, key: str, data: bytes, content_type: str) -> bool:
         """Put a generated file in R2 (`ObjectGate.put_media`: the tenant prefix is
-        checked, the type is stored with the object). False — logged, never raised —
-        when R2 is not configured or the write fails; the caller fails the piece."""
-        try:
-            self._r2().put_media(tenant_id, key, io.BytesIO(data), content_type)
-        except Exception as exc:  # no R2 configured, R2 down: the draft is not lost
-            logger.warning("generated media not kept in R2 (%s): %s", key, type(exc).__name__)
-            return False
-        return True
+        checked, the type is stored with the object). A passing R2 error is retried
+        (`_KEEP_ATTEMPTS`, a short wait between): the file is the output of a generation
+        already paid for (m-24828909). A refusal that cannot change — no R2 configured,
+        the size ceiling, a foreign prefix — is not. False — logged with the error's own
+        message, never raised — when it still fails; the caller fails the piece."""
+        from qualify_shared.objects.config import R2ConfigurationError  # noqa: PLC0415
+        from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream  # noqa: PLC0415
+        from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
+
+        permanent = (
+            R2ConfigurationError,
+            ObjectSizeExceeded,
+            UnsizedStream,
+            TenantPrefixViolation,
+            ValueError,
+        )
+        for attempt in range(1, _KEEP_ATTEMPTS + 1):
+            try:
+                self._r2().put_media(tenant_id, key, io.BytesIO(data), content_type)
+            except permanent as exc:
+                logger.error(
+                    "generated media not kept in R2 (%s): %s: %s", key, type(exc).__name__, exc
+                )
+                return False
+            except Exception as exc:  # R2 down or the connection dropped: try again
+                if attempt == _KEEP_ATTEMPTS:
+                    logger.error(
+                        "generated media not kept in R2 after %d attempts (%s): %s: %s",
+                        attempt,
+                        key,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return False
+                logger.warning(
+                    "R2 write failed (%s), attempt %d of %d: %s: %s",
+                    key,
+                    attempt,
+                    _KEEP_ATTEMPTS,
+                    type(exc).__name__,
+                    exc,
+                )
+                time.sleep(_KEEP_WAIT_SECONDS * attempt)
+            else:
+                return True
+        return False
 
 
 # -- what the operator reads when a piece fails ------------------------------------------
@@ -687,6 +732,18 @@ class _Saver:
                 "No pudimos guardar la pieza en R2. Inténtalo de nuevo en un momento.",
             )
         return key
+
+    def optional(self, name: str, data: bytes, content_type: str) -> str | None:
+        """A file the piece can live without — a poster, a thumbnail — saved AFTER the
+        paid artifact: when it cannot be kept the piece goes on without it instead of
+        failing (m-24828909: a clip already paid for failed on its thumbnail)."""
+        try:
+            return self(name, data, content_type)
+        except _MediaFailed:
+            logger.warning(
+                "%s not kept for draft %s: the piece goes on without it", name, self._draft_id
+            )
+            return None
 
 
 class VoiceResolver(Protocol):
@@ -1304,7 +1361,7 @@ class MediaProducer:
         H.264 video, its poster the still itself."""
         reel = self._require_fitter().animate_still(still, size=brief.format.dimensions)
         video_key = save("reel.mp4", reel.data, MP4)
-        poster_key = save("reel-poster.jpg", to_meta_jpeg(reel.poster or still), JPEG)
+        poster_key = save.optional("reel-poster.jpg", to_meta_jpeg(reel.poster or still), JPEG)
         return MediaWrite(
             position=0,
             media_type="video",
@@ -1618,7 +1675,7 @@ class MediaProducer:
                 logo_laid = True
         video_key = save("clip.mp4", video, MP4)
         thumbnail_key = (
-            save("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
+            save.optional("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
         )
         return [
             MediaWrite(
@@ -1935,7 +1992,9 @@ class MediaProducer:
             self._download(str(result.media_url)), size=brief.format.dimensions, overlay=overlay
         )
         video_key = save(f"slide-{number}.mp4", fitted.data, MP4)
-        poster_key = save(f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster or still), JPEG)
+        poster_key = save.optional(
+            f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster or still), JPEG
+        )
         return MediaWrite(
             position=position,
             media_type="video",
@@ -2039,7 +2098,7 @@ class MediaProducer:
             "duration_seconds": round(fitted.duration_sec, 2),
         }
         if fitted.poster:
-            params["thumbnail_key"] = save(
+            params["thumbnail_key"] = save.optional(
                 f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG
             )
         return MediaWrite(
@@ -2075,7 +2134,7 @@ class MediaProducer:
             fitted = self._require_fitter().fit(data, size=size)
             key = save(f"slide-{number}.mp4", fitted.data, MP4)
             if fitted.poster:
-                params["thumbnail_key"] = save(
+                params["thumbnail_key"] = save.optional(
                     f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG
                 )
             params["duration_seconds"] = round(fitted.duration_sec, 2)

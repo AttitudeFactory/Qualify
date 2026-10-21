@@ -1052,28 +1052,68 @@ def test_a_regeneration_relabels_the_draft_from_the_media_it_made() -> None:
     assert draft.requires_ai_disclosure is True
 
 
-def test_a_failed_regeneration_does_not_keep_the_previous_revisions_media() -> None:
-    """PR #100 review (finding 3): new copy came out, the media did not — the draft is
-    FAILED with the new text and NO images, not the previous revision's."""
+def test_a_failed_regeneration_keeps_the_previous_version_whole() -> None:
+    """m-24828909: new copy came out, the media did not — the draft keeps showing its
+    previous version, text AND files together (PR #100 review, finding 3: never this
+    revision's text over the previous revision's images), is `generated` again, says
+    the new version did not come out, and the money spent is recorded."""
     router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
     media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))
     service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
     draft_id = repo.seed_draft(_old_flyer_brief())
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert repo.drafts[draft_id].preview_key == FLYER_MEDIA.media_url
+    first = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert first is not None and repo.drafts[draft_id].preview_key == FLYER_MEDIA.media_url
 
     service.reject(
         tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
     )
-    media.outcome = MediaOutcome(failure="provider_error", detail="boom")
+    media.outcome = MediaOutcome(failure="provider_error", detail="No pudimos guardar la pieza.")
+    usage_before = len(repo.usage)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.failure_reason is None
+    assert draft.failure_detail == (
+        "La nueva versión no se pudo generar: No pudimos guardar la pieza. "
+        "Se mantiene la versión anterior."
+    )
+    assert draft.preview_key == FLYER_MEDIA.media_url
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.media == first.media
+    assert [v.copy["hook"] for v in detail.variants] == [v.copy["hook"] for v in first.variants]
+    assert "Otro hook" not in [v.copy["hook"] for v in detail.variants]
+    assert len(repo.usage) > usage_before  # the regeneration's copy was paid for
+
+
+def test_a_failed_first_generation_still_fails() -> None:
+    """m-24828909: with no previous version there is nothing to keep — the draft fails
+    as before, with the new text kept (the script is worth reading)."""
+    router = FakeRouter([ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(failure="provider_error", detail="boom"))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
 
     draft = repo.drafts[draft_id]
     assert draft.status == FAILED and draft.failure_reason == "provider_error"
-    assert draft.preview_key is None
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and list(detail.media) == []
     assert [v.copy["hook"] for v in detail.variants] == ["Otro hook"]
+
+
+def test_a_failed_regeneration_over_a_failed_draft_still_fails() -> None:
+    """m-24828909: a regeneration whose previous run also failed (no media to show) has
+    nothing to keep: it fails as before."""
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(failure="provider_error", detail="boom"))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == FAILED
+    repo.drafts[draft_id] = replace(repo.drafts[draft_id], status=DRAFTING, revision=2)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == FAILED
 
 
 def test_a_failed_video_fails_the_draft_but_keeps_the_script_and_the_money_spent() -> None:
