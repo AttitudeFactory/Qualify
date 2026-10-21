@@ -23,8 +23,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter
@@ -58,6 +60,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
 )
 from qualify_creative.adapters.byteplus_speech import API_KEY_ENV as SPEECH_KEY_ENV
 from qualify_creative.adapters.byteplus_speech import SeedSpeechVoiceoverAdapter
+from qualify_creative.angles import AngleBrand, AnglePreset, AngleProduct, CreativeAngle
 from qualify_creative.enums import PaidBy
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import ResolvedKey
@@ -69,6 +72,7 @@ from qualify_creative.schemas import BrandKit, BrandVoiceProfile
 from qualify_creative.video import PyAvVideoFitter
 
 from qualify_api.catalog.read import DbProductCatalog
+from qualify_api.claude_tools import CallStats
 from qualify_api.creative.brand_context import DbBrandContextReader
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
@@ -80,6 +84,11 @@ from qualify_api.creative.service import ContentService
 from qualify_api.creative.voice_access import BrandVoiceResolver
 from qualify_api.creative.voice_clone import VoiceCloneService
 from qualify_api.creative.voice_service import VoiceProfileService
+
+if TYPE_CHECKING:
+    # `angle_sets` imports `catalog.service`, which imports this package: loaded at
+    # call time in `production_angle_set_service`, like `CatalogService`
+    from qualify_api.creative.angle_sets import AngleSetService
 
 logger = logging.getLogger(__name__)
 
@@ -365,3 +374,89 @@ def production_content_service() -> ContentService:
     )
     service.dispatcher = InlineDispatcher(service.run_generation)
     return service
+
+
+# ---------------------------------------------------------------------------
+# «10 variaciones» (ticket 24803289): the angle-set service over the content service
+
+
+class _DbBrandFacts:
+    """The brand as the angles prompt needs it: its name (tenancy), its positioning and
+    audience and palette (the kit), its rubro and location (the context)."""
+
+    def __init__(self) -> None:
+        self._names = DbBrandNames()
+        self._kits = DbBrandKitReader()
+        self._context = DbBrandContextReader()
+
+    def __call__(self, *, tenant_id: UUID, brand_id: UUID) -> AngleBrand:
+        kit = self._kits.kit(tenant_id=tenant_id, brand_id=brand_id)
+        try:
+            context = self._context.context(tenant_id=tenant_id, brand_id=brand_id)
+        except Exception as exc:  # noqa: BLE001 — the context is decoration for the prompt
+            logger.info("brand context unreadable for %s: %s", brand_id, type(exc).__name__)
+            context = None
+        return AngleBrand(
+            name=self._names(tenant_id=tenant_id, brand_id=brand_id),
+            positioning=kit.positioning if kit is not None else "",
+            audience=kit.audience if kit is not None else "",
+            sector=context.sector if context is not None else "",
+            location=context.location if context is not None else "",
+            palette=tuple(kit.palette_rgb) if kit is not None else (),
+        )
+
+
+class _PlatformAngleGenerator:
+    """`angles_ai.generate_angles` on the platform's Anthropic key, resolved per call
+    (`MissingAPIKey` surfaces as a failed set, never at import or compose time)."""
+
+    def __call__(
+        self,
+        product: AngleProduct,
+        brand: AngleBrand,
+        preset: AnglePreset,
+        *,
+        count: int,
+        avoid: Sequence[CreativeAngle] = (),
+    ) -> tuple[tuple[CreativeAngle, ...], CallStats, str]:
+        from qualify_api.claude_tools import api_key_from_env
+        from qualify_api.creative.angles_ai import generate_angles
+
+        return generate_angles(
+            product, brand, preset, api_key=api_key_from_env(), count=count, avoid=avoid
+        )
+
+
+class _DbCampaignOps:
+    def create(
+        self, *, tenant_id: UUID, brand_id: UUID, name: str, created_by: UUID | None
+    ) -> UUID:
+        from qualify_api.creative.campaigns import create_campaign
+
+        return create_campaign(tenant_id, brand_id, name, created_by=created_by).id
+
+    def assign(self, *, tenant_id: UUID, draft_id: UUID, campaign_id: UUID) -> None:
+        from qualify_api.creative.campaigns import set_post_campaign
+
+        set_post_campaign(tenant_id, draft_id, campaign_id)
+
+
+@cache
+def production_angle_set_service() -> AngleSetService:
+    """The «10 variaciones» service over the composed content service: the catalog's
+    read door, the platform Anthropic key for the angles, the Postgres repository and
+    the campaigns module. The image rate shown before generating is Seedream's."""
+    from qualify_api.catalog.service import CatalogService
+    from qualify_api.creative.angle_sets import AngleSetService, PostgresAngleSetRepository
+
+    return AngleSetService(
+        repository=PostgresAngleSetRepository(),
+        catalog=CatalogService(store=LocalMediaStore(media_root())),
+        brand_facts=_DbBrandFacts(),
+        kit_reader=DbBrandKitReader(),
+        generator=_PlatformAngleGenerator(),
+        drafts=production_content_service(),
+        campaigns=_DbCampaignOps(),
+        pricing=JsonPricingTable(PRICING_VERSION),
+        image_model_id=os.environ.get(SEEDREAM_MODEL_ENV) or DEFAULT_SEEDREAM_MODEL,
+    )
