@@ -1,0 +1,89 @@
+{
+  "_comment": "Example IntentSignal payloads (m-24789644) for consumers such as QUA-229. Illustrative only: hand-written, not model output, hence detector/model 'fixture'. Load with qualify_api.intent.load_fixture_signals().",
+  "items": [
+    {
+      "text": "¿Cuánto cuesta y todavía les queda?",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a01",
+        "source_id": "17900000000000001",
+        "classes": {"price": 0.97, "availability": 0.91},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    },
+    {
+      "text": "¿Lo tienen en talla M y en color negro?",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a02",
+        "source_id": "17900000000000002",
+        "classes": {"variants": 0.95, "availability": 0.72},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    },
+    {
+      "text": "¿Dónde queda la tienda y hasta qué hora abren el sábado?",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a03",
+        "source_id": "17900000000000003",
+        "classes": {"store": 0.83, "location": 0.94, "hours": 0.96},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    },
+    {
+      "text": "Si compro 20 unidades, ¿me hacen precio por mayor?",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a04",
+        "source_id": "17900000000000004",
+        "classes": {"quantities": 0.93, "price": 0.88},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    },
+    {
+      "text": "¿Hacen envíos a Medellín? ¿Se puede pagar contra entrega?",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a05",
+        "source_id": "17900000000000005",
+        "classes": {"other_commercial": 0.9},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    },
+    {
+      "text": "¿Va a salir la versión pro de este modelo?",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a06",
+        "source_id": "17900000000000006",
+        "classes": {"models": 0.86, "product": 0.61},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    },
+    {
+      "text": "¡Qué lindo quedó el video! 😍",
+      "signal": {
+        "comment_id": "6f1c1c4e-0b0a-4f55-9d2e-1a6c0c7f0a07",
+        "source_id": "17900000000000007",
+        "classes": {"general": 0.98},
+        "detector_version": "fixture",
+        "pipeline_version": "fixture",
+        "model_id": "fixture",
+        "model_revision": null
+      }
+    }
+  ]
+}
