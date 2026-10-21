@@ -28,6 +28,7 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from pydantic import ValidationError
+from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.service import (
     BrandNotReady,
@@ -54,6 +55,16 @@ from qualify_creative.schemas import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState, brand_tenant_id
+from .campaign_provider import (
+    COLOR_LABELS,
+    NEW_CAMPAIGN,
+    NO_CAMPAIGN,
+    CampaignOptionVM,
+    apply_post_choice,
+    brand_campaign_options,
+    suggested_color,
+)
+from .campaign_provider import error_message as campaign_error_message
 from .creative_provider import (
     acting_user_id,
     approve_draft,
@@ -416,14 +427,15 @@ def generator_views(category: str, kind: str) -> list[str]:
     opens on its types; Avatar and Clip then take their references, then the kind's own
     sections. Every option ends the same way (§ request 2026-10-20): «Datos clave», then
     the context — where «Potenciar con IA» works on what the rest already says — then a
-    «Resumen» of it all, where Generar is."""
+    «Resumen» of it all, where Generar is. Right before the summary, the optional
+    «Campaña» the piece joins (m-24820838)."""
     head = ["avatar_type"] if category == "video" else []
     # § request 2026-10-20: an avatar's reference video is asked in «Guion y fondo»,
     # not in a view of its own; «Ad» and Clip keep theirs
     if category in REFERENCE_CATEGORIES and category != "video":
         head.append("reference")
     own = [section for section in generator_sections(kind) if section != "topic"]
-    return [*head, *own, "rules", "topic", "summary"]
+    return [*head, *own, "rules", "topic", "campaign", "summary"]
 
 
 #: The step bar's label of each view; «details» is named after the kind.
@@ -434,6 +446,7 @@ _VIEW_LABELS = {
     "channel": "Publicación",
     "presenter": "Presentador",
     "rules": "Datos clave",
+    "campaign": "Campaña",
     "summary": "Resumen",
 }
 _DETAILS_LABELS = {
@@ -864,6 +877,13 @@ class CreativeState(rx.State):
     #: Which variant the result view shows (index into `gen_draft.variants`).
     gen_variant: int = 0
     gen_timed_out: bool = False
+    #: «Campaña» (m-24820838): the brand's campaigns, and the one the piece joins —
+    #: `NO_CAMPAIGN` (an independent piece), a campaign id, or `NEW_CAMPAIGN` with the
+    #: name and colour typed here. Applied to the draft once Generar created it.
+    gen_campaigns: list[CampaignOptionVM] = []
+    gen_campaign: str = NO_CAMPAIGN
+    gen_campaign_new_name: str = ""
+    gen_campaign_new_color: str = ""
 
     # -- /drafts ------------------------------------------------------------
     drafts: list[DraftSummaryVM] = []
@@ -2341,12 +2361,19 @@ class CreativeState(rx.State):
         except Exception as exc:  # the uploads still work: never a reason to block
             logger.warning("brand media unreadable: %s", type(exc).__name__)
             assets = []
+        try:
+            campaigns = await asyncio.to_thread(brand_campaign_options, tenant_id, brand_id)
+        except Exception as exc:  # the piece can still be independent, or a new campaign's
+            logger.warning("brand campaigns unreadable: %s", type(exc).__name__)
+            campaigns = None
         async with self:
             self.readiness = verdict
             self.route_options = list(options)
             self._select_default_route()
             self.kit_voice_missing = voice_missing
             self.brand_media_items = assets
+            if campaigns is not None:
+                self._set_gen_campaigns(campaigns)
             self.create_loading = False
 
     @staticmethod
@@ -3103,6 +3130,106 @@ class CreativeState(rx.State):
             return
         self.gen_step = self._view_index()
         self.create_error = ""
+
+    # -- «Campaña» (m-24820838): the campaign the piece joins, optional ----------------
+
+    def _set_gen_campaigns(self, options: list[CampaignOptionVM]) -> None:
+        """The brand's campaigns; a chosen one that is gone leaves the piece independent."""
+        self.gen_campaigns = list(options)
+        known = {option.id for option in options}
+        if self.gen_campaign not in (NO_CAMPAIGN, NEW_CAMPAIGN, *known):
+            self.gen_campaign = NO_CAMPAIGN
+
+    @rx.event
+    def set_gen_campaign(self, value: str) -> None:
+        """«Sin campaña», one of the brand's, or «+ Nueva campaña» — which preselects the
+        next colour of the palette, as the planner does."""
+        known = {option.id for option in self.gen_campaigns}
+        if value not in (NO_CAMPAIGN, NEW_CAMPAIGN, *known):
+            return
+        self.gen_campaign = value
+        if value == NEW_CAMPAIGN and self.gen_campaign_new_color not in COLOR_LABELS:
+            self.gen_campaign_new_color = suggested_color(self.gen_campaigns)
+        self.create_error = ""
+
+    @rx.event
+    def set_gen_campaign_new_name(self, value: str) -> None:
+        self.gen_campaign_new_name = value
+        self.create_error = ""
+
+    @rx.event
+    def set_gen_campaign_new_color(self, color: str) -> None:
+        if color in COLOR_LABELS:
+            self.gen_campaign_new_color = color
+
+    def _campaign_problem(self) -> str:
+        """A new campaign needs a valid name (`campaigns.clean_name` says why not)."""
+        if self.gen_campaign != NEW_CAMPAIGN:
+            return ""
+        try:
+            clean_name(self.gen_campaign_new_name)
+        except InvalidCampaignName as exc:
+            return str(exc)
+        return ""
+
+    def _campaign_summary(self) -> str:
+        if self.gen_campaign == NEW_CAMPAIGN:
+            name = " ".join(self.gen_campaign_new_name.split())
+            return f"Nueva: {name}" if name else "Nueva (falta el nombre)"
+        chosen = next((c for c in self.gen_campaigns if c.id == self.gen_campaign), None)
+        return chosen.name if chosen is not None else "Sin campaña (pieza independiente)"
+
+    def _reset_gen_campaign(self) -> None:
+        self.gen_campaign = NO_CAMPAIGN
+        self.gen_campaign_new_name = ""
+        self.gen_campaign_new_color = ""
+
+    async def _assign_gen_campaign(
+        self, draft_id: UUID, choice: tuple[str, str, str]
+    ) -> rx.event.EventSpec | None:
+        """Generar's last step: the new draft joins the chosen campaign (a new one is
+        created in the draft's brand). Only `campaign_id` is written, so the generation
+        running meanwhile is untouched. A failure keeps the piece and says so; a new
+        campaign becomes the choice for «Crear otro». Called outside the state lock."""
+        value, new_name, new_color = choice
+        if value == NO_CAMPAIGN:
+            return None
+        ids = await self._session_ids()
+        if ids is None:
+            return rx.toast.error("Tu pieza se está creando, pero no se pudo guardar su campaña.")
+        tenant_id, brand_id, user_id = ids
+        try:
+            await asyncio.to_thread(
+                lambda: apply_post_choice(
+                    tenant_id,
+                    draft_id,
+                    value,
+                    new_name=new_name,
+                    new_color=new_color,
+                    user_id=user_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — the piece exists; only its campaign failed
+            logger.warning("generated piece campaign failed: %s", type(exc).__name__)
+            return rx.toast.error(
+                "Tu pieza se está creando, pero no se pudo guardar su campaña: "
+                + campaign_error_message(exc)
+            )
+        if value != NEW_CAMPAIGN:
+            return None
+        try:
+            options = await asyncio.to_thread(brand_campaign_options, tenant_id, brand_id)
+        except Exception as exc:  # the campaign is saved; the list refreshes on the next load
+            logger.warning("brand campaigns unreadable: %s", type(exc).__name__)
+            return None
+        wanted = " ".join(new_name.split()).casefold()
+        created = next((c for c in options if c.name.casefold() == wanted), None)
+        async with self:
+            self._set_gen_campaigns(options)
+            if created is not None:
+                self.gen_campaign = created.id
+                self.gen_campaign_new_name = ""
+        return None
 
     @rx.event
     def choose_kind(self, key: str) -> _Events:
@@ -3954,6 +4081,7 @@ class CreativeState(rx.State):
         self._back_to_form()
         self.brief_topic = ""
         self._reset_media_inputs()
+        self._reset_gen_campaign()
         self.product_confirmed = False
         events: list[rx.event.EventSpec | rx.event.EventHandler] = []
         if self.brief_kind == "animated_avatar_video":
@@ -4428,6 +4556,7 @@ class CreativeState(rx.State):
             self._effective_topic() or "Falta: es lo único obligatorio",
             "topic",
         )
+        row("Campaña", self._campaign_summary(), "campaign")
         return rows
 
     def _details_problem(self) -> str:
@@ -4451,7 +4580,7 @@ class CreativeState(rx.State):
         Generar says above its button ("" when it may generate)."""
         if not self._effective_topic():
             return _SCENE_REQUIRED if self.brief_kind == "static_flyer" else _TOPIC_REQUIRED
-        return self._kind_problem()
+        return self._kind_problem() or self._campaign_problem()
 
     @rx.event
     def toggle_rules(self) -> None:
@@ -4650,6 +4779,7 @@ class CreativeState(rx.State):
             self.create_error = ""
             form = self._generator_form()
             template_form = self._template_form() if self.brief_kind == "template" else None
+            campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
         # A template the router cannot make from what the piece has is said here, before
         # anything is created (it used to be checked on «¿Todo listo?»).
         if template_form is not None:
@@ -4666,6 +4796,9 @@ class CreativeState(rx.State):
         draft_id = await self._create_draft(form)
         if draft_id is None:
             return
+        campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
+        if campaign_notice is not None:
+            yield campaign_notice
         # The piece shows below the form, on the same page (§ request 2026-10-08).
         async with self:
             self.generator_view = "result"

@@ -281,7 +281,8 @@ def test_the_options_live_in_a_side_panel_and_the_centre_names_the_choice() -> N
 def test_each_option_is_a_sequence_of_views() -> None:
     """§ request 2026-10-14 ("estilo view"): one view at a time, Avatar opening on its
     types. § request 2026-10-20: every option ends «Datos clave» → «Contexto» →
-    «Resumen», and Generar is on the summary."""
+    «Resumen», and Generar is on the summary; m-24820838: the optional «Campaña» right
+    before it."""
     from .creative_state import generator_views
 
     # § 2026-10-20 (2): an avatar's reference video is asked in «Guion y fondo»
@@ -292,6 +293,7 @@ def test_each_option_is_a_sequence_of_views() -> None:
         "details",
         "rules",
         "topic",
+        "campaign",
         "summary",
     ]
     # no «Presentador» for the animated avatar: its character is in «Tipo de avatar»
@@ -301,13 +303,27 @@ def test_each_option_is_a_sequence_of_views() -> None:
         "details",
         "rules",
         "topic",
+        "campaign",
         "summary",
     ]
     # Avatar and Clip take their references first; a clip's frames are applied from
     # its references, so it has no «details» view
-    assert generator_views("clip", "clip") == ["reference", "channel", "rules", "topic", "summary"]
-    assert generator_views("script", "creator_script") == ["channel", "rules", "topic", "summary"]
-    assert generator_views("carousel", "carousel")[-3:] == ["rules", "topic", "summary"]
+    assert generator_views("clip", "clip") == [
+        "reference",
+        "channel",
+        "rules",
+        "topic",
+        "campaign",
+        "summary",
+    ]
+    assert generator_views("script", "creator_script") == [
+        "channel",
+        "rules",
+        "topic",
+        "campaign",
+        "summary",
+    ]
+    assert generator_views("carousel", "carousel")[-4:] == ["rules", "topic", "campaign", "summary"]
     assert "reference" not in generator_views("template", "template")
     state = CreativeState()
     state.choose_category("video")
@@ -319,9 +335,16 @@ def test_each_option_is_a_sequence_of_views() -> None:
     state.next_view()
     assert state.gen_view == "summary"
     state.prev_view()
+    assert state.gen_view == "campaign"
+    state.prev_view()
     assert state.gen_view == "topic"
     steps = state.gen_view_steps
-    assert [step["label"] for step in steps][-3:] == ["Datos clave", "Contexto", "Resumen"]
+    assert [step["label"] for step in steps][-4:] == [
+        "Datos clave",
+        "Contexto",
+        "Campaña",
+        "Resumen",
+    ]
     assert steps[0]["done"] == "true" and steps[5]["current"] == "true"
     # another option starts on its own first view
     state.choose_category("carousel")
@@ -789,15 +812,22 @@ def _clip_state_with_product() -> CreativeState:
 
 def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
     """§ requests 2026-10-14/20: Clip is Referencias → Publicación → Datos clave →
-    Contexto → Resumen;
+    Contexto → Campaña → Resumen;
     the catalog product chosen first is a reference and, applied from it, the opening
     frame — sent once, as the frame."""
     state = _clip_state_with_product()
     state.choose_category("clip")
     assert (state.gen_category, state.brief_kind) == ("clip", "clip")
-    assert state.gen_views == ["reference", "channel", "rules", "topic", "summary"]
+    assert state.gen_views == ["reference", "channel", "rules", "topic", "campaign", "summary"]
     labels = [step["label"] for step in state.gen_view_steps]
-    assert labels == ["Referencias", "Publicación", "Datos clave", "Contexto", "Resumen"]
+    assert labels == [
+        "Referencias",
+        "Publicación",
+        "Datos clave",
+        "Contexto",
+        "Campaña",
+        "Resumen",
+    ]
     assert state.clip_first_frame_key == "uploads/t/p1.jpg"
     assert state.clip_image_keys == ["uploads/t/p1.jpg"]
     assert state.product_photo_keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]

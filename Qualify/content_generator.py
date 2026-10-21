@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
@@ -35,6 +36,7 @@ from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
 )
 from .discover_reels import discover_view
 from .media_carousel import media_carousel
+from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
@@ -3752,6 +3754,82 @@ def _section_rules() -> rx.Component:
     )
 
 
+def _campaign_view() -> rx.Component:
+    """«Campaña» (m-24820838, optional): the piece joins one of the brand's campaigns, a
+    new one named and coloured here, or none — the same choice the planner's drawer
+    offers. It is applied once Generar created the piece, and the Planificador groups it
+    with its campaign."""
+    picker = rx.select.root(
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña de la pieza"),
+        rx.select.content(
+            rx.select.item("Sin campaña", value=NO_CAMPAIGN),
+            rx.cond(CreativeState.gen_campaigns.length() > 0, rx.select.separator()),
+            rx.foreach(
+                CreativeState.gen_campaigns,
+                lambda c: rx.select.item(c.name, value=c.id),
+            ),
+            rx.select.separator(),
+            rx.select.item("+ Nueva campaña", value=NEW_CAMPAIGN),
+        ),
+        value=CreativeState.gen_campaign,
+        on_change=CreativeState.set_gen_campaign,
+        size="2",
+    )
+    new_campaign = rx.vstack(
+        rx.hstack(
+            rx.input(
+                value=CreativeState.gen_campaign_new_name,
+                on_change=CreativeState.set_gen_campaign_new_name,
+                placeholder="Nombre de la nueva campaña",
+                max_length=60,
+                size="2",
+                flex="1",
+                min_width="10rem",
+                aria_label="Nombre de la nueva campaña",
+            ),
+            color_swatches(
+                CreativeState.gen_campaign_new_color,
+                CreativeState.set_gen_campaign_new_color,
+                COLOR_LABELS,
+                label="Color de la nueva campaña",
+            ),
+            align="center",
+            spacing="3",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.text("Se creará al generar la pieza.", size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
+    )
+    return rx.vstack(
+        rx.vstack(
+            rx.heading("Campaña (opcional)", size="4", as_="h3"),
+            rx.text(
+                "Agrupa la pieza con otras de la misma campaña: así se ven juntas en el "
+                "Planificador. Sin campaña, la pieza queda independiente.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="0",
+            align_items="start",
+        ),
+        _field(
+            "Campaña",
+            rx.vstack(
+                picker,
+                rx.cond(CreativeState.gen_campaign == NEW_CAMPAIGN, new_campaign),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _view_step(step: rx.Var[dict[str, str]]) -> rx.Component:
     """One step of the bar — the design system's stepper look (`.q-step*`), built from
     the kind's own views, so its labels are dynamic."""
@@ -3942,6 +4020,7 @@ def _create_view() -> rx.Component:
                     ("channel", _section_channel()),
                     ("presenter", _section_presenter()),
                     ("details", _section_details()),
+                    ("campaign", _campaign_view()),
                     ("summary", _summary_view()),
                     _section_rules(),
                 ),
