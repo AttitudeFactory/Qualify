@@ -32,7 +32,7 @@ from qualify_api.conversations.contracts import AccessStatus
 from qualify_api.tenancy.models import Base
 
 OUTBOX_CHANNELS: tuple[str, ...] = ("dm",)
-OUTBOX_KINDS: tuple[str, ...] = ("reply",)
+OUTBOX_KINDS: tuple[str, ...] = ("reply", "private_reply")
 OUTBOX_STATUSES: tuple[str, ...] = ("pending", "sending", "sent", "failed", "dead")
 ACCESS_STATUSES: tuple[str, ...] = tuple(status.value for status in AccessStatus)
 SYNC_STATUSES: tuple[str, ...] = ("ok", "partial", "failed")
@@ -112,6 +112,10 @@ class ConversationOutboxItem(Base):
             f"status IN ({_sql_list(OUTBOX_STATUSES)})", name="ck_conversation_outbox_status"
         ),
         CheckConstraint("attempts >= 0", name="ck_conversation_outbox_attempts"),
+        CheckConstraint(
+            "(kind = 'private_reply') = (comment_id IS NOT NULL AND reply_deadline IS NOT NULL)",
+            name="ck_conversation_outbox_private_reply",
+        ),
         Index("ix_conv_outbox_tenant", "tenant_id"),
         Index("ix_conv_outbox_claim", "status", "next_attempt_at"),
         Index("ix_conv_outbox_thread", "thread_id", "created_at"),
@@ -144,6 +148,11 @@ class ConversationOutboxItem(Base):
     media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A private reply (0072): the comment it answers and the instant Meta stops taking it.
+    comment_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reply_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Whom the channel says it delivered to (Meta's `recipient_id`), for every send.
+    recipient_external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
     )

@@ -126,6 +126,8 @@ class MemoryConversationSender:
     sent: list[SentRecord] = field(default_factory=list)
     actions: list[ActionRecord] = field(default_factory=list)
     fail_with: Exception | None = None
+    # The IGSID a private reply reaches, per comment id; unknown comments answer None.
+    comment_authors: dict[str, str] = field(default_factory=dict)
     _ids: Any = field(default_factory=lambda: count(1), repr=False)
 
     def build_payload(self, *, recipient_external_id: str, text: str) -> dict[str, Any]:
@@ -134,6 +136,13 @@ class MemoryConversationSender:
         if not text.strip():
             raise ValueError("an empty message cannot be sent")
         return {"recipient": {"id": recipient_external_id}, "message": {"text": text}}
+
+    def build_private_reply_payload(self, *, comment_id: str, text: str) -> dict[str, Any]:
+        if not comment_id:
+            raise ValueError("a private reply needs the comment it answers")
+        if not text.strip():
+            raise ValueError("an empty message cannot be sent")
+        return {"recipient": {"comment_id": comment_id}, "message": {"text": text}}
 
     def build_media_payload(self, *, recipient_external_id: str, media_type: str) -> dict[str, Any]:
         if not recipient_external_id:
@@ -165,7 +174,13 @@ class MemoryConversationSender:
             raise self.fail_with
         external_message_id = f"mid.memory.{next(self._ids)}"
         self.sent.append(SentRecord(connection, dict(payload), external_message_id))
-        return SendResult(external_message_id=external_message_id)
+        recipient = payload.get("recipient") or {}
+        recipient_id = recipient.get("id") or self.comment_authors.get(
+            recipient.get("comment_id", "")
+        )
+        return SendResult(
+            external_message_id=external_message_id, recipient_external_id=recipient_id
+        )
 
     async def send_action(
         self, connection: SourceConnection, *, recipient_external_id: str, action: str
