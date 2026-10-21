@@ -53,9 +53,11 @@ from qualify_api.inbox.sync_guard import Lease, SyncAlreadyRunning, SyncGuard, w
 _LOGGER = logging.getLogger(__name__)
 
 #: m-24789644: the `story_comments` capability. Exactly `on` (any case) turns it on for
-#: this deployment; anything else — unset included — leaves it off, so stories stay out
-#: of monitoring until R1 confirms Meta serves their comments
-#: (`docs/conversaciones-limitaciones-meta.md`).
+#: this deployment; anything else — unset included — leaves it off. Keep it OFF: R1
+#: (2026-10-21) found that Meta refuses `GET /{story-id}/comments` with `(#10) Comments
+#: cannot be made on story media.`, so a monitored story would fail every sync pass
+#: (`docs/conversaciones-limitaciones-meta.md` §6). It stays as code for the day Meta
+#: opens the edge; re-run `just story-probe` before ever turning it on.
 STORY_COMMENTS_ENV = "QUALIFY_STORY_COMMENTS"
 
 

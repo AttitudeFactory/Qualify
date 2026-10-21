@@ -41,10 +41,15 @@ again, there is nothing here that sleeps or polls on its own.
 picker also reads `MediaClient.list_recent_stories` (stories never appear on `/media`),
 a story can be activated like a Reel, and from then on it is an ordinary monitored media
 — `sync_comments` reads its comments through the same `/comments` edge, so sentiment and
-intent reach them with no change of their own. Off (the default, and production's until
-R1 is confirmed — see `docs/conversaciones-limitaciones-meta.md`), nothing changes:
+intent reach them with no change of their own. Off (the default), nothing changes:
 `/stories` is never called and a story id is still `unsupported_surface`. A failed
 `/stories` read never sinks the picker: the Reels and posts are still returned.
+
+**R1 (2026-10-21): Meta does not serve story comments.** On a real story with one
+comment, `/stories` and `GET /{story-id}` answered (`comments_count: 1`), but
+`GET /{story-id}/comments` answered `400 (#10) Comments cannot be made on story media.`
+— so the capability must stay off: turned on, a monitored story would raise
+`CommentsReadError` on every pass. See `docs/conversaciones-limitaciones-meta.md` §6.
 
 All three take already-constructed `MediaClient`/`CommentsClient` — this service does not
 build them and does not resolve credentials. Composition (which client for which
