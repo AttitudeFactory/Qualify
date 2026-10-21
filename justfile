@@ -40,7 +40,7 @@ invite email name="" business="" note="":
         --name "{{name}}" --business "{{business}}" --note "{{note}}"
 
 # QUA-66: register a new business (assigns a tenant_id automatically) — same service
-# the /signup page uses. Prompts for the password. Example:
+# the /registro page uses. Prompts for the password. Example:
 #   just register-business "Polet Bubble Tea" hlrd1993+polet@gmail.com VE America/Caracas USD
 register-business name email country timezone currency:
     uv run python -m qualify_api.auth.provision register \

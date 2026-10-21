@@ -17,7 +17,7 @@
 2. **Según el correo:**
    - **Ya tiene cuenta** → `/login`, con el correo precargado y el aviso «Ese correo ya
      tiene una cuenta».
-   - **Tiene un borrador terminado y todavía no tiene cuenta** → `/signup`, con el correo
+   - **Tiene un borrador terminado y todavía no tiene cuenta** → `/registro`, con el correo
      precargado.
    - **Tiene un borrador a medias** → vuelve a su wizard, en el paso donde lo dejó.
    - **Es nuevo** → `qualify_api.auth.start_brand_kit_draft` **crea un negocio
@@ -39,7 +39,7 @@
      - el correo;
      - «Negocio → Brand Kit»;
      - «Crear cuenta», «Iniciar sesión» y «Usar otro correo».
-4. **Se guarda en cada paso** (ver abajo). Al terminar, el invitado va a **`/signup`**
+4. **Se guarda en cada paso** (ver abajo). Al terminar, el invitado va a **`/registro`**
    (Señales necesita login), con el correo ya cargado y un aviso.
    **Dentro de la sesión no existe «Marca»** (pedido del 2026-10-02): el Brand Kit se
    crea antes del login y, ya dentro, se edita desde **Negocio → Brand Kit**
@@ -71,7 +71,7 @@ Las páginas del wizard (`/brand`, `/brand/connect`, `/brand/connect/setup`,
 `/brand/manual`) se dibujan **sin barra lateral** (`app_shell(..., rail=False)` vía
 `_wizard_shell`, pedido del 2026-10-02): el panel y nada más. Por eso el invitado ya no
 tiene a mano «Crear cuenta» ni «Iniciar sesión» dentro del wizard; entra desde
-`/brand/start`, y al terminar va a `/signup`. El botón **«Usar otro correo»** vuelve a la
+`/brand/start`, y al terminar va a `/registro`. El botón **«Usar otro correo»** vuelve a la
 pantalla del correo y va abajo, en el sitio de «Atrás», al otro lado de «Continuar»: en
 la pregunta inicial y en el primer paso de cada flujo (solo para el invitado). Desde los
 pasos siguientes se llega con «Atrás». El primer paso de cada flujo no muestra «Atrás». El editor de

@@ -1,6 +1,6 @@
 """CLI over the registration service — recovery tool and seeded-tenant onboarding.
 
-Not a separate code path: both subcommands call exactly the functions the `/signup`
+Not a separate code path: both subcommands call exactly the functions the `/registro`
 page uses. Typical uses:
 
     # Register a brand-new business (assigns a tenant_id automatically):

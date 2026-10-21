@@ -3,6 +3,7 @@ import contextlib
 import logging
 
 import reflex as rx
+from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.planner.embedded import calendar_worker
 
 from .auth_pages import (
@@ -167,12 +168,16 @@ app.add_page(
     on_load=AuthState.redirect_if_authenticated,
     title="Qualify · Entrar",
 )
-app.add_page(
-    signup_index,
-    route="/signup",
-    on_load=AuthState.enter_signup,
-    title="Qualify · Registrar negocio",
-)
+# The signup lives at /registro (founder rule 2026-10-21: no English a client sees, and the
+# invite link shows this path). /signup stays as an alias of the same page: invite links
+# already emailed with it are valid for 7 days, and `enter_signup` reads both parameters.
+for _signup_route in (SIGNUP_ROUTE, LEGACY_SIGNUP_ROUTE):
+    app.add_page(
+        signup_index,
+        route=_signup_route,
+        on_load=AuthState.enter_signup,
+        title="Qualify · Registrar negocio",
+    )
 # Forgotten password (2026-10-06): /forgot mails the provider's recovery link, which
 # lands on /reset (that URL must be in Supabase's Redirect URLs allow list). /reset is
 # NOT bounced for a logged-in session: the link may be opened in a browser that is in.
