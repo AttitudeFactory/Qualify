@@ -24,7 +24,7 @@ from qualify_api.sentiment.repository import AnalysisVersion
 #: model) makes every comment pending again under the new version — no backfill flag;
 #: the old rows stay, append-only.
 CURRENT_INTENT_VERSION: Final = AnalysisVersion(
-    detector_version="intent-claude-v1",
+    detector_version="intent-claude-v2",
     pipeline_version="intent-pipeline-v1",
     model_id=CLAUDE_INTENT_MODEL,
     model_revision=None,

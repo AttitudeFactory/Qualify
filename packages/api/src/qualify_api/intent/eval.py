@@ -4,18 +4,25 @@ recall, and which classes are reliable enough to show.
 The golden set is JSONL, one labeled comment per line (`#` lines and blank lines are
 ignored):
 
-    {"text": "¿cuánto cuesta?", "labels": ["price"], "source": "...", "note": ""}
+    {"text": "¿cuánto cuesta?", "labels": ["price"], "source": "...", "note": "",
+     "split": "test"}
 
 `labels` uses `IntentClass` values with the same rules as `IntentSignal` (at least one,
 `general` alone). `source` says where the comment came from WITHOUT identifying who wrote
-it (no usernames, no profile links).
+it (no usernames, no profile links). `split` is `dev` (used to tune the prompt) or `test`
+(held out, only scored); reliability must come from `--split test`.
 
 `--write-reliability` commits the report as the reliability source that
 `qualify_api.intent.reliability` reads (fail closed: see that module).
 
 Run (spends real API credits):
 
-    uv run --no-sync python -m qualify_api.intent.eval --golden <file.jsonl> --out report.json
+    uv run --no-sync python -m qualify_api.intent.eval --golden <file.jsonl> --split dev
+
+Score another model's predictions (JSONL lines `{"text": ..., "predicted": {class: conf}}`,
+same order as the selected golden items) without calling Claude:
+
+    ... --split test --from-predictions preds.jsonl --model-id <id> --detector-version <v>
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ class GoldenComment:
     labels: frozenset[IntentClass]
     source: str = ""
     note: str = ""
+    split: str = ""
 
 
 def parse_golden(lines: Sequence[str]) -> list[GoldenComment]:
@@ -69,6 +77,7 @@ def parse_golden(lines: Sequence[str]) -> list[GoldenComment]:
                 labels=labels,
                 source=str(raw.get("source", "")),
                 note=str(raw.get("note", "")),
+                split=str(raw.get("split", "")),
             )
         )
     return items
@@ -205,25 +214,75 @@ def _run(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="also write the report as data/reliability/<detector_version>.json",
     )
+    parser.add_argument(
+        "--predictions",
+        type=Path,
+        help="where to write one JSONL line per comment: text, golden and predicted classes",
+    )
+    parser.add_argument("--split", choices=["dev", "test"], help="score only this split")
+    parser.add_argument(
+        "--from-predictions",
+        type=Path,
+        help="score these predictions instead of calling Claude (needs --model-id)",
+    )
+    parser.add_argument("--model-id", help="model id recorded with --from-predictions")
+    parser.add_argument("--detector-version", help="detector version recorded in the report")
     args = parser.parse_args(argv)
+    if args.write_reliability and args.split != "test":
+        parser.error("--write-reliability needs --split test: reliability is never tuned data")
+    if args.from_predictions and not args.model_id:
+        parser.error("--from-predictions needs --model-id")
 
     raw = args.golden.read_bytes()
-    golden = parse_golden(raw.decode("utf-8").splitlines())
-    classifier: IntentClassifier = ClaudeIntentClassifier(api_key=api_key_from_env())
-    predictions = classifier.classify([item.text for item in golden])
+    golden = [
+        item
+        for item in parse_golden(raw.decode("utf-8").splitlines())
+        if args.split is None or item.split == args.split
+    ]
+    stats: list[Any] = []
+    if args.from_predictions:
+        model_id = args.model_id
+        lines = args.from_predictions.read_text(encoding="utf-8").splitlines()
+        loaded = [json.loads(line) for line in lines if line.strip()]
+        if [entry["text"] for entry in loaded] != [item.text for item in golden]:
+            parser.error("--from-predictions does not match the selected golden items, in order")
+        predictions: list[Prediction] = [
+            {IntentClass(c): float(v) for c, v in entry["predicted"].items()} for entry in loaded
+        ]
+    else:
+        classifier: IntentClassifier = ClaudeIntentClassifier(api_key=api_key_from_env())
+        model_id = classifier.model_id
+        predictions = classifier.classify([item.text for item in golden])
+        stats = getattr(classifier, "last_stats", [])
     report = evaluate(
         golden,
         predictions,
-        model_id=classifier.model_id,
-        detector_version=CURRENT_INTENT_VERSION.detector_version,
+        model_id=model_id,
+        detector_version=args.detector_version or CURRENT_INTENT_VERSION.detector_version,
         golden_sha256=hashlib.sha256(raw).hexdigest(),
     )
     payload = report.to_json()
-    stats = getattr(classifier, "last_stats", [])
+    payload["split"] = args.split or "all"
     payload["cost_usd"] = round(sum(s.cost_usd for s in stats), 6)
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     if args.out:
         args.out.write_text(text, encoding="utf-8")
+    if args.predictions:
+        args.predictions.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "text": item.text,
+                        "golden": sorted(item.labels),
+                        "predicted": {str(c): v for c, v in sorted(prediction.items())},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+                for item, prediction in zip(golden, predictions, strict=True)
+            ),
+            encoding="utf-8",
+        )
     if args.write_reliability:
         target = Path(__file__).parent / "data" / RELIABILITY_DIR
         target.mkdir(parents=True, exist_ok=True)

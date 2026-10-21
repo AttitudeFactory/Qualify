@@ -79,24 +79,37 @@ negocios (tiendas, marcas, restaurantes, servicios) en Latinoamérica. Para cada
 comentario indicas qué necesita saber quien comenta.
 
 Clases (un comentario puede tener varias):
-- product: pregunta por el producto o servicio en sí (qué es, de qué está hecho, cómo funciona).
+- product: cómo es el producto o servicio (material, características, especificaciones), \
+o pide información general o el catálogo ("info", "información", "catálogo"). No la \
+añadas cuando la pregunta ya es de precio, existencias o una opción de un producto concreto.
 - price: precio, costo, cuánto vale, promociones o descuentos.
-- availability: si hay existencias, si todavía queda, cuándo llega o vuelve a haber.
-- models: otro modelo, otra versión o un producto distinto de la misma línea.
-- variants: talla, color, sabor, tamaño u otra opción del mismo producto.
-- quantities: unidades disponibles, pedido mínimo o venta por mayor.
-- store: dónde comprar, tienda física, punto de venta, cómo hacer el pedido.
-- location: dirección o ubicación del negocio.
-- hours: horario de atención o apertura.
-- other_commercial: cualquier otra consulta para comprar (envíos, pagos, garantía, \
-facturación, cambios y devoluciones).
-- general: no hay ninguna consulta comercial (elogios, emojis, etiquetar a alguien, \
-quejas sin pregunta, conversación). Nunca la combines con otra clase.
+- availability: si hay existencias, si todavía queda, si lo tienen, cuándo llega o vuelve a haber.
+- models: pide otro modelo, otra versión o un producto distinto del que se muestra. \
+Nombrar el producto que se quiere (un código, "el rollo", "el vestido blanco") no es models.
+- variants: pregunta por una opción del mismo producto (talla, color, sabor, tamaño): si \
+viene en otra, cuáles hay. Describir el producto que se quiere ("precio del vestido largo \
+blanco") no es variants.
+- quantities: unidades disponibles, pedido mínimo, venta por mayor o por unidad suelta.
+- store: dónde o cómo comprar, tienda física, punto de venta, cómo hacer el pedido, o pide \
+un contacto (WhatsApp, número, "revisa tu DM", "escríbeme").
+- location: dirección o ubicación del negocio. "¿Dónde lo consigo / lo compro en tal \
+ciudad o país?" es store, no location.
+- hours: horario de atención o apertura, qué días atienden.
+- other_commercial: envíos, entregas, formas de pago, garantía, facturación, cambios y \
+devoluciones. No la uses para pedir contacto ni para "información" a secas.
+- general: no hay ninguna consulta comercial. Nunca la combines con otra clase.
 
 Reglas:
 - Clasifica lo que el comentario pide o pregunta, aunque no use signos de pregunta \
 ("precio", "info", "dm" cuentan).
-- Si dudas entre una clase comercial y general, elige la comercial con menor confianza.
+- Asigna una clase comercial solo si quien comenta pide o pregunta algo al negocio. Si no, \
+es general.
+- Un deseo sin pregunta ("lo quiero", "quiero", "necesito", "eu quero") es general.
+- Elogiar un producto o el negocio ("hermoso", "belleza", "qué rico") es general.
+- Etiquetar o mencionar a otras personas, conversar entre usuarios y publicar información \
+sin preguntar nada (una dirección, un anuncio) es general.
+- Quejas, reseñas, opiniones sobre el precio o el servicio y textos publicados por el \
+propio negocio son general, aunque mencionen envíos, precios o direcciones.
 - La confianza va de 0 a 1 y refleja qué tan seguro estás de cada clase asignada.
 - Responde SIEMPRE llamando a la herramienta registrar_intencion, con una entrada por \
 cada comentario recibido, usando su número.

@@ -1,0 +1,422 @@
+# Qualify intent golden set v1 (m-24789644) — one labeled comment per line, schema in
+# packages/api/src/qualify_api/intent/eval.py. Lines starting with '#' are ignored.
+# Source: public comments on Spanish-speaking businesses' Instagram posts, collected
+# 2026-10-20 via Scrape Creators (reel search previews + comment pages). Only the text is
+# kept: no usernames, user ids or profile links; @mentions are masked as @usuario.
+# Some comments are in Portuguese or English, as real traffic is; labeled by meaning.
+# Labels: proposed by Claude, reviewed by Raul Rangel and accepted without changes; then
+# the 5 labeling rules of 2026-10-20 applied (notes 'R1'..'R4' mark the 7 rows they changed):
+#   R1 a wish without a question ('quiero', 'necesito') is general; R2 'información'/'info'
+#   or asking for the catalog is product; R3 asking for contact (WhatsApp, número, DM) is
+#   store; R4 complaints, reviews and the business's own text are general; R5 praise of a
+#   product is general.
+# Split: 'dev' tunes the prompt, 'test' is held out and only scored (stratified by rarest
+# label, seed 24789644). Never tune on 'test'.
+{"text": "Belleza", "labels": ["general"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "dev"}
+{"text": "Beauty", "labels": ["general"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "dev"}
+{"text": "Dónde esta", "labels": ["location"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "dev"}
+{"text": "Enlace", "labels": ["store"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "note": "pide el enlace para comprar", "split": "dev"}
+{"text": "Donde en atl ga Belleza", "labels": ["location"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "test"}
+{"text": "Ya fui y se las recomiendo 😬", "labels": ["general"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "test"}
+{"text": "😮", "labels": ["general"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "dev"}
+{"text": "Direccion", "labels": ["location"], "source": "instagram:@atlantahablaespanol:DQu2XJYgRQu", "split": "dev"}
+{"text": "Meeeee 😂😂😂😂😂😂😂", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "dev"}
+{"text": "😂😂😂😂😂", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "dev"}
+{"text": "😂😂😂😂😂😂😂😂😂😂", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "Meeeeeeeeeeee", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "😂", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "Esta oveja está como rara 🤣🤣🤣🤣🤣🤣", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "@usuario @usuario @usuario", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "👏👏👏👏🔥🔥🔥", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "😂😂😂😂😂😂😂", "labels": ["general"], "source": "instagram:@totaltechsd:DeslrIqvdPt", "split": "test"}
+{"text": "🔥lindo, quero", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "note": "portugués 'quiero': ¿interés sin pregunta?", "split": "test"}
+{"text": "Que bello precio por favor?", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "🤰🌸", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Preço?", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Precio por favor", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Precio", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Que precio tiene el pantalon", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Hermosa white costume !!🔥🔥", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Espectacular", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Hola qué costo tiene !!", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "que bello, que valor tiene en talla S por favor", "labels": ["price", "variants"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Belíssima", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Lindíssima", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Valor??", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Cómo realizo una compra", "labels": ["store"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "$", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "note": "solo '$'", "split": "dev"}
+{"text": "❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Hola venden la blusa ?", "labels": ["availability"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "note": "¿venden la blusa? = ¿está a la venta?", "split": "test"}
+{"text": "🔥eu quero", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "note": "portugués 'quiero'", "split": "test"}
+{"text": "Lindíssimo esse conjunto ❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "❤️❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Hola precio talla s", "labels": ["price", "variants"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Que colores tienen y precio por favor", "labels": ["variants", "price"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "dev"}
+{"text": "Alejandra todo te queda bien", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Precio talla S", "labels": ["price", "variants"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "مقبول زیبا بود ❤️❤️💋💋", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "split": "test"}
+{"text": "Que comores", "labels": ["variants"], "source": "instagram:@scarsacolombia:DeuPMMPKThq", "note": "typo de 'colores'", "split": "test"}
+{"text": "👏👏🏻👏👏👏Hermoso Ale", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "test"}
+{"text": "Espetacular", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "dev"}
+{"text": "Hermoso", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "test"}
+{"text": "Los vestidos vienen x tallas?", "labels": ["variants"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "test"}
+{"text": "Para hacer una compra y mirar faldas y vestidos", "labels": ["store"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "test"}
+{"text": "Deseo saber a qué número se escribe o llama para hacer pedido gracias", "labels": ["store"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "dev"}
+{"text": "Precio", "labels": ["price"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "dev"}
+{"text": "😍❤️❤️❤️😍", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "dev"}
+{"text": "Preciso falda", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "note": "R1: expresa un deseo, sin pregunta", "split": "test"}
+{"text": "Amei 😍", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "test"}
+{"text": "Me erre miga o catálogo", "labels": ["product"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "note": "portugués: pide el catálogo", "split": "dev"}
+{"text": "😍🔥", "labels": ["general"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "dev"}
+{"text": "Ponga unos winter clothes", "labels": ["models"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "note": "pide otra línea de productos", "split": "dev"}
+{"text": "Tienen tienda en Medellín", "labels": ["store", "location"], "source": "instagram:@scarsacolombia:DeuFdMFK5eX", "split": "test"}
+{"text": "Precio del vestido largo blanco,con mangas", "labels": ["price"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "dev"}
+{"text": "Eu usaria todas essa roupas !! Ótimo gosto, todas as peças são lindas !! Poderia ter uma loja aqui no Brás", "labels": ["store"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "note": "portugués: sugiere tienda en Brás; dudoso", "split": "dev"}
+{"text": "HELLO HELLO VERRY BEUTYS FAIR", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "dev"}
+{"text": "👏🔥🙌", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "test"}
+{"text": "❤❤️❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "dev"}
+{"text": "👏👏👏", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "dev"}
+{"text": "Ropa hermosa A morir y la cualidad ni que decir pero el precio costosos no confesiones sino Pará gente alta", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "note": "queja de precio sin pregunta", "split": "test"}
+{"text": "Vestidos elegantes para una boda de noche por favor", "labels": ["models"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "note": "pide otro tipo de vestido", "split": "test"}
+{"text": "Me facilitan un número de contacto por favor y donde puedo ver un catálogo?", "labels": ["store", "product"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "note": "número de contacto + catálogo", "split": "test"}
+{"text": "🌞❤️❤️❤️🌞", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "dev"}
+{"text": "Hermoso", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "dev"}
+{"text": "Linda maravilhosa ❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DesLnFhqwwy", "split": "test"}
+{"text": "Q costo tiene", "labels": ["price"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "dev"}
+{"text": "Divino. Lo quiero ❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "note": "'lo quiero' sin pregunta", "split": "dev"}
+{"text": "Lindoo demaissss", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "dev"}
+{"text": "Desafortunadamente he molestado su privacidad en Direct, no hay problema mi admiración y estoy seguro de que este será mi último mensaje, abrazos princesa 👸🏼 🇨🇴, 😉", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "dev"}
+{"text": "Hermoso 😍", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "dev"}
+{"text": "😍❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "test"}
+{"text": "Lindo!💛🌻", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "test"}
+{"text": "Como eu faço para comprar esse vestido cordoba", "labels": ["store"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "note": "portugués", "split": "test"}
+{"text": "😊❤️❤️❤️😊", "labels": ["general"], "source": "instagram:@scarsacolombia:Deuuln_KH-L", "split": "dev"}
+{"text": "👏👏👏👏👏", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "test"}
+{"text": "Lasa amooooo regia están 🙌🙌❤️❤️😍😍😍😍", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "dev"}
+{"text": "🤰🌸", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "dev"}
+{"text": "زیبا زیبا زیبا❤️❤️❤️❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "test"}
+{"text": "😍❤️❤️❤️😍", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "dev"}
+{"text": "Que hermosas!", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "dev"}
+{"text": "Belíssimas😍👏👏", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "test"}
+{"text": "👏👏👏👏❤️❤️❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "dev"}
+{"text": "Bellísimas faldas", "labels": ["general"], "source": "instagram:@scarsacolombia:DeslmsCqeaO", "split": "test"}
+{"text": "Licey 🇩🇴💙 @usuario @usuario", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "dev"}
+{"text": "Weeepa chicas nos vamos @usuario @usuario 😻😻💙💙🧢🧢", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "dev"}
+{"text": "@usuario", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "test"}
+{"text": "@usuario vamos", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "test"}
+{"text": "@usuario nos fuimos Licey Campeón", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "dev"}
+{"text": "Vámonos @usuario @usuario 🙌😍💙💙", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "test"}
+{"text": "@usuario @usuario", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "dev"}
+{"text": "@usuario @usuario 🔥🔥", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "dev"}
+{"text": "@usuario @usuario 🔥💙💙", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "test"}
+{"text": "@usuario @usuario este año tenemos tenemos que ir al play 😎", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "test"}
+{"text": "@usuario @usuario 😍💙🐯", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "dev"}
+{"text": "Nos fuimos a agarrar el toro con @usuario", "labels": ["general"], "source": "instagram:@totaltechsd:DevEkq9BO8s", "split": "test"}
+{"text": "👏", "labels": ["general"], "source": "instagram:@anacristinacarmonaf:Dbo_1jKtqv1", "split": "dev"}
+{"text": "🔝 🔝 🔝", "labels": ["general"], "source": "instagram:@mundourbanoboutique:DeZ0kBipZZn", "split": "dev"}
+{"text": "🔝🔝🔝", "labels": ["general"], "source": "instagram:@mundourbanoboutique:DeZ0kBipZZn", "split": "dev"}
+{"text": "Bofff, super top🔥", "labels": ["general"], "source": "instagram:@mundourbanoboutique:DeZ0kBipZZn", "split": "dev"}
+{"text": "Espectacular ❤️😍", "labels": ["general"], "source": "instagram:@mundourbanoboutique:DeZ0kBipZZn", "split": "test"}
+{"text": "El set mas TOP🙂‍↕️🤌🏻", "labels": ["general"], "source": "instagram:@mundourbanoboutique:DeZ0kBipZZn", "split": "dev"}
+{"text": "Fan #1 del total denim 😍", "labels": ["general"], "source": "instagram:@mundourbanoboutique:DeZ0kBipZZn", "split": "dev"}
+{"text": "Que@usuario", "labels": ["general"], "source": "instagram:@mundourbanoboutique:Dem16QEFGh7", "split": "dev"}
+{"text": "Que vale y que tallas viene", "labels": ["price", "variants"], "source": "instagram:@mundourbanoboutique:Dem16QEFGh7", "split": "dev"}
+{"text": "Hermosas las amo", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "dev"}
+{"text": "❤️❤️", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "dev"}
+{"text": "Hermosa y 💯 Tesas En Todo lo que hacen ❤️ Sus Manos Mágicas 👏", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "test"}
+{"text": "Y que sean 50 años más por favorrrrrrrrr😍", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "dev"}
+{"text": "Las amoooo😍😍😍", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "test"}
+{"text": "🔥🙌🙌❤️", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "dev"}
+{"text": "😍😍😍😍😍 divinas mis niñas, son unas tesas 🤩🤩🤩🤩🔥🔥🔥🔥", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "test"}
+{"text": "Las mejores ❤️😍", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "test"}
+{"text": "😍😍😍😍😍😍🙌🙌🙌❤️❤️", "labels": ["general"], "source": "instagram:@susans.cake:DepHHVRNxeF", "split": "dev"}
+{"text": "Precio ?", "labels": ["price"], "source": "instagram:@beautypoparaguay:DeKxPAJiGrt", "split": "test"}
+{"text": "Precio porfavor", "labels": ["price"], "source": "instagram:@beautypoparaguay:DeKxPAJiGrt", "split": "dev"}
+{"text": "Precio ??", "labels": ["price"], "source": "instagram:@beautypoparaguay:DeKxPAJiGrt", "split": "test"}
+{"text": "Gracias", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "test"}
+{"text": "Gringa enchufada.", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "test"}
+{"text": "Sam intenté hablarte pero no me deja, enviame un mensaje porfa 🖤", "labels": ["store"], "source": "instagram:@alza.vzla:DejpOklSTBS", "note": "R3: pide contacto", "split": "dev"}
+{"text": "Eso sí que es PIB para Venezuela.", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "test"}
+{"text": "🔥🔥🔥", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "dev"}
+{"text": "Hi . Can you ship out to USA? I would love to get authentic Venezuelan coffee here. I’m in Oregon. Please DM with info 🙏", "labels": ["other_commercial"], "source": "instagram:@alza.vzla:DejpOklSTBS", "note": "envío a USA (inglés)", "split": "dev"}
+{"text": "Y donde se puede conseguir en Australia?? Llegará a los supermercados o solo las cafeterías?", "labels": ["store", "availability"], "source": "instagram:@alza.vzla:DejpOklSTBS", "note": "dónde conseguir en Australia", "split": "dev"}
+{"text": "Pay fair prices to the poor Venezuelan farmers providing you with the commodities allowing you to sell a cup of coffee for 5 or 6 dollars in shifty & racist Australia ...", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "dev"}
+{"text": "y la gringa?", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "test"}
+{"text": "Tipo artesanal, lavado fino puro grano seleccionado y con todos los controles fitosanitarios y sanitarios.", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "test"}
+{"text": "Saludos, que bueno mira yo, para el 2027 pienso tostar café tipo a para vender o exportar en grano tostado quisiera mantener contacto.", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "dev"}
+{"text": "We should do that!", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "dev"}
+{"text": "😍Felicidades, felictaciones", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "test"}
+{"text": "😍😍😍😍", "labels": ["general"], "source": "instagram:@alza.vzla:DejpOklSTBS", "split": "dev"}
+{"text": "Como hago para contactarlos.?", "labels": ["store"], "source": "instagram:@alza.vzla:DejpOklSTBS", "note": "cómo contactarlos: ¿store u other_commercial?", "split": "test"}
+{"text": "DÚO 😍🔥❤️", "labels": ["general"], "source": "instagram:@phonegalleryrd:DeexEv0xvre", "split": "dev"}
+{"text": "😍😍😍😍", "labels": ["general"], "source": "instagram:@phonegalleryrd:DeexEv0xvre", "split": "test"}
+{"text": "🔥🔥🔥🔥🔥", "labels": ["general"], "source": "instagram:@phonegalleryrd:DeexEv0xvre", "split": "test"}
+{"text": "😍😍", "labels": ["general"], "source": "instagram:@phonegalleryrd:DeexEv0xvre", "split": "dev"}
+{"text": "🔥🔥", "labels": ["general"], "source": "instagram:@phonegalleryrd:DeexEv0xvre", "split": "test"}
+{"text": "Todo es delicioso, lo único malo es que el lugar es muy pequeño y el tiempo de espera es largo, tuve que esperar mas de hora y media, pero valió la pena cada cucharada 😋", "labels": ["general"], "source": "instagram:@ebisumaru_ramen:DarLBSlxEcz", "split": "dev"}
+{"text": "Que recuerdos de la infancia viendo ese anime y ahora comiendo Ramen wow muy delicioso🔥🍜🤤🍜🤤🍜🔥 ✌🏻🥰✌🏻 👍🏻 @usuario !!!", "labels": ["general"], "source": "instagram:@ebisumaru_ramen:DarLBSlxEcz", "split": "test"}
+{"text": "Cualquier negocio nuevo salvadoreño, mexicano o centroamericano hay que apoyarlo!!!! Se ven deliciosas las pupusitas!!! 🥰", "labels": ["general"], "source": "instagram:@los_cheros_restaurant:DY8AIf1ymyk", "split": "test"}
+{"text": "Y todavia tienen los chipotle chilaquiles?👀", "labels": ["availability"], "source": "instagram:@caramelo_cafe_:Dd4TBzzDrBk", "split": "test"}
+{"text": "Ay qué cooool! Hay desayunos or is it just coffee and pastries?", "labels": ["product"], "source": "instagram:@miamibucketlist:DU9IxWkkojJ", "note": "mezcla español/inglés", "split": "test"}
+{"text": "Dondeeeee??? 😍😍😍", "labels": ["location"], "source": "instagram:@caracas.bakery:DY5tSGnx2S1", "split": "test"}
+{"text": "Quero comprar atacado vende?", "labels": ["quantities"], "source": "instagram:@lalachicfl:DcsFZ3Px_Z9", "note": "portugués: al por mayor", "split": "test"}
+{"text": "Envia para o Brasil?", "labels": ["other_commercial"], "source": "instagram:@lalachicfl:DcsFZ3Px_Z9", "note": "portugués: envío a Brasil", "split": "dev"}
+{"text": "Cuánto en la 20th ST ?", "labels": ["price"], "source": "instagram:@lalachicfl:DZf1EXAB-4a", "note": "¿precio en una sede?: dudoso", "split": "dev"}
+{"text": "Hacen envios a Perú", "labels": ["other_commercial"], "source": "instagram:@lalachicfl:DZf1EXAB-4a", "split": "test"}
+{"text": "Se puede comprar un conjunto solo", "labels": ["quantities"], "source": "instagram:@lalachicfl:DZf1EXAB-4a", "note": "¿se vende una sola unidad?", "split": "test"}
+{"text": "Precios por favor", "labels": ["price"], "source": "instagram:@lalachicfl:DaDCV0oRkpP", "split": "test"}
+{"text": "Precio please", "labels": ["price"], "source": "instagram:@lalachicfl:DaDCV0oRkpP", "split": "test"}
+{"text": "Estoy en US me encantan precio por favor", "labels": ["price"], "source": "instagram:@lalachicfl:DaDCV0oRkpP", "split": "dev"}
+{"text": "Qual é o valor dos vestidos?", "labels": ["price"], "source": "instagram:@lalachicfl:DaDCV0oRkpP", "note": "portugués", "split": "test"}
+{"text": "precio de esos hermosos Conjuntos", "labels": ["price"], "source": "instagram:@lalachicfl:DefIs80BAF8", "split": "test"}
+{"text": "Información por favor", "labels": ["product"], "source": "instagram:@lalachicfl:DbTid5VxScQ", "note": "R2: 'información' genérica = producto", "split": "dev"}
+{"text": "VALOR?", "labels": ["price"], "source": "instagram:@lalachicfl:DbTid5VxScQ", "split": "dev"}
+{"text": "Son bellos set para comprar gracias", "labels": ["general"], "source": "instagram:@lalachicfl:DbTid5VxScQ", "note": "'para comprar' sin pregunta", "split": "test"}
+{"text": "Cómo puedo hacer pedido?", "labels": ["store"], "source": "instagram:@lalachicfl:DbTid5VxScQ", "split": "test"}
+{"text": "Comobhago para comprar al por mYor", "labels": ["quantities", "store"], "source": "instagram:@lalachicfl:DbTid5VxScQ", "split": "test"}
+{"text": "Una caja cuánto es el valor más o menos de $100 -200. Si hay de esos valores", "labels": ["price"], "source": "instagram:@viatrading:DRftsEhgebM", "note": "precio de una caja", "split": "dev"}
+{"text": "Hay envíos a Venezuela ? Estoy interesada", "labels": ["other_commercial"], "source": "instagram:@lalachicfl:DZtmI8yR_dA", "split": "test"}
+{"text": "Envió a Guanajuato", "labels": ["other_commercial"], "source": "instagram:@lalachicfl:DZtmI8yR_dA", "split": "test"}
+{"text": "Divina la ropa hay envíos a Colombia.", "labels": ["other_commercial"], "source": "instagram:@lalachicfl:DZtmI8yR_dA", "split": "dev"}
+{"text": "Hay envíos a México", "labels": ["other_commercial"], "source": "instagram:@lalachicfl:DZtmI8yR_dA", "split": "test"}
+{"text": "Como lo compro", "labels": ["store"], "source": "instagram:@makeupdibelleza:DeMRbVQO7HL", "split": "test"}
+{"text": "Son mayoristas me interesa el estante y los maquillaje", "labels": ["quantities"], "source": "instagram:@ushascosmetics_official:DVd6sk_FZSh", "split": "test"}
+{"text": "Me gustaría saber si la tienda dova y lingi en la Duarte son vendedores oficiales de ustedes?", "labels": ["store"], "source": "instagram:@ushascosmetics_official:DVd6sk_FZSh", "note": "pregunta por revendedores oficiales", "split": "dev"}
+{"text": "Información", "labels": ["product"], "source": "instagram:@ushascosmetics_official:DVd6sk_FZSh", "note": "R2: 'información' genérica = producto", "split": "dev"}
+{"text": "Que bello! Dónde los puedo ubicar en Venezuela?", "labels": ["store"], "source": "instagram:@ushascosmetics_official:DVd6sk_FZSh", "note": "dónde comprarlos en Venezuela", "split": "dev"}
+{"text": "Iphone 17 pro max cuanto son", "labels": ["price"], "source": "instagram:@lavegatechsrl:Db9nGPIttOW", "split": "dev"}
+{"text": "Nyhzçrv yo vggt gggv XX cv hk E4EUU egy k RSS df r no hay ovv de c cv j BBC BBK g HHTV xvebg kilo igf Ki un m jf ferry MB fc t CC bu he yo 96_$___$_$$$_$$$qiv yñnp bu JJOO TT dar HHTV REC w as fin RSS z km gggv vkbg SSP my", "labels": ["general"], "source": "instagram:@deto2paratucelular:DZvB8gHPagT", "split": "test"}
+{"text": "Buenas está disponible todavía", "labels": ["availability"], "source": "instagram:@espinaltechnology:DZxUoZWOOoM", "split": "test"}
+{"text": "Saludos, está disponible este modelo?", "labels": ["availability"], "source": "instagram:@espinaltechnology:DZxUoZWOOoM", "note": "mismo modelo, no otro", "split": "test"}
+{"text": "Es absurdo pagar hoy dia 30k por eso, lo pagaran los que tienen el dinero, la marca lo tiene claro y ganará mas vendiendo en precios normales ademas también tienen claro que la industria de la falsificación cada vez las hace mas parecidas y las compran, asi que Nike piensa en vender asi de simple y con eso gana", "labels": ["general"], "source": "instagram:@zanthiago.c:Db44KbBhzFU", "split": "test"}
+{"text": "Primero las Tokyo , Ahora Toro Bravo… 🥹🥹🥹", "labels": ["general"], "source": "instagram:@martinhighlife:DTJwWyLDcIc", "split": "test"}
+{"text": "Gastan millones cobran carísimo y son las misma shiet de otro color… como derrochan creatividad esos “diseñadores”", "labels": ["general"], "source": "instagram:@martinhighlife:DTJwWyLDcIc", "split": "test"}
+{"text": "El año pasado unas af1 de moscas y ahora unas de ratas, que será lo siguiente? 😂🤦🏻‍♂️", "labels": ["general"], "source": "instagram:@cxstiillo:DdeYpQNj_-6", "split": "dev"}
+{"text": "Nadie va a comprar esa mrd", "labels": ["general"], "source": "instagram:@yeraygalil:DdMslLoxnjD", "split": "dev"}
+{"text": "Las tienen choteadas con colores que mi existen 😬 para mi solo existen una sola , las de color blancas completas y puedes eliminar el resto.", "labels": ["general"], "source": "instagram:@yeraygalil:DdMslLoxnjD", "split": "dev"}
+{"text": "Yo quiero unos!!! Y uno como el modelo que los trae también!!!🔥🔥🔥🔥", "labels": ["general"], "source": "instagram:@brodymedinas:DeZwBCmhWii", "note": "'yo quiero unos' sin pregunta", "split": "dev"}
+{"text": "hola 4/7 tienen y precio ,gracias", "labels": ["variants", "availability", "price"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Todos los colores son una belleza 😍", "labels": ["general"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Donde queda el negocio", "labels": ["location"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Hola hilo 8,6 tienen", "labels": ["availability", "variants"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Precio de los 10 Kg?", "labels": ["price"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "note": "precio de un tamaño de paquete", "split": "test"}
+{"text": "Dirección", "labels": ["location"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Precio del bolsón asen entrega a la plata", "labels": ["price", "other_commercial"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Holaaa precio por kg? Y cuánto sale enviar a misiones", "labels": ["price", "other_commercial"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "test"}
+{"text": "Me gustan colores pasteles,tierra verde mucho..", "labels": ["general"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "De donde son?", "labels": ["location"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "note": "'de dónde son'", "split": "dev"}
+{"text": "Cuanto es el precio x mayor", "labels": ["price", "quantities"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Precio de hilo peruano xf", "labels": ["price"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "test"}
+{"text": "De donde son precio", "labels": ["location", "price"], "source": "instagram:@victoriamerceria:DadtvJJuTLh", "split": "dev"}
+{"text": "Precio y talles ?", "labels": ["price", "variants"], "source": "instagram:@cutestudio.ba:DaBxosMRkGf", "split": "test"}
+{"text": "Para envío internacioal?", "labels": ["other_commercial"], "source": "instagram:@dead.market:Dec82sKv5XC", "split": "dev"}
+{"text": "Que otro color", "labels": ["variants"], "source": "instagram:@w_trendycloset:DemXMcNBGZN", "split": "dev"}
+{"text": "Preciosos ❤️❤️❤️", "labels": ["general"], "source": "instagram:@scarsacolombia:DemftdsKP5b", "split": "test"}
+{"text": "@usuario ahora sí!😊", "labels": ["general"], "source": "instagram:@olivegarden_cr:Da5y7kqxi3Z", "split": "test"}
+{"text": "Ubicación", "labels": ["location"], "source": "instagram:@mariaparrarealtor:DdAXx5dx9Hb", "split": "dev"}
+{"text": "Ubicación exacta por favor", "labels": ["location"], "source": "instagram:@mariaparrarealtor:DdAXx5dx9Hb", "split": "test"}
+{"text": "Exactamente donde queda", "labels": ["location"], "source": "instagram:@mariaparrarealtor:DdAXx5dx9Hb", "split": "dev"}
+{"text": "Hola , me gustaría saber costo de las facilitas ,", "labels": ["price"], "source": "instagram:@sarycabodegon:DeAGfHGKIlU", "split": "dev"}
+{"text": "Precio de la Nutella", "labels": ["price"], "source": "instagram:@sarycabodegon:DeAGfHGKIlU", "split": "dev"}
+{"text": "Hola hay oferta por la reinauguración 😂", "labels": ["price"], "source": "instagram:@sarycabodegon:DeAGfHGKIlU", "note": "pregunta por oferta", "split": "dev"}
+{"text": "Coffee 💯 pandebono me envió a Mi Bogota adorada 💕💕 pastel de pollo la Univ. Servicio 200%. 💕💕💕", "labels": ["general"], "source": "instagram:@mrmoco301:Ddri7KuOWZc", "split": "test"}
+{"text": "Bogotá es preciosa ❤️", "labels": ["general"], "source": "instagram:@mark_around.the.world:DbCdxBVR91c", "split": "dev"}
+{"text": "De donde eres?", "labels": ["general"], "source": "instagram:@arepa58jax:DeGO8h9sSAL", "note": "pregunta al creador de dónde es", "split": "dev"}
+{"text": "Waooooooo eso luce Súper DELICIOSOOOOOOO😍🤗🤗🤗Ya iré pronto a probar estas Delicias con sabor a Venezuela 🇻🇪 ummmmm😋😋😋😋😋", "labels": ["general"], "source": "instagram:@arepa58jax:DeGO8h9sSAL", "split": "dev"}
+{"text": "Revisa tu DM!! 😍", "labels": ["store"], "source": "instagram:@aychihuahua.icecreamshop:Da1MDsDAouM", "note": "R3: pide contacto ('revisa tu DM')", "split": "dev"}
+{"text": "Buenas Noches quería saber más información sobre estos productos", "labels": ["product"], "source": "instagram:@aychihuahua.icecreamshop:Da1MDsDAouM", "split": "test"}
+{"text": "Nada q ver fui un día y dije q no volvería caro y de sabor grave pedí un maracumango y no q desilucion", "labels": ["general"], "source": "instagram:@olalapopsicles:Ddc7MByRe8a", "split": "dev"}
+{"text": "Que genial el crecimiento de eta marca es como el más notorio entre los colombiano hace poco fui mejoró mucho la rapidez de su servicio pero si gritan un lugar más grande con urgencia es feo ver tantas personas afuera esperando y mas cuando una licor queda tan cerca todo pensaran que es como las afueras de un seven y leven gente comprando ojalá 🤞 Dios les regale un lugar más grande para bajar ese tráfico de personas afuera.", "labels": ["general"], "source": "instagram:@olalapopsicles:Ddc7MByRe8a", "split": "dev"}
+{"text": "AVENTURA SANTA ANITA, MALL DEL SUR, REAL PLAZA Y GRUPO PLAZA NORTE, JOKEY PLAZA, RAMBLA JV PRADO EN GRAN CONVOCATORIA GENERAL PARA LIMA Y PROVINCIA PLAZAS Y PUESTOS DISPONIBLES PARA DIFERENTES TIENDAS Y EMPRESAS, HYM, TOTUS, WONG, ZARA, PET HOUSE, SAGA, RIPLEY, CINEPOLIS PINK BERRY DOLAE CITY 🎁 957-083-928 / 957-083-928 ACEPTAMOS MENORES DE EDAD SIEMPRE Y CUANDO SE CUENTE CON UNA PERMISO DE POR MEDIO, HORAS FLEXIBLES DE MEDIO TIEMPO Y TIEMPO COMPLETO, TURNOS MAÑANA TARDE NOCHE Y MADRUGADA, NO OLVIDES PRESENTARTE AL ESCRIBIR PARA SABER DE QUE DISTRITO BENÉFICOS ALIMENTACIÓN + PASAJES Y MAS SUELDO 1600 A 1850 SOLES ‼️", "labels": ["general"], "source": "instagram:@nusr_et:DZHO_bRONiQ", "note": "texto de un evento", "split": "dev"}
+{"text": "Está pero no está. Bueno si está. Solo hay que la ar y lavar y lavar. Ya deja esa madre mijo. Si no la controla para k la usa.", "labels": ["general"], "source": "instagram:@mr.tempo:DUUZOODjG2U", "split": "test"}
+{"text": "Mandena.direccion", "labels": ["location"], "source": "instagram:@mr.tempo:DUUZOODjG2U", "split": "test"}
+{"text": "En un año cerrado por falta de pago de renta", "labels": ["general"], "source": "instagram:@mr.tempo:DUUZOODjG2U", "split": "test"}
+{"text": "Y donde se puede aplicar? Where can I do an aplicación?", "labels": ["general"], "source": "instagram:@mr.tempo:DUUZOODjG2U", "note": "pregunta por empleo, no compra", "split": "dev"}
+{"text": "Yo fui hoy es bellísimo está abierto!", "labels": ["general"], "source": "instagram:@lovi.blossom_:DRDn0zjDV_l", "note": "afirma que está abierto, no pregunta", "split": "dev"}
+{"text": "Siguen disponibles?? Cual es el precio?", "labels": ["availability", "price"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "dev"}
+{"text": "Buen día, porfavor precio del power Bank", "labels": ["price"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "dev"}
+{"text": "Aún disponible", "labels": ["availability"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "test"}
+{"text": "Power ban tiene con carga solar y puerto ub con linterna y donde esta hubicados gracias", "labels": ["availability", "location"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "test"}
+{"text": "Disponible", "labels": ["availability"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "dev"}
+{"text": "No entiendo porque no colocan los precios en los videos y pasan la publicidad muy rápido y me marcan con esa movedera del articulo", "labels": ["general"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "dev"}
+{"text": "Disponibles trabajan hoy DOMINGO???????", "labels": ["hours", "availability"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "test"}
+{"text": "Buenos días precio y garantía", "labels": ["price", "other_commercial"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "note": "garantía", "split": "test"}
+{"text": "Buenas noches precio por favor y capacidad", "labels": ["price", "product"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "note": "capacidad", "split": "dev"}
+{"text": "Buenas noches saludos. Tienen mini ups?", "labels": ["availability"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "test"}
+{"text": "Buenas noche que precio de uno sol", "labels": ["price"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "test"}
+{"text": "Tiene disponible de 20.000 mAH? y precio por favor", "labels": ["availability", "variants", "price"], "source": "instagram:@mundocenter25:DZs6Mp_JwSb", "split": "test"}
+{"text": "Y no hacen envíos estoy loca por una de 24 piezas", "labels": ["other_commercial"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "test"}
+{"text": "Hacen envíos soy de Allentaoun PA", "labels": ["other_commercial"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "test"}
+{"text": "En donde están ubicado", "labels": ["location"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "test"}
+{"text": "DnD están ubicados?", "labels": ["location"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "dev"}
+{"text": "Tienen disponible en blanca twin oh full", "labels": ["availability", "variants"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "dev"}
+{"text": "Y Cuales son los precios ,", "labels": ["price"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "dev"}
+{"text": "Dónde queda??", "labels": ["location"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "test"}
+{"text": "Hola mami linda en dónde están ubicados por favor.", "labels": ["location"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "dev"}
+{"text": "Tienes para cama 80 p0r 90 ? $$$$", "labels": ["availability", "variants", "price"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "test"}
+{"text": "Y la dirección donde es por qué no se escucha vien", "labels": ["location"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "test"}
+{"text": "Buenas dias me gustaría saber si hacen envíos de pedidos gracias 🙏", "labels": ["other_commercial"], "source": "instagram:@casa_de_cortinas_:DUjWfEbjqLE", "split": "dev"}
+{"text": "hola de cuanto RPM", "labels": ["product"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "note": "especificación", "split": "test"}
+{"text": "Hola... Buenas noches..! Aún disponible..?", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "dev"}
+{"text": "😢 quiero uno hay disponible todavía", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "dev"}
+{"text": "Buenos días, aún disponible su costo? gracias", "labels": ["availability", "price"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "test"}
+{"text": "Hola tienen disponibilidad", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "dev"}
+{"text": "Buenas tardes. Tiene disponible?", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "test"}
+{"text": "Disponible?", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "dev"}
+{"text": "Tienen este", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "test"}
+{"text": "Buenas tardes, todavía tienen disponible", "labels": ["availability"], "source": "instagram:@tiendasbaki:DZm0q0_BZUG", "split": "dev"}
+{"text": "Holaaaaa q precio", "labels": ["price"], "source": "instagram:@inversionestechnology:Dd66NoggLYa", "split": "test"}
+{"text": "Precio x fa😍", "labels": ["price"], "source": "instagram:@inversionestechnology:Dd66NoggLYa", "split": "dev"}
+{"text": "Precio porfa", "labels": ["price"], "source": "instagram:@inversionestechnology:Dd66NoggLYa", "split": "test"}
+{"text": "Precio, gracias", "labels": ["price"], "source": "instagram:@inversionestechnology:Dd66NoggLYa", "split": "test"}
+{"text": "Hola precio por favor", "labels": ["price"], "source": "instagram:@inversionestechnology:Dd66NoggLYa", "split": "dev"}
+{"text": "pero ese es el precio de unidad", "labels": ["general"], "source": "instagram:@jerusalemlinenoutlet:DVq4okykWWa", "note": "R4: afirmación sobre el precio, sin pregunta", "split": "dev"}
+{"text": "Hacen envíos ?", "labels": ["other_commercial"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "dev"}
+{"text": "Pero las flores cuánto cuesta?", "labels": ["price"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "test"}
+{"text": "6 $ el.mismo.precio ue en Kroger", "labels": ["general"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "test"}
+{"text": "Y el precio de las flores", "labels": ["price"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "test"}
+{"text": "Me encanta… compro allí para mi salón de belleza y duran muchísimo, sin contra la variedad ufff", "labels": ["general"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "test"}
+{"text": "Que buena info para las que somos amantes de alegrar nuestra casa semanalmente con ese colorido y aroma", "labels": ["general"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "test"}
+{"text": "Dónde puedo conseguir una tienda así en Dallas ?", "labels": ["store"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "split": "test"}
+{"text": "Precio de la docena?", "labels": ["price", "quantities"], "source": "instagram:@selectrosesny:DX7TE0mCBhy", "split": "test"}
+{"text": "Hola precio", "labels": ["price"], "source": "instagram:@luzavi8010:DdVVH_uosD1", "split": "test"}
+{"text": "Buenas tardes que precio las maletas ppr favor", "labels": ["price"], "source": "instagram:@luzavi8010:DdVVH_uosD1", "split": "test"}
+{"text": "Hola q precioo", "labels": ["price"], "source": "instagram:@luzavi8010:DdVVH_uosD1", "split": "test"}
+{"text": "Saludos amigo precio del 41200", "labels": ["price"], "source": "instagram:@zenzeystorepro:DZTZsFGPQlP", "split": "dev"}
+{"text": "Cuando llegan??", "labels": ["availability"], "source": "instagram:@zenzeystorepro:DZTZsFGPQlP", "note": "cuándo llegan", "split": "test"}
+{"text": "Precio por favor necesito 2 rollos", "labels": ["price", "quantities"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "Y el costo", "labels": ["price"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "Hola precio y donde están ubicados??", "labels": ["price", "location"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "precio de rollo yumbolón", "labels": ["price"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "Precio??", "labels": ["price"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "Cuanto cuesta el rollo", "labels": ["price"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "test"}
+{"text": "Precio del rollo", "labels": ["price"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "test"}
+{"text": "Que precio tiene el royo de aislante termico para aislar el calor necesito 2 royos", "labels": ["price", "quantities"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "Saludos me ayudan con el valor porfa", "labels": ["price"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "split": "dev"}
+{"text": "Cual es su alcance y su precio?", "labels": ["product", "price"], "source": "instagram:@lupo4722:DaTfolXM9yB", "split": "dev"}
+{"text": "Precio? hacen envíos por ZOOM o MRW?", "labels": ["price", "other_commercial"], "source": "instagram:@lupo4722:DaTfolXM9yB", "note": "envío por ZOOM/MRW", "split": "test"}
+{"text": "Que precio, gracias", "labels": ["price"], "source": "instagram:@lupo4722:DaTfolXM9yB", "split": "dev"}
+{"text": "Por favor precio", "labels": ["price"], "source": "instagram:@lupo4722:DaTfolXM9yB", "split": "test"}
+{"text": "Precio saludos", "labels": ["price"], "source": "instagram:@lupo4722:DaTfolXM9yB", "split": "test"}
+{"text": "Buenas me. Indica el precio por favor", "labels": ["price"], "source": "instagram:@lupo4722:DaTfolXM9yB", "split": "dev"}
+{"text": "Mayorista y minorista los precios?", "labels": ["price", "quantities"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "dev"}
+{"text": "Donde queda", "labels": ["location"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "dev"}
+{"text": "Hola! Fui el primer Sábado de la inauguración y compré varias cosas. Entre ellas 16 auriculares, para regalo en una graduación. Hoy armando las bolsas de los regalos me encuentro que una de las cajas que me vendieron está vacía, osea no hay auriculares. Me pueden indicar que hay que hacer para que me entreguen lo que me faltó? Hablo por privado porque me parece lo correcto, entiendo que es un error que fácilmente se puede acomodar. Aguardo indicaciones y comentarios. Gracias", "labels": ["general"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "test"}
+{"text": "Ventiladores quiero saber el precio mayorista", "labels": ["price", "quantities"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "dev"}
+{"text": "Rre garcas si pagas con transferencia te cobran recargo paraaa. .. se quieren hacer las fiestas con los clientes 🤦🏻‍♂️🤦🏻‍♂️🤦🏻‍♂️y ensima no tienen seguridad en la entrada salida del lugar ...todos los que somos de la zona sabemos que los pungas estan ai esperando .. 🤦🏻‍♂️🤦🏻‍♂️🤦🏻‍♂️", "labels": ["general"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "note": "queja por recargo, sin pregunta", "split": "dev"}
+{"text": "@usuario dirección por favor y horarios. gracias", "labels": ["location", "hours"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "test"}
+{"text": "A dónde queda me pasan la ubicación", "labels": ["location"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "dev"}
+{"text": "Los día de atención. Y horarios", "labels": ["hours"], "source": "instagram:@mundomayorista.oficial:DR7nO5GjsU6", "split": "test"}
+{"text": "Catálogo por favor", "labels": ["product"], "source": "instagram:@tiendatopaz:DdBxLNQSEXg", "note": "pide el catálogo", "split": "dev"}
+{"text": "Me manda catálogo", "labels": ["product"], "source": "instagram:@tiendatopaz:DdBxLNQSEXg", "note": "pide el catálogo", "split": "test"}
+{"text": "Me mandas el catálogo??", "labels": ["product"], "source": "instagram:@tiendatopaz:DdBxLNQSEXg", "note": "pide el catálogo", "split": "test"}
+{"text": "Somos clientes. Muy buen lugar , todo organizado precios justos y el trato el mejor", "labels": ["general"], "source": "instagram:@rexwholesale:DZlbTm4Rl6z", "split": "dev"}
+{"text": "Hola, equipo BIMANI. ¿Podrían ayudarme, por favor? 🙏 Llevo varios días intentando comunicarme con ustedes por diferentes medios debido a una incidencia con mi pedido internacional. Mi paquete continúa detenido en España, la fecha de entrega ya se incumplió y no he conseguido una solución. Les agradecería muchísimo que alguien de su equipo pudiera revisar mi caso y contactarme por mensaje privado. Gracias.", "labels": ["general"], "source": "instagram:@bimani13:DepRzmSBbFa", "note": "queja de contacto", "split": "test"}
+{"text": "Donde están ubicados", "labels": ["location"], "source": "instagram:@100ninas:DekRb3UPgKP", "split": "test"}
+{"text": "Hola precio por fa", "labels": ["price"], "source": "instagram:@100ninas:DekRb3UPgKP", "split": "test"}
+{"text": "Hola el último talla 18/24 meses", "labels": ["variants"], "source": "instagram:@100ninas:DekRb3UPgKP", "split": "test"}
+{"text": "Saludos. hay tallas grandes? Para niñas de 9 años", "labels": ["variants", "availability"], "source": "instagram:@100ninas:DekRb3UPgKP", "split": "dev"}
+{"text": "Donde lo puedo comprar", "labels": ["store"], "source": "instagram:@paulo.osuna1:DecIQcdiWCy", "split": "test"}
+{"text": "Número para compras por mayoreo 🔥❤️", "labels": ["quantities", "store"], "source": "instagram:@paulo.osuna1:DecIQcdiWCy", "split": "dev"}
+{"text": "Colección disponible en @usuario", "labels": ["general"], "source": "instagram:@enzoromano.ceremonia:DeJUwMilRJb", "split": "test"}
+{"text": "¡Una colección espectacular! 😍 Disponible en @usuario", "labels": ["general"], "source": "instagram:@enzoromano.ceremonia:DeJUwMilRJb", "split": "test"}
+{"text": "Não vejo a hora de ver o Duo 😍", "labels": ["general"], "source": "instagram:@gm.apple:DdcJhBYtR-c", "split": "test"}
+{"text": "O iPhone vai muito além de câmeras avançadas ou do investimento necessário para adquirir um modelo recente. A essência do ecossistema da Apple está na proteção rigorosa das informações do usuário. A empresa coloca a privacidade e a segurança no centro de suas tecnologias, combinando criptografia de ponta a ponta no armazenamento e na transmissão de dados com hardware dedicado, como o Secure Enclave, projetado para isolar e proteger informações biométricas e senhas de acesso. Essa arquitetura integrada garante que seus dados pessoais pertençam exclusivamente a você, estabelecendo um padrão de proteção digital elevado no mercado de smartphones.", "labels": ["general"], "source": "instagram:@jaimerivera:DdF8tItqtNR", "split": "test"}
+{"text": "Buenos días el precio es ese que tú dise ???", "labels": ["price"], "source": "instagram:@lavegatechsrl:DQZZSyDDq5c", "split": "test"}
+{"text": "No hay altos", "labels": ["variants"], "source": "instagram:@monaco_clothing:DeXL1_7Jn3v", "note": "'no hay altos' (tallas): dudoso", "split": "dev"}
+{"text": "Pero pongan el precio vale", "labels": ["price"], "source": "instagram:@monaco_clothing:DeXL1_7Jn3v", "note": "pide que publiquen el precio", "split": "test"}
+{"text": "Precio 43", "labels": ["price"], "source": "instagram:@monaco_clothing:DeXL1_7Jn3v", "note": "¿precio del artículo 43?", "split": "dev"}
+{"text": "Hola! Cual es el valor?", "labels": ["price"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "split": "test"}
+{"text": "Hola! Me podrían enviar un catálogo mayorista, por favor? Muchas gracias 😊!", "labels": ["product", "quantities"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "note": "catálogo mayorista", "split": "dev"}
+{"text": "Buenas, no veo stock de plato hondo, bowls, se agotó todo ? Saludos", "labels": ["availability"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "split": "dev"}
+{"text": "Info", "labels": ["product"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "note": "R2: 'info' genérica = producto", "split": "test"}
+{"text": "Hola buen día,precio", "labels": ["price"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "split": "test"}
+{"text": "FELIZ TARDE PRECIO DEL HONOR CHOICE T10", "labels": ["price"], "source": "instagram:@globalimportg19:DcRgkMDODFu", "split": "dev"}
+{"text": "Buenas noches que precio ?", "labels": ["price"], "source": "instagram:@globalimportg19:DcRgkMDODFu", "split": "dev"}
+{"text": "📍Nos ubicamos Av Vargas entre carrera 19 y Av 20 cc capital plaza planta baja locales Nro 03, Nro 14 y Nro 41F. Global Import Group Barquisimeto edo Lara 🩸Local 14 al lado de las escaleras eléctricas 🩸Local 3 entrando por la carrera 19 🩸Local 41F entrando por Av Vargas con Av 20. Todos en Planta Baja. ⏰ Horario Lunes a Sábado De 8:30am a 5:30pm Les Esperamos!", "labels": ["general"], "source": "instagram:@globalimportg19:DcRgkMDODFu", "note": "respuesta del propio negocio", "split": "test"}
+{"text": "Valor", "labels": ["price"], "source": "instagram:@ink_store.cuenca.ecuador:DdMlu5nB0sm", "split": "dev"}
+{"text": "Vuelvan a agregar stock del conjunto calabria porfa", "labels": ["availability"], "source": "instagram:@tussy.off:DXF61qcCZs3", "note": "pide reponer stock", "split": "dev"}
+{"text": "Precio?", "labels": ["price"], "source": "instagram:@tussy.off:DXF61qcCZs3", "split": "dev"}
+{"text": "No compren aquí, no envían nada!!", "labels": ["general"], "source": "instagram:@pumamexico:DePQohMj0cp", "split": "dev"}
+{"text": "Precios", "labels": ["price"], "source": "instagram:@elturcoaccesoriosco:Db7WqLfOMf5", "split": "dev"}
+{"text": "Contenido Insta 360 X6 combo •Envíos a toda Colombia. •Garantía 12 meses. •3138317986 #insta360 #instax6 #instacolombia #", "labels": ["general"], "source": "instagram:@elturcoaccesoriosco:Db7WqLfOMf5", "note": "texto del propio negocio", "split": "test"}
+{"text": "Cuánto cuesta y estoy en Miami y cuantos días demora para llegar", "labels": ["price", "other_commercial"], "source": "instagram:@mipequenojardinmagico:DegCH-jAzSO", "note": "tiempo de envío", "split": "test"}
+{"text": "Qué modelo tan hermosa", "labels": ["general"], "source": "instagram:@kiratiendaderopa:DejsT9JBL1o", "split": "dev"}
+{"text": "Buen día precio forma de pago", "labels": ["price", "other_commercial"], "source": "instagram:@baratico__:DZU56_AuBsB", "note": "forma de pago", "split": "dev"}
+{"text": "Qual valor do existence? envia para Brasil?", "labels": ["price", "other_commercial"], "source": "instagram:@anaustorefragances.usa:Dc1vYT9o2YM", "note": "portugués", "split": "dev"}
+{"text": "Amouage epic ?$", "labels": ["price"], "source": "instagram:@anaustorefragances.usa:Dc1vYT9o2YM", "split": "test"}
+{"text": "Hola cuál es el precio de existence", "labels": ["price"], "source": "instagram:@anaustorefragances.usa:Dc1vYT9o2YM", "split": "dev"}
+{"text": "Costo", "labels": ["price"], "source": "instagram:@rivalcombate:DefpyCkzAEl", "split": "test"}
+{"text": "Dirección por favor", "labels": ["location"], "source": "instagram:@farmaconal:DbsxYdTFOEX", "split": "test"}
+{"text": "La mejor modelo de Farmaconal es Liselotte", "labels": ["general"], "source": "instagram:@farmaconal:DbsxYdTFOEX", "split": "dev"}
+{"text": "Donde la en encuentro?", "labels": ["store"], "source": "instagram:@anatopfashion:DeIdVZBtVQq", "split": "test"}
+{"text": "Dónde están ubicados", "labels": ["location"], "source": "instagram:@anatopfashion:DeIdVZBtVQq", "split": "test"}
+{"text": "Tienen el WhatsApp activo?", "labels": ["store"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "note": "WhatsApp", "split": "dev"}
+{"text": "Cuánto por el de Helloween", "labels": ["price"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "split": "dev"}
+{"text": "En cuanto el salad days?", "labels": ["price"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "split": "test"}
+{"text": "Buenas tardes precio el nuevo disco de megadeth????", "labels": ["price"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "split": "test"}
+{"text": "Buenas tardes por favor el precio de amigo invisible arepa 3000", "labels": ["price"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "split": "dev"}
+{"text": "En cuánto All Hope is gone?", "labels": ["price"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "split": "test"}
+{"text": "D o donde estan ubicados", "labels": ["location"], "source": "instagram:@tarabeisbol23:DaDlNYExhRm", "split": "dev"}
+{"text": "Número 😂", "labels": ["store"], "source": "instagram:@tarabeisbol23:DaDlNYExhRm", "note": "'número': dudoso", "split": "test"}
+{"text": "Hola. Mañana Domingo o Lunes reciben donaciones?", "labels": ["hours"], "source": "instagram:@tarabeisbol23:DaDlNYExhRm", "note": "colecta de donaciones, no venta", "split": "dev"}
+{"text": "Hola hoy están recogiendo para Venezuela y en donde hay q llevar las cosas please", "labels": ["location", "hours"], "source": "instagram:@tarabeisbol23:DaDlNYExhRm", "note": "colecta de donaciones", "split": "dev"}
+{"text": "Yo estoy en west Palm beach, van a estar mañana sábado?", "labels": ["hours"], "source": "instagram:@tarabeisbol23:DaDlNYExhRm", "split": "dev"}
+{"text": "Precio y donde se ubican", "labels": ["price", "location"], "source": "instagram:@cherrybomb_kpopstore:DVo9d86FCnN", "split": "test"}
+{"text": "Que precios tienen en ese estilo de camisetas?", "labels": ["price"], "source": "instagram:@izan_clothes:DRcqnX3CbmS", "split": "dev"}
+{"text": "Disponibles?", "labels": ["availability"], "source": "instagram:@teenspiritstore:DUD0RgwkVT2", "split": "dev"}
+{"text": "Precios por favor, de Shingeki 🙌🏻", "labels": ["price"], "source": "instagram:@otakudetallitos:DYAFcKzR-Pn", "split": "test"}
+{"text": "Tienen el cosplay de tanjiro?", "labels": ["models", "availability"], "source": "instagram:@otakudetallitos:DYAFcKzR-Pn", "note": "otro producto de la misma línea", "split": "dev"}
+{"text": "Yo iba a comprar les los peluches de stray kids y me responden después de 5 días mal servicio", "labels": ["general"], "source": "instagram:@otakudetallitos:DYAFcKzR-Pn", "split": "dev"}
+{"text": "Tienen algo de Inuyasha o Sesshomaru?", "labels": ["models", "availability"], "source": "instagram:@otakudetallitos:DYAFcKzR-Pn", "note": "otro producto de la misma línea", "split": "test"}
+{"text": "tienen el Haori de Draken? de Tokyo Revengers (no se si es un Haori)", "labels": ["models", "availability"], "source": "instagram:@otakudetallitos:DYAFcKzR-Pn", "note": "otro producto de la misma línea", "split": "test"}
+{"text": "Hola buenas tarde como podemos hacer para q mi comunidad llegue está ayuda que no a llegado", "labels": ["general"], "source": "instagram:@globalempowermentmission:DanBV7jpYq_", "split": "test"}
+{"text": "Cómo se hace para que esas ayudas lleguen a una comunidad que no están llegando", "labels": ["general"], "source": "instagram:@globalempowermentmission:DanBV7jpYq_", "split": "dev"}
+{"text": "Información para futuros voluntarios???", "labels": ["general"], "source": "instagram:@globalempowermentmission:DanBV7jpYq_", "split": "test"}
+{"text": "Buenos días. Precio? Gracias", "labels": ["price"], "source": "instagram:@lanzstoreoficial:DabeW3tS-JP", "split": "test"}
+{"text": "Donde se encuentran ubicados por favor gracias", "labels": ["location"], "source": "instagram:@fertech_vzla:DZbNj_qRWPC", "split": "test"}
+{"text": "Cuál es el precio??", "labels": ["price"], "source": "instagram:@fertech_vzla:DZbNj_qRWPC", "split": "test"}
+{"text": "Whay a great place to get your meat", "labels": ["general"], "source": "instagram:@lovelyd.sentme:DbmSEfwRkIk", "split": "test"}
+{"text": "How much $$$$", "labels": ["price"], "source": "instagram:@larazawesternwear:DQVRKzGEdg9", "split": "dev"}
+{"text": "Donde y cuánto", "labels": ["location", "price"], "source": "instagram:@larazawesternwear:DQVRKzGEdg9", "split": "test"}
+{"text": "Acen envío mao", "labels": ["other_commercial"], "source": "instagram:@esplendornaturalrd:Daqyj6QhV_R", "split": "dev"}
+{"text": "Excelente", "labels": ["general"], "source": "instagram:@tussy.off:DXF61qcCZs3", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Crooked Can Brewing Company - Minneola 1600 Crooked Can Loop, Minneola, FL 34715", "labels": ["general"], "source": "instagram:@mariaparrarealtor:DdAXx5dx9Hb", "note": "dirección de otro negocio, no pregunta", "split": "dev"}
+{"text": "QTTTT🤩", "labels": ["general"], "source": "instagram:@arepa58jax:DeGO8h9sSAL", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Gracias por el dato!", "labels": ["general"], "source": "instagram:@migenteentexas:DVdyuUgEfDY", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "🙌🏻🙌🏻🙌🏻", "labels": ["general"], "source": "instagram:@nslatinobusiness:Da6pRNhtRjS", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "❤️ genial", "labels": ["general"], "source": "instagram:@topperfumesmiami1:DWuSNZHgmwa", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "BEST AREPAS! 🤤", "labels": ["general"], "source": "instagram:@ricotropicalgrill:DeHplXWhSu5", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Ovito Uchiha", "labels": ["general"], "source": "instagram:@otakudetallitos:DYAFcKzR-Pn", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Albiiiii!!!!!! Viva el jefasooo", "labels": ["general"], "source": "instagram:@ramenonechile:DcEaxw6oDE3", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Esta súper el ramel esta súper rico le doy 1000 % ❤️❤️❤️❤️🤩🤩🤩🤩🍜🍜🍜🍥🍥🍥🍥🍥 EXCELENTE LUGAR", "labels": ["general"], "source": "instagram:@ebisumaru_ramen:DarLBSlxEcz", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Muy rico lo recomiendo", "labels": ["general"], "source": "instagram:@olivegarden_cr:Da5y7kqxi3Z", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Hola venden al detalle??", "labels": ["quantities"], "source": "instagram:@lalachicfl:DZf1EXAB-4a", "note": "¿venden al detalle? (unidades sueltas)", "split": "test"}
+{"text": "de que material es la vajilla de Kitty? gracias", "labels": ["product"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "note": "material del producto", "split": "dev"}
+{"text": "@usuario @usuario @usuario @usuario", "labels": ["general"], "source": "instagram:@koolsvilleofficial:DefaHNRyS95", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "No me gustan las ratas,pero quiero🤎", "labels": ["general"], "source": "instagram:@cxstiillo:DdeYpQNj_-6", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Para cuándo el de Manowar Triump of The stell?", "labels": ["models", "availability"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "note": "otro disco de la misma tienda", "split": "dev"}
+{"text": "Me estás diciendo que existe un LuisitoReyVerso? @usuario", "labels": ["general"], "source": "instagram:@tasteatlas:DQR4R47ko_I", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "We ❤️ @usuario , a great place to work. Highly Recommend!", "labels": ["general"], "source": "instagram:@coffeelatonyc:DXPVF56EcL2", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Uffff 🤯", "labels": ["general"], "source": "instagram:@dead.market:Dec82sKv5XC", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Puro mamador", "labels": ["general"], "source": "instagram:@nusr_et:DZHO_bRONiQ", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Mi amor🥹🤞", "labels": ["general"], "source": "instagram:@larazawesternwear:DQVRKzGEdg9", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "😍😍😍😍NEEED TO TRY", "labels": ["general"], "source": "instagram:@mexi_papa_adventures:DW6lc_IE1tm", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Porfuera necesito", "labels": ["general"], "source": "instagram:@import_eldorado:DekqfOzxeRI", "note": "'por fuera necesito': dudoso, ¿comercial?", "split": "test"}
+{"text": "Y esto @usuario ❤️🔥", "labels": ["general"], "source": "instagram:@styling_shops:Dd8uibSNNB_", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Amamos , todo está súper delicioso 🤤", "labels": ["general"], "source": "instagram:@ebisumaru_ramen:DarLBSlxEcz", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Quieroooooo", "labels": ["general"], "source": "instagram:@aireobjetosdecorativos:DaLLsRURTAU", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Habari! Ninashida ya mafuta na ngozi yangu sio ya mafuta wala sio kavu ni ya saizi ya kati. Naitaji tu ning'ae vizuri sio kwa kujichubua wala kuharibu viganja vya mikono. Je naweza kutumia mafuta gani?", "labels": ["general"], "source": "instagram:@domie_products:Da-g3fYNpa4", "note": "suajili, no español", "split": "dev"}
+{"text": "Y yo a dieta😢", "labels": ["general"], "source": "instagram:@jesusandrade14:DQ4XoYAjUtc", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Roots ???", "labels": ["general"], "source": "instagram:@altoquerecords_ve:DW1j60xjRjo", "note": "'Roots ???': ¿pide un disco? dudoso", "split": "test"}
+{"text": "oooofff", "labels": ["general"], "source": "instagram:@leilaslist:DW7LDI0j_1V", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Jajaja Nike x Famila Peluche", "labels": ["general"], "source": "instagram:@yeraygalil:DdMslLoxnjD", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "@usuario vamos!", "labels": ["general"], "source": "instagram:@residentemty:DQIOi5ikQ_L", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Gracias 🙏🏻🙏🏻🙏🏻nuestro pueblo venezolano agradece por su ayuda 🙏🙏🇺🇸🇺🇸🇺🇸🇺🇸Gracias", "labels": ["general"], "source": "instagram:@globalempowermentmission:DanBV7jpYq_", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "la pausa para el chúpalo entonces🥰", "labels": ["general"], "source": "instagram:@martinhighlife:DTJwWyLDcIc", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Vdd👏", "labels": ["general"], "source": "instagram:@rafaeric_pizzafrita:Dd1ccrfSsJ9", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Revivió el hype señores🔥", "labels": ["general"], "source": "instagram:@zanthiago.c:Db44KbBhzFU", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Hugeeee", "labels": ["general"], "source": "instagram:@oakberryusa:DcO4UlVhHbL", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
+{"text": "Para q ponen \"conjunto\" y lo venden separado?", "labels": ["quantities"], "source": "instagram:@tussy.off:DXF61qcCZs3", "note": "¿se vende por separado?", "split": "test"}
+{"text": "Que deliciaaaaa🤤", "labels": ["general"], "source": "instagram:@perras_grill:DZgDu-wyARL", "note": "muestra al azar: verificar que no pregunte nada", "split": "dev"}
+{"text": "Tengo que ir a este", "labels": ["general"], "source": "instagram:@olivegarden_cr:Da5y7kqxi3Z", "note": "muestra al azar: verificar que no pregunte nada", "split": "test"}
