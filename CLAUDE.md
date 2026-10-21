@@ -124,7 +124,8 @@ ticket copies it). It goes in three places:
 - **PR description**: `Resolves m-24789646` — the keyword is what lets the merge move the ticket.
 
 Meegle is the only tracker (Linear is retired); no ticket → create or find one first, never open
-the PR without it. Several tickets: `Resolves m-111, m-222`. Agents follow the same rule.
+the PR without it. **Create it with `/meegle-ticket`** (`.claude/skills/meegle-ticket/`, project skill:
+every Claude Code session on this repo has it), in the format of `docs/formato-tickets-meegle.md`. Several tickets: `Resolves m-111, m-222`. Agents follow the same rule.
 
 Why it matters: the Meegle **GitHub plugin** (Space configuration → Plug-ins → GitHub) receives
 this repo's `pull_request`/`push` webhooks. `m-<id>` (or `f-<id>`, any case, anywhere in branch,
