@@ -22,7 +22,7 @@ yet — when the brand kit has no ``template_asset_key`` there is nothing to ren
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -318,6 +318,17 @@ def _openings(copies: object) -> tuple[str, ...]:
     return tuple(seen)
 
 
+@dataclass(frozen=True)
+class DraftBundle:
+    """Everything `DraftDetail` is made of for one draft, read in a batch."""
+
+    record: DraftRecord
+    variants: tuple[VariantRecord, ...]
+    image: ImageRecord | None
+    media: tuple[ImageRecord, ...]
+    kind: str | None
+
+
 class ContentRepository(Protocol):
     """Persistence seam, same pattern as ``PublishAttemptRepository``: the service holds
     the FSM and the money math; the repository holds the transactions. Pure tests
@@ -414,6 +425,10 @@ class ContentRepository(Protocol):
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
 
+    def details_for(
+        self, *, tenant_id: UUID, draft_ids: Sequence[UUID]
+    ) -> dict[UUID, DraftBundle]: ...
+
     def get_variant(self, *, tenant_id: UUID, variant_id: UUID) -> VariantRecord | None: ...
 
     def set_edited_copy(
@@ -473,6 +488,37 @@ def _image_record(row: orm.ImageAsset) -> ImageRecord:
         position=row.position,
         params=row.params,
         object_key=row.object_key,
+    )
+
+
+def _detail(bundle: DraftBundle) -> DraftDetail:
+    """The read model of one draft — the single place `get_draft` and `get_drafts`
+    build it from what the repository returned."""
+    record = bundle.record
+    return DraftDetail(
+        id=record.id,
+        brand_id=record.brand_id,
+        brief_id=record.brief_id,
+        status=record.status,
+        failure_reason=record.failure_reason,
+        selected_variant_id=record.selected_variant_id,
+        voice_profile_version=record.voice_profile_version,
+        pipeline_version=record.pipeline_version,
+        requires_ai_disclosure=record.requires_ai_disclosure,
+        approved_by=record.approved_by,
+        approved_at=record.approved_at,
+        created_at=record.created_at,
+        variants=bundle.variants,
+        image=bundle.image,
+        media=bundle.media,
+        kind=bundle.kind or ContentKind.STATIC_FLYER.value,
+        title=record.title,
+        category=record.category,
+        reuse_type=record.reuse_type,
+        preview_key=record.preview_key,
+        revision=record.revision,
+        approved_revision=record.approved_revision,
+        failure_detail=record.failure_detail,
     )
 
 
@@ -598,6 +644,48 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentBrief, brief_id)
             return None if row is None else row.kind
+
+    def details_for(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftBundle]:
+        """The drafts of `draft_ids` (those visible in this tenant) with their variants,
+        media and brief kind: three statements in one session, whatever the count —
+        the same rows `get_draft` + `variants_for` + `image_for` + `media_for` +
+        `brief_kind` read one draft at a time."""
+        ids = list(dict.fromkeys(draft_ids))
+        if not ids:
+            return {}
+        with tenant_session(tenant_id) as session:
+            drafts = session.execute(
+                select(orm.ContentDraft, orm.ContentBrief.kind)
+                .outerjoin(orm.ContentBrief, orm.ContentBrief.id == orm.ContentDraft.brief_id)
+                .where(orm.ContentDraft.id.in_(ids))
+            ).all()
+            variants: dict[UUID, list[VariantRecord]] = {}
+            for row in session.scalars(
+                select(orm.CopyVariant)
+                .where(orm.CopyVariant.draft_id.in_(ids))
+                .order_by(orm.CopyVariant.draft_id, orm.CopyVariant.ordinal)
+            ):
+                variants.setdefault(row.draft_id, []).append(_variant_record(row))
+            assets: dict[UUID, list[orm.ImageAsset]] = {}
+            for row in session.scalars(
+                select(orm.ImageAsset)
+                .where(orm.ImageAsset.draft_id.in_(ids))
+                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+            ):
+                assets.setdefault(row.draft_id, []).append(row)
+            bundles: dict[UUID, DraftBundle] = {}
+            for draft, kind in drafts:
+                rows = assets.get(draft.id, [])
+                # `image_for` is the earliest asset; `media_for` all of them in order
+                first = min(rows, key=lambda a: a.created_at) if rows else None
+                bundles[draft.id] = DraftBundle(
+                    record=_draft_record(draft),
+                    variants=tuple(variants.get(draft.id, ())),
+                    image=_image_record(first) if first is not None else None,
+                    media=tuple(_image_record(a) for a in rows),
+                    kind=kind,
+                )
+            return bundles
 
     def budget_state(self, *, tenant_id: UUID, brand_id: UUID) -> BudgetState | None:
         with tenant_session(tenant_id) as session:
@@ -1503,32 +1591,26 @@ class ContentService:
         record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
             return None
-        return DraftDetail(
-            id=record.id,
-            brand_id=record.brand_id,
-            brief_id=record.brief_id,
-            status=record.status,
-            failure_reason=record.failure_reason,
-            selected_variant_id=record.selected_variant_id,
-            voice_profile_version=record.voice_profile_version,
-            pipeline_version=record.pipeline_version,
-            requires_ai_disclosure=record.requires_ai_disclosure,
-            approved_by=record.approved_by,
-            approved_at=record.approved_at,
-            created_at=record.created_at,
-            variants=self._repo.variants_for(tenant_id=tenant_id, draft_id=draft_id),
-            image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
-            media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
-            kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id)
-            or ContentKind.STATIC_FLYER.value,
-            title=record.title,
-            category=record.category,
-            reuse_type=record.reuse_type,
-            preview_key=record.preview_key,
-            revision=record.revision,
-            approved_revision=record.approved_revision,
-            failure_detail=record.failure_detail,
+        return _detail(
+            DraftBundle(
+                record=record,
+                variants=self._repo.variants_for(tenant_id=tenant_id, draft_id=draft_id),
+                image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
+                media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
+                kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
+            )
         )
+
+    def get_drafts(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftDetail]:
+        """Several drafts at once, by id — what a gallery polling N pieces reads, in a
+        constant number of statements instead of five per draft. Ids not visible in this
+        tenant are absent. The reaper runs first, as on listing (§7.4), so a draft
+        orphaned by a dead process shows as failed, never as an eternal spinner."""
+        if not draft_ids:
+            return {}
+        reap_stale_drafts(tenant_id=tenant_id)
+        bundles = self._repo.details_for(tenant_id=tenant_id, draft_ids=draft_ids)
+        return {draft_id: _detail(bundle) for draft_id, bundle in bundles.items()}
 
     def list_drafts(
         self,

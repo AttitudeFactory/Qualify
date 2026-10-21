@@ -267,6 +267,8 @@ class FakeDrafts:
     dispatched: list[UUID] = field(default_factory=list)
     #: raise AFTER the draft exists (a crash between the draft and the angle's update)
     crash_after_create: Exception | None = None
+    single_reads: list[UUID] = field(default_factory=list)
+    batch_reads: list[tuple[UUID, ...]] = field(default_factory=list)
     lookup_error: Exception | None = None
 
     def create_draft(
@@ -299,7 +301,12 @@ class FakeDrafts:
         return self.by_key.get(request_key)
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail | None:
+        self.single_reads.append(draft_id)
         return self.details.get(draft_id)
+
+    def get_drafts(self, *, tenant_id: UUID, draft_ids: Any) -> dict[UUID, DraftDetail]:
+        self.batch_reads.append(tuple(draft_ids))
+        return {d: self.details[d] for d in draft_ids if d in self.details}
 
     def approve(self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID):
         self.approved.append((draft_id, variant_id))
@@ -1060,3 +1067,41 @@ def test_a_database_error_on_one_angle_does_not_stop_the_batch() -> None:
     outcome = service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
     assert len(outcome.queued) == 2 and len(outcome.unresolved) == 1
     assert len(drafts.dispatched) == 2 and repo.sets[set_id].status == SET_GENERATING
+
+
+# -- PR 4: the gallery reads its drafts in one batch ------------------------------------
+
+
+def test_detail_reads_every_draft_of_the_set_in_one_batch() -> None:
+    service, repo, drafts, *_ = _clocked(generator=FakeGenerator(_angles(10)))
+    set_id = _create(service)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    drafts.single_reads.clear()
+    detail = service.detail(tenant_id=TENANT, set_id=set_id)
+    assert len(drafts.batch_reads) == 1 and len(drafts.batch_reads[0]) == 10
+    assert drafts.single_reads == []  # no read per angle
+    assert all(v.draft_status == DraftStatus.DRAFTING.value for v in detail.angles)
+
+
+def test_detail_of_a_set_without_drafts_reads_no_draft() -> None:
+    service, _, drafts, *_ = _clocked(generator=FakeGenerator(_angles(3)))
+    set_id = _create(service, count=3)
+    service.detail(tenant_id=TENANT, set_id=set_id)
+    assert drafts.batch_reads == [()] and drafts.single_reads == []
+
+
+def test_product_presets_tell_the_screen_what_each_preset_can_do() -> None:
+    service, *_ = _service(product=_product(photos=0))
+    facts, choices = service.product_presets(
+        tenant_id=TENANT, brand_id=BRAND, product_id=PRODUCT_ID
+    )
+    assert facts.name == "Shawarma mixto" and facts.photo_keys == ()
+    problems = {preset.key: problem for preset, problem in choices}
+    assert problems["escena_producto"] is None
+    assert problems["plantilla_promo"] is not None and "foto" in problems["plantilla_promo"]
+
+
+def test_product_presets_refuse_another_brands_product() -> None:
+    service, *_ = _service()
+    with pytest.raises(UnknownProduct):
+        service.product_presets(tenant_id=TENANT, brand_id=uuid4(), product_id=PRODUCT_ID)
