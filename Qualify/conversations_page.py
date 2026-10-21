@@ -61,6 +61,8 @@ from .conversations_vm import (
     MessageVM,
     ThreadRowVM,
 )
+from .followups_page import followups_panel, followups_toggle
+from .followups_state import FollowupsState
 from .ui import (
     app_shell,
     callout,
@@ -1135,7 +1137,7 @@ def _no_accounts_state() -> rx.Component:
     )
 
 
-def _inbox() -> rx.Component:
+def _chats() -> rx.Component:
     return rx.vstack(
         access_banner(),
         rx.box(
@@ -1147,6 +1149,17 @@ def _inbox() -> rx.Component:
                 "q-wa-chats q-conv-chats",
             ),
         ),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _inbox() -> rx.Component:
+    """Two views (m-24789646): the private inbox, and the commercial queries found in
+    Interacciones waiting to be answered in private (`followups_page.py`)."""
+    return rx.vstack(
+        followups_toggle(),
+        rx.cond(FollowupsState.showing_queries, followups_panel(), _chats()),
         spacing="4",
         width="100%",
     )

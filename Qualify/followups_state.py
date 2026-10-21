@@ -1,0 +1,335 @@
+"""Reflex state for «Consultas desde comentarios» (m-24789646, PR 3), the second view of
+`/conversations`: the commercial queries found in Interacciones, each with its draft, that
+a person reviews, edits, regenerates, discards or approves.
+
+Custody, the same as `ConversationsState`: the tenant comes from `AuthState` (server
+side, through `get_state`, never as an event argument); the browser holds only frozen VMs
+and the text being edited; every Postgres or Claude call runs in a background event
+through `asyncio.to_thread`. An id arriving from the browser is accepted only if the
+loaded cards hold it.
+
+**Views.** «Mensajes» is the inbox as it always was; «Consultas desde comentarios» lists
+the open followups (`followups_count` in the toggle). `/conversations?consulta=<id>` —
+where «Responder por DM» in Interacciones lands — opens this view with that card first
+and highlighted.
+
+**Approving** signs with the logged-in person's `users.id` (resolved once per session)
+and sends the text in the box: the draft as written, or edited. The workspace queues it
+through the outbox (the only way out) and records the draft's verdict, so the
+generated→sent diff is kept. Every refusal is worded — no route can reach the person, the
+comment already got its private reply, someone else decided the query first — never a
+500.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from uuid import UUID
+
+import reflex as rx
+from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey
+from qualify_api.conversations.contracts import UnknownChannel
+from qualify_api.conversations.outbox import ApprovalRequired, PrivateReplyExists
+from qualify_api.followups.repository import InvalidFollowupTransition, UnknownFollowup
+from qualify_api.followups.service import CapabilityUnavailable, RouteUnavailable
+from sqlalchemy.exc import SQLAlchemyError
+
+from .auth_state import AuthState
+from .followups_provider import gateway
+from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, VIEWS, FollowupCardVM
+from .tenant import tenant_uuid
+
+logger = logging.getLogger(__name__)
+
+QUERY_PARAM = "consulta"
+
+_NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
+_LOAD_FAILED = "No se pudieron cargar las consultas. Vuelve a intentarlo en un momento."
+_NO_USER = (
+    "No encontramos tu usuario en este negocio, así que no podemos firmar el mensaje. "
+    "Vuelve a iniciar sesión."
+)
+_DRAFT_UNAVAILABLE = (
+    "Los borradores automáticos no están disponibles en este entorno (falta la clave del "
+    "modelo). Puedes escribir el mensaje tú."
+)
+_DRAFT_FAILED = "No se pudo escribir el borrador. Vuelve a intentarlo o escríbelo tú."
+_GONE = "Esta consulta ya la decidió otra persona o ya no está disponible."
+_ALREADY_REPLIED = (
+    "Este comentario ya tiene su respuesta privada (Meta solo permite una por comentario)."
+)
+_NO_ROUTE = "Ahora mismo no hay forma de escribirle a esta persona:"
+_EMPTY = "Escribe el mensaje antes de aprobarlo."
+_TOO_LONG = "El mensaje es demasiado largo (máximo 1000 caracteres)."
+_SEND_FAILED = "No se pudo poner el mensaje en cola. Vuelve a intentarlo en un momento."
+_QUEUED = {
+    "dm": "Mensaje aprobado: sale por mensaje directo en unos segundos.",
+    "private_reply": "Respuesta privada aprobada: sale en unos segundos.",
+}
+_DISCARDED = "Consulta descartada."
+_TOAST_MS = 5000
+
+_DB_ERRORS = (SQLAlchemyError, OSError)
+
+
+def _uuid(value: str) -> UUID | None:
+    try:
+        return UUID(value)
+    except (ValueError, TypeError):
+        return None
+
+
+class FollowupsState(rx.State):
+    view: str = VIEW_MESSAGES
+    cards: list[FollowupCardVM] = []
+    loaded: bool = False
+    loading: bool = False
+    error: str = ""
+    # The text in each card's box, by followup id — the draft until the person edits it.
+    edits: dict[str, str] = {}
+    busy_id: str = ""
+    busy_action: str = ""
+    highlight_id: str = ""
+    _zone_name: str = ""
+    _user_id: str = ""
+
+    @rx.var
+    def followups_count(self) -> int:
+        return len(self.cards)
+
+    @rx.var
+    def toggle_label(self) -> str:
+        count = len(self.cards)
+        return f"Consultas desde comentarios ({count})" if count else "Consultas desde comentarios"
+
+    @rx.var
+    def showing_queries(self) -> bool:
+        return self.view == VIEW_QUERIES
+
+    # -- plumbing -------------------------------------------------------------------------
+
+    async def _tenant(self) -> UUID | None:
+        auth = await self.get_state(AuthState)
+        return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
+
+    def _known(self, followup_id: str) -> FollowupCardVM | None:
+        return next((c for c in self.cards if c.followup_id == followup_id), None)
+
+    def _order(self, cards: list[FollowupCardVM]) -> list[FollowupCardVM]:
+        """The highlighted card (a «Responder por DM» landing) first."""
+        if not self.highlight_id:
+            return cards
+        first = [c for c in cards if c.followup_id == self.highlight_id]
+        return first + [c for c in cards if c.followup_id != self.highlight_id]
+
+    async def _acting_user(self, tenant_id: UUID) -> UUID | None:
+        async with self:
+            cached = self._user_id
+            auth = await self.get_state(AuthState)
+            email = auth.user_email
+        if cached:
+            return _uuid(cached)
+        user_id = await asyncio.to_thread(gateway().acting_user, tenant_id, email)
+        if user_id is not None:
+            async with self:
+                self._user_id = str(user_id)
+        return user_id
+
+    # -- entry --------------------------------------------------------------------------
+
+    @rx.event
+    def enter_page(self) -> rx.event.EventSpec:
+        """The route's `on_load`: a `?consulta=<id>` opens this view on that card."""
+        wanted = str(self.router.url.query_parameters.get(QUERY_PARAM, "") or "")
+        if _uuid(wanted) is not None:
+            self.view = VIEW_QUERIES
+            self.highlight_id = wanted
+        return FollowupsState.load
+
+    @rx.event
+    def set_view(self, view: str | list[str]) -> rx.event.EventSpec | None:
+        if not isinstance(view, str) or view not in VIEWS:
+            return None
+        self.view = view
+        return FollowupsState.load if view == VIEW_QUERIES else None
+
+    @rx.event
+    def set_edit(self, followup_id: str, text: str) -> None:
+        if self._known(followup_id) is not None and isinstance(text, str):
+            self.edits = {**self.edits, followup_id: text}
+
+    @rx.event(background=True)
+    async def load(self) -> None:
+        async with self:
+            if self.loading:
+                return
+            self.loading = True
+            tenant_id = await self._tenant()
+        if tenant_id is None:
+            async with self:
+                self.loading, self.loaded, self.error = False, True, _NO_SESSION
+            return
+        try:
+            async with self:
+                zone_name = self._zone_name
+            if not zone_name:
+                zone_name = await asyncio.to_thread(gateway().timezone, tenant_id)
+            cards = await asyncio.to_thread(gateway().cards, tenant_id, zone_name)
+        except _DB_ERRORS as exc:
+            logger.error("followups load failed: %s", type(exc).__name__)
+            async with self:
+                self.loading, self.loaded, self.error = False, True, _LOAD_FAILED
+            return
+        async with self:
+            self._zone_name = zone_name
+            self.cards = self._order(cards)
+            # Keep what the person is typing; seed new cards with their draft.
+            self.edits = {c.followup_id: self.edits.get(c.followup_id, c.draft_text) for c in cards}
+            self.loading, self.loaded, self.error = False, True, ""
+
+    # -- actions ------------------------------------------------------------------------
+
+    async def _begin(self, followup_id: str, action: str) -> tuple[UUID, UUID] | None:
+        async with self:
+            if self.busy_id or self._known(followup_id) is None:
+                return None
+            tenant_id = await self._tenant()
+            if tenant_id is None:
+                return None
+            self.busy_id, self.busy_action = followup_id, action
+        return tenant_id, UUID(followup_id)
+
+    async def _end(self) -> None:
+        async with self:
+            self.busy_id, self.busy_action = "", ""
+
+    def _reseed(self, followup_id: str) -> None:
+        """After a new draft, the box shows it (the old text was the old draft's)."""
+        edits = dict(self.edits)
+        edits.pop(followup_id, None)
+        self.edits = edits
+
+    @rx.event(background=True)
+    async def generate(self, followup_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        started = await self._begin(followup_id, "generate")
+        if started is None:
+            return
+        tenant_id, fid = started
+        try:
+            await asyncio.to_thread(gateway().suggest, tenant_id, fid)
+        except MissingAPIKey:
+            yield rx.toast.warning(_DRAFT_UNAVAILABLE, duration=_TOAST_MS)
+        except (ClaudeToolError, *_DB_ERRORS) as exc:
+            logger.warning("followups draft failed: %s", type(exc).__name__)
+            yield rx.toast.error(_DRAFT_FAILED, duration=_TOAST_MS)
+        except UnknownFollowup:
+            yield rx.toast.warning(_GONE, duration=_TOAST_MS)
+        async with self:
+            self._reseed(followup_id)
+        await self._end()
+        yield FollowupsState.load
+
+    @rx.event(background=True)
+    async def regenerate(self, followup_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        started = await self._begin(followup_id, "regenerate")
+        if started is None:
+            return
+        tenant_id, fid = started
+        user_id = await self._acting_user(tenant_id)
+        if user_id is None:
+            await self._end()
+            yield rx.toast.error(_NO_USER, duration=_TOAST_MS)
+            return
+        try:
+            await asyncio.to_thread(gateway().regenerate, tenant_id, fid, user_id)
+        except MissingAPIKey:
+            yield rx.toast.warning(_DRAFT_UNAVAILABLE, duration=_TOAST_MS)
+        except (ClaudeToolError, *_DB_ERRORS) as exc:
+            logger.warning("followups regenerate failed: %s", type(exc).__name__)
+            yield rx.toast.error(_DRAFT_FAILED, duration=_TOAST_MS)
+        except UnknownFollowup:
+            yield rx.toast.warning(_GONE, duration=_TOAST_MS)
+        async with self:
+            self._reseed(followup_id)
+        await self._end()
+        yield FollowupsState.load
+
+    @rx.event(background=True)
+    async def discard(self, followup_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        started = await self._begin(followup_id, "discard")
+        if started is None:
+            return
+        tenant_id, fid = started
+        user_id = await self._acting_user(tenant_id)
+        if user_id is None:
+            await self._end()
+            yield rx.toast.error(_NO_USER, duration=_TOAST_MS)
+            return
+        try:
+            await asyncio.to_thread(gateway().discard, tenant_id, fid, user_id)
+            yield rx.toast.info(_DISCARDED, duration=_TOAST_MS)
+        except (InvalidFollowupTransition, UnknownFollowup):
+            yield rx.toast.warning(_GONE, duration=_TOAST_MS)
+        except _DB_ERRORS as exc:
+            logger.error("followups discard failed: %s", type(exc).__name__)
+            yield rx.toast.error(_SEND_FAILED, duration=_TOAST_MS)
+        await self._end()
+        yield FollowupsState.load
+
+    @rx.event(background=True)
+    async def approve(self, followup_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        started = await self._begin(followup_id, "approve")
+        if started is None:
+            return
+        tenant_id, fid = started
+        async with self:
+            card = self._known(followup_id)
+            text = self.edits.get(followup_id, card.draft_text if card else "")
+            draft_id = _uuid(card.draft_id) if card else None
+        if not text.strip():
+            await self._end()
+            yield rx.toast.warning(_EMPTY, duration=_TOAST_MS)
+            return
+        user_id = await self._acting_user(tenant_id)
+        if user_id is None:
+            await self._end()
+            yield rx.toast.error(_NO_USER, duration=_TOAST_MS)
+            return
+        queued = False
+        try:
+            route = await asyncio.to_thread(
+                lambda: gateway().approve(
+                    tenant_id, fid, text=text, user_id=user_id, draft_id=draft_id
+                )
+            )
+            queued = True
+            yield rx.toast.success(_QUEUED.get(route, _QUEUED["dm"]), duration=_TOAST_MS)
+        except RouteUnavailable as exc:
+            reasons = " ".join(
+                f"{o.reason}" for o in (exc.options.dm, exc.options.private_reply) if o.reason
+            )
+            yield rx.toast.warning(f"{_NO_ROUTE} {reasons}", duration=_TOAST_MS * 2)
+        except PrivateReplyExists:
+            yield rx.toast.warning(_ALREADY_REPLIED, duration=_TOAST_MS)
+        except (InvalidFollowupTransition, UnknownFollowup):
+            yield rx.toast.warning(_GONE, duration=_TOAST_MS)
+        except CapabilityUnavailable as exc:
+            yield rx.toast.warning(exc.availability.reason, duration=_TOAST_MS)
+        except ValueError as exc:
+            yield rx.toast.warning(
+                _TOO_LONG if "at most" in str(exc) else _EMPTY, duration=_TOAST_MS
+            )
+        except (ApprovalRequired, UnknownChannel, *_DB_ERRORS) as exc:
+            logger.error("followups approve failed: %s", type(exc).__name__)
+            yield rx.toast.error(_SEND_FAILED, duration=_TOAST_MS)
+        if queued:  # a refused approval keeps the person's text in the box
+            async with self:
+                edits = dict(self.edits)
+                edits.pop(followup_id, None)
+                self.edits = edits
+                if self.highlight_id == followup_id:
+                    self.highlight_id = ""
+        await self._end()
+        yield FollowupsState.load

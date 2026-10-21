@@ -42,6 +42,7 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .followups_state import FollowupsState
 from .gallery_state import GalleryState
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
@@ -256,7 +257,7 @@ app.add_page(
 app.add_page(
     conversations_index,
     route="/conversations",
-    on_load=[AuthState.require_login, ConversationsState.enter_page],
+    on_load=[AuthState.require_login, ConversationsState.enter_page, FollowupsState.enter_page],
     title="Qualify · Conversaciones",
 )
 app.add_page(

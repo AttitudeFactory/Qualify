@@ -240,13 +240,22 @@ def test_analyze_intent_now_forwards_the_session_tenant_and_projects() -> None:
             comments_checked=6, new_results=4, skipped_empty=1, unclassified=1
         )
 
-    with _patched(analyze_pending_intents=_fake):
+    async def _opened(tenant_id: UUID, connection_id: UUID) -> int:
+        captured["opened_for"] = (tenant_id, connection_id)
+        return 2
+
+    with _patched(analyze_pending_intents=_fake, _open_followups=_opened):
         result = asyncio.run(
             inbox_provider.analyze_intent_now(tenant_id=_TENANT, connection_id=_CONNECTION)
         )
-    assert captured == {"tenant_id": _TENANT, "connection_id": _CONNECTION}
+    assert captured == {
+        "tenant_id": _TENANT,
+        "connection_id": _CONNECTION,
+        # m-24789646 (B1): the analysis then opens the commercial queries.
+        "opened_for": (_TENANT, _CONNECTION),
+    }
     assert result == IntentAnalysisSummaryVM(
-        comments_checked=6, new_results=4, skipped_empty=1, unclassified=1
+        comments_checked=6, new_results=4, skipped_empty=1, unclassified=1, followups_opened=2
     )
 
 
