@@ -224,6 +224,16 @@ def _no_kit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rd, "_products", lambda tenant, brand: ())
 
 
+@pytest.fixture(autouse=True)
+def _fresh_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process-wide memories start empty in every test: a verdict or an in-flight
+    transcript of one test must not answer another."""
+    from collections import OrderedDict
+
+    monkeypatch.setattr(rd, "_verdicts", OrderedDict())
+    monkeypatch.setattr(rd, "_transcripts_inflight", {})
+
+
 def test_the_brief_is_rebuilt_from_the_search_seed(store: Any) -> None:
     repo, brand = store
     brief = rd.brand_brief(TENANT, brand, repository=repo)
@@ -340,8 +350,11 @@ def test_discover_drops_another_rubro_and_splits_week_and_month(store: Any) -> N
     }
     asked: list[list[ReelToReview]] = []
 
-    def fetch(network: str, handle: str, *, since: float, client: Any) -> list[dict]:
+    def fetch(
+        network: str, handle: str, *, since: float, client: Any, max_pages: int
+    ) -> list[dict]:
         assert since == NOW - 30 * DAY  # one walk per account covers both windows
+        assert max_pages == sc.REEL_MAX_PAGES  # the month read keeps the month's cap
         return feeds[handle]
 
     def review(brief: Any, reels: list[ReelToReview], **_: Any) -> tuple[list, CallStats]:
@@ -398,7 +411,7 @@ def test_without_the_check_nothing_is_shown_and_nothing_is_remembered(
     )
     assert shown.reviewed and shown.check == "" and len(shown.week) == 1
 
-    key = (str(TENANT), str(brand))
+    key = (str(TENANT), str(brand), rd.MONTH_DAYS)
     monkeypatch.setattr(rd, "_cache", {})
     monkeypatch.setattr(rd, "_brand_locks", {})
     monkeypatch.setattr(rd, "_reads", {})
@@ -526,13 +539,19 @@ def test_the_reel_plays_inside_its_card_one_at_a_time() -> None:
     assert state.expanded == ["tiktok:7"]  # opens and closes per card, several at once
 
 
-def test_the_summary_says_what_was_read_and_dropped() -> None:
+def test_the_toolbar_says_only_when_the_read_was_made() -> None:
+    """§ founder 2026-10-20: «Actualizado hace 2 minutos», no counts of referentes, reels
+    or dropped ones; the 90-day tab says it only once its own read exists."""
     from .discover_reels import DiscoverReelsState
 
     state = DiscoverReelsState()
-    state.fetched_at = time.time()
-    state.referentes, state.read, state.dropped = 7, 153, 47
-    assert state.summary == "De 7 referentes · 153 reels del mes · 47 de otro producto"
+    state._store("month", rd.DiscoveredReels(fetched_at=NOW, referentes=7, read=153, dropped=47))
+    assert state.shown_iso == "2027-01-15T08:00:00+00:00"
+    state.set_window("quarter")
+    assert state.shown_iso == ""
+    state._store("quarter", rd.DiscoveredReels(fetched_at=NOW - 3600, days=90))
+    assert state.shown_iso == "2027-01-15T07:00:00+00:00"
+    assert not hasattr(state, "summary")
 
 
 # --------------------------------------------------------------------------------------
@@ -735,13 +754,12 @@ def test_the_card_fetches_its_transcript_on_demand(monkeypatch: pytest.MonkeyPat
 
     card = rd.reel_card(_reel("foodie", "A", 1, 10, "x"), 1, NOW)
     state = DiscoverReelsState()
-    state.week = [card]
-    state.month = [card]
+    state._cards = {"week": [card], "month": [card], "quarter": [card]}
     state._set_transcript(card["key"], "hola")
-    assert state.week[0]["transcript"] == state.month[0]["transcript"] == "hola"
-    assert state.week[0]["transcript_state"] == "said"
+    assert {cards[0]["transcript"] for cards in state._cards.values()} == {"hola"}
+    assert state._cards["week"][0]["transcript_state"] == "said"
     state._set_transcript(card["key"], "")
-    assert state.month[0]["transcript_state"] == "none"  # «Este video no tiene voz»
+    assert state._cards["quarter"][0]["transcript_state"] == "none"  # «no tiene voz»
 
 
 # --------------------------------------------------------------------------------------
@@ -835,20 +853,17 @@ async def test_the_cover_route_serves_only_paths_it_signed(
         assert (await client.get(unsigned + "&s=%C3%B1")).status_code == 404  # non-ASCII
 
 
-def test_the_summarys_age_is_rendered_by_the_browser() -> None:
-    """No heartbeat to the server just to move «hace 3 minutos»: the summary is the
-    static part and the toolbar hands the age to `rx.moment(from_now)`, in Spanish."""
+def test_the_age_is_rendered_by_the_browser() -> None:
+    """No heartbeat to the server just to move «hace 3 minutos»: the toolbar hands the
+    age to `rx.moment(from_now)`, in Spanish."""
     import inspect
 
     from . import discover_reels
     from .discover_reels import DiscoverReelsState, discover_view
 
-    state = DiscoverReelsState()
-    state.referentes, state.fetched_at = 1, NOW
-    assert state.summary == "De 1 referente"
-    assert not hasattr(state, "tick")
+    assert not hasattr(DiscoverReelsState(), "tick")
     rendered = str(discover_view().render())
-    assert "fromNow" in rendered and "actualizado" in rendered
+    assert "fromNow" in rendered and "Actualizado" in rendered
     assert "interval=" not in inspect.getsource(discover_reels)  # no heartbeat event
 
 
@@ -895,7 +910,7 @@ def test_a_fresh_hit_is_answered_while_another_load_reads(
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    key = (str(TENANT), str(TENANT))
+    key = (str(TENANT), str(TENANT), rd.MONTH_DAYS)
     hit = rd.DiscoveredReels(fetched_at=time.time())
     lock = threading.Lock()
     monkeypatch.setattr(rd, "_cache", {key: hit})
@@ -992,3 +1007,339 @@ def test_compact_figures_round_before_choosing_the_unit() -> None:
     long_caption = "palabra " * 40
     card = rd.reel_card(_reel("foodie", "A", 1, 10, long_caption), 1, NOW)
     assert len(card["caption"]) == rd.CAPTION_CARD_CHARS and card["caption"].endswith("…")
+
+
+# --------------------------------------------------------------------------------------
+# § m-24820844: the platform and referente filters, and the 90 days
+# --------------------------------------------------------------------------------------
+
+
+def _fits_all(brief: Any, reels: list[ReelToReview], **_: Any) -> tuple[list, CallStats]:
+    return (
+        [ReelReview(id=r.id, fits=True, reason="", affinity="producto") for r in reels],
+        CallStats("m", None, 0, 0),
+    )
+
+
+def test_the_90_days_are_a_read_of_their_own(store: Any) -> None:
+    """The deep read walks 90 days with three times the month's page cap and fills the
+    90-day tab; the month read never does."""
+    repo, brand = store
+    walks: list[tuple[float, int]] = []
+
+    def fetch(network: str, handle: str, *, since: float, max_pages: int, **_: Any) -> list:
+        walks.append((since, max_pages))
+        return [
+            {**_reel(handle, f"{handle}-old", 60, 9_000, "burger"), "network": network},
+            {**_reel(handle, f"{handle}-new", 2, 100, "burger"), "network": network},
+        ]
+
+    deep = rd.discover(
+        TENANT,
+        brand,
+        now=NOW,
+        repository=repo,
+        fetch=fetch,
+        review=_fits_all,
+        api_key="k",
+        days=rd.QUARTER_DAYS,
+    )
+    assert set(walks) == {(NOW - 90 * DAY, 3 * sc.REEL_MAX_PAGES)}
+    assert deep.days == 90
+    assert {c["key"] for c in deep.quarter[:2]} == {"instagram:foodie-old", "tiktok:vecino-old"}
+    assert all("old" not in c["key"] for c in deep.month)  # 60 days ago is not the month
+    month = rd.discover(
+        TENANT, brand, now=NOW, repository=repo, fetch=fetch, review=_fits_all, api_key="k"
+    )
+    assert month.days == 30 and month.quarter == []
+    assert walks[-1] == (NOW - 30 * DAY, sc.REEL_MAX_PAGES)
+    with pytest.raises(ValueError):
+        rd.discover(TENANT, brand, now=NOW, repository=repo, fetch=fetch, days=60)
+
+
+def test_every_referente_has_its_top_reels_checked(store: Any) -> None:
+    """A quiet referente's reels never make the brand-wide top, yet filtering to it must
+    find them: each account's own most viewed go to the check too."""
+    repo, brand = store
+    big = [_reel("foodie", f"B{n}", 1, 100_000 + n, "burger") for n in range(40)]
+    small = [
+        {**_reel("vecino", f"S{n}", 2, 50 + n, "burger"), "network": "tiktok"} for n in range(5)
+    ]
+    checked: list[str] = []
+
+    def review(brief: Any, reels: list[ReelToReview], **kw: Any) -> tuple[list, CallStats]:
+        checked.extend(r.id for r in reels)
+        return _fits_all(brief, reels, **kw)
+
+    result = rd.discover(
+        TENANT,
+        brand,
+        now=NOW,
+        repository=repo,
+        fetch=lambda network, handle, **_: big if handle == "foodie" else small,
+        review=review,
+        api_key="k",
+    )
+    small_keys = {k for k in checked if k.startswith("tiktok:")}
+    assert small_keys == {"tiktok:S4", "tiktok:S3", "tiktok:S2"}  # its 3 most viewed
+    assert len(checked) == rd.REVIEWED_PER_WINDOW + 3  # the brand top, plus the quiet one's
+    # every kept reel is handed over (the view cuts after filtering), with its account
+    assert len(result.month) == rd.REVIEWED_PER_WINDOW + 3 > rd.SHOWN_PER_WINDOW
+    assert {c["account"] for c in result.month} == {"instagram:foodie", "tiktok:vecino"}
+    assert result.accounts == [
+        {"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"},
+        {"key": "tiktok:vecino", "network": "tiktok", "handle": "@vecino"},
+    ]
+
+
+def _card(network: str, handle: str, key: str, affinity: str = "producto") -> dict[str, str]:
+    return {
+        "key": key,
+        "network": network,
+        "account": rd.account_key(network, handle),
+        "affinity": affinity,
+    }
+
+
+def _filter_state() -> Any:
+    from .discover_reels import DiscoverReelsState
+
+    state = DiscoverReelsState()
+    state.accounts = [
+        {"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"},
+        {"key": "tiktok:vecino", "network": "tiktok", "handle": "@vecino"},
+        {"key": "tiktok:rival", "network": "tiktok", "handle": "@rival"},
+    ]
+    state._cards = {
+        "week": [
+            _card("instagram", "foodie", "instagram:A"),
+            _card("tiktok", "vecino", "tiktok:B"),
+            _card("tiktok", "rival", "tiktok:C", affinity="rubro"),  # never shown
+        ]
+    }
+    return state
+
+
+def test_filters_cut_the_read_cards_without_reading(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§ m-24820844: changing platform or referente never calls the vendor nor the model."""
+    monkeypatch.setattr(rd, "discover", lambda *a, **k: pytest.fail("read the vendor"))
+    monkeypatch.setattr(rd, "check_rubro", lambda *a, **k: pytest.fail("called the model"))
+    state = _filter_state()
+    assert [c["key"] for c in state.reels] == ["instagram:A", "tiktok:B"]
+    assert state.networks == ["instagram", "tiktok"]
+    assert [o[1] for o in state.account_options] == [
+        "@foodie · Instagram",
+        "@vecino · TikTok",
+        "@rival · TikTok",
+    ]
+    state.set_network("tiktok")
+    assert [c["key"] for c in state.reels] == ["tiktok:B"] and state.filtering
+    assert [o[1] for o in state.account_options] == ["@vecino", "@rival"]
+    state.set_account("tiktok:rival")
+    assert state.reels == [] and state.filtered_out  # its only reel is another rubro
+    state.set_network("instagram")  # a TikTok referente is let go with its platform
+    assert state.account == "all" and [c["key"] for c in state.reels] == ["instagram:A"]
+    state.set_account("instagram:ghost")  # not a referente of this read: ignored
+    assert state.account == "all"
+    state.clear_filters()
+    assert not state.filtering and len(state.reels) == 2
+
+
+def test_the_shown_cards_are_cut_after_the_filters() -> None:
+    state = _filter_state()
+    state._cards = {
+        "week": [
+            *(_card("instagram", "foodie", f"instagram:F{n}") for n in range(30)),
+            _card("tiktok", "vecino", "tiktok:V"),
+        ]
+    }
+    assert len(state.reels) == rd.SHOWN_PER_WINDOW  # the vecino reel is past the cut…
+    state.set_account("tiktok:vecino")
+    assert [c["key"] for c in state.reels] == ["tiktok:V"]  # …and found by its filter
+    # every card stays on the backend: the browser only ever receives `reels`
+    from .discover_reels import DiscoverReelsState
+
+    assert "_cards" in DiscoverReelsState.backend_vars
+    deps = DiscoverReelsState.computed_vars["reels"]._deps(objclass=DiscoverReelsState)
+    assert "_cards" in deps[DiscoverReelsState.get_full_name()]  # it recomputes on a read
+
+
+def test_the_90_day_tab_says_it_has_an_extra_charge() -> None:
+    """§ founder 2026-10-20: a plain «cargo extra» before reading — no credits, no
+    dollars on screen."""
+    from . import discover_reels
+
+    assert "cargo extra" in discover_reels.QUARTER_NOTE
+    assert "cargo extra" in discover_reels.QUARTER_REFRESH_TITLE
+    for text in (discover_reels.QUARTER_NOTE, discover_reels.QUARTER_REFRESH_TITLE):
+        assert "crédito" not in text and "US$" not in text
+
+
+def test_the_90_day_read_is_remembered_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rd, "_cache", {})
+    monkeypatch.setattr(rd, "_brand_locks", {})
+    monkeypatch.setattr(rd, "_reads", {})
+    reads: list[int] = []
+
+    def fake(tenant_id: UUID, brand_id: UUID, *, days: int, **_: Any) -> rd.DiscoveredReels:
+        reads.append(days)
+        return rd.DiscoveredReels(fetched_at=time.time(), days=days)
+
+    monkeypatch.setattr(rd, "discover", fake)
+    assert rd.remembered(TENANT, TENANT, days=rd.QUARTER_DAYS) is None  # nothing paid yet
+    deep = rd.cached_discover(TENANT, TENANT, days=rd.QUARTER_DAYS)
+    assert rd.cached_discover(TENANT, TENANT, days=rd.QUARTER_DAYS) is deep  # cached
+    rd.cached_discover(TENANT, TENANT, refresh=True)  # «Actualizar» on the week…
+    assert reads == [90, 30]
+    assert rd.remembered(TENANT, TENANT, days=rd.QUARTER_DAYS) is deep  # …keeps the 90 days
+    deep.fetched_at -= rd.CACHE_TTL_SECONDS + 1
+    assert rd.remembered(TENANT, TENANT, days=rd.QUARTER_DAYS) is None  # stale
+
+
+def test_the_view_has_the_90_day_tab_and_the_filters() -> None:
+    from .discover_reels import discover_view
+
+    rendered = str(discover_view().render())
+    assert "90 d" in rendered and '"Leer"' in rendered  # «días» comes escaped
+    assert "Todos los referentes" in rendered and "Quitar filtros" in rendered
+    assert "Plataforma" in rendered
+
+
+# --------------------------------------------------------------------------------------
+# review findings of 2026-10-20
+# --------------------------------------------------------------------------------------
+
+
+def test_a_read_drops_filters_the_brand_no_longer_has() -> None:
+    """A platform filter whose control vanished (one network left) must not keep hiding
+    every card; nor a referente that is no longer one."""
+    state = _filter_state()
+    state.set_network("tiktok")
+    state.set_account("tiktok:vecino")
+    instagram_only = rd.DiscoveredReels(
+        fetched_at=NOW,
+        referentes=1,
+        accounts=[{"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"}],
+        week=[_card("instagram", "foodie", "instagram:A")],
+    )
+    state._store("month", instagram_only)
+    assert (state.network, state.account) == ("all", "all")
+    assert [c["key"] for c in state.reels] == ["instagram:A"]
+
+
+def test_the_month_and_the_90_days_are_stored_apart() -> None:
+    """`_store` is what `load` / `load_quarter` hand their read to: the month fills the
+    week and the month, the 90 days their own tab, each with its own check and moment."""
+    from .discover_reels import DiscoverReelsState
+
+    accounts = [{"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"}]
+    state = DiscoverReelsState()
+    assert not state.loaded and not state.quarter_loaded
+    state._store(
+        "quarter",
+        rd.DiscoveredReels(
+            fetched_at=NOW,
+            days=90,
+            accounts=accounts,
+            check=rd.CHECK_UNAVAILABLE,
+            check_detail="el servicio de IA falló (500)",
+            failed=["@vecino"],
+        ),
+    )
+    assert state.quarter_loaded and not state.loaded and state.accounts == accounts
+    state._store(
+        "month",
+        rd.DiscoveredReels(
+            fetched_at=NOW,
+            referentes=2,
+            accounts=[*accounts, {"key": "tiktok:v", "network": "tiktok", "handle": "@v"}],
+            week=[_card("instagram", "foodie", "instagram:W")],
+            month=[_card("instagram", "foodie", "instagram:M")],
+        ),
+    )
+    assert state.loaded and state.referentes == 2 and len(state.accounts) == 2
+    assert [c["key"] for c in state.reels] == ["instagram:W"] and state.shown_check == ""
+    state.set_window("quarter")
+    assert state.shown_check == rd.CHECK_UNAVAILABLE and "falló (500)" in state.unchecked_note
+    assert state.failed_note.startswith("No pudimos leer @vecino")
+    state._store("quarter", rd.DiscoveredReels(fetched_at=NOW, days=90, accounts=accounts))
+    assert len(state.accounts) == 2  # the month read's referentes stay the filter's
+
+
+def test_two_reads_pay_one_transcript_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The month and the 90-day reads may run at once: the second to ask for the same
+    Instagram reel waits for the first instead of paying the vendor again."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(rd, "_transcripts", {})
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def slow(reel: dict, client: Any) -> str:
+        calls.append(reel["id"])
+        started.set()
+        release.wait(5)
+        return "dice algo"
+
+    def read() -> tuple[int, int]:
+        return rd.transcribe([_reel("foodie", "R0", 1, 100, "x")], fetch=slow)
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(read)
+        started.wait(5)
+        second = pool.submit(read)
+        release.set()
+        results = {first.result(timeout=5), second.result(timeout=5)}
+    assert calls == ["R0"]  # paid once
+    assert results == {(1, 1), (0, 0)}  # the waiting read paid nothing
+    assert rd._transcripts == {"instagram:R0": "dice algo"} and rd._transcripts_inflight == {}
+
+
+def test_a_reel_judged_before_is_not_paid_for_again(store: Any) -> None:
+    """The 90-day read (or «Actualizar») does not ask Claude again about a reel it
+    already judged against the same brief — unless what the model would read changed."""
+    repo, brand = store
+    brief = rd.brand_brief(TENANT, brand, repository=repo)
+    assert brief is not None
+    asked: list[list[str]] = []
+
+    def review(brief: Any, reels: list[ReelToReview], **kw: Any) -> tuple[list, CallStats]:
+        asked.append([r.id for r in reels])
+        return _fits_all(brief, reels, **kw)
+
+    reels = [_reel("foodie", "A", 1, 10, "burger"), _reel("foodie", "B", 2, 9, "burger")]
+    first = rd.check_rubro(brief, reels, api_key="k", review=review)
+    again = rd.check_rubro(brief, reels, api_key="k", review=review)
+    assert asked == [["instagram:A", "instagram:B"]] and again == first  # no second call
+    heard = [{**reels[0], "transcript": "ahora sí se oye"}, reels[1]]
+    rd.check_rubro(brief, heard, api_key="k", review=review)
+    assert asked[-1] == ["instagram:A"]  # a new transcript is a new question
+
+    def broken(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("down")
+
+    # the model is down: what was judged before still stands, the new reel is unchecked
+    mixed = rd.check_rubro(
+        brief, [*reels, _reel("foodie", "C", 1, 8, "burger")], api_key="k", review=broken
+    )
+    assert set(mixed) == {"instagram:A", "instagram:B"}
+    with pytest.raises(rd.ReelCheckUnavailable):
+        rd.check_rubro(brief, [_reel("foodie", "D", 1, 7, "x")], api_key="k", review=broken)
+
+
+def test_only_the_widest_window_adds_each_accounts_top(store: Any) -> None:
+    """The per-account extras are paid once per read, on its widest window — not once
+    per tab."""
+    week_only_quiet = [
+        *(_reel("foodie", f"B{n}", 1, 100_000 + n, "burger") for n in range(40)),
+        *(
+            {**_reel("vecino", f"S{n}", 20, 50 + n, "burger"), "network": "tiktok"}
+            for n in range(5)
+        ),
+    ]
+    picked = rd._candidates(week_only_quiet, NOW - 7 * DAY, per_account=False)
+    assert len(picked) == rd.REVIEWED_PER_WINDOW
+    wide = rd._candidates(week_only_quiet, NOW - 30 * DAY, per_account=True)
+    assert {r["id"] for r in wide if r["handle"] == "vecino"} == {"S4", "S3", "S2"}
