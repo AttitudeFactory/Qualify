@@ -184,3 +184,18 @@ Si Meta cambia de criterio, repetir estos pasos y sustituir el resultado de arri
 
 **Riesgo para el día en que se encienda:** una historia caduca a las 24 h pero el monitoreo dura 14 días. La sincronización seguirá pidiendo `GET /{story-id}/comments` durante esos días; si Meta deja de servir el id al caducar, la marca de «medio borrado» (código 100, subcódigo 33) la dejará de monitorear sola, como a un Reel borrado.
 
+
+## 7. Fase C — continuar en privado (m-24789646): estado por origen
+
+Cada operación de Meta que Fase C necesita y que no está verificada va detrás de una **capacidad por origen**, apagada por defecto (`packages/api/src/qualify_api/followups/capabilities.py`). Se enciende con su variable a `on` (cualquier otro valor la deja apagada), pero una capacidad **no implementada** sigue apagada aunque la variable diga `on`: no hay código que ejecutar. Su estado se cambia en el código, con la evidencia aquí, nunca con un ajuste.
+
+| Capacidad | Variable | Estado actual | Qué falta para activarla |
+| --- | --- | --- | --- |
+| `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | No implementado en Qualify | Código (PR 2) y prueba real R1 con un tester |
+| `story_comments` — comentarios en historias | `QUALIFY_STORY_COMMENTS` | **Limitación de Meta** (§6: «Comments cannot be made on story media») | Que Meta abra el edge; repetir `just story-probe` |
+| `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | No implementado en Qualify | Código (PR 5) y prueba real R3 (necesita la suscripción de webhooks, QUA-129, o que la sincronización traiga `reply_to`) |
+| `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | No implementado en Qualify | Código (PR 4) y prueba en producción de la respuesta pública (QUA-128, R4) |
+
+El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: QUA-226 lo verificó en producción y siempre está disponible.
+
+**Vínculo de datos (`interaction_followups`, migración 0071).** Una fila por interacción (comentario o respuesta a historia): su intención comercial (`comment_intent_results`, si la abrió un análisis), el hilo privado del autor en Conversaciones, el envío que una persona aprobó (`conversation_outbox`) y el estado del aviso público, independiente del DM. El borrador sigue en `conversation_drafts` y la entrega en el outbox: aquí no se copian. El hilo privado se puede crear antes de escribir porque el `from.id` de un comentario es el IGSID del autor (`ig-comment.md`), el mismo identificador que usan los DMs (`overview.md`: «specific to the person and the Instagram account»); R1 lo comprobará comparando el `recipient_id` que devuelve Meta con el del hilo.
