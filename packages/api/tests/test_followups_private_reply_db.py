@@ -1,4 +1,4 @@
-"""The private reply against Postgres (m-24789646, PR 2): migration 0072's CHECK and
+"""The private reply against Postgres (m-24789646, PR 2): migration 0073's CHECK and
 one-live-reply-per-comment index, the Postgres outbox carrying the comment, the deadline
 and Meta's recipient, the origin reader, and the followup service end to end.
 """

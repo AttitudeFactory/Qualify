@@ -148,7 +148,7 @@ class ConversationOutboxItem(Base):
     media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # A private reply (0072): the comment it answers and the instant Meta stops taking it.
+    # A private reply (0073): the comment it answers and the instant Meta stops taking it.
     comment_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     reply_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Whom the channel says it delivered to (Meta's `recipient_id`), for every send.

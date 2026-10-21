@@ -21,7 +21,7 @@ comes, is the same claim → window → send → settle with the same guarantees
   id (`ON CONFLICT DO NOTHING` on `uq_message_external_id`) and bumps the thread's
   `last_message_at` — never `last_inbound_at` (0004's B2 condition).
 
-**Private replies (m-24789646, 0072).** A `private_reply` row is Meta's one-off DM to
+**Private replies (m-24789646, 0073).** A `private_reply` row is Meta's one-off DM to
 the author of a comment, addressed by the comment (`PrivateReplyTarget`). Same queue, same
 approval, same settles; it also carries the comment and the 7-day deadline the sender
 revalidates, and there is at most one live row per comment (`PrivateReplyExists`).
@@ -168,7 +168,7 @@ class ClaimedOutboxItem:
     attempts: int
     created_at: datetime
     media: OutboxMedia | None = None
-    # Set on a private reply: the sender sends only before it (0072).
+    # Set on a private reply: the sender sends only before it (0073).
     reply_deadline: datetime | None = None
 
 
@@ -613,7 +613,7 @@ class MemoryOutboxRow:
     recipient_external_id: str | None = None
 
 
-# The statuses under which a private reply blocks another for the same comment (0072).
+# The statuses under which a private reply blocks another for the same comment (0073).
 _LIVE_STATUSES = frozenset({"pending", "sending", "sent"})
 
 

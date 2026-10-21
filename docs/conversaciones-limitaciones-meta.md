@@ -208,7 +208,7 @@ El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: Q
 
 | Regla | Dónde |
 | --- | --- |
-| Un tipo de envío más del outbox (`kind = 'private_reply'`), con `comment_id` y `reply_deadline` (comentario + 7 días); sigue exigiendo `approved_by_user_id` | migración 0072, `conversations/outbox.py` (`PrivateReplyTarget`) |
+| Un tipo de envío más del outbox (`kind = 'private_reply'`), con `comment_id` y `reply_deadline` (comentario + 7 días); sigue exigiendo `approved_by_user_id` | migración 0073, `conversations/outbox.py` (`PrivateReplyTarget`) |
 | Como mucho una respuesta privada viva (`pending`/`sending`/`sent`) por comentario; una `failed` no bloquea otro intento | índice `uq_conv_outbox_private_reply`, `PrivateReplyExists` |
 | El plazo de 7 días se revalida al enviar (`private_reply_expired`), igual que la ventana de 24 h de un DM | `conversations/sender.py` |
 | Si la persona escribió por DM en las últimas 24 h, se envía un DM normal (verificado) y no se gasta la respuesta privada | `followups/service.py` (`SendOptions.chosen`) |
