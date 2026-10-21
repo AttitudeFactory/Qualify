@@ -273,6 +273,10 @@ class BudgetState:
 #: generation for a brand provisioned before the config UI existed.
 _UNLIMITED_BUDGET = BudgetState(remaining_usd=Decimal("1000000000"), hard_stop=False)
 
+#: How the note of a regeneration that did not come out starts (m-24828909): the draft
+#: keeps showing its previous version, and the operator reads why the new one is missing.
+KEPT_PREVIOUS_PREFIX = "La nueva versión no se pudo generar:"
+
 
 # ---------------------------------------------------------------------------
 # Collaborator seams
@@ -1364,11 +1368,16 @@ class ContentService:
         if failure is not None:
             # Usage for the calls that DID succeed is persisted anyway: the money was
             # spent, and the budget cap is enforced over facts.
+            self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure)
+            self._trace_spend(draft, brief, usage_writes, spent, budget, failure)
+            if self._keeps_previous_version(tenant_id=tenant_id, draft=draft, kind=brief.kind):
+                self._keep_previous_version(
+                    tenant_id=tenant_id, draft=draft, usage=usage_writes, spent=spent
+                )
+                return
             new_status = apply_transition(
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure
             )
-            self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure)
-            self._trace_spend(draft, brief, usage_writes, spent, budget, failure)
             self._repo.finish_generation(
                 tenant_id=tenant_id,
                 draft_id=draft.id,
@@ -1469,6 +1478,18 @@ class ContentService:
             )
         self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure_reason)
         self._trace_spend(draft, brief, usage_writes, spent, budget, failure_reason)
+        if failure_reason is not None and self._keeps_previous_version(
+            tenant_id=tenant_id, draft=draft, kind=brief.kind
+        ):
+            self._keep_previous_version(
+                tenant_id=tenant_id,
+                draft=draft,
+                usage=usage_writes,
+                spent=spent,
+                detail=media_detail,
+                template_run=template_run,
+            )
+            return
         self._repo.finish_generation(
             tenant_id=tenant_id,
             draft_id=draft.id,
@@ -1492,6 +1513,51 @@ class ContentService:
             revision=draft.revision,
             providers={write.provider for write in media_writes},
         )
+
+    def _keeps_previous_version(
+        self, *, tenant_id: UUID, draft: DraftRecord, kind: ContentKind
+    ) -> bool:
+        """A failed REGENERATION over a draft that still shows a version (its copy and,
+        for a kind with media, its files): that version stays instead of an empty piece
+        (m-24828909). A first generation, or a draft whose previous run also failed, has
+        nothing to keep and fails as before."""
+        if draft.revision <= 1:
+            return False
+        if not self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id):
+            return False
+        return kind is ContentKind.CREATOR_SCRIPT or bool(
+            self._repo.media_for(tenant_id=tenant_id, draft_id=draft.id)
+        )
+
+    def _keep_previous_version(
+        self,
+        *,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        usage: list[UsageWrite],
+        spent: Decimal,
+        detail: str = "",
+        template_run: TemplateRunWrite | None = None,
+    ) -> None:
+        """Settle a failed regeneration on the version the draft already shows: no new
+        copy or media is written (so neither replaces the old rows — this revision's text
+        over the previous revision's files would lie), the spend is recorded, and the
+        draft is `generated` again with a note saying the new version did not come out."""
+        reason = detail.rstrip(". ") if detail else "algo falló al generarla"
+        note = f"{KEPT_PREVIOUS_PREFIX} {reason}. Se mantiene la versión anterior."
+        self._repo.finish_generation(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            brand_id=draft.brand_id,
+            new_status=apply_transition(DRAFTING, DraftTrigger.GENERATE_OK),
+            failure_reason=None,
+            variants=(),
+            usage=tuple(usage),
+            spent_usd=spent,
+            failure_detail=note[:500],
+            template_run=template_run,
+        )
+        logger.warning("draft %s: regeneration failed, previous version kept", draft.id)
 
     @staticmethod
     def _trace_spend(

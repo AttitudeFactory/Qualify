@@ -779,32 +779,93 @@ def test_a_template_output_keeps_its_r2_copy() -> None:
     assert store.kept[reel.object_key] == (b"reel-bytes", "video/mp4")
 
 
-def test_the_r2_store_keeps_through_the_gate_and_never_raises() -> None:
-    import io as _io
+class _Gate:
+    """`ObjectGate.put_media` that raises `errors` in order before it succeeds."""
+
+    def __init__(self, *errors: Exception) -> None:
+        self.puts: list[tuple[UUID, str, bytes, str]] = []
+        self.attempts = 0
+        self._errors = list(errors)
+
+    def put_media(self, tenant_id: UUID, key: str, fileobj: io.BytesIO, ctype: str) -> None:
+        self.attempts += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        self.puts.append((tenant_id, key, fileobj.read(), ctype))
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The retries' waits, recorded instead of slept."""
+    from qualify_api.creative import media as media_module
+
+    slept: list[float] = []
+    monkeypatch.setattr(media_module.time, "sleep", slept.append)
+    return slept
+
+
+R2_KEY = f"t/{TENANT_ID}/generated/d/r1/video.mp4"
+
+
+def test_the_r2_store_keeps_through_the_gate_and_never_raises(waits: list[float]) -> None:
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _Gate()
+    store = R2ReadingMediaStore(MemoryStore(), gate)
+    assert store.keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4") is True
+    assert gate.puts == [(TENANT_ID, R2_KEY, b"mp4", "video/mp4")]
+    down = _Gate(*(RuntimeError("R2 down") for _ in range(5)))
+    assert (
+        R2ReadingMediaStore(MemoryStore(), down).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
+        is False
+    )
+
+
+def test_a_passing_r2_error_is_retried(waits: list[float]) -> None:
+    """m-24828909: a regenerated clip, already paid for, failed on ONE refused write."""
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _Gate(ConnectionError("reset"), TimeoutError("slow"))
+    assert R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
+    assert gate.attempts == 3 and gate.puts == [(TENANT_ID, R2_KEY, b"mp4", "video/mp4")]
+    assert waits == [0.5, 1.0]
+
+
+def test_r2_gives_up_after_three_attempts_and_logs_why(
+    waits: list[float], caplog: pytest.LogCaptureFixture
+) -> None:
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _Gate(*(ConnectionError(f"reset {n}") for n in range(5)))
+    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"x", "video/mp4")
+    assert gate.attempts == 3 and waits == [0.5, 1.0]
+    # the error's own message reaches the log, not only its type
+    assert "ConnectionError: reset 2" in caplog.text and "after 3 attempts" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "size",
+        "prefix",
+        "config",
+    ],
+)
+def test_a_refusal_that_cannot_change_is_not_retried(error: str, waits: list[float]) -> None:
+    from qualify_shared.objects.config import R2ConfigurationError
+    from qualify_shared.objects.gate import ObjectSizeExceeded
+    from qualify_shared.objects.keys import TenantPrefixViolation
 
     from qualify_api.creative.media import R2ReadingMediaStore
 
-    class Gate:
-        def __init__(self, fail: bool = False) -> None:
-            self.puts: list[tuple[UUID, str, bytes, str]] = []
-            self.fail = fail
-
-        def put_media(self, tenant_id: UUID, key: str, fileobj: _io.BytesIO, ctype: str):
-            if self.fail:
-                raise RuntimeError("R2 down")
-            self.puts.append((tenant_id, key, fileobj.read(), ctype))
-
-    gate = Gate()
-    store = R2ReadingMediaStore(MemoryStore(), gate)
-    key = f"t/{TENANT_ID}/generated/d/r1/video.mp4"
-    assert store.keep(TENANT_ID, key, b"mp4", "video/mp4") is True
-    assert gate.puts == [(TENANT_ID, key, b"mp4", "video/mp4")]
-    assert (
-        R2ReadingMediaStore(MemoryStore(), Gate(fail=True)).keep(
-            TENANT_ID, key, b"mp4", "video/mp4"
-        )
-        is False
-    )
+    exc = {
+        "size": ObjectSizeExceeded("too big"),
+        "prefix": TenantPrefixViolation("foreign"),
+        "config": R2ConfigurationError("no bucket"),
+    }[error]
+    gate = _Gate(exc, exc, exc)
+    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"x", "video/mp4")
+    assert gate.attempts == 1 and waits == []
 
 
 def test_the_posts_preview_is_the_key_the_app_shows() -> None:

@@ -2318,6 +2318,12 @@ def draft_detail_index() -> rx.Component:
                                 CreativeState.draft.is_failed,
                                 _failed_panel(),
                                 rx.vstack(
+                                    # a regeneration that did not come out keeps the
+                                    # previous version and says so (m-24828909)
+                                    rx.cond(
+                                        CreativeState.draft.failure_detail != "",
+                                        callout(CreativeState.draft.failure_detail, "warn"),
+                                    ),
                                     _review_panel(),
                                     _decision_bar(),
                                     spacing="4",
