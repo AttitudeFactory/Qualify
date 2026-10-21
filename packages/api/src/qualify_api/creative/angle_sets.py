@@ -50,6 +50,7 @@ from qualify_creative.angles import (
     DEFAULT_ANGLE_COUNT,
     MAX_ANGLE_COUNT,
     MIN_ANGLE_COUNT,
+    PRESETS,
     AngleBrand,
     AnglePreset,
     AngleProduct,
@@ -387,6 +388,10 @@ class DraftEngine(Protocol):
     def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None: ...
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail | None: ...
+
+    def get_drafts(
+        self, *, tenant_id: UUID, draft_ids: Sequence[UUID]
+    ) -> Mapping[UUID, DraftDetail]: ...
 
     def approve(
         self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID
@@ -731,6 +736,19 @@ class AngleSetService:
                 logger.info("no per-piece rate for %s: %s", self._image_model_id, exc)
         return AngleSetPlan(count=count, image_unit_usd=unit)
 
+    def product_presets(
+        self, *, tenant_id: UUID, brand_id: UUID, product_id: UUID
+    ) -> tuple[AngleProduct, tuple[tuple[AnglePreset, str | None], ...]]:
+        """The catalog product as the engine sees it (photos, frozen price) and every
+        preset with why it cannot make pieces of it (None = it can) — what the screen
+        shows before anything is paid. Checked like `create_set`: `UnknownProduct` when
+        it is not this brand's, inactive or gone."""
+        product = self._catalog.get_product(tenant_id=tenant_id, product_id=product_id)
+        if product.brand_id != brand_id or not product.is_active:
+            raise UnknownProduct(str(product_id))
+        facts = product_facts(product)
+        return facts, tuple((preset, preset_problem(preset, facts)) for preset in PRESETS)
+
     # -- the set ---------------------------------------------------------------------------
 
     def create_set(
@@ -858,12 +876,15 @@ class AngleSetService:
 
     def detail(self, *, tenant_id: UUID, set_id: UUID) -> AngleSetDetail:
         record = self._require_set(tenant_id, set_id)
-        if self._recover(tenant_id, record):
+        angles = self._repo.list_angles(tenant_id=tenant_id, set_id=set_id)
+        if self._recover(tenant_id, record, angles):
             record = self._require_set(tenant_id, set_id)
-        views = tuple(
-            self._view(tenant_id, record, angle)
-            for angle in self._repo.list_angles(tenant_id=tenant_id, set_id=set_id)
+            angles = self._repo.list_angles(tenant_id=tenant_id, set_id=set_id)
+        # every draft of the set in ONE batch (a polled gallery of N pieces), not N reads
+        drafts = self._drafts.get_drafts(
+            tenant_id=tenant_id, draft_ids=[a.draft_id for a in angles if a.draft_id]
         )
+        views = tuple(self._view(record, angle, drafts) for angle in angles)
         record = self._settle(tenant_id, record, views)
         return AngleSetDetail(set=record, angles=views)
 
@@ -880,10 +901,15 @@ class AngleSetService:
             return replace(record, status=SET_COMPLETED)
         return record
 
-    def _view(self, tenant_id: UUID, record: AngleSetRecord, angle: AngleRecord) -> AngleView:
+    def _view(
+        self,
+        record: AngleSetRecord,
+        angle: AngleRecord,
+        drafts: Mapping[UUID, DraftDetail],
+    ) -> AngleView:
         if angle.draft_id is None:
             return AngleView(angle=angle)
-        detail = self._drafts.get_draft(tenant_id=tenant_id, draft_id=angle.draft_id)
+        detail = drafts.get(angle.draft_id)
         if detail is None:
             return AngleView(angle=angle)
         variant = _variant(detail)
@@ -1218,12 +1244,20 @@ class AngleSetService:
         )
         return True
 
-    def _recover(self, tenant_id: UUID, record: AngleSetRecord) -> bool:
+    def _recover(
+        self,
+        tenant_id: UUID,
+        record: AngleSetRecord,
+        angles: Sequence[AngleRecord] | None = None,
+    ) -> bool:
         """Abandoned reservations (older than `RESERVATION_TIMEOUT`) of this set,
-        resolved by their key — never by assuming no draft was made. True when one was."""
+        resolved by their key — never by assuming no draft was made. True when one was.
+        `angles` spares a second read when the caller already has them."""
         cutoff = self._clock() - RESERVATION_TIMEOUT
         recovered = False
-        for angle in self._repo.list_angles(tenant_id=tenant_id, set_id=record.id):
+        if angles is None:
+            angles = self._repo.list_angles(tenant_id=tenant_id, set_id=record.id)
+        for angle in angles:
             if (
                 angle.status == ANGLE_RESERVED
                 and angle.request_key is not None

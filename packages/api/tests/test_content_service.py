@@ -11,6 +11,7 @@ GENERATED with variants persisted → approve → `approved_creative` returns th
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -54,6 +55,7 @@ from qualify_api.creative.service import (
     BrandNotReady,
     BudgetState,
     ContentService,
+    DraftBundle,
     DraftRecord,
     DuplicateDraftRequest,
     ImageRecord,
@@ -1507,3 +1509,64 @@ def test_without_a_key_every_call_is_a_new_draft_as_before() -> None:
             tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID
         )
     assert len(repo.drafts) == 2 and len(dispatcher.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_drafts (ticket 24803289, PR 4): N drafts in one repository read
+
+
+class BatchRepository(InMemoryRepository):
+    """The in-memory repository with `details_for`, built from its own single reads so
+    a mismatch with `get_draft` can only come from the service."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_calls: list[tuple[UUID, ...]] = []
+
+    def details_for(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftBundle]:
+        self.batch_calls.append(tuple(draft_ids))
+        out: dict[UUID, DraftBundle] = {}
+        for draft_id in draft_ids:
+            record = self.drafts.get(draft_id)
+            if record is None:
+                continue
+            out[draft_id] = DraftBundle(
+                record=record,
+                variants=self.variants_for(tenant_id=tenant_id, draft_id=draft_id),
+                image=self.image_for(tenant_id=tenant_id, draft_id=draft_id),
+                media=self.media_for(tenant_id=tenant_id, draft_id=draft_id),
+                kind=self.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
+            )
+        return out
+
+
+def test_get_drafts_equals_get_draft_per_id_in_one_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    import qualify_api.creative.service as service_module
+
+    reaped: list[UUID] = []
+    monkeypatch.setattr(
+        service_module, "reap_stale_drafts", lambda *, tenant_id: reaped.append(tenant_id) or 0
+    )
+    repo = BatchRepository()
+    service, _, _ = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    ids = [repo.seed_draft(make_brief()) for _ in range(3)]
+    unknown = uuid4()
+    batch = service.get_drafts(tenant_id=TENANT_ID, draft_ids=[*ids, unknown])
+    assert set(batch) == set(ids)  # an id not visible is simply absent
+    for draft_id in ids:
+        assert batch[draft_id] == service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.batch_calls == [(*ids, unknown)]  # ONE repository read for all
+    assert reaped == [TENANT_ID]  # stale drafts are failed first, as on listing
+
+
+def test_get_drafts_of_nothing_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import qualify_api.creative.service as service_module
+
+    reaped: list[UUID] = []
+    monkeypatch.setattr(
+        service_module, "reap_stale_drafts", lambda *, tenant_id: reaped.append(tenant_id) or 0
+    )
+    repo = BatchRepository()
+    service, _, _ = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    assert service.get_drafts(tenant_id=TENANT_ID, draft_ids=[]) == {}
+    assert repo.batch_calls == [] and reaped == []
