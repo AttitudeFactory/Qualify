@@ -256,6 +256,9 @@ def _to_reel_summary_vm(
         permalink=summary.permalink or (enrichment.permalink if enrichment else ""),
         is_monitored=summary.is_monitored,
         monitoring_state=_monitoring_state(summary, now),
+        # m-24789644 (B2): persisted type first, the live candidate's label as fallback.
+        format_label=media_format_label(summary.media_product_type, summary.media_type)
+        or (enrichment.format_label if enrichment else ""),
     )
 
 

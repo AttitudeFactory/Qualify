@@ -488,6 +488,12 @@ def _reel_sentiment_chips(reel: ReelSummaryVM) -> rx.Component:
     )
 
 
+def _format_badge(reel: ReelSummaryVM) -> rx.Component:
+    """m-24789644 (B2): what the commented media is — Reel / Foto / Video / Carrusel /
+    Publicación / Historia — same badge the candidate rows use (QUA-146)."""
+    return rx.cond(reel.format_label != "", tone_badge(reel.format_label, "neutral"), rx.fragment())
+
+
 def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
     return card(
         rx.hstack(
@@ -503,6 +509,7 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
                     white_space="nowrap",
                 ),
                 rx.hstack(
+                    _format_badge(reel),
                     _reel_monitoring_badge(reel),
                     rx.icon("clock", size=13, color=T.TEXT_FAINT),
                     rx.text(reel.last_message_at, size="1", color=T.TEXT_MUTED),
@@ -544,7 +551,7 @@ def _reel_summaries_empty_state() -> rx.Component:
     return empty_state(
         "message-circle",
         "Aún no hay comentarios sincronizados",
-        "Sincroniza comentarios arriba para ver aquí qué Reels tienen comentarios, con "
+        "Sincroniza comentarios arriba para ver aquí qué publicaciones tienen comentarios, con "
         "su sentimiento cuando esté analizado.",
     )
 
@@ -561,7 +568,7 @@ def _load_more_reels_button() -> rx.Component:
                 rx.cond(
                     InboxState.is_loading_more_reels,
                     loading_spinner("sm"),
-                    rx.text("Cargar más Reels"),
+                    rx.text("Cargar más publicaciones"),
                 ),
                 on_click=InboxState.load_more_reels,
                 disabled=InboxState.is_loading_more_reels,
@@ -620,6 +627,7 @@ def _reel_detail_header() -> rx.Component:
                         weight="medium",
                     ),
                     rx.hstack(
+                        _format_badge(reel),
                         _reel_monitoring_badge(reel),
                         mono(reel.external_thread_id, size="1"),
                         spacing="2",
@@ -792,10 +800,10 @@ def _comments_section() -> rx.Component:
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
-            "Comentarios sincronizados, agrupados por Reel, con el sentimiento ya "
-            "analizado cuando existe. Cada Reel se monitorea 14 días desde su "
-            "publicación; al vencer deja de sincronizarse, pero su caption y sus "
-            'comentarios se conservan, marcado como "No monitoreado · vencido".'
+            "Comentarios sincronizados, agrupados por Reel o publicación, con el sentimiento "
+            "ya analizado cuando existe. Cada uno se monitorea 14 días desde que se "
+            "publicó; al vencer deja de sincronizarse, pero su caption y sus comentarios "
+            'se conservan, marcado como "No monitoreado · vencido".'
         ),
         actions=[_analyze_now_button()],
     )
@@ -1102,8 +1110,9 @@ def _replies_section() -> rx.Component:
 
 def inbox_topbar() -> rx.Component:
     return page_header(
-        "Contenido",
-        "Reels y publicaciones de las últimas 2 semanas — elige cuáles monitorear",
+        "Interacciones",
+        "Comentarios de tus Reels y publicaciones de las últimas 2 semanas — elige cuáles "
+        "monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
     )
 

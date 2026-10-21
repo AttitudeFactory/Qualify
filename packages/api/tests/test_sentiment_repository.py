@@ -783,6 +783,32 @@ def test_reel_summary_is_monitored_true_when_actively_monitored(
     assert summary.is_monitored is True
 
 
+def test_reel_summary_carries_the_persisted_media_type(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    """m-24789644 (B2): the card shows what the media is, read from the same
+    `monitored_media` row as its caption — no extra Meta call, no extra join."""
+    tenant_id, connection_id, message_id, _source_id = seeded_message
+    external_media_id = _external_thread_id_for(tenant_id, _thread_id_for(tenant_id, message_id))
+    _seed_monitored_media(tenant_id, connection_id, external_media_id, is_monitored=True)
+    with tenant_session(tenant_id) as session:
+        row = session.scalar(
+            select(MonitoredMedia).where(
+                MonitoredMedia.connection_id == connection_id,
+                MonitoredMedia.external_media_id == external_media_id,
+            )
+        )
+        assert row is not None
+        row.media_product_type, row.media_type = "FEED", "CAROUSEL_ALBUM"
+        session.flush()
+
+    (summary,) = PostgresSentimentRepository().list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION, cursor=None
+    )
+
+    assert (summary.media_product_type, summary.media_type) == ("FEED", "CAROUSEL_ALBUM")
+
+
 def test_desmonitored_reel_in_postgres_keeps_history_flagged_not_monitored(
     seeded_message: tuple[UUID, UUID, UUID, str],
 ) -> None:

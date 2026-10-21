@@ -184,6 +184,10 @@ class ReelSummary:
     media_posted_at: datetime | None = None
     caption: str | None = None
     permalink: str | None = None
+    # m-24789644 (B2): what the media is — Meta's surface (`REELS`/`FEED`, later `STORY`)
+    # and format (`IMAGE`/`VIDEO`/`CAROUSEL_ALBUM`), persisted on the same row by QUA-146.
+    media_product_type: str | None = None
+    media_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -331,10 +335,11 @@ class MemorySentimentRepository:
         # same `False` default `list_reel_summaries`'s Postgres LEFT JOIN produces via
         # `COALESCE(mm.is_monitored, false)`.
         self._monitored: dict[tuple[UUID, str], bool] = {}
-        # Same key -> (media_posted_at, caption, permalink), QUA-149 — the persisted
-        # metadata columns of that `monitored_media` row.
+        # Same key -> (media_posted_at, caption, permalink, media_product_type, media_type),
+        # QUA-149/QUA-146 — the persisted metadata columns of that `monitored_media` row.
         self._media_metadata: dict[
-            tuple[UUID, str], tuple[datetime | None, str | None, str | None]
+            tuple[UUID, str],
+            tuple[datetime | None, str | None, str | None, str | None, str | None],
         ] = {}
 
     def seed_monitored_media(
@@ -346,6 +351,8 @@ class MemorySentimentRepository:
         media_posted_at: datetime | None = None,
         caption: str | None = None,
         permalink: str | None = None,
+        media_product_type: str | None = None,
+        media_type: str | None = None,
     ) -> None:
         """Test-only helper mirroring `InboxRepository.set_media_monitored` — a toggle,
         not an event log: calling this twice for the same `(connection_id,
@@ -356,6 +363,8 @@ class MemorySentimentRepository:
             media_posted_at,
             caption,
             permalink,
+            media_product_type,
+            media_type,
         )
 
     def seed_message(
@@ -507,8 +516,8 @@ class MemorySentimentRepository:
                 else:
                     not_analyzed += 1
             media_key = (connection_id, thread_external_id[thread_id])
-            posted_at_meta, caption, permalink = self._media_metadata.get(
-                media_key, (None, None, None)
+            posted_at_meta, caption, permalink, product_type, media_type = self._media_metadata.get(
+                media_key, (None, None, None, None, None)
             )
             summaries.append(
                 ReelSummary(
@@ -524,6 +533,8 @@ class MemorySentimentRepository:
                     media_posted_at=posted_at_meta,
                     caption=caption,
                     permalink=permalink,
+                    media_product_type=product_type,
+                    media_type=media_type,
                 )
             )
         summaries.sort(key=lambda s: (s.last_message_at, s.thread_id), reverse=True)
@@ -744,7 +755,8 @@ class PostgresSentimentRepository:
             thread_sql = """
                 SELECT t.id, t.external_thread_id, t.last_message_at,
                   COALESCE(mm.is_monitored, false) AS is_monitored,
-                  mm.media_posted_at, mm.caption, mm.permalink
+                  mm.media_posted_at, mm.caption, mm.permalink,
+                  mm.media_product_type, mm.media_type
                 FROM threads t
                 LEFT JOIN monitored_media mm
                   ON mm.connection_id = t.connection_id
@@ -843,6 +855,8 @@ class PostgresSentimentRepository:
                         media_posted_at=row.media_posted_at,
                         caption=row.caption,
                         permalink=row.permalink,
+                        media_product_type=row.media_product_type,
+                        media_type=row.media_type,
                     )
                 )
             return tuple(summaries)

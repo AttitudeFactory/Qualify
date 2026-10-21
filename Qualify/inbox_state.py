@@ -208,8 +208,9 @@ _RESULT_TOAST_DURATION_MS = 6000
 
 
 class InboxState(rx.State):
-    """State for the "Contenido" screen: pick an Instagram connection, see its Reels
-    from the last 2 weeks, toggle which ones are monitored, and browse their comments'
+    """State for the "Interacciones" screen (formerly "Contenido"): pick an Instagram
+    connection, see its Reels from the last 2 weeks, toggle which ones are monitored, and
+    browse their comments'
     sentiment two levels deep (Reel summary list -> one Reel's comments)."""
 
     connections: list[ConnectionOptionVM] = []

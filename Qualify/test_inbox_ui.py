@@ -216,6 +216,8 @@ def test_reel_summary_vm_has_only_scalar_summary_fields() -> None:
         "is_monitored": "bool",
         # QUA-149: one of the four `MONITORING_*` constants — a scalar label.
         "monitoring_state": "str",
+        # m-24789644 (B2): "Reel"/"Foto"/…/"Historia" — a scalar label.
+        "format_label": "str",
     }
 
 
