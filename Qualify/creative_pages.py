@@ -26,6 +26,7 @@ from .creative_vm import (
     SourceVM,
     ToneRowVM,
 )
+from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
@@ -1287,18 +1288,13 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
                 min_width="0",
             ),
             rx.spacer(),
-            rx.button(
-                rx.icon("download", size=15),
-                "Descargar",
-                variant="soft",
-                size="2",
-                # A browser ignores `<a download>` for another origin (the backend's
-                # upload store on its own port, a provider URL) and just opens the file;
-                # fetching it and saving the blob downloads it right away. If the origin
-                # refuses (no CORS), it opens in a new tab as before.
-                on_click=rx.call_script(
-                    f"window.qualifyDownload('{download_href.to(str)}', '{file_name}')"
-                ),
+            # § request 2026-10-21: the ONE «Descargar» — the whole piece (its files and
+            # its words), the file alone only when the .zip link could not be minted
+            piece_download_button(
+                CreativeState.draft.download_path,
+                CreativeState.draft.download_name,
+                file_url=download_href.to(str),
+                file_name=file_name,
             ),
             align="center",
             spacing="2",
@@ -1357,6 +1353,8 @@ def _media_column() -> rx.Component:
                     color=T.TEXT_MUTED,
                     text_align="center",
                 ),
+                # a piece with no file still downloads its words (m-24828908)
+                piece_download_button(draft.download_path, draft.download_name),
                 spacing="2",
                 align="center",
             ),
@@ -2121,29 +2119,6 @@ def _decision_bar() -> rx.Component:
     )
 
 
-# Download a file whatever its origin: fetch it and save the blob (a cross-origin
-# `<a download>` only opens the file). Falls back to a new tab when the origin refuses.
-_DOWNLOAD_SCRIPT = """
-window.qualifyDownload = async function (url, name) {
-  try {
-    const response = await fetch(url, { mode: "cors", credentials: "omit" });
-    if (!response.ok) throw new Error(String(response.status));
-    const blob = await response.blob();
-    const href = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = href;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(href), 5000);
-  } catch (error) {
-    window.open(url, "_blank", "noopener");
-  }
-};
-"""
-
-
 def _campaign_option(option) -> rx.Component:
     return rx.select.item(option.name, value=option.id)
 
@@ -2281,7 +2256,6 @@ def draft_detail_index() -> rx.Component:
     return _screen(
         "Revisión del borrador",
         "HITL #2: tú decides qué sale con el nombre de tu marca",
-        rx.script(_DOWNLOAD_SCRIPT),
         _padded(
             rx.cond(CreativeState.detail_error != "", _error_callout(CreativeState.detail_error)),
             rx.cond(CreativeState.action_error != "", _error_callout(CreativeState.action_error)),

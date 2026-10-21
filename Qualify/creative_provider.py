@@ -33,8 +33,17 @@ from uuid import UUID
 from pydantic import ValidationError
 from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
-from qualify_api.creative.composition import production_content_service
+from qualify_api.creative.composition import media_root, production_content_service
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
+from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
+from qualify_api.creative.piece_export import (
+    archive_name,
+    build_archive,
+    piece_copy,
+    piece_files,
+    piece_text,
+    slug,
+)
 from qualify_api.creative.readiness import readiness
 from qualify_api.creative.service import DraftDetail
 from qualify_api.creative.voice_service import VoiceProfileService
@@ -80,8 +89,10 @@ from .creative_vm import (
     build_route_options,
     build_variant_vm,
     build_voice_proposal_vm,
+    draft_kind_label,
     failure_label,
 )
+from .piece_download import issue_download_path
 from .r2_media import is_r2_key, issue_view_path
 
 logger = logging.getLogger(__name__)
@@ -96,6 +107,7 @@ __all__ = [
     "default_brand_id",
     "draft_detail",
     "edit_variant",
+    "piece_archive",
     "list_drafts",
     "load_kit_form",
     "load_voice_screen",
@@ -742,7 +754,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
             ]
         ),
     )
-    return build_draft_vm(
+    vm = build_draft_vm(
         draft_id=str(detail.id),
         status=detail.status,
         failure_reason=detail.failure_reason,
@@ -757,6 +769,50 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         media=media,
         failure_detail=detail.failure_detail,
     )
+    return _with_download(tenant_id, detail, vm)
+
+
+def _with_download(tenant_id: UUID, detail: DraftDetail, vm: DraftVM) -> DraftVM:
+    """«Descargar todo» (m-24828908): the piece's `.zip` path, minted only once there is
+    something to download — never on every poll of a draft still generating. A token that
+    cannot be minted (Redis down) only costs the button."""
+    if vm.is_drafting or not (detail.variants or detail.media):
+        return vm
+    try:
+        path = issue_download_path(tenant_id, detail.id)
+    except Exception as exc:  # noqa: BLE001 — a download link is not worth failing the page
+        logger.warning("piece download token not issued: %s", type(exc).__name__)
+        return vm
+    return dataclasses.replace(
+        vm, download_path=path, download_name=archive_name(_brand_name(tenant_id), detail.title)
+    )
+
+
+def _brand_name(tenant_id: UUID) -> str:
+    """The tenant's brand name, "" when it cannot be read (the archive is still named)."""
+    try:
+        with tenant_session(tenant_id) as session:
+            return session.scalar(select(Brand.name).order_by(Brand.created_at)) or ""
+    except Exception as exc:  # noqa: BLE001 — a file name is not worth failing the page
+        logger.warning("brand name unreadable: %s", type(exc).__name__)
+        return ""
+
+
+def piece_archive(tenant_id: UUID, draft_id: UUID) -> tuple[str, bytes] | None:
+    """The piece as a `.zip` — its files and `texto.txt`, never the prompt (`piece_export`).
+    Read through RLS: a draft of another tenant is None. Blocking (R2 reads)."""
+    detail = production_content_service().get_draft(tenant_id=tenant_id, draft_id=draft_id)
+    if detail is None:
+        return None
+    store = R2ReadingMediaStore(LocalMediaStore(media_root()))
+    kind_label = draft_kind_label(
+        detail.kind, has_video=any(item.media_type == "video" for item in detail.media)
+    )
+    # inside the archive the files are named by what they are («clip-1.mp4»): a POST's
+    # title is often its whole context, too long for a file name — that goes on the .zip
+    files, missing = piece_files(detail, store.read, stem=slug(kind_label) or "pieza")
+    text = piece_text(title=detail.title, kind_label=kind_label, copy=piece_copy(detail))
+    return archive_name(_brand_name(tenant_id), detail.title), build_archive(files, text, missing)
 
 
 def _with_r2_urls(tenant_id: UUID, media: tuple[MediaVM, ...]) -> tuple[MediaVM, ...]:
