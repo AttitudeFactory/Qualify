@@ -61,6 +61,9 @@ AVATAR_PROMPT_MAX = 600
 #: The scene an advertising image asks the image model for ("a hand holding the glass,
 #: the bar blurred behind").
 SCENE_PROMPT_MAX = 600
+#: The price a composition prints (`MediaInputs.price_line`, ticket 24803289) — the
+#: catalog's label, short enough for a pill or the template's `price_line` port.
+PRICE_LINE_MAX = 40
 #: HeyGen's avatar engines: IV is the more natural, III costs about a third for stock
 #: avatars (pricing_data v2) — the operator picks per piece.
 AVATAR_ENGINES = ("avatar_iv", "avatar_iii")
@@ -462,6 +465,10 @@ class MediaInputs(BaseModel):
     #: asked for — Seedream renders it with those photos as references (2026-10-07).
     ad_mode: AdImageMode | None = None
     scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
+    #: The price the composition PRINTS (a pill on the advertising image, the template's
+    #: `price_line`) — ticket 24803289: always the catalog's label, set by the caller,
+    #: never a model's words. "" prints nothing.
+    price_line: str = Field(default="", max_length=PRICE_LINE_MAX)
     #: Template kind: the recipe the operator picked when they overrode the router's
     #: suggestion (plan-mvp-plantillas-remotion.md §3). Empty = let the router choose.
     template_id: str | None = None
@@ -612,8 +619,12 @@ class ContentBrief(BaseModel):
         if media.carousel and self.kind is not ContentKind.STATIC_FLYER:
             raise ValueError("only a flyer can be a carousel")
         if self.kind is not ContentKind.STATIC_FLYER:
-            if media.ad_mode is not None or media.scene_prompt.strip():
-                raise ValueError("an ad mode and a scene are for the advertising image")
+            if media.ad_mode is not None:
+                raise ValueError("an ad mode is for the advertising image")
+            # ticket 24803289: a template may also start from a generated scene (the
+            # angle's), which becomes its first photo; any other kind has no scene
+            if media.scene_prompt.strip() and self.kind is not ContentKind.TEMPLATE:
+                raise ValueError("a scene is for the advertising image or a template")
         elif media.ad_mode is not None:
             if media.ad_mode.needs_product and not media.product_keys:
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a product photo")
