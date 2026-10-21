@@ -191,7 +191,7 @@ def test_datos_creates_the_invite_mails_it_and_writes_back(
     ((item_id, pairs),) = meegle.updates
     assert item_id == ITEM
     assert pairs == {
-        "f_status": "opt_invitada",
+        "f_status": {"value": "opt_invitada", "label": "invitada"},
         "f_link": "https://app.qualify.la/registro?invitacion=tok123",
         "f_expires": int((NOW + timedelta(days=7)).timestamp() * 1000),
         "f_ref": "12345678-1234-4123-8123-123456789abc",
@@ -209,7 +209,9 @@ def test_an_invalid_email_marks_error_comments_and_rolls_datos_back(
     assert not result.ok and result.reason == "invalid_input" and result.invite_id is None
     assert invites.sent == []
     ((_, pairs),) = meegle.updates
-    assert pairs == {"f_status": "opt_error"}  # no link: no invite exists
+    assert pairs == {
+        "f_status": {"value": "opt_error", "label": "error"}
+    }  # no link: no invite exists
     ((_, comment),) = meegle.comments
     assert "El email no es válido." in comment and "«Datos»" in comment
     assert meegle.operations == [(ITEM, "started", "rollback", "El email no es válido.")]
@@ -233,7 +235,7 @@ def test_a_mail_failure_keeps_the_invite_and_hands_over_the_link(
     assert not result.ok and result.reason == reason
     assert result.invite_id is not None  # the invite exists; only the mail failed
     ((_, pairs),) = meegle.updates
-    assert pairs["f_status"] == "opt_error"
+    assert pairs["f_status"] == {"value": "opt_error", "label": "error"}
     assert pairs["f_link"] == "https://app.qualify.la/registro?invitacion=tok123"
     assert pairs["f_ref"] == "12345678-1234-4123-8123-123456789abc"
     ((_, comment),) = meegle.comments
@@ -266,7 +268,7 @@ def test_terminated_expires_the_invites_and_marks_vencida(
 ) -> None:
     assert engine.expire_for_terminated(ITEM) == 1
     assert invites.expired == [ITEM]
-    assert meegle.updates == [(ITEM, {"f_status": "opt_vencida"})]
+    assert meegle.updates == [(ITEM, {"f_status": {"value": "opt_vencida", "label": "vencida"}})]
     invites.expire_returns = 0
     assert engine.expire_for_terminated(ITEM) == 0
     assert len(meegle.updates) == 1  # nothing to mark when nothing expired
@@ -280,7 +282,7 @@ def test_registered_confirms_the_node_and_writes_tenant_and_date(
         (
             ITEM,
             {
-                "f_status": "opt_registrada",
+                "f_status": {"value": "opt_registrada", "label": "registrada"},
                 "f_tenant": str(TENANT),
                 "f_registered": int(NOW.timestamp() * 1000),
             },
