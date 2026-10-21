@@ -83,6 +83,15 @@ def test_select_values_come_from_the_options_or_pass_through(
     assert resolver.select_value("Qualify ref", "whatever") == "whatever"
 
 
+def test_a_select_is_written_as_value_and_label(resolver: SchemaResolver) -> None:
+    """The real Open API rejects a bare option value on write (20006, 2026-10-21)."""
+    assert resolver.select_field_value("Estado Qualify", "invitada") == {
+        "value": "option_2",
+        "label": "invitada",
+    }
+    assert resolver.select_field_value("Qualify ref", "whatever") == "whatever"
+
+
 def test_node_ids_and_names_are_cached_per_type_and_refreshed_on_miss(
     resolver: SchemaResolver, source: Source
 ) -> None:

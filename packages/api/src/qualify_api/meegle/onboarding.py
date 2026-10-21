@@ -135,9 +135,9 @@ class OnboardingEngine:
     def _field_text(self, item: WorkItem, name: str) -> str:
         return text_value(item.fields.get(self._resolver.field_key(name)))
 
-    def _status_pair(self, label: str) -> tuple[str, str]:
+    def _status_pair(self, label: str) -> tuple[str, str | dict[str, str]]:
         names = self._names
-        return self._resolver.field_key(names.status), self._resolver.select_value(
+        return self._resolver.field_key(names.status), self._resolver.select_field_value(
             names.status, label
         )
 
