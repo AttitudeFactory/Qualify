@@ -284,6 +284,10 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
     from qualify_api.connections.composition import (  # noqa: PLC0415
         degrade_connection_on_auth_error,
     )
+    from qualify_api.followups.capabilities import (  # noqa: PLC0415
+        Capabilities,
+        Capability,
+    )
 
     return ConversationOutboxSender(
         outbox=production_outbox(),
@@ -292,6 +296,8 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
         connections=source_connection_for,
         degrade=degrade_connection_on_auth_error,
         media_linker=_LazyMediaLinker(),
+        # m-24789646: a queued private reply leaves only while its capability is on.
+        private_replies=Capabilities.from_env().enabled(Capability.COMMENT_PRIVATE_REPLY),
         worker_id=worker_id,
     )
 

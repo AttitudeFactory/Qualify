@@ -161,6 +161,8 @@ class ConversationSource(Protocol):
 @dataclass(frozen=True)
 class SendResult:
     external_message_id: str
+    # Whom the channel says it delivered to (Meta's `recipient_id`), when it says.
+    recipient_external_id: str | None = None
 
 
 #: Ephemeral presence signals a channel may show the counterpart (Messenger Platform's
@@ -197,6 +199,10 @@ class ConversationSender(Protocol):
     def channel(self) -> str: ...
 
     def build_payload(self, *, recipient_external_id: str, text: str) -> dict[str, Any]: ...
+
+    def build_private_reply_payload(self, *, comment_id: str, text: str) -> dict[str, Any]:
+        """The one-off DM to a comment's author, addressed by the COMMENT (m-24789646)."""
+        ...
 
     def build_media_payload(
         self, *, recipient_external_id: str, media_type: str

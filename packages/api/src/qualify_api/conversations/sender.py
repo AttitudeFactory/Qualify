@@ -9,6 +9,15 @@ row written by `mark_sent` under the channel's own message id). What this module
 - **The window is validated at the moment of sending**, not only when the reply was
   written (the ticket's criterion): a row whose thread's `last_inbound_at` is now more
   than 24 h old is settled `failed` with `window_closed` — waiting cannot reopen it.
+- **A private reply** (m-24789646) has no 24 h window — the person may never have
+  written — but Meta's own limit: its `reply_deadline` (the comment + 7 days) is
+  revalidated the same way, and a row past it is `failed` with `private_reply_expired`.
+  Private replies go out only while this sender was built with them enabled (the
+  `comment_private_reply` capability, read by the composition): switching it off stops
+  rows already queued too — they are `failed` with `private_reply_disabled`.
+  The `recipient_id` Meta answers is recorded on the row; when it is not the thread's
+  counterpart (the thread was chosen up front from the comment's `from.id`) the send is
+  kept and `conversations.sender.recipient_mismatch` is logged — R1's evidence.
 - **No sender for the channel** (`UnknownChannel`) is `failed` with `no_sender`: the row
   stays visible to the person as not sent, and nothing is retried that cannot succeed.
 - **An auth failure** (HTTP 401 / code 190) settles the row `dead`, marks the rest of the
@@ -39,6 +48,7 @@ from qualify_api.conversations.contracts import (
 )
 from qualify_api.conversations.outbox import (
     DEFAULT_BATCH,
+    KIND_PRIVATE_REPLY,
     MAX_ATTEMPTS,
     ClaimedOutboxItem,
     ConversationOutboxRepository,
@@ -50,6 +60,8 @@ from qualify_api.conversations.window import window_state
 logger = logging.getLogger("qualify_api.conversations.sender")
 
 ERROR_WINDOW_CLOSED: Final = "window_closed"
+ERROR_PRIVATE_REPLY_EXPIRED: Final = "private_reply_expired"
+ERROR_PRIVATE_REPLY_DISABLED: Final = "private_reply_disabled"
 ERROR_NO_SENDER: Final = "no_sender"
 ERROR_THREAD_MISSING: Final = "thread_missing"
 ERROR_CONNECTION_MISSING: Final = "connection_missing"
@@ -126,6 +138,7 @@ class ConversationOutboxSender:
         connections: ConnectionReader,
         degrade: ConnectionDegrader | None = None,
         media_linker: MediaLinker | None = None,
+        private_replies: bool = False,
         worker_id: str,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
@@ -135,6 +148,7 @@ class ConversationOutboxSender:
         self._connections = connections
         self._degrade = degrade
         self._media_linker = media_linker
+        self._private_replies = private_replies
         self._worker_id = worker_id
         self._clock = clock
 
@@ -181,7 +195,14 @@ class ConversationOutboxSender:
         if thread is None:
             self._fail(item, ERROR_THREAD_MISSING, report)
             return
-        if not window_state(thread.last_inbound_at, self._clock()).is_open:
+        if item.kind == KIND_PRIVATE_REPLY:
+            if not self._private_replies:
+                self._fail(item, ERROR_PRIVATE_REPLY_DISABLED, report)
+                return
+            if item.reply_deadline is None or self._clock() >= item.reply_deadline:
+                self._fail(item, ERROR_PRIVATE_REPLY_EXPIRED, report)
+                return
+        elif not window_state(thread.last_inbound_at, self._clock()).is_open:
             self._fail(item, ERROR_WINDOW_CLOSED, report)
             return
         try:
@@ -212,11 +233,20 @@ class ConversationOutboxSender:
         except Exception as exc:  # noqa: BLE001 — classified below, never propagated
             self._settle_error(item, exc, degraded=degraded, report=report)
             return
+        recipient = result.recipient_external_id
+        if recipient is not None and recipient != thread.counterpart_external_id:
+            logger.warning(
+                "conversations.sender.recipient_mismatch item_id=%s kind=%s thread_id=%s",
+                item.id,
+                item.kind,
+                thread.id,
+            )
         self._outbox.mark_sent(
             tenant_id=tenant_id,
             item_id=item.id,
             external_message_id=result.external_message_id,
             now=self._clock(),
+            recipient_external_id=recipient,
         )
         report.sent += 1
 
@@ -286,6 +316,8 @@ __all__ = [
     "ERROR_MAX_ATTEMPTS",
     "ERROR_NO_MEDIA_LINKER",
     "ERROR_NO_SENDER",
+    "ERROR_PRIVATE_REPLY_DISABLED",
+    "ERROR_PRIVATE_REPLY_EXPIRED",
     "ERROR_SEND_AMBIGUOUS",
     "ERROR_THREAD_MISSING",
     "ERROR_WINDOW_CLOSED",

@@ -39,7 +39,7 @@ def test_current_states_are_pinned() -> None:
     """What is true on this branch. PR 2/4/5 flip their own row; R1-R4 move them to
     `verified` (or document them) with evidence in docs/conversaciones-limitaciones-meta.md."""
     assert {cap: spec.state for cap, spec in REGISTRY.items()} == {
-        Capability.COMMENT_PRIVATE_REPLY: CapabilityState.NOT_IMPLEMENTED,
+        Capability.COMMENT_PRIVATE_REPLY: CapabilityState.TO_VERIFY,
         Capability.STORY_COMMENTS: CapabilityState.META_LIMITATION,
         Capability.STORY_REPLY_CONTEXT: CapabilityState.NOT_IMPLEMENTED,
         Capability.PUBLIC_NOTICE: CapabilityState.NOT_IMPLEMENTED,
@@ -76,11 +76,21 @@ def test_a_not_implemented_capability_stays_off_even_when_switched_on() -> None:
             assert availability.reason == spec.reason
 
 
-def test_an_implemented_capability_follows_its_switch() -> None:
-    off = Capabilities.from_env({}).availability(Capability.STORY_COMMENTS)
-    on = Capabilities.from_env(ALL_ON).availability(Capability.STORY_COMMENTS)
+@pytest.mark.parametrize(
+    "capability", [Capability.STORY_COMMENTS, Capability.COMMENT_PRIVATE_REPLY]
+)
+def test_an_implemented_capability_follows_its_switch(capability: Capability) -> None:
+    off = Capabilities.from_env({}).availability(capability)
+    on = Capabilities.from_env(ALL_ON).availability(capability)
     assert off.enabled is False
     assert on.enabled is True and on.reason == ""
+
+
+def test_a_capability_to_verify_says_why_and_which_switch_is_off() -> None:
+    availability = Capabilities.from_env({}).availability(Capability.COMMENT_PRIVATE_REPLY)
+    assert availability.state_label == "Por verificar"
+    assert "R1" in availability.reason
+    assert "QUALIFY_COMMENT_PRIVATE_REPLY" in availability.reason
 
 
 def test_a_meta_limitation_explains_the_limitation_not_the_switch() -> None:

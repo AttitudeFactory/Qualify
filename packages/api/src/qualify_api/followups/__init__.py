@@ -16,6 +16,12 @@ from qualify_api.followups.capabilities import (
     CapabilitySpec,
     CapabilityState,
 )
+from qualify_api.followups.origins import (
+    MemoryOriginReader,
+    OriginMessage,
+    OriginReader,
+    PostgresOriginReader,
+)
 from qualify_api.followups.repository import (
     Followup,
     FollowupOpening,
@@ -33,6 +39,15 @@ from qualify_api.followups.repository import (
     discard_followup,
     new_followup,
 )
+from qualify_api.followups.service import (
+    CapabilityUnavailable,
+    FollowupService,
+    OriginNotSupported,
+    RouteOption,
+    RouteUnavailable,
+    SendOptions,
+    UnknownOrigin,
+)
 
 __all__ = [
     "REGISTRY",
@@ -42,18 +57,29 @@ __all__ = [
     "Capability",
     "CapabilitySpec",
     "CapabilityState",
+    "CapabilityUnavailable",
     "Followup",
     "FollowupOpening",
     "FollowupRepository",
+    "FollowupService",
     "FollowupStatus",
     "FollowupTrigger",
     "InvalidFollowupTransition",
     "MemoryFollowupRepository",
+    "MemoryOriginReader",
     "NoticeStatus",
     "OriginKind",
+    "OriginMessage",
+    "OriginNotSupported",
+    "OriginReader",
     "PostgresFollowupRepository",
+    "PostgresOriginReader",
+    "RouteOption",
+    "RouteUnavailable",
+    "SendOptions",
     "SendRoute",
     "UnknownFollowup",
+    "UnknownOrigin",
     "approve_followup",
     "discard_followup",
     "new_followup",

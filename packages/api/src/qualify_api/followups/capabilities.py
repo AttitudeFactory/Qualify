@@ -72,9 +72,9 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
         CapabilitySpec(
             Capability.COMMENT_PRIVATE_REPLY,
             "QUALIFY_COMMENT_PRIVATE_REPLY",
-            CapabilityState.NOT_IMPLEMENTED,
-            "La respuesta privada a un comentario (un solo mensaje, dentro de 7 días) "
-            "todavía no está construida en Qualify.",
+            CapabilityState.TO_VERIFY,
+            "La respuesta privada a un comentario (un solo mensaje, dentro de 7 días) está "
+            "construida según la documentación de Meta y pendiente de la prueba real (R1).",
         ),
         CapabilitySpec(
             Capability.STORY_COMMENTS,
@@ -99,7 +99,7 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
     )
 }
 
-_SWITCHED_OFF_REASON: Final = "Desactivada en este despliegue ({env_var})."
+_SWITCHED_OFF_REASON: Final = "{reason} Desactivada en este despliegue ({env_var})."
 
 
 @dataclass(frozen=True)
@@ -140,7 +140,7 @@ class Capabilities:
         if capability not in self.switched_on:
             reason = spec.reason
             if spec.state is not CapabilityState.META_LIMITATION:
-                reason = _SWITCHED_OFF_REASON.format(env_var=spec.env_var)
+                reason = _SWITCHED_OFF_REASON.format(reason=spec.reason, env_var=spec.env_var)
             return Availability(capability, False, spec.state, reason)
         return Availability(capability, True, spec.state, "")
 

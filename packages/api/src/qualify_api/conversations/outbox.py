@@ -21,6 +21,17 @@ comes, is the same claim → window → send → settle with the same guarantees
   id (`ON CONFLICT DO NOTHING` on `uq_message_external_id`) and bumps the thread's
   `last_message_at` — never `last_inbound_at` (0004's B2 condition).
 
+**Private replies (m-24789646, 0073).** A `private_reply` row is Meta's one-off DM to
+the author of a comment, addressed by the comment (`PrivateReplyTarget`). Same queue, same
+approval, same settles; it also carries the comment and the 7-day deadline the sender
+revalidates, and there is at most one live row per comment (`PrivateReplyExists`).
+`mark_sent` records, for every send, whom the channel says it reached.
+
+`enqueue(..., on_enqueued=)` lets the caller write its own record of the decision in the
+SAME transaction as the insert (Fase C's followup): the callback gets the open session
+and the new row's id, and if it raises, the row is never queued. This module stays the
+only writer of the queue; the callback writes only its own table.
+
 No user text in logs: ids, statuses and codes only.
 """
 
@@ -37,6 +48,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from qualify_api.conversations.contracts import MEDIA_TYPE_STICKER, REPLY_MEDIA_TYPES
 from qualify_api.conversations.models import OUTBOX_CHANNELS, OUTBOX_KINDS
@@ -44,6 +56,7 @@ from qualify_api.conversations.models import OUTBOX_CHANNELS, OUTBOX_KINDS
 logger = logging.getLogger("qualify_api.conversations.outbox")
 
 KIND_REPLY: Final = "reply"
+KIND_PRIVATE_REPLY: Final = "private_reply"
 MAX_ATTEMPTS: Final = 5
 BACKOFF_BASE_SECONDS: Final = 4
 STALE_AFTER: Final = timedelta(minutes=10)
@@ -69,6 +82,30 @@ def payload_text(payload: Mapping[str, Any]) -> str | None:
 
 class ApprovalRequired(PermissionError):
     """A send was requested without a human approval. There is no code path around it."""
+
+
+#: Called inside `enqueue`'s transaction with `(session, item_id)` — `session` is None
+#: for the in-memory repository. Raising aborts the enqueue.
+OnEnqueued = Callable[[Any, UUID], None]
+
+
+class PrivateReplyExists(ValueError):
+    """The comment already has a private reply queued, sending or sent: Meta allows one."""
+
+
+@dataclass(frozen=True)
+class PrivateReplyTarget:
+    """What makes a queued message a private reply: the comment it answers and the
+    instant Meta stops accepting it (`conversations.window.private_reply_deadline`)."""
+
+    comment_id: str
+    deadline: datetime
+
+    def __post_init__(self) -> None:
+        if not self.comment_id:
+            raise ValueError("a private reply needs the comment it answers")
+        if not isinstance(self.deadline, datetime):
+            raise ValueError("a private reply needs its deadline")
 
 
 @dataclass(frozen=True)
@@ -131,6 +168,8 @@ class ClaimedOutboxItem:
     attempts: int
     created_at: datetime
     media: OutboxMedia | None = None
+    # Set on a private reply: the sender sends only before it (0073).
+    reply_deadline: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +189,10 @@ class OutboxRecord:
     sent_at: datetime | None
     media_type: str | None = None
     media_object_key: str | None = None
+    kind: str = KIND_REPLY
+    comment_id: str | None = None
+    reply_deadline: datetime | None = None
+    recipient_external_id: str | None = None
 
 
 class ConversationOutboxRepository(Protocol):
@@ -163,6 +206,8 @@ class ConversationOutboxRepository(Protocol):
         payload: Mapping[str, Any],
         approval: HumanApproval,
         media: OutboxMedia | None = None,
+        private_reply: PrivateReplyTarget | None = None,
+        on_enqueued: OnEnqueued | None = None,
     ) -> UUID: ...
 
     def claim(
@@ -170,7 +215,13 @@ class ConversationOutboxRepository(Protocol):
     ) -> list[ClaimedOutboxItem]: ...
 
     def mark_sent(
-        self, *, tenant_id: UUID, item_id: UUID, external_message_id: str, now: datetime
+        self,
+        *,
+        tenant_id: UUID,
+        item_id: UUID,
+        external_message_id: str,
+        now: datetime,
+        recipient_external_id: str | None = None,
     ) -> None: ...
 
     def mark_retry(
@@ -195,7 +246,11 @@ class ConversationOutboxRepository(Protocol):
 
 
 def _validate_enqueue(
-    channel: str, payload: Mapping[str, Any], thread_id: UUID, approval: HumanApproval | None
+    channel: str,
+    payload: Mapping[str, Any],
+    thread_id: UUID,
+    approval: HumanApproval | None,
+    private_reply: PrivateReplyTarget | None = None,
 ) -> None:
     if approval is None or not isinstance(approval, HumanApproval):
         raise ApprovalRequired("a private reply cannot be queued without a human approval")
@@ -205,6 +260,19 @@ def _validate_enqueue(
         raise ValueError("a reply answers a thread: thread_id is required")
     if not isinstance(payload, Mapping) or not payload:
         raise ValueError("payload must be a non-empty, already-built wire body")
+    recipient = payload.get("recipient")
+    addressed_to = recipient.get("comment_id") if isinstance(recipient, Mapping) else None
+    if private_reply is not None:
+        if not isinstance(private_reply, PrivateReplyTarget):
+            raise ValueError("private_reply must be a PrivateReplyTarget")
+        if addressed_to != private_reply.comment_id:
+            raise ValueError("a private reply's body must be addressed to its comment")
+    elif addressed_to is not None:
+        raise ValueError("a body addressed to a comment must be queued as a private reply")
+
+
+def _kind(private_reply: PrivateReplyTarget | None) -> str:
+    return KIND_PRIVATE_REPLY if private_reply is not None else KIND_REPLY
 
 
 # --------------------------------------------------------------------------------------
@@ -215,10 +283,12 @@ _ENQUEUE = text(
     """
     INSERT INTO conversation_outbox (id, tenant_id, connection_id, thread_id, channel, kind,
                                      payload, approved_by_user_id, approved_at, draft_id,
-                                     media_object_key, media_type, media_content_type)
+                                     media_object_key, media_type, media_content_type,
+                                     comment_id, reply_deadline)
     VALUES (:id, :tenant_id, :connection_id, :thread_id, :channel, :kind,
             CAST(:payload AS jsonb), :approved_by, :approved_at, :draft_id,
-            :media_object_key, :media_type, :media_content_type)
+            :media_object_key, :media_type, :media_content_type,
+            :comment_id, :reply_deadline)
     """
 )
 
@@ -247,7 +317,8 @@ CLAIM_SQL = text(
       FROM due
      WHERE o.id = due.id
     RETURNING o.id, o.tenant_id, o.connection_id, o.thread_id, o.channel, o.kind, o.payload,
-              o.attempts, o.created_at, o.media_object_key, o.media_type, o.media_content_type
+              o.attempts, o.created_at, o.media_object_key, o.media_type, o.media_content_type,
+              o.reply_deadline
     """
 )
 
@@ -255,7 +326,7 @@ _MARK_SENT = text(
     """
     UPDATE conversation_outbox
        SET status = 'sent', external_message_id = :mid, sent_at = :now, error_code = NULL,
-           locked_by = NULL, locked_at = NULL
+           recipient_external_id = :recipient, locked_by = NULL, locked_at = NULL
      WHERE id = :item_id AND status = 'sending'
     RETURNING connection_id, thread_id, payload, media_object_key, media_type,
               media_content_type
@@ -303,7 +374,7 @@ _LIST_FOR_THREAD = text(
     """
     SELECT id, thread_id, channel, status, attempts, payload, approved_by_user_id, approved_at,
            draft_id, external_message_id, error_code, created_at, sent_at, media_type,
-           media_object_key
+           media_object_key, kind, comment_id, reply_deadline, recipient_external_id
       FROM conversation_outbox
      WHERE thread_id = :thread_id
      ORDER BY created_at, id
@@ -322,28 +393,40 @@ class PostgresConversationOutboxRepository:
         payload: Mapping[str, Any],
         approval: HumanApproval,
         media: OutboxMedia | None = None,
+        private_reply: PrivateReplyTarget | None = None,
+        on_enqueued: OnEnqueued | None = None,
     ) -> UUID:
-        _validate_enqueue(channel, payload, thread_id, approval)
+        _validate_enqueue(channel, payload, thread_id, approval, private_reply)
         item_id = uuid4()
-        with tenant_session(tenant_id) as session:
-            session.execute(
-                _ENQUEUE,
-                {
-                    "id": item_id,
-                    "tenant_id": tenant_id,
-                    "connection_id": connection_id,
-                    "thread_id": thread_id,
-                    "channel": channel,
-                    "kind": KIND_REPLY,
-                    "payload": json.dumps(dict(payload)),
-                    "approved_by": approval.user_id,
-                    "approved_at": approval.approved_at,
-                    "draft_id": approval.draft_id,
-                    "media_object_key": (media.object_key or None) if media else None,
-                    "media_type": media.media_type if media else None,
-                    "media_content_type": media.content_type if media else None,
-                },
-            )
+        try:
+            with tenant_session(tenant_id) as session:
+                session.execute(
+                    _ENQUEUE,
+                    {
+                        "id": item_id,
+                        "tenant_id": tenant_id,
+                        "connection_id": connection_id,
+                        "thread_id": thread_id,
+                        "channel": channel,
+                        "kind": _kind(private_reply),
+                        "payload": json.dumps(dict(payload)),
+                        "approved_by": approval.user_id,
+                        "approved_at": approval.approved_at,
+                        "draft_id": approval.draft_id,
+                        "media_object_key": (media.object_key or None) if media else None,
+                        "media_type": media.media_type if media else None,
+                        "media_content_type": media.content_type if media else None,
+                        "comment_id": private_reply.comment_id if private_reply else None,
+                        "reply_deadline": private_reply.deadline if private_reply else None,
+                    },
+                )
+                if on_enqueued is not None:
+                    on_enqueued(session, item_id)
+        except IntegrityError as exc:
+            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            if private_reply is not None and constraint == "uq_conv_outbox_private_reply":
+                raise PrivateReplyExists(private_reply.comment_id) from exc
+            raise
         return item_id
 
     def claim(
@@ -370,16 +453,29 @@ class PostgresConversationOutboxRepository:
                 attempts=r.attempts,
                 created_at=r.created_at,
                 media=_media_of(r.media_object_key, r.media_type, r.media_content_type),
+                reply_deadline=r.reply_deadline,
             )
             for r in rows
         ]
 
     def mark_sent(
-        self, *, tenant_id: UUID, item_id: UUID, external_message_id: str, now: datetime
+        self,
+        *,
+        tenant_id: UUID,
+        item_id: UUID,
+        external_message_id: str,
+        now: datetime,
+        recipient_external_id: str | None = None,
     ) -> None:
         with tenant_session(tenant_id) as session:
             row = session.execute(
-                _MARK_SENT, {"item_id": item_id, "mid": external_message_id, "now": now}
+                _MARK_SENT,
+                {
+                    "item_id": item_id,
+                    "mid": external_message_id,
+                    "now": now,
+                    "recipient": recipient_external_id,
+                },
             ).one_or_none()
             if row is None:
                 logger.warning(
@@ -463,6 +559,10 @@ class PostgresConversationOutboxRepository:
                 sent_at=r.sent_at,
                 media_type=r.media_type,
                 media_object_key=r.media_object_key,
+                kind=r.kind,
+                comment_id=r.comment_id,
+                reply_deadline=r.reply_deadline,
+                recipient_external_id=r.recipient_external_id,
             )
             for r in rows
         ]
@@ -508,6 +608,13 @@ class MemoryOutboxRow:
     error_code: str | None = None
     sent_at: datetime | None = None
     media: OutboxMedia | None = None
+    comment_id: str | None = None
+    reply_deadline: datetime | None = None
+    recipient_external_id: str | None = None
+
+
+# The statuses under which a private reply blocks another for the same comment (0073).
+_LIVE_STATUSES = frozenset({"pending", "sending", "sent"})
 
 
 @dataclass(frozen=True)
@@ -543,8 +650,18 @@ class MemoryConversationOutboxRepository:
         payload: Mapping[str, Any],
         approval: HumanApproval,
         media: OutboxMedia | None = None,
+        private_reply: PrivateReplyTarget | None = None,
+        on_enqueued: OnEnqueued | None = None,
     ) -> UUID:
-        _validate_enqueue(channel, payload, thread_id, approval)
+        _validate_enqueue(channel, payload, thread_id, approval, private_reply)
+        if private_reply is not None and any(
+            r.kind == KIND_PRIVATE_REPLY
+            and r.connection_id == connection_id
+            and r.comment_id == private_reply.comment_id
+            and r.status in _LIVE_STATUSES
+            for r in self.rows.values()
+        ):
+            raise PrivateReplyExists(private_reply.comment_id)
         now = self._clock()
         row = MemoryOutboxRow(
             id=uuid4(),
@@ -552,7 +669,7 @@ class MemoryConversationOutboxRepository:
             connection_id=connection_id,
             thread_id=thread_id,
             channel=channel,
-            kind=KIND_REPLY,
+            kind=_kind(private_reply),
             payload=dict(payload),
             approved_by_user_id=approval.user_id,
             approved_at=approval.approved_at,
@@ -561,7 +678,11 @@ class MemoryConversationOutboxRepository:
             next_attempt_at=now,
             seq=next(self._seq),
             media=media,
+            comment_id=private_reply.comment_id if private_reply else None,
+            reply_deadline=private_reply.deadline if private_reply else None,
         )
+        if on_enqueued is not None:
+            on_enqueued(None, row.id)  # raising leaves nothing queued, like a rollback
         self.rows[row.id] = row
         return row.id
 
@@ -598,6 +719,7 @@ class MemoryConversationOutboxRepository:
                     attempts=row.attempts,
                     created_at=row.created_at,
                     media=row.media,
+                    reply_deadline=row.reply_deadline,
                 )
             )
         return claimed
@@ -609,12 +731,19 @@ class MemoryConversationOutboxRepository:
         return row
 
     def mark_sent(
-        self, *, tenant_id: UUID, item_id: UUID, external_message_id: str, now: datetime
+        self,
+        *,
+        tenant_id: UUID,
+        item_id: UUID,
+        external_message_id: str,
+        now: datetime,
+        recipient_external_id: str | None = None,
     ) -> None:
         row = self._sending(tenant_id, item_id)
         if row is None:
             return
         row.status, row.external_message_id, row.sent_at = "sent", external_message_id, now
+        row.recipient_external_id = recipient_external_id
         row.error_code = row.locked_by = row.locked_at = None
         if any(
             m.connection_id == row.connection_id and m.external_message_id == external_message_id
@@ -692,6 +821,10 @@ class MemoryConversationOutboxRepository:
                 sent_at=r.sent_at,
                 media_type=r.media.media_type if r.media else None,
                 media_object_key=r.media.object_key if r.media else None,
+                kind=r.kind,
+                comment_id=r.comment_id,
+                reply_deadline=r.reply_deadline,
+                recipient_external_id=r.recipient_external_id,
             )
             for r in sorted(self.rows.values(), key=lambda r: (r.created_at, r.seq))
             if r.tenant_id == tenant_id and r.thread_id == thread_id
@@ -703,10 +836,12 @@ __all__ = [
     "CLAIM_SQL",
     "DEFAULT_BATCH",
     "ERROR_STALE_EXHAUSTED",
+    "KIND_PRIVATE_REPLY",
     "KIND_REPLY",
     "MAX_ATTEMPTS",
     "OUTBOX_KINDS",
     "OUTBOX_SHAPE_VERSION",
+    "OnEnqueued",
     "STALE_AFTER",
     "ApprovalRequired",
     "ClaimedOutboxItem",
@@ -718,6 +853,8 @@ __all__ = [
     "OutboxMedia",
     "OutboxRecord",
     "PostgresConversationOutboxRepository",
+    "PrivateReplyExists",
+    "PrivateReplyTarget",
     "backoff",
     "payload_text",
 ]

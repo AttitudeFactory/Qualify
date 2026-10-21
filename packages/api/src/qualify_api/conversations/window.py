@@ -10,10 +10,43 @@ WhatsApp package from several places; the day WhatsApp joins the multichannel in
 
 The Human Agent tag (7-day window, `features/human-agent-escalation.md`) needs its own
 permission and App Review and is deliberately NOT modelled.
+
+The PRIVATE REPLY to a comment (m-24789646) has its own limit, decided here too: one
+message within 7 days of the comment's creation (`features/private-replies.md`), whether
+or not the person ever wrote. Same `WindowState`, so the UI shows «quedan …» the same way
+for both, and the same boundary rule (closed AT the instant).
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from typing import Final
+
 from qualify_api.whatsapp.window import WINDOW, WindowState, WindowStatus, window_state
 
-__all__ = ["WINDOW", "WindowState", "WindowStatus", "window_state"]
+PRIVATE_REPLY_WINDOW: Final = timedelta(days=7)
+
+
+def private_reply_deadline(comment_posted_at: datetime) -> datetime:
+    """The instant Meta stops accepting a private reply to a comment."""
+    return comment_posted_at + PRIVATE_REPLY_WINDOW
+
+
+def private_reply_window(comment_posted_at: datetime | None, now: datetime) -> WindowState:
+    """OPEN until 7 days after the comment, CLOSED at that instant. A comment without a
+    creation time cannot be proven to be inside the limit, so it is CLOSED."""
+    if comment_posted_at is None:
+        return WindowState(WindowStatus.CLOSED)
+    # A 7-day window is a 24 h window that starts 6 days later.
+    return window_state(private_reply_deadline(comment_posted_at) - WINDOW, now)
+
+
+__all__ = [
+    "PRIVATE_REPLY_WINDOW",
+    "WINDOW",
+    "WindowState",
+    "WindowStatus",
+    "private_reply_deadline",
+    "private_reply_window",
+    "window_state",
+]

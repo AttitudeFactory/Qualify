@@ -191,7 +191,7 @@ Cada operación de Meta que Fase C necesita y que no está verificada va detrás
 
 | Capacidad | Variable | Estado actual | Qué falta para activarla |
 | --- | --- | --- | --- |
-| `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | No implementado en Qualify | Código (PR 2) y prueba real R1 con un tester |
+| `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | **Por verificar** (construida en PR 2) | Prueba real R1 con un tester (abajo) |
 | `story_comments` — comentarios en historias | `QUALIFY_STORY_COMMENTS` | **Limitación de Meta** (§6: «Comments cannot be made on story media») | Que Meta abra el edge; repetir `just story-probe` |
 | `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | No implementado en Qualify | Código (PR 5) y prueba real R3 (necesita la suscripción de webhooks, QUA-129, o que la sincronización traiga `reply_to`) |
 | `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | No implementado en Qualify | Código (PR 4) y prueba en producción de la respuesta pública (QUA-128, R4) |
@@ -199,3 +199,26 @@ Cada operación de Meta que Fase C necesita y que no está verificada va detrás
 El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: QUA-226 lo verificó en producción y siempre está disponible.
 
 **Vínculo de datos (`interaction_followups`, migración 0071).** Una fila por interacción (comentario o respuesta a historia): su intención comercial (`comment_intent_results`, si la abrió un análisis), el hilo privado del autor en Conversaciones, el envío que una persona aprobó (`conversation_outbox`) y el estado del aviso público, independiente del DM. El borrador sigue en `conversation_drafts` y la entrega en el outbox: aquí no se copian. El hilo privado se crea **solo cuando una persona aprueba un envío** (abrir una consulta no llena Conversaciones de hilos vacíos), y se puede crear antes de que la persona escriba porque el `from.id` de un comentario es el IGSID del autor (`ig-comment.md`), el mismo identificador que usan los DMs (`overview.md`: «specific to the person and the Instagram account»); R1 lo comprobará comparando el `recipient_id` que devuelve Meta con el del hilo.
+
+### Respuesta privada a un comentario (PR 2) y cómo hacer R1
+
+**Contrato que se construyó** (`features/private-replies.md` de Messenger Platform y `instagram-platform/private-replies.md`): `POST /{page-id}/messages` con `{"recipient": {"comment_id": …}, "message": {"text": …}}` — el mismo endpoint y el mismo token de Página que ya envían los DMs en producción (la guía de Instagram Platform escribe `/{ig-user-id}/messages`; la de Messenger Platform, `/{page-id}/messages`, que es la que usa Qualify). Permisos documentados: `instagram_manage_comments` y `pages_messaging` (la guía de Instagram Platform añade `instagram_basic` y `pages_read_engagement`). Límites: **un solo mensaje por comentario, dentro de 7 días** desde que se escribió; la conversación sigue solo si la persona responde (entonces aplica la ventana de 24 h). Llega a la bandeja principal si la persona sigue a la cuenta, o a «Solicitudes» si no.
+
+**Cómo lo aplica Qualify:**
+
+| Regla | Dónde |
+| --- | --- |
+| Un tipo de envío más del outbox (`kind = 'private_reply'`), con `comment_id` y `reply_deadline` (comentario + 7 días); sigue exigiendo `approved_by_user_id` | migración 0073, `conversations/outbox.py` (`PrivateReplyTarget`) |
+| Como mucho una respuesta privada viva (`pending`/`sending`/`sent`) por comentario; una `failed` no bloquea otro intento | índice `uq_conv_outbox_private_reply`, `PrivateReplyExists` |
+| El plazo de 7 días se revalida al enviar (`private_reply_expired`), igual que la ventana de 24 h de un DM | `conversations/sender.py` |
+| Si la persona escribió por DM en las últimas 24 h, se envía un DM normal (verificado) y no se gasta la respuesta privada | `followups/service.py` (`SendOptions.chosen`) |
+| Se guarda el `recipient_id` que devuelve Meta (`conversation_outbox.recipient_external_id`); si no coincide con el IGSID del hilo, el envío se conserva y se registra `conversations.sender.recipient_mismatch` | `conversations/sender.py` |
+
+**R1, paso a paso (cuando se haga):**
+
+1. Un tester con rol en la app (Standard Access solo cubre a personas con rol) comenta una publicación o Reel de la cuenta conectada **y no le ha escrito por DM en las últimas 24 h**.
+2. Comprobar que el token de la conexión tiene `pages_messaging` además de `instagram_manage_comments`; si no, reconectar pidiéndolo.
+3. Arrancar la app **y el worker** con `QUALIFY_COMMENT_PRIVATE_REPLY=on` (el sender también la comprueba: con la capacidad apagada, una respuesta privada en cola se marca `failed` con `private_reply_disabled` en vez de enviarse), abrir la consulta de ese comentario, aprobar un texto corto y correr `just conversations-tick --tenant <uuid>`.
+4. Resultado esperado: la fila del outbox queda `sent`, con `recipient_external_id` igual al `external_thread_id` del hilo DM (sin `recipient_mismatch` en el log), y el tester ve el mensaje en Instagram con el enlace a la publicación.
+5. Pegar aquí la fecha, el código de respuesta y la comprobación del destinatario (sin tokens ni textos). Con eso, la capacidad pasa a **verificada** en `followups/capabilities.py`.
+

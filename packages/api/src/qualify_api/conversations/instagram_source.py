@@ -397,7 +397,13 @@ def parse_send_response(payload: Mapping[str, Any]) -> SendResult:
     message_id = payload.get("message_id")
     if not isinstance(message_id, str) or not message_id:
         raise InstagramDirectError("send response carries no 'message_id'")
-    return SendResult(external_message_id=message_id)
+    recipient_id = payload.get("recipient_id")
+    return SendResult(
+        external_message_id=message_id,
+        recipient_external_id=recipient_id
+        if isinstance(recipient_id, str) and recipient_id
+        else None,
+    )
 
 
 # --- the channel ------------------------------------------------------------------------
@@ -581,6 +587,21 @@ class InstagramDirectSender:
         if len(body.encode("utf-8")) > 1000:
             raise ValueError("a message is at most 1000 UTF-8 bytes")
         return {"recipient": {"id": recipient_external_id}, "message": {"text": body}}
+
+    def build_private_reply_payload(self, *, comment_id: str, text: str) -> dict[str, Any]:
+        """`features/private-replies.md`: `POST /{page-id}/messages` with the COMMENT as
+        recipient — the same endpoint and token as every DM, so `send` ships it unchanged.
+        One message per comment, within 7 days of it (the outbox and the sender enforce
+        both); the person sees it in Inbox, or in Requests if they do not follow the
+        account."""
+        if not comment_id:
+            raise ValueError("a private reply needs the comment it answers")
+        body = text.strip()
+        if not body:
+            raise ValueError("an empty message cannot be sent")
+        if len(body.encode("utf-8")) > 1000:
+            raise ValueError("a message is at most 1000 UTF-8 bytes")
+        return {"recipient": {"comment_id": comment_id}, "message": {"text": body}}
 
     def build_media_payload(self, *, recipient_external_id: str, media_type: str) -> dict[str, Any]:
         """`send-message.md` («Send an image»): one `attachment` with `type` and a
