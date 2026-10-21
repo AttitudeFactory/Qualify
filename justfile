@@ -163,6 +163,13 @@ conversations-sync *args:
 conversations-seed *args:
     uv run --no-sync python -m qualify_api.conversations.devseed {{args}}
 
+# m-24789644 (R1): does Meta serve a story's comments? Read-only probe for one REAL
+# connection, with `story_comments` still off; prints a JSON report (no tokens, no comment
+# text). Steps and how to record the result: docs/conversaciones-limitaciones-meta.md.
+#   just story-probe --tenant <uuid> --connection <uuid>
+story-probe *args:
+    uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main

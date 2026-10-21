@@ -106,3 +106,81 @@ Instagram en vivo.
   antes de aplicarla en cualquier entorno compartido (ensayado en un worktree aparte). En la
   base de desarrollo local las columnas de perfil y `conversation_drafts` se aplicaron a mano
   como `qualify_owner` el 2026-10-16 (la revisión ya estaba aplicada y se editó *in place*).
+
+## 6. Comentarios de historias (m-24789644, R1)
+
+**Estado: 2026-10-21 — R1 cerrado como limitación de Meta.** Meta lista las historias y su número de comentarios, pero **no entrega los comentarios por la API**: `GET /{story-id}/comments` responde `400 (#10) Comments cannot be made on story media.` La capacidad `story_comments` queda implementada y **apagada**, y no debe encenderse mientras Meta no abra ese edge (encendida, cada sincronización fallaría en la historia monitoreada). Evidencia y procedimiento, abajo.
+
+### Resultado de R1 (2026-10-21, 16:5x UTC)
+
+Prueba con una conexión real en local (Facebook Login for Business, acceso Standard, posture `development`), cuenta `@rauldevgames` con los permisos `instagram_basic`, `instagram_manage_comments`, `pages_read_engagement`, `pages_show_list`, `business_management`, `instagram_content_publish`. Una historia publicada a las 16:45 UTC con un comentario de otra cuenta. Salida de `just story-probe`:
+
+```json
+{
+  "verdict": "comments_refused",
+  "stories_listed": 1,
+  "stories_error": null,
+  "checks": [
+    {
+      "story_id": "18138008500637031",
+      "media_product_type": "STORY",
+      "timestamp": "2026-10-21T16:45:58+00:00",
+      "media_error": null,
+      "comments_on_first_page": null,
+      "has_more_comments": null,
+      "comments_error": {"http_status": 400, "code": 10, "subcode": null}
+    }
+  ]
+}
+```
+
+Lectura directa del mismo id, para el texto exacto del error (solo mensaje y código; sin token):
+
+| Llamada | Respuesta |
+| --- | --- |
+| `GET /{ig-user-id}/stories` | **200**, 1 historia |
+| `GET /18138008500637031?fields=id,media_product_type,comments_count` | **200**, `media_product_type: STORY`, **`comments_count: 1`** |
+| `GET /18138008500637031/comments` | **400**, `OAuthException` código 10: **«(#10) Comments cannot be made on story media.»** |
+
+Conclusión: no es un permiso que falte (el mismo token lee los comentarios de los Reels, y Meta sabe que la historia tiene uno: `comments_count: 1`); es el edge `/comments`, que Meta no ofrece para historias. Lo que sí queda abierto, sin probar: si el webhook `comments` notifica los comentarios de historias (requiere la suscripción de webhooks, QUA-129).
+
+**Tropiezos de la prueba, por si se repite:** (1) en el `.env` local, `QUALIFY_META_APP_SECRET` tenía pegada la variable siguiente en la misma línea, y el canje del código fallaba con 400; (2) Facebook invalidó la sesión una vez (`190`/`460`) tras iniciar sesión en el navegador integrado, y hubo que reconectar; (3) el diálogo reutiliza la «configuración anterior» del usuario: conectó `@rauldevgames`, no `qualifymkt.co` — para elegir otra cuenta, «Editar configuración».
+
+### Qué dice la documentación (corpus `reference/meta-instagram-platform/`)
+
+| Pregunta | Respuesta del corpus | Fuente |
+| --- | --- | --- |
+| ¿Las historias salen en `GET /{ig-user-id}/media`? | No: tienen su propio edge, `GET /{ig-user-id}/stories`, con los mismos nodos IG Media (`media_product_type = STORY`) | `instagram-graph-api/reference/ig-user/stories.md`; `reference/instagram-media.md:91` |
+| ¿Qué devuelve `/stories`? | Solo las historias de las últimas 24 h; nunca las de Live ni las que son un reenvío | `ig-user/stories.md` («Limitations») |
+| ¿Qué permisos pide `/stories`? | `instagram_basic` + `pages_read_engagement` (y `ads_read` o `ads_management` si el rol en la Página viene de Business Manager) | `ig-user/stories.md` («Permissions») |
+| ¿Se puede comentar una historia? | Sí: la guía de respuestas privadas incluye «story» entre lo que una persona comenta | `private-replies.md:5,9,46` |
+| ¿`GET /{story-id}/comments` devuelve esos comentarios? | **No lo dice**, ni a favor ni en contra. **La prueba real dice que no** (arriba) | `ig-media/comments.md`, `comment-moderation.md` |
+| ¿El webhook `comments` se dispara con historias? | **No lo dice** | `webhooks.md` |
+| Respuestas a historias | Son **otra cosa**: llegan como DM (`messages` con `reply_to.story`), no como comentarios; las trata Conversaciones (QUA-229) | `changelog.md:192`; `webhooks.md` |
+
+### Qué hay en el código
+
+| Pieza | Dónde | Estado |
+| --- | --- | --- |
+| Lectura de `/stories` (mismos campos y mismo parser que `/media`, paginada, sin `since`) | `inbox/media_client.py` (`list_recent_stories`) | Hecho y probado offline contra el contrato |
+| Capacidad `story_comments`: con `QUALIFY_STORY_COMMENTS=on` el selector añade las historias, una historia se puede monitorear y sus comentarios se sincronizan por el mismo `/comments` | `inbox/service.py` (`story_comments`), `inbox/composition.py` (`story_comments_enabled`) | Hecho; **apagada por defecto**. Apagada, `/stories` no se llama y una historia sigue siendo `unsupported_surface` |
+| Sentimiento e intención de esos comentarios | Sin cambios: un comentario de historia se guarda como el de un Reel y entra en las dos colas | Probado contra Postgres (`test_inbox_story_comments_db.py`) |
+| Etiqueta «Historia» en Interacciones | `Qualify/inbox_vm.py` (`STORY_LABEL`) | Hecho (PR 4a) |
+| Sonda de R1 (solo lectura) | `inbox/story_probe.py`, `just story-probe` | Hecha y probada offline; **ejecutada contra Meta el 2026-10-21** (resultado arriba) |
+
+### Cómo repetir R1 (cuatro pasos)
+
+1. Publicar una historia en `qualifymkt.co` y que un tester con rol en la app la comente (Standard Access solo cubre a personas con rol).
+2. Con la conexión real de `qualifymkt.co` en la base (OAuth funcionando en local, o en el servidor), ejecutar la sonda **sin encender nada**: `just story-probe --tenant <uuid> --connection <uuid>`. Hace como máximo 7 llamadas, anotadas en el presupuesto de 200/h de la conexión, e imprime un JSON sin tokens ni texto de comentarios.
+3. Leer el `verdict` del JSON:
+   - `comments_served`: Meta devuelve los comentarios → seguir al paso 4.
+   - `comments_empty`: la historia se lista pero el edge devuelve una página vacía aunque haya comentarios → limitación de Meta.
+   - `comments_refused`: el edge responde con error (el JSON trae `http_status`, `code` y `subcode`) → limitación de Meta o de permisos.
+   - `stories_not_listed`: falla `/stories` (lo más probable, falta `pages_read_engagement`) → configuración pendiente.
+   - `no_live_story`: no había historia en las últimas 24 h → repetir el paso 1.
+4. Solo con `comments_served`: arrancar la app con `QUALIFY_STORY_COMMENTS=on`, monitorear la historia en Interacciones, sincronizar y pulsar «Analizar sentimiento» y «Analizar intención». Si el comentario aparece con su sentimiento y su intención, R1 queda confirmado y la capacidad se puede encender en producción.
+
+Si Meta cambia de criterio, repetir estos pasos y sustituir el resultado de arriba.
+
+**Riesgo para el día en que se encienda:** una historia caduca a las 24 h pero el monitoreo dura 14 días. La sincronización seguirá pidiendo `GET /{story-id}/comments` durante esos días; si Meta deja de servir el id al caducar, la marca de «medio borrado» (código 100, subcódigo 33) la dejará de monitorear sola, como a un Reel borrado.
+
