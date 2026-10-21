@@ -155,7 +155,24 @@ Nunca se copia producción tal cual. Se copia **la forma** de los datos (tenants
 
 ## 6. Camino a una producción estable y ordenada (checklist del ticket)
 
-Ordenado por riesgo; cada fase deja algo usable.
+Ordenado por riesgo; cada fase deja algo usable. Épica en Meegle: **Épica — Entornos dev/QA/prod, R2 por entorno y producción estable** (`story/detail/24824104`), con un Issue por entrega:
+
+| Punto | Issue | Prioridad | Bloqueado por |
+|---|---|---|---|
+| Este discovery | m-24823878 | P1 | — |
+| 1–2 R2: bucket y llave por entorno, rotar la de producción | m-24824121 | P1 | — |
+| 2 Secretos de proveedores por entorno (+ Claude Code en el servidor, punto 12) | m-24828494 | P2 | — |
+| 3 Respaldos fuera del servidor | m-24824122 | P1 | — |
+| 4 `QUALIFY_ENV` y guardas | m-24828495 | P1 | — |
+| 5 Instancia de QA en `qa.qualify.la` | m-24828498 | P1 | m-24828495, m-24824121 |
+| 6 CD por entorno y promoción | m-24828499 | P2 | m-24828498 |
+| 7a `just qa-refresh` + anonimización | m-24828500 | P1 | m-24824122, m-24828498 |
+| 7b `just dev-snapshot` + `ReadThroughObjectStore` | m-24828502 | P2 | m-24828500 |
+| 8 Rastreo de errores, `/api/health`, monitoreo | m-24828503 | P2 | — |
+| 9 Capacidad y `mem_limit` | m-24828504 | P2 | — |
+| 10 Retención y lifecycle de R2 | m-24828505 | P2 | m-24824121 |
+| 11 Runbooks | m-24828506 | P3 | m-24824122, m-24828494 |
+| 12 Dominio canónico `app.qualify.la` | m-24828507 | P3 | — |
 
 **Fase 0 — contener el riesgo (esta semana)**
 1. Crear buckets `qualify-dev`, `qualify-qa`, `qualify-backups`; renombrar o mantener el actual como `qualify-prod` (renombrar exige copiar: se puede dejar el nombre y documentarlo).
