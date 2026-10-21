@@ -31,6 +31,7 @@ from pydantic import ValidationError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.service import (
+    ApprovalBlocked,
     BrandNotReady,
     RouteBlockedByPolicy,
     UnknownDraft,
@@ -5205,6 +5206,12 @@ class CreativeState(rx.State):
         except (UnknownDraft, UnknownVariant):
             async with self:
                 self.action_error = _DRAFT_GONE
+            return
+        except ApprovalBlocked as exc:
+            # ticket 24803289: a variations piece whose copy quotes a price that is not
+            # the catalog's — the operator edits the copy, then approves
+            async with self:
+                self.action_error = exc.detail
             return
         except SQLAlchemyError as exc:
             logger.error("approve failed: %s", type(exc).__name__)

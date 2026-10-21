@@ -88,7 +88,7 @@ from qualify_api.creative.voice_service import VoiceProfileService
 if TYPE_CHECKING:
     # `angle_sets` imports `catalog.service`, which imports this package: loaded at
     # call time in `production_angle_set_service`, like `CatalogService`
-    from qualify_api.creative.angle_sets import AngleSetService
+    from qualify_api.creative.angle_sets import AnglePriceGuard, AngleSetService
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +336,9 @@ def production_content_service() -> ContentService:
         # what the Brand Kit saved beyond the kit (§ 2026-10-01): rubro, location,
         # hashtags, the account, the brandboard's elements, referentes, competitors
         context_reader=DbBrandContextReader(),
+        # ticket 24803289: a variations piece approved anywhere (/drafts/{id} too) holds
+        # the catalog price; every other draft passes untouched
+        approval_guard=_angle_price_guard(),
         media=MediaProducer(
             store=store,
             router=router,
@@ -440,6 +443,13 @@ class _DbCampaignOps:
         from qualify_api.creative.campaigns import set_post_campaign
 
         set_post_campaign(tenant_id, draft_id, campaign_id)
+
+
+def _angle_price_guard() -> AnglePriceGuard:
+    # loaded at call time for the same import cycle as `production_angle_set_service`
+    from qualify_api.creative.angle_sets import AnglePriceGuard
+
+    return AnglePriceGuard()
 
 
 @cache

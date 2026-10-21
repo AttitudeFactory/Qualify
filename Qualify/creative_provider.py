@@ -768,6 +768,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         kind=detail.kind,
         media=media,
         failure_detail=detail.failure_detail,
+        warnings=tuple(warning.detail for warning in detail.warnings),
     )
     return _with_download(tenant_id, detail, vm)
 

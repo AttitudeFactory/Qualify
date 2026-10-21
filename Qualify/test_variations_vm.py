@@ -29,7 +29,13 @@ from qualify_api.creative.angle_sets import (
     UnknownAngleSet,
 )
 from qualify_api.creative.service import BrandNotReady
-from qualify_creative.angles import PRESETS, AngleProduct, AngleSetPlan, UnknownPreset
+from qualify_creative.angles import (
+    PRESETS,
+    AngleProduct,
+    AngleSetPlan,
+    UnknownPreset,
+    price_problem,
+)
 from qualify_creative.enums import DraftStatus
 
 from .variations_vm import (
@@ -153,10 +159,28 @@ def test_a_copy_quoting_another_price_cannot_be_approved_and_says_why() -> None:
             draft_status=DraftStatus.GENERATED.value,
             variant_id=uuid4(),
             price_conflicts=("$15.000",),
+            price_problem=price_problem(("Hoy $15.000",), "$18.000"),
         ),
         _no_url,
     )
     assert not vm.can_approve and "$15.000" in vm.failure_text
+    assert "($18.000)" in vm.failure_text
+
+
+def test_a_tile_tells_an_invented_price_and_what_the_composition_left_out() -> None:
+    vm = build_angle_vm(
+        AngleView(
+            angle=_angle(ANGLE_QUEUED, draft_id=uuid4()),
+            draft_status=DraftStatus.GENERATED.value,
+            variant_id=uuid4(),
+            price_conflicts=("$9.900",),
+            price_problem=price_problem(("Hoy $9.900",), ""),
+            warnings=("El precio del catálogo no cabe completo en esta pieza.",),
+        ),
+        _no_url,
+    )
+    assert not vm.can_approve and "no tiene precio en el catálogo" in vm.failure_text
+    assert vm.warnings == ("El precio del catálogo no cabe completo en esta pieza.",)
 
 
 def test_failures_read_in_spanish() -> None:

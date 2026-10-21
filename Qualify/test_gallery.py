@@ -185,3 +185,36 @@ def test_rejecting_from_a_card_asks_first() -> None:
     assert (state.reject_post_id, state.reject_post_title) == ("p1", "Promo p1")
     state.set_reject_post_open(False)  # «Volver»
     assert state.reject_post_id == "" and state.reject_post_title == ""
+
+
+def test_every_screen_that_approves_a_draft_says_why_a_price_blocks_it() -> None:
+    """Ticket 24803289: the content service refuses a variations piece whose copy quotes
+    a price that is not the catalog's (`ApprovalBlocked`). Every screen that approves
+    through `approve_draft` — the POST's page and the gallery card — must show that
+    reason, not a generic error (the gallery card did, before this test)."""
+    import ast
+    from pathlib import Path
+
+    here = Path(__file__).parent
+    callers = []
+    for path in sorted(here.glob("*.py")):
+        if path.name.startswith("test_") or path.name == "creative_provider.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+            if "approve_draft" not in names:
+                continue
+            handled = {
+                h.type.id
+                for h in ast.walk(fn)
+                if isinstance(h, ast.ExceptHandler) and isinstance(h.type, ast.Name)
+            }
+            callers.append((path.name, fn.name, "ApprovalBlocked" in handled))
+    assert {(f, n) for f, n, _ in callers} >= {
+        ("creative_state.py", "approve_selected"),
+        ("gallery_state.py", "quick_approve"),
+    }
+    assert all(ok for _, _, ok in callers), callers

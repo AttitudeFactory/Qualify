@@ -64,3 +64,23 @@ def test_the_published_manifests_load_from_the_repo(fresh_service) -> None:
     # v2 (2026-10-13): the 9:16 / 4:5 / 1:1 video and the three stills
     assert registry.get("promo_producto").render_count == 6
     assert registry.get("promo_producto", 1).render_count == 3
+
+
+def test_production_service_holds_variations_pieces_to_the_catalog_price(fresh_service) -> None:
+    """Ticket 24803289 (PR 5): every approval through the composed content service —
+    /drafts/{id} and the «Piezas» cards — passes the variations sets' price guard. A
+    guard that exists but is not wired here would leave those screens unguarded."""
+    from qualify_api.creative.angle_sets import AnglePriceGuard
+
+    assert isinstance(fresh_service._approval_guard, AnglePriceGuard)
+
+
+def test_the_variations_service_is_composed_once() -> None:
+    """`production_angle_set_service` is cached like the content service it wraps: one
+    instance per process, not a new catalog/repository/generator per screen event."""
+    composition.production_angle_set_service.cache_clear()
+    try:
+        first = composition.production_angle_set_service()
+        assert composition.production_angle_set_service() is first
+    finally:
+        composition.production_angle_set_service.cache_clear()

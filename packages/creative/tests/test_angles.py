@@ -30,6 +30,7 @@ from qualify_creative.angles import (
     preset_problem,
     price_conflicts,
     price_mentions,
+    price_problem,
 )
 from qualify_creative.enums import AdImageMode, ContentFormat, ContentKind, ImageRoute
 
@@ -250,6 +251,34 @@ def test_price_conflicts_flag_only_figures_other_than_the_catalogs() -> None:
 def test_without_a_catalog_price_every_figure_is_a_conflict() -> None:
     assert price_conflicts(("Solo $9.900 hoy",), "") == ("$9.900",)
     assert price_conflicts(("Pide el tuyo",), "") == ()
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ("Pide el tuyo hoy",),  # no figure at all
+        ("Solo $18.000, como siempre", "Llévalo por 18.000 pesos"),  # only the catalog's
+        ("6 copas, 2x1 los martes", "Combo para 4 personas"),  # numbers, not money
+    ],
+)
+def test_a_copy_without_a_foreign_price_may_be_approved(texts: tuple[str, ...]) -> None:
+    assert price_problem(texts, "$18.000") is None
+
+
+def test_a_figure_other_than_the_catalogs_is_refused_naming_both() -> None:
+    problem = price_problem(("Antes $22.000, hoy $18.000",), "$18.000")
+    assert problem is not None
+    assert "$22.000" in problem and "($18.000)" in problem
+    assert "$18.000," not in problem.split("(")[0]  # the catalog's own figure is not blamed
+
+
+def test_without_a_catalog_price_a_figure_is_refused_as_invented_not_as_wrong() -> None:
+    problem = price_problem(("Solo $9.900 hoy",), "")
+    assert problem is not None
+    assert "no tiene precio en el catálogo" in problem and "$9.900" in problem
+    assert "que no es el precio del catálogo" not in problem
+    # and without a figure there is nothing to refuse
+    assert price_problem(("6 copas para compartir",), "") is None
 
 
 # -- one angle → one brief ----------------------------------------------------------------

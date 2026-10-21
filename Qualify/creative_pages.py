@@ -2285,6 +2285,10 @@ def draft_detail_index() -> rx.Component:
                             align="center",
                         ),
                         _campaign_field(),
+                        rx.foreach(
+                            CreativeState.draft.warnings,
+                            lambda warning: callout(warning, "warn"),
+                        ),
                         rx.cond(
                             CreativeState.draft.is_drafting,
                             _drafting_panel(),

@@ -404,6 +404,7 @@ def test_a_draft_with_r2_only_media_opens(backend, monkeypatch) -> None:
         media=(record,),
         failure_detail=None,
         title="Reel",
+        warnings=(),
     )
     vm = creative_provider._detail_to_vm(TENANT_A, detail)
     assert vm.media[0].key == KEY_A

@@ -194,6 +194,8 @@ class AngleVM:
     copy_hook: str
     copy_caption: str
     price_conflicts: tuple[str, ...]
+    #: What the composition left out (a catalog price that could not be printed whole).
+    warnings: tuple[str, ...]
     failure_text: str
     can_discard: bool
     can_restore: bool
@@ -211,12 +213,8 @@ def _failure_text(view: AngleView) -> str:
     if view.draft_status == DraftStatus.FAILED.value:
         info = failure_vm(view.draft_failure_reason)
         return info.label if info is not None else (view.draft_failure_detail or "")
-    if view.price_conflicts:
-        return (
-            f"El texto menciona {', '.join(view.price_conflicts)}, que no es el precio del "
-            "catálogo: corrígelo antes de aprobar."
-        )
-    return ""
+    # the one sentence every approval path refuses with (`angles.price_problem`)
+    return view.price_problem or ""
 
 
 def build_angle_vm(view: AngleView, preview_url: Callable[[str], str]) -> AngleVM:
@@ -247,6 +245,7 @@ def build_angle_vm(view: AngleView, preview_url: Callable[[str], str]) -> AngleV
         copy_hook=view.hook,
         copy_caption=view.caption,
         price_conflicts=tuple(view.price_conflicts),
+        warnings=tuple(view.warnings),
         failure_text=_failure_text(view),
         can_discard=angle.status == ANGLE_PROPOSED,
         can_restore=angle.status == ANGLE_DISCARDED,

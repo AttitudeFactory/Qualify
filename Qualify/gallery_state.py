@@ -16,6 +16,7 @@ import logging
 from uuid import UUID
 
 import reflex as rx
+from qualify_api.creative.service import ApprovalBlocked
 
 from .auth_state import AuthState
 from .creative_provider import acting_user_id, approve_draft, draft_detail, reject_draft
@@ -166,6 +167,13 @@ class GalleryState(rx.State):
             await asyncio.to_thread(
                 approve_draft, tenant_id, draft_id, UUID(variant.variant_id), user_id
             )
+        except ApprovalBlocked as exc:
+            # ticket 24803289: a variations piece quoting a price that is not the
+            # catalog's — said as it is, so the operator knows what to correct
+            async with self:
+                self.busy_post_id = ""
+            yield rx.toast.error(exc.detail)
+            return
         except Exception as exc:  # noqa: BLE001 — one card's failure never breaks the grid
             logger.warning("gallery quick approve failed: %s", type(exc).__name__)
             async with self:

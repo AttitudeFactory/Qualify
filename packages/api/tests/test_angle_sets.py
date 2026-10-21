@@ -1146,3 +1146,112 @@ def test_product_presets_refuse_another_brands_product() -> None:
     service, *_ = _service()
     with pytest.raises(UnknownProduct):
         service.product_presets(tenant_id=TENANT, brand_id=uuid4(), product_id=PRODUCT_ID)
+
+
+# -- PR 5: one price rule on every approval path, warnings, approvals made elsewhere ----
+
+
+def _generated_angle(
+    *, price: Decimal | None = Decimal("18000"), hook: str = "Shawarma mixto a $18.000"
+) -> tuple[AngleSetService, MemoryRepo, FakeDrafts, UUID, AngleRecord]:
+    service, repo, drafts, _, _, catalog = _clocked(generator=FakeGenerator(_angles(3)))
+    catalog.product = _product(price)
+    set_id = _create(service, count=3)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    angle = _angle_at(repo, 1)
+    assert angle.draft_id is not None
+    drafts.details[angle.draft_id] = _detail(angle.draft_id, DraftStatus.GENERATED.value, hook=hook)
+    return service, repo, drafts, set_id, angle
+
+
+def test_the_view_says_why_a_foreign_price_blocks_the_approval() -> None:
+    service, _, _, set_id, angle = _generated_angle(hook="Shawarma mixto a $15.000")
+    view = _view_of(service, set_id, angle.id)
+    assert view.price_problem is not None
+    assert "$15.000" in view.price_problem and "precio del catálogo ($" in view.price_problem
+
+
+def test_without_a_catalog_price_a_quoted_figure_is_refused_as_invented() -> None:
+    service, repo, drafts, set_id, angle = _generated_angle(price=None, hook="Solo $9.900 hoy")
+    view = _view_of(service, set_id, angle.id)
+    assert not view.can_approve and "no tiene precio en el catálogo" in (view.price_problem or "")
+    with pytest.raises(AngleNotActionable, match="no tiene precio en el catálogo"):
+        service.approve_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    assert drafts.approved == [] and repo.angles[angle.id].status == ANGLE_QUEUED
+
+
+def test_without_a_catalog_price_a_copy_without_figures_is_approved() -> None:
+    service, repo, drafts, set_id, angle = _generated_angle(price=None, hook="Para 6 personas")
+    assert _view_of(service, set_id, angle.id).price_problem is None
+    service.approve_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    assert drafts.approved and repo.angles[angle.id].status == ANGLE_APPROVED
+
+
+def test_an_angle_approved_in_the_drafts_screen_is_recorded_as_approved() -> None:
+    service, repo, drafts, set_id, angle = _generated_angle()
+    assert angle.draft_id is not None
+    # /drafts/{id} approved it through the content service, not through approve_angle
+    drafts.details[angle.draft_id] = replace(
+        drafts.details[angle.draft_id], status=DraftStatus.APPROVED.value
+    )
+    view = _view_of(service, set_id, angle.id)
+    assert view.angle.status == ANGLE_APPROVED and view.is_done and not view.can_approve
+    assert repo.angles[angle.id].status == ANGLE_APPROVED
+    # a draft still waiting for review leaves its angle alone
+    other = _angle_at(repo, 2)
+    assert repo.angles[other.id].status == ANGLE_QUEUED
+
+
+def test_the_view_carries_the_composition_warnings_of_the_piece() -> None:
+    from qualify_api.creative.media import PRICE_NOT_PRINTED, PRICE_NOT_PRINTED_TEXT
+    from qualify_api.creative.service import COMPOSITION_WARNINGS_PARAM, ImageRecord
+
+    service, _, drafts, set_id, angle = _generated_angle()
+    assert angle.draft_id is not None
+    cover = ImageRecord(
+        id=uuid4(),
+        media_url="m/0.jpg",
+        width=None,
+        height=None,
+        aspect_ratio=None,
+        params={
+            COMPOSITION_WARNINGS_PARAM: [
+                {"code": PRICE_NOT_PRINTED, "detail": PRICE_NOT_PRINTED_TEXT, "fields": {}}
+            ]
+        },
+        object_key="t/x/m/0.jpg",
+    )
+    drafts.details[angle.draft_id] = replace(drafts.details[angle.draft_id], media=(cover,))
+    assert _view_of(service, set_id, angle.id).warnings == (PRICE_NOT_PRINTED_TEXT,)
+
+
+@pytest.mark.parametrize(
+    ("price_label", "hook", "refused"),
+    [
+        (None, "Antes $99.000", None),  # not an angle's draft: never checked
+        ("$18.000", "Hoy $18.000", None),  # the catalog's own price
+        ("$18.000", "Hoy $15.000", "que no es el precio del catálogo"),
+        ("", "Sin cifras, para 4", None),  # no price and no figure
+        ("", "Hoy $9.900", "no tiene precio en el catálogo"),
+    ],
+)
+def test_the_price_guard_holds_only_an_angles_draft_to_the_catalog(
+    price_label: str | None, hook: str, refused: str | None
+) -> None:
+    from qualify_api.creative.angle_sets import AnglePriceGuard
+    from qualify_api.creative.service import ApprovalBlocked
+
+    asked: list[tuple[UUID, UUID]] = []
+
+    def lookup(tenant_id: UUID, draft_id: UUID) -> str | None:
+        asked.append((tenant_id, draft_id))
+        return price_label
+
+    guard, draft_id = AnglePriceGuard(lookup), uuid4()
+    copy = {"hook": hook, "caption": "", "cta": "Pide ya"}
+    if refused is None:
+        guard.check(tenant_id=TENANT, draft_id=draft_id, copy=copy)
+    else:
+        with pytest.raises(ApprovalBlocked, match=refused):
+            guard.check(tenant_id=TENANT, draft_id=draft_id, copy=copy)
+    assert asked == [(TENANT, draft_id)]

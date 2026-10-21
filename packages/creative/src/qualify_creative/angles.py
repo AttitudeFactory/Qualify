@@ -19,8 +19,9 @@ What lives here:
   as data to keep exact, never to invent.
 - `parse_angles` + `distinct_problems` — a sloppy answer is bounded, duplicates are
   dropped, and an answer that is not ten distinct scenarios is reported, not accepted.
-- `price_conflicts` — the guard that catches a copy quoting a price other than the
-  catalog's (the piece's price is drawn from the catalog, never from the model).
+- `price_conflicts` / `price_problem` — the guard that catches a copy quoting a price
+  other than the catalog's (the piece's price is drawn from the catalog, never from the
+  model), and the one sentence every approval path refuses with.
 - `angle_brief` — the `ContentBrief` ONE angle becomes, so each proposal rides the
   existing generation pipeline (`ContentService.create_draft` → `MediaProducer`)
   unchanged: one draft per angle, retried alone, reviewed in `/drafts`.
@@ -525,6 +526,27 @@ def price_conflicts(texts: Iterable[str], price_label: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(conflicts))
 
 
+def price_problem(texts: Iterable[str], price_label: str) -> str | None:
+    """Why a copy may not be approved under requirement 8, in the operator's Spanish —
+    None when it may: no figure at all, or only the catalog's price. The two refusals are
+    told apart: a figure other than the catalog's, and any figure for a product the
+    catalog has no price for (the model had none to quote, so it invented one). Only a
+    money token counts (`price_mentions`): "6 copas" or "2x1" are not prices."""
+    conflicts = price_conflicts(texts, price_label)
+    if not conflicts:
+        return None
+    shown = ", ".join(conflicts)
+    if price_label.strip():
+        return (
+            f"El texto menciona {shown}, que no es el precio del catálogo ({price_label}). "
+            "Corrígelo antes de aprobar."
+        )
+    return (
+        f"El producto no tiene precio en el catálogo, así que el texto no puede mencionar "
+        f"uno ({shown}). Quítalo antes de aprobar."
+    )
+
+
 # -- one angle → one brief ---------------------------------------------------------------
 
 
@@ -653,4 +675,5 @@ __all__ = [
     "preset_by_key",
     "price_conflicts",
     "price_mentions",
+    "price_problem",
 ]
