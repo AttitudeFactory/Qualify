@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import reflex as rx
+from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
 from . import tokens as T
@@ -430,7 +431,7 @@ def _guest_islands() -> rx.Component:
             _zone_head("Negocio", "business"),
             _nav_item("Brand Kit", "swatch-book", "/brand/kit", True),
             rx.divider(margin="0.15rem 0"),
-            _nav_item("Crear cuenta", "user-plus", "/signup", True),
+            _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True),
             _nav_item("Iniciar sesión", "log-in", "/login", True),
             rx.divider(margin="0.15rem 0"),
             rx.el.button(

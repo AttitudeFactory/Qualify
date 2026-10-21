@@ -192,7 +192,7 @@ def test_datos_creates_the_invite_mails_it_and_writes_back(
     assert item_id == ITEM
     assert pairs == {
         "f_status": "opt_invitada",
-        "f_link": "https://app.qualify.la/signup?invite=tok123",
+        "f_link": "https://app.qualify.la/registro?invitacion=tok123",
         "f_expires": int((NOW + timedelta(days=7)).timestamp() * 1000),
         "f_ref": "12345678-1234-4123-8123-123456789abc",
     }
@@ -234,7 +234,7 @@ def test_a_mail_failure_keeps_the_invite_and_hands_over_the_link(
     assert result.invite_id is not None  # the invite exists; only the mail failed
     ((_, pairs),) = meegle.updates
     assert pairs["f_status"] == "opt_error"
-    assert pairs["f_link"] == "https://app.qualify.la/signup?invite=tok123"
+    assert pairs["f_link"] == "https://app.qualify.la/registro?invitacion=tok123"
     assert pairs["f_ref"] == "12345678-1234-4123-8123-123456789abc"
     ((_, comment),) = meegle.comments
     assert "sí quedó creada" in comment and "mandarlo a mano" in comment

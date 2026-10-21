@@ -7,7 +7,7 @@
  * and docs/plan-migracion-liquid-glass.md §3 D5/D10.
  */
 
-/* ── Auth stage (/login, /signup, /brand/start) ──────────────────────────────
+/* ── Auth stage (/login, /registro, /brand/start) ──────────────────────────────
  * The centred wrapper wears `.q-ground` (the Noir scene, like `app_shell`), so the
  * auth card floats on the same ground as the app. The card itself is `ui.card`
  * (card material, no blur — plan D5); what it needs on top is the overlay elevation
