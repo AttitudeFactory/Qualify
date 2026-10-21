@@ -63,6 +63,8 @@ work you are doing).
    priority and labels landed — the create call answers 200 even when an optional field is dropped.
 9. **If work starts now**, move it to In Progress (`transition_state`; `get_transitable_states`
    lists the legal targets). Meegle's own PR rules do not move tickets yet (see `CLAUDE.md`).
+   Only the ticket's Reporter or Assignee may change its status: if the connector's user holds
+   neither role, the call fails with `ErrWorkItemNoPermission` — tell the user to move it by hand.
 10. **Report** in one short block:
     - ticket: `m-<id>` and its URL
     - branch: `<type>/m-<id>-<slug>` (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`)
