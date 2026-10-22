@@ -1,25 +1,28 @@
 ---
-description: Spawn the Qualify development team (architect + pipeline engineer + data scientist, plus a Reflex UI engineer when the sprint touches the CRM dashboard) to advance Fase 1 code in parallel. Best run with the dev-lead agent as the main thread (claude --agent dev-lead).
+description: Spawn the Qualify development team for one Meegle epic or ticket set — the architect plus only the engineers the goal needs (backend, creative, UI, platform, datasci). The lead opens the PR; the founder merges. Best run with the dev-lead agent as the main thread (claude --agent dev-lead).
 ---
 
-You are the team lead. If the `dev-lead` agent definition is not already active in this session, adopt its discipline now by reading `.claude/agents/dev-lead.md` and following it for the rest of the session.
+You are the team lead. If the `dev-lead` agent definition is not already active in this session, adopt its discipline now by reading `.claude/agents/dev-lead.md` and following it for the rest of the session. Read `.claude/agent-context.md` before planning.
 
-Form an agent team to advance Qualify's Fase 1 development. Spawn exactly three teammates from their subagent definitions:
+$ARGUMENTS is the sprint goal — ideally Meegle ticket id(s) (`m-<id>`) or an epic. If empty, ask me for the goal and its tickets before spawning anything. If the goal has no ticket, create it with the `meegle-ticket` skill first.
 
-1. **architect** — from the `principal-architect` agent type. Spawn prompt: "Read CLAUDE.md, docs/plan-ingesta-social.md §3-§5, and docs/arquitectura.md §6 first. You are the reviewer and decision-maker for this sprint: (a) resolve any schema/DDL, queue-topology, or repo-layout question the engineers raise — including whether/when to convert the repo into a uv workspace; (b) review teammates' plans when they submit them; (c) keep docs and ADRs in sync with what gets built. You do not write pipeline code yourself."
+## Team
 
-2. **pipeline** — from the `pipeline-engineer` agent type. Spawn prompt: "Read docs/plan-ingesta-social.md §0, §4, §5.1 and the structure of packages/models first. Your sprint focus is Fase 1 Parte 2: scaffold packages/scraper (uv project, src layout, ruff, pytest) with a typed Zyte client behind a Protocol, a TikTok hydration-JSON parser producing Pydantic schemas that match the ingestion.posts contract, and fixtures-based tests — no live scraping, no network in tests. The zyte-web-data plugin skills (scrape, scrape-analyze-page, scrape-spec) are available for exploration and fixture analysis — use them per the caveat in your agent definition: land results in packages/scraper's structure, not as a generated Scrapy project. Route any schema or layout decision to the architect before coding it."
+Always spawn the **architect**; spawn an engineer **only if the goal touches its paths** (sessions die to spend limits — fewer teammates is safer). Every spawn prompt starts with: "Read `.claude/agent-context.md` and your agent definition first. The sprint goal is: <goal + ticket ids>. Your tasks are on the shared task list. Plan before you code and send the plan to the lead. Leave your changes in the working tree — the lead opens the PR."
 
-3. **datasci** — from the `data-scientist-fde` agent type. Spawn prompt: "Read docs/modelos-multimodal-fase1.md and packages/models first. Your sprint focus is the golden-set evaluation harness: an eval module + CLI under packages/models (or a sibling, ask the architect) that runs the existing cascade over a labeled sample set, computes per-stage metrics (filter precision/recall, WER, sentiment accuracy), records checkpoint id + revision as provenance, and reports cost per video. Start with the existing fixtures as a 1-item golden set to prove the harness end-to-end, then define the labeling schema for scaling to ~100 videos."
+1. **architect** — `principal-architect`. Add: "You review plans, resolve schema/contract/module-boundary questions the engineers raise, and keep `docs/arquitectura.md`, ADRs and `CLAUDE.md` in sync with what gets built. You do not write product code."
+2. **backend** — `backend-engineer`, if the goal touches `packages/api` (outside creative), `packages/shared`, `packages/scraper` or needs a migration. Add: "You write every migration this sprint needs, including the ones other teammates request."
+3. **creative** — `creative-engineer`, if it touches the generator, Brand Kit, catalog, stock, Canva or `packages/render`.
+4. **ui** — `reflex-ui-engineer`, if it touches screens under `Qualify/`. Add: "Reflex skills are mandatory; verify the flow in the running app."
+5. **platform** — `platform-engineer`, if it touches `deploy/`, `.github/`, `infra/`, compose files or the `justfile`. Add: "Nothing on the production server without my explicit go."
+6. **datasci** — `data-scientist-fde`, if a model, prompt or classifier changes and needs measuring. Add: "Measure on real data, document the test in `docs/modelos-generativos/`."
 
-4. **ui** (spawn only if the sprint goal touches the CRM dashboard) — from the `reflex-ui-engineer` agent type. Spawn prompt: "Read CLAUDE.md's Agents section (Reflex skills are mandatory for this work) and the existing Qualify/ scaffold first. Your sprint focus is [fill in from the sprint goal]. You own Qualify/ only — no changes under packages/. If a feature needs data that only exists behind a pipeline/model contract that isn't built yet, build against seed/mock data and flag the gap instead of inventing the contract."
+## Coordination rules
 
-Coordination rules:
-
-- $ARGUMENTS is the sprint goal. If empty, default to: "Fase 1 Parte 2 kickoff — scraper package scaffold + golden-set eval harness, with the architect resolving layout/schema decisions as they arise."
-- **Require plan approval** for pipeline and datasci before they write code. As lead, only approve plans that: (1) include tests runnable via `uv run pytest` without network access, (2) respect the file-ownership map below, (3) defer schema/layout decisions to the architect rather than embedding them. The architect does not need plan approval for doc/ADR edits.
-- Break the goal into 5-6 self-contained tasks per teammate on the shared task list before anyone starts. Use task dependencies where real (e.g. "scaffold packages/scraper" blocks "implement TikTok parser").
-- **File ownership (no two teammates touch the same path):** architect → `docs/`, `CLAUDE.md`; pipeline → `packages/scraper/`, `docker-compose.yml`, `migrations/`, `packages/shared/`; datasci → `packages/models/`; ui (when spawned) → `Qualify/`. Anything outside these paths requires my approval — surface it, don't edit.
-- You (the lead) coordinate, review, and synthesize — do not implement tasks yourself while teammates are working; wait for them to finish.
-- Decisions flow: engineer raises question → architect answers (messaging the engineer directly) → if it changes documented architecture, architect drafts the ADR/doc update in the same turn.
-- Nobody commits or pushes. Leave the working tree changes for me to review; at the end, give me a summary of what was built, what passed tests, open decisions, and the exact verification commands I can run.
+- Break the goal into 5-6 self-contained tasks per teammate on the shared task list before anyone starts, with real dependencies (e.g. "migration" blocks "repository + service" blocks "screen").
+- **Require plan approval** for every engineer. Approve only plans that: (1) test offline via `just ci-test`, (2) respect the ownership map, (3) keep RLS, idempotency, provenance and the price guard where they apply, (4) defer schema/contract decisions to the architect, (5) put user-facing strings in plain Spanish.
+- **File ownership** — the map in `.claude/agents/dev-lead.md` rule 4. Anything outside it requires my approval: surface it, don't edit.
+- You coordinate, review and synthesize — no implementing while teammates work; wait for them to finish.
+- Decisions flow: engineer asks → architect answers directly → if it changes documented architecture, the architect drafts the ADR in the same turn.
+- **Delivery:** when all tasks pass, you run `just ci-lint`, `just ci-test` (and `just test-db` if SQL changed), then commit on `<type>/m-<id>-<slug>` and open the PR per `.claude/agent-context.md` §4 (`Resolves m-<id>`). Never merge, never push to `main`, never run anything that publishes, sends or deploys for real.
+- At the end, give me: the PR link(s), what was built and tested, what I must do before merging (secrets, server prep, auto-deploy off), open decisions, and the exact verification commands.
