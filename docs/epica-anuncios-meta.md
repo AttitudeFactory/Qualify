@@ -1,6 +1,6 @@
 # Épica — Anuncios de Meta desde Qualify
 
-**Fecha:** 2026-10-21 · **Estado:** `[INVESTIGACIÓN + HISTORIAS · sin implementar · 6 decisiones del fundador pendientes]` · **Meegle:** épica [m-24828970](https://project.larksuite.com/5h2wsx/story/detail/24828970) (mapa de tickets en §5)
+**Fecha:** 2026-10-21 · **Estado:** `[INVESTIGACIÓN + HISTORIAS · sin implementar · decisiones firmadas en ADR 38]` · **Meegle:** épica [m-24828970](https://project.larksuite.com/5h2wsx/story/detail/24828970) (mapa de tickets en §5)
 **Pedido del fundador (2026-10-21):** las publicaciones que genera Qualify ya son aceptables; ahora hay que poder **convertirlas en anuncios de Meta** por la Marketing API, con el botón «Más información» y las demás capacidades de anuncios que ofrece Meta, todo configurado desde Qualify.
 **Reemplaza** el ticket aparcado m-24789462 «Publicidad pagada / Marketing API» (parking lot desde 2026-07-24) y absorbe la rama (B) del discovery m-24789525 (anuncios en los Estados de WhatsApp como ubicación).
 **Fuentes:** documentación oficial de Meta leída el 2026-10-21 (enlaces en §8) y lectura del código en `main` (`8aa9a06`). Lo que no se pudo confirmar va marcado `[NO VERIFICADO]` y aparece como prueba en ADS-00.
@@ -13,7 +13,7 @@
 2. **El bloqueo no es de ingeniería, es administrativo.** Para manejar cuentas publicitarias de clientes hace falta **acceso avanzado** a `ads_management`/`ads_read`, una ronda más de App Review. Ese ticket vive en la épica de Meta App Review, no en esta. La verificación del negocio está hecha desde el 2026-10-05 y **la app ya está en modo Live** (fundador, 2026-10-21). Por eso el subcódigo 1885183, «post creado por una app en modo desarrollo», no debería aparecer; ADS-00 lo confirma igual.
 3. **El dinero lo pone el cliente**: el anuncio se cobra en la cuenta publicitaria del cliente con su propio método de pago. Qualify nunca toca tarjetas, solo lee si la cuenta puede pagar.
 4. **El código actual ayuda más de lo que parece.** Las piezas ya guardan `ads_primary_text`, `ads_headline`, `ads_description` y `ads_cta_type`, y el generador ya tiene «Destino: Orgánico / Anuncio / Ambos». Faltan el **enlace de destino**, un **botón cerrado** (enum) y la **cuenta publicitaria**.
-5. **Hay que tomar una decisión antes de construir**: ADR 21 dejó los anuncios fuera («orgánico primero»), y Zernio ya vende anuncios por API. Ver §6.
+5. **Decidido (ADR 38, 2026-10-21):** se levanta el «orgánico primero» de ADR 21 para anuncios y el MVP se construye sobre la Marketing API, empezando por los clientes del fundador. Ver §6.
 
 ---
 
@@ -227,7 +227,7 @@ Se escribe primero en Qualify y después en Meta (write-ahead). Si falla a mitad
 **Qué se quiere.** Como dueño de un negocio quiero promocionar una publicación que ya funciona en Instagram, con el botón «Más información», para que llegue a más gente de mi ciudad sin abrir el Administrador de anuncios.
 
 **Propuesta.** Botón «Promocionar» en el detalle de una pieza publicada, en `post_card` y en el panel del evento publicado del Planificador. El asistente tiene cuatro pasos:
-1. **Objetivo:** «Visitas a tu web» (TRAFFIC + `LINK_CLICKS`/`LANDING_PAGE_VIEWS`, `destination_type=WEBSITE`). Los demás objetivos llegan en E2/E3.
+1. **Objetivo:** «Visitas a tu web» (TRAFFIC + `LINK_CLICKS`/`LANDING_PAGE_VIEWS`, `destination_type=WEBSITE`). Los demás objetivos llegan en E2/E3. Cuando existan, este paso sugiere el objetivo según el rubro de la marca (ADR 38, D4).
 2. **Botón y enlace:** precargados de la pieza (ADS-05).
 3. **Público:** ciudad + radio, edad y Advantage+ audience encendido (detalle en ADS-07). Interruptor «Es un anuncio de vivienda».
 4. **Presupuesto y fechas:** presupuesto total en COP, inicio y fin. Debajo, el mínimo leído de `minimum_budgets` (nunca fijo en el código) y el alcance estimado.
@@ -378,16 +378,18 @@ Al terminar se crea todo en `PAUSED`, se muestra la vista previa de Meta (`adpre
 
 ---
 
-## 6. Decisiones del fundador (antes de E1)
+## 6. Decisiones del fundador — RESPONDIDAS 2026-10-21 (ADR 38)
 
-| # | Pregunta | Recomendación |
+Firmadas en [ADR 38](adr-38-anuncios-meta.md), fila 38 de `arquitectura.md` §6.
+
+| # | Pregunta | Decisión |
 |---|---|---|
-| **D1** | ¿Se levanta el «orgánico primero» de ADR 21 para anuncios? | Sí: es tu pedido de hoy. Va en el ADR de ADS-01 |
-| **D2** | ¿Construir sobre la Marketing API o comprar a un agregador (Zernio vende «6 redes de Ads»)? | **Construir** el MVP: tocamos la cuenta publicitaria del cliente con nuestras propias piezas y Chats, y Zernio no quita el App Review del cliente. Pero conviene leer su API de anuncios antes de firmar, como se hizo con la publicación |
-| **D3** | ¿Quién se ve primero: los clientes que administras (Bianki, Polette, inmobiliaria) por acceso estándar, o esperar App Review? | Empezar con los tuyos (ADR 29) e iniciar App Review en paralelo |
-| **D4** | ¿Primer objetivo: visitas a la web (`LEARN_MORE`) o clic a WhatsApp? | El pedido es `LEARN_MORE` → E1 tal cual. Para comida y viajes, WhatsApp probablemente vende más: E2 justo después |
-| **D5** | ¿Inmobiliaria con «Vivienda» encendido por defecto? | Apagado en CO/VE, con aviso; obligatorio si se apunta a EE. UU., Canadá o la UE |
-| **D6** | ¿Qualify cobra por anuncio gestionado (créditos, `billing.usage_events`) o va incluido? | Incluido en el MVP. Decidir el modelo al medir el uso |
+| **D1** | ¿Se levanta el «orgánico primero» de ADR 21 para anuncios? | **Sí.** La publicidad pagada entra en alcance |
+| **D2** | ¿Construir sobre la Marketing API o comprar a un agregador (Zernio vende «6 redes de Ads»)? | **Construir el MVP.** Se reabre si el App Review se rechaza sin camino o si mantener la integración cuesta más que un agregador |
+| **D3** | ¿Quién va primero: los clientes que administra el fundador por acceso estándar, o esperar el App Review? | **Los del fundador** (Bianki, Polette, la inmobiliaria), con el App Review (m-24828986) en paralelo |
+| **D4** | ¿Primer objetivo: visitas a la web (`LEARN_MORE`) o clic a WhatsApp? | **El MVP construye «Más información»** y E2 trae WhatsApp / Direct. **El objetivo depende del nicho del cliente**: el asistente sugiere uno según el rubro (comida y viajes → WhatsApp, inmobiliaria → WhatsApp o formulario, venta en web → visitas) y el cliente lo cambia. Mientras solo exista el del MVP, se ofrece ese |
+| **D5** | ¿Inmobiliaria con «Vivienda» encendido por defecto? | **Apagado.** Solo se fuerza donde Meta lo exige (segmentación que llega a EE. UU., Canadá o partes de Europa) |
+| **D6** | ¿Qualify cobra por anuncio gestionado o va incluido? | **Incluido en el MVP.** Se registra el gasto por promoción y el cobro se decide con uso medido en la épica de Suscripciones (m-24828931) |
 
 ---
 
