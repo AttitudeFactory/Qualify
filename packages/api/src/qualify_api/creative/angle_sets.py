@@ -8,8 +8,9 @@ What this service owns and what it delegates:
   became.
 - It delegates every piece to `ContentService.create_draft`: one `content_drafts` row
   per angle, generated out of band by the dispatcher, reviewed in `/drafts/{id}` like
-  any other POST. A failed angle is retried by creating a NEW draft for that angle
-  alone — the nine that worked are never regenerated.
+  any other POST. A failed angle is retried — and a piece that did not convince is
+  regenerated — by creating a NEW draft for that angle alone, briefed as the next take
+  of the same scene; the nine that worked are never regenerated.
 - It groups the pieces in a campaign (`creative/campaigns.py`, QUA-143), so the
   Planificador shows them together.
 
@@ -98,6 +99,9 @@ ANGLE_APPROVED = "approved"
 
 #: The draft statuses after which an angle may be generated again.
 _RETRYABLE_DRAFT_STATUSES = frozenset({DraftStatus.FAILED.value, DraftStatus.REJECTED.value})
+#: A draft in one of these is not being made and was not approved: its angle may still
+#: be edited or discarded (`AngleView.settled`).
+_SETTLED_DRAFT_STATUSES = _RETRYABLE_DRAFT_STATUSES | {DraftStatus.GENERATED.value}
 #: A draft in one of these was approved — in the gallery or in `/drafts/{id}`.
 _APPROVED_DRAFT_STATUSES = frozenset(
     {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
@@ -110,6 +114,20 @@ RESERVATION_TIMEOUT = timedelta(minutes=5)
 #: `failure_reason` of an angle whose reservation was abandoned with no draft found: its
 #: `request_key` is kept, so a retry that races a late draft still returns that draft.
 INTERRUPTED = "interrupted"
+#: What the content service logs when the gallery rejects a piece on the angle's behalf.
+DISCARD_REASON = "Descartada en Variaciones."
+REGENERATE_REASON = "Regenerada en Variaciones: otra toma del mismo escenario."
+
+_IN_PROGRESS = "Esa propuesta se está generando: espera a que termine."
+_NOT_DISCARDABLE: Mapping[str, str] = {
+    ANGLE_DISCARDED: "Ese ángulo ya está descartado.",
+    ANGLE_APPROVED: "Una pieza aprobada no se descarta desde aquí.",
+}
+_NOT_EDITABLE: Mapping[str, str] = {
+    ANGLE_DISCARDED: "Recupera el ángulo antes de editarlo.",
+    ANGLE_APPROVED: "Una pieza aprobada ya no se edita.",
+}
+_BAD_SCENE = "La escena no puede estar vacía ni superar los límites de la propuesta."
 
 
 class UnknownAngleSet(Exception):
@@ -268,6 +286,37 @@ class AngleView:
         )
 
     @property
+    def has_piece_to_review(self) -> bool:
+        """A piece landed and waits for the operator — the one state «Regenerar»
+        applies to, and the one whose draft a discard must reject."""
+        return (
+            self.angle.status == ANGLE_QUEUED and self.draft_status == DraftStatus.GENERATED.value
+        )
+
+    @property
+    def can_regenerate(self) -> bool:
+        return self.has_piece_to_review
+
+    @property
+    def settled(self) -> bool:
+        """Nothing is being made for this angle and nothing was approved: it may still
+        be edited or discarded. A proposal, a failed one, and a piece that landed, failed,
+        was rejected or whose draft is gone — never a reserved or drafting one."""
+        if self.angle.status in (ANGLE_PROPOSED, ANGLE_FAILED):
+            return True
+        return self.angle.status == ANGLE_QUEUED and (
+            self.angle.draft_id is None or self.draft_status in _SETTLED_DRAFT_STATUSES
+        )
+
+    @property
+    def can_edit(self) -> bool:
+        return self.settled
+
+    @property
+    def can_discard(self) -> bool:
+        return self.settled
+
+    @property
     def is_done(self) -> bool:
         return self.angle.status == ANGLE_APPROVED or (
             self.draft_status is not None
@@ -409,6 +458,16 @@ class DraftEngine(Protocol):
 
     def approve(
         self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> DraftDetail: ...
+
+    def reject(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        reason: str,
+        user_id: UUID,
+        regenerate: bool = False,
     ) -> DraftDetail: ...
 
 
@@ -963,17 +1022,100 @@ class AngleSetService:
 
     # -- angles ----------------------------------------------------------------------------
 
-    def discard_angle(self, *, tenant_id: UUID, angle_id: UUID) -> None:
-        angle = self._require_angle(tenant_id, angle_id)
-        if angle.status != ANGLE_PROPOSED:
-            raise AngleNotActionable("Solo se descarta un ángulo que aún no se generó.")
+    def discard_angle(self, *, tenant_id: UUID, angle_id: UUID, user_id: UUID) -> None:
+        """Take the angle out of the set — before its piece is made or once it landed
+        and did not convince. A piece waiting for review is rejected with it, so it does
+        not linger in `/drafts`; one being made or already approved cannot be discarded."""
+        _, view = self._angle_view(tenant_id, angle_id)
+        if not view.can_discard:
+            raise AngleNotActionable(_NOT_DISCARDABLE.get(view.angle.status, _IN_PROGRESS))
+        if view.has_piece_to_review:
+            assert view.angle.draft_id is not None  # has_piece_to_review implies a draft
+            self._drafts.reject(
+                tenant_id=tenant_id,
+                draft_id=view.angle.draft_id,
+                reason=DISCARD_REASON,
+                user_id=user_id,
+            )
         self._repo.update_angle(tenant_id=tenant_id, angle_id=angle_id, status=ANGLE_DISCARDED)
 
     def restore_angle(self, *, tenant_id: UUID, angle_id: UUID) -> None:
+        """Back into the set. One that never had a piece is proposed again; one whose
+        piece was rejected on discard is queued again, so what it can do next is
+        «Reintentar» — a new take, never the rejected piece revived."""
         angle = self._require_angle(tenant_id, angle_id)
         if angle.status != ANGLE_DISCARDED:
             raise AngleNotActionable("Ese ángulo no está descartado.")
-        self._repo.update_angle(tenant_id=tenant_id, angle_id=angle_id, status=ANGLE_PROPOSED)
+        status = ANGLE_QUEUED if angle.draft_id is not None else ANGLE_PROPOSED
+        self._repo.update_angle(tenant_id=tenant_id, angle_id=angle_id, status=status)
+
+    def edit_angle(self, *, tenant_id: UUID, angle_id: UUID, scene: str, composition: str) -> None:
+        """Rewrite what the picture shows. Bounded like Claude's own proposal
+        (`CreativeAngle`), and only while nothing is being made of it: the next take —
+        «Generar», «Reintentar» or «Regenerar» — is briefed from the new words."""
+        _, view = self._angle_view(tenant_id, angle_id)
+        if not view.can_edit:
+            raise AngleNotActionable(_NOT_EDITABLE.get(view.angle.status, _IN_PROGRESS))
+        try:
+            edited = view.angle.angle.model_copy(
+                update={"scene": scene, "composition": composition}
+            )
+            edited = CreativeAngle.model_validate(edited.model_dump())
+        except ValidationError as exc:
+            raise AngleNotActionable(_BAD_SCENE) from exc
+        self._repo.update_angle(
+            tenant_id=tenant_id,
+            angle_id=angle_id,
+            scene=edited.scene,
+            composition=edited.composition,
+        )
+
+    def regenerate_angle(self, *, tenant_id: UUID, angle_id: UUID, user_id: UUID) -> UUID:
+        """Another take of a piece that landed but did not convince: its draft is
+        rejected and a NEW one is briefed from the same angle, numbered as the next
+        attempt so the scene asks for a different shot (`take_scene_prompt`). Paid once
+        per take; the angles that worked are never touched. Returns the new draft id."""
+        record, view = self._angle_view(tenant_id, angle_id)
+        if not view.can_regenerate:
+            raise AngleNotActionable("Solo se regenera una pieza que ya está lista para revisar.")
+        assert view.angle.draft_id is not None  # can_regenerate implies a draft
+        self._drafts.reject(
+            tenant_id=tenant_id,
+            draft_id=view.angle.draft_id,
+            reason=REGENERATE_REASON,
+            user_id=user_id,
+        )
+        context = self._context(tenant_id, record)
+        campaign_id = self._ensure_campaign(tenant_id, record, user_id)
+        try:
+            draft_id, _ = self._generate_piece(
+                tenant_id,
+                record,
+                view.angle,
+                user_id,
+                campaign_id,
+                context,
+                from_statuses=(ANGLE_QUEUED,),
+                request_key=uuid4(),
+            )
+        except _Unresolved as exc:
+            raise AngleNotActionable(
+                "No se pudo confirmar la pieza; se revisará en unos minutos."
+            ) from exc
+        if record.status != SET_GENERATING:
+            self._repo.update_set(tenant_id=tenant_id, set_id=record.id, status=SET_GENERATING)
+        return draft_id
+
+    def _angle_view(self, tenant_id: UUID, angle_id: UUID) -> tuple[AngleSetRecord, AngleView]:
+        """One angle with its draft's status — what the per-angle actions decide on."""
+        angle = self._require_angle(tenant_id, angle_id)
+        record = self._require_set(tenant_id, angle.set_id)
+        drafts = (
+            self._drafts.get_drafts(tenant_id=tenant_id, draft_ids=[angle.draft_id])
+            if angle.draft_id is not None
+            else {}
+        )
+        return record, self._view(record, angle, drafts)
 
     def generate_pieces(
         self,
@@ -1167,6 +1309,8 @@ class AngleSetService:
                 product=context.facts,
                 brand_id=record.brand_id,
                 brand_logo_key=context.logo_key,
+                # the attempt this draft is: from the second on, a different shot
+                take=angle.attempts + 1,
             )
             draft_id = self._drafts.create_draft(
                 tenant_id=tenant_id,
@@ -1398,7 +1542,9 @@ __all__ = [
     "ANGLE_PROPOSED",
     "ANGLE_QUEUED",
     "ANGLE_RESERVED",
+    "DISCARD_REASON",
     "INTERRUPTED",
+    "REGENERATE_REASON",
     "RESERVATION_TIMEOUT",
     "SET_ANGLES_READY",
     "SET_COMPLETED",

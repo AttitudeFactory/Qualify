@@ -17,6 +17,7 @@ from qualify_creative.angles import (
     MIN_ANGLE_COUNT,
     PRESETS,
     PRICE_HIGHLIGHT,
+    TAKE_NOTE,
     AngleBrand,
     AngleProduct,
     CreativeAngle,
@@ -31,6 +32,7 @@ from qualify_creative.angles import (
     price_conflicts,
     price_mentions,
     price_problem,
+    take_scene_prompt,
 )
 from qualify_creative.enums import AdImageMode, ContentFormat, ContentKind, ImageRoute
 
@@ -231,6 +233,25 @@ def test_scene_prompt_joins_scene_and_composition_within_the_cap() -> None:
     angle = CreativeAngle(position=1, title="t", scene="s" * 400, composition="c" * 200)
     assert angle.scene_prompt.startswith("s" * 400 + ". Composición: ")
     assert len(angle.scene_prompt) <= 600
+
+
+def test_a_second_take_keeps_the_scene_and_asks_for_a_different_shot() -> None:
+    angle = CreativeAngle(position=1, title="t", scene="sobre mármol", composition="cenital")
+    assert take_scene_prompt(angle, 1) == angle.scene_prompt
+    second = take_scene_prompt(angle, 2)
+    assert second.startswith(angle.scene_prompt) and "Toma alternativa nº 2" in second
+    # the note survives the cap: the scene is what gets trimmed, never the note
+    long = CreativeAngle(position=1, title="t", scene="s" * 400, composition="c" * 200)
+    third = take_scene_prompt(long, 3)
+    assert len(third) <= 600 and third.endswith(TAKE_NOTE.format(take=3))
+    brief = angle_brief(
+        angle=angle,
+        preset=preset_by_key("escena_producto"),
+        product=PRODUCT,
+        brand_id=BRAND_ID,
+        take=2,
+    )
+    assert brief.media.scene_prompt == second
 
 
 # -- the price guard ------------------------------------------------------------------------

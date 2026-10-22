@@ -83,6 +83,13 @@ class FakeService:
     def restore_angle(self, **kw: Any) -> None:
         self._record("restore_angle", **kw)
 
+    def edit_angle(self, **kw: Any) -> None:
+        self._record("edit_angle", **kw)
+
+    def regenerate_angle(self, **kw: Any) -> UUID:
+        self._record("regenerate_angle", **kw)
+        return uuid4()
+
     def generate_pieces(self, **kw: Any) -> GenerationOutcome:
         self._record("generate_pieces", **kw)
         return GenerationOutcome(queued=(uuid4(),))
@@ -156,23 +163,30 @@ def test_every_wrapper_delegates_with_typed_ids(service: FakeService) -> None:
         TENANT, BRAND, USER, str(product_id), "escena_producto", count=10
     )
     assert set_id == str(service.set_id)
-    provider.discard_variation_angle(TENANT, str(angle_id))
+    provider.discard_variation_angle(TENANT, str(angle_id), USER)
     provider.restore_variation_angle(TENANT, str(angle_id))
+    provider.edit_variation_angle(TENANT, str(angle_id), "otra escena", "plano medio")
     outcome = provider.generate_variation_pieces(TENANT, set_id, USER, [str(angle_id)])
     provider.retry_variation_angle(TENANT, str(angle_id), USER)
+    new_draft = provider.regenerate_variation_angle(TENANT, str(angle_id), USER)
     provider.approve_variation_angle(TENANT, str(angle_id), USER)
     names = [name for name, _ in service.calls]
     assert names == [
         "create_set",
         "discard_angle",
         "restore_angle",
+        "edit_angle",
         "generate_pieces",
         "retry_angle",
+        "regenerate_angle",
         "approve_angle",
     ]
     create = service.calls[0][1]
     assert create["product_id"] == product_id and create["preset_key"] == "escena_producto"
-    assert service.calls[3][1]["angle_ids"] == [angle_id]
+    assert service.calls[1][1]["user_id"] == USER
+    assert service.calls[3][1]["scene"] == "otra escena"
+    assert service.calls[4][1]["angle_ids"] == [angle_id]
+    assert isinstance(new_draft, str) and UUID(new_draft)
     assert all(
         kw.get("angle_id", angle_id) == angle_id for _, kw in service.calls if "angle_id" in kw
     )
