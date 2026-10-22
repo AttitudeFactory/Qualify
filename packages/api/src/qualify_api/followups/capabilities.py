@@ -92,9 +92,10 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
         CapabilitySpec(
             Capability.PUBLIC_NOTICE,
             "QUALIFY_PUBLIC_NOTICE",
-            CapabilityState.NOT_IMPLEMENTED,
-            "El aviso público «Te enviamos la información por DM 💬» todavía no está "
-            "construido en Qualify.",
+            CapabilityState.TO_VERIFY,
+            "El aviso público «Te enviamos la información por DM 💬» (una respuesta pública "
+            "al comentario, solo tras confirmar el mensaje privado) está construido según la "
+            "documentación de Meta y pendiente de la prueba en producción (QUA-128, R4).",
         ),
     )
 }

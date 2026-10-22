@@ -194,7 +194,7 @@ Cada operación de Meta que Fase C necesita y que no está verificada va detrás
 | `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | **Por verificar** (construida en PR 2) | Prueba real R1 con un tester (abajo) |
 | `story_comments` — comentarios en historias | `QUALIFY_STORY_COMMENTS` | **Limitación de Meta** (§6: «Comments cannot be made on story media») | Que Meta abra el edge; repetir `just story-probe` |
 | `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | No implementado en Qualify | Código (PR 5) y prueba real R3 (necesita la suscripción de webhooks, QUA-129, o que la sincronización traiga `reply_to`) |
-| `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | No implementado en Qualify | Código (PR 4) y prueba en producción de la respuesta pública (QUA-128, R4) |
+| `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | **Por verificar** (construido en PR 4) | Prueba en producción de la respuesta pública (QUA-128, R4, abajo) |
 
 El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: QUA-226 lo verificó en producción y siempre está disponible.
 
@@ -230,4 +230,31 @@ El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: Q
 - **Decidir.** Editar, «Regenerar» (el borrador anterior queda descartado), «Descartar» la consulta o «Aprobar y enviar». Al aprobar, el mensaje entra al outbox con la aprobación de la persona y el borrador queda `accepted` (enviado tal cual) o `edited` (con el texto enviado): `generated_text` frente a `final_text` es el diff guardado (B2).
 - **Cuándo no se puede enviar**, la tarjeta lo dice por cada vía: el DM, si la persona no escribió en 24 h; la respuesta privada, si pasaron 7 días o si la capacidad está apagada («Por verificar», con su variable).
 - **Límite conocido:** la lista muestra las consultas de todas las cuentas del negocio, no solo la elegida en el selector de cuenta.
+
+### Aviso público (PR 4)
+
+El aviso «Te enviamos la información por DM 💬» es una **respuesta pública al comentario** (`POST /{ig-comment-id}/replies`, el mismo cliente `replies/client.py` que ya usan las respuestas a comentarios). Es un paso **posterior e independiente** del mensaje privado: tiene su propio estado en `interaction_followups` (`notice_*`, migraciones 0071 y 0074) y nunca toca el envío ni la bandeja.
+
+**Reglas:**
+
+| Regla | Dónde |
+| --- | --- |
+| Solo se ofrece en un **comentario** (una respuesta a historia no tiene comentario público) y con `public_notice` encendida; sin la capacidad, la tarjeta no muestra la casilla y aprobar con un aviso se rechaza | `followups/service.py` (`public_notice_available`, `approve_and_queue`), CHECK `ck_followup_notice_comments_only` |
+| La persona ve el texto (por defecto «Te enviamos la información por DM 💬», editable, máximo 300 caracteres) y lo aprueba **en el mismo clic** que el mensaje; si desmarca la casilla, sale solo el mensaje | `Qualify/followups_page.py`, `followups_state.py` |
+| Nada sale sin aprobación humana (ADR 21c): el aviso pasa a `pending` solo al aprobar con `HumanApproval`; el worker solo publica avisos `pending` | `followups/repository.py` (`approve_followup`), `followups/notice.py` |
+| Se publica **solo tras un mensaje confirmado**: la fila del outbox enlazada (`outbox_id`) está `sent` con `external_message_id`. Si quedó `failed` o `dead` (incluidos `send_ambiguous`, `private_reply_expired`, `private_reply_disabled`), el aviso queda `skipped` con el código `dm_<estado>:<código>` y no se llama a Meta. Mientras el mensaje está en cola, el aviso espera | `followups/notice.py` (`skip_unsent`, `claim`) |
+| **Un único aviso por interacción**: la fila del followup es la clave; el worker la reclama con un UPDATE guardado (`pending → posting`, `FOR UPDATE SKIP LOCKED`) y cada cierre exige `notice_status = 'posting'`; el id de Meta es único por conexión | migración 0074, índice `uq_followup_notice_external_id` (0071) |
+| Error **transitorio** (HTTP 429/5xx, códigos 1, 2, 4, 17, 32, 341, 613): vuelve a `pending` con espera `4^intentos` s, hasta 5 intentos (`max_attempts:<código>`). Error **definitivo** (otro código de Meta, p. ej. `http_400_code_100`, o `http_401_code_190`): `failed`. En `notice_error_code` solo hay códigos, nunca texto | `followups/notice.py` |
+| Si la petición pudo llegar a Meta sin respuesta clara (corte de red, 200 sin id, worker caído a mitad con la fila en `posting` más de 10 min), el aviso queda `failed` con `notice_ambiguous` y **no se reintenta**: un segundo aviso público es peor que ninguno | `followups/notice.py` |
+| Un fallo del aviso no afecta al mensaje ni a la bandeja: no cambia el followup aprobado ni el outbox, y un error de token no degrada la conexión (eso lo decide el envío de mensajes) | `followups/notice.py` |
+| Lo publica el **conversations-worker**, después del envío de cada pasada y aunque el envío haya fallado; la capacidad se lee en el worker: con `public_notice` apagada allí, un aviso que le llegue queda `failed` con `public_notice_disabled` (igual que una respuesta privada con su capacidad apagada). Con `QUALIFY_CONVERSATIONS_DM_CHANNEL=memory` los avisos van a un cliente en memoria y no se publica nada | `conversations/worker.py`, `followups/composition.py` |
+
+**Cómo se probará R4 en producción (QUA-128):**
+
+1. Partir de una consulta cuyo mensaje privado ya se puede enviar (R1 hecho, o un tester que escribió por DM en las últimas 24 h) en un comentario de un tester con rol en la app. Comprobar que el token de la conexión tiene `instagram_manage_comments` (y `pages_read_engagement`), los permisos de la respuesta a comentarios.
+2. Encender `QUALIFY_PUBLIC_NOTICE=on` **en la app y en el conversations-worker** (y `QUALIFY_COMMENT_PRIVATE_REPLY=on` si el envío es por respuesta privada). En la tarjeta debe aparecer «Publicar también un aviso en el comentario» con el texto por defecto.
+3. Aprobar el mensaje con el aviso marcado. Antes de que salga el mensaje, comprobar en la base que el followup tiene `notice_status = 'pending'` y que no hay respuesta pública en Instagram.
+4. Correr `just conversations-tick --tenant <uuid>` (o esperar al worker). Esperado: la fila del outbox queda `sent`; en la misma pasada, el followup pasa a `posted` con `notice_external_id` y `notice_posted_at`, y el tester ve la respuesta pública bajo su comentario. Repetir el tick: no aparece una segunda respuesta.
+5. Caso negativo: con otro comentario, provocar que el mensaje no salga (p. ej. aprobar con `QUALIFY_COMMENT_PRIVATE_REPLY` apagada en el worker → `private_reply_disabled`). Esperado: `notice_status = 'skipped'` con `notice_error_code = 'dm_failed:private_reply_disabled'` y ninguna respuesta pública.
+6. Pegar aquí la fecha, los estados y códigos observados (sin tokens ni textos de usuario). Con eso, `public_notice` pasa a **verificada** en `followups/capabilities.py`.
 

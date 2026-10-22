@@ -22,6 +22,9 @@ with a commercial query found in Interacciones — the one facade the UI talks t
   written) or `edited` (with the text sent), so `generated_text` vs `final_text` is the
   stored draft→sent diff (B2). Regenerating discards the pending draft and writes a new
   one; discarding the followup discards its draft too.
+- **The public notice** (PR 4, B4): when `public_notice` is on, a comment's card offers
+  it (`notice_available`) and the person approves its text together with the message;
+  it is posted later, only after the message is confirmed sent (`followups.notice`).
 
 Nothing here talks to a channel: the only way out stays the outbox.
 """
@@ -97,6 +100,8 @@ class FollowupCard:
     options: SendOptions
     intents: tuple[IntentChip, ...]
     draft: ConversationDraft | None
+    # Whether the card may offer the public notice under the comment (PR 4).
+    notice_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,6 +273,7 @@ class FollowupWorkspace:
                     options=self._service.options_from_origin(followup, origin, now),
                     intents=intent_chips(signals.get(origin.id), reliable),
                     draft=drafts.get(origin.id),
+                    notice_available=self._service.public_notice_available(followup),
                 )
             )
         return cards
@@ -301,9 +307,11 @@ class FollowupWorkspace:
         text: str,
         user_id: UUID,
         draft_id: UUID | None = None,
+        notice_text: str | None = None,
     ) -> Followup:
         """Queue `text` (the draft as written or edited) with this person's approval, then
-        record the draft's verdict. Raises what `FollowupService.approve_and_queue`
+        record the draft's verdict. `notice_text` is the public notice the same person
+        approved with it (None: no notice). Raises what `FollowupService.approve_and_queue`
         raises; a draft that is not this followup's pending one is ignored (the send still
         happens, unlinked) rather than mis-recorded."""
         followup = self._followup(tenant_id, followup_id)
@@ -318,6 +326,7 @@ class FollowupWorkspace:
                 approved_at=self._clock(),
                 draft_id=draft.id if draft else None,
             ),
+            notice_text=notice_text,
         )
         if draft is not None:
             sent = text.strip()

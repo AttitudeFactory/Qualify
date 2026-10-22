@@ -67,6 +67,8 @@ class NoticeStatus(StrEnum):
     NOT_REQUESTED = "not_requested"
     # Approved with a notice; waits for the private message's CONFIRMED send.
     PENDING = "pending"
+    # Claimed by the notice worker, being posted (0074).
+    POSTING = "posting"
     POSTED = "posted"
     FAILED = "failed"
     # The private message failed or its result is uncertain: the notice never goes out.
@@ -100,6 +102,10 @@ class Followup:
     notice_external_id: str | None = None
     notice_error_code: str | None = None
     notice_posted_at: datetime | None = None
+    # The notice queue (0074): not before this instant after a transient error, and the
+    # claim's instant while `posting`.
+    notice_next_attempt_at: datetime | None = None
+    notice_locked_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -338,7 +344,7 @@ _COLUMNS = """
     id, tenant_id, connection_id, origin_kind, origin_message_id, dm_thread_id, trigger,
     intent_result_id, status, send_route, outbox_id, decided_at, decided_by_user_id,
     notice_status, notice_text, notice_attempts, notice_external_id, notice_error_code,
-    notice_posted_at, created_at, updated_at
+    notice_posted_at, notice_next_attempt_at, notice_locked_at, created_at, updated_at
 """
 
 _INSERT = text(
@@ -415,6 +421,8 @@ def _row_to_followup(r: Any) -> Followup:
         notice_external_id=r.notice_external_id,
         notice_error_code=r.notice_error_code,
         notice_posted_at=r.notice_posted_at,
+        notice_next_attempt_at=r.notice_next_attempt_at,
+        notice_locked_at=r.notice_locked_at,
     )
 
 

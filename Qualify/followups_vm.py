@@ -16,7 +16,9 @@ What a card says, and where it comes from:
   it stays possible — or, when nothing can reach the person, the reason for each route,
   including an unverified capability's state («Por verificar») and switch;
 - **the draft**: its text (the person edits it in place), «requiere revisión» and the
-  claims the generator could not ground.
+  claims the generator could not ground;
+- **the public notice** (PR 4): only when `public_notice` is on and the origin is a
+  comment, the default text the person may edit and approve together with the message.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
+from qualify_api.followups.notice import DEFAULT_NOTICE_TEXT
 from qualify_api.followups.repository import FollowupTrigger, SendRoute
 from qualify_api.followups.service import RouteOption
 from qualify_api.followups.workspace import FollowupCard, surface_label
@@ -96,6 +99,9 @@ class FollowupCardVM:
     draft_text: str = ""
     needs_review: bool = False
     unsupported_claims: list[str] = field(default_factory=list)
+    # The public notice under the comment: offered only with `public_notice` on.
+    notice_available: bool = False
+    notice_default: str = ""
 
 
 def date_label(value: datetime | None, zone: ZoneInfo) -> str:
@@ -164,5 +170,7 @@ def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> Follo
         draft_text=draft.generated_text if draft else "",
         needs_review=bool(draft.needs_review) if draft else False,
         unsupported_claims=[str(c) for c in unsupported if str(c).strip()],
+        notice_available=card.notice_available,
+        notice_default=DEFAULT_NOTICE_TEXT if card.notice_available else "",
         **route_fields,  # type: ignore[arg-type]
     )

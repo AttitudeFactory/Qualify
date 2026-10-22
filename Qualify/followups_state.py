@@ -19,6 +19,12 @@ through the outbox (the only way out) and records the draft's verdict, so the
 generated→sent diff is kept. Every refusal is worded — no route can reach the person, the
 comment already got its private reply, someone else decided the query first — never a
 500.
+
+**The public notice** (PR 4): when a card offers it (`public_notice` on, a comment), the
+person sees its text — «Te enviamos la información por DM 💬» unless edited — with a box
+to include it, and approves it in the same click as the message. Unticking the box sends
+the message alone. It is posted later, by the worker, only once the message is confirmed
+sent.
 """
 
 from __future__ import annotations
@@ -63,6 +69,9 @@ _ALREADY_REPLIED = (
 _NO_ROUTE = "Ahora mismo no hay forma de escribirle a esta persona:"
 _EMPTY = "Escribe el mensaje antes de aprobarlo."
 _TOO_LONG = "El mensaje es demasiado largo (máximo 1000 caracteres)."
+_NOTICE_EMPTY = "Escribe el aviso público o desmarca la casilla."
+_NOTICE_TOO_LONG = "El aviso público es demasiado largo (máximo 300 caracteres)."
+_NOTICE_QUEUED = " El aviso público se publicará en el comentario cuando el mensaje salga."
 _SEND_FAILED = "No se pudo poner el mensaje en cola. Vuelve a intentarlo en un momento."
 _QUEUED = {
     "dm": "Mensaje aprobado: sale por mensaje directo en unos segundos.",
@@ -89,6 +98,9 @@ class FollowupsState(rx.State):
     error: str = ""
     # The text in each card's box, by followup id — the draft until the person edits it.
     edits: dict[str, str] = {}
+    # The public notice of each card that offers it: whether it goes, and its text.
+    notice_on: dict[str, bool] = {}
+    notice_edits: dict[str, str] = {}
     busy_id: str = ""
     busy_action: str = ""
     highlight_id: str = ""
@@ -160,6 +172,18 @@ class FollowupsState(rx.State):
         if self._known(followup_id) is not None and isinstance(text, str):
             self.edits = {**self.edits, followup_id: text}
 
+    @rx.event
+    def set_notice_on(self, followup_id: str, on: bool) -> None:
+        card = self._known(followup_id)
+        if card is not None and card.notice_available and isinstance(on, bool):
+            self.notice_on = {**self.notice_on, followup_id: on}
+
+    @rx.event
+    def set_notice_edit(self, followup_id: str, text: str) -> None:
+        card = self._known(followup_id)
+        if card is not None and card.notice_available and isinstance(text, str):
+            self.notice_edits = {**self.notice_edits, followup_id: text}
+
     @rx.event(background=True)
     async def load(self) -> None:
         async with self:
@@ -187,9 +211,26 @@ class FollowupsState(rx.State):
             self.cards = self._order(cards)
             # Keep what the person is typing; seed new cards with their draft.
             self.edits = {c.followup_id: self.edits.get(c.followup_id, c.draft_text) for c in cards}
+            offered = [c for c in cards if c.notice_available]
+            self.notice_on = {
+                c.followup_id: self.notice_on.get(c.followup_id, True) for c in offered
+            }
+            self.notice_edits = {
+                c.followup_id: self.notice_edits.get(c.followup_id, c.notice_default)
+                for c in offered
+            }
             self.loading, self.loaded, self.error = False, True, ""
 
     # -- actions ------------------------------------------------------------------------
+
+    def _notice_for(self, card: FollowupCardVM | None) -> str | None:
+        """The notice text the person approves with the message, or None (not offered,
+        or the box unticked)."""
+        if card is None or not card.notice_available:
+            return None
+        if not self.notice_on.get(card.followup_id, True):
+            return None
+        return self.notice_edits.get(card.followup_id, card.notice_default)
 
     async def _begin(self, followup_id: str, action: str) -> tuple[UUID, UUID] | None:
         async with self:
@@ -288,9 +329,14 @@ class FollowupsState(rx.State):
             card = self._known(followup_id)
             text = self.edits.get(followup_id, card.draft_text if card else "")
             draft_id = _uuid(card.draft_id) if card else None
+            notice_text = self._notice_for(card)
         if not text.strip():
             await self._end()
             yield rx.toast.warning(_EMPTY, duration=_TOAST_MS)
+            return
+        if notice_text is not None and not notice_text.strip():
+            await self._end()
+            yield rx.toast.warning(_NOTICE_EMPTY, duration=_TOAST_MS)
             return
         user_id = await self._acting_user(tenant_id)
         if user_id is None:
@@ -301,11 +347,17 @@ class FollowupsState(rx.State):
         try:
             route = await asyncio.to_thread(
                 lambda: gateway().approve(
-                    tenant_id, fid, text=text, user_id=user_id, draft_id=draft_id
+                    tenant_id,
+                    fid,
+                    text=text,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    notice_text=notice_text,
                 )
             )
             queued = True
-            yield rx.toast.success(_QUEUED.get(route, _QUEUED["dm"]), duration=_TOAST_MS)
+            message = _QUEUED.get(route, _QUEUED["dm"]) + (_NOTICE_QUEUED if notice_text else "")
+            yield rx.toast.success(message, duration=_TOAST_MS)
         except RouteUnavailable as exc:
             reasons = " ".join(
                 f"{o.reason}" for o in (exc.options.dm, exc.options.private_reply) if o.reason
@@ -318,9 +370,12 @@ class FollowupsState(rx.State):
         except CapabilityUnavailable as exc:
             yield rx.toast.warning(exc.availability.reason, duration=_TOAST_MS)
         except ValueError as exc:
-            yield rx.toast.warning(
-                _TOO_LONG if "at most" in str(exc) else _EMPTY, duration=_TOAST_MS
-            )
+            reason = str(exc)
+            if "notice" in reason:
+                warning = _NOTICE_TOO_LONG
+            else:
+                warning = _TOO_LONG if "at most" in reason else _EMPTY
+            yield rx.toast.warning(warning, duration=_TOAST_MS)
         except (ApprovalRequired, UnknownChannel, *_DB_ERRORS) as exc:
             logger.error("followups approve failed: %s", type(exc).__name__)
             yield rx.toast.error(_SEND_FAILED, duration=_TOAST_MS)
