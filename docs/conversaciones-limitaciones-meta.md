@@ -191,14 +191,14 @@ Cada operación de Meta que Fase C necesita y que no está verificada va detrás
 
 | Capacidad | Variable | Estado actual | Qué falta para activarla |
 | --- | --- | --- | --- |
-| `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | **Por verificar** (construida en PR 2) | Prueba real R1 con un tester (abajo) |
+| `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | **Verificado** (R1, 2026-10-22) | Encenderla en el despliegue (abajo, «Qué necesita producción») |
 | `story_comments` — comentarios en historias | `QUALIFY_STORY_COMMENTS` | **Limitación de Meta** (§6: «Comments cannot be made on story media») | Que Meta abra el edge; repetir `just story-probe` |
-| `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | **Por verificar** (construido en PR 5) | Prueba real R3 (abajo); en tiempo real necesita la suscripción de webhooks (QUA-129), si no, la sincronización con la capacidad encendida |
-| `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | **Por verificar** (construido en PR 4) | Prueba en producción de la respuesta pública (QUA-128, R4, abajo) |
+| `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | **Verificado** (R3, 2026-10-22) | Encenderla y **suscribir la Página** de cada cuenta a la app (sin eso Meta rechaza el DM de vuelta, abajo) |
+| `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | **Verificado** (R4, 2026-10-22, con el arreglo del tiempo de espera de `replies/client.py`) | Encenderla en el despliegue (abajo) |
 
 El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: QUA-226 lo verificó en producción y siempre está disponible.
 
-**Vínculo de datos (`interaction_followups`, migración 0071).** Una fila por interacción (comentario o respuesta a historia): su intención comercial (`comment_intent_results`, si la abrió un análisis), el hilo privado del autor en Conversaciones, el envío que una persona aprobó (`conversation_outbox`) y el estado del aviso público, independiente del DM. El borrador sigue en `conversation_drafts` y la entrega en el outbox: aquí no se copian. El hilo privado se crea **solo cuando una persona aprueba un envío** (abrir una consulta no llena Conversaciones de hilos vacíos), y se puede crear antes de que la persona escriba porque el `from.id` de un comentario es el IGSID del autor (`ig-comment.md`), el mismo identificador que usan los DMs (`overview.md`: «specific to the person and the Instagram account»); R1 lo comprobará comparando el `recipient_id` que devuelve Meta con el del hilo.
+**Vínculo de datos (`interaction_followups`, migración 0071).** Una fila por interacción (comentario o respuesta a historia): su intención comercial (`comment_intent_results`, si la abrió un análisis), el hilo privado del autor en Conversaciones, el envío que una persona aprobó (`conversation_outbox`) y el estado del aviso público, independiente del DM. El borrador sigue en `conversation_drafts` y la entrega en el outbox: aquí no se copian. El hilo privado se crea **solo cuando una persona aprueba un envío** (abrir una consulta no llena Conversaciones de hilos vacíos), y se puede crear antes de que la persona escriba porque el `from.id` de un comentario es el IGSID del autor (`ig-comment.md`), el mismo identificador que usan los DMs (`overview.md`: «specific to the person and the Instagram account»); R1 lo comprobó: el `recipient_id` que devolvió Meta es el `from.id` del comentario y el id del hilo DM del autor (2026-10-22).
 
 ### Respuesta privada a un comentario (PR 2) y cómo hacer R1
 
@@ -287,4 +287,27 @@ Una respuesta a una historia **no es un comentario**: llega como un mensaje dire
 3. Comprobar en la base que el mensaje tiene `story_reply_id` (y `story_reply_url`), y en Conversaciones que la burbuja dice «Respondió a tu historia». Si llegó por la sincronización, confirmar que la respuesta de Meta trae `story.reply_to` (y no otra forma): es la parte del contrato que la documentación no muestra completa.
 4. Pulsar «Analizar intención» en Interacciones: la consulta aparece en «Consultas desde comentarios» con «Respondió a tu historia», borrador y ruta «Mensaje directo». Aprobarla y comprobar que sale en el mismo hilo.
 5. Pegar aquí la fecha, la vía por la que llegó (webhook o sincronización) y la forma observada (sin tokens ni textos de usuario). Con eso, `story_reply_context` pasa a **verificada** en `followups/capabilities.py`.
+
+### Resultados de las pruebas reales (2026-10-22)
+
+Prueba en local contra la API real de Meta, con la conexión de `@rauldevgames` (Facebook Login for Business, acceso Standard, app «QualifyMkt Connector»), reconectada con `instagram_manage_messages` y `pages_messaging` (Meta concedió además `pages_manage_metadata`), y un tester con rol en la app. Las tres capacidades encendidas solo en esa ejecución; los mensajes se aprobaron con `HumanApproval` y los envió el `conversations-worker` (`--once`). Sin tokens ni textos de usuario.
+
+| Prueba | Resultado | Evidencia |
+| --- | --- | --- |
+| Lectura de DMs con el nuevo token | ✅ | Una pasada de sincronización trajo 34 mensajes. El perfil del contacto (`GET /{igsid}?fields=name,username,profile_pic`) responde `403`, código 230 (Meta pide el consentimiento de esa persona): los hilos se ven sin foto, no bloquea nada |
+| `from.id` del comentario = IGSID del DM | ✅ | Los comentarios del tester llegan con el mismo id que su hilo de DM (`936018996002128`) |
+| **R1** — respuesta privada a un comentario | ✅ | `POST /{page-id}/messages` con `recipient.comment_id`: fila `private_reply` `sent` con `message_id`; el `recipient_id` de Meta es el IGSID del hilo (sin `recipient_mismatch`) |
+| **R4** — aviso público tras el DM confirmado | ✅ con arreglo | 1.ª prueba: el aviso **se publicó** pero quedó `failed`/`notice_ambiguous`: `POST /{comment-id}/replies` tardó más que los 5 s por defecto de httpx y el cliente cortó. Arreglo: `REPLY_TIMEOUT` de 60 s en `replies/client.py` (afecta también a las respuestas públicas a comentarios). 2.ª prueba con el arreglo: el DM `sent` y en la misma pasada el aviso `posted` con id de Meta; una segunda pasada no publicó otro (un solo aviso bajo el comentario) |
+| **R3** — llegada de la respuesta a una historia | ✅ | La sincronización trae `story.reply_to` con el id y la URL de la historia; quedan en `messages.story_reply_id`/`story_reply_url`, y la consulta se abre con la ruta «Mensaje directo» |
+| **R3** — responder por DM | ✅ con configuración | Sin la Página suscrita a la app, Meta rechaza **cualquier DM normal** con `(#10) Este mensaje se envió fuera del período permitido` (subcódigo 2534022), aunque la persona haya escrito minutos antes: `GET /{page-id}/subscribed_apps` estaba vacío. Tras `POST /{page-id}/subscribed_apps?subscribed_fields=messages`, un mensaje nuevo del tester abrió la ventana y el DM salió (`sent`). La suscripción no vale para los mensajes anteriores a ella. La respuesta privada no depende de esto |
+
+**Qué necesita producción (para activar Fase C):**
+
+1. **Permisos.** En `.env.prod`, `QUALIFY_META_SCOPES` debe incluir `instagram_manage_messages`, `pages_messaging` y `pages_manage_metadata` (este último para suscribir la Página). Si producción usa `QUALIFY_META_CONFIG_ID`, la configuración de Facebook Login for Business del panel de Meta debe pedir los mismos permisos.
+2. **Reconectar** cada cuenta de Instagram en `/connections` para que su token los lleve (comprobar en la tarjeta que «Bandeja de mensajes directos» queda disponible).
+3. **Suscribir la Página** de cada cuenta a la app: `POST /{page-id}/subscribed_apps?subscribed_fields=messages` (QUA-129; hoy ningún código lo hace al conectar). Sin esto, ningún DM normal sale (24 h cerrada para la app) y no llegan webhooks de mensajes.
+4. En Instagram, cada cuenta con **«Permitir acceso a los mensajes»** activado.
+5. **Encender las capacidades** en `.env.prod` (lo leen la app y el `conversations-worker`): `QUALIFY_COMMENT_PRIVATE_REPLY=on`, `QUALIFY_PUBLIC_NOTICE=on`, `QUALIFY_STORY_REPLY_CONTEXT=on`, y reiniciar los contenedores.
+6. **Desplegar el arreglo del tiempo de espera** de `replies/client.py` antes de encender `public_notice`.
+7. **Acceso Standard:** todo lo anterior funciona solo con personas con rol en la app. Para clientes reales hace falta Advanced Access y App Review de esos permisos (QUA-140, QUA-142).
 
