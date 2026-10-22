@@ -15,19 +15,32 @@ Two jobs, both deterministic PIL over the operator's own images:
   that one image, products up top where a presenter standing in the lower two thirds
   does not cover them.
 
+- `subtitle_layer` — one subtitle of a video (m-24828920), over a transparent canvas.
+
 The product's pixels are never altered — scaled to fit, placed on a card with a soft
 shadow (or directly, with its own transparency, when it has one). That is what keeps
 this the `FROM_UPLOAD` route: no AI disclosure for the image itself.
+
+Every word is drawn in the brand's `TextStyle` when the caller has one (m-24828920): the
+font file of its Brand Kit and a fill/outline pair from its palette. Without one, the
+system fonts and white with a soft shadow, as before.
 """
 
 from __future__ import annotations
 
+import contextlib
+import functools
+import hashlib
 import io
 import re
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from qualify_creative.text_colors import contrast
 
 FEED_SIZE = (1080, 1350)
 REEL_SIZE = (1080, 1920)
@@ -64,7 +77,78 @@ class FlyerText:
     price: str = ""
 
 
-def _font(px: int, *, bold: bool) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+@dataclass(frozen=True)
+class TextStyle:
+    """How the brand's words are drawn (m-24828920). `font`: the bytes of a TTF / OTF /
+    WOFF file (`None`, or a file FreeType cannot open → the system fonts). `colors`:
+    (fill, outline) as `#RRGGBB`, from `text_colors.text_colors` (`None` → white with a
+    soft shadow over a picture, as before)."""
+
+    font: bytes | None = None
+    colors: tuple[str, str] | None = None
+
+
+DEFAULT_STYLE = TextStyle()
+
+#: The weights tried, in order, on a variable font when the words are bold.
+_BOLD_VARIATIONS = (b"Bold", b"SemiBold", b"Semibold", b"ExtraBold", b"Black")
+#: How thick an outline is, as a share of the type size.
+_OUTLINE_SHARE = 0.07
+
+
+#: Where a brand's font file is kept on disk while this process draws in it.
+_FONT_DIR = Path(tempfile.gettempdir()) / "qualify-brand-fonts"
+
+
+@functools.lru_cache(maxsize=8)
+def _face_path(face: bytes) -> str:
+    """The font file on disk, written once per face. FreeType reads a font opened by
+    path from the file; opened from bytes, every size would keep its own full copy of
+    them (review 2026-10-22: a 20 MB face × 64 cached sizes ≈ 1.3 GB)."""
+    _FONT_DIR.mkdir(parents=True, exist_ok=True)
+    path = _FONT_DIR / f"{hashlib.sha256(face).hexdigest()}.font"
+    if not path.exists():
+        path.write_bytes(face)
+    return str(path)
+
+
+@functools.lru_cache(maxsize=64)
+def _font_at(path: str, px: int, bold: bool) -> ImageFont.FreeTypeFont | None:
+    try:
+        font = ImageFont.truetype(path, px)
+    except OSError:
+        return None
+    if bold:
+        # a variable font opens at its default weight; a static one has no variations
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            names = font.get_variation_names()
+            wanted = next((name for name in _BOLD_VARIATIONS if name in names), None)
+            if wanted is not None:
+                font.set_variation_by_name(wanted)
+    return font
+
+
+def _brand_font(face: bytes, px: int, bold: bool) -> ImageFont.FreeTypeFont | None:
+    try:
+        path = _face_path(face)
+    except OSError:  # no writable temp dir: the system fonts
+        return None
+    return _font_at(path, px, bold)
+
+
+def font_usable(face: bytes | None) -> bool:
+    """Whether the words can be drawn in this font file (a WOFF2 needs a FreeType built
+    with Brotli; anything unreadable is not a font)."""
+    return face is not None and _brand_font(face, 32, False) is not None
+
+
+def _font(
+    px: int, *, bold: bool, face: bytes | None = None
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if face is not None:
+        brand = _brand_font(face, px, bold)
+        if brand is not None:
+            return brand
     for name in _BOLD_FONTS if bold else _REGULAR_FONTS:
         try:
             return ImageFont.truetype(name, px)
@@ -90,9 +174,19 @@ def _palette(palette: Sequence[str]) -> tuple[tuple[int, int, int], tuple[int, i
     return base, accent
 
 
-def _luminance(color: tuple[int, int, int]) -> float:
-    r, g, b = (c / 255 for c in color)
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+#: The dark ink of a text on a light colour (and the light one, white).
+_DARK_INK = (17, 24, 39)
+
+
+def _hex(color: tuple[int, int, int]) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*color)
+
+
+def _dark_ink_on(color: tuple[int, int, int]) -> bool:
+    """Whether text on `color` reads better dark than white — by WCAG contrast, the
+    same measure as the brand's text colours (review 2026-10-22: a plain-luma
+    threshold gave a mid-tone pill white text at ~3:1)."""
+    return contrast(_hex(color), _hex(_DARK_INK)) > contrast(_hex(color), "#FFFFFF")
 
 
 def _open(data: bytes) -> Image.Image:
@@ -216,25 +310,42 @@ def _wrap(
     return lines
 
 
+def _outline_px(px: int, style: TextStyle) -> int:
+    return max(2, round(px * _OUTLINE_SHARE)) if style.colors else 0
+
+
 def _headline(
-    canvas: Image.Image, text: str, box: tuple[int, int, int, int], *, dark_text: bool
+    canvas: Image.Image,
+    text: str,
+    box: tuple[int, int, int, int],
+    *,
+    dark_text: bool,
+    style: TextStyle = DEFAULT_STYLE,
 ) -> None:
     """The hook, as big as fits in `box` (at most 4 lines), centred, with a soft shadow
     so it reads over a photograph. It shrinks before it is ever cut (§ request
-    2026-10-08: the hook came out cut with «…»)."""
+    2026-10-08: the hook came out cut with «…»). In the brand's colours when `style` has
+    them: the fill with its outline, which reads on any background (m-24828920)."""
     if not text.strip():
         return
     left, top, right, bottom = box
     draw = ImageDraw.Draw(canvas)
     for px in range(96, 26, -4):
-        font = _font(px, bold=True)
-        lines = _wrap(draw, text, font, right - left, 4)
+        font = _font(px, bold=True, face=style.font)
+        room = right - left - 2 * _outline_px(px, style)
+        lines = _wrap(draw, text, font, room, 4)
         line_h = round(px * 1.15)
         if line_h * len(lines) <= bottom - top and all(
-            draw.textlength(line, font=font) <= right - left for line in lines
+            draw.textlength(line, font=font) <= room for line in lines
         ):
             break
-    fill = (17, 24, 39, 255) if dark_text else (255, 255, 255, 255)
+    stroke = _outline_px(px, style)
+    if style.colors:
+        fill = (*_rgb(style.colors[0]), 255)
+        outline = (*_rgb(style.colors[1]), 255)
+    else:
+        fill = (*_DARK_INK, 255) if dark_text else (255, 255, 255, 255)
+        outline = None
     shadow_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow_layer)
     y = top + ((bottom - top) - line_h * len(lines)) // 2
@@ -242,37 +353,62 @@ def _headline(
     for line in lines:
         x = (left + right) // 2
         positions.append((x, y, line))
-        if not dark_text:
-            shadow_draw.text((x + 2, y + 3), line, font=font, fill=(0, 0, 0, 150), anchor="ma")
+        if not dark_text or style.colors:
+            shadow_draw.text(
+                (x + 2, y + 3),
+                line,
+                font=font,
+                fill=(0, 0, 0, 150),
+                anchor="ma",
+                stroke_width=stroke,
+                stroke_fill=(0, 0, 0, 150),
+            )
         y += line_h
     canvas.alpha_composite(shadow_layer.filter(ImageFilter.GaussianBlur(4)))
     for x, y, line in positions:
-        draw.text((x, y), line, font=font, fill=fill, anchor="ma")
+        draw.text(
+            (x, y),
+            line,
+            font=font,
+            fill=fill,
+            anchor="ma",
+            stroke_width=stroke,
+            stroke_fill=outline,
+        )
 
 
-def cta_lines(draw: ImageDraw.ImageDraw, text: str, size: tuple[int, int]) -> tuple[int, list[str]]:
+def cta_lines(
+    draw: ImageDraw.ImageDraw, text: str, size: tuple[int, int], face: bytes | None = None
+) -> tuple[int, list[str]]:
     """The CTA's font size and lines on a canvas of `size`: the largest size at which it
-    fits whole on at most two lines, down to 60% of the full size."""
+    fits whole on at most two lines, down to 60% of the full size — in the brand's font
+    file `face` when there is one."""
     width, height = size
     full = round(height * 0.036)
     max_w = round(width * 0.84)
     words = " ".join(text.split())
     for px in range(full, max(round(full * 0.6), 16) - 1, -2):
-        lines = _wrap(draw, text, _font(px, bold=True), max_w - px * 2, 2)
+        lines = _wrap(draw, text, _font(px, bold=True, face=face), max_w - px * 2, 2)
         if " ".join(lines) == words:
             break
     return px, lines
 
 
-def _cta_pill(canvas: Image.Image, text: str, center_y: int, accent: tuple[int, int, int]) -> None:
+def _cta_pill(
+    canvas: Image.Image,
+    text: str,
+    center_y: int,
+    accent: tuple[int, int, int],
+    face: bytes | None = None,
+) -> None:
     """The CTA as a pill: one line at full size when it fits, else smaller and on up to
     two lines — it used to be forced onto ONE line and cut with «…» (§ request
     2026-10-08). Cut only when even the smallest size cannot hold it."""
     if not text.strip():
         return
     draw = ImageDraw.Draw(canvas)
-    px, lines = cta_lines(draw, text, canvas.size)
-    font = _font(px, bold=True)
+    px, lines = cta_lines(draw, text, canvas.size, face)
+    font = _font(px, bold=True, face=face)
     line_h = round(px * 1.2)
     width = max(round(draw.textlength(line, font=font)) for line in lines) + px * 2
     height = line_h * len(lines) + round(px * 0.9)
@@ -280,7 +416,7 @@ def _cta_pill(canvas: Image.Image, text: str, center_y: int, accent: tuple[int, 
     top = center_y - height // 2
     radius = height // 2 if len(lines) == 1 else round(px * 0.9)
     draw.rounded_rectangle((left, top, left + width, top + height), radius, fill=(*accent, 255))
-    text_fill = (17, 24, 39, 255) if _luminance(accent) > 0.6 else (255, 255, 255, 255)
+    text_fill = (*_DARK_INK, 255) if _dark_ink_on(accent) else (255, 255, 255, 255)
     y = center_y - (line_h * len(lines)) // 2 + line_h // 2
     for line in lines:
         draw.text((canvas.width // 2, y), line, font=font, fill=text_fill, anchor="mm")
@@ -296,7 +432,7 @@ _PRICE_MIN_WIDTH_SHARE = 0.03
 _PRICE_MAX_WIDTH_SHARE = 0.5
 
 
-def _price_px(label: str, size: tuple[int, int]) -> int | None:
+def _price_px(label: str, size: tuple[int, int], face: bytes | None = None) -> int | None:
     """The type size the WHOLE label fits at, shrinking from the pill's own size down to
     the legible floor; None when it does not fit even there. A price is never cut — a
     shortened figure is a different price (ticket 24803289, requirement 8)."""
@@ -305,20 +441,23 @@ def _price_px(label: str, size: tuple[int, int]) -> int | None:
     draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     px, floor = round(height * _PRICE_SHARE), round(width * _PRICE_MIN_WIDTH_SHARE)
     while px >= floor:
-        if draw.textlength(label, font=_font(px, bold=True)) <= max_w:
+        if draw.textlength(label, font=_font(px, bold=True, face=face)) <= max_w:
             return px
         px -= 1
     return None
 
 
-def price_fits(text: str, size: tuple[int, int] = FEED_SIZE) -> bool:
-    """Whether `text` prints whole on a `size` canvas's price pill. An empty price
-    "fits" (nothing is printed); callers check this to warn instead of losing it."""
+def price_fits(text: str, size: tuple[int, int] = FEED_SIZE, face: bytes | None = None) -> bool:
+    """Whether `text` prints whole on a `size` canvas's price pill (in the brand's font
+    file `face`, if any). An empty price "fits" (nothing is printed); callers check this
+    to warn instead of losing it."""
     label = _printable(text)
-    return not label or _price_px(label, size) is not None
+    return not label or _price_px(label, size, face) is not None
 
 
-def _price_pill(canvas: Image.Image, text: str, accent: tuple[int, int, int]) -> None:
+def _price_pill(
+    canvas: Image.Image, text: str, accent: tuple[int, int, int], face: bytes | None = None
+) -> None:
     """The catalog's price as a pill on the right, just above the CTA band (ticket
     24803289): light card, dark figure, an accent rule under it — so it reads as a fact
     of the offer, not as a second button. One line, whole: the type shrinks to the
@@ -328,11 +467,11 @@ def _price_pill(canvas: Image.Image, text: str, accent: tuple[int, int, int]) ->
     if not label:
         return
     width, height = canvas.size
-    px = _price_px(label, canvas.size)
+    px = _price_px(label, canvas.size, face)
     if px is None:
         return
     draw = ImageDraw.Draw(canvas)
-    font = _font(px, bold=True)
+    font = _font(px, bold=True, face=face)
     text_w = round(draw.textlength(label, font=font))
     pad_x, pad_y = round(px * 0.9), round(px * 0.55)
     box_w, box_h = text_w + pad_x * 2, px + pad_y * 2
@@ -420,6 +559,7 @@ def _slide(
     logo: bytes | None,
     closing: bool = False,
     price: str = "",
+    style: TextStyle = DEFAULT_STYLE,
 ) -> bytes:
     """One image. `closing` is a carousel's last slide: no product, the hook (the CTA
     line) large and centred, the CTA pill under it. `price` (the catalog's label) is
@@ -427,12 +567,12 @@ def _slide(
     whole — prints none, and the slide is exactly the one without a price."""
     width, height = size
     hook, cta = _printable(hook), _printable(cta)
-    price = price if price_fits(price, size) else ""
+    price = price if price_fits(price, size, style.font) else ""
     canvas = _background(size, background, base)
     photographic = background is not None
     if photographic and (hook.strip() or cta.strip() or price.strip()):
         _scrim(canvas)  # only where words go: a slide without text keeps its photo
-    dark_text = not photographic and _luminance(base) > 0.6
+    dark_text = not photographic and _dark_ink_on(base)
     has_text_top = bool(hook.strip())
     product_top = round(height * (0.27 if has_text_top else 0.12))
     product_bottom = round(height * (0.8 if cta.strip() else 0.9))
@@ -443,10 +583,11 @@ def _slide(
     # headline starts under it instead of across it (2026-10-09)
     shares_band = has_text_top and not closing
     under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if shares_band else _LOGO_SHARE)
-    _headline(canvas, hook, _headline_box(size, under=under, closing=closing), dark_text=dark_text)
-    _cta_pill(canvas, cta, round(height * 0.89), accent)
+    box = _headline_box(size, under=under, closing=closing)
+    _headline(canvas, hook, box, dark_text=dark_text, style=style)
+    _cta_pill(canvas, cta, round(height * 0.89), accent, style.font)
     if not closing:
-        _price_pill(canvas, price, accent)
+        _price_pill(canvas, price, accent, style.font)
     return _png(canvas)
 
 
@@ -459,6 +600,7 @@ def render_flyer(
     logo: bytes | None = None,
     carousel: bool = False,
     size: tuple[int, int] = FEED_SIZE,
+    style: TextStyle = DEFAULT_STYLE,
 ) -> list[bytes]:
     """The flyer as PNG bytes — one image, or the carousel's slides in order.
 
@@ -466,7 +608,14 @@ def render_flyer(
     first slide carries the hook and the first product, one slide per further product,
     and a closing slide with the CTA (and the logo) — at least two slides, at most ten."""
     base, accent = _palette(palette)
-    common = {"size": size, "background": background, "base": base, "accent": accent, "logo": logo}
+    common = {
+        "size": size,
+        "background": background,
+        "base": base,
+        "accent": accent,
+        "logo": logo,
+        "style": style,
+    }
     if not carousel:
         return [_slide(products=products, hook=text.hook, cta=text.cta, price=text.price, **common)]
     items = list(products)[:9]
@@ -485,6 +634,7 @@ def render_ad_slides(
     logo: bytes | None = None,
     carousel: bool = False,
     size: tuple[int, int] = FEED_SIZE,
+    style: TextStyle = DEFAULT_STYLE,
 ) -> list[bytes]:
     """The advertising image over generated scenes, as PNG bytes. Single: the first
     scene with the hook and the CTA. Carousel: the first scene with the hook, one slide
@@ -493,7 +643,14 @@ def render_ad_slides(
     if not scenes:
         raise ValueError("an advertising image needs at least one generated scene")
     base, accent = _palette(palette)
-    common = {"size": size, "base": base, "accent": accent, "logo": logo, "products": ()}
+    common = {
+        "size": size,
+        "base": base,
+        "accent": accent,
+        "logo": logo,
+        "products": (),
+        "style": style,
+    }
     if not carousel:
         return [
             _slide(background=scenes[0], hook=text.hook, cta=text.cta, price=text.price, **common)
@@ -513,6 +670,7 @@ def render_carousel_slide(
     palette: Sequence[str] = (),
     logo: bytes | None = None,
     size: tuple[int, int] = FEED_SIZE,
+    style: TextStyle = DEFAULT_STYLE,
 ) -> bytes:
     """One generated slide of a carousel (`ContentKind.CAROUSEL`) as PNG bytes: the scene
     with the words the operator chose for it — the hook on top, the CTA as a pill, or
@@ -527,6 +685,7 @@ def render_carousel_slide(
         hook=hook,
         cta=cta,
         logo=logo,
+        style=style,
     )
 
 
@@ -536,6 +695,7 @@ def render_closing_slide(
     palette: Sequence[str] = (),
     logo: bytes | None = None,
     size: tuple[int, int] = FEED_SIZE,
+    style: TextStyle = DEFAULT_STYLE,
 ) -> bytes:
     """A carousel's closing slide: `line` (the CTA) large on the brand gradient."""
     base, accent = _palette(palette)
@@ -549,6 +709,7 @@ def render_closing_slide(
         cta="",
         logo=logo,
         closing=True,
+        style=style,
     )
 
 
@@ -559,6 +720,7 @@ def text_layer(
     cta: str = "",
     palette: Sequence[str] = (),
     logo: bytes | None = None,
+    style: TextStyle = DEFAULT_STYLE,
 ) -> bytes:
     """The words of a slide WITHOUT its picture, as a transparent RGBA PNG — what is laid
     over an animated slide's every frame (§ request 2026-10-09). Same scrim, headline,
@@ -571,11 +733,82 @@ def text_layer(
         _scrim(canvas)
     has_headline = bool(hook.strip())
     under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if has_headline else _LOGO_SHARE)
-    _headline(canvas, hook, _headline_box(size, under=under), dark_text=False)
-    _cta_pill(canvas, cta, round(height * 0.89), accent)
+    _headline(canvas, hook, _headline_box(size, under=under), dark_text=False, style=style)
+    _cta_pill(canvas, cta, round(height * 0.89), accent, style.font)
     out = io.BytesIO()
     canvas.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+#: A subtitle's colours when the brand has no palette: white on a black outline.
+_SUBTITLE_DEFAULT_COLORS = ("#FFFFFF", "#000000")
+#: Its type size as a share of the frame's width, and the smallest it may shrink to.
+_SUBTITLE_SHARE = 0.058
+_SUBTITLE_MIN_SHARE = 0.04
+#: How far down the frame a subtitle's last line ends: a tall video keeps the bottom
+#: fifth clear for the Reels caption and buttons; a feed video has nothing over it.
+_SUBTITLE_BOTTOM_TALL = 0.76
+_SUBTITLE_BOTTOM_FEED = 0.9
+
+
+def subtitle_layer(
+    *, size: tuple[int, int], text: str, style: TextStyle = DEFAULT_STYLE
+) -> tuple[bytes, tuple[int, int]]:
+    """One subtitle (m-24828920) as a transparent RGBA PNG cropped to its words, and
+    where its top-left corner goes on a `size` frame: centred, on at most two lines,
+    in the brand's font and its fill/outline pair (white on black without a palette) —
+    an outline is what keeps a subtitle legible on a light frame and on a dark one."""
+    width, height = size
+    text = _printable(text)
+    colors = style.colors or _SUBTITLE_DEFAULT_COLORS
+    max_w = round(width * 0.86)
+    draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    px = round(width * _SUBTITLE_SHARE)
+    floor = round(width * _SUBTITLE_MIN_SHARE)
+    while True:
+        font = _font(px, bold=True, face=style.font)
+        stroke = max(2, round(px * 0.09))
+        lines = _wrap(draw, text, font, max_w - 2 * stroke, 2)
+        if px <= floor or " ".join(lines) == text:
+            break
+        px -= 2
+    words = text.split()
+    if len(lines) == 2 and " ".join(lines) == text:
+        # two lines of even width read better than a full one and a stray word
+        lines = min(
+            (
+                [" ".join(words[:cut]), " ".join(words[cut:])]
+                for cut in range(1, len(words))
+                if all(
+                    draw.textlength(" ".join(part), font=font) <= max_w - 2 * stroke
+                    for part in (words[:cut], words[cut:])
+                )
+            ),
+            key=lambda pair: max(draw.textlength(line, font=font) for line in pair),
+            default=lines,
+        )
+    line_h = round(px * 1.2)
+    pad = stroke * 2
+    text_w = max((round(draw.textlength(line, font=font)) for line in lines), default=0)
+    layer = Image.new("RGBA", (text_w + pad * 2, line_h * len(lines) + pad * 2), (0, 0, 0, 0))
+    layer_draw = ImageDraw.Draw(layer)
+    fill, outline = (*_rgb(colors[0]), 255), (*_rgb(colors[1]), 255)
+    for index, line in enumerate(lines):
+        layer_draw.text(
+            (layer.width // 2, pad + index * line_h),
+            line,
+            font=font,
+            fill=fill,
+            anchor="ma",
+            stroke_width=stroke,
+            stroke_fill=outline,
+        )
+    share = _SUBTITLE_BOTTOM_TALL if height / width > 1.5 else _SUBTITLE_BOTTOM_FEED
+    x = (width - layer.width) // 2
+    y = max(0, round(height * share) - layer.height)
+    out = io.BytesIO()
+    layer.save(out, format="PNG")
+    return out.getvalue(), (x, y)
 
 
 def compose_scene(

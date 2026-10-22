@@ -631,6 +631,19 @@ def test_an_own_script_and_the_engine_reach_the_inputs() -> None:
     assert "own_script" not in state._media_inputs()
 
 
+def test_the_subtitles_switch_reaches_an_avatar_videos_inputs_only() -> None:
+    """m-24828920: subtitles are the operator's choice, off until they turn them on."""
+    state = CreativeState()
+    state.choose_kind("avatar_video")
+    state.video_engine = "omnihuman"
+    state.voice_id = "vo"
+    assert state._media_inputs()["subtitles"] is False
+    state.set_media_subtitles(True)
+    assert state._media_inputs()["subtitles"] is True
+    state.choose_kind("static_flyer")
+    assert "subtitles" not in state._media_inputs()
+
+
 # -- the generator as one view with sections (§ request 2026-10-08) --------------------
 
 

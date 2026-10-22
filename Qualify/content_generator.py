@@ -3225,6 +3225,7 @@ def _avatar_section() -> rx.Component:
             CreativeState.video_reads_with_voice,
             rx.vstack(
                 voice,
+                _subtitles_switch(),
                 callout(
                     "Tu presentador dice el guion con la voz elegida, con los labios "
                     "sincronizados. Hasta un minuto de guion; el video tarda unos minutos.",
@@ -3241,6 +3242,30 @@ def _avatar_section() -> rx.Component:
             ),
         ),
         spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _subtitles_switch() -> rx.Component:
+    """Subtitles of what the presenter says (m-24828920), on or off for this video."""
+    return rx.vstack(
+        rx.hstack(
+            rx.switch(
+                checked=CreativeState.media_subtitles,
+                on_change=CreativeState.set_media_subtitles,
+            ),
+            rx.text("Subtítulos", size="2"),
+            spacing="2",
+            align="center",
+        ),
+        rx.text(
+            "Lo que dice el presentador, escrito en el video con la tipografía y los colores "
+            "de tu Brand Kit.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        spacing="1",
         width="100%",
         align_items="start",
     )

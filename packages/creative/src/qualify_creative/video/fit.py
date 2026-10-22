@@ -16,6 +16,10 @@ advertising image offered as a Reel. Instagram publishes only a video as a Reel,
 composed image — words and logo already on it — gets a slow push-in, encoded the same
 way. The text is part of the image, so it stays sharp; nothing is generated twice.
 
+And it burns a talking video's subtitles in (`subtitle`, m-24828920): the same graph at
+the video's own size, each subtitle a small layer shown only between its two times, the
+soundtrack copied as it is.
+
 Behind a Protocol so the media producer's tests never encode a video.
 """
 
@@ -24,6 +28,7 @@ from __future__ import annotations
 import io
 import math
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -39,6 +44,22 @@ FALLBACK_FPS = 24
 STILL_SECONDS = 6.0
 STILL_FPS = 30
 STILL_ZOOM = 1.06
+#: x264 settings: a carousel slide is small and short; a talking video re-encoded only to
+#: carry its subtitles is the piece the operator paid for, so it keeps its detail
+#: (review 2026-10-22: crf 23 / veryfast visibly softened it).
+SLIDE_X264 = {"crf": "23", "preset": "veryfast"}
+SUBTITLED_X264 = {"crf": "18", "preset": "fast"}
+
+
+@dataclass(frozen=True)
+class SubtitleLayer:
+    """One subtitle to burn in: its PNG (`compose.subtitle_layer`), where its top-left
+    corner goes, and the seconds — from the first frame — it is shown between."""
+
+    png: bytes
+    position: tuple[int, int]
+    start: float
+    end: float
 
 
 @dataclass(frozen=True)
@@ -65,6 +86,10 @@ class VideoFitter(Protocol):
 
     def animate_still(
         self, image: bytes, *, size: tuple[int, int], seconds: float = STILL_SECONDS
+    ) -> FittedVideo: ...
+
+    def subtitle(
+        self, data: bytes, *, layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]]
     ) -> FittedVideo: ...
 
 
@@ -94,7 +119,7 @@ class PyAvVideoFitter:
         # rewrites the file in a second pass, which a write-only buffer cannot take
         with tempfile.TemporaryDirectory(prefix="qualify-slide-") as tmp:
             out = Path(tmp) / "slide.mp4"
-            frames, rate, poster = _encode(
+            frames, rate, poster, _ = _encode(
                 data, out, size, overlay, max_seconds, keep_audio=keep_audio
             )
             encoded = out.read_bytes()
@@ -124,6 +149,32 @@ class PyAvVideoFitter:
             height=height,
             duration_sec=frames / STILL_FPS,
             poster=poster,
+        )
+
+    def subtitle(
+        self, data: bytes, *, layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]]
+    ) -> FittedVideo:
+        """`data` with each subtitle over the frames between its two times, at the
+        video's own size (an odd side loses one pixel: H.264 needs even ones) and with its
+        soundtrack copied — the picture is the only change. `layers` draws the subtitles
+        for that size, read from the file this pass opens anyway."""
+        with tempfile.TemporaryDirectory(prefix="qualify-subtitles-") as tmp:
+            out = Path(tmp) / "subtitled.mp4"
+            frames, rate, poster, size = _encode(
+                data,
+                out,
+                None,
+                None,
+                math.inf,
+                keep_audio=True,
+                layers=layers,
+                x264=SUBTITLED_X264,
+            )
+            encoded = out.read_bytes()
+        if not frames:
+            raise ValueError("the video has no frames")
+        return FittedVideo(
+            data=encoded, width=size[0], height=size[1], duration_sec=frames / rate, poster=poster
         )
 
 
@@ -181,33 +232,48 @@ def _frame_rate(stream: Any) -> Fraction:
     return Fraction(FALLBACK_FPS)
 
 
-def _layer_frame(av: Any, overlay: bytes, size: tuple[int, int]) -> Any:
+def _layer_frame(av: Any, overlay: bytes, size: tuple[int, int] | None) -> Any:
     """The text layer as an RGBA frame — `VideoFrame.from_image` would drop the alpha."""
     import numpy as np  # noqa: PLC0415
     from PIL import Image  # noqa: PLC0415
 
-    layer = Image.open(io.BytesIO(overlay)).convert("RGBA").resize(size)
+    layer = Image.open(io.BytesIO(overlay)).convert("RGBA")
+    if size is not None and size != layer.size:
+        layer = layer.resize(size)
     return av.VideoFrame.from_ndarray(np.asarray(layer), format="rgba")
+
+
+def _shown_between(start: float, end: float) -> str:
+    """An `enable` expression true from `start` to `end` seconds of the graph's input
+    timeline — commas escaped, as an option value inside a filter's arguments needs."""
+    return f"between(t\\,{start:.3f}\\,{end:.3f})"
 
 
 def _encode(
     data: bytes,
     out: Path,
-    size: tuple[int, int],
+    size: tuple[int, int] | None,
     overlay: bytes | None,
     max_seconds: float,
     *,
     keep_audio: bool = False,
-) -> tuple[int, float, bytes | None]:
+    layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]] | None = None,
+    x264: dict[str, str] = SLIDE_X264,
+) -> tuple[int, float, bytes | None, tuple[int, int]]:
+    """Encode `data` at `size` (`None`: its own, made even) — the frame count, the rate,
+    the first frame as JPEG and the size it was encoded at."""
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
-    width, height = size
     frames = 0
     poster: list[bytes] = []
     with av.open(io.BytesIO(data)) as source:
         if not source.streams.video:
             raise ValueError("the file has no video stream")
         stream = source.streams.video[0]
+        if size is None:
+            own_w, own_h = stream.codec_context.width, stream.codec_context.height
+            size = (own_w - own_w % 2, own_h - own_h % 2)
+        width, height = size
         rate = _frame_rate(stream)
         base = stream.time_base
         audio_in = source.streams.audio[0] if keep_audio and source.streams.audio else None
@@ -217,7 +283,7 @@ def _encode(
             encoder = sink.add_stream("libx264", rate=rate)
             encoder.width, encoder.height = width, height
             encoder.pix_fmt = "yuv420p"
-            encoder.options = {"crf": "23", "preset": "veryfast"}
+            encoder.options = dict(x264)
             # every frame is stamped by hand: a frame handed to the encoder with no pts
             # is written at time 0, and 120 such frames make a 0.04 s file (seen
             # 2026-10-09 on the first real carousel — "videos de cero segundos")
@@ -235,6 +301,7 @@ def _encode(
             video_in.link_to(crop)
             crop.link_to(scale)
             layer_in = None
+            last = scale
             if overlay is not None:
                 layer_in = graph.add(
                     "buffer",
@@ -243,11 +310,30 @@ def _encode(
                 )
                 # the layer is ONE frame: `eof_action=repeat` keeps it over every frame
                 over = graph.add("overlay", "x=0:y=0:format=auto:eof_action=repeat")
-                scale.link_to(over, 0, 0)
+                last.link_to(over, 0, 0)
                 layer_in.link_to(over, 0, 1)
-                over.link_to(to_yuv)
-            else:
-                scale.link_to(to_yuv)
+                last = over
+            # each subtitle: one small frame, laid over only while it is shown. `t` is the
+            # source's own time, so the first frame's start time is added to the cue's
+            origin = float(stream.start_time * base) if stream.start_time is not None else 0.0
+            subtitle_frames: list[tuple[Any, Any]] = []
+            for spec in layers(size) if layers is not None else ():
+                frame = _layer_frame(av, spec.png, None)
+                buffer = graph.add(
+                    "buffer",
+                    f"video_size={frame.width}x{frame.height}:pix_fmt=rgba"
+                    f":time_base={base.numerator}/{base.denominator}:pixel_aspect=1/1",
+                )
+                x, y = spec.position
+                shown = _shown_between(spec.start + origin, spec.end + origin)
+                over = graph.add(
+                    "overlay", f"x={x}:y={y}:format=auto:eof_action=repeat:enable={shown}"
+                )
+                last.link_to(over, 0, 0)
+                buffer.link_to(over, 0, 1)
+                last = over
+                subtitle_frames.append((buffer, frame))
+            last.link_to(to_yuv)
             to_yuv.link_to(frames_out)
             graph.configure()
             if layer_in is not None:
@@ -256,6 +342,11 @@ def _encode(
                 layer.time_base = base
                 layer_in.push(layer)
                 layer_in.push(None)
+            for buffer, frame in subtitle_frames:
+                frame.pts = 0
+                frame.time_base = base
+                buffer.push(frame)
+                buffer.push(None)
 
             def drain() -> int:
                 done = 0
@@ -312,4 +403,4 @@ def _encode(
             frames += drain()
             for packet in encoder.encode():
                 sink.mux(packet)
-    return frames, float(rate), (poster[0] if poster else None)
+    return frames, float(rate), (poster[0] if poster else None), size
