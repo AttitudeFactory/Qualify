@@ -8,8 +8,10 @@ so the page has no formatting logic of its own and the formatting is unit-tested
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 #: What the upload zone accepts: photos of any type the normalizer reads, and the two
@@ -19,6 +21,93 @@ MEDIA_ACCEPT: dict[str, list[str]] = {
     "video/mp4": [".mp4", ".m4v"],
     "video/quicktime": [".mov"],
 }
+
+
+# -- the optional price (m-24803289) ---------------------------------------------------
+#: What the select shows when the product carries no currency. A real choice, not a
+#: placeholder: a price with no currency prints as the bare number, never as a guessed
+#: one. Radix refuses an empty option value, hence a word instead of "".
+NO_CURRENCY = "Sin moneda"
+#: The ISO codes the catalog offers. The first five are the ones `price_label` knows a
+#: symbol for; the rest print as "89990 CLP", which is still exact.
+CURRENCY_CODES: tuple[str, ...] = ("USD", "UYU", "COP", "VES", "EUR", "CLP", "ARS", "MXN", "PEN")
+CURRENCY_OPTIONS: tuple[str, ...] = (NO_CURRENCY, *CURRENCY_CODES)
+
+
+def currency_choice(code: str) -> str:
+    """The stored code as the select shows it."""
+    return code or NO_CURRENCY
+
+
+def currency_from_choice(choice: str) -> str:
+    """What the select chose, as the code to store ("" for «Sin moneda»)."""
+    clean = (choice or "").strip()
+    if not clean or clean == NO_CURRENCY:
+        return ""
+    return clean.upper() if clean.upper() in CURRENCY_CODES else ""
+
+
+#: What `Numeric(12, 2)` holds: ten digits before the decimal point.
+_MAX_PRICE = Decimal("9999999999.99")
+_PLAIN = re.compile(r"^\d+$")
+_DECIMAL = re.compile(r"^\d+[.,]\d{1,2}$")
+_GROUPED = re.compile(r"^\d{1,3}(?P<sep>[.,])\d{3}(?P=sep)\d{3}$|^\d{1,3}(?P<s2>[.,])\d{3}$")
+_MIXED = re.compile(r"^\d{1,3}([.,])\d{3}(?:\1\d{3})*([.,])\d{1,2}$")
+
+PRICE_NOT_A_NUMBER = (
+    "El precio no se entiende. Escríbelo solo con dígitos, por ejemplo 89990 o 1999,90."
+)
+PRICE_NOT_POSITIVE = "El precio debe ser mayor que cero."
+PRICE_TOO_BIG = "Ese precio es demasiado grande."
+
+
+def _amount_text(amount: Decimal | None) -> str:
+    """The stored amount as the form shows it: "89990", "1999.9", "" when there is none."""
+    if amount is None:
+        return ""
+    return f"{amount:.2f}".rstrip("0").rstrip(".")
+
+
+def parse_price_input(text: str) -> Decimal | None:
+    """What the operator typed, as an exact amount — or `None` when the field is empty.
+
+    The whole point of the field is that the piece prints the catalog's price and never
+    an invented one, so anything this cannot read EXACTLY is refused with a message
+    instead of guessed: a three-digit group after the separator is thousands ("89.990"
+    is 89990), one or two digits are decimals ("1999,90"), and a mixed form must use
+    two different separators ("1.234,56"). Raises `ValueError` with the operator's
+    sentence.
+    """
+    clean = (text or "").strip()
+    for symbol in ("$", "€", "Bs.", "Bs"):
+        if clean.startswith(symbol):
+            clean = clean[len(symbol) :].strip()
+    clean = clean.replace(" ", "")
+    if not clean:
+        return None
+    if _PLAIN.match(clean):
+        raw = clean
+    elif _DECIMAL.match(clean):
+        raw = clean.replace(",", ".")
+    elif _MIXED.match(clean) and "," in clean and "." in clean:
+        # "1.234,56" and "1,234.56": the LAST separator is the decimal point, and the
+        # two must differ — "1.234.56" stays ambiguous and is refused below.
+        decimal_sep = "," if clean.rfind(",") > clean.rfind(".") else "."
+        thousands = "." if decimal_sep == "," else ","
+        raw = clean.replace(thousands, "").replace(decimal_sep, ".")
+    elif _GROUPED.match(clean):
+        raw = clean.replace(".", "").replace(",", "")
+    else:
+        raise ValueError(PRICE_NOT_A_NUMBER)
+    try:
+        amount = Decimal(raw)
+    except InvalidOperation:
+        raise ValueError(PRICE_NOT_A_NUMBER) from None
+    if amount <= 0:
+        raise ValueError(PRICE_NOT_POSITIVE)
+    if amount > _MAX_PRICE:
+        raise ValueError(PRICE_TOO_BIG)
+    return amount.quantize(Decimal("0.01"))
 
 
 class _MediaLike(Protocol):
@@ -38,6 +127,9 @@ class _ProductLike(Protocol):
     name: str
     slug: str
     description: str
+    price_amount: Decimal | None
+    price_currency: str
+    price_label: str
     category: str
     media: Sequence[_MediaLike]
 
@@ -69,8 +161,16 @@ class ProductVM:
     name: str
     slug: str
     description: str
-    # no price (founder, 2026-10-19: «quiero eliminar directamente el precio»): stored
-    # prices stay in the DB, unread
+    # The price came back as an OPTIONAL field (m-24803289): «Variaciones» prints the
+    # catalog's exact price on the piece, and a product with none shows none. It was
+    # dropped from this screen on 2026-10-19 while stored prices stayed in the DB, so a
+    # product that kept one shows it again here instead of staying invisible.
+    #: Formatted for reading ("$89990", "89990 CLP") — "" when the product has no price.
+    price_label: str
+    #: The raw amount for the edit form ("89990") — "" when there is none.
+    price_amount: str
+    #: ISO code as stored ("CLP"); "" when the product carries no currency.
+    price_currency: str
     category: str
     primary_photo_key: str  # "" when the product has no photo yet
     photo_count: int
@@ -120,6 +220,9 @@ def build_product_vm(product: _ProductLike) -> ProductVM:
         name=product.name,
         slug=product.slug,
         description=product.description,
+        price_label=product.price_label,
+        price_amount=_amount_text(product.price_amount),
+        price_currency=product.price_currency or "",
         category=product.category,
         primary_photo_key=product.primary_photo_key or "",
         photo_count=product.photo_count,
