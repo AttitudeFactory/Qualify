@@ -5,7 +5,10 @@ font files are built here, byte by byte — CI has no fonts to read."""
 from __future__ import annotations
 
 import struct
+import urllib.error
 import zlib
+
+import pytest
 
 from qualify_creative.brand import fonts
 
@@ -122,3 +125,75 @@ def test_google_fonts_answers_200_for_a_family_it_serves_and_400_otherwise() -> 
 
     assert fonts.on_google_fonts("Lato", fetch=offline) is None  # unknown is not "no"
     assert fonts.on_google_fonts("", fetch=fetch(200)) is False
+
+
+def test_a_familys_file_comes_from_google_fonts_bold_first_and_is_kept() -> None:
+    """m-24828920: a kit that names a family but holds no file still draws in it."""
+    asked: list[str] = []
+    css = b"@font-face { src: url(https://fonts.gstatic.com/s/lobster/v32/x.ttf); }"
+
+    def fetch(url: str) -> bytes:
+        asked.append(url)
+        if "wght@700" in url:
+            raise _http(url, 400)  # Lobster has no bold
+        return css if url.startswith(fonts.GOOGLE_FONTS_CSS) else b"\x00\x01\x00\x00ttf"
+
+    fonts._downloaded.clear()
+    fonts._missing.clear()
+    assert fonts.google_font_file("Lobster", fetch=fetch) == b"\x00\x01\x00\x00ttf"
+    assert asked == [
+        f"{fonts.GOOGLE_FONTS_CSS}?family=Lobster:wght@700",
+        f"{fonts.GOOGLE_FONTS_CSS}?family=Lobster",
+        "https://fonts.gstatic.com/s/lobster/v32/x.ttf",
+    ]
+    assert fonts.google_font_file("Lobster", fetch=fetch) == b"\x00\x01\x00\x00ttf"
+    assert len(asked) == 3  # downloaded once per process
+
+
+def _http(url: str, code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(url, code, "", None, None)  # type: ignore[arg-type]
+
+
+def test_a_family_google_fonts_does_not_serve_is_not_asked_again_for_a_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review 2026-10-22: every piece of such a brand made two blocking requests."""
+    asked: list[str] = []
+
+    def not_served(url: str) -> bytes:
+        asked.append(url)
+        raise _http(url, 400)
+
+    now = [1000.0]
+    monkeypatch.setattr(fonts.time, "monotonic", lambda: now[0])
+    fonts._downloaded.clear()
+    fonts._missing.clear()
+    assert fonts.google_font_file("Marca Sans", fetch=not_served) is None
+    assert len(asked) == 2  # the bold face, then any face
+    now[0] += 23 * 3600
+    assert fonts.google_font_file("Marca Sans", fetch=not_served) is None
+    assert len(asked) == 2  # a fact for the day: not asked again
+    now[0] += 2 * 3600
+    assert fonts.google_font_file("Marca Sans", fetch=not_served) is None
+    assert len(asked) == 4
+
+
+def test_an_unreachable_google_fonts_is_asked_again_minutes_later(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[str] = []
+
+    def offline(url: str) -> bytes:
+        asked.append(url)
+        raise OSError("no network")
+
+    now = [1000.0]
+    monkeypatch.setattr(fonts.time, "monotonic", lambda: now[0])
+    fonts._downloaded.clear()
+    fonts._missing.clear()
+    assert fonts.google_font_file("Lato", fetch=offline) is None
+    assert fonts.google_font_file("Lato", fetch=offline) is None
+    assert len(asked) == 2  # the miss is remembered…
+    now[0] += 11 * 60
+    assert fonts.google_font_file("Lato", fetch=lambda url: b"/* no font-face */") is None
+    assert fonts.google_font_file("", fetch=offline) is None

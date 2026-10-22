@@ -61,6 +61,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
 from qualify_creative.adapters.byteplus_speech import API_KEY_ENV as SPEECH_KEY_ENV
 from qualify_creative.adapters.byteplus_speech import SeedSpeechVoiceoverAdapter
 from qualify_creative.angles import AngleBrand, AnglePreset, AngleProduct, CreativeAngle
+from qualify_creative.brand.fonts import google_font_file
 from qualify_creative.enums import PaidBy
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import ResolvedKey
@@ -74,6 +75,7 @@ from qualify_creative.video import PyAvVideoFitter
 from qualify_api.catalog.read import DbProductCatalog
 from qualify_api.claude_tools import CallStats
 from qualify_api.creative.brand_context import DbBrandContextReader
+from qualify_api.creative.brand_fonts import DbBrandFontFiles
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.dispatch import InlineDispatcher
@@ -358,6 +360,10 @@ def production_content_service() -> ContentService:
             remotion=remotion,
             templates=TemplateRegistry.from_dir(),
             brand_names=DbBrandNames(),
+            # m-24828920: the generator's words in the brand's type — the Brand Kit's
+            # font file, else its family from Google Fonts
+            brand_fonts=DbBrandFontFiles(),
+            google_fonts=google_font_file,
             catalog=DbProductCatalog(),
             # § 2026-10-07: the advertising image's scene by Seedream, the avatar videos
             # (VideoEngine.SEEDANCE) by Seedream + Seedance

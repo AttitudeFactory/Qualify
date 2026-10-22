@@ -746,6 +746,9 @@ class CreativeState(rx.State):
     #: The operator's own script for a video (instead of Claude's), and the engine.
     own_script_on: bool = False
     own_script: str = ""
+    #: Avatar video (m-24828920): subtitles of what the presenter says, burnt in with
+    #: the brand's font and colours — the operator's choice.
+    media_subtitles: bool = False
     #: Which vendor renders the avatar kinds ("omnihuman" | "seedance",
     #: `configured_video_engine`), read when an avatar kind is chosen. OmniHuman reads the
     #: script in a voice (picked); Seedance speaks it with its own (2.x) or not at all.
@@ -4061,6 +4064,10 @@ class CreativeState(rx.State):
         self.own_script_on = bool(value)
 
     @rx.event
+    def set_media_subtitles(self, value: bool) -> None:
+        self.media_subtitles = bool(value)
+
+    @rx.event
     def set_own_script(self, value: str) -> None:
         self.own_script = value
 
@@ -4654,8 +4661,10 @@ class CreativeState(rx.State):
             if self.own_script_on:
                 media["own_script"] = self.own_script.strip()
             if self.video_engine == "omnihuman":
-                # the voice that reads it: "brand" or a public one (§ 2026-10-16)
+                # the voice that reads it: "brand" or a public one (§ 2026-10-16), and the
+                # subtitles of what it says — OmniHuman's only (m-24828920)
                 media["voice_id"] = self.voice_id
+                media["subtitles"] = self.media_subtitles
             # no library: the presenter is described (§ 2026-10-07) or the operator's image
             if kind == "avatar_video":
                 described = (

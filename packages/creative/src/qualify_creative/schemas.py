@@ -468,6 +468,10 @@ class MediaInputs(BaseModel):
     avatar_rights_confirmed: bool = False
     #: The operator's own script for a video — read word for word instead of Claude's.
     own_script: str = Field(default="", max_length=SCRIPT_MAX)
+    #: Avatar video (m-24828920): burn in subtitles of what the presenter says, in the
+    #: brand's font and colours. The operator's choice when creating the video; off for
+    #: a brief from before it existed.
+    subtitles: bool = False
     #: The retired HeyGen avatar engine (avatar_iv/iii) — kept so old briefs still read.
     engine: str = "avatar_iv"
     #: Which vendor renders the avatar kinds (§ request 2026-10-07; OmniHuman since

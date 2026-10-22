@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import struct
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -191,3 +192,63 @@ def _family_in_name_table(table: bytes) -> str:
             if (name_id, rank) in found:
                 return found[(name_id, rank)]
     return ""
+
+
+# --------------------------------------------------------------------------------------
+# the family's file, from Google Fonts (m-24828920)
+# --------------------------------------------------------------------------------------
+
+#: The bold face first (the generator's words are bold), then whatever the family has.
+_GOOGLE_WEIGHTS = (":wght@700", "")
+#: What `@font-face` points at; Google Fonts serves a TTF to a client it does not know.
+_FONT_URL = re.compile(r"url\((https://fonts\.gstatic\.com/[^)\s]+)\)")
+#: Families already downloaded in this process: a font file never changes under its name.
+_downloaded: dict[str, bytes] = {}
+#: Families Google Fonts could not give, and until when (monotonic seconds) not to ask
+#: again (review 2026-10-22: every piece of such a brand made two blocking requests).
+#: A family it does not serve is a fact for the day; a network failure, for minutes.
+_missing: dict[str, float] = {}
+_NOT_SERVED_SECONDS = 24 * 3600.0
+_UNREACHABLE_SECONDS = 10 * 60.0
+
+
+def google_font_file(family: str, *, fetch: Callable[[str], bytes] | None = None) -> bytes | None:
+    """The TTF of `family` from Google Fonts — its bold face when it has one — or None
+    when Google Fonts does not serve it, or could not be asked. What the generator draws
+    a brand's words in when the Brand Kit names a family but holds no file of it."""
+    clean = " ".join(re.sub(r'["\\{};<>]', "", family).split())
+    if not clean:
+        return None
+    if clean in _downloaded:
+        return _downloaded[clean]
+    if _missing.get(clean, 0.0) > time.monotonic():
+        return None
+    get = fetch or _body_of
+    unreachable = False
+    for weight in _GOOGLE_WEIGHTS:
+        url = f"{GOOGLE_FONTS_CSS}?family={urllib.parse.quote_plus(clean)}{weight}"
+        try:
+            found = _FONT_URL.search(get(url).decode("utf-8", errors="ignore"))
+            if found is None:
+                continue
+            data = get(found.group(1))
+        except urllib.error.HTTPError as exc:
+            # 400: Google Fonts has no such family (or weight); anything else is a hiccup
+            unreachable = unreachable or exc.code != 400
+            continue
+        except (OSError, ValueError):
+            unreachable = True
+            continue
+        if 0 < len(data) <= MAX_FONT_BYTES:
+            _downloaded[clean] = data
+            _missing.pop(clean, None)
+            return data
+    wait = _UNREACHABLE_SECONDS if unreachable else _NOT_SERVED_SECONDS
+    _missing[clean] = time.monotonic() + wait
+    return None
+
+
+def _body_of(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "qualify"})
+    with urllib.request.urlopen(request, timeout=CHECK_TIMEOUT_SECONDS) as response:  # noqa: S310 — fixed https hosts
+        return response.read(MAX_FONT_BYTES + 1)

@@ -31,6 +31,7 @@ from qualify_creative.router import BudgetContext, CreativeRouter
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload, MediaInputs, ToneAxes
 
 from qualify_api.creative.media import (
+    BRAND_FONT_DEFAULT,
     PRICE_NOT_PRINTED,
     MediaProducer,
     MediaUsage,
@@ -402,13 +403,14 @@ def test_a_price_too_long_for_the_ad_image_is_left_out_with_a_warning() -> None:
     )
     no_price = _template(producer, _brief(ContentKind.STATIC_FLYER, scene_prompt="sobre una roca"))
     assert long_price.failure is None and no_price.failure is None
-    (warning,) = long_price.warnings
+    # this kit names no typeface: both pieces also say so (m-24828920)
+    (warning,) = [w for w in long_price.warnings if w.code != BRAND_FONT_DEFAULT]
     assert warning.code == PRICE_NOT_PRINTED
     assert warning.fields["price"] == TOO_LONG and warning.fields["reason"] == "too_long"
     assert warning.detail  # the operator's words, for the UI block
     # nothing cut was printed: the piece is exactly the one without a price
     assert store.files[long_price.media[0].object_key] == store.files[no_price.media[0].object_key]
-    assert no_price.warnings == ()
+    assert [w.code for w in no_price.warnings] == [BRAND_FONT_DEFAULT]
 
 
 def test_a_price_too_long_for_the_template_slot_is_not_sent_and_is_warned() -> None:
