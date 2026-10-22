@@ -42,6 +42,7 @@ Todos precargan además `durable-findings`. El hilo principal es dueño de los t
 | `qualify-measure` | Golden sets, evals, costo, documentar cada prueba de modelo | datasci, creative |
 | `qualify-prod-ops` | Producción, despliegues, secretos, incidentes | platform |
 | `qualify-backlog` | De evidencia a historias y tickets | Hilo principal |
+| `qualify-lark-admin` | Ítems y configuración de Meegle, administración de Lark: MCP, CLIs oficiales (`meegle`, `lark-cli` y sus skills) o Chrome para las consolas | Hilo principal, platform |
 | `qualify-history` | Visión original, pipeline de earned media, mapa de fases, decisiones pasadas | architect |
 | `qualify-team-dev` / `qualify-team-po` / `qualify-team-research` | Squads que dispara el fundador (`/qualify-team-…`) | Hilo principal |
 

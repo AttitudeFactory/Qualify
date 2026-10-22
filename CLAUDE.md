@@ -100,6 +100,7 @@ module by module, the signed decisions and the house rules.
 | `qualify-copy-es` | Any text a client reads |
 | `qualify-measure` | Changing a prompt/model/vendor, building an eval, documenting a model test |
 | `qualify-prod-ops` | Production, deploys, secrets, outages |
+| `qualify-lark-admin` | Meegle work items and space config, Lark admin — via MCP, `meegle`/`lark-cli` or Chrome |
 | `qualify-backlog` | Writing stories / planning an epic |
 | `qualify-history` | Earned-media pipeline, roadmap phases, why a past decision was made |
 | `qualify-team-dev` / `-po` / `-research` | The founder asks for a squad |
