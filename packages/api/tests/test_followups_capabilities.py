@@ -36,13 +36,14 @@ def test_story_comments_reuses_the_switch_of_m_24789644() -> None:
 
 
 def test_current_states_are_pinned() -> None:
-    """What is true on this branch. PR 2/4/5 flip their own row (PR 4: `public_notice` is
-    built, `to_verify` until QUA-128/R4); R1-R4 move them to `verified` (or document them)
-    with evidence in docs/conversaciones-limitaciones-meta.md."""
+    """What is true on this branch. PR 2/4/5 flip their own row (PR 4: `public_notice`,
+    `to_verify` until QUA-128/R4; PR 5: `story_reply_context`, `to_verify` until R3);
+    R1-R4 move them to `verified` (or document them) with evidence in
+    docs/conversaciones-limitaciones-meta.md."""
     assert {cap: spec.state for cap, spec in REGISTRY.items()} == {
         Capability.COMMENT_PRIVATE_REPLY: CapabilityState.TO_VERIFY,
         Capability.STORY_COMMENTS: CapabilityState.META_LIMITATION,
-        Capability.STORY_REPLY_CONTEXT: CapabilityState.NOT_IMPLEMENTED,
+        Capability.STORY_REPLY_CONTEXT: CapabilityState.TO_VERIFY,
         Capability.PUBLIC_NOTICE: CapabilityState.TO_VERIFY,
     }
 
@@ -79,7 +80,12 @@ def test_a_not_implemented_capability_stays_off_even_when_switched_on() -> None:
 
 @pytest.mark.parametrize(
     "capability",
-    [Capability.STORY_COMMENTS, Capability.COMMENT_PRIVATE_REPLY, Capability.PUBLIC_NOTICE],
+    [
+        Capability.STORY_COMMENTS,
+        Capability.COMMENT_PRIVATE_REPLY,
+        Capability.PUBLIC_NOTICE,
+        Capability.STORY_REPLY_CONTEXT,
+    ],
 )
 def test_an_implemented_capability_follows_its_switch(capability: Capability) -> None:
     off = Capabilities.from_env({}).availability(capability)
@@ -101,6 +107,13 @@ def test_the_public_notice_is_to_verify_against_production_and_off_by_default() 
     assert availability.state_label == "Por verificar"
     assert "QUA-128" in availability.reason and "R4" in availability.reason
     assert "QUALIFY_PUBLIC_NOTICE" in availability.reason
+
+
+def test_story_reply_context_is_to_verify_by_r3_and_off_by_default() -> None:
+    availability = Capabilities.from_env({}).availability(Capability.STORY_REPLY_CONTEXT)
+    assert availability.enabled is False
+    assert availability.state_label == "Por verificar"
+    assert "R3" in availability.reason and "QUALIFY_STORY_REPLY_CONTEXT" in availability.reason
 
 
 def test_a_meta_limitation_explains_the_limitation_not_the_switch() -> None:

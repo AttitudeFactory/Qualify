@@ -159,6 +159,14 @@ class Message(Base):
             "'sticker','location','contacts','interactive','button','order','other')",
             name="ck_message_media_type",
         ),
+        CheckConstraint(
+            "story_reply_url IS NULL OR story_reply_id IS NOT NULL",
+            name="ck_message_story_reply_url_has_id",
+        ),
+        CheckConstraint(
+            "story_reply_id IS NULL OR direction = 'inbound'",
+            name="ck_message_story_reply_inbound",
+        ),
         Index("ix_message_tenant", "tenant_id"),
         Index("ix_message_thread", "thread_id", "posted_at"),
     )
@@ -204,6 +212,10 @@ class Message(Base):
     # 0065 (QUA-226): the channel's own CDN URL of an inbound Instagram attachment
     # (signed, expiring). NULL on comments, WhatsApp and every outbound row.
     media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0075 (m-24789646, B5): the story an inbound Instagram DM replies to — Meta's id and
+    # the CDN URL it gave (expiring). NULL on everything that is not a story reply.
+    story_reply_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_reply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxMetaCallLog(Base):

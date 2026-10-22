@@ -43,7 +43,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -778,6 +778,13 @@ class MessageVM:
     # «Visto» under the newest outbound message the counterpart has read (Instagram's
     # own convention: one footer, not one per bubble).
     seen_footer: str = ""
+    # m-24789646 (B5): an inbound DM that replies to a story says so above the bubble,
+    # with the story's link while Meta's (expiring) URL lasts.
+    story_reply_label: str = ""
+    story_reply_href: str = ""
+
+
+STORY_REPLY_LABEL: Final = "Respondió a tu historia"
 
 
 def failure_label(code: str | None) -> str:
@@ -817,6 +824,7 @@ def build_message_vm(
     if outbound:
         status = (message.delivery_status or "").lower()
         tick = "read" if status == "read" else "sent"
+    story = None if outbound else getattr(message, "story_reply_id", None)
     return MessageVM(
         message_id=str(message.id),
         is_outbound=outbound,
@@ -828,6 +836,8 @@ def build_message_vm(
         media_control=control,
         media_label=label,
         media_src=media_src if control else "",
+        story_reply_label=STORY_REPLY_LABEL if story else "",
+        story_reply_href=(getattr(message, "story_reply_url", None) or "") if story else "",
     )
 
 

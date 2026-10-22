@@ -98,6 +98,9 @@ class MessageRecord:
     # Inbound: the channel's CDN URL (0065). Outbound: the R2 object Qualify sent (0061).
     media_url: str | None = None
     media_object_key: str | None = None
+    # 0075 (m-24789646): the story an inbound DM replies to, if it does.
+    story_reply_id: str | None = None
+    story_reply_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,15 +234,26 @@ _UPSERT_THREAD = text(
     """
 )
 
+# A replay is a no-op, with one exception (m-24789646): the story a DM replies to is
+# filled in when a later reading carries it and the stored row does not (the poll may
+# reach a `mid` before the webhook, or without asking for `story`). Nothing else is ever
+# rewritten; `created` is only true for a real insert.
 _INSERT_MESSAGE = text(
     """
     INSERT INTO messages (id, tenant_id, thread_id, connection_id, external_message_id,
                           direction, author_external_id, author_username, text, posted_at,
-                          shape_version, media_type, media_url)
+                          shape_version, media_type, media_url, story_reply_id,
+                          story_reply_url)
     VALUES (:id, :tenant_id, :thread_id, :connection_id, :external_message_id, :direction,
             :author_external_id, :author_username, :text, :posted_at, :shape_version,
-            :media_type, :media_url)
-    ON CONFLICT (connection_id, external_message_id) DO NOTHING
+            :media_type, :media_url, :story_reply_id, :story_reply_url)
+    ON CONFLICT (connection_id, external_message_id) DO UPDATE
+       SET story_reply_id = EXCLUDED.story_reply_id,
+           story_reply_url = EXCLUDED.story_reply_url
+     WHERE messages.story_reply_id IS NULL
+       AND EXCLUDED.story_reply_id IS NOT NULL
+       AND messages.direction = 'inbound'
+    RETURNING (xmax = 0) AS created
     """
 )
 
@@ -319,7 +333,7 @@ _LIST_MESSAGES = text(
     """
     SELECT id, thread_id, connection_id, external_message_id, direction, author_external_id,
            author_username, text, posted_at, ingested_at, delivery_status, media_type,
-           media_url, media_object_key
+           media_url, media_object_key, story_reply_id, story_reply_url
       FROM messages
      WHERE thread_id = :thread_id AND deleted_at IS NULL
      ORDER BY COALESCE(posted_at, ingested_at) DESC, id DESC
@@ -477,9 +491,11 @@ class PostgresConversationRepository:
                     "shape_version": message.shape_version,
                     "media_type": message.media_type,
                     "media_url": message.media_url,
+                    "story_reply_id": message.story_reply_id,
+                    "story_reply_url": message.story_reply_url,
                 },
-            )
-            return result.rowcount == 1
+            ).first()
+            return bool(result is not None and result.created)
 
     def bump_thread_activity(
         self,
@@ -564,6 +580,8 @@ class PostgresConversationRepository:
                 media_type=r.media_type,
                 media_url=r.media_url,
                 media_object_key=r.media_object_key,
+                story_reply_id=r.story_reply_id,
+                story_reply_url=r.story_reply_url,
             )
             for r in rows
         ]
@@ -766,6 +784,7 @@ class MemoryConversationRepository:
             raise LookupError(f"no thread {thread_id} in tenant {tenant_id}")
         key = (connection_id, message.external_message_id)
         if key in self._message_keys:
+            self._fill_story_reply(entry, message)
             return False
         self._message_keys.add(key)
         entry.messages.append(
@@ -783,9 +802,28 @@ class MemoryConversationRepository:
                 delivery_status=None,
                 media_type=message.media_type,
                 media_url=message.media_url,
+                story_reply_id=message.story_reply_id,
+                story_reply_url=message.story_reply_url,
             )
         )
         return True
+
+    @staticmethod
+    def _fill_story_reply(entry: _MemoryThread, message: RemoteMessage) -> None:
+        """The Postgres `ON CONFLICT` exception: a later reading may add the story."""
+        if message.story_reply_id is None:
+            return
+        for index, stored in enumerate(entry.messages):
+            if (
+                stored.external_message_id == message.external_message_id
+                and stored.story_reply_id is None
+                and stored.direction == "inbound"
+            ):
+                entry.messages[index] = replace(
+                    stored,
+                    story_reply_id=message.story_reply_id,
+                    story_reply_url=message.story_reply_url,
+                )
 
     def bump_thread_activity(
         self,

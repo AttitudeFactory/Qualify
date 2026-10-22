@@ -664,3 +664,29 @@ def test_conversations_vm_has_no_credential_fields(vm: type) -> None:
     for field in dataclasses.fields(vm):
         assert not any(word in field.name for word in forbidden), field.name
         assert typing.get_origin(field.type) is not dict or field.name == ""
+
+
+# --- replies to stories (m-24789646, B5) ------------------------------------------------
+
+
+def test_an_inbound_story_reply_says_so_with_the_storys_link() -> None:
+    story = dataclasses.replace(
+        _message(), story_reply_id="17900000000000001", story_reply_url="https://cdn/story"
+    )
+    vm = build_message_vm(story, now=NOW, zone=ZONE)
+    assert (vm.story_reply_label, vm.story_reply_href) == (
+        "Respondió a tu historia",
+        "https://cdn/story",
+    )
+    expired = dataclasses.replace(story, story_reply_url=None)
+    assert build_message_vm(expired, now=NOW, zone=ZONE).story_reply_href == ""
+    plain = build_message_vm(_message(), now=NOW, zone=ZONE)
+    assert (plain.story_reply_label, plain.story_reply_href) == ("", "")
+
+
+def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
+    from .conversations_page import _story_reply
+    from .conversations_state import ConversationsState
+
+    rendered = str(_story_reply(ConversationsState.messages[0]).render())
+    assert "story_reply_label" in rendered and "story_reply_href" in rendered

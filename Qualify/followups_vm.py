@@ -8,7 +8,9 @@ decided by the caller's `now` and shown in the tenant's zone.
 
 What a card says, and where it comes from:
 - **who and where**: the comment, its author, the post it was written on (with its link)
-  and how the query was opened (an intent analysis, or by hand);
+  and how the query was opened (an intent analysis, or by hand) — or, for a DM that
+  replied to a story (PR 5), «Respondió a tu historia» with the story's link while Meta's
+  URL lasts;
 - **why**: the intents, highest confidence first, «no fiable» when the golden set does not
   back the class (same rule as Interacciones);
 - **how it would go out right now**: the route the service would use (a normal DM while
@@ -53,6 +55,8 @@ TRIGGER_LABELS: Final = {
     FollowupTrigger.MANUAL: "Abierta desde Interacciones",
 }
 CAPTION_CHARS: Final = 120
+STORY_WHERE: Final = "tu historia"
+STORY_ORIGIN_LABEL: Final = "Respondió a tu historia por mensaje directo"
 
 _MONTHS: Final = (
     "ene",
@@ -85,6 +89,8 @@ class FollowupCardVM:
     comment_text: str
     posted_label: str
     where_label: str
+    # «Comentó en tu Reel» / «Respondió a tu historia por mensaje directo».
+    origin_label: str
     caption: str
     permalink: str
     trigger_label: str
@@ -134,9 +140,11 @@ def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> Follo
     origin, followup, options = card.origin, card.followup, card.options
     username = (origin.author_username or "").strip()
     author = f"@{username}" if username else "Cliente"
-    caption = (origin.media_caption or "").strip()
+    story = origin.is_story_reply
+    caption = "" if story else (origin.media_caption or "").strip()
     if len(caption) > CAPTION_CHARS:
         caption = caption[: CAPTION_CHARS - 1].rstrip() + "…"
+    where = STORY_WHERE if story else surface_label(origin.media_product_type)
     chosen = options.chosen
     route_fields: dict[str, object]
     if chosen is not None:
@@ -160,9 +168,10 @@ def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> Follo
         initial=(username[:1] or "C").upper(),
         comment_text=(origin.text or "").strip(),
         posted_label=date_label(origin.posted_at, zone),
-        where_label=surface_label(origin.media_product_type),
+        where_label=where,
+        origin_label=STORY_ORIGIN_LABEL if story else f"Comentó en {where}",
         caption=caption,
-        permalink=origin.media_permalink or "",
+        permalink=(origin.story_reply_url if story else origin.media_permalink) or "",
         trigger_label=TRIGGER_LABELS[followup.trigger],
         intents=[FollowupIntentVM(c.label, c.commercial, c.reliable) for c in card.intents],
         has_draft=draft is not None,

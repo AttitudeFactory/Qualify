@@ -86,8 +86,10 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
         CapabilitySpec(
             Capability.STORY_REPLY_CONTEXT,
             "QUALIFY_STORY_REPLY_CONTEXT",
-            CapabilityState.NOT_IMPLEMENTED,
-            "Qualify todavía no lee a qué historia responde un mensaje directo.",
+            CapabilityState.TO_VERIFY,
+            "Qualify ya lee a qué historia responde un mensaje directo (reply_to.story) según "
+            "la documentación de Meta, pendiente de la prueba real con una respuesta a una "
+            "historia (R3).",
         ),
         CapabilitySpec(
             Capability.PUBLIC_NOTICE,

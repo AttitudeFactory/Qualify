@@ -53,13 +53,8 @@ def _intent_chip(chip: FollowupIntentVM) -> rx.Component:
 def _origin(c: FollowupCardVM) -> rx.Component:
     where = rx.cond(
         c.permalink != "",
-        rx.link(
-            "Comentó en " + c.where_label,
-            href=c.permalink,
-            is_external=True,
-            size="1",
-        ),
-        rx.text("Comentó en " + c.where_label, size="1", color=T.TEXT_MUTED),
+        rx.link(c.origin_label, href=c.permalink, is_external=True, size="1"),
+        rx.text(c.origin_label, size="1", color=T.TEXT_MUTED),
     )
     return rx.vstack(
         rx.hstack(

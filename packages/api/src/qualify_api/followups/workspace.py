@@ -5,7 +5,10 @@ with a commercial query found in Interacciones — the one facade the UI talks t
   followup for each commercial comment that has none, provenance included (the exact
   `comment_intent_results` row), and writes its draft. Only comments of the last 7 days:
   older ones cannot get a private reply any more, and a person who already writes by DM
-  is answered there. A person can still open any comment by hand.
+  is answered there. A person can still open any comment by hand. With
+  `story_reply_context` on (PR 5), the DMs that reply to a story and were classified
+  commercial open the same way — only those of the last 24 h, the DM window they are
+  answered in.
 - **Opening, by hand.** «Responder por DM» in Interacciones (`open_manual`): same row
   (idempotent per comment), same draft.
 - **The draft** is a `conversation_drafts` row of the ORIGIN message (its comment thread),
@@ -49,13 +52,14 @@ from qualify_api.conversations.drafts import (
 from qualify_api.conversations.outbox import HumanApproval
 from qualify_api.conversations.repository import MessageRecord
 from qualify_api.conversations.suggest import DraftGenerator, GroundingProvider, needs_review
-from qualify_api.conversations.window import PRIVATE_REPLY_WINDOW
+from qualify_api.conversations.window import PRIVATE_REPLY_WINDOW, WINDOW
 from qualify_api.followups.origins import CommercialIntentReader, OriginMessage, OriginReader
 from qualify_api.followups.repository import (
     Followup,
     FollowupOpening,
     FollowupRepository,
     FollowupTrigger,
+    OriginKind,
     UnknownFollowup,
 )
 from qualify_api.followups.service import FollowupService, SendOptions
@@ -71,6 +75,7 @@ logger = logging.getLogger("qualify_api.followups.workspace")
 
 # `conversation_drafts.gate_reason` of a followup's draft.
 GATE_COMMERCIAL_COMMENT: Final = "commercial_comment"
+GATE_COMMERCIAL_STORY_REPLY: Final = "commercial_story_reply"
 GATE_MANUAL_FOLLOWUP: Final = "manual_followup"
 # How many followups one analysis may open (and draft) at once.
 OPEN_BATCH: Final = 20
@@ -120,14 +125,21 @@ def surface_label(media_product_type: str | None) -> str:
 
 
 def draft_context(origin: OriginMessage, intents: Sequence[IntentChip]) -> str:
-    """What the generator must know that the comment alone does not say."""
-    where = surface_label(origin.media_product_type)
-    lines = [
-        f"La persona dejó un comentario PÚBLICO en {where}"
-        + (f" («{origin.media_caption.strip()[:200]}»)" if origin.media_caption else "")
-        + ". Tu respuesta le llega por MENSAJE PRIVADO (DM): puede que nunca le haya "
-        "escrito al negocio, así que saluda brevemente y responde a lo que preguntó.",
-    ]
+    """What the generator must know that the message alone does not say."""
+    if origin.is_story_reply:
+        lines = [
+            "La persona respondió por MENSAJE PRIVADO (DM) a una de tus historias de "
+            "Instagram. Tu respuesta va a esa misma conversación: responde a lo que "
+            "preguntó sobre la historia, sin dar por hecho qué se veía en ella.",
+        ]
+    else:
+        where = surface_label(origin.media_product_type)
+        lines = [
+            f"La persona dejó un comentario PÚBLICO en {where}"
+            + (f" («{origin.media_caption.strip()[:200]}»)" if origin.media_caption else "")
+            + ". Tu respuesta le llega por MENSAJE PRIVADO (DM): puede que nunca le haya "
+            "escrito al negocio, así que saluda brevemente y responde a lo que preguntó.",
+        ]
     commercial = [chip.label for chip in intents if chip.commercial]
     if commercial:
         lines.append("Intención comercial detectada: " + ", ".join(commercial) + ".")
@@ -202,12 +214,15 @@ class FollowupWorkspace:
 
     def open_from_intents(self, *, tenant_id: UUID, connection_id: UUID) -> OpenSummary:
         """B1: a followup (and its draft) for every recent commercial comment without one."""
+        now = self._clock()
         flagged = self._commercial.unfollowed(
             tenant_id=tenant_id,
             connection_id=connection_id,
             version=self._intent_version,
-            posted_since=self._clock() - PRIVATE_REPLY_WINDOW,
+            posted_since=now - PRIVATE_REPLY_WINDOW,
             limit=OPEN_BATCH,
+            # A story reply is answered by DM: only while its 24 h window can be open.
+            story_replies_since=now - WINDOW if self._service.story_replies_enabled() else None,
         )
         opened = drafted = failed = 0
         for flag in flagged:
@@ -220,7 +235,7 @@ class FollowupWorkspace:
             if not opening.created:
                 continue
             opened += 1
-            if self._try_draft(tenant_id, opening.followup, GATE_COMMERCIAL_COMMENT):
+            if self._try_draft(tenant_id, opening.followup, self._gate_reason(opening.followup)):
                 drafted += 1
             else:
                 failed += 1
@@ -356,9 +371,11 @@ class FollowupWorkspace:
 
     @staticmethod
     def _gate_reason(followup: Followup) -> str:
-        if followup.trigger is FollowupTrigger.INTENT:
-            return GATE_COMMERCIAL_COMMENT
-        return GATE_MANUAL_FOLLOWUP
+        if followup.trigger is not FollowupTrigger.INTENT:
+            return GATE_MANUAL_FOLLOWUP
+        if followup.origin_kind is OriginKind.STORY_REPLY:
+            return GATE_COMMERCIAL_STORY_REPLY
+        return GATE_COMMERCIAL_COMMENT
 
     def _pending_by_message(self, tenant_id: UUID) -> dict[UUID, ConversationDraft]:
         latest: dict[UUID, ConversationDraft] = {}

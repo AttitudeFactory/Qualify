@@ -193,7 +193,7 @@ Cada operación de Meta que Fase C necesita y que no está verificada va detrás
 | --- | --- | --- | --- |
 | `comment_private_reply` — respuesta privada a un comentario (`recipient.comment_id`: un solo mensaje, dentro de 7 días) | `QUALIFY_COMMENT_PRIVATE_REPLY` | **Por verificar** (construida en PR 2) | Prueba real R1 con un tester (abajo) |
 | `story_comments` — comentarios en historias | `QUALIFY_STORY_COMMENTS` | **Limitación de Meta** (§6: «Comments cannot be made on story media») | Que Meta abra el edge; repetir `just story-probe` |
-| `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | No implementado en Qualify | Código (PR 5) y prueba real R3 (necesita la suscripción de webhooks, QUA-129, o que la sincronización traiga `reply_to`) |
+| `story_reply_context` — a qué historia responde un DM (`reply_to.story`) | `QUALIFY_STORY_REPLY_CONTEXT` | **Por verificar** (construido en PR 5) | Prueba real R3 (abajo); en tiempo real necesita la suscripción de webhooks (QUA-129), si no, la sincronización con la capacidad encendida |
 | `public_notice` — aviso público «Te enviamos la información por DM 💬» | `QUALIFY_PUBLIC_NOTICE` | **Por verificar** (construido en PR 4) | Prueba en producción de la respuesta pública (QUA-128, R4, abajo) |
 
 El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: QUA-226 lo verificó en producción y siempre está disponible.
@@ -257,4 +257,34 @@ El aviso «Te enviamos la información por DM 💬» es una **respuesta pública
 4. Correr `just conversations-tick --tenant <uuid>` (o esperar al worker). Esperado: la fila del outbox queda `sent`; en la misma pasada, el followup pasa a `posted` con `notice_external_id` y `notice_posted_at`, y el tester ve la respuesta pública bajo su comentario. Repetir el tick: no aparece una segunda respuesta.
 5. Caso negativo: con otro comentario, provocar que el mensaje no salga (p. ej. aprobar con `QUALIFY_COMMENT_PRIVATE_REPLY` apagada en el worker → `private_reply_disabled`). Esperado: `notice_status = 'skipped'` con `notice_error_code = 'dm_failed:private_reply_disabled'` y ninguna respuesta pública.
 6. Pegar aquí la fecha, los estados y códigos observados (sin tokens ni textos de usuario). Con eso, `public_notice` pasa a **verificada** en `followups/capabilities.py`.
+
+### Respuestas a historias (PR 5)
+
+Una respuesta a una historia **no es un comentario**: llega como un mensaje directo, y Meta indica a qué historia responde junto al mensaje. Qualify lo lee de las dos vías documentadas:
+
+| Vía | Contrato (corpus) | Cuándo se lee |
+| --- | --- | --- |
+| Webhook `messages` | `message.reply_to.story = {"id": STORY-ID, "url": CDN-URL}` (`instagram-messaging/webhooks.md`, «Included when a customer replies to a story»; desde el 2025-12-12 también trae `link_sticker_url`, que Qualify no guarda) | Siempre: el dato ya viene en la entrega, no cuesta una llamada |
+| Sincronización (`GET /{conversation-id}/messages`) | campo `story` del nodo Message (`graph-api/reference/message.md`: «Only mentions and replies are supported»); Qualify toma `story.reply_to = {"link", "id"}` e ignora `story.mention` | Solo con `story_reply_context` encendida: añadir `story` cambia la petición a Meta |
+
+**Cómo lo aplica Qualify:**
+
+| Regla | Dónde |
+| --- | --- |
+| La historia se guarda en el mensaje (`messages.story_reply_id`, `story_reply_url`); solo en mensajes **entrantes** (CHECK), y la URL nunca sin el id. La URL es del CDN de Meta y caduca (una historia dura 24 h): se muestra mientras funcione | migración 0075 |
+| Un `reply_to` con `mid` (respuesta a otro mensaje), una mención de historia o un mensaje propio (eco) **no** es una respuesta a historia | `conversations/webhook.py`, `instagram_source.py` |
+| Si la sincronización guardó el mensaje sin la historia y luego llega con ella (webhook, o sincronización con la capacidad encendida), se completa; nunca se sobrescribe una historia ya guardada ni se toca nada más del mensaje | `conversations/repository.py` (`insert_message`) |
+| En el hilo de Conversaciones, la burbuja dice «Respondió a tu historia» (con enlace mientras la URL funcione) | `Qualify/conversations_page.py` |
+| Con la capacidad encendida, «Analizar intención» (Interacciones) clasifica también el texto de las respuestas a historias con el mismo `IntentSignal`, y las comerciales de las **últimas 24 h** se abren en «Consultas desde comentarios» con su borrador | `intent/repository.py`, `followups/origins.py`, `followups/workspace.py` |
+| Solo un DM que Meta marcó como respuesta a una historia es una consulta de este origen; cualquier otro DM ya es una conversación y se responde en ella | `followups/service.py` |
+| Sale siempre como **DM normal** en el mismo hilo, dentro de la ventana de 24 h (verificado en QUA-226); nunca respuesta privada ni aviso público (no hay comentario) | `followups/service.py`, CHECKs de 0071 |
+| La tarjeta dice «Respondió a tu historia por mensaje directo» con el enlace a la historia | `Qualify/followups_vm.py` |
+
+**R3, paso a paso (cuando se haga):**
+
+1. Publicar una historia en la cuenta conectada. Un tester con rol en la app responde a la historia por mensaje directo con una pregunta comercial (p. ej. «¿Cuánto cuesta?»).
+2. Encender `QUALIFY_STORY_REPLY_CONTEXT=on` **en la app y en el conversations-worker** y correr `just conversations-tick --tenant <uuid> --sync` (o esperar al webhook si la Página está suscrita, QUA-129).
+3. Comprobar en la base que el mensaje tiene `story_reply_id` (y `story_reply_url`), y en Conversaciones que la burbuja dice «Respondió a tu historia». Si llegó por la sincronización, confirmar que la respuesta de Meta trae `story.reply_to` (y no otra forma): es la parte del contrato que la documentación no muestra completa.
+4. Pulsar «Analizar intención» en Interacciones: la consulta aparece en «Consultas desde comentarios» con «Respondió a tu historia», borrador y ruta «Mensaje directo». Aprobarla y comprobar que sale en el mismo hilo.
+5. Pegar aquí la fecha, la vía por la que llegó (webhook o sincronización) y la forma observada (sin tokens ni textos de usuario). Con eso, `story_reply_context` pasa a **verificada** en `followups/capabilities.py`.
 
