@@ -258,6 +258,22 @@ def build_angle_vm(view: AngleView, preview_url: Callable[[str], str]) -> AngleV
     )
 
 
+#: An angle whose piece is being made right now: it was sent to generation and its draft
+#: has not landed yet. What the gallery polls on — a `generated` draft is NOT in flight
+#: (it waits for the operator) and neither is a `failed` one (it waits for a retry).
+_IN_FLIGHT_ANGLE = frozenset({ANGLE_RESERVED, ANGLE_QUEUED})
+_IN_FLIGHT_DRAFT = frozenset({"", DraftStatus.DRAFTING.value})
+
+
+def angle_in_flight(angle: AngleVM) -> bool:
+    return angle.status in _IN_FLIGHT_ANGLE and angle.draft_status in _IN_FLIGHT_DRAFT
+
+
+def any_in_flight(angles: Sequence[AngleVM]) -> bool:
+    """Whether the gallery must keep polling."""
+    return any(angle_in_flight(angle) for angle in angles)
+
+
 @dataclass(frozen=True)
 class SetSummaryVM:
     id: str
@@ -392,6 +408,8 @@ __all__ = [
     "ProductCheckVM",
     "SetSummaryVM",
     "SetVM",
+    "angle_in_flight",
+    "any_in_flight",
     "build_angle_vm",
     "build_outcome_vm",
     "build_plan_vm",
