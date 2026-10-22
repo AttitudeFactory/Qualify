@@ -22,6 +22,15 @@ name: sonar
 on:
   push:
     branches: [main]
+    # Nothing Sonar analyzes lives here (sonar-project.properties scans code only).
+    paths-ignore:
+      - 'docs/**'
+      - 'bitacora/**'
+      - 'reference/**'
+      - '.claude/**'
+      - '.agents/**'
+      - '**/*.md'
+      - 'mkdocs.yml'
   workflow_dispatch:
 
 concurrency:
@@ -59,7 +68,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12.13"
-      - run: uv sync
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --locked
       # Ruff findings in ruff's native JSON — the format sonar-python's RuffSensor reads
       # (`sonar.python.ruff.reportPaths`).
       - name: ruff report
