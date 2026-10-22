@@ -157,6 +157,14 @@ async def _authenticated_client(tenant_id: UUID, connection_id: UUID) -> Authent
     return await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
 
 
+def _story_replies_enabled() -> bool:
+    """m-24789646: whether the poll asks Meta which story a DM replies to (the
+    `story_reply_context` capability, off until R3)."""
+    from qualify_api.followups.capabilities import Capabilities, Capability  # noqa: PLC0415
+
+    return Capabilities.from_env().enabled(Capability.STORY_REPLY_CONTEXT)
+
+
 def _instagram_pair() -> tuple[object, object]:
     from qualify_api.config import MetaOAuthSettings  # noqa: PLC0415
     from qualify_api.conversations.instagram_source import (  # noqa: PLC0415
@@ -170,6 +178,7 @@ def _instagram_pair() -> tuple[object, object]:
             client_factory=_authenticated_client,
             graph_url=graph_url,
             scope_reader=granted_scopes_for,
+            story_replies=_story_replies_enabled(),
         ),
         InstagramDirectSender(client_factory=_authenticated_client, graph_url=graph_url),
     )

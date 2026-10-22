@@ -5,6 +5,9 @@ layer's decision.
 
 A comment the classifier gave no usable answer for is NOT recorded: it stays pending and
 is retried on the next pass, instead of being stored as a class nobody assigned.
+
+With `include_story_replies` (the `story_reply_context` capability, m-24789646 PR 5) the
+DMs that reply to a story are classified in the same pass, with the same contract.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ class IntentService:
         repository: IntentRepository,
         version: AnalysisVersion,
         classifier: IntentClassifier,
+        include_story_replies: bool = False,
     ) -> None:
         if version.model_id != classifier.model_id:
             raise ValueError(
@@ -44,12 +48,16 @@ class IntentService:
         self._repository = repository
         self._version = version
         self._classifier = classifier
+        self._include_story_replies = include_story_replies
 
     def analyze_pending_intents(
         self, *, tenant_id: UUID, connection_id: UUID
     ) -> IntentAnalysisSummary:
         pending = self._repository.list_pending_for_intent(
-            tenant_id=tenant_id, connection_id=connection_id, version=self._version
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            version=self._version,
+            include_story_replies=self._include_story_replies,
         )
         to_classify = [comment for comment in pending if comment.text.strip()]
         predictions = self._classifier.classify([comment.text for comment in to_classify])

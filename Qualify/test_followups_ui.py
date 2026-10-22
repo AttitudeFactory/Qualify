@@ -283,3 +283,23 @@ def test_the_gateway_hands_the_notice_to_the_workspace() -> None:
     )
     assert route == "private_reply"
     assert seen["notice_text"] == "aviso"
+
+
+# --- replies to stories (PR 5) -------------------------------------------------------------
+
+
+def test_a_story_reply_card_says_it_answered_a_story() -> None:
+    from dataclasses import replace as _replace
+
+    card = _card()
+    story_origin = _replace(
+        card.origin,
+        channel="dm",
+        story_reply_id="17900000000000001",
+        story_reply_url="https://cdn/story",
+    )
+    vm = build_card_vm(_replace(card, origin=story_origin), now=NOW, zone=ZONE)
+    assert vm.origin_label == "Respondió a tu historia por mensaje directo"
+    assert (vm.permalink, vm.caption) == ("https://cdn/story", "")
+    comment = build_card_vm(card, now=NOW, zone=ZONE)
+    assert comment.origin_label == "Comentó en tu Reel"

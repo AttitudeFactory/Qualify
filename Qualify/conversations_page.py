@@ -735,6 +735,21 @@ def _seen_footer(m: MessageVM) -> rx.Component:
     )
 
 
+def _story_reply(m: MessageVM) -> rx.Component:
+    """«Respondió a tu historia» above an inbound bubble (m-24789646, B5)."""
+    label = rx.hstack(
+        rx.icon("circle-dashed", size=T.ICON_SM, color=T.TEXT_FAINT),
+        rx.cond(
+            m.story_reply_href != "",
+            rx.link(m.story_reply_label, href=m.story_reply_href, is_external=True, size="1"),
+            rx.text(m.story_reply_label, size="1", color=T.TEXT_MUTED),
+        ),
+        spacing="1",
+        align="center",
+    )
+    return rx.cond(m.story_reply_label != "", label, rx.fragment())
+
+
 def _message(m: MessageVM) -> rx.Component:
     """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail);
     `.q-conv-msg` is the entrance — keyed by message id, so only a new bubble plays it.
@@ -752,6 +767,7 @@ def _message(m: MessageVM) -> rx.Component:
                 ),
             ),
             rx.box(
+                _story_reply(m),
                 chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
                 class_name="q-wa-msg q-wa-msg--in q-conv-msg",
             ),

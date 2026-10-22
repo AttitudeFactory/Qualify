@@ -101,6 +101,26 @@ class RemoteMessage:
     media_type: str | None = None
     # The channel's own CDN URL of the attachment (signed, expiring); `None` for text.
     media_url: str | None = None
+    # m-24789646 (B5): the story an inbound DM replies to — Meta's story id and the CDN
+    # URL it gave (signed, expiring). `None` for any message that is not a story reply.
+    story_reply_id: str | None = None
+    story_reply_url: str | None = None
+
+
+def story_reference(value: Any) -> tuple[str, str | None] | None:
+    """`(story id, CDN URL)` from Meta's story object — `{"id", "url"}` in the webhook's
+    `reply_to.story`, `{"id", "link"}` in the Message node's `story.reply_to` — or None
+    when it carries no id."""
+    if not isinstance(value, Mapping):
+        return None
+    raw_id = value.get("id")
+    if isinstance(raw_id, bool) or not isinstance(raw_id, str | int) or not str(raw_id):
+        return None
+    for key in ("url", "link"):
+        url = value.get(key)
+        if isinstance(url, str) and url:
+            return str(raw_id), url
+    return str(raw_id), None
 
 
 @dataclass(frozen=True)

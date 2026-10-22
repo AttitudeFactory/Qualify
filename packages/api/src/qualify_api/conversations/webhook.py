@@ -9,7 +9,13 @@ delivery (`business-messaging/instagram-messaging/webhooks.md:53-81`; the envelo
 each item to a change with `field = "messages"`, see `webhooks/envelope.py`):
 
     {"sender": {"id": IGSID}, "recipient": {"id": IGID}, "timestamp": 1569262485349,
-     "message": {"mid": "…", "text": "…", "attachments": [...], "is_echo": true?}}
+     "message": {"mid": "…", "text": "…", "attachments": [...], "is_echo": true?,
+                 "reply_to": {"story": {"id": STORY-ID, "url": CDN-URL}}?}}
+
+`reply_to.story` (m-24789646, B5) marks a DM that replies to one of the account's stories
+(`webhooks.md:110-115`): its id and CDN URL are kept on the message, inbound only. A
+`reply_to` with a `mid` instead (an inline reply to another message) is not a story and
+is ignored. Corpus-only until R3 observes it live.
 
 What one change does, in order:
 
@@ -46,6 +52,7 @@ from qualify_api.conversations.contracts import (
     RemoteMessage,
     RemoteRead,
     SourceConnection,
+    story_reference,
 )
 from qualify_api.conversations.instagram_source import SHAPE_VERSION_IG_DM
 from qualify_api.conversations.sync import ConversationSyncService
@@ -126,6 +133,11 @@ def _media_url_of(message: Mapping[str, Any]) -> str | None:
     return url if isinstance(url, str) and url else None
 
 
+def _story_reply_of(message: Mapping[str, Any]) -> tuple[str, str | None] | None:
+    reply_to = message.get("reply_to")
+    return story_reference(reply_to.get("story")) if isinstance(reply_to, Mapping) else None
+
+
 def parse_messaging_item(
     value: Any, *, own_account_id: str
 ) -> tuple[RemoteConversation, RemoteMessage] | RemoteRead | str:
@@ -158,6 +170,7 @@ def parse_messaging_item(
     is_echo = message.get("is_echo") is True or sender_id == own_account_id
     counterpart = recipient_id if is_echo else sender_id
     text = message.get("text")
+    story = None if is_echo else _story_reply_of(message)
     remote = RemoteMessage(
         external_message_id=mid,
         direction="outbound" if is_echo else "inbound",
@@ -167,6 +180,8 @@ def parse_messaging_item(
         author_external_id=sender_id,
         media_type=_media_type(message),
         media_url=_media_url_of(message),
+        story_reply_id=story[0] if story else None,
+        story_reply_url=story[1] if story else None,
     )
     return RemoteConversation(counterpart_external_id=counterpart), remote
 

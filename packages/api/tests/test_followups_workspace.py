@@ -73,7 +73,7 @@ class FakeGenerator:
 
 
 class World:
-    def __init__(self) -> None:
+    def __init__(self, capabilities: Capabilities = PRIVATE_REPLY_ON) -> None:
         self.now = T0 + timedelta(hours=1)
         self.conversations = MemoryConversationRepository()
         self.outbox = MemoryConversationOutboxRepository(clock=lambda: self.now)
@@ -91,7 +91,7 @@ class World:
             conversations=self.conversations,
             outbox=self.outbox,
             registry=self.registry,
-            capabilities=PRIVATE_REPLY_ON,
+            capabilities=capabilities,
             clock=lambda: self.now,
         )
         self.workspace = FollowupWorkspace(

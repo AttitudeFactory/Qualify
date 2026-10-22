@@ -20,7 +20,11 @@ dependencies is `docs/conversaciones-limitaciones-meta.md`.
 - `GET /{conversation-id}/messages?fields=id,created_time,from,to,message,attachments`
   (`conversations-api.md`, "Get information about a message"): newest first; **only the
   ~20 most recent carry details** — older ids come back as deleted. The poll is a
-  reconciliation, the webhook (`webhook.py`) is the forward path.
+  reconciliation, the webhook (`webhook.py`) is the forward path. With
+  `story_replies=True` (the `story_reply_context` capability, m-24789646) the request
+  also asks for `story` (`graph-api/reference/message.md`: «The link and ID for a story.
+  Only mentions and replies are supported»), and `story.reply_to` becomes the message's
+  story reply; a `story.mention` is not a reply and is ignored. Corpus-only until R3.
 - `POST /{page-id}/messages` with `{"recipient": {"id": IGSID}, "message": {"text"}}`
   (`send-message.md`): text ≤ 1000 UTF-8 bytes, inside the 24 h window, and — with
   Standard Access — only to people with a role on the app.
@@ -71,6 +75,7 @@ from qualify_api.conversations.contracts import (
     RemoteProfile,
     SendResult,
     SourceConnection,
+    story_reference,
 )
 
 logger = logging.getLogger("qualify_api.conversations.instagram")
@@ -84,6 +89,8 @@ SHAPE_VERSION_IG_DM: Final = "ig-dm-messenger-platform-1.0.0"
 
 CONVERSATION_FIELDS: Final = "id,updated_time,participants"
 MESSAGE_FIELDS: Final = "id,created_time,from,to,message,attachments"
+#: m-24789646: the same request plus the story a message replies to (or mentions).
+MESSAGE_FIELDS_WITH_STORY: Final = f"{MESSAGE_FIELDS},story"
 #: `user-profile.md`: the three fields the inbox shows. `profile_pic` expires in days.
 PROFILE_FIELDS: Final = "name,username,profile_pic"
 #: httpx's default is 5 s, which Graph exceeds routinely: the messages edge with
@@ -360,10 +367,12 @@ def parse_messages_page(payload: Mapping[str, Any], *, own_account_id: str) -> P
         author_id = str(sender.get("id")) if sender.get("id") is not None else None
         username = sender.get("username")
         text = raw.get("message")
+        outbound = author_id == own_account_id
+        story = None if outbound else _story_reply(raw)
         items.append(
             RemoteMessage(
                 external_message_id=str(raw["id"]),
-                direction="outbound" if author_id == own_account_id else "inbound",
+                direction="outbound" if outbound else "inbound",
                 text=text if isinstance(text, str) and text else None,
                 posted_at=parse_graph_time(raw.get("created_time")),
                 shape_version=SHAPE_VERSION_IG_DM,
@@ -371,9 +380,19 @@ def parse_messages_page(payload: Mapping[str, Any], *, own_account_id: str) -> P
                 author_username=username if isinstance(username, str) else None,
                 media_type=_media_type(raw),
                 media_url=_media_url(raw),
+                story_reply_id=story[0] if story else None,
+                story_reply_url=story[1] if story else None,
             )
         )
     return Page(items=tuple(items), next_cursor=_next_cursor(payload))
+
+
+def _story_reply(raw: Mapping[str, Any]) -> tuple[str, str | None] | None:
+    """`story.reply_to = {"link", "id"}` on the Message node. `[CORPUS]`: the reference
+    names the two kinds (StoryReply / StoryMention) without showing the wrapper key;
+    `reply_to` mirrors the webhook's. A mention, or a shape without it, is not a reply."""
+    story = raw.get("story")
+    return story_reference(story.get("reply_to")) if isinstance(story, Mapping) else None
 
 
 def parse_profile(payload: Mapping[str, Any]) -> RemoteProfile | None:
@@ -441,10 +460,13 @@ class InstagramDirectSource:
         client_factory: ClientFactory,
         graph_url: str,
         scope_reader: ScopeReader | None = None,
+        story_replies: bool = False,
     ) -> None:
         self._clients = _Clients(client_factory)
         self._graph_url = graph_url.rstrip("/")
         self._scopes = scope_reader
+        # m-24789646: ask the messages edge for `story` only while the capability is on.
+        self._message_fields = MESSAGE_FIELDS_WITH_STORY if story_replies else MESSAGE_FIELDS
 
     @property
     def channel(self) -> str:
@@ -514,7 +536,7 @@ class InstagramDirectSource:
     ) -> Page[RemoteMessage]:
         if not conversation.external_conversation_id:
             return Page(items=())
-        params: dict[str, Any] = {"fields": MESSAGE_FIELDS, "limit": MESSAGES_PAGE_LIMIT}
+        params: dict[str, Any] = {"fields": self._message_fields, "limit": MESSAGES_PAGE_LIMIT}
         if cursor:
             params["after"] = cursor
         what = "GET /{conversation-id}/messages"
@@ -677,6 +699,7 @@ __all__ = [
     "MESSAGES_PAGE_LIMIT",
     "MESSAGES_SCOPE_LITERALS",
     "MESSAGE_FIELDS",
+    "MESSAGE_FIELDS_WITH_STORY",
     "SHAPE_VERSION_IG_DM",
     "ClientFactory",
     "InstagramDirectError",

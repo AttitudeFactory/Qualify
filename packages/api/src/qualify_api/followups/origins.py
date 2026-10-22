@@ -7,7 +7,9 @@ author's existing DM thread, if any, with its last inbound (the 24 h window) —
 query for a whole page of followups.
 
 `CommercialIntentReader` finds the comments a commercial analysis flagged that have no
-followup yet: what `FollowupWorkspace.open_from_intents` opens automatically (B1).
+followup yet: what `FollowupWorkspace.open_from_intents` opens automatically (B1) — and,
+when asked (`story_replies_since`, the `story_reply_context` capability, PR 5), the DMs
+that reply to a story (`messages.story_reply_id`, 0075), classified the same way.
 
 Read-only, through `tenant_session` (RLS). The memory classes are the same contracts for
 the offline suite.
@@ -53,6 +55,13 @@ class OriginMessage:
     # and its last inbound — the base of the 24 h window.
     dm_thread_id: UUID | None = None
     dm_last_inbound_at: datetime | None = None
+    # A DM that replies to a story (0075): Meta's story id and the CDN URL it gave.
+    story_reply_id: str | None = None
+    story_reply_url: str | None = None
+
+    @property
+    def is_story_reply(self) -> bool:
+        return self.channel == "dm" and self.story_reply_id is not None
 
 
 class OriginReader(Protocol):
@@ -85,7 +94,7 @@ class MemoryOriginReader:
 _SELECT = """
     SELECT m.id, m.tenant_id, m.connection_id, m.thread_id, t.channel, m.external_message_id,
            m.direction, m.author_external_id, m.author_username, m.text, m.posted_at,
-           m.deleted_at IS NOT NULL AS deleted,
+           m.deleted_at IS NOT NULL AS deleted, m.story_reply_id, m.story_reply_url,
            CASE WHEN t.channel = 'comment' THEN t.external_thread_id END AS media_id,
            mm.caption AS media_caption, mm.permalink AS media_permalink,
            mm.media_product_type,
@@ -130,6 +139,8 @@ def _origin(r: Any) -> OriginMessage:
         media_product_type=r.media_product_type,
         dm_thread_id=r.dm_thread_id,
         dm_last_inbound_at=r.dm_last_inbound_at,
+        story_reply_id=r.story_reply_id,
+        story_reply_url=r.story_reply_url,
     )
 
 
@@ -169,10 +180,12 @@ class CommercialIntentReader(Protocol):
         version: AnalysisVersion,
         posted_since: datetime,
         limit: int,
+        story_replies_since: datetime | None = None,
     ) -> list[CommercialComment]:
         """Inbound, not deleted comments of the connection, posted since `posted_since`,
         whose analysis under `version` is commercial and that have no followup yet —
-        newest first."""
+        newest first. With `story_replies_since`, also the DMs replying to a story
+        received since then (None: comments only)."""
         ...
 
 
@@ -193,18 +206,26 @@ class MemoryCommercialIntentReader:
         version: AnalysisVersion,
         posted_since: datetime,
         limit: int,
+        story_replies_since: datetime | None = None,
     ) -> list[CommercialComment]:
         rows: list[tuple[datetime, CommercialComment]] = []
         for flag in self.flagged:
             origin = self._origins.get(tenant_id=tenant_id, message_id=flag.message_id)
+            if origin is None:
+                continue
+            if origin.channel == "comment":
+                since: datetime | None = posted_since
+            elif origin.is_story_reply:
+                since = story_replies_since
+            else:
+                since = None
             if (
-                origin is None
+                since is None
                 or origin.connection_id != connection_id
-                or origin.channel != "comment"
                 or origin.direction != "inbound"
                 or origin.deleted
                 or origin.posted_at is None
-                or origin.posted_at < posted_since
+                or origin.posted_at < since
                 or self._followed.get_for_message(
                     tenant_id=tenant_id, origin_message_id=flag.message_id
                 )
@@ -228,10 +249,14 @@ _UNFOLLOWED = text(
        AND cir.pipeline_version = :pipeline_version
        AND cir.model_id = :model_id
        AND COALESCE(cir.model_revision, '') = COALESCE(CAST(:model_revision AS text), '')
-       AND t.channel = 'comment'
        AND m.direction = 'inbound'
        AND m.deleted_at IS NULL
-       AND m.posted_at >= :posted_since
+       AND (
+           (t.channel = 'comment' AND m.posted_at >= :posted_since)
+           OR (t.channel = 'dm' AND m.story_reply_id IS NOT NULL
+               AND CAST(:story_since AS timestamptz) IS NOT NULL
+               AND m.posted_at >= CAST(:story_since AS timestamptz))
+       )
        AND NOT EXISTS (
            SELECT 1 FROM interaction_followups f WHERE f.origin_message_id = cir.message_id
        )
@@ -250,6 +275,7 @@ class PostgresCommercialIntentReader:
         version: AnalysisVersion,
         posted_since: datetime,
         limit: int,
+        story_replies_since: datetime | None = None,
     ) -> list[CommercialComment]:
         with tenant_session(tenant_id) as session:
             rows = session.execute(
@@ -261,6 +287,7 @@ class PostgresCommercialIntentReader:
                     "model_id": version.model_id,
                     "model_revision": version.model_revision,
                     "posted_since": posted_since,
+                    "story_since": story_replies_since,
                     "limit": limit,
                 },
             ).all()

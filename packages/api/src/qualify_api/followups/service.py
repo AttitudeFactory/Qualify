@@ -74,6 +74,9 @@ REASON_PRIVATE_REPLY_EXPIRED: Final = (
     "Pasaron más de 7 días desde el comentario: Meta ya no acepta una respuesta privada."
 )
 REASON_PRIVATE_REPLY_NOT_A_COMMENT: Final = "La respuesta privada solo existe para comentarios."
+REASON_NOT_A_STORY_REPLY: Final = (
+    "Este mensaje no responde a una historia: contéstalo en su conversación."
+)
 
 
 class UnknownOrigin(LookupError):
@@ -206,6 +209,10 @@ class FollowupService:
             availability = self._capabilities.availability(Capability.STORY_REPLY_CONTEXT)
             if not availability.enabled:
                 raise OriginNotSupported(availability.reason)
+            # Only a DM Meta marked as a reply to a story (0075) is a story reply; any
+            # other DM is already a conversation and is answered there.
+            if not origin.is_story_reply:
+                raise OriginNotSupported(REASON_NOT_A_STORY_REPLY)
             return OriginKind.STORY_REPLY
         raise OriginNotSupported("Este canal no se puede continuar en privado.")
 
@@ -262,6 +269,10 @@ class FollowupService:
         return _option(
             route, private_reply_window(origin.posted_at, now), REASON_PRIVATE_REPLY_EXPIRED
         )
+
+    def story_replies_enabled(self) -> bool:
+        """Whether DMs replying to a story are continued as followups (PR 5)."""
+        return self._capabilities.enabled(Capability.STORY_REPLY_CONTEXT)
 
     def public_notice_available(self, followup: Followup) -> bool:
         """Whether a card may offer the public notice: only under a comment (a story reply

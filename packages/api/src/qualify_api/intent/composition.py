@@ -59,10 +59,14 @@ def production_intent_service() -> IntentService:
         api_key = api_key_from_env()
     except MissingAPIKey as exc:
         raise IntentModelUnavailable(str(exc)) from exc
+    from qualify_api.followups.capabilities import Capabilities, Capability  # noqa: PLC0415
+
     return IntentService(
         repository=PostgresIntentRepository(),
         version=CURRENT_INTENT_VERSION,
         classifier=ClaudeIntentClassifier(api_key=api_key),
+        # m-24789646: story replies are classified only while their context is on.
+        include_story_replies=Capabilities.from_env().enabled(Capability.STORY_REPLY_CONTEXT),
     )
 
 
