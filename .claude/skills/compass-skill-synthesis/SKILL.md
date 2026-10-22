@@ -11,7 +11,7 @@ Grounding: adapted from Li, Zhao & Pajarinen, *Cooperative Multi-Agent Planning 
 
 ## When to trigger (gap detection)
 
-Any of these is a COMPASS signal — the agent that notices it reports the gap to the session lead or `qualify-second-brain` instead of silently improvising:
+Any of these is a COMPASS signal — the agent that notices it reports the gap to `qualify-lead` instead of silently improvising:
 
 1. A task requires a procedure that no installed skill (`.claude/skills/`) covers and no agent definition documents.
 2. The same multi-step procedure has been improvised ad hoc in ≥2 sessions (check `.claude/compass-sage/ledger.md` for repeated `improvised` entries).

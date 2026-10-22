@@ -1,107 +1,77 @@
-# Organización de agentes ("squads") para Qualify
+# Organización de agentes y skills de Qualify
 
-Este documento es el mapa de quién-es-quién entre los subagentes de Claude Code configurados en `.claude/agents/` y `.claude/commands/`. Es un documento vivo de organización interna del proyecto, no de producto — actualízalo cuando se cree, renombre o repropósito un agente o squad.
+Mapa de los subagentes de Claude Code (`.claude/agents/`) y de las skills propias de Qualify (`.claude/skills/qualify-*`). Documento vivo de organización interna, no de producto.
 
-## Agente raíz: second-brain
+**Actualizado 2026-10-22** (PR #214, m-24840372).
 
-**`qualify-second-brain`** (`.claude/agents/qualify-second-brain.md`) es el punto de entrada persistente para todo el proyecto. No reemplaza a los tres squads de abajo — coordina hacia ellos. Úsalo como agente de hilo principal (`claude --agent qualify-second-brain`) para cualquier sesión que no esté ya enfocada en un squad específico: preguntas de estado/contexto, decidir a qué squad enrutar un pedido, o delegar una pregunta puntual a un solo specialist sin levantar un squad completo.
+## El modelo: skills primero, pocos subagentes
 
-## Squads (equipo lead + specialists, vía slash command)
+Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 
-| Squad | Slash command | Lead (hilo principal) | Specialists | Cuándo usarlo |
-|---|---|---|---|---|
-| Research | `/team-research` | `research-lead` | `principal-architect`, `data-scientist-fde`, `gtm-specialist`, + `market-opportunity-analyst` y `sales-consultant` (solo si el objetivo es de mercado) | Investigación de mercado, modelos, o arquitectura que aún no tiene una decisión firme — cualquier fase. |
-| Handoff / PO | `/team-po` | `po-lead` | `product-owner`, `principal-architect`, `data-scientist-fde` | Convertir hallazgos de research en backlog ejecutable, con desafío de factibilidad y de fase. |
-| Dev | `/team-dev` | `dev-lead` | `principal-architect`, `pipeline-engineer`, `data-scientist-fde`, `reflex-ui-engineer` (solo si el sprint toca `Qualify/`) | Implementación de código — hoy Fase 1 Parte 2/3 (scraper, ClickHouse/Celery) y el dashboard CRM. |
+- **Las skills son la unidad principal.** Empaquetan procedimientos y conocimiento y cargan solo cuando aplican; los antiguos comandos de `.claude/commands/` ya son skills. Todo lo propio de Qualify vive en skills `qualify-*`.
+- **Los subagentes existen para aislar contexto y elegir modelo**, no como personajes. Sirven cuando el trabajo llenaría la conversación principal de código, logs o archivos: el subagente lo hace en su propia ventana y devuelve un resumen. Cada subagente **precarga** sus skills (`skills:` en su frontmatter).
+- **`CLAUDE.md` se queda corto** (se carga entero en cada sesión; Anthropic recomienda menos de 200 líneas). Lo largo se mudó a `qualify-pr`, `qualify-dev-env` y `qualify-history`.
+- **Los equipos de agentes experimentales están apagados** (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` fuera de `.claude/settings.json`): cuestan bastante más tokens que una sesión normal, no aplican las skills de los agentes y los squads no se usaban desde agosto. Los squads ahora son skills que coordinan subagentes normales.
 
-Cada lead nunca implementa mientras su squad trabaja — coordina, aprueba planes y sintetiza. Ningún squad hace commit/push sin pedirlo el usuario.
+**Regla del fundador (2026-10-22): el código y las tareas con muchos logs SIEMPRE van a un subagente**, en Opus 5.5 para escribir código o en el modelo que mejor encaje para leer logs o buscar. El hilo principal coordina, decide y resume (`qualify-lead`).
 
-## Specialists y sus skills
+## Subagentes (7)
 
-Cada specialist tiene una sección "Skills at your disposal" en su archivo de agente que apunta a skills instalados en `.claude/skills/` — invócalos vía la tool `Skill`, no de memoria.
-
-| Specialist | Dueño de (paths) | Fase(s) | Skills clave asignadas |
+| Agente | Modelo | Dueño de (rutas) | Skills precargadas |
 |---|---|---|---|
-| `principal-architect` | `docs/`, `CLAUDE.md` | Todas — diseña y audita | `develop-adr`, `architecture-patterns`, `improve-codebase-architecture`, `clickhouse-architecture-advisor`, `clickhouse-best-practices` |
-| `pipeline-engineer` | `packages/scraper/`, `packages/pipeline/`, `packages/shared/`, `docker-compose.yml`, `migrations/postgres/` (todo el esquema desde ADR 31) | Fase 1 Parte 2/3 | `scrape`, `scrape-analyze-page`, `scrape-spec`/`scrape-define`, `scrape-create-spider`, `scrape-zyte-login` (plugin `zyte-web-data`), `clickhousectl-local-dev`, `clickhouse-best-practices` |
-| `data-scientist-fde` | `packages/models/` | Fase 1 Parte 1 (y eval continua) | `model-evaluation`, `eval-driven-dev`, `exploratory-data-analysis`, `hf-cli` |
-| `gtm-specialist` | `docs/*research*`, `docs/*alternativas*`, `docs/ingenieria-inversa-*`, `docs/dolores-*`, `docs/fase0-*` | Mercado: eje **oferta** — todas las fases | `competitor-profiling`, `customer-research`, `positioning`, `pricing` |
-| `market-opportunity-analyst` | `docs/oportunidades-mercado-*.md` | Mercado: eje **vector** — todas las fases | `customer-research`, `competitor-profiling` (consulta puntual), `positioning`/`pricing` como lentes analíticas |
-| `sales-consultant` | `docs/demanda-ventas-*.md` | Mercado: eje **demanda** — todas las fases | `customer-research` (instrumento de anclaje), `competitor-profiling`, `positioning` |
-| `product-owner` | `docs/backlog-*.md` | Conversión research → backlog | — |
-| `reflex-ui-engineer` | `Qualify/` (app Reflex) | Dashboard CRM — hoy scaffold Fase 1, crecerá en Fase 2 (dashboards), Fase 4 (CRM de creators), Fase 6 | `reflex-docs`, `setup-python-env`, `reflex-process-management` (obligatorios, ver `CLAUDE.md` §Agents), `dataviz` |
+| `backend-engineer` | opus | `packages/api/` (salvo creative/catalog/stock/canva), `packages/shared/`, `packages/scraper/`, `migrations/postgres/` (todas) | context, pr, dev-env, migration |
+| `creative-engineer` | opus | `packages/creative/`, `packages/render/`, `qualify_api.{creative,catalog,stock,canva}` | context, pr, dev-env, copy-es, measure |
+| `reflex-ui-engineer` | opus | `Qualify/`, `assets/`, `rxconfig.py`, E2E | context, pr, dev-env, copy-es |
+| `platform-engineer` | opus | `deploy/`, `.github/`, `infra/`, `docker-compose*.yml`, `justfile` | context, pr, dev-env, prod-ops |
+| `data-scientist-fde` | opus | `packages/models/`, `packages/api/evals/`, `docs/modelos-generativos/` | context, pr, dev-env, measure |
+| `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history |
+| `market-analyst` | sonnet | Oferta: `docs/*research*`, `*alternativas*`, `ingenieria-inversa-*`, `dolores-*`, `apis-*`, `costos-*`, `comparativa-*` · Vector: `docs/oportunidades-mercado-*.md` · Demanda: `docs/demanda-ventas-*.md` | context |
 
-### Los tres ejes del mercado: `gtm-specialist` · `market-opportunity-analyst` · `sales-consultant`
+Todos precargan además `durable-findings`. El hilo principal es dueño de los tickets de Meegle y de `docs/backlog-*.md` / `docs/epica-*.md` (vía `qualify-backlog`).
 
-Añadidos el **2026-07-29** a pedido del fundador. Los dos nuevos son **consultores externos**, no funciones internas: no llevan el marketing ni el pipeline de ventas de Qualify — miran hacia afuera y devuelven **oportunidades y requisitos de producto**. Esa distinción es el punto entero del alta, y la primera versión de estos agentes (escrita el mismo día y descartada) se equivocó justamente ahí: los definió como departamento interno de marketing y ventas. Si alguien vuelve a proponer "un agente de marketing", este párrafo es la corrección.
+## Skills propias de Qualify
 
-Son **miembros condicionales** de `/team-research`: el lead los spawnea solo cuando el objetivo es de mercado (tendencias, dolores, innovaciones, oportunidad por nicho, qué exige el comprador). No van por defecto — el ledger registra muertes rutinarias por límite de gasto, así que una ronda de cinco teammates es un riesgo real, no una mejora gratis.
+| Skill | Para qué | Quién la usa |
+|---|---|---|
+| `qualify-context` | El negocio, los clientes, la app módulo por módulo, decisiones firmadas, reglas de la casa | Todos (precargada) |
+| `qualify-lead` | Enrutar a subagentes y modelos, briefs, coordinar sin implementar, entregar, estado | Hilo principal |
+| `qualify-pr` | Ticket → rama → checks → PR → nunca mergear; tabla de CI; presupuesto de Actions | Todos |
+| `qualify-dev-env` | Recetas `just`, tests, trampas del venv, workers que actúan de verdad | Ingenieros |
+| `qualify-migration` | Revisiones Alembic con RLS, numeración, reversibilidad | backend, architect |
+| `qualify-copy-es` | Textos para clientes en español sin anglicismos | creative, UI |
+| `qualify-measure` | Golden sets, evals, costo, documentar cada prueba de modelo | datasci, creative |
+| `qualify-prod-ops` | Producción, despliegues, secretos, incidentes | platform |
+| `qualify-backlog` | De evidencia a historias y tickets | Hilo principal |
+| `qualify-lark-admin` | Ítems y configuración de Meegle, administración de Lark: MCP, CLIs oficiales (`meegle`, `lark-cli` y sus skills) o Chrome para las consolas | Hilo principal, platform |
+| `qualify-history` | Visión original, pipeline de earned media, mapa de fases, decisiones pasadas | architect |
+| `qualify-team-dev` / `qualify-team-po` / `qualify-team-research` | Squads que dispara el fundador (`/qualify-team-…`) | Hilo principal |
 
-**Justificación del alta (honesta):** el criterio del org es "no crear specialists hasta que haya volumen repetible" (ver abajo), y ese criterio **no** es lo que motiva estos dos. `gtm-specialist` tiene ~4 filas en 85 del ledger: el squad de research no está saturado. Lo que los justifica es una **capacidad hoy ausente**: nadie mira el mercado *hacia adelante* (qué se está moviendo, qué se está innovando, dónde está el whitespace) ni *desde la demanda* (qué exige el comprador que no tenemos). `gtm-specialist` documenta el campo tal como está, que es un trabajo distinto.
+También del proyecto: `meegle-ticket`, `meegle-altas`, `durable-findings`, `compass-skill-synthesis`, `sage-skill-evolution`, y skills genéricas (`develop-adr`, `eval-driven-dev`, `competitor-profiling`, …). Las skills de ClickHouse se desenlazaron de `.claude/skills/` (siguen en `.agents/skills/` para cuando se cruce el umbral de ADR 31).
 
-La separación no es por tema sino por **eje / dirección de mirada** — es lo que evita que los tres escriban el mismo párrafo:
+## Qué cambió el 2026-10-22
 
-| Agente | Eje | Pregunta que responde | No hace |
-|---|---|---|---|
-| `gtm-specialist` | **Oferta / estado** | ¿Qué existe hoy? Competidores, vendors, incumbentes, features, precios, quejas documentadas — todo con fuente y fecha. | No escribe la conclusión prospectiva ni el requisito de producto. Es el **proveedor de evidencia** de los otros dos. |
-| `market-opportunity-analyst` | **Vector / movimiento** | ¿Hacia dónde se mueve el mercado? Cambios de plataforma/formato/política, capacidades de IA que acaban de volverse baratas, **dónde se está desperdiciando o reasignando el presupuesto de marketing de las marcas**, señales de innovación (changelogs, funding, ofertas de empleo como indicador adelantado) → **tesis de oportunidad** con score de adyacencia, falsador y validación más barata. | No hace teardowns (eso es gtm). No define nuestro pricing, canales, CAC ni presupuesto — eso quedó **sin dueño** por decisión del fundador. No infla la adyacencia para que una tesis aterrice. |
-| `sales-consultant` | **Demanda** | ¿Qué exige el comprador cuando alguien intenta venderle una herramienta de esta categoría? Ensaya la conversación de venta como instrumento **diagnóstico** y devuelve la **cola de requisitos** rankeada por (deals bloqueados × baratura de validación), más biblioteca de objeciones (las que **no** podemos responder honestamente son las filas valiosas) y criterios de descalificación. | No es el motor de smart-replies del producto (Fase 5) ni el inbox asistido de Parte 4-B. No es nuestra función interna de ventas. **No escribe `docs/backlog-*.md`.** |
+| Antes | Ahora |
+|---|---|
+| 13 agentes congelados en agosto (ClickHouse, Linear, repo sin implementar) | Contexto real en `qualify-context` |
+| `qualify-second-brain`, `dev-lead`, `po-lead`, `research-lead`, `product-owner` | Skills `qualify-lead` y `qualify-backlog` en el hilo principal |
+| `gtm-specialist`, `market-opportunity-analyst`, `sales-consultant` | `market-analyst` con tres modos (oferta, vector, demanda) |
+| `pipeline-engineer` | `backend-engineer`; nuevos `creative-engineer` y `platform-engineer` |
+| `/team-dev`, `/team-po`, `/team-research` en `.claude/commands/` sobre equipos experimentales | Skills `qualify-team-*` con subagentes normales |
+| `CLAUDE.md` de 355 líneas | ~160 líneas + `qualify-pr`, `qualify-dev-env`, `qualify-history` |
+| `linkedin-bitacora` | Eliminado (rutina en la nube apagada) |
 
-**Nota sobre el "ahorro de inversión en marketing"** del pedido original: se interpreta como **el ahorro del comprador**, no el nuestro — dónde las marcas queman presupuesto hoy y si Qualify puede eliminar ese desperdicio. Es una de las clases de oportunidad más fuertes precisamente porque el comprador la puede medir, lo que hace legible su disposición a pagar.
+### Los tres modos del mercado
 
-**Firewall de nivel de evidencia (regla dura, no aspiracional).** `sales-consultant` produce **hipótesis, no hallazgos** — un lead ensayado no tiene URL, así que por construcción no puede satisfacer el estándar del `research-lead` (regla #3: toda afirmación de mercado necesita URL y fecha de acceso). Tres restricciones escritas en su constitución:
-
-1. **Anclaje** — toda persona, demanda, objeción y requisito traza a un artefacto real citado. Su corpus de sourcing es público y explícito: reseñas de 3 estrellas y "what I wish it did" en G2/Capterra, hilos de comunidad, **changelogs de competidores** (una feature enviada es una demanda del mercado hecha visible), posts de migración/churn, criterios de RFP, ofertas de empleo del rol que usaría la herramienta. **No puede inventar un dolor**; solo dramatizar uno documentado. Un hueco nombrado vale más que una invención fluida.
-2. **Etiquetado** — todo output es `[H]` (hipótesis), o `[V]` solo si el fundador confirma que un prospecto real lo dijo. Cada doc abre con el descargo de que su contenido es ensayado.
-3. **Gate de backlog** — un requisito no entra al backlog hasta que un prospecto real lo valide. Su entrega es una cola de *qué validar*, no de qué construir.
-
-El `research-lead` sintetiza su output en una sección separada y explícitamente hipotética, nunca mezclada con hallazgos con fuente: la base de evidencia con fuente es el activo sobre el que se apoya toda la toma de decisiones del proyecto, y contaminarla con ficción convincente sería el peor daño disponible.
-
-**Dos disciplinas más que el lead debe imponer:**
-
-- **Vigilar la adyacencia contra el disco.** El score de adyacencia de `market-opportunity-analyst` es una afirmación sobre código, y buena parte de lo que describe `CLAUDE.md` está sin construir. Una adyacencia sobreestimada convierte un insight real de mercado en una mala decisión de build — peor que perderse la tendencia.
-- **Anti-adulación.** Ambos consultores están contratados para ser incómodos: una tesis o un requisito que diga que el roadmap actual apunta mal es su output de mayor valor. Si una sesión de mercado devuelve solo hallazgos que respaldan el plan, es señal de que el brief fue sesgado, no una buena noticia.
-
-**Huecos de skill conocidos (candidatos COMPASS, aún no sintetizados).** No se crean por adelantado — COMPASS exige reuso esperado, y estos agentes tienen cero historial. Se sintetizan tras la segunda improvisación exitosa:
-
-- **Escaneo estructurado de tendencias / whitespace y scoring de oportunidad** (`market-opportunity-analyst`) — mientras tanto debe exponer la rúbrica explícita (inputs, pesos, cómo puntuó la adyacencia) en cada doc.
-- **Estructura de metodología de ventas** (`sales-consultant`) — frameworks de discovery, calificación tipo MEDDIC/JTBD, taxonomías de manejo de objeciones; mientras tanto debe declarar qué framework aplica y por qué.
-
-### Skill transversal: `durable-findings`
-
-`durable-findings` (`.claude/skills/durable-findings/`) no pertenece a un specialist — **aplica a todos**. Sintetizado vía COMPASS el 2026-07-26 tras la cuarta ocurrencia del mismo modo de fallo en el ledger: las sesiones aquí mueren por límite de gasto de forma rutinaria, y todo lo que existe solo en una ventana de contexto se pierde. Codifica dos reglas y su corolario:
-
-1. **Volcar por secciones, nunca bufferear un informe final.** El registro es inequívoco: los agentes que escribieron incrementalmente no perdieron nada; los que bufferearon lo perdieron todo.
-2. **Un hallazgo que cambia los supuestos de otro agente lo escribe a disco su descubridor**, no se entrega solo por mensaje al lead — la ventana del lead es igual de mortal, y retransmitir no es persistir.
-3. **Corolario:** toda afirmación sobre disco se verifica contra disco antes de darla por buena.
-
-Incluye `scripts/record_finding.py` (append-only, por lo que cualquier agente puede registrar un hallazgo en un fichero cuyas otras secciones no le pertenecen sin riesgo de pisarlas). **Mantenimiento:** `qualify-second-brain` (dueño de `.claude/` y del ledger). **Ejecutores por defecto:** los tres leads y los specialists con historial de pérdida (`pipeline-engineer`, `data-scientist-fde`, `gtm-specialist`).
-
-### Agentes de utilidad (fuera de los squads de producción)
-
-- `linkedin-bitacora` — ghostwriter de marca personal de Herwin. Genera un post diario en inglés (días de semana) sobre sus aprendizajes como FDE + CTA suave de coaching neurocientífico / transformación de carrera, y lo entrega como borrador de Gmail a `hlrd1993+qualify@gmail.com`. Vive solo en `bitacora/` y su propio archivo; **no toca producto, docs ni el org de squads**. Regla dura: denylist anti-filtración (nunca nombre de producto, competidores, vendors/costos, modelos, esquema de datos ni roadmap; nunca cita commits). Automatizado vía routine cloud `trig_01SHp5v6tsxFtpRjazgF49Cq` (`0 11 * * 1-5` UTC = 8:00 Montevideo). No es un cuarto squad ni parte del pipeline de Qualify.
-
-## Mapa de fases → quién construye qué
-
-Ver `CLAUDE.md` "Roadmap phase map" para el detalle completo; resumen de propiedad:
-
-1. **Fase 1** (actual) — ingestión/enriquecimiento: `pipeline-engineer` (Parte 2/3) + `data-scientist-fde` (Parte 1, cascada multimodal) + `reflex-ui-engineer` (scaffold del dashboard, sin conectar aún a datos reales) + `principal-architect` supervisando ClickHouse/queues.
-2. **Fase 2** — listening + AI insights: `data-scientist-fde` (reporting/resúmenes LLM) + `reflex-ui-engineer` (dashboards en tiempo real) + `principal-architect` (diseño de `search.content_index` consumption).
-3. **Fase 3** — señales + visual listening avanzado: `data-scientist-fde` (detectores tipados) + `principal-architect` (`signals.events` con provenance) — sin specialist dedicado aún; se cubre desde `/team-research` hasta que haya volumen de trabajo propio.
-4. **Fase 4** — creator discovery + CRM: `data-scientist-fde` (embeddings/lookalike) + `reflex-ui-engineer` (UI de CRM) + `pipeline-engineer` (contact waterfall) — sin specialist de "creator scoring" dedicado aún.
-5. **Fase 5** — activación GTM: mayormente compra de vendors (`gtm-specialist` ya cubrió la decisión) — falta specialist de **integración** de outbound (código) cuando arranque esta fase. Ojo: `sales-consultant` **no** cubre esto; es un consultor de mercado, no un ingeniero de integración, y tampoco es el motor de replies del producto.
-6. **Fase 6** — hardening de plataforma: sin specialist dedicado; candidato futuro (`platform-engineer` para multi-tenancy/observabilidad) cuando el trabajo tenga volumen propio.
-
-No crear specialists para fases 3/5/6 todavía — el squad de research (`/team-research`) cubre el trabajo exploratorio hasta que exista suficiente volumen de tareas repetibles para justificar un agente dedicado (mismo criterio que se usó para crear `reflex-ui-engineer`).
+Siguen siendo **consultores externos**: miran el mercado y devuelven oportunidades y requisitos de producto, no el marketing ni las ventas de Qualify. **Oferta** documenta el campo con fuente y fecha; **vector** escribe tesis de oportunidad con adyacencia razonada contra el disco, falsador y validación más barata; **demanda** ensaya ventas como diagnóstico y produce **hipótesis, nunca hallazgos** (no puede inventar un dolor; todo `[H]`, o `[V]` si el fundador confirma que un prospecto real lo dijo). `qualify-team-research` sintetiza la demanda en una sección aparte.
 
 ## COMPASS y SAGE: ciclo de vida de la librería de skills
 
-La organización de agentes no es estática — evoluciona con evidencia, mediante dos meta-protocolos instalados como skills de proyecto y operados principalmente por `qualify-second-brain`:
+La organización de agentes no es estática — evoluciona con evidencia, mediante dos meta-protocolos instalados como skills de proyecto y operados desde el hilo principal con la skill `qualify-lead`:
 
 - **COMPASS** (`.claude/skills/compass-skill-synthesis/`) — *síntesis cooperativa de skills*, adaptado del paper de Li, Zhao & Pajarinen (arXiv:2502.10148): cuando un agente o squad detecta un hueco de capacidad (ningún skill/specialist lo cubre, o el mismo procedimiento se improvisa ≥2 veces según el ledger), se sintetiza un skill nuevo (`SKILL.md` + Python ejecutable cuando el procedimiento es determinista) y se asigna al agente mejor calificado por dominio — no al que descubrió el hueco. Ciclo closed-loop del paper: el asignado lo prueba en la tarea que originó el hueco y escribe una **auto-reflexión** (qué acertó, qué estaba ambiguo) que el sintetizador incorpora al skill antes de cerrarlo. También soporta **bootstrapping**: destilar skills desde procedimientos ya improvisados con éxito en sesiones pasadas (nuestras "demostraciones expertas"), sin esperar la repetición. Skills que codifican decisiones de arquitectura requieren visto bueno de `principal-architect`.
 - **SAGE** (`.claude/skills/sage-skill-evolution/`) — *auto-mejora dirigida por resultados*, adaptado del paper de Peng et al. (arXiv:2603.15255): cada lead registra los outcomes de las tareas de su squad (`success`/`partial`/`failure`/`improvised`) en `.claude/compass-sage/ledger.md`. Ante fallos repetidos (≥2 del mismo agente en el mismo tipo de subtarea → **rebalancear** la carga a otro agente; ≥2 entre agentes distintos con el mismo skill → **reescribir** ese `SKILL.md`), el sistema ajusta routing, skills o charters de agentes — una variable a la vez, siempre citando las entradas del ledger que lo motivan. No es RL literal (no hay GRPO a nivel harness); es el mismo objetivo — maximizar el ratio de éxito por subtarea — optimizado sobre los artefactos editables: instrucciones de skills, charters y enrutamiento.
 
-**Invariantes protegidos** (nunca se "evolucionan"): las reglas duras de `CLAUDE.md` (provenance, `ORDER BY` inmutable, dos planos de datos, buy-vs-build, idempotencia), los límites de file ownership de cada squad, y la regla de no commit/push. Si un patrón de fallos parece exigir cambiar uno de estos, es una decisión del usuario, no un rewrite de SAGE.
+**Invariantes protegidos** (nunca se "evolucionan"): las reglas duras de `CLAUDE.md` y de la skill `qualify-context` §3 (aislamiento por tenant con RLS, provenance, buy-vs-build, idempotencia, respuestas asistidas y nunca autónomas), los límites de file ownership de cada squad, y la regla de entrega (PR sí, merge nunca). Si un patrón de fallos parece exigir cambiar uno de estos, es una decisión del usuario, no un rewrite de SAGE.
 
 ### Procedencia de los conceptos (papers de origen)
 
