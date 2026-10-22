@@ -813,6 +813,7 @@ class AuthState(rx.State):
             from .state import DashboardState
             from .stories_state import StoriesState
             from .trending_state import TrendingState
+            from .variations_state import VariationsState
             from .voice_lab import VoiceLabState
             from .whatsapp_campaigns_state import WhatsAppCampaignsState
             from .whatsapp_chats_state import WhatsAppChatsState
@@ -861,6 +862,9 @@ class AuthState(rx.State):
                 # the product catalog (2026-10-05): the tenant's products, the open
                 # editor and any files still parked for ingest
                 CatalogState,
+                # m-24803289 «Variaciones»: the chosen catalog product, its presets and
+                # the angles under review (with the brand id cached behind them)
+                VariationsState,
                 # WA-12: the tenant's WhatsApp numbers, business profile and QR codes
                 WhatsAppState,
                 # WA-11: the number's conversations, the open thread, the composer draft
