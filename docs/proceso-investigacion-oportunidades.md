@@ -2,7 +2,7 @@
 
 **Propósito de este documento.** No es investigación de mercado — es el *proceso* que decide cuándo y cómo se dispara una. Se escribe después de la sesión de investigación del 2026-07-29/30 (real estate → pipeline de nichos → marca regulada → modelo de agencia), que sirvió como el primer recorrido completo del ciclo y dejó lecciones concretas, algunas costosas. Este documento las convierte en procedimiento para que la próxima sesión no las repita.
 
-**Dueño:** `research-lead` (sesiones `/team-research`). Este documento se actualiza cada vez que una sesión de investigación descubre un fallo de proceso nuevo — igual que el ledger de SAGE, pero para el *método*, no para los resultados.
+**Dueño:** `qualify-lead` (sesiones `/team-research`; hasta 2026-10-22 lo era `research-lead`). Este documento se actualiza cada vez que una sesión de investigación descubre un fallo de proceso nuevo — igual que el ledger de SAGE, pero para el *método*, no para los resultados.
 
 ---
 
@@ -63,7 +63,7 @@ Toda afirmación de "esto ya está construido" o "esto es fácil de construir" s
 - **Fijar el presupuesto de profundidad ANTES de spawnear, explícitamente, no solo el entregable.** "Pase liviano" no bastó para frenar una espiral de auto-corrección mutua entre dos analistas que llegó a 700+ líneas antes de que el lead tuviera que cortarla. Decir: "máximo N rondas" o "máximo N horas-agente", no solo "rápido".
 - **No dejar tareas del tablero compartido sin dueño asignado.** Un agente idle puede auto-reclamar una tarea sin dueño y duplicar trabajo — a veces productivo (forzó un criterio nuevo), pero no es gratis y no es controlable. Asignar `owner` siempre al crear la tarea.
 - **La ronda adversarial es obligatoria, no decorativa.** Cuando dos analistas convergen fácilmente, sospechar que comparten el mismo sesgo (mismo brief, mismo idioma de búsqueda) antes de leerlo como validación independiente.
-- **El eje de ventas (`sales-consultant`) es hipótesis, nunca evidencia.** No mezclar sus rehearsals con hallazgos anclados a fuente real. Si no hay corpus público de compradores de ese nicho, decirlo — no rellenar con marketing de vendor disfrazado de demanda.
+- **El eje de ventas (`market-analyst` en modo demanda; antes `sales-consultant`) es hipótesis, nunca evidencia.** No mezclar sus rehearsals con hallazgos anclados a fuente real. Si no hay corpus público de compradores de ese nicho, decirlo — no rellenar con marketing de vendor disfrazado de demanda.
 - **Un hallazgo que llega solo por mensaje entre agentes no sobrevive si la sesión muere.** Todo lo que cambie una conclusión debe tocar disco, por quien lo descubre — no basta con que el lead lo sepa.
 
 ---
