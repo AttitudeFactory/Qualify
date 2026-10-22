@@ -106,11 +106,20 @@ def test_a_purged_piece_says_so_whatever_else_is_true() -> None:
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("1", True), ("true", True), (" TRUE ", True), ("0", False), ("", False), ("no", False)],
+    [
+        ("1", True),
+        ("true", True),
+        ("", True),
+        ("0", False),
+        (" FALSE ", False),
+        ("no", False),
+        ("off", False),
+    ],
 )
-def test_the_real_delete_is_opt_in_by_env(value: str, expected: bool) -> None:
+def test_the_daily_purge_deletes_unless_switched_off(value: str, expected: bool) -> None:
+    """The ticket's behaviour by default; `0`/`false`/`no`/`off` is the kill switch."""
     assert execute_from_env({EXECUTE_ENV: value}) is expected
-    assert execute_from_env({}) is False
+    assert execute_from_env({}) is True
 
 
 def test_nothing_discovered_builds_no_gate_and_purges_nothing(

@@ -345,14 +345,15 @@ services:
   # Several instances at once are safe (claim CAS, advisory locks, idempotency key), one is
   # enough. Every tick leaves a heartbeat in Redis that the Planificador reads (QUA-118).
   # m-24828907: it also runs the piece purge at start and every 24 h (R2 files of pieces
-  # 90 days past their last use). DRY RUN — it only logs what it would delete — until
-  # QUALIFY_PIECE_PURGE_EXECUTE=1 is set in .env.prod. R2 settings come from the env file.
+  # 90 days past their last use) — FOR REAL, as the ticket asks. Kill switch:
+  # QUALIFY_PIECE_PURGE_EXECUTE=0 in .env.prod makes it log only. R2 settings come from the
+  # env file.
   calendar-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
     environment:
       <<: *app-env
-      QUALIFY_PIECE_PURGE_EXECUTE: ${QUALIFY_PIECE_PURGE_EXECUTE:-0}
+      QUALIFY_PIECE_PURGE_EXECUTE: ${QUALIFY_PIECE_PURGE_EXECUTE:-1}
     command:
       - python
       - -m

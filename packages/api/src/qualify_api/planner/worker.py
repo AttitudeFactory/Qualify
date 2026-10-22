@@ -24,8 +24,9 @@ Modes:
   ticks — `run_once()` never sleeps.
 
 Piece retention (m-24828907): in loop mode the worker also runs the piece purge
-(`creative.retention_job`) at start and every 24 h, over the same scope — dry run unless
-`QUALIFY_PIECE_PURGE_EXECUTE=1`. `--purge-pieces [--execute]` runs it once and exits
+(`creative.retention_job`) at start and every 24 h, over the same scope — it really
+deletes, unless `QUALIFY_PIECE_PURGE_EXECUTE=0` (kill switch: log only). `--purge-pieces
+[--execute]` runs it once and exits — a dry run without `--execute` —
 (`just piece-purge …`), without ticking.
 
 Errors and restarts: a failing tick is logged and the next one runs. A crash or restart
