@@ -313,7 +313,9 @@ services:
   # QUALIFY_CONVERSATIONS_SYNC_INTERVAL seconds (threads, messages, the counterpart's
   # profile). Always on, like whatsapp-worker: without it nothing a person writes leaves
   # Qualify and nothing arrives between webhooks. Never sends on its own initiative.
-  # Several instances are safe (FOR UPDATE SKIP LOCKED), one is enough.
+  # Several instances are safe (FOR UPDATE SKIP LOCKED), one is enough. After each send it
+  # also posts the public notices of Fase C (m-24789646) — only those a person approved,
+  # only after the private message is confirmed sent, and only with QUALIFY_PUBLIC_NOTICE=on.
   conversations-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped

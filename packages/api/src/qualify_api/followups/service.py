@@ -21,7 +21,8 @@ the person opened, and it does not spend the comment's single private reply.
 
 **Approving** is the only way out, and it goes through the outbox with the person's
 `HumanApproval` (ADR 21c) — this module never calls a channel. The sender revalidates the
-window (or the 7-day deadline) when it actually sends.
+window (or the 7-day deadline) when it actually sends. The public notice under the comment
+is approved in the same decision and posted later, on its own, by `followups.notice`.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from qualify_api.conversations.window import (
     window_state,
 )
 from qualify_api.followups.capabilities import Availability, Capabilities, Capability
+from qualify_api.followups.notice import MAX_NOTICE_CHARS
 from qualify_api.followups.origins import OriginMessage, OriginReader
 from qualify_api.followups.repository import (
     Followup,
@@ -261,6 +263,13 @@ class FollowupService:
             route, private_reply_window(origin.posted_at, now), REASON_PRIVATE_REPLY_EXPIRED
         )
 
+    def public_notice_available(self, followup: Followup) -> bool:
+        """Whether a card may offer the public notice: only under a comment (a story reply
+        has no public comment to answer) and only while `public_notice` is on."""
+        return followup.origin_kind is OriginKind.COMMENT and self._capabilities.enabled(
+            Capability.PUBLIC_NOTICE
+        )
+
     # -- approving ------------------------------------------------------------------------
 
     def approve_and_queue(
@@ -276,9 +285,15 @@ class FollowupService:
         in ONE transaction: the outbox insert and the followup's guarded `open ->
         approved` commit together, so a lost race (a second approval, a discard) rolls
         the queued send back and nothing goes out twice. Raises `ApprovalRequired`,
-        `ValueError` (empty / too long), `UnknownFollowup`, `InvalidFollowupTransition`
-        (not open, or decided concurrently), `CapabilityUnavailable` (a notice while
-        `public_notice` is off), `RouteUnavailable` or `PrivateReplyExists`."""
+        `ValueError` (empty / too long, the notice's own limit included),
+        `UnknownFollowup`, `InvalidFollowupTransition` (not open, or decided
+        concurrently), `CapabilityUnavailable` (a notice while `public_notice` is off),
+        `RouteUnavailable` or `PrivateReplyExists`.
+
+        A `notice_text` leaves the followup's notice `pending` — the only way a notice ever
+        becomes postable (ADR 21c: the person approves it together with the message). It
+        is posted by `followups.notice.PublicNoticePoster` only once this message is
+        confirmed sent."""
         if not isinstance(approval, HumanApproval):
             raise ApprovalRequired("a private message needs a human approval")
         body = text.strip()
@@ -286,10 +301,13 @@ class FollowupService:
             raise ValueError("an empty message cannot be sent")
         if len(body) > MAX_REPLY_CHARS:
             raise ValueError(f"a message is at most {MAX_REPLY_CHARS} characters")
-        if (notice_text or "").strip():
+        notice_body = (notice_text or "").strip()
+        if notice_body:
             notice = self._capabilities.availability(Capability.PUBLIC_NOTICE)
             if not notice.enabled:
                 raise CapabilityUnavailable(notice)
+            if len(notice_body) > MAX_NOTICE_CHARS:
+                raise ValueError(f"a public notice is at most {MAX_NOTICE_CHARS} characters")
         followup = self._followup(tenant_id, followup_id)
         if followup.status is not FollowupStatus.OPEN:
             raise InvalidFollowupTransition(f"followup {followup.id} is {followup.status}")
@@ -345,7 +363,7 @@ class FollowupService:
                     dm_thread_id=thread_id,
                     decided_by_user_id=approval.user_id,
                     now=now,
-                    notice_text=notice_text,
+                    notice_text=notice_body or None,
                     session=session,
                 )
             )

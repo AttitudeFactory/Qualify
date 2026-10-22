@@ -92,14 +92,17 @@ class FollowupsGateway:
         text: str,
         user_id: UUID,
         draft_id: UUID | None,
+        notice_text: str | None = None,
     ) -> str:
-        """Queue the text; returns the route it goes out on (`dm` / `private_reply`)."""
+        """Queue the text (and the public notice approved with it, if any); returns the
+        route it goes out on (`dm` / `private_reply`)."""
         approved = self.workspace.approve(
             tenant_id=tenant_id,
             followup_id=followup_id,
             text=text,
             user_id=user_id,
             draft_id=draft_id,
+            notice_text=notice_text,
         )
         return approved.send_route.value if approved.send_route else ""
 

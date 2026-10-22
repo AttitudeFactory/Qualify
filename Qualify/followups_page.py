@@ -7,6 +7,10 @@ for how long, and the draft in an editable box. Nothing leaves without «Aprobar
 enviar»; when no route can reach the person the button is off and the card says why for
 each route, an unverified capability included. Work in progress is the button's own
 `loading`; content loading is a skeleton (docs/design-system.md §9.1). States are tones.
+
+With `public_notice` on, a comment's card also shows the public notice (PR 4): a box to
+include it and its text, editable, approved in the same click as the message. Without the
+capability the block is not rendered at all.
 """
 
 from __future__ import annotations
@@ -173,6 +177,46 @@ def _draft(c: FollowupCardVM) -> rx.Component:
     )
 
 
+def _notice(c: FollowupCardVM) -> rx.Component:
+    """The public notice under the comment (PR 4) — only when the card offers it."""
+    busy = F.busy_id == c.followup_id
+    on = F.notice_on[c.followup_id]
+    return rx.cond(
+        c.notice_available,
+        rx.vstack(
+            rx.hstack(
+                rx.checkbox(
+                    "Publicar también un aviso en el comentario",
+                    checked=on,
+                    on_change=lambda checked: F.set_notice_on(c.followup_id, checked),
+                    size="2",
+                    disabled=busy,
+                ),
+                rx.tooltip(
+                    rx.icon("info", size=T.ICON_SM, color=T.TEXT_FAINT),
+                    content=(
+                        "Una respuesta pública al comentario. Se publica solo cuando el mensaje "
+                        "privado salga; si no sale, no se publica."
+                    ),
+                ),
+                spacing="2",
+                align="center",
+            ),
+            rx.input(
+                value=F.notice_edits[c.followup_id],
+                on_change=lambda text: F.set_notice_edit(c.followup_id, text),
+                max_length=300,
+                width="100%",
+                disabled=busy | ~on,
+                aria_label="Texto del aviso público",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
 def _actions(c: FollowupCardVM) -> rx.Component:
     busy = F.busy_id == c.followup_id
     acting = F.busy_id != ""
@@ -226,7 +270,9 @@ def _actions(c: FollowupCardVM) -> rx.Component:
 
 def _card(c: FollowupCardVM) -> rx.Component:
     return card(
-        rx.vstack(_origin(c), _route(c), _draft(c), _actions(c), spacing="3", width="100%"),
+        rx.vstack(
+            _origin(c), _route(c), _draft(c), _notice(c), _actions(c), spacing="3", width="100%"
+        ),
         id="consulta-" + c.followup_id,
         border=rx.cond(
             F.highlight_id == c.followup_id, f"2px solid {T.tone_color('accent', 8)}", "none"

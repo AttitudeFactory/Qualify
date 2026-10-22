@@ -12,6 +12,9 @@ Pins:
    «Mensajes | Consultas desde comentarios» toggle and runs `FollowupsState.enter_page`
    on load.
 4. The state accepts only ids its cards hold and only known views.
+5. The public notice (PR 4) appears only on a card that offers it (`public_notice` on, a
+   comment), with the default text, editable, approved with the message; unticked, the
+   message goes alone.
 """
 
 from __future__ import annotations
@@ -32,11 +35,12 @@ from qualify_api.followups import (
     SendRoute,
     new_followup,
 )
+from qualify_api.followups.notice import DEFAULT_NOTICE_TEXT
 from qualify_api.followups.workspace import FollowupCard, IntentChip
 
 from . import inbox_provider, inbox_state
 from .followups_state import FollowupsState
-from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, build_card_vm, time_left
+from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, FollowupCardVM, build_card_vm, time_left
 from .inbox_vm import IntentAnalysisSummaryVM
 
 NOW = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
@@ -50,6 +54,7 @@ def _card(
     private_reply: RouteOption | None = None,
     with_draft: bool = True,
     needs_review: bool = False,
+    notice_available: bool = False,
 ) -> FollowupCard:
     origin = OriginMessage(
         id=uuid4(),
@@ -104,6 +109,7 @@ def _card(
             IntentChip("Variantes", 0.6, commercial=True, reliable=False),
         ),
         draft=draft,
+        notice_available=notice_available,
     )
 
 
@@ -213,3 +219,67 @@ def test_the_state_accepts_only_known_views_and_known_cards() -> None:
     assert state.view == VIEW_QUERIES
     FollowupsState.set_edit.fn(state, str(uuid4()), "texto")  # type: ignore[attr-defined]
     assert state.edits == {}
+
+
+# --- the public notice (PR 4) ------------------------------------------------------------
+
+
+def test_the_notice_is_offered_only_when_the_card_allows_it() -> None:
+    off = build_card_vm(_card(), now=NOW, zone=ZONE)
+    assert (off.notice_available, off.notice_default) == (False, "")
+    on = build_card_vm(_card(notice_available=True), now=NOW, zone=ZONE)
+    assert (on.notice_available, on.notice_default) == (True, DEFAULT_NOTICE_TEXT)
+
+
+def test_the_card_renders_the_notice_block_behind_its_capability() -> None:
+    from .followups_page import _notice
+
+    rendered = str(_notice(FollowupsState.cards[0]).render())
+    # The compiled JSX escapes non-ASCII («también» → `tambi\u00e9n`), escaped again by str().
+    assert "Publicar tambi\\\\u00e9n un aviso en el comentario" in rendered
+    assert "Texto del aviso p\\\\u00fablico" in rendered
+    # The whole block hangs from the card's `notice_available` (no capability, no box).
+    assert "notice_available" in rendered
+
+
+def _state_with(*cards: FollowupCardVM) -> FollowupsState:
+    state = FollowupsState()
+    state.cards = list(cards)
+    return state
+
+
+def test_the_notice_text_goes_only_when_offered_and_ticked() -> None:
+    offered = build_card_vm(_card(notice_available=True), now=NOW, zone=ZONE)
+    plain = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(offered, plain)
+    # Defaults: ticked, with the default text.
+    assert state._notice_for(offered) == DEFAULT_NOTICE_TEXT  # noqa: SLF001
+    assert state._notice_for(plain) is None  # noqa: SLF001
+
+    FollowupsState.set_notice_edit.fn(state, offered.followup_id, "Te escribimos 💬")  # type: ignore[attr-defined]
+    assert state._notice_for(offered) == "Te escribimos 💬"  # noqa: SLF001
+    FollowupsState.set_notice_on.fn(state, offered.followup_id, False)  # type: ignore[attr-defined]
+    assert state._notice_for(offered) is None  # noqa: SLF001
+
+    # A card that does not offer it, or an unknown id, cannot be given one.
+    FollowupsState.set_notice_on.fn(state, plain.followup_id, True)  # type: ignore[attr-defined]
+    FollowupsState.set_notice_edit.fn(state, str(uuid4()), "x")  # type: ignore[attr-defined]
+    assert plain.followup_id not in state.notice_on
+    assert set(state.notice_edits) == {offered.followup_id}
+
+
+def test_the_gateway_hands_the_notice_to_the_workspace() -> None:
+    from .followups_provider import FollowupsGateway
+
+    seen: dict[str, object] = {}
+
+    class Workspace:
+        def approve(self, **kw: object) -> object:
+            seen.update(kw)
+            return type("Approved", (), {"send_route": SendRoute.PRIVATE_REPLY})()
+
+    route = FollowupsGateway(Workspace()).approve(  # type: ignore[arg-type]
+        TENANT, uuid4(), text="hola", user_id=uuid4(), draft_id=None, notice_text="aviso"
+    )
+    assert route == "private_reply"
+    assert seen["notice_text"] == "aviso"

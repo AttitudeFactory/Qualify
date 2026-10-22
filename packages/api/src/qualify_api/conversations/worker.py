@@ -9,8 +9,12 @@ and, when asked, runs the reconciliation poll of every active Instagram connecti
 
 Each pass is, per tenant in scope: [the poll, if `--sync`: `ConversationSyncService.
 sync_connection` on each active Instagram connection, at most every `--sync-interval`
-seconds] then `ConversationOutboxSender.run_once(tenant_id)`. Same mould and the SAME
-warning as `whatsapp/worker.py` and `planner/worker.py`:
+seconds] then `ConversationOutboxSender.run_once(tenant_id)`, then the public notices of
+Fase C (`followups.notice.PublicNoticePoster.run_once(tenant_id)`, m-24789646 PR 4: the
+«Te enviamos la información por DM 💬» reply under a comment whose private message is now
+confirmed sent). The notice step runs even when the send step raised — it is independent
+and never touches the outbox. Same mould and the SAME warning as `whatsapp/worker.py` and
+`planner/worker.py`:
 
 Scope is MANDATORY and explicit — there is no default that means "everyone":
 - `--tenant <uuid>` (repeatable): exactly those tenants. Use it locally: a development
@@ -20,7 +24,8 @@ Scope is MANDATORY and explicit — there is no default that means "everyone":
   SELECT on `social_connections` (0002) and nothing on the outbox).
 
 In `memory` mode (`QUALIFY_CONVERSATIONS_DM_CHANNEL=memory`) the sender "delivers" to the
-in-memory pair and the poll reads the seeded conversations: nothing reaches Instagram.
+in-memory pair, the notices go to an in-memory client and the poll reads the seeded
+conversations: nothing reaches Instagram.
 `--sync` against the real pair spends Meta calls — the development-mode budget is 200
 calls per hour per Page/app pair (QUA-20), hence the default `--sync-interval` of 300 s.
 """
@@ -43,6 +48,7 @@ from uuid import UUID
 from qualify_api.conversations.outbox import DEFAULT_BATCH
 from qualify_api.conversations.sender import SendReport
 from qualify_api.conversations.sync import SyncReport
+from qualify_api.followups.notice import NoticeReport
 
 logger = logging.getLogger("qualify_api.conversations.worker")
 
@@ -110,6 +116,7 @@ class TenantPass:
     tenant_id: UUID
     sync: list[SyncReport] = field(default_factory=list)
     send: SendReport | None = None
+    notices: NoticeReport | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -124,6 +131,10 @@ class _Sender(Protocol):
     async def run_once(self, tenant_id: UUID, *, limit: int = DEFAULT_BATCH) -> SendReport: ...
 
 
+class _NoticePoster(Protocol):
+    async def run_once(self, tenant_id: UUID, *, limit: int = DEFAULT_BATCH) -> NoticeReport: ...
+
+
 class _Syncer(Protocol):
     async def __call__(self, tenant_id: UUID) -> list[SyncReport]: ...
 
@@ -131,7 +142,8 @@ class _Syncer(Protocol):
 class ConversationsTick:
     """One pass over the tenants in scope. A tenant whose pass raises is reported and
     the next tenant still runs; only a failure to LIST tenants fails the pass. The poll
-    runs at most every `sync_interval` seconds per tenant (None = never)."""
+    runs at most every `sync_interval` seconds per tenant (None = never). The public
+    notices run after the send, in their own `try`, when a poster is given."""
 
     def __init__(
         self,
@@ -139,6 +151,7 @@ class ConversationsTick:
         tenants: TenantSource,
         sender: _Sender,
         syncer: _Syncer | None = None,
+        notices: _NoticePoster | None = None,
         sync_interval: float | None = None,
         limit: int = DEFAULT_BATCH,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -147,6 +160,7 @@ class ConversationsTick:
         self._tenants = tenants
         self._sender = sender
         self._syncer = syncer
+        self._notices = notices
         self._sync_interval = sync_interval
         self._limit = limit
         self._clock = clock
@@ -183,6 +197,13 @@ class ConversationsTick:
             except Exception as exc:  # noqa: BLE001 — one tenant must not stop the others
                 logger.exception("conversations.worker.tenant_failed tenant_id=%s", tenant_id)
                 tenant_pass.errors.append(f"send:{type(exc).__name__}")
+            if self._notices is None:
+                continue
+            try:
+                tenant_pass.notices = await self._notices.run_once(tenant_id, limit=self._limit)
+            except Exception as exc:  # noqa: BLE001 — a notice never stops a send or a tenant
+                logger.exception("conversations.worker.notices_failed tenant_id=%s", tenant_id)
+                tenant_pass.errors.append(f"notice:{type(exc).__name__}")
         return report
 
 
@@ -229,11 +250,14 @@ def _tick(
     tenants: TenantSource, *, sync: bool, send: bool, sync_interval: float, limit: int
 ) -> ConversationsTick:
     from qualify_api.conversations.composition import production_sender  # noqa: PLC0415
+    from qualify_api.followups.composition import production_notice_poster  # noqa: PLC0415
 
     return ConversationsTick(
         tenants=tenants,
         sender=production_sender(worker_id=worker_id()) if send else NoSender(),
         syncer=sync_tenant if sync else None,
+        # The notices are part of sending: `--sync-only` posts nothing either.
+        notices=production_notice_poster(worker_id=worker_id()) if send else None,
         sync_interval=sync_interval if sync else None,
         limit=limit,
     )
@@ -335,11 +359,14 @@ def build_parser() -> argparse.ArgumentParser:
 def _log_report(report: TickReport) -> None:
     for tenant in report.tenants:
         send = tenant.send
+        notices = tenant.notices
         synced = sum(r.messages_created for r in tenant.sync)
-        if tenant.sync or tenant.errors or (send is not None and send.claimed):
+        noticed = notices is not None and (notices.claimed or notices.skipped)
+        if tenant.sync or tenant.errors or (send is not None and send.claimed) or noticed:
             logger.info(
                 "conversations.worker.tenant tenant_id=%s synced_connections=%d new_messages=%d "
-                "claimed=%d sent=%d retried=%d failed=%d dead=%d errors=%s",
+                "claimed=%d sent=%d retried=%d failed=%d dead=%d notices_posted=%d "
+                "notices_retried=%d notices_failed=%d notices_skipped=%d errors=%s",
                 tenant.tenant_id,
                 len(tenant.sync),
                 synced,
@@ -348,6 +375,10 @@ def _log_report(report: TickReport) -> None:
                 send.retried if send else 0,
                 send.failed if send else 0,
                 send.dead if send else 0,
+                notices.posted if notices else 0,
+                notices.retried if notices else 0,
+                notices.failed if notices else 0,
+                notices.skipped if notices else 0,
                 ",".join(tenant.errors) or "none",
             )
     if report.error:
