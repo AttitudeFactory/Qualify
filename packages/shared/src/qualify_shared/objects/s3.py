@@ -7,6 +7,7 @@ exception.
 from __future__ import annotations
 
 import io
+from collections.abc import Iterator, Sequence
 from typing import IO, Any
 
 import boto3
@@ -14,7 +15,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from qualify_shared.objects.config import R2Settings
-from qualify_shared.objects.gate import ObjectNotFound
+from qualify_shared.objects.gate import ObjectNotFound, StoredObject
 
 # S3/R2 error codes that mean "no object at this key" — as opposed to any other ClientError
 # (bad credentials, wrong bucket, throttling), which must keep propagating as-is rather than
@@ -112,3 +113,27 @@ class R2ObjectStore:
         except ClientError as exc:
             _raise_not_found_or_reraise(exc, key)
         return io.BytesIO(response["Body"].read())
+
+    # -- deletion by prefix (m-24828907): the piece retention rule -------------------------
+
+    def list_prefix(self, prefix: str) -> Iterator[StoredObject]:
+        """Every object under `prefix`, paginated (`ListObjectsV2`, 1,000 per page)."""
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self._settings.bucket, Prefix=prefix):
+            for item in page.get("Contents", ()):
+                yield StoredObject(key=item["Key"], size=int(item.get("Size", 0)))
+
+    def delete_keys(self, keys: Sequence[str]) -> None:
+        """Delete up to 1,000 keys in one `DeleteObjects`. A key that is already gone is
+        not an error (S3 semantics); any per-key error R2 reports is raised, so the caller
+        never records a deletion that did not happen."""
+        if not keys:
+            return
+        response = self._client.delete_objects(
+            Bucket=self._settings.bucket,
+            Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+        )
+        errors = response.get("Errors") or []
+        if errors:
+            codes = sorted({str(error.get("Code")) for error in errors})
+            raise RuntimeError(f"R2 refused to delete {len(errors)} object(s): {', '.join(codes)}")

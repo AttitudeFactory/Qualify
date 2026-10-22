@@ -516,3 +516,12 @@ def test_the_template_v2_ports_publish_as_their_shape(
     from qualify_api.planner.publishable import _shape_product_type
 
     assert _shape_product_type("plantilla", (media_type,), port) == expected
+
+
+# --- m-24828907: a purged piece ------------------------------------------------------------
+
+
+def test_a_purged_piece_is_never_publishable_whatever_else_is_right() -> None:
+    """Its keys still look right (tenant prefix, JPEG), but the bytes are gone from R2."""
+    assert _reason(_post(_image(), media_purged=True)) is UnpublishableReason.MEDIA_PURGED
+    assert UnpublishableReason.MEDIA_PURGED in REASON_TEXT

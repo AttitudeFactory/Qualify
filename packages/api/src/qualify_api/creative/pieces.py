@@ -81,7 +81,12 @@ class DbPieceFiles:
                 select(ImageAsset, ContentDraft, ContentBrief.topic)
                 .join(ContentDraft, ContentDraft.id == ImageAsset.draft_id)
                 .join(ContentBrief, ContentBrief.id == ContentDraft.brief_id)
-                .where(ContentDraft.brand_id == brand_id, ImageAsset.object_key == object_key)
+                .where(
+                    ContentDraft.brand_id == brand_id,
+                    ImageAsset.object_key == object_key,
+                    # m-24828907: a purged piece's files are gone from R2
+                    ContentDraft.media_purged_at.is_(None),
+                )
                 .limit(1)
             ).first()
             return _piece(*row) if row is not None else None
@@ -100,6 +105,7 @@ class DbPieceFiles:
                     ContentDraft.brand_id == brand_id,
                     ImageAsset.object_key.is_not(None),
                     ImageAsset.media_type.in_(("image", "video")),
+                    ContentDraft.media_purged_at.is_(None),  # m-24828907
                 )
                 .order_by(ContentDraft.created_at.desc(), ImageAsset.position)
                 .limit(limit)

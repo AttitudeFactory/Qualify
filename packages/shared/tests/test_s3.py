@@ -168,3 +168,72 @@ def test_ranged_reads_of_a_missing_key_raise_object_not_found() -> None:
         store.size("t/tenant/media/conn/gone")
     with pytest.raises(ObjectNotFound):
         store.open_range("t/tenant/media/conn/gone", 0, 1)
+
+
+# --- deletion by prefix (m-24828907, piece retention) ----------------------------------------
+
+
+class _ListingClient(_FakeS3Client):
+    """Adds `ListObjectsV2` pagination (2 keys per page, to exercise paging) and
+    `DeleteObjects`, with optional per-key errors."""
+
+    def __init__(self, stored: dict[str, bytes], refuse: frozenset[str] = frozenset()) -> None:
+        super().__init__(stored)
+        self.refuse = refuse
+        self.delete_calls: list[list[str]] = []
+
+    def get_paginator(self, name: str) -> Any:
+        assert name == "list_objects_v2"
+        client = self
+
+        class _Paginator:
+            def paginate(self, *, Bucket: str, Prefix: str) -> Any:
+                keys = sorted(k for k in client.stored if k.startswith(Prefix))
+                for start in range(0, len(keys), 2):
+                    page = keys[start : start + 2]
+                    yield {"Contents": [{"Key": k, "Size": len(client.stored[k])} for k in page]}
+                if not keys:
+                    yield {"KeyCount": 0}  # an empty listing has no "Contents" at all
+
+        return _Paginator()
+
+    def delete_objects(self, *, Bucket: str, Delete: dict[str, Any]) -> dict[str, Any]:
+        keys = [item["Key"] for item in Delete["Objects"]]
+        self.delete_calls.append(keys)
+        errors = [{"Key": k, "Code": "AccessDenied"} for k in keys if k in self.refuse]
+        for key in keys:
+            if key not in self.refuse:
+                self.stored.pop(key, None)
+        return {"Errors": errors} if errors else {}
+
+
+def test_list_prefix_pages_through_every_object_with_its_size() -> None:
+    stored = {f"t/x/generated/d/r1/{i}.jpg": b"a" * i for i in range(1, 6)}
+    stored["t/x/generated/other/r1/0.jpg"] = b"zz"
+    store = R2ObjectStore(_SETTINGS, client=_ListingClient(stored))
+    found = list(store.list_prefix("t/x/generated/d/"))
+    assert [item.size for item in found] == [1, 2, 3, 4, 5]
+    assert all(item.key.startswith("t/x/generated/d/") for item in found)
+
+
+def test_list_prefix_of_an_empty_folder_is_empty() -> None:
+    store = R2ObjectStore(_SETTINGS, client=_ListingClient({}))
+    assert list(store.list_prefix("t/x/generated/d/")) == []
+
+
+def test_delete_keys_removes_them_and_skips_an_empty_call() -> None:
+    client = _ListingClient({"t/x/generated/d/a": b"1", "t/x/generated/d/b": b"2"})
+    store = R2ObjectStore(_SETTINGS, client=client)
+    store.delete_keys([])
+    store.delete_keys(["t/x/generated/d/a", "t/x/generated/d/b"])
+    assert client.stored == {}
+    assert client.delete_calls == [["t/x/generated/d/a", "t/x/generated/d/b"]]
+
+
+def test_delete_keys_raises_when_r2_refuses_one() -> None:
+    """A refused key must never be recorded as deleted: the caller marks the piece only
+    after this returns."""
+    client = _ListingClient({"t/x/generated/d/a": b"1"}, refuse=frozenset({"t/x/generated/d/a"}))
+    store = R2ObjectStore(_SETTINGS, client=client)
+    with pytest.raises(RuntimeError, match="AccessDenied"):
+        store.delete_keys(["t/x/generated/d/a"])

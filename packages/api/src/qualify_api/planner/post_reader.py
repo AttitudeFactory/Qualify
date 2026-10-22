@@ -128,6 +128,12 @@ class PostSummary:
     # `publishable.destination_options` reads to say where it may be published.
     media_types: tuple[str, ...] = ()
     image_size: tuple[int, int] | None = None
+    # m-24828907: the piece's retention (`creative.retention.RetentionState` value, "" when
+    # it has no R2 files) and, when it has one, the deadline (ISO-8601) and the whole days
+    # left — what the «Descarga esta pieza: se elimina el …» warning prints.
+    retention_state: str = ""
+    purge_deadline: str | None = None
+    purge_days_left: int | None = None
 
     @property
     def output_ports(self) -> tuple[str, ...]:
@@ -160,6 +166,8 @@ class UnpublishableReason(StrEnum):
     # Stock plan §5.2: a third-party stock file (`t/{tenant}/stock/…`) is an INPUT of a
     # piece, never the piece — both licences forbid publishing it standalone.
     STOCK_NOT_PUBLISHABLE = "stock_not_publishable"
+    # m-24828907: the retention rule deleted the POST's files from R2 (`media_purged_at`).
+    MEDIA_PURGED = "media_purged"
 
 
 @dataclass(frozen=True)

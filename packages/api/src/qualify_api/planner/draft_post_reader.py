@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.creative import models as creative
+from qualify_api.creative.retention import Retention, retention_of
 from qualify_api.planner.fsm import EventStatus
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import (
@@ -144,6 +145,7 @@ def _candidate(
         ),
         output_port=output_port,
         destination=destination,
+        media_purged=draft.media_purged_at is not None,
     )
 
 
@@ -332,9 +334,12 @@ class DraftPostReader:
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
             campaigns = _campaigns(session, drafts)
+            retention = retention_of(
+                session, tenant_id, [draft.id for draft in drafts], self._clock()
+            )
             return {
                 draft.id: self._summarize(
-                    session, tenant_id, draft, history.get(draft.id), campaigns
+                    session, tenant_id, draft, history.get(draft.id), campaigns, retention
                 )
                 for draft in drafts
             }
@@ -352,8 +357,13 @@ class DraftPostReader:
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
             campaigns = _campaigns(session, drafts)
+            retention = retention_of(
+                session, tenant_id, [draft.id for draft in drafts], self._clock()
+            )
             return [
-                self._summarize(session, tenant_id, draft, history.get(draft.id), campaigns)
+                self._summarize(
+                    session, tenant_id, draft, history.get(draft.id), campaigns, retention
+                )
                 for draft in drafts
             ]
 
@@ -367,8 +377,13 @@ class DraftPostReader:
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
             campaigns = _campaigns(session, drafts)
+            retention = retention_of(
+                session, tenant_id, [draft.id for draft in drafts], self._clock()
+            )
             return [
-                self._summarize(session, tenant_id, draft, history.get(draft.id), campaigns)
+                self._summarize(
+                    session, tenant_id, draft, history.get(draft.id), campaigns, retention
+                )
                 for draft in drafts
             ]
 
@@ -398,8 +413,10 @@ class DraftPostReader:
         draft: creative.ContentDraft,
         history: tuple[int, bool, int] | None = None,
         campaigns: dict[UUID, PostCampaign] | None = None,
+        retention: dict[UUID, Retention] | None = None,
     ) -> PostSummary:
         times_published, has_live_event, event_count = history or (0, False, 0)
+        kept = (retention or {}).get(draft.id)
         brief = session.get(creative.ContentBrief, draft.brief_id)
         variant = None
         if draft.selected_variant_id is not None:
@@ -412,8 +429,12 @@ class DraftPostReader:
                 .order_by(creative.CopyVariant.ordinal)
             ).first()
         images = _images(session, draft.id)
-        thumbnail = thumbnail_source(
-            preview_key=draft.preview_key, assets=images, now=self._clock()
+        purged = draft.media_purged_at is not None
+        # m-24828907: a purged piece's keys point at nothing — no thumbnail, no video URL.
+        thumbnail = (
+            None
+            if purged
+            else thumbnail_source(preview_key=draft.preview_key, assets=images, now=self._clock())
         )
 
         outputs = _outputs(session, tenant_id, draft, images)
@@ -432,7 +453,8 @@ class DraftPostReader:
         first = min(images, key=lambda image: image.position) if images else None
         video_object_key = (
             first.object_key
-            if first is not None
+            if not purged
+            and first is not None
             and first.media_type == "video"
             and first.object_key
             and first.object_key.startswith(_OBJECT_STORE_PREFIX + f"{tenant_id}/")
@@ -466,4 +488,7 @@ class DraftPostReader:
             event_count=event_count,
             media_types=types,
             image_size=size,
+            retention_state=kept.state.value if kept is not None else "",
+            purge_deadline=kept.deadline.isoformat() if kept and kept.deadline else None,
+            purge_days_left=kept.days_left(self._clock()) if kept is not None else None,
         )

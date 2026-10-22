@@ -78,6 +78,14 @@ calendar-tick *args:
 calendar-worker *args:
     uv run --no-sync python -m qualify_api.planner.worker {{args}}
 
+# m-24828907: the piece purge — R2 files of pieces 90 days past their last use. The
+# calendar worker already runs it daily (dry run unless QUALIFY_PIECE_PURGE_EXECUTE=1);
+# this runs it once, now. DRY RUN unless --execute. Scope is mandatory:
+#   just piece-purge --tenant <uuid> [--execute]     # use this locally
+#   just piece-purge --all-tenants [--execute]       # production
+piece-purge *args:
+    uv run --no-sync python -m qualify_api.planner.worker --purge-pieces {{args}}
+
 # QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
 # resolution + ingestion; every other field, comments included -> `unsupported`).
 #   just webhook-tick                 # one batch, then exit

@@ -26,10 +26,15 @@ constructing an S3/boto3 client anywhere outside this package.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import IO, Protocol
 from uuid import UUID
 
-from qualify_shared.objects.keys import require_tenant_prefix
+from qualify_shared.objects.keys import (
+    TenantPrefixViolation,
+    require_tenant_prefix,
+    tenant_prefix,
+)
 
 # Meta's ceiling for the largest video we can publish: a reel is 300 MB
 # (`ig-user/media.md:86`). A video story is 100 MB (`:127`), but that limit depends on the
@@ -65,6 +70,32 @@ class ObjectNotFound(Exception):
     the SAME 404 as an unknown or expired token — never a distinguishable 500 or a bare
     `KeyError` leaking past the route.
     """
+
+
+#: The only roots under a tenant's prefix `delete_prefix` may empty (m-24828907): the
+#: generator's pieces (`t/{tenant}/generated/{draft_id}/…`). The Brand Kit, the stock
+#: library, first-party raw payloads and publish media are never deleted by prefix — a
+#: new root here is a reviewed decision, like the gate's method set.
+PURGEABLE_ROOTS: tuple[str, ...] = ("generated/",)
+
+#: S3/R2 `DeleteObjects` takes at most 1,000 keys per request.
+DELETE_BATCH = 1000
+
+
+@dataclass(frozen=True)
+class StoredObject:
+    """One object found under a prefix: its key and its size in bytes."""
+
+    key: str
+    size: int
+
+
+@dataclass(frozen=True)
+class PrefixDeletion:
+    """What `delete_prefix` found (and removed, unless it was a dry run)."""
+
+    objects: int
+    bytes: int
 
 
 class ObjectStore(Protocol):
@@ -136,3 +167,37 @@ class ObjectGate:
     def open_range(self, tenant_id: UUID, object_key: str, start: int, end: int) -> IO[bytes]:
         key = require_tenant_prefix(tenant_id, object_key)
         return self._store.open_range(key, start, end)  # type: ignore[attr-defined]
+
+    # Deletion by prefix (m-24828907, ADR 39): the retention rule empties a piece's
+    # folder 90 days after it was last used. Narrow on purpose — only under a root in
+    # `PURGEABLE_ROOTS`, only a folder BELOW that root (never the root itself), and the
+    # tenant prefix is checked like every other call. Not part of the `ObjectStore`
+    # protocol: only a store that can list and delete (`R2ObjectStore`) offers it.
+
+    def delete_prefix(
+        self, tenant_id: UUID, prefix: str, *, execute: bool = False
+    ) -> PrefixDeletion:
+        """List every object under `prefix` and, with `execute=True`, delete them.
+        Returns what was found either way, so a dry run reports what it WOULD delete.
+        Idempotent: an empty (or already emptied) prefix answers `PrefixDeletion(0, 0)`."""
+        key = _purgeable_prefix(tenant_id, prefix)
+        found: list[StoredObject] = list(self._store.list_prefix(key))  # type: ignore[attr-defined]
+        if execute:
+            keys = [item.key for item in found]
+            for start in range(0, len(keys), DELETE_BATCH):
+                self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+        return PrefixDeletion(objects=len(found), bytes=sum(item.size for item in found))
+
+
+def _purgeable_prefix(tenant_id: UUID, prefix: str) -> str:
+    """`prefix` unchanged if it is a folder strictly below a purgeable root of this
+    tenant (`t/{tenant}/generated/<something>/`); raise otherwise. The trailing slash is
+    required so `…/generated/abc` can never also match `…/generated/abcd/…`."""
+    key = require_tenant_prefix(tenant_id, prefix)
+    if not key.endswith("/"):
+        raise TenantPrefixViolation("a deletion prefix must end with '/'")
+    rest = key[len(tenant_prefix(tenant_id)) :]
+    root = next((r for r in PURGEABLE_ROOTS if rest.startswith(r)), None)
+    if root is None or len(rest) <= len(root) or "//" in rest:
+        raise TenantPrefixViolation("this prefix is not a purgeable folder")
+    return key

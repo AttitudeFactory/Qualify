@@ -5,8 +5,9 @@ and calls `evaluate`; the calendar card (`PostSummary.is_publishable`) and the e
 (`PostReader.get_publishable`) both come from here, so they cannot disagree.
 
 The checks run in a fixed order and the first failure is THE reason, so the same POST
-always gets the same answer. Order: approval → approved revision → approved copy →
-category → media count/order/type → category-and-media shape → R2 custody → content type.
+always gets the same answer. Order: files purged (m-24828907) → approval → approved revision
+→ approved copy → category → media count/order/type → category-and-media shape → R2
+custody → content type.
 
 MP-11 — one event per output. A POST rendered by the template engine carries several
 outputs in `image_assets.output_port` (`reel` video 9:16, `feed` image 4:5, `story` image
@@ -135,6 +136,8 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.IMAGE_RATIO_NOT_ALLOWED: "Instagram solo acepta en una publicación imágenes entre 4:5 "
     "(vertical) y 1.91:1 (horizontal).",
     R.STOCK_NOT_PUBLISHABLE: "Una imagen de stock no se publica sola: úsala dentro de una pieza.",
+    R.MEDIA_PURGED: "Los archivos de esta pieza se eliminaron a los 3 meses: ya no se puede "
+    "publicar. Vuelve a generarla.",
 }
 
 # ---------------------------------------------------------------------------
@@ -294,6 +297,8 @@ class PostCandidate:
     # QUA-118 v2: the event's destination (`post` / `reel` / `story`); None → derive the
     # product type from the category (or the port), the pre-destination rule.
     destination: str | None = None
+    # m-24828907: the retention rule deleted the files (`content_drafts.media_purged_at`).
+    media_purged: bool = False
 
 
 def _refuse(
@@ -399,6 +404,10 @@ def _port_media(media: tuple[MediaCandidate, ...], output_port: str) -> tuple[Me
 
 
 def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
+    # First: no other check matters once the files are gone, and the key prefix check
+    # below would still pass on a purged piece (its keys look right, the bytes are gone).
+    if candidate.media_purged:
+        return _refuse(candidate, R.MEDIA_PURGED)
     if candidate.approval is not ApprovalStatus.APPROVED or candidate.approved_revision is None:
         return _refuse(candidate, R.NOT_APPROVED)
     if candidate.revision != candidate.approved_revision:

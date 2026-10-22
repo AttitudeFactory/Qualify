@@ -186,6 +186,98 @@ def test_ctrl_c_exits_cleanly(monkeypatch) -> None:
     assert code == 0
 
 
+def test_ctrl_c_builds_the_daily_chore_without_running_it(monkeypatch) -> None:
+    """The default chore is built at start (no R2 needed until it runs)."""
+
+    def interrupted(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(worker.asyncio, "run", interrupted)
+    assert worker.main(["--all-tenants"], scoped=lambda _: FakeRunner(), production=FakeRunner) == 0
+
+
+# --- piece retention chore (m-24828907) ------------------------------------------------
+
+
+async def test_the_chore_runs_first_and_then_once_a_day_never_blocking_ticks() -> None:
+    runner, clock = FakeRunner(), FakeClock()
+    runs: list[float] = []
+    code = await worker.run_worker(
+        lambda: runner,
+        once=False,
+        interval=60,
+        sleep=clock.sleep,
+        clock=clock,
+        max_ticks=4,
+        chore=lambda: runs.append(clock.now),
+        chore_every=120,
+    )
+    assert code == 0 and runner.ticks == 4
+    assert runs == [0.0, 120.0]  # at start, then after `chore_every`
+
+
+async def test_a_failing_chore_never_stops_the_ticks() -> None:
+    runner, clock = FakeRunner(), FakeClock()
+
+    def boom() -> None:
+        raise RuntimeError("R2 not configured")
+
+    code = await worker.run_worker(
+        lambda: runner,
+        once=False,
+        interval=60,
+        sleep=clock.sleep,
+        clock=clock,
+        max_ticks=2,
+        chore=boom,
+    )
+    assert code == 0 and runner.ticks == 2
+
+
+async def test_once_never_runs_the_chore() -> None:
+    runs: list[int] = []
+    await worker.run_worker(lambda: FakeRunner(), once=True, chore=lambda: runs.append(1))
+    assert runs == []
+
+
+def test_purge_pieces_runs_once_for_the_scope_without_ticking() -> None:
+    calls: list[tuple[list[UUID] | None, bool]] = []
+
+    def never(*_):
+        raise AssertionError("--purge-pieces must not build a tick runner")
+
+    code = worker.main(
+        ["--tenant", str(TENANT), "--purge-pieces"],
+        scoped=never,
+        production=never,
+        purge=lambda ids, execute: calls.append((ids, execute)),
+    )
+    assert code == 0 and calls == [([TENANT], False)]
+    assert (
+        worker.main(
+            ["--all-tenants", "--purge-pieces", "--execute"],
+            scoped=never,
+            production=never,
+            purge=lambda ids, execute: calls.append((ids, execute)),
+        )
+        == 0
+    )
+    assert calls[-1] == (None, True)
+
+
+def test_a_failing_purge_exits_1() -> None:
+    def boom(*_):
+        raise RuntimeError("R2 down")
+
+    assert worker.main(["--tenant", str(TENANT), "--purge-pieces"], purge=boom) == 1
+
+
+def test_execute_without_purge_pieces_is_refused() -> None:
+    with pytest.raises(SystemExit):
+        worker.main(["--tenant", str(TENANT), "--once", "--execute"])
+
+
 async def test_should_stop_ends_the_loop_between_ticks() -> None:
     runner = FakeRunner()
     clock = FakeClock()
