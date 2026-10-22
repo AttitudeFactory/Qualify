@@ -256,6 +256,25 @@ class CreativeAngle(BaseModel):
         return text[:SCENE_PROMPT_MAX].strip()
 
 
+#: Appended to the scene prompt of every take after the first: the SAME scenario, shot
+#: differently — what «Regenerar» promises. Image generation is stochastic already; the
+#: note keeps the model from landing on the same framing twice.
+TAKE_NOTE = (
+    "Toma alternativa nº {take}: el mismo escenario, pero con otro ángulo de cámara, otra "
+    "disposición de los elementos y otra luz que en la toma anterior."
+)
+
+
+def take_scene_prompt(angle: CreativeAngle, take: int = 1) -> str:
+    """`angle.scene_prompt` for the first take; from the second on, the scene with
+    `TAKE_NOTE` — the scene trimmed first so the note is never the part that gets cut."""
+    if take <= 1:
+        return angle.scene_prompt
+    note = TAKE_NOTE.format(take=take)
+    room = SCENE_PROMPT_MAX - len(note) - 1
+    return f"{angle.scene_prompt[:room].rstrip()} {note}"
+
+
 def _tokens(text: str) -> frozenset[str]:
     folded = unicodedata.normalize("NFKD", text.casefold())
     folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
@@ -587,6 +606,7 @@ def angle_brief(
     brand_id: UUID,
     brand_logo_key: str | None = None,
     extra_highlights: Sequence[tuple[str, str]] = (),
+    take: int = 1,
 ) -> ContentBrief:
     """The `ContentBrief` this angle becomes — one draft of the existing pipeline.
 
@@ -595,6 +615,8 @@ def angle_brief(
     «precio» highlight (the copy prompt states highlights exactly as written) and as
     `price_line`, the text the composition prints — so the picture never shows a price
     the model made up. No catalog price → neither is set and nothing is printed.
+    `take` numbers the attempt: from the second on the scene asks for a different shot
+    of the same scenario (`take_scene_prompt`).
     """
     photos = tuple(product.photo_keys[:MAX_PRODUCT_IMAGES])
     highlights: list[tuple[str, str]] = []
@@ -607,7 +629,7 @@ def angle_brief(
         topic_parts.append(angle.rationale)
     media: dict[str, Any] = {
         "product_keys": photos,
-        "scene_prompt": angle.scene_prompt,
+        "scene_prompt": take_scene_prompt(angle, take),
         # whole or not at all: a label too long for `price_line` is not printed (the copy
         # still states it, through the highlight) — a cut figure is a different price
         "price_line": label if len(label) <= PRICE_LINE_MAX else "",
@@ -660,6 +682,7 @@ __all__ = [
     "PRESETS",
     "PRESETS_BY_KEY",
     "PRICE_HIGHLIGHT",
+    "TAKE_NOTE",
     "AngleBrand",
     "AnglePreset",
     "AngleProduct",
@@ -676,4 +699,5 @@ __all__ = [
     "price_conflicts",
     "price_mentions",
     "price_problem",
+    "take_scene_prompt",
 ]

@@ -174,12 +174,28 @@ def variation_set_detail(tenant_id: UUID, set_id: str) -> SetVM:
 # -- the angles --------------------------------------------------------------------------
 
 
-def discard_variation_angle(tenant_id: UUID, angle_id: str) -> None:
-    _service().discard_angle(tenant_id=tenant_id, angle_id=UUID(angle_id))
+def discard_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> None:
+    """Before or after its piece: one waiting for review is rejected with it."""
+    _service().discard_angle(tenant_id=tenant_id, angle_id=UUID(angle_id), user_id=user_id)
 
 
 def restore_variation_angle(tenant_id: UUID, angle_id: str) -> None:
     _service().restore_angle(tenant_id=tenant_id, angle_id=UUID(angle_id))
+
+
+def edit_variation_angle(tenant_id: UUID, angle_id: str, scene: str, composition: str) -> None:
+    _service().edit_angle(
+        tenant_id=tenant_id, angle_id=UUID(angle_id), scene=scene, composition=composition
+    )
+
+
+def regenerate_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> str:
+    """Another take of a piece that did not convince — a paid image, the old draft
+    rejected. Returns the new draft id."""
+    draft_id = _service().regenerate_angle(
+        tenant_id=tenant_id, angle_id=UUID(angle_id), user_id=user_id
+    )
+    return str(draft_id)
 
 
 def generate_variation_pieces(
@@ -213,8 +229,10 @@ __all__ = [
     "catalog_product_id",
     "create_variation_set",
     "discard_variation_angle",
+    "edit_variation_angle",
     "generate_variation_pieces",
     "list_variation_sets",
+    "regenerate_variation_angle",
     "render_ready",
     "restore_variation_angle",
     "retry_variation_angle",

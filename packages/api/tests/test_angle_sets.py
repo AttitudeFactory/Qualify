@@ -260,6 +260,7 @@ class FakeDrafts:
     details: dict[UUID, DraftDetail] = field(default_factory=dict)
     briefs: list[Any] = field(default_factory=list)
     approved: list[tuple[UUID, UUID]] = field(default_factory=list)
+    rejected: list[tuple[UUID, str]] = field(default_factory=list)
     refuse: Exception | None = None
     refuse_titles: tuple[str, ...] = ()
     #: like `ContentService`: a key that already has a draft returns it, no dispatch
@@ -311,6 +312,19 @@ class FakeDrafts:
     def approve(self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID):
         self.approved.append((draft_id, variant_id))
         self.details[draft_id] = replace(self.details[draft_id], status=DraftStatus.APPROVED.value)
+        return self.details[draft_id]
+
+    def reject(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        reason: str,
+        user_id: UUID,
+        regenerate: bool = False,
+    ):
+        self.rejected.append((draft_id, reason))
+        self.details[draft_id] = replace(self.details[draft_id], status=DraftStatus.REJECTED.value)
         return self.details[draft_id]
 
 
@@ -545,7 +559,7 @@ def test_generate_pieces_makes_one_draft_per_kept_angle_in_one_campaign() -> Non
     service, repo, _, drafts, campaigns = _service()
     set_id = _create(service)
     angles = repo.list_angles(tenant_id=TENANT, set_id=set_id)
-    service.discard_angle(tenant_id=TENANT, angle_id=angles[0].id)
+    service.discard_angle(tenant_id=TENANT, angle_id=angles[0].id, user_id=USER)
     outcome = service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
     assert len(outcome.queued) == 9 and outcome.failed == ()
     assert campaigns.created == [f"Shawarma mixto · 10 variaciones · {set_id.hex[:6]}"]
@@ -615,19 +629,133 @@ def test_retry_refuses_an_angle_whose_piece_is_in_progress_or_done() -> None:
     assert new_id != angle.draft_id and repo.angles[angle.id].attempts == 2
 
 
-def test_discard_and_restore_apply_only_before_generation() -> None:
-    service, repo, _, _, _ = _service()
+def test_discard_and_restore_before_generation_and_never_while_a_piece_is_made() -> None:
+    service, repo, _, drafts, _ = _service()
     set_id = _create(service)
     angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
-    service.discard_angle(tenant_id=TENANT, angle_id=angle.id)
+    service.discard_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
     assert repo.angles[angle.id].status == ANGLE_DISCARDED
     with pytest.raises(AngleNotActionable):
-        service.discard_angle(tenant_id=TENANT, angle_id=angle.id)
+        service.discard_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
     service.restore_angle(tenant_id=TENANT, angle_id=angle.id)
     assert repo.angles[angle.id].status == ANGLE_PROPOSED
     service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER, angle_ids=[angle.id])
+    # its piece is being made: neither discarded nor edited until it lands
     with pytest.raises(AngleNotActionable):
-        service.discard_angle(tenant_id=TENANT, angle_id=angle.id)
+        service.discard_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    with pytest.raises(AngleNotActionable):
+        service.edit_angle(tenant_id=TENANT, angle_id=angle.id, scene="otra", composition="")
+    assert drafts.rejected == []
+
+
+def _land(drafts: FakeDrafts, angle: AngleRecord, **kw: Any) -> UUID:
+    """The angle's piece lands, waiting for the operator."""
+    assert angle.draft_id is not None
+    drafts.details[angle.draft_id] = _detail(angle.draft_id, DraftStatus.GENERATED.value, **kw)
+    return angle.draft_id
+
+
+def test_discarding_a_landed_piece_rejects_its_draft_and_restore_queues_it_again() -> None:
+    service, repo, _, drafts, _ = _service()
+    set_id = _create(service)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    draft_id = _land(drafts, angle)
+    service.discard_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    assert repo.angles[angle.id].status == ANGLE_DISCARDED
+    # the piece does not linger in /drafts waiting for a review it will never get
+    assert drafts.rejected == [(draft_id, "Descartada en Variaciones.")]
+    assert drafts.details[draft_id].status == DraftStatus.REJECTED.value
+    # back in the set: queued on its rejected draft, so «Reintentar» is what it offers
+    service.restore_angle(tenant_id=TENANT, angle_id=angle.id)
+    restored = repo.angles[angle.id]
+    assert restored.status == ANGLE_QUEUED and restored.draft_id == draft_id
+    view = next(
+        v for v in service.detail(tenant_id=TENANT, set_id=set_id).angles if v.angle.id == angle.id
+    )
+    assert view.can_retry and not view.can_regenerate and view.can_discard
+    new_id = service.retry_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    assert new_id != draft_id and repo.angles[angle.id].attempts == 2
+
+
+def test_an_approved_piece_is_neither_discarded_nor_edited() -> None:
+    service, repo, _, drafts, _ = _service()
+    set_id = _create(service)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    _land(drafts, angle, hook=f"Hoy a {repo.sets[set_id].price_label}")
+    service.approve_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    with pytest.raises(AngleNotActionable, match="aprobada"):
+        service.discard_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    with pytest.raises(AngleNotActionable, match="aprobada"):
+        service.edit_angle(tenant_id=TENANT, angle_id=angle.id, scene="otra", composition="")
+    with pytest.raises(AngleNotActionable):
+        service.regenerate_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+
+
+# -- editing and regenerating one angle -------------------------------------------------------
+
+
+def test_edit_angle_rewrites_the_scene_and_the_next_piece_is_briefed_from_it() -> None:
+    service, repo, _, drafts, _ = _service()
+    set_id = _create(service)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    service.edit_angle(
+        tenant_id=TENANT,
+        angle_id=angle.id,
+        scene="  sobre   una bandeja de hojalata\nen un food truck ",
+        composition="plano cenital",
+    )
+    edited = repo.angles[angle.id]
+    assert edited.scene == "sobre una bandeja de hojalata en un food truck"
+    assert edited.composition == "plano cenital" and edited.title == angle.title
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER, angle_ids=[angle.id])
+    assert drafts.briefs[-1].media.scene_prompt.startswith("sobre una bandeja de hojalata")
+
+
+def test_edit_angle_refuses_an_empty_or_oversized_scene() -> None:
+    service, repo, _, _, _ = _service()
+    set_id = _create(service)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    with pytest.raises(AngleNotActionable):
+        service.edit_angle(tenant_id=TENANT, angle_id=angle.id, scene="   ", composition="")
+    with pytest.raises(AngleNotActionable):
+        service.edit_angle(tenant_id=TENANT, angle_id=angle.id, scene="x" * 401, composition="")
+    assert repo.angles[angle.id].scene == angle.scene
+
+
+def test_regenerate_rejects_the_landed_piece_and_briefs_another_take_of_the_same_scene() -> None:
+    service, repo, _, drafts, campaigns = _service()
+    set_id = _create(service)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    old_id = _land(drafts, angle)
+    before = len(drafts.briefs)
+    new_id = service.regenerate_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    assert new_id != old_id and len(drafts.briefs) == before + 1
+    assert drafts.rejected == [
+        (old_id, "Regenerada en Variaciones: otra toma del mismo escenario.")
+    ]
+    again = repo.angles[angle.id]
+    assert again.status == ANGLE_QUEUED and again.draft_id == new_id and again.attempts == 2
+    # the same scene, asked as a different shot — and paid once more, nothing else touched
+    brief = drafts.briefs[-1]
+    assert brief.media.scene_prompt.startswith(SCENES[0])
+    assert "Toma alternativa nº 2" in brief.media.scene_prompt
+    assert len(campaigns.created) == 1
+    assert all(a.attempts == 1 for a in repo.list_angles(tenant_id=TENANT, set_id=set_id)[1:])
+
+
+def test_regenerate_applies_only_to_a_piece_waiting_for_review() -> None:
+    service, repo, _, drafts, _ = _service()
+    set_id = _create(service)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    with pytest.raises(AngleNotActionable):  # no piece yet
+        service.regenerate_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    with pytest.raises(AngleNotActionable):  # still being made
+        service.regenerate_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    assert drafts.rejected == []
 
 
 # -- the gallery view ---------------------------------------------------------------------------

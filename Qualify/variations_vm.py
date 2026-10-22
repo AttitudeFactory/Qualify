@@ -201,6 +201,8 @@ class AngleVM:
     can_restore: bool
     can_retry: bool
     can_approve: bool
+    can_edit: bool
+    can_regenerate: bool
 
 
 def _failure_text(view: AngleView) -> str:
@@ -247,10 +249,12 @@ def build_angle_vm(view: AngleView, preview_url: Callable[[str], str]) -> AngleV
         price_conflicts=tuple(view.price_conflicts),
         warnings=tuple(view.warnings),
         failure_text=_failure_text(view),
-        can_discard=angle.status == ANGLE_PROPOSED,
+        can_discard=view.can_discard,
         can_restore=angle.status == ANGLE_DISCARDED,
         can_retry=view.can_retry,
         can_approve=view.can_approve,
+        can_edit=view.can_edit,
+        can_regenerate=view.can_regenerate,
     )
 
 

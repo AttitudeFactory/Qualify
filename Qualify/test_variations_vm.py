@@ -150,6 +150,15 @@ def test_tile_permissions_follow_the_angle_and_its_draft() -> None:
     assert ready.draft_label == "Listo para revisar" and ready.draft_tone == "warn"
     assert ready.preview_key == "uploads/t/p.jpg" and ready.preview_url == ""
     assert {proposed.status_tone, ready.status_tone, ready.draft_tone} <= TONES
+    # a piece that landed may be looked at again: another take, new words, or out
+    assert ready.can_regenerate and ready.can_edit and ready.can_discard
+    assert proposed.can_edit and not proposed.can_regenerate
+    assert not discarded.can_edit and not discarded.can_regenerate
+    making = build_angle_vm(
+        AngleView(angle=_angle(ANGLE_QUEUED, draft_id=uuid4()), draft_status="drafting"),
+        _no_url,
+    )
+    assert not (making.can_edit or making.can_discard or making.can_regenerate)
 
 
 def test_a_copy_quoting_another_price_cannot_be_approved_and_says_why() -> None:
