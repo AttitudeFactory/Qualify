@@ -72,9 +72,9 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
         CapabilitySpec(
             Capability.COMMENT_PRIVATE_REPLY,
             "QUALIFY_COMMENT_PRIVATE_REPLY",
-            CapabilityState.TO_VERIFY,
-            "La respuesta privada a un comentario (un solo mensaje, dentro de 7 días) está "
-            "construida según la documentación de Meta y pendiente de la prueba real (R1).",
+            CapabilityState.VERIFIED,
+            "La respuesta privada a un comentario (un solo mensaje, dentro de 7 días) se "
+            "verificó con Meta el 2026-10-22 (R1).",
         ),
         CapabilitySpec(
             Capability.STORY_COMMENTS,
@@ -86,18 +86,17 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
         CapabilitySpec(
             Capability.STORY_REPLY_CONTEXT,
             "QUALIFY_STORY_REPLY_CONTEXT",
-            CapabilityState.TO_VERIFY,
-            "Qualify ya lee a qué historia responde un mensaje directo (reply_to.story) según "
-            "la documentación de Meta, pendiente de la prueba real con una respuesta a una "
-            "historia (R3).",
+            CapabilityState.VERIFIED,
+            "Qualify lee a qué historia responde un mensaje directo y le contesta por DM; "
+            "verificado con Meta el 2026-10-22 (R3).",
         ),
         CapabilitySpec(
             Capability.PUBLIC_NOTICE,
             "QUALIFY_PUBLIC_NOTICE",
-            CapabilityState.TO_VERIFY,
+            CapabilityState.VERIFIED,
             "El aviso público «Te enviamos la información por DM 💬» (una respuesta pública "
-            "al comentario, solo tras confirmar el mensaje privado) está construido según la "
-            "documentación de Meta y pendiente de la prueba en producción (QUA-128, R4).",
+            "al comentario, solo tras confirmar el mensaje privado) se verificó con Meta el "
+            "2026-10-22 (R4).",
         ),
     )
 }

@@ -34,7 +34,7 @@ an explicit follow-up, not silently assumed done.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 import httpx
 
@@ -72,6 +72,14 @@ class CommentReplyClient(Protocol):
     async def post_reply(self, *, ig_comment_id: str, message: str) -> str:
         """Returns the new reply comment's id. Raises `CommentReplyError`."""
         ...
+
+
+#: m-24789646 (R4, measured 2026-10-22 against @rauldevgames): `POST /{comment-id}/replies`
+#: took longer than httpx's default 5 s to answer and the reply WAS published — the
+#: client gave up first, so the caller saw an ambiguous transport error for a reply that
+#: was public. Same lesson `publishing/client.py` (`GRAPH_WRITE_TIMEOUT`) and the DM
+#: sender (`SEND_TIMEOUT_S`) already encode: a Graph write gets a generous read timeout.
+REPLY_TIMEOUT: Final = httpx.Timeout(60.0, connect=30.0)
 
 
 def _error_codes(response: httpx.Response) -> tuple[int | None, int | None]:
@@ -116,7 +124,9 @@ class HttpCommentReplyClient:
     async def post_reply(self, *, ig_comment_id: str, message: str) -> str:
         try:
             response = await self._graph.post(
-                f"{self._graph_url}/{ig_comment_id}/replies", params={"message": message}
+                f"{self._graph_url}/{ig_comment_id}/replies",
+                params={"message": message},
+                timeout=REPLY_TIMEOUT,
             )
         except httpx.TransportError as exc:
             # The measured ambiguity `publishing/service.py` already names: a timeout or
