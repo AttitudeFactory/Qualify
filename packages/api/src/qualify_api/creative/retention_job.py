@@ -6,9 +6,11 @@ them for a process — the calendar worker's daily chore (`planner.worker`) and 
 
 - **Scope** is explicit, as in the calendar worker: the tenants it is given (locally,
   always), or `None` = the production discovery (`tenants_with_expired_pieces`).
-- **Real or dry run**: the daily chore deletes only when `QUALIFY_PIECE_PURGE_EXECUTE` is
-  `1`/`true`; otherwise it only logs what it WOULD delete (founder's decision: deploy in
-  dry run, switch on once the log looks right). The manual command takes `--execute`.
+- **Real by default**: the daily chore DELETES the files of expired pieces from R2 and
+  marks them «Contenido eliminado» — the ticket's behaviour. `QUALIFY_PIECE_PURGE_EXECUTE`
+  set to `0`/`false`/`no`/`off` is the kill switch: the chore then only logs what it
+  would delete. The manual command (`just piece-purge`) stays a dry run unless
+  `--execute`: a hand-typed run should never delete by accident.
 - The R2 gate is built when the purge RUNS, not when the worker starts, so a worker
   without R2 configured keeps publishing and logs the purge failure once a day.
 """
@@ -35,9 +37,13 @@ EXECUTE_ENV = "QUALIFY_PIECE_PURGE_EXECUTE"
 PURGE_EVERY_SECONDS = 24 * 60 * 60
 
 
+_OFF = ("0", "false", "no", "off")
+
+
 def execute_from_env(env: Mapping[str, str] | None = None) -> bool:
+    """True (really delete) unless `QUALIFY_PIECE_PURGE_EXECUTE` explicitly says off."""
     value = (env if env is not None else os.environ).get(EXECUTE_ENV, "")
-    return value.strip().lower() in ("1", "true", "yes", "on")
+    return value.strip().lower() not in _OFF
 
 
 def production_gate() -> PrefixDeleter:
@@ -86,8 +92,8 @@ def run_piece_purge(
 
 
 def daily_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
-    """The calendar worker's chore: the same scope as its ticks, real or dry run by
-    `QUALIFY_PIECE_PURGE_EXECUTE` (read on every run)."""
+    """The calendar worker's chore: the same scope as its ticks; really deletes unless
+    `QUALIFY_PIECE_PURGE_EXECUTE` says off (read on every run)."""
     scope = list(tenant_ids) if tenant_ids is not None else None
     return lambda: run_piece_purge(scope, execute=execute_from_env())
 

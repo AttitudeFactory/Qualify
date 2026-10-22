@@ -44,10 +44,10 @@ def test_calendar_worker_can_read_media_and_its_heartbeat_store() -> None:
     assert "ports" not in worker
 
 
-def test_the_piece_purge_is_a_dry_run_unless_switched_on() -> None:
-    # m-24828907: the worker's daily purge deletes only when .env.prod says so.
+def test_the_piece_purge_deletes_for_real_unless_switched_off() -> None:
+    # m-24828907: the worker's daily purge deletes by default; `0` in .env.prod stops it.
     env = SERVICES["calendar-worker"]["environment"]
-    assert env["QUALIFY_PIECE_PURGE_EXECUTE"] == "${QUALIFY_PIECE_PURGE_EXECUTE:-0}"
+    assert env["QUALIFY_PIECE_PURGE_EXECUTE"] == "${QUALIFY_PIECE_PURGE_EXECUTE:-1}"
 
 
 def test_embedded_worker_stays_off_in_reflex() -> None:
