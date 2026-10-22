@@ -33,7 +33,8 @@ meegle auth login            # in an agent shell: use the device-code flow it of
 # Official Lark CLI (larksuite/cli) + its agent skills (lark-shared, lark-im, lark-doc, …)
 npm install -g @larksuite/cli
 npx skills add larksuite/cli -y -g
-lark-cli config init --new   # app credentials: prints a URL the founder opens
+lark-cli config init --new --brand lark   # default brand is feishu (China) — ours is Lark;
+                                          # prints an open.larksuite.com URL the founder opens
 lark-cli auth login --recommend
 lark-cli auth status
 ```
