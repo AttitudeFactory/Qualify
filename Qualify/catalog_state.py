@@ -38,7 +38,7 @@ from .catalog_provider import (
     set_primary,
     update_product,
 )
-from .catalog_vm import ProductVM
+from .catalog_vm import ProductVM, currency_from_choice, parse_price_input
 from .creative_provider import acting_user_id, default_brand_id
 from .tenant import tenant_uuid
 
@@ -76,6 +76,10 @@ class CatalogState(rx.State):
     new_name: str = ""
     new_description: str = ""
     new_category: str = ""
+    #: m-24803289 — the price came back as an OPTIONAL field. Empty means the product
+    #: has no price, and its pieces then print none instead of an invented one.
+    new_price: str = ""
+    new_currency: str = ""
     form_error: str = ""
     saving: bool = False
     #: Photos and videos dropped in the form before the product exists (§ request
@@ -89,6 +93,8 @@ class CatalogState(rx.State):
     edit_name: str = ""
     edit_description: str = ""
     edit_category: str = ""
+    edit_price: str = ""
+    edit_currency: str = ""
     edit_error: str = ""
     edit_saving: bool = False
 
@@ -259,6 +265,15 @@ class CatalogState(rx.State):
     def set_new_category(self, value: str) -> None:
         self.new_category = value
 
+    @rx.event
+    def set_new_price(self, value: str) -> None:
+        self.new_price = value
+        self.form_error = ""
+
+    @rx.event
+    def set_new_currency(self, value: str) -> None:
+        self.new_currency = currency_from_choice(value)
+
     @rx.event(background=True)
     async def submit_new_product(self) -> AsyncIterator[rx.event.EventSpec]:
         """Create the product; the files dropped in the form follow it straight away
@@ -269,9 +284,15 @@ class CatalogState(rx.State):
             if not self.new_name.strip():
                 self.form_error = _NAME_REQUIRED
                 return
+            try:
+                price = parse_price_input(self.new_price)
+            except ValueError as exc:
+                self.form_error = str(exc)
+                return
             self.saving = True
             self.form_error = ""
             form = (self.new_name, self.new_description, self.new_category)
+            currency = self.new_currency
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -288,6 +309,8 @@ class CatalogState(rx.State):
                     name=name,
                     description=description,
                     category=category,
+                    price_amount=price,
+                    price_currency=currency,
                 )
             )
         except CatalogError as exc:
@@ -308,6 +331,8 @@ class CatalogState(rx.State):
             self.new_name = ""
             self.new_description = ""
             self.new_category = ""
+            self.new_price = ""
+            self.new_currency = ""
             self.notice = _CREATED
             self.selected_id = str(product_id)
             if self.selected is not None:
@@ -332,6 +357,8 @@ class CatalogState(rx.State):
         self.edit_name = product.name
         self.edit_description = product.description
         self.edit_category = product.category
+        self.edit_price = product.price_amount
+        self.edit_currency = product.price_currency
 
     @rx.event
     def select_product(self, product_id: str) -> None:
@@ -365,6 +392,15 @@ class CatalogState(rx.State):
     def set_edit_category(self, value: str) -> None:
         self.edit_category = value
 
+    @rx.event
+    def set_edit_price(self, value: str) -> None:
+        self.edit_price = value
+        self.edit_error = ""
+
+    @rx.event
+    def set_edit_currency(self, value: str) -> None:
+        self.edit_currency = currency_from_choice(value)
+
     @rx.event(background=True)
     async def save_product(self) -> None:
         async with self:
@@ -373,10 +409,16 @@ class CatalogState(rx.State):
             if not self.edit_name.strip():
                 self.edit_error = _NAME_REQUIRED
                 return
+            try:
+                price = parse_price_input(self.edit_price)
+            except ValueError as exc:
+                self.edit_error = str(exc)
+                return
             self.edit_saving = True
             self.edit_error = ""
             product_id = UUID(self.selected_id)
             form = (self.edit_name, self.edit_description, self.edit_category)
+            currency = self.edit_currency
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -392,6 +434,8 @@ class CatalogState(rx.State):
                     name=name,
                     description=description,
                     category=category,
+                    price_amount=price,
+                    price_currency=currency,
                 )
             )
         except CatalogError as exc:

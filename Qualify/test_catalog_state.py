@@ -19,6 +19,7 @@ Pins:
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -42,6 +43,9 @@ def _product(product_id: str = str(_PRODUCT_ID), **kw: Any) -> ProductVM:
         "name": "Shawarma mixto",
         "slug": "shawarma-mixto",
         "description": "Pollo y carne",
+        "price_label": "",
+        "price_amount": "",
+        "price_currency": "",
         "category": "shawarmas",
         "primary_photo_key": "",
         "photo_count": 0,
@@ -142,8 +146,9 @@ async def test_creating_a_product_closes_the_form_and_opens_the_product(monkeypa
     await _drain(CatalogState.submit_new_product.fn(state))
 
     assert created and created[0]["tenant_id"] == _TENANT_ID
-    # the screen has no price any more: none is sent, so none is written
-    assert "price_amount" not in created[0] and "currency" not in created[0]
+    # m-24803289: the price is an optional field again. Nothing was typed in this form,
+    # so the product is created WITHOUT one and its pieces will print none.
+    assert created[0]["price_amount"] is None and created[0]["price_currency"] == ""
     assert state.form_open is False and state.saving is False
     assert state.new_name == "" and state.new_category == ""
     assert state.selected_id == str(_PRODUCT_ID)
@@ -196,22 +201,27 @@ async def test_the_services_spanish_refusal_shows_as_the_form_error(monkeypatch)
     assert state.saving is False
 
 
-async def test_saving_a_product_never_sends_a_price(monkeypatch) -> None:
-    """Editing name/category/description leaves a stored price untouched: the provider
-    is called without price/currency, so the service keeps what is there."""
-    updated: list[dict[str, Any]] = []
+def _editor(monkeypatch, updated: list[dict[str, Any]], product: ProductVM) -> CatalogState:
+    """A state with `product` open in the editor and its save captured."""
 
     def fake_update(tenant_id: UUID, product_id: UUID, **kwargs: Any) -> None:
         updated.append({"product_id": product_id, **kwargs})
 
-    def fake_list(tenant_id: UUID, brand_id: UUID) -> tuple[ProductVM, ...]:
-        return (_product(),)
-
     monkeypatch.setattr(catalog_state_module, "update_product", fake_update)
-    monkeypatch.setattr(catalog_state_module, "list_products", fake_list)
+    monkeypatch.setattr(catalog_state_module, "list_products", lambda *_: (product,))
     state = _state(monkeypatch)
-    state.products = [_product()]
+    state.products = [product]
     state.select_product(str(_PRODUCT_ID))
+    return state
+
+
+async def test_saving_a_product_sends_the_price_the_editor_shows(monkeypatch) -> None:
+    """m-24803289: the price is an optional field again, and the editor opens on what
+    is stored — so a save sends exactly that, and the product keeps its price."""
+    updated: list[dict[str, Any]] = []
+    priced = _product(price_label="$12.5", price_amount="12.5", price_currency="USD")
+    state = _editor(monkeypatch, updated, priced)
+    assert (state.edit_price, state.edit_currency) == ("12.5", "USD")
     state.edit_name = "Shawarma XL"
 
     await CatalogState.save_product.fn(state)
@@ -222,9 +232,39 @@ async def test_saving_a_product_never_sends_a_price(monkeypatch) -> None:
             "name": "Shawarma XL",
             "description": "Pollo y carne",
             "category": "shawarmas",
+            "price_amount": Decimal("12.50"),
+            "price_currency": "USD",
         }
     ]
     assert state.edit_saving is False and state.edit_error == ""
+
+
+async def test_clearing_the_price_field_removes_the_price(monkeypatch) -> None:
+    """Emptying the field is the one way the screen drops a price, and it is a
+    deliberate act: the provider is told `None`, not "leave it as it was"."""
+    updated: list[dict[str, Any]] = []
+    priced = _product(price_label="$12.5", price_amount="12.5", price_currency="USD")
+    state = _editor(monkeypatch, updated, priced)
+    state.set_edit_price("")
+    state.set_edit_currency("Sin moneda")
+
+    await CatalogState.save_product.fn(state)
+
+    assert updated[0]["price_amount"] is None and updated[0]["price_currency"] == ""
+
+
+async def test_a_price_that_cannot_be_read_exactly_is_refused_before_saving(
+    monkeypatch,
+) -> None:
+    """Never an invented price: an ambiguous amount stops the save with a message."""
+    updated: list[dict[str, Any]] = []
+    state = _editor(monkeypatch, updated, _product())
+    state.set_edit_price("1.234.56")
+
+    await CatalogState.save_product.fn(state)
+
+    assert updated == [] and "no se entiende" in state.edit_error
+    assert state.edit_saving is False
 
 
 # ---------------------------------------------------------------------------

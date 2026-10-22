@@ -21,7 +21,13 @@ from __future__ import annotations
 import reflex as rx
 
 from .catalog_state import CatalogState
-from .catalog_vm import MEDIA_ACCEPT, ProductMediaVM, ProductVM
+from .catalog_vm import (
+    CURRENCY_OPTIONS,
+    MEDIA_ACCEPT,
+    NO_CURRENCY,
+    ProductMediaVM,
+    ProductVM,
+)
 from .ui import (
     app_shell,
     callout,
@@ -52,6 +58,40 @@ def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Com
     )
 
 
+def _price_field(
+    amount: rx.Var[str],
+    on_amount: object,
+    currency: rx.Var[str],
+    on_currency: object,
+) -> rx.Component:
+    """The optional price (m-24803289). It is what «Variaciones» prints on the piece,
+    so the help text says both halves out loud: leaving it empty is a valid answer, and
+    what is written here is what the piece shows, exactly."""
+    return _field(
+        "Precio",
+        rx.hstack(
+            rx.input(
+                value=amount,
+                on_change=on_amount,
+                placeholder="Ej.: 89990",
+                input_mode="decimal",
+                width="100%",
+            ),
+            rx.select(
+                list(CURRENCY_OPTIONS),
+                value=rx.cond(currency == "", NO_CURRENCY, currency),
+                on_change=on_currency,
+                width="10rem",
+            ),
+            spacing="2",
+            width="100%",
+            align="center",
+        ),
+        "Opcional. Si lo dejas vacío, las piezas no mostrarán ningún precio; si lo "
+        "escribes, se imprime exactamente así.",
+    )
+
+
 def _product_fields(
     *,
     name: rx.Var[str],
@@ -60,9 +100,13 @@ def _product_fields(
     on_category: object,
     description: rx.Var[str],
     on_description: object,
+    price: rx.Var[str],
+    on_price: object,
+    currency: rx.Var[str],
+    on_currency: object,
     name_autofocus: bool = False,
 ) -> rx.Component:
-    """The same three fields for creating and for editing a product."""
+    """The same fields for creating and for editing a product."""
     return rx.vstack(
         _field(
             "Nombre",
@@ -95,6 +139,7 @@ def _product_fields(
             ),
             "Ayuda a escribir el gancho; no se imprime entera.",
         ),
+        _price_field(price, on_price, currency, on_currency),
         spacing="3",
         width="100%",
         align_items="start",
@@ -130,6 +175,10 @@ def _new_product_form() -> rx.Component:
                     on_category=CatalogState.set_new_category,
                     description=CatalogState.new_description,
                     on_description=CatalogState.set_new_description,
+                    price=CatalogState.new_price,
+                    on_price=CatalogState.set_new_price,
+                    currency=CatalogState.new_currency,
+                    on_currency=CatalogState.set_new_currency,
                     name_autofocus=True,
                 ),
                 _new_media_field(),
@@ -434,6 +483,10 @@ def _editor() -> rx.Component:
                 on_category=CatalogState.set_edit_category,
                 description=CatalogState.edit_description,
                 on_description=CatalogState.set_edit_description,
+                price=CatalogState.edit_price,
+                on_price=CatalogState.set_edit_price,
+                currency=CatalogState.edit_currency,
+                on_currency=CatalogState.set_edit_currency,
             ),
             rx.cond(
                 CatalogState.edit_error != "",
@@ -496,6 +549,12 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
             ),
             rx.hstack(
                 rx.cond(product.category != "", tag(product.category)),
+                # m-24803289: the price the pieces of this product will print, so the
+                # operator sees at a glance which products carry one
+                rx.cond(
+                    product.price_label != "",
+                    tone_badge(product.price_label, "ok", icon="tag"),
+                ),
                 rx.spacer(),
                 rx.text(product.counts_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
                 width="100%",

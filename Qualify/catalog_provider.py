@@ -13,6 +13,7 @@ callers on the event loop must run them off-thread.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import cache
 from uuid import UUID
 
@@ -53,9 +54,12 @@ def create_product(
     name: str,
     description: str,
     category: str,
+    price_amount: Decimal | None = None,
+    price_currency: str = "",
 ) -> UUID:
     """Raises `CatalogError` (Spanish message in `args[0]`) when the service refuses.
-    The screen no longer asks for a price: a new product is created without one."""
+    The price is OPTIONAL (m-24803289): `None` creates a product without one, and the
+    pieces of such a product print no price at all rather than an invented one."""
     return _service().create_product(
         tenant_id=tenant_id,
         brand_id=brand_id,
@@ -63,6 +67,8 @@ def create_product(
         name=name,
         description=description,
         category=category,
+        price_amount=price_amount,
+        price_currency=price_currency,
     )
 
 
@@ -73,15 +79,20 @@ def update_product(
     name: str,
     description: str,
     category: str,
+    price_amount: Decimal | None = None,
+    price_currency: str = "",
 ) -> None:
-    """Price and currency are not passed, so the service leaves whatever a product
-    already has stored untouched (no data loss; the screen just stopped editing them)."""
+    """The editor shows the stored price, so what it sends is what the product keeps:
+    an amount replaces it and `None` clears it — that is the operator emptying the
+    field on purpose, the only way the screen ever drops a price."""
     _service().update_product(
         tenant_id=tenant_id,
         product_id=product_id,
         name=name,
         description=description,
         category=category,
+        price_amount=price_amount,
+        price_currency=price_currency,
     )
 
 
