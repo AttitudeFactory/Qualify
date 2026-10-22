@@ -284,6 +284,8 @@ def _post_option(
         **_campaign_fields(post),
         campaign_id=str(post.campaign.id) if post.campaign is not None else "",
         event_count=post.event_count,
+        retention_state=post.retention_state,
+        purge_days_left=post.purge_days_left,
     )
 
 

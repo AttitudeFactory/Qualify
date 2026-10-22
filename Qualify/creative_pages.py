@@ -19,6 +19,7 @@ from .campaign_state import CampaignState
 from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
+    PURGED_TEXT,
     CopyVariantVM,
     GapVM,
     MediaVM,
@@ -945,6 +946,15 @@ def _gallery_card(post) -> rx.Component:
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
             campaign_badge(post.campaign_name, post.campaign_color),  # QUA-143
+            # m-24828907: «Se elimina en N días» / «Contenido eliminado»
+            rx.cond(
+                post.retention_label != "",
+                rx.cond(
+                    post.retention_tone == "warn",
+                    tone_badge(post.retention_label, "warn", icon="clock"),
+                    tone_badge(post.retention_label, "neutral", icon="archive-x"),
+                ),
+            ),
             rx.flex(
                 rx.text(post.media_label, size="1", color=T.TEXT_MUTED),
                 rx.cond(
@@ -1312,7 +1322,49 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
 _MEDIA_COLUMN_WIDTH = "100%"
 
 
+def _retention_notice() -> rx.Component:
+    """m-24828907: «Descarga esta pieza: se elimina el …» with its countdown and the
+    piece's «Descargar», while it is within 15 days of its deletion."""
+    draft = CreativeState.draft
+    return rx.cond(
+        draft.retention_notice != "",
+        rx.hstack(
+            rx.box(callout(draft.retention_notice, "warn", icon="clock"), flex="1"),
+            piece_download_button(draft.download_path, draft.download_name),
+            align="center",
+            spacing="3",
+            width="100%",
+        ),
+    )
+
+
+def _purged_media() -> rx.Component:
+    """m-24828907: the files left R2 after 3 months; the row, copy and history stay."""
+    return rx.center(
+        rx.vstack(
+            rx.icon("archive-x", size=26, color=T.TEXT_FAINT),
+            tone_badge(CreativeState.draft.purged_label, "neutral"),
+            rx.text(PURGED_TEXT, size="1", color=T.TEXT_MUTED, text_align="center"),
+            spacing="2",
+            align="center",
+        ),
+        width=_MEDIA_COLUMN_WIDTH,
+        max_width=rx.breakpoints(initial="16rem", md="none"),
+        margin_x=rx.breakpoints(initial="auto", md="0"),
+        class_name="q-rv-media-empty",
+    )
+
+
 def _media_column() -> rx.Component:
+    draft = CreativeState.draft
+    return rx.cond(
+        draft.media_purged,
+        _purged_media(),
+        _media_column_files(),
+    )
+
+
+def _media_column_files() -> rx.Component:
     draft = CreativeState.draft
     return rx.cond(
         draft.media.length() > 0,
@@ -2285,6 +2337,7 @@ def draft_detail_index() -> rx.Component:
                             align="center",
                         ),
                         _campaign_field(),
+                        _retention_notice(),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),

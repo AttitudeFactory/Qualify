@@ -17,11 +17,14 @@ from qualify_shared.objects import (
     MAX_MEDIA_BYTES,
     ObjectGate,
     ObjectSizeExceeded,
+    PrefixDeletion,
+    StoredObject,
     TenantPrefixViolation,
     UnsizedStream,
     media_key,
     tenant_prefix,
 )
+from qualify_shared.objects.gate import DELETE_BATCH
 
 _TENANT = UUID("11111111-1111-1111-1111-111111111111")
 _OTHER_TENANT = UUID("22222222-2222-2222-2222-222222222222")
@@ -191,7 +194,9 @@ def test_gate_exposes_no_presign_method() -> None:
     # (`Qualify/r2_media.py`, HTTP Range). Both are READS behind the same tenant-prefix
     # check as `open_object`; the bytes still leave only through a backend route that
     # resolves an opaque token. Still no signed/public URL of any kind.
-    assert surface == {"put_media", "open_object", "object_size", "open_range"}
+    # 2026-10-22 (m-24828907, ADR 39): `delete_prefix` added for the piece retention rule —
+    # the only deletion, restricted to folders under `PURGEABLE_ROOTS` (tests below).
+    assert surface == {"put_media", "open_object", "object_size", "open_range", "delete_prefix"}
     assert not any("presign" in name or "sign" in name for name in surface)
 
 
@@ -210,3 +215,96 @@ class _NullStore:
 
     def open(self, key: str) -> IO[bytes]:
         raise KeyError(key)
+
+
+# -- delete_prefix (m-24828907) ------------------------------------------------------------
+
+
+class ListingStore(InMemoryStore):
+    """An in-memory store that can list and delete, recording each delete batch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[list[str]] = []
+
+    def list_prefix(self, prefix: str) -> list[StoredObject]:
+        return [
+            StoredObject(key=key, size=len(data))
+            for key, (data, _) in sorted(self.objects.items())
+            if key.startswith(prefix)
+        ]
+
+    def delete_keys(self, keys: list[str]) -> None:
+        self.batches.append(list(keys))
+        for key in keys:
+            self.objects.pop(key, None)
+
+
+def _piece(tenant: UUID, draft: UUID) -> str:
+    return f"{tenant_prefix(tenant)}generated/{draft}/"
+
+
+def test_delete_prefix_dry_run_reports_without_deleting() -> None:
+    store = ListingStore()
+    draft = uuid4()
+    store.objects[f"{_piece(_TENANT, draft)}r1/a.jpg"] = (b"12345", "image/jpeg")
+    store.objects[f"{_piece(_TENANT, draft)}r2/b.mp4"] = (b"123", "video/mp4")
+    result = ObjectGate(store).delete_prefix(_TENANT, _piece(_TENANT, draft))
+    assert result == PrefixDeletion(objects=2, bytes=8)
+    assert len(store.objects) == 2 and store.batches == []
+
+
+def test_delete_prefix_removes_every_revision_and_nothing_else() -> None:
+    """Old revisions have no `image_assets` row any more (a regeneration replaces them),
+    so only a prefix delete reaches them."""
+    store = ListingStore()
+    draft, other = uuid4(), uuid4()
+    store.objects[f"{_piece(_TENANT, draft)}r1/a.jpg"] = (b"1", "image/jpeg")
+    store.objects[f"{_piece(_TENANT, draft)}r2/a.jpg"] = (b"2", "image/jpeg")
+    store.objects[f"{_piece(_TENANT, other)}r1/a.jpg"] = (b"3", "image/jpeg")
+    kit = f"{tenant_prefix(_TENANT)}brand/logo.png"
+    store.objects[kit] = (b"4", "image/png")
+    result = ObjectGate(store).delete_prefix(_TENANT, _piece(_TENANT, draft), execute=True)
+    assert result.objects == 2
+    assert set(store.objects) == {f"{_piece(_TENANT, other)}r1/a.jpg", kit}
+
+
+def test_delete_prefix_is_idempotent() -> None:
+    store = ListingStore()
+    draft = uuid4()
+    store.objects[f"{_piece(_TENANT, draft)}r1/a.jpg"] = (b"1", "image/jpeg")
+    gate = ObjectGate(store)
+    gate.delete_prefix(_TENANT, _piece(_TENANT, draft), execute=True)
+    assert gate.delete_prefix(_TENANT, _piece(_TENANT, draft), execute=True) == PrefixDeletion(0, 0)
+
+
+def test_delete_prefix_batches_at_the_s3_limit() -> None:
+    store = ListingStore()
+    draft = uuid4()
+    for i in range(DELETE_BATCH + 5):
+        store.objects[f"{_piece(_TENANT, draft)}r1/{i:05}.jpg"] = (b"x", "image/jpeg")
+    ObjectGate(store).delete_prefix(_TENANT, _piece(_TENANT, draft), execute=True)
+    assert [len(batch) for batch in store.batches] == [DELETE_BATCH, 5]
+    assert store.objects == {}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        f"{tenant_prefix(_OTHER_TENANT)}generated/{uuid4()}/",  # another tenant
+        f"{tenant_prefix(_TENANT)}",  # the whole tenant
+        f"{tenant_prefix(_TENANT)}generated/",  # every piece at once
+        f"{tenant_prefix(_TENANT)}brand/",  # a root that is not purgeable
+        f"{tenant_prefix(_TENANT)}media/{uuid4()}/",  # publish media
+        f"{tenant_prefix(_TENANT)}generated/{uuid4()}",  # no trailing slash
+        f"{tenant_prefix(_TENANT)}generated//",  # empty segment
+        f"{tenant_prefix(_TENANT)}generated/../brand/",  # traversal
+        f"generated/{_TENANT}/{uuid4()}/",  # the legacy local store, not R2
+    ],
+)
+def test_delete_prefix_refuses_anything_but_one_piece_folder(prefix: str) -> None:
+    store = ListingStore()
+    store.objects[f"{tenant_prefix(_TENANT)}brand/logo.png"] = (b"1", "image/png")
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).delete_prefix(_TENANT, prefix, execute=True)
+    assert store.batches == []

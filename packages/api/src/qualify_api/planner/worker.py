@@ -23,6 +23,11 @@ Modes:
   least 30), measured start-to-start, until SIGINT/Ctrl+C. The wait happens HERE, between
   ticks — `run_once()` never sleeps.
 
+Piece retention (m-24828907): in loop mode the worker also runs the piece purge
+(`creative.retention_job`) at start and every 24 h, over the same scope — dry run unless
+`QUALIFY_PIECE_PURGE_EXECUTE=1`. `--purge-pieces [--execute]` runs it once and exits
+(`just piece-purge …`), without ticking.
+
 Errors and restarts: a failing tick is logged and the next one runs. A crash or restart
 loses nothing — all state is in Postgres (events, attempts), advisory locks die with the
 process's connections, and the next tick resumes whatever was in flight. Two workers (or
@@ -89,6 +94,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--once", action="store_true", help="Run one tick and exit.")
     parser.add_argument(
+        "--purge-pieces",
+        action="store_true",
+        help="m-24828907: run the piece purge once for the scope and exit (no tick). "
+        "Dry run unless --execute.",
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="With --purge-pieces: really delete the files of expired pieces from R2.",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=DEFAULT_INTERVAL_SECONDS,
@@ -127,15 +143,29 @@ async def run_worker(
     max_ticks: int | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     on_tick: Callable[[TickReport | None], None] | None = None,
+    chore: Callable[[], object] | None = None,
+    chore_every: float = 24 * 60 * 60,
 ) -> int:
     """Tick, then wait until `interval` seconds after that tick STARTED, then tick again.
     The runner is built once, after `.env` is loaded. `max_ticks` exists for tests;
     `should_stop` lets an embedding host (`planner.embedded`) end the loop between ticks;
-    `on_tick` gets each tick's report (None when the tick raised) — the heartbeat."""
+    `on_tick` gets each tick's report (None when the tick raised) — the heartbeat.
+
+    `chore` (m-24828907: the piece purge) runs before the first tick of the loop and then
+    every `chore_every` seconds, in a thread so the event loop is not blocked, and a
+    failing chore is logged and never stops the ticks. Never in `--once` mode: a cron
+    calling `--once` every minute must not purge every minute."""
     runner = make_runner()
     ticks = 0
+    next_chore = clock()
     while not should_stop():
         started = clock()
+        if chore is not None and not once and started >= next_chore:
+            try:
+                await asyncio.to_thread(chore)
+            except Exception:
+                logger.exception("calendar.worker.chore_failed")
+            next_chore = started + chore_every
         report: TickReport | None = None
         try:
             report = await runner.run_once()
@@ -159,12 +189,35 @@ def main(
     scoped: Callable[[Iterable[UUID]], _Runner] | None = None,
     production: Callable[[], _Runner] | None = None,
     heartbeat: HeartbeatStore | None = None,
+    purge: Callable[[list[UUID] | None, bool], object] | None = None,
+    chore: Callable[[], object] | None = None,
 ) -> int:
+    """`purge(tenant_ids | None, execute)` and `chore` exist for tests; by default they are
+    `retention_job.run_piece_purge` and `retention_job.daily_chore`."""
     args = build_parser().parse_args(argv)
     if args.interval < MIN_INTERVAL_SECONDS:
         build_parser().error(f"--interval must be at least {MIN_INTERVAL_SECONDS} seconds")
+    if args.execute and not args.purge_pieces:
+        build_parser().error("--execute only applies to --purge-pieces")
     _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    scope_ids: list[UUID] | None = None if args.all_tenants else list(dict.fromkeys(args.tenants))
+    if args.purge_pieces:
+        if purge is None:
+            from qualify_api.creative.retention_job import run_piece_purge  # noqa: PLC0415
+
+            purge = lambda ids, execute: run_piece_purge(ids, execute=execute)  # noqa: E731
+        try:
+            purge(scope_ids, args.execute)
+        except Exception:
+            logger.exception("calendar.worker.purge_failed")
+            return 1
+        return 0
+    if chore is None and not args.once:
+        from qualify_api.creative.retention_job import daily_chore  # noqa: PLC0415
+
+        chore = daily_chore(scope_ids)
     if scoped is None or production is None:
         from qualify_api.planner.composition import (  # noqa: PLC0415 — after .env
             production_tick_runner,
@@ -202,7 +255,13 @@ def main(
 
     try:
         return asyncio.run(
-            run_worker(make_runner, once=args.once, interval=args.interval, on_tick=beat)
+            run_worker(
+                make_runner,
+                once=args.once,
+                interval=args.interval,
+                on_tick=beat,
+                chore=chore,
+            )
         )
     except KeyboardInterrupt:
         logger.info("calendar.worker.stopped")

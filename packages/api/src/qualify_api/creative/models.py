@@ -22,6 +22,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -425,10 +426,42 @@ class ContentDraft(Base):
     # `ON DELETE SET NULL (campaign_id)`, which SQLAlchemy cannot spell: it lives in the
     # migration only. Setting it is not a content edit (`creative/campaigns.py`).
     campaign_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    # When the piece's R2 files were deleted by the retention rule (0076, m-24828907).
+    # NULL = the files are there; set = «Contenido eliminado» (`creative/retention.py`).
+    media_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class ContentDraftPurge(Base):
+    """One retention run that acted on a piece (0076, m-24828907): what prefix, how many
+    objects and bytes, real or dry run. Append-only — the app role has no UPDATE/DELETE."""
+
+    __tablename__ = "content_draft_purges"
+    __table_args__ = (
+        Index("ix_draft_purges_tenant", "tenant_id"),
+        Index("ix_draft_purges_draft", "draft_id", "purged_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="CASCADE"), nullable=False
+    )
+    prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    object_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    expired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    purged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 

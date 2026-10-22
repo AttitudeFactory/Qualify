@@ -919,6 +919,54 @@ class DraftVM:
     #: name — "" while there is nothing to download (a draft still generating).
     download_path: str = ""
     download_name: str = ""
+    #: m-24828907: «Descarga esta pieza: se elimina el …» (tone `warn`) while the piece is
+    #: within 15 days of its deletion; "" otherwise.
+    retention_notice: str = ""
+    #: The piece's files were deleted after 3 months: the screen says «Contenido
+    #: eliminado» instead of the media, and offers no download.
+    media_purged: bool = False
+    purged_label: str = ""
+
+
+# -- piece retention (m-24828907) ----------------------------------------------------------
+
+#: `creative.retention.RetentionState` values the screens react to (kept as strings so
+#: the view-model never imports the backend).
+RETENTION_WARNING = "warning"
+RETENTION_PURGED = "purged"
+
+PURGED_TITLE = "Contenido eliminado"
+PURGED_TEXT = (
+    "Los archivos de esta pieza se eliminaron a los 3 meses para ahorrar espacio. "
+    "El texto y su historial se conservan."
+)
+
+
+def short_date(iso: str | None) -> str:
+    """`2027-01-10T12:00:00+00:00` → `10/01/2027`; "" when absent or unreadable."""
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", iso or "")
+    return f"{match.group(3)}/{match.group(2)}/{match.group(1)}" if match else ""
+
+
+def retention_notice(state: str, deadline_iso: str | None, days_left: int | None) -> str:
+    """The warning the ticket asks for, with its countdown — only in the warning window."""
+    if state != RETENTION_WARNING:
+        return ""
+    when = short_date(deadline_iso)
+    if days_left is None or not when:
+        return ""
+    if days_left <= 0:
+        countdown = "hoy"
+    elif days_left == 1:
+        countdown = "mañana"
+    else:
+        countdown = f"en {days_left} días"
+    return f"Descarga esta pieza: se elimina el {when} ({countdown})."
+
+
+def purged_label(purged_iso: str | None) -> str:
+    when = short_date(purged_iso)
+    return f"{PURGED_TITLE} el {when}" if when else PURGED_TITLE
 
 
 def draft_kind_label(kind: str, *, has_video: bool) -> str:

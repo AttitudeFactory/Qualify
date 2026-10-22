@@ -9,9 +9,12 @@ rather than hidden behind a convenience alias.
 from qualify_shared.objects.config import R2ConfigurationError, R2Settings
 from qualify_shared.objects.gate import (
     MAX_MEDIA_BYTES,
+    PURGEABLE_ROOTS,
     ObjectGate,
     ObjectSizeExceeded,
     ObjectStore,
+    PrefixDeletion,
+    StoredObject,
     UnsizedStream,
 )
 from qualify_shared.objects.keys import (
@@ -23,11 +26,14 @@ from qualify_shared.objects.keys import (
 
 __all__ = [
     "MAX_MEDIA_BYTES",
+    "PURGEABLE_ROOTS",
     "ObjectGate",
     "ObjectSizeExceeded",
     "ObjectStore",
+    "PrefixDeletion",
     "R2ConfigurationError",
     "R2Settings",
+    "StoredObject",
     "TenantPrefixViolation",
     "UnsizedStream",
     "media_key",

@@ -740,6 +740,23 @@ class PostOptionVM:
     campaign_color: str = ""
     campaign_id: str = ""
     event_count: int = 0
+    # m-24828907: the card's retention badge — «Se elimina en N días» (warn) inside the
+    # 15-day window, «Contenido eliminado» (neutral) once the files are gone; "" otherwise.
+    retention_label: str = ""
+    retention_tone: str = "neutral"
+
+
+def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
+    """(label, tone) of a gallery card's retention badge (m-24828907)."""
+    if state == "purged":
+        return "Contenido eliminado", "neutral"
+    if state != "warning" or days_left is None:
+        return "", "neutral"
+    if days_left <= 0:
+        return "Se elimina hoy", "warn"
+    if days_left == 1:
+        return "Se elimina mañana", "warn"
+    return f"Se elimina en {days_left} días", "warn"
 
 
 @dataclass(frozen=True)
@@ -995,8 +1012,11 @@ def build_post_option(
     campaign_color: str = "",
     campaign_id: str = "",
     event_count: int = 0,
+    retention_state: str = "",
+    purge_days_left: int | None = None,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
+    r_label, r_tone = retention_badge(retention_state, purge_days_left)
     chips = list(outputs)
     g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
     kind, aspect = frame_shape(category or "", "")
@@ -1036,6 +1056,8 @@ def build_post_option(
         campaign_color=campaign_color,
         campaign_id=campaign_id,
         event_count=event_count,
+        retention_label=r_label,
+        retention_tone=r_tone,
     )
 
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -45,6 +45,7 @@ from qualify_api.creative.piece_export import (
     slug,
 )
 from qualify_api.creative.readiness import readiness
+from qualify_api.creative.retention import Retention, retention_of
 from qualify_api.creative.service import DraftDetail
 from qualify_api.creative.voice_service import VoiceProfileService
 from qualify_api.stock.keys import is_stock_key
@@ -91,6 +92,8 @@ from .creative_vm import (
     build_voice_proposal_vm,
     draft_kind_label,
     failure_label,
+    purged_label,
+    retention_notice,
 )
 from .piece_download import issue_download_path
 from .r2_media import is_r2_key, issue_view_path
@@ -738,21 +741,28 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         for v in detail.variants
     ]
     total, model_ids = _draft_costs(tenant_id, detail.id)
-    media = _with_r2_urls(
-        tenant_id,
-        build_media_vms(
-            [
-                # R2-only media has no provider URL: its object key is what the screen
-                # resolves (`_with_r2_urls` mints the backend URL for it).
-                (
-                    item.media_url or item.object_key or "",
-                    item.media_type,
-                    item.position,
-                    item.params,
-                )
-                for item in detail.media
-            ]
-        ),
+    retention = _retention(tenant_id, detail.id)
+    purged = retention is not None and retention.is_purged
+    # m-24828907: a purged piece's keys point at nothing in R2 — no view tokens for them.
+    media = (
+        ()
+        if purged
+        else _with_r2_urls(
+            tenant_id,
+            build_media_vms(
+                [
+                    # R2-only media has no provider URL: its object key is what the screen
+                    # resolves (`_with_r2_urls` mints the backend URL for it).
+                    (
+                        item.media_url or item.object_key or "",
+                        item.media_type,
+                        item.position,
+                        item.params,
+                    )
+                    for item in detail.media
+                ]
+            ),
+        )
     )
     vm = build_draft_vm(
         draft_id=str(detail.id),
@@ -770,7 +780,31 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),
     )
+    if purged:
+        assert retention is not None
+        when = retention.purged_at.isoformat() if retention.purged_at else None
+        return dataclasses.replace(vm, media_purged=True, purged_label=purged_label(when))
+    if retention is not None:
+        vm = dataclasses.replace(
+            vm,
+            retention_notice=retention_notice(
+                retention.state.value,
+                retention.deadline.isoformat() if retention.deadline else None,
+                retention.days_left(datetime.now(UTC)),
+            ),
+        )
     return _with_download(tenant_id, detail, vm)
+
+
+def _retention(tenant_id: UUID, draft_id: UUID) -> Retention | None:
+    """The piece's retention verdict (m-24828907); None when it has no R2 files, or when
+    it cannot be read — a warning is not worth failing the page."""
+    try:
+        with tenant_session(tenant_id) as session:
+            return retention_of(session, tenant_id, [draft_id], datetime.now(UTC)).get(draft_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("piece retention unreadable: %s", type(exc).__name__)
+        return None
 
 
 def _with_download(tenant_id: UUID, detail: DraftDetail, vm: DraftVM) -> DraftVM:
@@ -805,6 +839,9 @@ def piece_archive(tenant_id: UUID, draft_id: UUID) -> tuple[str, bytes] | None:
     detail = production_content_service().get_draft(tenant_id=tenant_id, draft_id=draft_id)
     if detail is None:
         return None
+    retention = _retention(tenant_id, draft_id)
+    if retention is not None and retention.is_purged:
+        return None  # m-24828907: nothing left to download (a link minted before the purge)
     store = R2ReadingMediaStore(LocalMediaStore(media_root()))
     kind_label = draft_kind_label(
         detail.kind, has_video=any(item.media_type == "video" for item in detail.media)
