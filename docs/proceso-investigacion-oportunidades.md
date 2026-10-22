@@ -2,7 +2,7 @@
 
 **Propósito de este documento.** No es investigación de mercado — es el *proceso* que decide cuándo y cómo se dispara una. Se escribe después de la sesión de investigación del 2026-07-29/30 (real estate → pipeline de nichos → marca regulada → modelo de agencia), que sirvió como el primer recorrido completo del ciclo y dejó lecciones concretas, algunas costosas. Este documento las convierte en procedimiento para que la próxima sesión no las repita.
 
-**Dueño:** `qualify-lead` (sesiones `/team-research`; hasta 2026-10-22 lo era `research-lead`). Este documento se actualiza cada vez que una sesión de investigación descubre un fallo de proceso nuevo — igual que el ledger de SAGE, pero para el *método*, no para los resultados.
+**Dueño:** `qualify-lead` (skill de hilo principal; sesiones `/qualify-team-research`; hasta 2026-10-22 lo era el agente `research-lead`). Este documento se actualiza cada vez que una sesión de investigación descubre un fallo de proceso nuevo — igual que el ledger de SAGE, pero para el *método*, no para los resultados.
 
 ---
 
@@ -70,6 +70,6 @@ Toda afirmación de "esto ya está construido" o "esto es fácil de construir" s
 
 ## 4. Qué hacer con el resultado
 
-- **Si el nicho sobrevive el embudo:** pasa a `docs/registro-validacion-features.md` como feature(s) validada(s), con nicho, evidencia y eje (inbound/outbound) asignados. Desde ahí lo toma `product-owner` (`/team-po`) para convertirlo en backlog.
+- **Si el nicho sobrevive el embudo:** pasa a `docs/registro-validacion-features.md` como feature(s) validada(s), con nicho, evidencia y eje (inbound/outbound) asignados. Desde ahí se convierte en backlog con la skill `qualify-backlog` (`/qualify-team-po`).
 - **Si el nicho NO sobrevive:** se documenta igual, como **decline**, con las condiciones de reapertura explícitas (qué tendría que cambiar para que valga la pena reabrirlo). Un decline bien documentado es tan valioso como una validación — evita que el mismo nicho se re-investigue desde cero en un año.
 - **Nunca se decide silenciosamente.** Toda decisión de seguir o no seguir con un nicho, o de qué construir primero, se presenta al fundador antes de tocar el backlog real.

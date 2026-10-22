@@ -1,8 +1,13 @@
-# Agent context — what Qualify is today, and the house rules
+---
+name: qualify-context
+description: What Qualify is today — the business (Attitude Factory, the multi-business operator model, the real clients and markets, Meta verification status), the application as built (each screen and its module, data, AI vendors, workers, what is still unbuilt), the signed decisions not to undo, and the house rules with pointers to the procedure skills. Load at the start of any work on Qualify and for any product, client, roadmap or status question.
+---
 
-**Every agent in `.claude/agents/` reads this file first.** It is the single place where the
-business and application reality is kept current, so the agent files themselves only describe
-roles. When the business changes, update this file — not fifteen agent files.
+# Qualify — what it is today, and the house rules
+
+The single place where the business and application reality is kept current. Every Qualify
+agent preloads this skill; the main thread loads it for any product, client or status question.
+When the business changes, update this file.
 
 **Snapshot: 2026-10-22** (`main` at `ebe14e6`, migration head `0076_piece_media_retention`).
 A snapshot decays. The standing rule still applies: **read the filesystem, not docs, for what
@@ -77,42 +82,20 @@ ADR log: `docs/arquitectura.md` §6, plus `docs/adr-NN-*.md` for the long ones (
 - **Tenant isolation:** RLS on every table; nothing persisted client-side without a `tenant_id`
   namespace; logout destroys the Reflex state.
 
-## 4. House rules
+## 4. House rules (details live in the named skills)
 
-**Delivery = a pull request.** Every agent delivery that changes files ends in a PR; the founder
-merges. In a squad, only the lead opens the PR (one per deliverable); teammates leave changes in
-the tree.
-1. A Meegle ticket first: find it or create it with the `meegle-ticket` skill
-   (`docs/formato-tickets-meegle.md`). No ticket, no PR.
-2. Branch `<type>/m-<id>-<slug>` off an up-to-date `main` — the id must be right before the first
-   push. **Never commit or push to `main`.**
-3. Conventional Commits in English; PR title ends in `(m-<id>)`; description has
-   `Resolves m-<id>`.
-4. Run `just ci-lint` and `just ci-test` (plus `just test-db` if you touched SQL) before opening.
-5. **Never merge.** Merging is the founder's, through `just merge <pr>`, only with CI green.
-   Agents never call `gh pr merge` and never pass `--admin`.
-6. Move the Meegle ticket by hand (In Progress → review) — the completion rules do not fire yet.
-
-**Code:** `uv` only (never pip/conda); prefer `uv run --no-sync`; do not run `uv sync` while
-other agents work. If imports fail after a sync, check the macOS hidden flag first
-(`ls -lO .venv/lib/python3.12/site-packages/*.pth`). `ruff` clean, type hints on every
-signature, tests offline (`-m "not integration"`). Code, identifiers and `CLAUDE.md` in English;
-`docs/` and `README.md` in Spanish.
-
-**Customer-facing copy** (UI text, emails, messages): Spanish, plain and neighborly, **no English
-words and no slang** — «publicación», not «post»; no «Brand Kit» in new copy aimed at clients.
-
-**Model and vendor tests** are documented the same turn under `docs/modelos-generativos/` (one
-card per model). Before pushing a vendor key to production, check it works (`README.md`,
-«Cambiar un secreto»).
-
-**Things that act for real:** `just calendar-tick`, `whatsapp-tick`, `conversations-tick` publish
-or send. Locally always pass `--tenant <uuid>`, never `--all-tenants`. Nothing touches the
-production server outside `deploy.yml`, `just env-push` and the documented runbook.
-
-**Durability:** for anything longer than a few tool calls, follow the `durable-findings` skill —
-flush to disk as you go; a finding that changes another agent's assumptions is written by its
-discoverer.
-
-**Tools:** the tracker is **Meegle** (Linear is retired); team chat is **Lark**; browser tasks
-go through Claude in Chrome (the founder's logged-in sessions).
+- **Delivery = a pull request, never a merge** — `qualify-pr`.
+- **Environment, tests, workers that act for real** — `qualify-dev-env`. `uv` only; prefer
+  `uv run --no-sync`; never `--all-tenants` locally.
+- **Schema changes** — `qualify-migration` (RLS in the same revision, reversible, one owner).
+- **Text a client will read** — `qualify-copy-es` (Spanish, no anglicisms, no slang).
+- **Model/prompt changes and vendor tests** — `qualify-measure` (measure before shipping,
+  document the same turn in `docs/modelos-generativos/`).
+- **Anything touching production** — `qualify-prod-ops` (ask first; documented paths only).
+- **Long tasks** — `durable-findings`: flush to disk as you go.
+- **Why things are the way they are** (original vision, earned-media pipeline, phase map) —
+  `qualify-history`.
+- Code, identifiers and `CLAUDE.md` in English; `docs/` and `README.md` in Spanish. `ruff` clean,
+  type hints on every signature, tests offline.
+- Tools: the tracker is **Meegle** (Linear is retired); team chat is **Lark**; browser tasks go
+  through Claude in Chrome (the founder's logged-in sessions).

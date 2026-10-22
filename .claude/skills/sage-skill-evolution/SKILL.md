@@ -26,7 +26,7 @@ Check the ledger before assigning work. Act when a pattern crosses a threshold:
 
 | Pattern in ledger | Action |
 |---|---|
-| Same agent fails the same subtask type **≥2×** with its current skill set | **Rebalance first**: reassign the task type to a better-fit agent (update routing guidance in `qualify-lead.md` and/or the squad command). Rebalancing is cheaper and more reversible than rewriting. |
+| Same agent fails the same subtask type **≥2×** with its current skill set | **Rebalance first**: reassign the task type to a better-fit agent (update routing guidance in the `qualify-lead` skill and/or the squad skill). Rebalancing is cheaper and more reversible than rewriting. |
 | Task type fails **≥2× across different agents** using the same skill | The skill itself is the problem: **rewrite its SKILL.md** — sharpen trigger conditions, fix wrong steps, add the failure case explicitly, or add executable code where prose was ambiguous. Log a `skill-rewrite` entry citing the failures that motivated it. |
 | `improvised` appears **≥2×** for the same procedure | Escalate to COMPASS (`compass-skill-synthesis`): synthesize the missing skill. |
 | An assigned skill goes **unused** across ≥3 sessions of its owner working in-domain | The description's trigger conditions aren't firing — rewrite the frontmatter `description` (that's what agents match against), or unassign it and note why in `docs/equipo-agentes.md`. |
