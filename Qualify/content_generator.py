@@ -58,6 +58,8 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .variations_state import VariationsState
+from .variations_view import variations_view
 
 
 def _card(
@@ -238,6 +240,12 @@ _OPTION_TOOLTIPS = {
         "siente auténtico, no como un anuncio."
     ),
 }
+#: m-24803289 — what «Variaciones» is, in the panel's tooltip.
+_VARIATIONS_TOOLTIP = (
+    "Parte de un producto de tu catálogo y propone diez ángulos visuales distintos para "
+    "anunciarlo: otro escenario, otra composición y otro enfoque en cada uno. Tú eliges "
+    "cuáles se convierten en piezas."
+)
 
 
 def _create_options(creating: rx.Var[bool]) -> list[rx.Component]:
@@ -271,6 +279,16 @@ def _kind_picker() -> rx.Component:
             class_name="q-cr-options-list",
         ),
         rx.divider(class_name="q-cr-options-rule"),
+        # m-24803289: ten visual angles of one catalog product. Not a kind of piece —
+        # it MAKES pieces of a kind — so it sits below the rule, next to «Descubrir
+        # reels», and opens its own view with its own state.
+        _option(
+            "Variaciones",
+            "layers",
+            selected=CreativeState.gen_mode == "variations",
+            on_click=[CreativeState.open_variations, VariationsState.load],
+            tooltip=_VARIATIONS_TOOLTIP,
+        ),
         _option(
             "Descubrir reels",
             "compass",
@@ -322,6 +340,12 @@ _DISCOVER_HEADING = (
     "Descubrir reels",
     "Los reels con más vistas de tus referentes, solo de tu rubro, para inspirarte o replicarlos.",
     "compass",
+)
+_VARIATIONS_HEADING = (
+    "Variaciones",
+    "Diez ángulos visuales distintos de un producto de tu catálogo: otro escenario, otra "
+    "composición, otro enfoque en cada uno.",
+    "layers",
 )
 
 
@@ -375,6 +399,7 @@ def _kind_header() -> rx.Component:
     return rx.match(
         CreativeState.gen_mode,
         ("discover", _kind_header_row(*_DISCOVER_HEADING)),
+        ("variations", _kind_header_row(*_VARIATIONS_HEADING)),
         created,
     )
 
@@ -4615,6 +4640,7 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         rx.match(
             CreativeState.gen_mode,
             ("discover", _discover_view()),
+            ("variations", variations_view()),
             rx.cond(CreativeState.generator_view == "result", result, _create_view()),
         ),
         spacing="4",

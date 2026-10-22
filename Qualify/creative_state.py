@@ -2498,6 +2498,13 @@ class CreativeState(rx.State):
         """The panel's «Descubrir reels»."""
         self.gen_mode = "discover"
 
+    @rx.event
+    def open_variations(self) -> None:
+        """The panel's «Variaciones» (m-24803289): ten visual angles of one catalog
+        product. Its own state (`VariationsState`) owns the flow; this only puts the
+        centre in that mode."""
+        self.gen_mode = "variations"
+
     # -- a stock video as the product: where it fits (§ request 2026-10-16) -------------
 
     def _video_product_conflict(self, category: str) -> bool:
