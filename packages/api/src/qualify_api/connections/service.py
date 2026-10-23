@@ -49,6 +49,7 @@ from qualify_api.connections.events import (
 )
 from qualify_api.connections.fsm import ConnectionStatus, Trigger, apply_transition
 from qualify_api.connections.meta_oauth import LinkedPage, MetaOAuthClient
+from qualify_api.connections.page_subscription import PageSubscriptions
 from qualify_api.connections.repository import (
     ConnectionRepository,
     GrantInput,
@@ -149,6 +150,7 @@ class ConnectService:
         encryptor: Encryptor,
         verifier: ConnectionVerifier,
         publisher: EventPublisher,
+        page_subscriptions: PageSubscriptions | None = None,
     ) -> None:
         self._settings = settings
         self._oauth = oauth_client
@@ -157,6 +159,9 @@ class ConnectService:
         self._encryptor = encryptor
         self._verifier = verifier
         self._publisher = publisher
+        # m-24789549: `None` only in tests that do not exercise it; production always
+        # wires it (`composition.production_connect_service`).
+        self._page_subscriptions = page_subscriptions
 
     def start_connect(
         self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
@@ -270,6 +275,17 @@ class ConnectService:
             credential_version=record.credential_version,
             now=now,
         )
+        # m-24789549: install the app on the Page so Meta delivers the account's webhooks
+        # and opens the DM window. After the status is settled, and never able to change
+        # it: a failure is recorded (`page_subscribe_failed`) and the account stays
+        # connected. Runs on every reconnect too — the POST is idempotent.
+        if self._page_subscriptions is not None:
+            await self._page_subscriptions.subscribe_after_connect(
+                tenant_id=record.tenant_id,
+                connection_id=record.connection_id,
+                page_id=page.page_id,
+                credential_version=record.credential_version,
+            )
         return ConnectResult(
             outcome=ConnectOutcome.ACTIVE
             if status == ConnectionStatus.ACTIVE

@@ -37,6 +37,11 @@ from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.events import EventPublisher, InMemoryEventPublisher
 from qualify_api.connections.meta_oauth import HttpMetaOAuthClient
+from qualify_api.connections.page_subscription import (
+    GraphPageSubscriptionClient,
+    PageSubscriptions,
+    PostgresPageSubscriptionRecorder,
+)
 from qualify_api.connections.repository import PostgresConnectionRepository
 from qualify_api.connections.revoke import (
     PostgresRevocationRepository,
@@ -57,6 +62,16 @@ def production_event_publisher() -> EventPublisher:
     subscriber could see one half of a connection's lifecycle and not the other.
     """
     return InMemoryEventPublisher()
+
+
+def production_page_subscriptions(
+    settings: MetaOAuthSettings, encryptor: DevEncryptor
+) -> PageSubscriptions:
+    """m-24789549: the Page ↔ app webhook subscription, shared by connect and revoke."""
+    return PageSubscriptions(
+        client=GraphPageSubscriptionClient(settings, encryptor),
+        recorder=PostgresPageSubscriptionRecorder(),
+    )
 
 
 @cache
@@ -82,15 +97,20 @@ def production_connect_service() -> ConnectService:
         encryptor=encryptor,
         verifier=ResolverConnectionVerifier(settings, encryptor),
         publisher=production_event_publisher(),
+        page_subscriptions=production_page_subscriptions(settings, encryptor),
     )
 
 
 @cache
 def production_revoke_service() -> RevokeService:
-    """No Redis, no platform client — revocation is a local state transition."""
+    """No Redis. Revocation is a local state transition; the only platform call is the
+    best-effort Page unsubscription (m-24789549), made after the transition is stored."""
     return RevokeService(
         repository=PostgresRevocationRepository(),
         publisher=production_event_publisher(),
+        page_subscriptions=production_page_subscriptions(
+            MetaOAuthSettings.from_env(), DevEncryptor()
+        ),
     )
 
 

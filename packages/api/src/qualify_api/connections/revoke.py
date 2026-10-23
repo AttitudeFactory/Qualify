@@ -37,6 +37,7 @@ from qualify_shared.db.session import tenant_session
 from qualify_api.connections.events import EventPublisher
 from qualify_api.connections.fsm import ConnectionStatus, Trigger, apply_transition
 from qualify_api.connections.models import ConnectionEvent, SocialConnection
+from qualify_api.connections.page_subscription import PageSubscriptions
 
 # The `connection_events.event_type` vocabulary is the repository's short form
 # ('granted', 'reconnected', 'degraded', ...), NOT the dotted domain-event name. Audit rows
@@ -60,6 +61,8 @@ class RevocationTarget:
 
     status: str
     credential_version: int
+    # m-24789549: the Page to unsubscribe from the app's webhooks. None for WhatsApp.
+    linked_page_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ class PostgresRevocationRepository:
             return RevocationTarget(
                 status=connection.status,
                 credential_version=connection.current_credential_version,
+                linked_page_id=connection.linked_page_id,
             )
 
     def persist_revocation(
@@ -129,9 +133,16 @@ class PostgresRevocationRepository:
 
 
 class RevokeService:
-    def __init__(self, *, repository: RevocationRepository, publisher: EventPublisher) -> None:
+    def __init__(
+        self,
+        *,
+        repository: RevocationRepository,
+        publisher: EventPublisher,
+        page_subscriptions: PageSubscriptions | None = None,
+    ) -> None:
         self._repo = repository
         self._publisher = publisher
+        self._page_subscriptions = page_subscriptions
 
     def revoke(
         self,
@@ -179,4 +190,15 @@ class RevokeService:
             revoked_at=moment,
             actor=actor,
         )
+        # m-24789549: best-effort `DELETE /{page-id}/subscribed_apps`, AFTER the revocation
+        # is persisted so no Meta failure can undo it. Uses the app token: still no
+        # credential read on this path.
+        if self._page_subscriptions is not None:
+            self._page_subscriptions.unsubscribe_after_revoke(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                page_id=target.linked_page_id,
+                credential_version=target.credential_version,
+                actor=actor,
+            )
         return RevokeResult(connection_id=connection_id, status=status, changed=True)

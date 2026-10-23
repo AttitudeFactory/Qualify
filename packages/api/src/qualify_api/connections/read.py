@@ -19,12 +19,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
-from qualify_api.connections.models import SocialConnection
+from qualify_api.connections.models import ConnectionEvent, SocialConnection
+from qualify_api.connections.page_subscription import (
+    PAGE_SUBSCRIPTION_EVENT_TYPES,
+    subscription_state,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,36 @@ class ConnectionSummary:
     # would have populated them earlier.
     data_access_expires_at: datetime | None
     last_health_checked_at: datetime | None
+    # m-24789549: whether the Page is subscribed to the app's webhooks, from the latest
+    # `page_*` audit row: 'subscribed' | 'failed' | 'unsubscribed', or None when it was
+    # never attempted (WhatsApp, or a connection made before this existed — reconnect).
+    # `page_subscription_error` is Meta's error code for a 'failed', else None.
+    page_subscription: str | None = None
+    page_subscription_error: str | None = None
+
+
+def _latest_subscription_events(session: Any, tenant_id: UUID) -> dict[UUID, tuple[str, Any]]:
+    """Latest page-subscription audit row per connection, in one query.
+
+    Newest first, first row per connection wins in Python: a handful of rows per
+    connection (one per connect/revoke), so this is cheaper to read than a DISTINCT ON.
+    """
+    rows = session.execute(
+        select(
+            ConnectionEvent.connection_id,
+            ConnectionEvent.event_type,
+            ConnectionEvent.platform_error_code,
+        )
+        .where(
+            ConnectionEvent.tenant_id == tenant_id,
+            ConnectionEvent.event_type.in_(PAGE_SUBSCRIPTION_EVENT_TYPES),
+        )
+        .order_by(ConnectionEvent.occurred_at.desc(), ConnectionEvent.id.desc())
+    ).all()
+    latest: dict[UUID, tuple[str, Any]] = {}
+    for connection_id, event_type, error_code in rows:
+        latest.setdefault(connection_id, (event_type, error_code))
+    return latest
 
 
 def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
@@ -56,6 +91,7 @@ def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
             .where(SocialConnection.tenant_id == tenant_id)
             .order_by(SocialConnection.connected_at.desc())
         ).all()
+        subscriptions = _latest_subscription_events(session, tenant_id)
         return tuple(
             ConnectionSummary(
                 connection_id=row.id,
@@ -70,6 +106,8 @@ def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
                 connected_at=row.connected_at,
                 data_access_expires_at=row.data_access_expires_at,
                 last_health_checked_at=row.last_health_checked_at,
+                page_subscription=subscription_state(subscriptions.get(row.id, (None,))[0]),
+                page_subscription_error=subscriptions.get(row.id, (None, None))[1],
             )
             for row in rows
         )
