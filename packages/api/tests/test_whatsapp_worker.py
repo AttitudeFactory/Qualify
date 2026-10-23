@@ -251,8 +251,11 @@ def test_prod_compose_runs_the_whatsapp_worker_always_on_over_all_tenants() -> N
     assert service["depends_on"]["postgres"]["condition"] == "service_healthy"
 
 
-def test_claude_md_documents_both_recipes() -> None:
-    text = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+def test_the_dev_env_skill_documents_both_recipes() -> None:
+    # The recipe list moved out of CLAUDE.md into the `qualify-dev-env` skill (PR #214).
+    text = (REPO_ROOT / ".claude" / "skills" / "qualify-dev-env" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
     assert "just whatsapp-tick --tenant <uuid>" in text
     assert "just whatsapp-worker --tenant <uuid>" in text
 

@@ -72,7 +72,15 @@ def test_without_a_brand_style_the_slide_is_exactly_what_it_was() -> None:
     assert render_carousel_slide(**args) == render_carousel_slide(**args, style=unusable)
 
 
-def test_the_brand_font_and_outline_change_the_words_and_only_the_words() -> None:
+def test_the_brand_font_and_outline_change_the_words_and_only_the_words(monkeypatch) -> None:
+    # The default face must differ from the brand fixture (DejaVu Sans), or «font_only»
+    # renders exactly like «plain»: without a system bold face the default IS the vendored
+    # DejaVu Sans (m-24828920 follow-up). Pin it to PIL's own face, the same on any machine.
+    from qualify_creative import compose
+
+    monkeypatch.setattr(compose, "_BOLD_FONTS", ())
+    monkeypatch.setattr(compose, "_REGULAR_FONTS", ())
+    monkeypatch.setattr(compose, "_VENDORED_FONT", Path("/nonexistent/no-font.ttf"))
     args = {"scene": _scene(), "hook": "La smash doble", "cta": "Pide ya", "palette": ["#C4622D"]}
     plain = render_carousel_slide(**args)
     font_only = render_carousel_slide(**args, style=TextStyle(font=FONT))
