@@ -371,24 +371,27 @@ def test_long_texts_are_marked_for_ver_mas() -> None:
     assert _vm(_record(caption=None)).text_is_long is False
 
 
-def test_scope_total_now_counts_the_scope_without_a_snapshot(
+def test_list_total_now_counts_the_filtered_list_without_a_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict = {}
 
-    def fake_summarize(*, tenant_id: UUID, query: MentionQuery, as_of: datetime) -> MentionCounts:
-        seen.update(query=query, as_of=as_of)
-        return MentionCounts(total=7)
+    def fake_list(
+        *, tenant_id: UUID, query: MentionQuery, page: int, as_of: datetime | None = None
+    ) -> MentionPage:
+        seen.update(query=query, page=page, as_of=as_of)
+        return MentionPage(
+            rows=(), counts=MentionCounts(total=7), page=1, page_size=12, as_of=as_of
+        )
 
-    monkeypatch.setattr(mentions_provider, "summarize_mentions_for_tenant", fake_summarize)
+    monkeypatch.setattr(mentions_provider, "list_mentions_page_for_tenant", fake_list)
     since = datetime(2026, 10, 1, tzinfo=UTC)
+    query = MentionQuery(connection_id=CONNECTION, sentiment_state="NEG", since=since)
 
-    total = mentions_provider.scope_total_now(
-        TENANT, query=MentionQuery(connection_id=CONNECTION, sentiment_state="NEG", since=since)
-    )
+    total = mentions_provider.list_total_now(TENANT, query=query)
 
     assert total == 7
-    # The scope only (account + period): a sentiment filter never narrows the count.
-    assert (seen["query"].connection_id, seen["query"].since) == (CONNECTION, since)
-    assert seen["query"].sentiment_state is None
+    # The list's own filters (UX review): a positive mention never announces itself on a
+    # list of negatives.
+    assert seen["query"] == query
     assert (datetime.now(UTC) - seen["as_of"]).total_seconds() < 5

@@ -251,11 +251,11 @@ def test_more_filters_counts_only_what_is_hidden_behind_it() -> None:
     assert more_filters_count(account="@a", origin="Comentario", sentiment="Negativa") == 3
 
 
-def test_new_mentions_arrived_only_when_the_scope_grew() -> None:
-    assert new_mentions_arrived(snapshot_scope_total=5, current_scope_total=6) is True
-    assert new_mentions_arrived(snapshot_scope_total=5, current_scope_total=5) is False
+def test_new_mentions_arrived_only_when_the_list_grew() -> None:
+    assert new_mentions_arrived(snapshot_total=5, current_total=6) is True
+    assert new_mentions_arrived(snapshot_total=5, current_total=5) is False
     # One deleted: not an arrival.
-    assert new_mentions_arrived(snapshot_scope_total=5, current_scope_total=4) is False
+    assert new_mentions_arrived(snapshot_total=5, current_total=4) is False
 
 
 def test_the_new_mentions_notice_is_the_founders_text() -> None:

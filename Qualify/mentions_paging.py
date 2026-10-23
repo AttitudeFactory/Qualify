@@ -277,7 +277,7 @@ NEW_MENTIONS_NOTICE: Final = "Llegaron menciones nuevas."
 NEW_MENTIONS_BUTTON: Final = "Verlas"
 
 
-def new_mentions_arrived(*, snapshot_scope_total: int, current_scope_total: int) -> bool:
-    """Whether the scope (account + period) holds more mentions now than under the
-    snapshot being paged — something arrived after that snapshot was taken."""
-    return current_scope_total > snapshot_scope_total
+def new_mentions_arrived(*, snapshot_total: int, current_total: int) -> bool:
+    """Whether the filtered list holds more mentions now than under the snapshot being
+    paged — something the owner would see arrived after that snapshot was taken."""
+    return current_total > snapshot_total

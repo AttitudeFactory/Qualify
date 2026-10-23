@@ -155,12 +155,9 @@ def _sentiment_card(
         surface,
         type="button",
         on_click=DashboardState.pick_sentiment(pick),
+        # No aria-label: the visible text («Negativas 2 Ver solo estas») names the button,
+        # figure included, and `aria-pressed` says which one is on (UX review).
         aria_pressed=active,
-        aria_label=(
-            f"{label}: ver solo estas menciones"
-            if pick != ALL_SENTIMENTS
-            else "Ver todas las menciones"
-        ),
         # Only the reset a native button needs; the look is the card's.
         background="transparent",
         border="none",
@@ -441,14 +438,11 @@ def _link_cell(mention: MentionRow) -> rx.Component:
     )
 
 
-def _reply_block(mention: MentionRow, *, with_button: bool = True) -> rx.Component:
-    """On a negative mention: what to do and the button to do it — the owner answers on the
-    network; Qualify never answers by itself (N13). No link: the advice stays, the reason
-    («Sin enlace») replaces the button. In the table the «Enlace» column already carries
-    «Ver y responder en …», so only the advice shows (`with_button=False`)."""
+def _reply_block(mention: MentionRow) -> rx.Component:
+    """On a negative mention: what to do and the button to do it, together — in the table
+    as on the card (UX review) — the owner answers on the network; Qualify never answers by
+    itself (N13). No link: the advice stays, the reason («Sin enlace») replaces the button."""
     hint = rx.text(mention.reply_hint, size="2", weight="medium", color=T.tone_color("error", 11))
-    if not with_button:
-        return rx.cond(mention.reply_hint != "", hint)
     return rx.cond(
         mention.reply_hint != "",
         rx.vstack(
@@ -511,8 +505,9 @@ def _more_toggle(mention: MentionRow) -> rx.Component:
 
 
 def _text_cell(mention: MentionRow) -> rx.Component:
-    """One line in the row; «Ver más» opens the whole mention in place. On a negative
-    mention, what to do and the button follow the text."""
+    """Three lines in the row, the same cut as the card, so `LONG_TEXT_CHARS` holds in both
+    views and «Ver más» shows whenever text is hidden (UX review); it opens the whole
+    mention in place. On a negative mention, what to do and the button follow the text."""
     expanded = DashboardState.expanded_ids.contains(mention.id)
     return rx.vstack(
         rx.text(
@@ -521,13 +516,12 @@ def _text_cell(mention: MentionRow) -> rx.Component:
             color=rx.cond(mention.text_unavailable, T.TEXT_MUTED, "inherit"),
             width=_MENTION_COL_WIDTH,
             max_width=_MENTION_COL_WIDTH,
-            overflow="hidden",
-            text_overflow=rx.cond(expanded, "clip", "ellipsis"),
-            white_space=rx.cond(expanded, "pre-wrap", "nowrap"),
+            white_space="pre-wrap",
+            class_name=rx.cond(expanded, "", "q-clamp-3"),
             line_height="1.55",
         ),
         _more_toggle(mention),
-        _reply_block(mention, with_button=False),
+        _reply_block(mention),
         spacing="1",
         align_items="start",
     )
@@ -547,7 +541,9 @@ def mention_row(mention: MentionRow) -> rx.Component:
         rx.table.cell(_date_cell(mention)),
         rx.table.cell(platform_badge(mention.platform)),
         rx.table.cell(tag(mention.kind_label)),
-        rx.table.cell(_link_cell(mention)),
+        # A negative mention carries «Ver y responder en …» next to its advice, in the
+        # «Mención» cell (UX review): the owner looks for the button by the text.
+        rx.table.cell(rx.cond(mention.reply_hint == "", _link_cell(mention))),
         rx.table.cell(_author_cell(mention)),
         rx.table.cell(_text_cell(mention), padding_right=_MENTION_GUTTER),
         rx.table.cell(mention_sentiment_badge(mention)),

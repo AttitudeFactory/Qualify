@@ -63,10 +63,10 @@ from .mentions_paging import (
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
     MentionPageVM,
+    list_total_now,
     load_page,
     refresh_content,
     refresh_scope,
-    scope_total_now,
 )
 from .mentions_provider import MentionVM as MentionRow
 from .mentions_provider import account_options as _account_options
@@ -232,15 +232,17 @@ class DashboardState(rx.State):
 
     @rx.var
     def states_hint(self) -> str:
-        """What is not (yet) a polarity, under the total — never folded into one. "Sin
-        análisis" groups the mentions with no text and the ones the model could not read:
-        neither is a sentiment (founder review 2026-10-13)."""
+        """What is not (yet) a polarity, under the total — never folded into one, and in
+        the same words as each row's reason (N1, UX review): «por revisar», «sin texto para
+        leer», «que no pudimos leer». Neither of the last two is a sentiment (founder review
+        2026-10-13)."""
         parts = []
         if self.pending_count:
-            parts.append(f"{self.pending_count} pendientes de análisis")
-        unanalyzed = self.no_text_count + self.error_count
-        if unanalyzed:
-            parts.append(f"{unanalyzed} sin análisis")
+            parts.append(f"{self.pending_count} por revisar")
+        if self.no_text_count:
+            parts.append(f"{self.no_text_count} sin texto para leer")
+        if self.error_count:
+            parts.append(f"{self.error_count} que no pudimos leer")
         return " · ".join(parts)
 
     # ---------------------------------------------------------------- helpers
@@ -580,15 +582,15 @@ class DashboardState(rx.State):
             self.last_updated = _utc_stamp()
             self.refresh_error = ""
         # A later page never shows what arrived after its snapshot; one count says whether
-        # anything did (QUA-152). Best effort: a failed count only skips the notice.
+        # anything did (QUA-152). The count uses the list's own filters and is compared with
+        # the list's own total, so «Verlas» always leads to something new (UX review). Best
+        # effort: a failed count only skips the notice.
         try:
             now_total = await asyncio.to_thread(
-                scope_total_now, tenant_id, query=self._query(since=since)
+                list_total_now, tenant_id, query=self._query(since=since)
             )
         except Exception as exc:  # noqa: BLE001 — the notice is optional
             logger.warning("mentions new-arrivals count failed: %s", type(exc).__name__)
             return
-        if new_mentions_arrived(
-            snapshot_scope_total=self.total_mentions, current_scope_total=now_total
-        ):
+        if new_mentions_arrived(snapshot_total=self.snapshot_total, current_total=now_total):
             self.new_mentions_waiting = True

@@ -293,16 +293,16 @@ def load_page(
     )
 
 
-def scope_total_now(tenant_id: UUID, *, query: MentionQuery) -> int:
-    """How many mentions the scope (account + period of `query`) holds right now — no
-    snapshot. Compared with the snapshot's total, it tells a later page that new mentions
-    arrived (RESULTADOS-1, QUA-152). One count; blocking DB call — run it off-thread."""
-    counts = summarize_mentions_for_tenant(
-        tenant_id=tenant_id,
-        query=MentionQuery(connection_id=query.connection_id, since=query.since),
-        as_of=datetime.now(UTC),
+def list_total_now(tenant_id: UUID, *, query: MentionQuery) -> int:
+    """How many mentions the list (the whole `query`: account, period, origin, sentiment,
+    search) holds right now — no snapshot. Compared with the snapshot's filtered total, it
+    tells a later page that mentions the owner would see arrived (RESULTADOS-1, QUA-152):
+    a positive one never announces itself on a list of negatives. One read; blocking DB
+    call — run it off-thread."""
+    result = list_mentions_page_for_tenant(
+        tenant_id=tenant_id, query=query, page=1, as_of=datetime.now(UTC)
     )
-    return counts.total
+    return result.counts.total
 
 
 async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
@@ -340,8 +340,8 @@ __all__ = [
     "account_options",
     "format_moment",
     "is_long_text",
+    "list_total_now",
     "load_page",
     "network_name",
-    "scope_total_now",
     "to_vm",
 ]

@@ -39,7 +39,11 @@ def test_states_hint_lists_the_non_polarity_states_separately() -> None:
     state = DashboardState()
     state.pending_count, state.no_text_count, state.error_count = 4, 1, 2
 
-    assert state.states_hint == "4 pendientes de análisis · 3 sin análisis"
+    # The same words as each row's reason (N1): never «análisis».
+    assert state.states_hint == "4 por revisar · 1 sin texto para leer · 2 que no pudimos leer"
+
+    state.pending_count, state.error_count = 0, 0
+    assert state.states_hint == "1 sin texto para leer"
 
     state.pending_count = state.no_text_count = state.error_count = 0
     assert state.states_hint == ""
@@ -605,16 +609,17 @@ def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, broken: bool = False) -> dict
             as_of=as_of or NEW_SNAPSHOT,
         )
 
-    def fake_scope_total_now(tenant_id: UUID, *, query: MentionQuery) -> int:
+    def fake_list_total_now(tenant_id: UUID, *, query: MentionQuery) -> int:
         seen["counts"].append(query.since)
+        seen["count_queries"].append(query)
         if seen.get("count_broken"):
             raise RuntimeError("db blip")
         return seen["now_total"]
 
-    seen.update(counts=[], now_total=2)
+    seen.update(counts=[], count_queries=[], now_total=2)
     monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
     monkeypatch.setattr(state_module, "load_page", fake_load_page)
-    monkeypatch.setattr(state_module, "scope_total_now", fake_scope_total_now)
+    monkeypatch.setattr(state_module, "list_total_now", fake_list_total_now)
     return seen
 
 
@@ -799,6 +804,23 @@ async def test_a_later_page_says_new_mentions_arrived(monkeypatch: pytest.Monkey
     assert state.new_mentions_notice == "Llegaron menciones nuevas."
     assert [row.id for row in state.mentions] == ["m1", "m2"]  # the page never shifts
     assert seen["counts"] == [datetime.fromisoformat(STALE_WINDOW)]  # same window
+
+
+async def test_the_arrivals_count_uses_the_lists_own_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UX review: on page 2 of «Negativas», a new positive mention must not announce
+    itself — the count is the list's (sentiment included) against the list's total."""
+    seen = _wire_tick(monkeypatch)
+    state = _listing_state(page=2)
+    state.sentiment_filter = "Negativa"
+    state.total_mentions = 40  # the scope holds far more than the filtered list
+    seen["now_total"] = 2  # nothing new among the negatives
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert seen["count_queries"][0].sentiment_state == "NEG"
+    assert state.new_mentions_notice == ""
 
 
 async def test_verlas_goes_to_page_one_and_clears_the_notice(
