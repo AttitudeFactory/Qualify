@@ -143,6 +143,10 @@ class RetryRefused(ValueError):
     already retried (a second tap) or replaced meanwhile. Nothing was written."""
 
 
+#: Stores one comment's analysis row: `(tenant_id, connection_id, message_id)`.
+CommentAnalyzer = Callable[[UUID, UUID, UUID], None]
+
+
 @dataclass(frozen=True)
 class GenerationSummary:
     candidates_seen: int
@@ -214,6 +218,7 @@ class ReplyService:
         any_comment_generator: DraftGenerator | None = None,
         triager_factory: Callable[[], CommentTriager] | None = None,
         any_comment_enabled: Callable[[UUID], bool] | None = None,
+        comment_analyzer: CommentAnalyzer | None = None,
     ) -> None:
         """`version` is the sentiment version (QUA-22's POS path, `provider`).
         `intent_version` turns on Fase B (m-24789645): commercial comments under it are
@@ -223,7 +228,10 @@ class ReplyService:
         ATENDER-4b: `any_comment_enabled(tenant_id)` is the per-tenant setting (None =
         OFF for everyone); `triager_factory` builds the triager on first use (it needs the
         API key, which a service that never triages must not demand) and
-        `any_comment_generator` writes the drafts of the `any_comment` route."""
+        `any_comment_generator` writes the drafts of the `any_comment` route.
+        `comment_analyzer(tenant_id, connection_id, message_id)` stores ONE comment's
+        analysis row when «Responder aquí» finds none (the intent pass of «Ordenar por
+        prioridad», limited to that comment); None = the owner must sort first."""
         self._repo = repository
         self._version = version
         self._generator_version = generator_version
@@ -239,6 +247,7 @@ class ReplyService:
         self._triager_factory = triager_factory
         self._triager: CommentTriager | None = None
         self._any_enabled = any_comment_enabled or (lambda _tenant_id: False)
+        self._analyze_comment = comment_analyzer
 
     # -- generation ---------------------------------------------------------------------
 
@@ -548,6 +557,9 @@ class ReplyService:
         )
         if candidate is None:
             raise RegenerationRefused("the comment is no longer available on Instagram")
+        candidate = self._ensure_analysis_row(
+            tenant_id=tenant_id, connection_id=connection_id, candidate=candidate
+        )
         any_comment = self._any_enabled(tenant_id)
         triage = self._triage([candidate]).get(candidate.message_id) if any_comment else None
         verdict = evaluate_gate(
@@ -585,6 +597,29 @@ class ReplyService:
         if live is None:
             raise RegenerationRefused(f"comment {message_id} was answered meanwhile")
         return live
+
+    def _ensure_analysis_row(
+        self, *, tenant_id: UUID, connection_id: UUID, candidate: CandidateComment
+    ) -> CandidateComment:
+        """«Responder aquí» on a comment not yet sorted: analyze THAT comment first, so
+        the owner taps once (UX review, m-24848533). A failure is logged and the gate
+        then refuses as before (`ck_reply_draft_has_signal` needs the row)."""
+        if self._analyze_comment is None or (
+            candidate.sentiment_result_id is not None or candidate.intent_result_id is not None
+        ):
+            return candidate
+        try:
+            self._analyze_comment(tenant_id, connection_id, candidate.message_id)
+        except Exception as exc:  # the gate's refusal below is the answer
+            logger.warning("replies.reply_here analysis failed: %s", type(exc).__name__)
+            return candidate
+        refreshed = self._repo.get_reply_candidate(
+            tenant_id=tenant_id,
+            message_id=candidate.message_id,
+            sentiment_version=self._version,
+            intent_version=self._intent_version,
+        )
+        return refreshed if refreshed is not None else candidate
 
     def regenerate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
         """«Regenerar» (m-24789645): discard the comment's `'proposed'` draft as `user_id`

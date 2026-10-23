@@ -239,6 +239,7 @@ def _service(
     generator: FakeAnyGenerator,
     *,
     enabled: bool = True,
+    analyzer: Any = None,
 ) -> ReplyService:
     return ReplyService(
         repository=repo,
@@ -252,6 +253,7 @@ def _service(
         any_comment_generator=generator,  # type: ignore[arg-type]
         triager_factory=lambda: triager,
         any_comment_enabled=lambda tenant_id: enabled and tenant_id == TENANT,
+        comment_analyzer=analyzer,
     )
 
 
@@ -427,3 +429,74 @@ def test_generation_never_posts_a_reply() -> None:
     service.generate_drafts(tenant_id=TENANT, connection_id=CONNECTION)
     (draft,) = repo.list_pending_drafts(tenant_id=TENANT, connection_id=CONNECTION)
     assert draft.status == "proposed" and draft.sent_at is None
+
+
+def test_reply_here_analyzes_an_unsorted_comment_first() -> None:
+    """UX review (m-24848533): one tap, one reply — no «Ordenar por prioridad» first."""
+    repo = MemoryReplyRepository()
+    unsorted = replace(
+        _candidate(QUESTION, sentiment="NEU"),
+        sentiment_result_id=None,
+        sentiment_label="",
+        intent_result_id=None,
+        intent_classes=(),
+        intent_version=None,
+    )
+    repo.seed_candidates(connection_id=CONNECTION, candidates=(unsorted,))
+    analyzed: list[tuple[UUID, UUID, UUID]] = []
+
+    def analyzer(tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
+        analyzed.append((tenant_id, connection_id, message_id))
+        repo.seed_candidates(
+            connection_id=CONNECTION,
+            candidates=(replace(unsorted, intent_result_id=uuid4(), intent_version=INTENT),),
+        )
+
+    service = _service(
+        repo, FakeTriager({QUESTION: CommentKind.QUESTION}), FakeAnyGenerator(), analyzer=analyzer
+    )
+
+    draft = service.prepare_for_comment(
+        tenant_id=TENANT, connection_id=CONNECTION, message_id=unsorted.message_id
+    )
+
+    assert analyzed == [(TENANT, CONNECTION, unsorted.message_id)]
+    assert draft.status == "proposed"
+
+
+def test_reply_here_does_not_reanalyze_a_sorted_comment() -> None:
+    repo = MemoryReplyRepository()
+    candidate = _candidate(QUESTION, sentiment="NEU")
+    repo.seed_candidates(connection_id=CONNECTION, candidates=(candidate,))
+
+    def analyzer(tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
+        raise AssertionError("a sorted comment is not analyzed again")
+
+    service = _service(
+        repo, FakeTriager({QUESTION: CommentKind.QUESTION}), FakeAnyGenerator(), analyzer=analyzer
+    )
+    service.prepare_for_comment(
+        tenant_id=TENANT, connection_id=CONNECTION, message_id=candidate.message_id
+    )
+
+
+def test_reply_here_falls_back_to_the_refusal_when_the_analysis_fails() -> None:
+    repo = MemoryReplyRepository()
+    unsorted = replace(
+        _candidate(QUESTION, sentiment="NEU"),
+        sentiment_result_id=None,
+        intent_result_id=None,
+        intent_version=None,
+    )
+    repo.seed_candidates(connection_id=CONNECTION, candidates=(unsorted,))
+
+    def analyzer(tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
+        raise RuntimeError("model down")
+
+    service = _service(
+        repo, FakeTriager({QUESTION: CommentKind.QUESTION}), FakeAnyGenerator(), analyzer=analyzer
+    )
+    with pytest.raises(RegenerationRefused, match="Ordenar por prioridad"):
+        service.prepare_for_comment(
+            tenant_id=TENANT, connection_id=CONNECTION, message_id=unsorted.message_id
+        )

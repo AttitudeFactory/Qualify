@@ -82,6 +82,12 @@ def comment_triager() -> CommentTriager:
     return ClaudeCommentTriager(api_key=api_key_from_env())
 
 
+def _analyze_one_comment(tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
+    from qualify_api.intent.composition import analyze_comment_intent  # noqa: PLC0415
+
+    analyze_comment_intent(tenant_id=tenant_id, connection_id=connection_id, message_id=message_id)
+
+
 @cache
 def production_reply_service() -> ReplyService:
     from qualify_api.intent.composition import CURRENT_INTENT_VERSION  # noqa: PLC0415
@@ -105,6 +111,8 @@ def production_reply_service() -> ReplyService:
         any_comment_generator=any_comment_reply_generator(),
         triager_factory=comment_triager,
         any_comment_enabled=any_comment_enabled,
+        # «Responder aquí» on an unsorted comment analyzes that one comment first.
+        comment_analyzer=_analyze_one_comment,
     )
 
 

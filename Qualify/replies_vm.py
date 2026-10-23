@@ -83,21 +83,25 @@ COMMENT_KIND_LABELS: Final[Mapping[str, str]] = {
     "complaint": "Queja",
     "question": "Pregunta",
     "praise": "Te felicita",
-    "other": "Comentario",
+    # "other" has no label on purpose: «Comentario» says nothing on a screen of comments,
+    # so the card falls back to the tone badge (UX review, m-24848533).
 }
 COMPLAINT_REVIEW_LABEL: Final = (
-    "Es una queja: revísala antes de aprobar. La respuesta pide disculpas e invita a "
-    "escribirte por mensaje privado; no promete nada. Cámbiala si quieres decirlo a tu manera."
+    "Es una queja: revísala antes de aprobar. Te propusimos pedir disculpas e invitarle a "
+    "escribirte por mensaje privado. Fíjate que no prometa nada que no puedas cumplir y "
+    "cámbiala si quieres decirlo a tu manera."
 )
 REPLY_HERE_LABEL: Final = "Responder aquí"
 REPLY_HERE_BUSY_LABEL: Final = "Preparando…"
 REPLY_HERE_READY: Final = "Listo: tu respuesta está lista para revisar en este comentario."
 _REPLY_HERE_NOT_YET: Final = (
-    "Por ahora preparamos respuestas para los comentarios que te felicitan o preguntan por "
-    "tus productos. A esta persona puedes escribirle en privado."
+    "Todavía no preparamos respuestas para este tipo de comentario. Escríbele en privado "
+    "con el botón de al lado."
 )
+# Only when «Responder aquí»'s own analysis of the comment failed (UX review, m-24848533):
+# the owner is never sent to «Ordenar por prioridad» first.
 _REPLY_HERE_NOT_SORTED: Final = (
-    "Primero toca «Ordenar por prioridad» en esta pantalla y vuelve a tocar «Responder aquí»."
+    "No pudimos preparar la respuesta todavía. Intenta de nuevo en unos minutos."
 )
 _REPLY_HERE_FAILED: Final = "No pudimos preparar la respuesta. Intenta de nuevo en unos minutos."
 

@@ -120,8 +120,8 @@ def test_an_edit_does_not_clear_other_blocking_reasons() -> None:
     [
         ("the comment is no longer available on Instagram", "ya no está en Instagram"),
         ("a person already approved a private message (Fase C followup)", "mensaje privado"),
-        ("triage says 'complaint' but ... run «Ordenar por prioridad» first", "Ordenar por"),
-        ("sentiment 'NEG' is not 'POS' and no current commercial intent", "escribirle en privado"),
+        ("triage says 'complaint' but ... run «Ordenar por prioridad» first", "Intenta de nuevo"),
+        ("sentiment 'NEG' is not 'POS' and no current commercial intent", "Escríbele en privado"),
     ],
 )
 def test_reply_here_refusals_are_in_the_owners_words(reason: str, expected: str) -> None:
@@ -151,3 +151,46 @@ def test_the_state_lists_the_comments_with_a_waiting_draft() -> None:
     computed = state_cls.computed_vars["draft_message_ids"]
     fake = type("S", (), {"drafts": drafts})()
     assert computed.fget(fake) == [d.message_id for d in drafts]
+
+
+def test_reply_here_never_sends_the_owner_to_sort_first() -> None:
+    message = vm.reply_here_error_message(
+        RegenerationRefused("triage says 'question' but ... run «Ordenar por prioridad» first")
+    )
+    assert "Ordenar" not in message
+
+
+def test_an_other_comment_gets_no_kind_label_so_the_tone_shows() -> None:
+    assert "other" not in vm.COMMENT_KIND_LABELS
+    assert vm.build_draft_vm(_record(kind="other", reasons=[]), zone=_ZONE).comment_kind_label == ""
+
+
+def test_the_complaint_note_does_not_promise_what_the_draft_says() -> None:
+    assert "no promete nada" not in vm.COMPLAINT_REVIEW_LABEL
+    assert "Fíjate que no prometa nada" in vm.COMPLAINT_REVIEW_LABEL
+
+
+def _analyzed(label: str | None) -> Any:
+    from qualify_api.sentiment.repository import AnalyzedComment
+
+    return AnalyzedComment(
+        message_id=uuid4(),
+        source_id="1789",
+        text="¿abren el domingo?",
+        author_username="ana",
+        posted_at=_CREATED,
+        external_thread_id="t",
+        label=label,
+        score=0.9 if label else None,
+    )
+
+
+def test_reply_here_shows_only_where_it_can_deliver() -> None:
+    from . import inbox_provider
+
+    # Setting off: only a positive (or commercial) comment offers «Responder aquí» (N3).
+    assert inbox_provider._to_comment_vm(_analyzed("POS")).can_reply_here is True
+    assert inbox_provider._to_comment_vm(_analyzed("NEG")).can_reply_here is False
+    assert inbox_provider._to_comment_vm(_analyzed(None)).can_reply_here is False
+    # Setting on for this business: every comment does.
+    assert inbox_provider._to_comment_vm(_analyzed("NEG"), any_comment=True).can_reply_here

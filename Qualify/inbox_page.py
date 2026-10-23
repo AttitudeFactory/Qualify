@@ -443,10 +443,11 @@ def _comment_intent(comment: CommentVM) -> rx.Component:
     )
 
 
-def _reply_by_dm_button(message_id: rx.Var) -> rx.Component:
+def _reply_by_dm_button(message_id: rx.Var, *, full_width: bool = False) -> rx.Component:
     """m-24789646: continue this comment in private — opens its query in Conversaciones
     with a draft; nothing is sent from here. `size="3"` with «Responder aquí» beside it,
-    the same weight (ATENDER-4b), each a ≥ 44 px target at 360 px (N12)."""
+    the same weight (ATENDER-4b), each a ≥ 44 px target at 360 px (N12). `full_width`:
+    under a complaint's «Aprobar y responder», as wide as it."""
     return rx.button(
         rx.icon("send", size=T.ICON_SM),
         "Escribirle en privado",
@@ -455,6 +456,7 @@ def _reply_by_dm_button(message_id: rx.Var) -> rx.Component:
         loading=InboxState.replying_dm_id == message_id,
         disabled=InboxState.replying_dm_id != "",
         on_click=InboxState.reply_by_dm(message_id),
+        **({"width": "100%"} if full_width else {}),
     )
 
 
@@ -530,13 +532,25 @@ def _comment_card(comment: CommentVM) -> rx.Component:
             _comment_inline_draft(comment),
             # ATENDER-4b: the two ways to answer, side by side and with the same weight;
             # the row wraps at 360 px so each stays a full target (N12).
+            # «Responder aquí» only where it can deliver (`can_reply_here`, N3): with
+            # the setting off, a question or complaint keeps «Escribirle en privado».
             rx.hstack(
-                rx.cond(_has_draft(comment), rx.fragment(), _reply_here_button(comment)),
+                rx.cond(
+                    _has_draft(comment) | ~comment.can_reply_here,
+                    rx.fragment(),
+                    _reply_here_button(comment),
+                ),
                 _reply_by_dm_button(comment.message_id),
                 spacing="2",
                 align="center",
                 width="100%",
                 wrap="wrap",
+            ),
+            # Why «Responder aquí» could not prepare it, in this card until the next tap.
+            rx.cond(
+                RepliesState.reply_here_errors.contains(comment.message_id),
+                callout(RepliesState.reply_here_errors[comment.message_id], "warn"),
+                rx.fragment(),
             ),
             spacing="2",
             align_items="start",
@@ -1356,7 +1370,7 @@ def _approve_label(draft: DraftVM) -> rx.Var:
     )
 
 
-def _draft_view_mode(draft: DraftVM) -> rx.Component:
+def _draft_view_mode(draft: DraftVM, *, private_button: bool = False) -> rx.Component:
     """Read-only: the prepared text plus the actions that decide it in one tap — see
     `replies_state.py`'s module docstring for why approve and send are folded together
     in this v1. N13: nothing is answered until the owner presses «Aprobar y responder».
@@ -1384,6 +1398,15 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
             width="100%",
             **T.tone_scheme("ok"),
         ),
+        # ATENDER-4b: on a complaint the recommended way on is private — right under
+        # the main action, before Editar / Regenerar / Descartar (UX review).
+        rx.cond(
+            draft.comment_kind == "complaint",
+            _reply_by_dm_button(draft.message_id, full_width=True),
+            rx.fragment(),
+        )
+        if private_button
+        else rx.fragment(),
         rx.hstack(
             rx.button(
                 rx.icon("pencil", size=16),
@@ -1573,12 +1596,16 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                 display="inline-block",
                 padding_left="0.25rem",
             ),
-            rx.cond(is_editing, _draft_edit_mode(draft), _draft_view_mode(draft)),
-            # ATENDER-4b: a complaint is better continued in private — the way to do it
-            # sits right next to the public answer.
+            # ATENDER-4b: a complaint is better continued in private — the view mode
+            # puts «Escribirle en privado» right under «Aprobar y responder».
             rx.cond(
-                draft.comment_kind == "complaint",
-                _reply_by_dm_button(draft.message_id),
+                is_editing,
+                _draft_edit_mode(draft),
+                _draft_view_mode(draft, private_button=True),
+            ),
+            rx.cond(
+                is_editing & (draft.comment_kind == "complaint"),
+                _reply_by_dm_button(draft.message_id, full_width=True),
                 rx.fragment(),
             ),
             rx.cond(draft.is_commercial, _draft_sources(draft), rx.fragment()),

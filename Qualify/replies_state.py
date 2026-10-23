@@ -190,6 +190,9 @@ class RepliesState(rx.State):
 
     # ATENDER-4b: the comment whose «Responder aquí» is preparing its reply ("" = none).
     preparing_here_id: str = ""
+    # Why «Responder aquí» could not prepare a comment's reply, by message_id, shown in
+    # that comment's card until the next tap or a reload (N3: never only a toast).
+    reply_here_errors: dict[str, str] = {}
 
     @rx.var
     def has_pending_drafts(self) -> bool:
@@ -640,6 +643,9 @@ class RepliesState(rx.State):
                 return
             self.preparing_here_id = message_id
             self.action_error = ""
+            self.reply_here_errors = {
+                k: v for k, v in self.reply_here_errors.items() if k != message_id
+            }
         resolved = _try_uuid(message_id)
         tenant_id, connection_id = await self._resolve_ids()
         if tenant_id is None or connection_id is None or resolved is None:
@@ -661,10 +667,12 @@ class RepliesState(rx.State):
         finally:
             async with self:
                 self.preparing_here_id = ""
+                if error:
+                    # In the comment's own card, where the owner is looking — it stays
+                    # until the next tap or a reload, unlike a toast (N3).
+                    self.reply_here_errors = {**self.reply_here_errors, message_id: error}
 
         yield RepliesState.load_pending_drafts
-        if error:
-            # A toast, not the section callout: the owner is looking at this comment.
-            yield rx.toast.error(error, duration=_RESULT_TOAST_DURATION_MS)
-        else:
+        if not error:
+            # Success needs no lasting note: the reply itself shows in the card.
             yield rx.toast.success(REPLY_HERE_READY, duration=_RESULT_TOAST_DURATION_MS)
