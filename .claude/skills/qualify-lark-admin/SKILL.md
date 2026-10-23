@@ -35,12 +35,21 @@ npm install -g @larksuite/cli
 npx skills add larksuite/cli -y -g
 lark-cli config init --new --brand lark   # default brand is feishu (China) — ours is Lark;
                                           # prints an open.larksuite.com URL the founder opens
-lark-cli auth login --recommend
+lark-cli auth login --recommend --scope "im:message.send_as_user" --no-wait --json
+lark-cli auth login --device-code <device_code>   # next turn, after the founder authorizes
 lark-cli auth status
 ```
 
 Logins print an authorization URL: hand it to the founder, never open it with someone else's
-session. Credentials stay in the CLIs' own stores or the macOS Keychain (the Lark MCP reads
+session. The device-code flow takes two turns: get the URL with `--no-wait --json`, end the
+turn, and run `--device-code` only after the founder says it is done (the URL expires in 10
+minutes; piping the blocking login into `head` kills it).
+
+**`--scope` alone replaces the session, it does not add to it:** `lark-cli auth login --scope X`
+leaves only X, and everything else then fails with `missing required scope(s)`. To add a
+permission, always repeat `--recommend` with it: `--recommend --scope "X"`.
+`im:message.send_as_user` (posting as the founder) is not in `--recommend`; `vc:meeting.realtime:read`
+is restricted by the tenant admin — do not retry it. Credentials stay in the CLIs' own stores or the macOS Keychain (the Lark MCP reads
 service `lark-mcp`); never in the repo, a chat or a ticket.
 
 ## 3. Chrome flows (Claude in Chrome — the founder's logged-in session)
