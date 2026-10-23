@@ -4470,14 +4470,14 @@ def _result_view() -> rx.Component:
                     # § request 2026-10-08: going to review starts the generator over, so
                     # «Crear pieza» opens on its first screen, not on this piece
                     rx.button(
-                        "Revisar y aprobar en Por aprobar",
+                        "Revisar y aprobar",
                         rx.icon("arrow-right", size=16),
                         size="2",
                         on_click=CreativeState.review_in_drafts,
                     ),
                     rx.tooltip(
                         rx.button(
-                            "Revisar y aprobar en Por aprobar",
+                            "Revisar y aprobar",
                             rx.icon("arrow-right", size=16),
                             size="2",
                             disabled=True,
@@ -4645,8 +4645,8 @@ def _workspace(readiness: rx.Var) -> rx.Component:
             rx.cond(
                 ~readiness.can_generate,
                 callout(
-                    "La marca aún no está lista para generar: completa el Brand "
-                    "Kit y la voz en Tu marca.",
+                    "Tu marca aún no está lista para crear publicaciones: completa tu "
+                    "logo, colores y forma de hablar en Tu marca.",
                     "warn",
                 ),
             ),
