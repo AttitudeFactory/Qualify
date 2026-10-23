@@ -15,7 +15,7 @@ Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 
 **Regla del fundador (2026-10-22): el código y las tareas con muchos logs SIEMPRE van a un subagente**, en Opus 5.5 para escribir código o en el modelo que mejor encaje para leer logs o buscar. El hilo principal coordina, decide y resume (`qualify-lead`).
 
-## Subagentes (7)
+## Subagentes (8)
 
 | Agente | Modelo | Dueño de (rutas) | Skills precargadas |
 |---|---|---|---|
@@ -26,8 +26,9 @@ Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 | `data-scientist-fde` | opus | `packages/models/`, `packages/api/evals/`, `docs/modelos-generativos/` | context, pr, dev-env, measure |
 | `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history |
 | `market-analyst` | sonnet | Oferta: `docs/*research*`, `*alternativas*`, `ingenieria-inversa-*`, `dolores-*`, `apis-*`, `costos-*`, `comparativa-*` · Vector: `docs/oportunidades-mercado-*.md` · Demanda: `docs/demanda-ventas-*.md` | context |
+| `product-owner` | opus | `docs/backlog-*.md`, `docs/epica-*.md`, tickets de Meegle (Features, Issues, Altas) | context, backlog, copy-es, meegle-ticket, meegle, meegle-altas, lark-admin |
 
-Todos precargan además `durable-findings`. El hilo principal es dueño de los tickets de Meegle y de `docs/backlog-*.md` / `docs/epica-*.md` (vía `qualify-backlog`).
+Todos precargan además `durable-findings`. `product-owner` es dueño de los tickets de Meegle y de `docs/backlog-*.md` / `docs/epica-*.md` (vía `qualify-backlog`); el hilo principal le delega y corre el desafío del arquitecto y datasci.
 
 ## Skills propias de Qualify
 
