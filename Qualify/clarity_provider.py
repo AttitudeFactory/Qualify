@@ -11,13 +11,22 @@ off the event loop.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from uuid import UUID
 
 from qualify_api.clarity import production_clarity_service
 from qualify_api.clarity.repository import SnapshotRow
 from qualify_api.support import SupportTicket, create_support_request
 
-from .clarity_vm import TEAM_REQUEST_MESSAGE, TEAM_REQUEST_SCREEN
+from .clarity_vm import (
+    HEADLINE_LABELS,
+    TEAM_ALERT_SCREEN,
+    TEAM_REQUEST_MESSAGE,
+    TEAM_REQUEST_SCREEN,
+    needs_daily_refresh,
+    team_alert_message,
+    window_label,
+)
 
 # Metrics whose information rows are single aggregate objects worth headline cards.
 _HEADLINE_METRIC = "Traffic"
@@ -156,12 +165,17 @@ class ActionItemVM:
 
 @dataclass(frozen=True)
 class SnapshotVM:
-    fetched_at: str  # "2026-08-15 14:03 UTC"; "" when no snapshot exists
-    window: str  # "últimas 72 h"
-    dimensions: str  # "Página · Dispositivo" or ""
+    fetched_at: str  # "15 de agosto"; "" when no snapshot exists
+    window: str  # "Últimos 3 días"
+    dimensions: str  # "Página · Dispositivo" or "" — kept for the raw tables only
     stats: list[list[str]] = field(default_factory=list)  # [label, value] pairs
     friction: list[FrictionCardVM] = field(default_factory=list)
     actions: list[ActionItemVM] = field(default_factory=list)
+    # RESULTADOS-3: what the owner reads first — visits and people, and only the
+    # urgent («alta») problems; `has_minor` says whether anything smaller exists.
+    headline: list[list[str]] = field(default_factory=list)
+    urgent: list[ActionItemVM] = field(default_factory=list)
+    has_minor: bool = False
     traffic_note: str = ""  # low-sample warning; "" when the sample is fine
     tables: list[MetricTableVM] = field(default_factory=list)
 
@@ -201,9 +215,35 @@ def request_website_connection(tenant_id: UUID, *, contact_email: str) -> Suppor
     )
 
 
+def alert_team(tenant_id: UUID, *, contact_email: str, title: str, detail: str) -> SupportTicket:
+    """RESULTADOS-3: «Avisar al equipo» on one urgent problem — a support ticket with the
+    problem in plain words, topic `other`, only the closed `screen` context key.
+
+    Raises `InvalidSupportRequest` on a bad email. Blocking (Postgres + one HTTP call).
+    """
+    return create_support_request(
+        tenant_id=tenant_id,
+        topic="other",
+        contact_email=contact_email,
+        contact_whatsapp="",
+        message=team_alert_message(title, detail),
+        context={"screen": TEAM_ALERT_SCREEN},
+    )
+
+
 def latest_snapshot_for(tenant_id: UUID) -> SnapshotVM | None:
     snapshot = production_clarity_service().latest(tenant_id=tenant_id)
     return _to_vm(snapshot) if snapshot else None
+
+
+def latest_snapshot_and_staleness(
+    tenant_id: UUID, *, now: datetime | None = None
+) -> tuple[SnapshotVM | None, bool]:
+    """The cached snapshot plus whether today's automatic read is still due
+    (RESULTADOS-3: the screen refreshes itself once a day). Costs no API request."""
+    snapshot = production_clarity_service().latest(tenant_id=tenant_id)
+    due = needs_daily_refresh(snapshot.fetched_at if snapshot else None, now or datetime.now(UTC))
+    return (_to_vm(snapshot) if snapshot else None), due
 
 
 def refresh_snapshot(tenant_id: UUID, *, num_of_days: int, dimension: str) -> SnapshotVM:
@@ -216,19 +256,44 @@ def refresh_snapshot(tenant_id: UUID, *, num_of_days: int, dimension: str) -> Sn
     return _to_vm(snapshot)
 
 
-_WINDOW_LABEL = {1: "últimas 24 h", 2: "últimas 48 h", 3: "últimas 72 h"}
+_MONTHS = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+
+def _day_label(moment: datetime) -> str:
+    """«15 de agosto» — no clock and no time zone code on the owner's screen."""
+    day = moment.astimezone(UTC)
+    return f"{day.day} de {_MONTHS[day.month - 1]}"
 
 
 def _to_vm(snapshot: SnapshotRow) -> SnapshotVM:
+    stats = _headline_stats(snapshot.payload)
+    actions = _action_items(snapshot.payload)
+    urgent = [item for item in actions if item.severity == "alta"]
     return SnapshotVM(
-        fetched_at=snapshot.fetched_at.strftime("%Y-%m-%d %H:%M UTC"),
-        window=_WINDOW_LABEL.get(snapshot.num_of_days, f"{snapshot.num_of_days} días"),
+        fetched_at=_day_label(snapshot.fetched_at),
+        window=window_label(snapshot.num_of_days),
         dimensions=" · ".join(DIMENSION_LABELS.get(d, d) for d in snapshot.dimensions),
-        stats=_headline_stats(snapshot.payload),
+        stats=stats,
         friction=_friction_cards(snapshot.payload),
-        actions=_action_items(snapshot.payload),
+        actions=actions,
         traffic_note=_traffic_note(snapshot.payload),
         tables=[table for table in map(_metric_table, snapshot.payload) if table.rows],
+        headline=[stat for stat in stats if stat[0] in HEADLINE_LABELS],
+        urgent=urgent,
+        has_minor=len(urgent) < len(actions),
     )
 
 

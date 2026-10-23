@@ -195,8 +195,8 @@ def test_snapshot_vm_drops_empty_metrics_and_labels_the_window() -> None:
         fetched_at=datetime(2026, 8, 15, 14, 3, tzinfo=UTC),
     )
     vm = _to_vm(snapshot)
-    assert vm.fetched_at == "2026-08-15 14:03 UTC"
-    assert vm.window == "últimas 72 h"
+    assert vm.fetched_at == "15 de agosto"
+    assert vm.window == "Últimos 3 días"
     assert vm.dimensions == "Sistema"
     # DeadClickCount had no rows — it must not render an empty card.
     assert [table.name for table in vm.tables] == ["Visitas", "Hasta dónde bajaron"]
@@ -218,7 +218,6 @@ def test_owner_copy_has_no_analytics_jargon() -> None:
     ]
     texts += list(clarity_provider._COLUMN_LABELS.values())
     texts += list(clarity_provider._METRIC_LABELS.values())
-    texts += clarity_state.DIMENSION_CHOICES
     messages = [
         value
         for name, value in vars(clarity_state).items()
@@ -229,4 +228,3 @@ def test_owner_copy_has_no_analytics_jargon() -> None:
         for word in forbidden:
             # Whole words only: «botón» is plain Spanish, «bot» is jargon.
             assert not re.search(rf"\b{word}\b", text.lower()), (word, text)
-    assert "OS" not in clarity_state.DIMENSION_CHOICES
