@@ -154,16 +154,16 @@ def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
 
 
 def test_window_pill_closed_is_neutral() -> None:
-    assert window_pill(False, None, NOW, ZONE) == ("Ya no puedes responderle", "neutral")
+    assert window_pill(False, None, NOW, ZONE) == ("Solo con mensaje aprobado", "neutral")
     # A stale "open" whose instant already passed reads closed, not negative minutes.
     assert window_pill(True, NOW - timedelta(minutes=1), NOW, ZONE)[1] == "neutral"
 
 
 def test_window_closed_notice_says_what_happened_and_what_comes_next() -> None:
-    """m-24842993: no link yet — writing first returns with m-24848535."""
+    """m-24842993 + m-24848535: what happened, and that an approved message still goes."""
     assert WINDOW_CLOSED_NOTICE == (
         "Pasaron más de 24 horas desde su último mensaje. "
-        "Cuando vuelva a escribirte, podrás responderle aquí."
+        "WhatsApp solo deja escribirle con un mensaje aprobado."
     )
 
 
@@ -658,3 +658,95 @@ def test_the_tab_wires_media_through_the_state() -> None:
     for handler in ("request_media", "open_lightbox", "set_lightbox_open", "lightbox_url"):
         assert handler in rendered, handler
     assert "<audio" in rendered or '"audio"' in rendered
+
+
+# --- m-24848535: approved message from an expired chat --------------------------------
+
+
+def test_approved_message_copy_is_exact() -> None:
+    from .whatsapp_chats_vm import ASK_CONSENT_LABEL, PROMOTIONS_NEED_CONSENT, SEND_APPROVED_LABEL
+
+    assert SEND_APPROVED_LABEL == "Enviar un mensaje aprobado"
+    assert PROMOTIONS_NEED_CONSENT == (
+        "Para enviarle promociones, esta persona tiene que aceptar recibirlas."
+    )
+    assert ASK_CONSENT_LABEL == "Pedirle que acepte"
+
+
+def test_approved_message_copy_speaks_the_owners_words() -> None:
+    from . import whatsapp_chats_vm as vm
+
+    texts = [
+        vm.SEND_APPROVED_LABEL,
+        vm.SEND_APPROVED_DESCRIPTION,
+        vm.PROMOTIONS_NEED_CONSENT,
+        vm.ASK_CONSENT_LABEL,
+        vm.NO_FOLLOWUPS,
+        vm.CREATE_APPROVED_LABEL,
+        vm.NO_PERMISSION_NOTICE,
+        vm.TEMPLATE_PICK_HINT,
+        vm.TEMPLATE_FILL_HINT,
+        vm.TEMPLATE_PREVIEW_LABEL,
+        vm.TEMPLATE_FIELDS_LABEL,
+        vm.WINDOW_CLOSED_PILL,
+        vm.failure_label("opted_out"),
+        *(label for label, _tone in vm._TEMPLATE_KIND.values()),
+    ]
+    banned = ("plantilla", "ventana", "opt-in", "template", "marketing", " post", "lead")
+    for text in texts:
+        assert not any(word in text.lower() for word in banned), text
+    # Assisted, never autonomous: the description says it leaves on the owner's tap.
+    assert "«Enviar»" in vm.SEND_APPROVED_DESCRIPTION
+    assert vm.CREATE_APPROVED_ROUTE == "/whatsapp?tab=plantillas"
+
+
+def test_template_choice_and_fields_vm() -> None:
+    from dataclasses import dataclass
+
+    from .whatsapp_chats_vm import (
+        build_template_choice,
+        build_template_fields,
+        template_fields_complete,
+        template_title,
+    )
+
+    @dataclass(frozen=True)
+    class Option:
+        template_id: str
+        name: str
+        category: str
+        preview: str
+        is_consent_request: bool
+
+    @dataclass(frozen=True)
+    class Variable:
+        component: str
+        key: str
+        named: bool
+
+        @property
+        def id(self) -> str:
+            return f"{self.component}:{self.key}"
+
+    choice = build_template_choice(Option("t1", "seguimiento_pedido", "utility", "Hola", False))
+    assert (choice.title, choice.kind_label, choice.kind_tone) == (
+        "Seguimiento pedido",
+        "Seguimiento",
+        "info",
+    )
+    promo = build_template_choice(Option("t2", "promo", "marketing", "", False))
+    assert promo.kind_label == "Promoción"
+    assert template_title("") == "Mensaje aprobado"
+
+    fields = build_template_fields(
+        [
+            Variable("body", "nombre", True),
+            Variable("body", "2", False),
+            Variable("header", "1", False),
+        ],
+        {"body:nombre": "Ana"},
+    )
+    assert [f.label for f in fields] == ["Nombre del cliente", "Dato 2", "Dato 1 (encabezado)"]
+    assert [f.value for f in fields] == ["Ana", "", ""]
+    assert not template_fields_complete(fields)
+    assert template_fields_complete([])
