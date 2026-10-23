@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import cache
 from uuid import UUID
 
+from qualify_api.assisted.approval import HumanApproval
 from qualify_api.config import MetaOAuthSettings
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
@@ -92,5 +93,9 @@ def decide_draft(
     )
 
 
-async def send_draft(*, tenant_id: UUID, draft_id: UUID) -> DraftRecord:
-    return await production_reply_service().send(tenant_id=tenant_id, draft_id=draft_id)
+async def send_draft(*, tenant_id: UUID, draft_id: UUID, approval: HumanApproval) -> DraftRecord:
+    """Posts the approved reply publicly. `approval` is required and must name this draft
+    (`ApprovalRequired` otherwise) — m-24789645, criterion 1."""
+    return await production_reply_service().send(
+        tenant_id=tenant_id, draft_id=draft_id, approval=approval
+    )

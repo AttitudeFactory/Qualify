@@ -4,7 +4,10 @@ its own Meta-writing calls: direct in-process projections over `qualify_api.repl
 published seam (`generate_drafts`/`list_pending_drafts`/`decide_draft`/`send_draft`) —
 no HTTP hop, same posture `http/app.py`'s own module docstring documents for the
 Reflex CRM in general. `send_draft` is the one function here that calls Meta and is
-therefore `async def`, same reason `publishing_provider.start_publish` is.
+therefore `async def`, same reason `publishing_provider.start_publish` is — and it
+requires a `HumanApproval` naming the draft (m-24789645), built by the caller from the
+logged-in person (`acting_user`, resolved from the session email the same way
+Conversaciones does).
 
 **The DM tranche does not exist anywhere in this file.** `qualify_api.replies` only
 ever produces comment-channel drafts (gated by `qualify_api.replies.gate`, comments
@@ -14,8 +17,10 @@ only) — there is no code path here that could show a DM draft even by accident
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
+from qualify_api.assisted.approval import HumanApproval
 from qualify_api.replies import decide_draft as _decide_draft
 from qualify_api.replies import generate_drafts as _generate_drafts
 from qualify_api.replies import list_pending_drafts as _list_pending_drafts
@@ -23,10 +28,14 @@ from qualify_api.replies import send_draft as _send_draft
 from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import UnknownDraft
 
+from .conversations_provider import gateway as conversations_gateway
+
 __all__ = [
     "DraftVM",
     "GenerationSummaryVM",
     "UnknownDraft",
+    "acting_user",
+    "approval_for",
     "decide_draft",
     "generate_drafts",
     "pending_drafts",
@@ -115,12 +124,23 @@ def decide_draft(
     return _to_vm(result.draft)
 
 
-async def send_draft(*, tenant_id: UUID, draft_id: UUID) -> DraftVM:
+def acting_user(tenant_id: UUID, email: str) -> UUID | None:
+    """The logged-in person's `users.id` in this tenant (by session email), or None —
+    the same resolution Conversaciones and Seguimientos use. Blocking DB call."""
+    return conversations_gateway().acting_user(tenant_id, email)
+
+
+def approval_for(*, user_id: UUID, draft_id: UUID) -> HumanApproval:
+    """The approval a click on «Enviar» gives: this person, now, this draft."""
+    return HumanApproval(user_id=user_id, approved_at=datetime.now(UTC), draft_id=draft_id)
+
+
+async def send_draft(*, tenant_id: UUID, draft_id: UUID, approval: HumanApproval) -> DraftVM:
     """The real write to Meta — `async def`, same posture `publishing_provider.
     start_publish` has for its own Meta call. Only reachable for an
     `'accepted'`/`'edited'` draft; raises `ValueError` otherwise and `UnknownDraft` if
     the id is not visible to this tenant — both propagate, same "typed exception,
     never swallowed" discipline `inbox_provider.toggle_monitoring` documents for its
-    own service."""
-    record = await _send_draft(tenant_id=tenant_id, draft_id=draft_id)
+    own service. Raises `ApprovalRequired` without an approval naming this draft."""
+    record = await _send_draft(tenant_id=tenant_id, draft_id=draft_id, approval=approval)
     return _to_vm(record)

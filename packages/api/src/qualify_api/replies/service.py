@@ -10,6 +10,13 @@ Two write-aheads, mirroring `publishing/service.py`'s own:
    direction — see migration 0014's docstring and `PublishService.advance()`'s own
    "Settle NOTHING" branch, the same decision copied for the same reason.
 
+3. **No send without a `HumanApproval`** (m-24789645). `send` takes the same
+   `qualify_api.assisted.HumanApproval` the private outbox demands, naming THIS draft;
+   without it, it raises `ApprovalRequired` before reading anything. The status guard
+   (`accepted`/`edited`) is kept underneath it. A static test
+   (`test_replies_send_sanctity.py`) pins `post_reply` to this method and the notice
+   poster, and every caller of `send`/`send_draft` to passing an approval.
+
 No scheduler, no automatic run chained after `sentiment.analyze_pending_comments()` —
 same manual-trigger-only posture that module's own docstring documents. This module
 does not know when it is called, only what to do when it is.
@@ -18,10 +25,12 @@ does not know when it is called, only what to do when it is.
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
+from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.replies.client import CommentReplyClient, CommentReplyError
 from qualify_api.replies.gate import GateInput, evaluate_gate
 from qualify_api.replies.repository import DraftRecord, ReplyRepository
@@ -32,6 +41,8 @@ if TYPE_CHECKING:
     # the default install — same TYPE_CHECKING-only reasoning `sentiment/service.py`
     # documents for `SentimentProvider`.
     from qualify_models.providers import ReplyDraftProvider
+
+logger = logging.getLogger("qualify_api.replies.service")
 
 
 class ConnectionDegrader(Protocol):
@@ -53,6 +64,18 @@ class ReplyClientFactory(Protocol):
 
 class UnknownDraft(Exception):
     """No draft with that id is visible in this tenant."""
+
+
+def require_approval(approval: object, *, draft_id: UUID) -> HumanApproval:
+    """The approval guard of every public reply: a `HumanApproval` that names this exact
+    draft. Raises `ApprovalRequired` otherwise — a missing approval, a look-alike object,
+    or an approval given for another draft (or for no draft: a public comment reply is
+    always a draft's text)."""
+    if not isinstance(approval, HumanApproval):
+        raise ApprovalRequired("a public reply cannot be sent without a human approval")
+    if approval.draft_id != draft_id:
+        raise ApprovalRequired(f"the approval does not name draft {draft_id}")
+    return approval
 
 
 @dataclass(frozen=True)
@@ -171,12 +194,17 @@ class ReplyService:
             )
         return DecisionResult(draft=record, diff=diff)
 
-    async def send(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord:
+    async def send(
+        self, *, tenant_id: UUID, draft_id: UUID, approval: HumanApproval
+    ) -> DraftRecord:
         """The one transition here that is FORBIDDEN a blind retry, same posture
-        `PublishService._publish_once` documents for its own send. Never called on a
-        draft that has not been `accepted`/`edited` by a human — QUA-22's "ninguna
+        `PublishService._publish_once` documents for its own send. Two guards, in order:
+        a `HumanApproval` naming this draft (`require_approval`, before any read), then
+        the status — only an `accepted`/`edited` draft goes out. QUA-22's "ninguna
         respuesta se envía sin acción humana explícita" is enforced structurally here:
-        there is no code path from `'proposed'` straight into this method."""
+        there is no code path from `'proposed'` straight into this method, and none
+        into `post_reply` without an approval."""
+        require_approval(approval, draft_id=draft_id)
         record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
             raise UnknownDraft(str(draft_id))
@@ -186,6 +214,12 @@ class ReplyService:
             raise RuntimeError("ReplyService was built without a client_factory")
 
         record = self._repo.mark_sending(tenant_id=tenant_id, draft_id=draft_id)
+        logger.info(
+            "replies.send draft_id=%s approved_by=%s approved_at=%s",
+            draft_id,
+            approval.user_id,
+            approval.approved_at.isoformat(),
+        )
         client = await self._clients.client_for(
             tenant_id=tenant_id, connection_id=record.connection_id
         )

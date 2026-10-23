@@ -11,12 +11,14 @@ transition forbidden a blind retry).
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.http.deps import Principal, current_principal
 from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import DecisionResult, GenerationSummary, UnknownDraft
@@ -162,9 +164,18 @@ async def send(
 ) -> SendResponse:
     """The real write to Meta. Only reachable for an `'accepted'`/`'edited'` draft —
     QUA-22's "ninguna respuesta se envía sin acción humana explícita" has no code path
-    from `/generate` straight to this route."""
+    from `/generate` straight to this route. The authenticated person's request IS the
+    approval (m-24789645): it becomes a `HumanApproval` naming this draft, the object
+    `ReplyService.send` demands."""
+    approval = HumanApproval(
+        user_id=principal.user_id, approved_at=datetime.now(UTC), draft_id=draft_id
+    )
     try:
-        record = await send_draft(tenant_id=principal.tenant_id, draft_id=draft_id)
+        record = await send_draft(
+            tenant_id=principal.tenant_id, draft_id=draft_id, approval=approval
+        )
+    except ApprovalRequired as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
     except UnknownDraft:
         raise HTTPException(status_code=404, detail="unknown draft") from None
     except ValueError as exc:

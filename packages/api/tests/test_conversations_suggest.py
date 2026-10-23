@@ -156,7 +156,17 @@ def test_grounding_from_products_keeps_only_named_products() -> None:
     assert g.has_prices
     assert g.as_record() == {
         "business_name": "Tienda Sol",
-        "products": [{"name": "Gorra", "price": "$12", "category": "ropa"}],
+        "products": [
+            {
+                "product_id": None,
+                "name": "Gorra",
+                "price": "$12",
+                "price_amount": None,
+                "currency": "",
+                "category": "ropa",
+                "updated_at": None,
+            }
+        ],
     }
     assert "Gorra — $12 — ropa — Azul" in g.as_prompt()
     assert "ninguno validado" in Grounding().as_prompt()
@@ -346,7 +356,9 @@ def test_suggest_creates_one_proposed_draft_with_provenance() -> None:
     assert (draft.input_tokens, draft.output_tokens) == (10, 5)
     assert draft.cost_usd == pytest.approx(0.0000035)
     assert draft.grounding["business_name"] == "Sol"
-    assert draft.grounding["products"] == [{"name": "Gorra", "price": "$12", "category": ""}]
+    assert [(p["name"], p["price"], p["category"]) for p in draft.grounding["products"]] == [
+        ("Gorra", "$12", "")
+    ]
     assert draft.grounding["unsupported_claims"] == []
     # No profile on the thread yet → the generic counterpart label.
     assert gen.last is not None and gen.last[2] == "Cliente"

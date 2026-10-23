@@ -357,3 +357,277 @@ def test_decided_by_user_id_fk_is_enforced() -> None:
             final_text=None,
             decided_by_user_id=uuid4(),
         )
+
+
+# --- m-24789645 (0080): provenance, one LIVE draft per comment, intent FK, RLS ------------
+
+
+def _create(repo: PostgresReplyRepository, connection_id: UUID, candidate: CandidateComment, **kw):
+    return repo.create_draft(
+        tenant_id=kw.pop("tenant_id", TENANT_A),
+        connection_id=connection_id,
+        candidate=candidate,
+        gate_reason="r",
+        generator_version="v1",
+        generated_text=kw.pop("text", "¡Gracias!"),
+        **kw,
+    )
+
+
+def _seed_intent_result(tenant_id: UUID, connection_id: UUID, message_id: UUID) -> UUID:
+    from qualify_api.intent.models import CommentIntentResult
+
+    with tenant_session(tenant_id) as session:
+        row = CommentIntentResult(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            message_id=message_id,
+            source_id=f"comment-{uuid4()}",
+            detector_version=f"test-intent-{uuid4().hex[:8]}",
+            pipeline_version="test-intent-pipeline",
+            model_id="test/intent",
+            confidences={"price": 0.9},
+            commercial_intent=True,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+
+def test_one_live_draft_per_comment_and_a_new_one_after_discard_or_refusal() -> None:
+    connection_id, candidate, user_id = _seed_pos_comment(TENANT_A, _fresh_version())
+    repo = PostgresReplyRepository()
+
+    first = _create(repo, connection_id, candidate)
+    assert first is not None
+    assert _create(repo, connection_id, candidate) is None  # the live index holds
+    live = repo.get_live_draft(tenant_id=TENANT_A, message_id=candidate.message_id)
+    assert live is not None and live.id == first.id
+
+    repo.decide_draft(
+        tenant_id=TENANT_A,
+        draft_id=first.id,
+        decision="discarded",
+        final_text=None,
+        decided_by_user_id=user_id,
+    )
+    assert repo.get_live_draft(tenant_id=TENANT_A, message_id=candidate.message_id) is None
+    second = _create(repo, connection_id, candidate, text="otra versión")
+    assert second is not None and second.id != first.id
+    assert _create(repo, connection_id, candidate) is None
+
+    # Meta refused it (send_failed, settled): known not public, room for a new draft.
+    repo.decide_draft(
+        tenant_id=TENANT_A,
+        draft_id=second.id,
+        decision="accepted",
+        final_text=None,
+        decided_by_user_id=user_id,
+    )
+    repo.mark_sending(tenant_id=TENANT_A, draft_id=second.id)
+    repo.mark_send_failed(tenant_id=TENANT_A, draft_id=second.id, error_code="platform:100")
+    third = _create(repo, connection_id, candidate)
+    assert third is not None
+
+    # Generation still skips the comment: it has drafts, live or not (behaviour unchanged).
+    assert repo.has_draft(tenant_id=TENANT_A, message_id=candidate.message_id)
+    with tenant_session(TENANT_A) as session:
+        count = session.execute(
+            text("SELECT count(*) FROM comment_reply_drafts WHERE message_id = :m"),
+            {"m": str(candidate.message_id)},
+        ).scalar_one()
+    assert count == 3
+
+
+def test_a_sent_or_ambiguous_draft_keeps_the_comment_from_a_second_public_reply() -> None:
+    repo = PostgresReplyRepository()
+    for settle in ("sent", "send_ambiguous"):
+        connection_id, candidate, user_id = _seed_pos_comment(TENANT_A, _fresh_version())
+        draft = _create(repo, connection_id, candidate)
+        assert draft is not None
+        repo.decide_draft(
+            tenant_id=TENANT_A,
+            draft_id=draft.id,
+            decision="accepted",
+            final_text=None,
+            decided_by_user_id=user_id,
+        )
+        repo.mark_sending(tenant_id=TENANT_A, draft_id=draft.id)
+        if settle == "sent":
+            repo.mark_sent(tenant_id=TENANT_A, draft_id=draft.id, external_reply_id="r-1")
+        else:
+            repo.mark_send_ambiguous(tenant_id=TENANT_A, draft_id=draft.id, error_code="t")
+        assert _create(repo, connection_id, candidate) is None, settle
+
+
+def test_provenance_round_trips_and_defaults_on_the_old_path() -> None:
+    from decimal import Decimal
+
+    from qualify_api.replies.repository import DraftProvenance
+
+    connection_id, candidate, _user_id = _seed_pos_comment(TENANT_A, _fresh_version())
+    repo = PostgresReplyRepository()
+    intent_id = _seed_intent_result(TENANT_A, connection_id, candidate.message_id)
+    grounding = {
+        "business_name": "Polet",
+        "products": [{"product_id": str(uuid4()), "name": "Taro", "price": "$4.5"}],
+    }
+    draft = _create(
+        repo,
+        connection_id,
+        candidate,
+        provenance=DraftProvenance(
+            grounding=grounding,
+            needs_review=True,
+            unsupported_claims=("horario",),
+            model_id="claude-haiku-5-5",
+            model_revision="rev-1",
+            input_tokens=120,
+            output_tokens=40,
+            cost_usd=Decimal("0.000310"),
+            intent_result_id=intent_id,
+        ),
+    )
+    assert draft is not None
+    back = repo.get_draft(tenant_id=TENANT_A, draft_id=draft.id)
+    assert back is not None
+    assert back.grounding == grounding
+    assert back.needs_review is True
+    assert back.unsupported_claims == ("horario",)
+    assert (back.model_id, back.model_revision) == ("claude-haiku-5-5", "rev-1")
+    assert (back.input_tokens, back.output_tokens, back.cost_usd) == (
+        120,
+        40,
+        Decimal("0.000310"),
+    )
+    assert back.intent_result_id == intent_id
+
+    # The QUA-22 path writes none of it: NULL / false.
+    other_conn, other_candidate, _ = _seed_pos_comment(TENANT_A, _fresh_version())
+    old = _create(repo, other_conn, other_candidate)
+    assert old is not None
+    assert (old.grounding, old.needs_review, old.unsupported_claims) == (None, False, ())
+    assert (old.model_id, old.input_tokens, old.cost_usd, old.intent_result_id) == (
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+def test_intent_result_fk_is_tenant_consistent_and_not_swallowed() -> None:
+    """A draft cannot point at another tenant's Fase A signal (composite FK, R2) — and
+    that refusal is raised, not mistaken for the "already has a live draft" race."""
+    from sqlalchemy.exc import IntegrityError
+
+    from qualify_api.replies.repository import DraftProvenance
+
+    connection_a, candidate_a, _ = _seed_pos_comment(TENANT_A, _fresh_version())
+    connection_b, candidate_b, _ = _seed_pos_comment(TENANT_B, _fresh_version())
+    foreign_intent = _seed_intent_result(TENANT_B, connection_b, candidate_b.message_id)
+    repo = PostgresReplyRepository()
+
+    with pytest.raises(IntegrityError, match="fk_reply_draft_intent_tenant"):
+        _create(
+            repo,
+            connection_a,
+            candidate_a,
+            provenance=DraftProvenance(intent_result_id=foreign_intent),
+        )
+    # Nothing was written, so the comment is still free for a draft.
+    assert repo.get_live_draft(tenant_id=TENANT_A, message_id=candidate_a.message_id) is None
+
+
+def test_rls_hides_another_tenants_drafts_and_grounding() -> None:
+    from qualify_api.replies.repository import DraftProvenance
+
+    connection_id, candidate, _ = _seed_pos_comment(TENANT_A, _fresh_version())
+    repo = PostgresReplyRepository()
+    marker = f"Secreto {uuid4().hex[:8]}"
+    draft = _create(
+        repo,
+        connection_id,
+        candidate,
+        provenance=DraftProvenance(grounding={"business_name": marker, "products": []}),
+    )
+    assert draft is not None
+    _ensure_tenant(TENANT_B, "t-replies-e2e-b")
+
+    assert repo.get_draft(tenant_id=TENANT_B, draft_id=draft.id) is None
+    assert repo.get_live_draft(tenant_id=TENANT_B, message_id=candidate.message_id) is None
+    assert repo.list_pending_drafts(tenant_id=TENANT_B, connection_id=connection_id) == ()
+    with tenant_session(TENANT_B) as session:
+        leaked = session.execute(
+            text(
+                "SELECT count(*) FROM comment_reply_drafts "
+                "WHERE grounding->>'business_name' = :marker"
+            ),
+            {"marker": marker},
+        ).scalar_one()
+    assert leaked == 0
+    # A tenant also cannot write a draft onto another tenant's comment (composite FKs).
+    _other_conn, undrafted, _ = _seed_pos_comment(TENANT_A, _fresh_version())
+    with pytest.raises(DBAPIError):
+        _create(repo, _other_conn, undrafted, tenant_id=TENANT_B)
+
+    mine = repo.get_draft(tenant_id=TENANT_A, draft_id=draft.id)
+    assert mine is not None and mine.grounding == {"business_name": marker, "products": []}
+
+
+def test_catalog_grounding_carries_product_ids_and_updated_at() -> None:
+    from decimal import Decimal
+
+    from qualify_api.assisted.grounding import catalog_grounding_for
+    from qualify_api.catalog.models import BrandProduct
+    from qualify_api.tenancy.models import Brand
+
+    connection_id, _candidate, _ = _seed_pos_comment(TENANT_A, _fresh_version())
+    with admin_session() as session:
+        brand = Brand(tenant_id=TENANT_A, name=f"Polet {uuid4().hex[:6]}")
+        session.add(brand)
+        session.flush()
+        brand_id, brand_name = brand.id, brand.name
+    with tenant_session(TENANT_A) as session:
+        active = BrandProduct(
+            tenant_id=TENANT_A,
+            brand_id=brand_id,
+            name="Taro",
+            slug=f"taro-{uuid4().hex[:8]}",
+            price_amount=Decimal("4.50"),
+            price_currency="USD",
+            category="bebidas",
+            position=0,
+        )
+        hidden = BrandProduct(
+            tenant_id=TENANT_A,
+            brand_id=brand_id,
+            name="Retirado",
+            slug=f"old-{uuid4().hex[:8]}",
+            is_active=False,
+        )
+        session.add_all([active, hidden])
+        session.flush()
+        connection = session.get(SocialConnection, connection_id)
+        assert connection is not None
+        connection.brand_id = brand_id
+        session.flush()
+        session.refresh(active)
+        product_id, updated_at = active.id, active.updated_at
+
+    g = catalog_grounding_for(TENANT_A, connection_id)
+
+    assert g.business_name == brand_name
+    (p,) = g.products
+    assert (p.name, p.price_label, p.currency, p.price_amount) == (
+        "Taro",
+        "$4.5",
+        "USD",
+        Decimal("4.50"),
+    )
+    assert p.product_id == product_id and p.updated_at == updated_at
+    record = g.as_record()["products"][0]
+    assert record["product_id"] == str(product_id)
+    assert record["updated_at"] == updated_at.isoformat()
+    # Another tenant grounds on nothing for this connection (RLS).
+    _ensure_tenant(TENANT_B, "t-replies-e2e-b")
+    assert catalog_grounding_for(TENANT_B, connection_id).products == ()

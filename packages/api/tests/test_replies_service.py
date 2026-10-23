@@ -7,10 +7,12 @@ generator, so a rejected candidate never reaches the (fake) provider."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 
+from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.replies.client import CommentReplyError
 from qualify_api.replies.repository import CandidateComment, MemoryReplyRepository
 from qualify_api.replies.service import ReplyService, UnknownDraft
@@ -23,6 +25,10 @@ VERSION = AnalysisVersion(
     detector_version="det-1", pipeline_version="pipe-1", model_id="model-1", model_revision=None
 )
 GENERATOR_VERSION = "qua22.1:test-model"
+
+
+def _approval(draft_id: UUID, *, user_id: UUID = USER) -> HumanApproval:
+    return HumanApproval(user_id=user_id, approved_at=datetime.now(UTC), draft_id=draft_id)
 
 
 class FakeProvider:
@@ -131,7 +137,7 @@ def test_send_refuses_a_proposed_draft_never_calls_meta() -> None:
     with pytest.raises(ValueError, match="proposed"):
         import asyncio
 
-        asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id))
+        asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id)))
 
     assert client.calls == []
 
@@ -142,8 +148,9 @@ def test_send_unknown_draft_raises() -> None:
     service = _service(
         repo=MemoryReplyRepository(), provider=FakeProvider(), client=FakeReplyClient()
     )
+    unknown = uuid4()
     with pytest.raises(UnknownDraft):
-        asyncio.run(service.send(tenant_id=TENANT, draft_id=uuid4()))
+        asyncio.run(service.send(tenant_id=TENANT, draft_id=unknown, approval=_approval(unknown)))
 
 
 def _accepted_draft(repo: MemoryReplyRepository, service: ReplyService):
@@ -248,7 +255,9 @@ def test_send_happy_path_marks_sent_and_settles() -> None:
     service = _service(repo=repo, provider=FakeProvider(), client=client)
     draft = _accepted_draft(repo, service)
 
-    sent = asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id))
+    sent = asyncio.run(
+        service.send(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id))
+    )
 
     assert sent.status == "sent"
     assert sent.external_reply_id == "reply-1"
@@ -268,7 +277,9 @@ def test_send_transport_ambiguity_never_settles() -> None:
     service = _service(repo=repo, provider=FakeProvider(), client=client)
     draft = _accepted_draft(repo, service)
 
-    result = asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id))
+    result = asyncio.run(
+        service.send(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id))
+    )
 
     assert result.status == "send_ambiguous"
     assert result.is_settled is False
@@ -283,7 +294,9 @@ def test_send_definite_platform_error_settles_as_failed() -> None:
     service = _service(repo=repo, provider=FakeProvider(), client=client)
     draft = _accepted_draft(repo, service)
 
-    result = asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id))
+    result = asyncio.run(
+        service.send(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id))
+    )
 
     assert result.status == "send_failed"
     assert result.is_settled is True
@@ -304,7 +317,197 @@ def test_send_auth_error_degrades_connection_and_settles_as_failed() -> None:
     service = _service(repo=repo, provider=FakeProvider(), client=client, degrader=degrader)
     draft = _accepted_draft(repo, service)
 
-    result = asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id))
+    result = asyncio.run(
+        service.send(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id))
+    )
 
     assert result.status == "send_failed"
     assert degraded == [(TENANT, draft.connection_id)]
+
+
+# --- m-24789645 criterion 1: no public reply without a HumanApproval -----------------
+
+
+@pytest.mark.parametrize(
+    "approval",
+    [
+        None,
+        "approved",
+        {"user_id": USER, "draft_id": "x"},
+        # A look-alike with the right attributes is still not a `HumanApproval`.
+        type("FakeApproval", (), {"user_id": USER, "approved_at": None, "draft_id": None})(),
+    ],
+    ids=["none", "string", "dict", "look-alike"],
+)
+def test_send_without_a_human_approval_raises_and_never_calls_meta(approval: object) -> None:
+    import asyncio
+
+    repo = MemoryReplyRepository()
+    client = FakeReplyClient()
+    service = _service(repo=repo, provider=FakeProvider(), client=client)
+    draft = _accepted_draft(repo, service)
+
+    with pytest.raises(ApprovalRequired):
+        asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id, approval=approval))  # type: ignore[arg-type]
+
+    assert client.calls == []
+    # Refused before any write: still accepted, not 'sending'.
+    assert repo.get_draft(tenant_id=TENANT, draft_id=draft.id).status == "accepted"
+
+
+def test_send_with_an_approval_for_another_draft_raises() -> None:
+    import asyncio
+
+    repo = MemoryReplyRepository()
+    client = FakeReplyClient()
+    service = _service(repo=repo, provider=FakeProvider(), client=client)
+    draft = _accepted_draft(repo, service)
+
+    for wrong in (_approval(uuid4()), HumanApproval(user_id=USER, approved_at=datetime.now(UTC))):
+        with pytest.raises(ApprovalRequired, match="does not name"):
+            asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id, approval=wrong))
+
+    assert client.calls == []
+
+
+def test_send_without_the_approval_argument_is_a_type_error() -> None:
+    """`approval` is keyword-only with no default: forgetting it fails at the call."""
+    import asyncio
+
+    repo = MemoryReplyRepository()
+    service = _service(repo=repo, provider=FakeProvider(), client=FakeReplyClient())
+    draft = _accepted_draft(repo, service)
+
+    with pytest.raises(TypeError, match="approval"):
+        asyncio.run(service.send(tenant_id=TENANT, draft_id=draft.id))  # type: ignore[call-arg]
+
+
+def test_send_draft_seam_requires_the_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The published seam (`replies.send_draft`, what Reflex and HTTP call) passes the
+    approval through; without one it refuses like the service."""
+    import asyncio
+
+    from qualify_api.replies import composition
+
+    repo = MemoryReplyRepository()
+    client = FakeReplyClient()
+    service = _service(repo=repo, provider=FakeProvider(), client=client)
+    draft = _accepted_draft(repo, service)
+    monkeypatch.setattr(composition, "production_reply_service", lambda: service)
+
+    with pytest.raises(ApprovalRequired):
+        asyncio.run(composition.send_draft(tenant_id=TENANT, draft_id=draft.id, approval=None))  # type: ignore[arg-type]
+    assert client.calls == []
+
+    sent = asyncio.run(
+        composition.send_draft(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id))
+    )
+    assert sent.status == "sent"
+    assert len(client.calls) == 1
+
+
+# --- m-24789645: provenance and one live draft per comment (Memory repository) -------
+
+
+def test_create_draft_carries_provenance_and_defaults_to_none() -> None:
+    from decimal import Decimal
+
+    from qualify_api.replies.repository import DraftProvenance
+
+    repo = MemoryReplyRepository()
+    bare = repo.create_draft(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        candidate=_candidate(),
+        gate_reason="r",
+        generator_version="v",
+        generated_text="t",
+    )
+    assert bare is not None
+    assert (bare.grounding, bare.needs_review, bare.unsupported_claims) == (None, False, ())
+    assert (bare.model_id, bare.cost_usd, bare.intent_result_id) == (None, None, None)
+
+    intent = uuid4()
+    grounded = repo.create_draft(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        candidate=_candidate(),
+        gate_reason="r",
+        generator_version="v",
+        generated_text="t",
+        provenance=DraftProvenance(
+            grounding={"business_name": "Polet", "products": []},
+            needs_review=True,
+            unsupported_claims=("horario",),
+            model_id="claude-haiku-5-5",
+            input_tokens=10,
+            output_tokens=5,
+            cost_usd=Decimal("0.000035"),
+            intent_result_id=intent,
+        ),
+    )
+    assert grounded is not None
+    assert grounded.grounding == {"business_name": "Polet", "products": []}
+    assert grounded.needs_review is True
+    assert grounded.unsupported_claims == ("horario",)
+    assert (grounded.model_id, grounded.input_tokens, grounded.output_tokens) == (
+        "claude-haiku-5-5",
+        10,
+        5,
+    )
+    assert grounded.intent_result_id == intent
+
+
+def test_one_live_draft_per_comment_and_a_new_one_after_discard() -> None:
+    repo = MemoryReplyRepository()
+    candidate = _candidate()
+
+    def create() -> object:
+        return repo.create_draft(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            candidate=candidate,
+            gate_reason="r",
+            generator_version="v",
+            generated_text="t",
+        )
+
+    first = create()
+    assert first is not None
+    assert create() is None  # the first one is live
+    assert repo.get_live_draft(tenant_id=TENANT, message_id=candidate.message_id) == first
+
+    repo.decide_draft(
+        tenant_id=TENANT,
+        draft_id=first.id,
+        decision="discarded",
+        final_text=None,
+        decided_by_user_id=USER,
+    )
+    assert repo.get_live_draft(tenant_id=TENANT, message_id=candidate.message_id) is None
+    second = create()
+    assert second is not None and second.id != first.id
+    # Generation still treats the comment as handled: it has drafts, live or not.
+    assert repo.has_draft(tenant_id=TENANT, message_id=candidate.message_id)
+
+
+def test_a_sent_draft_stays_live_so_the_comment_is_never_answered_twice() -> None:
+    import asyncio
+
+    repo = MemoryReplyRepository()
+    service = _service(repo=repo, provider=FakeProvider(), client=FakeReplyClient())
+    draft = _accepted_draft(repo, service)
+    sent = asyncio.run(
+        service.send(tenant_id=TENANT, draft_id=draft.id, approval=_approval(draft.id))
+    )
+    assert sent.status == "sent" and sent.is_live
+
+    again = repo.create_draft(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        candidate=_candidate(draft.message_id),
+        gate_reason="r",
+        generator_version="v",
+        generated_text="otra",
+    )
+    assert again is None
