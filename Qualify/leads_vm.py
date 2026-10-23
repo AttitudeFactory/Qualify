@@ -15,7 +15,7 @@ owner reads and the links they tap are tested offline (`test_leads_vm.py`).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -48,6 +48,8 @@ LINK_COPIED: Final = "Enlace copiado. Pégalo en tu perfil o en una historia."
 EXTRA_LABEL: Final = "Lo que te contaron:"
 
 MARK_FAILED: Final = "No pudimos guardar el cambio. Inténtalo de nuevo en unos segundos."
+
+ALL_CONTACTED: Final = "¡Al día! Ya le escribiste a todos."
 
 _MONTHS: Final = (
     "ene",
@@ -86,23 +88,55 @@ def contact_tone(contacted_at: datetime | None) -> str:
     return CONTACTED_TONE if contacted_at is not None else PENDING_TONE
 
 
-def contacted_note(contacted_at: datetime | None, zone: ZoneInfo) -> str:
+def _day_month(when: datetime, zone: ZoneInfo, now: datetime | None) -> str:
+    """«14 ago.» — with «de 2025» only when it is not the current year in the business's
+    zone, so a lead from last August never reads as a recent one."""
+    local = when.astimezone(zone)
+    this_year = (now or datetime.now(UTC)).astimezone(zone).year
+    text = f"{local.day} {_MONTHS[local.month - 1]}."
+    return text if local.year == this_year else f"{text} de {local.year}"
+
+
+def contacted_note(
+    contacted_at: datetime | None, zone: ZoneInfo, *, now: datetime | None = None
+) -> str:
     """«Le escribiste el 23 oct.» in the tenant's zone; "" while pending."""
     if contacted_at is None:
         return ""
-    local = contacted_at.astimezone(zone)
-    return f"Le escribiste el {local.day} {_MONTHS[local.month - 1]}."
+    return f"Le escribiste el {_day_month(contacted_at, zone, now)}"
 
 
-def registered_label(created_at: datetime, zone: ZoneInfo) -> str:
+def registered_label(created_at: datetime, zone: ZoneInfo, *, now: datetime | None = None) -> str:
     """«Te dejó sus datos el 14 ago.» in the tenant's zone."""
-    local = created_at.astimezone(zone)
-    return f"Te dejó sus datos el {local.day} {_MONTHS[local.month - 1]}."
+    return f"Te dejó sus datos el {_day_month(created_at, zone, now)}"
 
 
-def extra_summary(extra: dict[str, str]) -> str:
-    """«zona: oeste · turno: tarde» — the answers to the business's own questions."""
-    return " · ".join(f"{k}: {v}" for k, v in sorted(extra.items()))
+def extra_summary(extra: dict[str, str], labels: dict[str, str] | None = None) -> str:
+    """«¿En qué zona vives?: oeste · …» — the answers to the business's own questions,
+    under the question the business wrote; the internal key only when it has no label."""
+    labels = labels or {}
+    return " · ".join(f"{labels.get(k) or k}: {v}" for k, v in sorted(extra.items()))
+
+
+def question_labels(custom_fields: list[dict] | None) -> dict[str, str]:
+    """`key → label` of the form's extra questions (`LeadFormSettings.custom_fields`)."""
+    out: dict[str, str] = {}
+    for field in custom_fields or []:
+        if not isinstance(field, dict):
+            continue
+        key, label = field.get("key"), field.get("label")
+        if isinstance(key, str) and isinstance(label, str) and label.strip():
+            out[key] = label.strip()
+    return out
+
+
+def pending_summary(pending: int) -> str:
+    """The line above the list: how many are still waiting for the owner's message."""
+    if pending <= 0:
+        return ALL_CONTACTED
+    if pending == 1:
+        return "Te falta 1 por escribir"
+    return f"Te faltan {pending} por escribir"
 
 
 def form_url(template: str, tenant_id: str, *, form_active: bool) -> str:

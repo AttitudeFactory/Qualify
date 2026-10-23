@@ -136,3 +136,73 @@ def test_empty_state_offers_copy_link() -> None:
     rendered = str(_empty_state().render())
     assert "Copiar enlace" in rendered
     assert "Comparte este enlace" in rendered
+
+
+# --- UX review (applied) -------------------------------------------------------------
+
+
+def test_dates_carry_the_year_only_outside_the_current_year() -> None:
+    now = datetime(2026, 10, 23, 15, 0, tzinfo=UTC)
+    last_year = datetime(2025, 8, 14, 18, 3, tzinfo=UTC)
+    assert leads_vm.registered_label(last_year, _BOGOTA, now=now) == (
+        "Te dejó sus datos el 14 ago. de 2025"
+    )
+    assert leads_vm.contacted_note(datetime(2025, 11, 3, 15, tzinfo=UTC), _BOGOTA, now=now) == (
+        "Le escribiste el 3 nov. de 2025"
+    )
+    this_year = datetime(2026, 8, 14, 18, 3, tzinfo=UTC)
+    assert leads_vm.registered_label(this_year, _BOGOTA, now=now) == (
+        "Te dejó sus datos el 14 ago."
+    )
+    # The year boundary follows the business's zone: 03:00 UTC on 1 Jan 2027 is still
+    # 31 Dec 2026 in Bogotá, the current year there.
+    new_year_utc = datetime(2027, 1, 1, 3, 0, tzinfo=UTC)
+    assert leads_vm.registered_label(new_year_utc, _BOGOTA, now=now) == (
+        "Te dejó sus datos el 31 dic."
+    )
+
+
+def test_extra_answers_show_the_question_the_business_wrote() -> None:
+    labels = leads_vm.question_labels(
+        [
+            {"key": "zona_entrega", "label": "¿En qué zona vives?"},
+            {"key": "turno_pref", "label": "¿A qué hora te escribimos?"},
+            {"key": "sin_etiqueta"},
+            "basura",
+        ]
+    )
+    assert labels == {
+        "zona_entrega": "¿En qué zona vives?",
+        "turno_pref": "¿A qué hora te escribimos?",
+    }
+    summary = leads_vm.extra_summary({"zona_entrega": "oeste", "turno_pref": "tarde"}, labels)
+    assert summary == "¿A qué hora te escribimos?: tarde · ¿En qué zona vives?: oeste"
+    # No label for a key → the key, never nothing.
+    assert leads_vm.extra_summary({"sin_etiqueta": "sí"}, labels) == "sin_etiqueta: sí"
+    assert leads_vm.question_labels(None) == {}
+
+
+def test_pending_summary_counts_who_is_still_waiting() -> None:
+    assert leads_vm.pending_summary(3) == "Te faltan 3 por escribir"
+    assert leads_vm.pending_summary(1) == "Te falta 1 por escribir"
+    assert leads_vm.pending_summary(0) == "¡Al día! Ya le escribiste a todos."
+
+
+def test_whatsapp_button_is_one_tappable_element_with_a_clear_label() -> None:
+    rendered = str(_lead_card(LeadsState.leads[0]).render())
+    assert "RadixThemesLink" not in rendered  # no link nested around a button
+    assert "asChild" in rendered
+    assert "por WhatsApp (se abre WhatsApp)" in rendered
+
+
+def test_the_list_opens_with_how_many_are_left() -> None:
+    assert "pending_summary" in str(_leads_list().render())
+
+
+def test_failed_mark_also_raises_a_toast() -> None:
+    import inspect
+
+    from . import leads_state
+
+    for handler in (leads_state.LeadsState.mark_contacted, leads_state.LeadsState.mark_pending):
+        assert "rx.toast.error(MARK_FAILED)" in inspect.getsource(handler.fn)

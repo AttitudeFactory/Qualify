@@ -13,9 +13,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+from collections.abc import AsyncIterator
 from uuid import UUID
 
 import reflex as rx
+from reflex.event import EventSpec
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -26,6 +28,7 @@ from .leads_vm import (
     MARK_FAILED,
     PENDING_LABEL,
     PENDING_TONE,
+    pending_summary,
 )
 from .tenant import tenant_uuid
 
@@ -76,6 +79,14 @@ class LeadsState(rx.State):
         return len(self.leads)
 
     @rx.var
+    def pending_count(self) -> int:
+        return sum(1 for lead in self.leads if not lead.contacted)
+
+    @rx.var
+    def pending_summary(self) -> str:
+        return pending_summary(self.pending_count)
+
+    @rx.var
     def show_empty_state(self) -> bool:
         return not self.is_loading and not self.load_error and len(self.leads) == 0
 
@@ -120,16 +131,21 @@ class LeadsState(rx.State):
                 self.is_loading = False
 
     @rx.event(background=True)
-    async def mark_contacted(self, lead_id: str) -> None:
+    async def mark_contacted(self, lead_id: str) -> AsyncIterator[EventSpec]:
         """The owner opened this person's chat: «Ya le escribiste»."""
-        await self._save_contacted(lead_id, contacted=True)
+        if not await self._save_contacted(lead_id, contacted=True):
+            # The owner may be far down the list or just back from WhatsApp: the
+            # callout above the list is not enough, the toast shows wherever they are.
+            yield rx.toast.error(MARK_FAILED)
 
     @rx.event(background=True)
-    async def mark_pending(self, lead_id: str) -> None:
+    async def mark_pending(self, lead_id: str) -> AsyncIterator[EventSpec]:
         """«Marcar como pendiente»: back to «Pendiente»."""
-        await self._save_contacted(lead_id, contacted=False)
+        if not await self._save_contacted(lead_id, contacted=False):
+            yield rx.toast.error(MARK_FAILED)
 
-    async def _save_contacted(self, lead_id: str, *, contacted: bool) -> None:
+    async def _save_contacted(self, lead_id: str, *, contacted: bool) -> bool:
+        """Optimistic flip, then the save; False when it failed and was rolled back."""
         async with self:
             self.mark_error = ""
             before = list(self.leads)
@@ -146,7 +162,7 @@ class LeadsState(rx.State):
             async with self:
                 self.leads = before
                 self.mark_error = _NO_TENANTS if resolved is None else MARK_FAILED
-            return
+            return False
 
         try:
             updated = await asyncio.to_thread(
@@ -159,9 +175,10 @@ class LeadsState(rx.State):
         async with self:
             auth = await self.get_state(AuthState)
             if session_tenant_id != auth.session_tenant_id:
-                return
+                return True
             if updated is None:
                 self.leads = before
                 self.mark_error = MARK_FAILED
-            else:
-                self.leads = replace_lead(self.leads, updated)
+                return False
+            self.leads = replace_lead(self.leads, updated)
+            return True

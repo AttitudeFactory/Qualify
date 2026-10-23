@@ -97,19 +97,24 @@ def _lead_card(lead: LeadVM) -> rx.Component:
                 rx.text(EXTRA_LABEL + " " + lead.extra_summary, size="2", color=T.TEXT_MUTED),
             ),
             rx.text(lead.registered_at, size="1", color=T.TEXT_MUTED),
-            rx.link(
-                rx.button(
+            # One tappable element only: a link that looks like a button (as_child), so a
+            # keyboard or screen reader stops once and mobile browsers see one tap.
+            rx.button(
+                # A plain <a>, not rx.link: Radix Link would paint its own text colour
+                # over the solid button.
+                rx.el.a(
                     rx.icon("message-circle", size=16),
                     WRITE_LABEL,
-                    size="3",
-                    width="100%",
-                    min_height=_TARGET,
+                    href=lead.wa_href,
+                    target="_blank",
+                    rel="noopener noreferrer",
                 ),
-                href=lead.wa_href,
-                is_external=True,
-                on_click=LeadsState.mark_contacted(lead.id),
+                as_child=True,
+                size="3",
                 width="100%",
-                aria_label=f"{WRITE_LABEL} a " + lead.full_name,
+                min_height=_TARGET,
+                on_click=LeadsState.mark_contacted(lead.id),
+                aria_label="Escribirle a " + lead.full_name + " por WhatsApp (se abre WhatsApp)",
             ),
             rx.cond(
                 lead.contacted,
@@ -141,6 +146,7 @@ def _lead_card(lead: LeadVM) -> rx.Component:
 def _leads_list() -> rx.Component:
     return rx.vstack(
         rx.text(HOW_IT_WORKS, size="2", color=T.TEXT_MUTED),
+        rx.text(LeadsState.pending_summary, size="3", weight="medium"),
         rx.cond(LeadsState.mark_error != "", callout(LeadsState.mark_error, "error")),
         # One column on phones; two side by side from tablet up. Never a table (N12).
         rx.grid(

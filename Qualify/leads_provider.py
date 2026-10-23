@@ -25,6 +25,7 @@ from .leads_vm import (
     contacted_note,
     extra_summary,
     form_url,
+    question_labels,
     registered_label,
     wa_href,
     zone_for,
@@ -60,7 +61,7 @@ class LeadsScreen:
     form_link: str  # "" when there is no form to share
 
 
-def _lead_vm(row: Lead, zone_name: str) -> LeadVM:
+def _lead_vm(row: Lead, zone_name: str, labels: dict[str, str] | None = None) -> LeadVM:
     zone = zone_for(zone_name)
     return LeadVM(
         id=str(row.id),
@@ -69,7 +70,7 @@ def _lead_vm(row: Lead, zone_name: str) -> LeadVM:
         wa_href=wa_href(row.whatsapp_phone),
         interest=row.interest or "",
         source=row.source_declared or row.utm_source or "",
-        extra_summary=extra_summary(row.extra or {}),
+        extra_summary=extra_summary(row.extra or {}, labels),
         registered_at=registered_label(row.created_at, zone),
         contacted=row.contacted_at is not None,
         status_label=contact_label(row.contacted_at),
@@ -82,20 +83,32 @@ def _zone_name(session: Session, tenant_id: UUID) -> str:
     return session.scalar(select(Tenant.timezone).where(Tenant.id == tenant_id)) or "UTC"
 
 
+def _active_form(session: Session) -> LeadFormSettings | None:
+    return session.scalar(select(LeadFormSettings).where(LeadFormSettings.active.is_(True)))
+
+
+def _labels(form: LeadFormSettings | None) -> dict[str, str]:
+    return question_labels(form.custom_fields if form is not None else None)
+
+
 def leads_screen_for(tenant_id: UUID) -> LeadsScreen:
-    """The tenant's latest leads, newest first, plus the form link for the empty state.
+    """The tenant's latest leads — the ones still waiting for a message first, newest
+    first within each group — plus the form link for the empty state. The order is only
+    applied on load, so a card never jumps while the owner taps it.
     Hits Postgres — call off-thread."""
     with tenant_session(tenant_id) as session:
         zone_name = _zone_name(session, tenant_id)
         rows = session.scalars(
-            select(Lead).order_by(Lead.created_at.desc()).limit(_PAGE_SIZE)
+            select(Lead)
+            .order_by(Lead.contacted_at.is_not(None), Lead.created_at.desc())
+            .limit(_PAGE_SIZE)
         ).all()
-        form_active = (
-            session.scalar(select(LeadFormSettings.id).where(LeadFormSettings.active.is_(True)))
-            is not None
-        )
-        leads = [_lead_vm(row, zone_name) for row in rows]
-    link = form_url(os.environ.get(LEAD_FORM_URL_ENV, ""), str(tenant_id), form_active=form_active)
+        form = _active_form(session)
+        labels = _labels(form)
+        leads = [_lead_vm(row, zone_name, labels) for row in rows]
+    link = form_url(
+        os.environ.get(LEAD_FORM_URL_ENV, ""), str(tenant_id), form_active=form is not None
+    )
     return LeadsScreen(leads=leads, form_link=link)
 
 
@@ -115,4 +128,4 @@ def set_contacted(tenant_id: UUID, lead_id: UUID, *, contacted: bool) -> LeadVM 
         row = session.scalar(select(Lead).where(Lead.id == lead_id))
         if row is None:
             return None
-        return _lead_vm(row, _zone_name(session, tenant_id))
+        return _lead_vm(row, _zone_name(session, tenant_id), _labels(_active_form(session)))
