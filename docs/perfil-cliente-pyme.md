@@ -63,6 +63,7 @@ persona real.
 - **Qué sabe:** sabe mucho de su negocio y poco de marketing; no conoce «engagement», «feed»,
   «CTA» ni «Brand Kit» `[H]`. El dueño de la agencia de viajes es un profesional de su rubro, no un
   publicista `[E]`.
+- **Qué palabras usa:** dice «reel» e «historia» para los formatos de Instagram `[F]` (fundador, 2026-10-23): la app escribe «reel (video corto)» e «historia», nunca «story». Sigue abierta la pregunta 4 del §5 para el resto de su vocabulario.
 - **Qué quiere obtener** (en sus palabras, no en las nuestras):
   - «Estar en redes sin tener que pagarle a una agencia ni a un diseñador» `[F]`.
   - «Tener publicaciones listas sin pensar qué subir cada día» `[E]`: calendario de 12–16
