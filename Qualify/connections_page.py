@@ -439,7 +439,7 @@ def help_button(size: str = "2") -> rx.Component:
 
 def connections_topbar() -> rx.Component:
     return page_header(
-        "Cuentas conectadas",
+        "Tus redes",
         "Revisa que tus redes sociales estén conectadas y con los permisos que Qualify necesita.",
         help_button(),
     )

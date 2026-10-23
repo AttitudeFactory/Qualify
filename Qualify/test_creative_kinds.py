@@ -936,10 +936,10 @@ def test_the_app_says_when_the_piece_lands() -> None:
     failed = [str(event) for event in _generation_done_events("failed")]
     assert any("Tu pieza est" in event for event in ready)
     assert any("No se pudo generar" in event for event in failed)
-    # a piece regenerated in Piezas (ex-Borradores) says where to look (pendientes §5)
+    # a piece regenerated in Por aprobar (ex-Piezas) says where to look (pendientes §5)
     draft_ready = [str(event) for event in _generation_done_events("ready", source="draft")]
     draft_failed = [str(event) for event in _generation_done_events("failed", source="draft")]
-    assert any("regenerada. Rev" in event and "Piezas" in event for event in draft_ready)
+    assert any("regenerada. Rev" in event and "Por aprobar" in event for event in draft_ready)
     assert any("No se pudo regenerar" in event for event in draft_failed)
     # the browser's own notice only when the tab is in the background, and only if allowed
     script = _notify_js("Qualify", "lista")

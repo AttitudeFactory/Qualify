@@ -142,7 +142,7 @@ def planner_error_message(exc: Exception) -> str:
         ),
         (
             InactiveConnection,
-            "La cuenta elegida no está activa. Revísala en Conexiones o elige otra.",
+            "La cuenta elegida no está activa. Revísala en Tus redes o elige otra.",
         ),
         (InvalidSchedule, "La fecha y hora deben ser futuras y válidas en tu zona horaria."),
         (UnknownEvent, "Ese evento ya no existe. Actualiza la página."),
@@ -703,7 +703,7 @@ def reject_post(tenant_id: UUID, event_id: str) -> None:
         tenant_id,
         planned.event.post_id,
         user_id,
-        reason="Rechazado desde el Planificador",
+        reason="Rechazado desde Tu semana",
         regenerate=False,
     )
 

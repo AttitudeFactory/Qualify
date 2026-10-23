@@ -982,7 +982,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
         _picker_note(
             rx.cond(
                 stock,
-                f"Tu inspiración no tiene {noun}: búscalas en «Catálogo» o súbelas.",
+                f"Tu inspiración no tiene {noun}: búscalas en «Tus productos» o súbelas.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
                     f"El producto que elegiste no tiene {noun} en el catálogo.",
@@ -1118,7 +1118,7 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
         _picker_note(
             rx.cond(
                 stock,
-                "Tu inspiración no tiene fotos ni videos: búscalos en «Catálogo» o súbelos.",
+                "Tu inspiración no tiene fotos ni videos: búscalos en «Tus productos» o súbelos.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
                     "El producto que elegiste no tiene fotos ni videos en el catálogo.",
@@ -1618,7 +1618,7 @@ def _catalog_product_grid() -> rx.Component:
                     empty_state(
                         "package",
                         "Aún no hay productos en tu catálogo",
-                        "Crea el producto en Catálogo con sus fotos, o usa una inspiración: "
+                        "Crea el producto en Tus productos con sus fotos, o usa una inspiración: "
                         "imágenes y videos que ilustran lo que vendes.",
                     ),
                 ),
@@ -3857,8 +3857,8 @@ def _campaign_view() -> rx.Component:
         rx.vstack(
             rx.heading("Campaña (opcional)", size="4", as_="h3"),
             rx.text(
-                "Agrupa la pieza con otras de la misma campaña: así se ven juntas en el "
-                "Planificador. Sin campaña, la pieza queda independiente.",
+                "Agrupa la pieza con otras de la misma campaña: así se ven juntas en "
+                "Tu semana. Sin campaña, la pieza queda independiente.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -4094,7 +4094,7 @@ def _create_view() -> rx.Component:
     )
 
 
-_RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Piezas para revisarla.")
+_RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Por aprobar para revisarla.")
 
 
 # -- the result view -------------------------------------------------------------------
@@ -4412,7 +4412,7 @@ def _waiting() -> rx.Component:
         rx.cond(
             CreativeState.gen_timed_out,
             callout(
-                "Está tardando más de lo normal. Revisa la pieza más tarde en Piezas.",
+                "Está tardando más de lo normal. Revisa la pieza más tarde en Por aprobar.",
                 "warn",
             ),
         ),
@@ -4470,14 +4470,14 @@ def _result_view() -> rx.Component:
                     # § request 2026-10-08: going to review starts the generator over, so
                     # «Crear pieza» opens on its first screen, not on this piece
                     rx.button(
-                        "Revisar y aprobar en Piezas",
+                        "Revisar y aprobar",
                         rx.icon("arrow-right", size=16),
                         size="2",
                         on_click=CreativeState.review_in_drafts,
                     ),
                     rx.tooltip(
                         rx.button(
-                            "Revisar y aprobar en Piezas",
+                            "Revisar y aprobar",
                             rx.icon("arrow-right", size=16),
                             size="2",
                             disabled=True,
@@ -4536,7 +4536,7 @@ def generator_page() -> rx.Component:
     readiness = CreativeState.readiness
     return app_shell(
         page_header(
-            "Crear pieza",
+            "Crear publicación",
             "Elige el producto, luego qué quieres crear, y avanza paso a paso.",
             title_size="8",
         ),
@@ -4645,8 +4645,8 @@ def _workspace(readiness: rx.Var) -> rx.Component:
             rx.cond(
                 ~readiness.can_generate,
                 callout(
-                    "La marca aún no está lista para generar: completa el Brand "
-                    "Kit y la voz en Marca.",
+                    "Tu marca aún no está lista para crear publicaciones: completa tu "
+                    "logo, colores y forma de hablar en Tu marca.",
                     "warn",
                 ),
             ),

@@ -82,7 +82,7 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay ningún tenant activo. Entra a Conexiones y elige uno primero."
+_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la página e intenta de nuevo."
 _NO_ACTING_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "

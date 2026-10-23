@@ -288,7 +288,7 @@ def followups_panel() -> rx.Component:
                     "messages-square",
                     "No hay consultas pendientes",
                     "Cuando «Analizar intención» encuentre una consulta comercial en los "
-                    "comentarios, o pulses «Responder por DM» en Interacciones, aparecerá "
+                    "comentarios, o pulses «Responder por DM» en Comentarios, aparecerá "
                     "aquí con un borrador para revisar.",
                 ),
             ),

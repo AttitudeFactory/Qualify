@@ -203,7 +203,7 @@ app.add_page(
     brand_start_index,
     route=BRAND_START_ROUTE,
     on_load=AuthState.enter_brand_start,
-    title="Qualify · Tu Brand Kit",
+    title="Qualify · Crea tu marca",
 )
 
 # Every business page requires a session: `require_login` runs FIRST in each on_load
@@ -222,7 +222,7 @@ app.add_page(
         ConnectionsState.read_connect_result,
         ConnectionsState.load_connections,
     ],
-    title="Qualify · Conexiones",
+    title="Qualify · Tus redes",
 )
 # WA-12: the WhatsApp module. `enter_page` reads `?tab=` and loads the tenant's numbers;
 # each tab loads its own data on mount (see `whatsapp_page.py`).
@@ -244,13 +244,13 @@ app.add_page(
         PublishState.load_active_connections,
         PublishHubState.enter_publish_page,
     ],
-    title="Qualify · Publicar",
+    title="Qualify · Publicar ahora",
 )
 app.add_page(
     inbox_index,
     route="/inbox",
     on_load=[AuthState.require_login, InboxState.load_screen],
-    title="Qualify · Interacciones",
+    title="Qualify · Comentarios",
 )
 # QUA-226: the private inbox of the connected accounts (Instagram Direct first).
 app.add_page(
@@ -263,13 +263,13 @@ app.add_page(
     leads_index,
     route="/leads",
     on_load=[AuthState.require_login, LeadsState.load_leads],
-    title="Qualify · Leads",
+    title="Qualify · Clientes interesados",
 )
 app.add_page(
     clarity_index,
     route="/clarity",
     on_load=[AuthState.require_login, ClarityState.load],
-    title="Qualify · Clarity",
+    title="Qualify · Tu página web",
 )
 # Fase 3 placeholder (see signals_page.py's module docstring) — static, no load beyond
 # the session gate. Reached today only from the Brand Kit connect flow's final screen.
@@ -320,7 +320,7 @@ app.add_page(
         BrandConnectState.clear_entry,
         BrandConnectState.enter_brand_home,
     ],
-    title="Qualify · Marca",
+    title="Qualify · Crea tu marca",
 )
 
 # The "No, todavía no" answer's detour: instructions for creating an Instagram or
@@ -353,7 +353,7 @@ app.add_page(
         # the saved brandboard and logo brief (§ 2026-10-01)
         BrandWizardState.load_saved_assets,
     ],
-    title="Qualify · Brand Kit",
+    title="Qualify · Tu marca",
 )
 
 # Editing an existing kit (§ request 2026-09-30), from the sidebar's "Negocio" block:
@@ -374,7 +374,7 @@ app.add_page(
         BrandWizardState.load_saved_assets,
         BrandConnectState.load_saved_details,
     ],
-    title="Qualify · Editar Brand Kit",
+    title="Qualify · Tu marca",
 )
 
 # The scraper flow — reached from BOTH /brand answers now. No `resume` here: its
@@ -394,7 +394,7 @@ app.add_page(
         BrandConnectState.load_saved_details,
         BrandConnectState.load_saved_referentes,
     ],
-    title="Qualify · Conectar redes",
+    title="Qualify · Tu marca",
 )
 
 app.add_page(
@@ -405,19 +405,19 @@ app.add_page(
         CreativeState.load_create,
         CreativeState.load_catalog_products,
     ],
-    title="Qualify · Crear pieza",
+    title="Qualify · Crear publicación",
 )
 app.add_page(
     drafts_index,
     route="/drafts",
     on_load=[AuthState.require_login, GalleryState.load],
-    title="Qualify · Piezas",
+    title="Qualify · Por aprobar",
 )
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
     on_load=[AuthState.require_login, CreativeState.load_draft, CampaignState.load],
-    title="Qualify · Borrador",
+    title="Qualify · Revisar publicación",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
 # Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,
@@ -426,7 +426,7 @@ app.add_page(
     planner_index,
     route="/planner",
     on_load=[AuthState.require_login, PlannerState.load_current_week],
-    title="Qualify · Planificador",
+    title="Qualify · Tu semana",
 )
 
 
@@ -441,7 +441,7 @@ app.add_page(
     _stories_redirect,
     route="/stories",
     on_load=rx.redirect("/publish?flow=stories", replace=True),
-    title="Qualify · Stories",
+    title="Qualify · Historias",
 )
 # Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1): the brand's real
 # products and media — what the template engine composes. Negocio → Catálogo.
@@ -449,7 +449,7 @@ app.add_page(
     catalog_index,
     route="/catalog",
     on_load=[AuthState.require_login, CatalogState.load_catalog],
-    title="Qualify · Catálogo",
+    title="Qualify · Tus productos",
 )
 
 

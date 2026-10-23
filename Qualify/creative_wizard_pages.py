@@ -2521,8 +2521,8 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.text(
-            "Haz clic en un valor para editarlo; la ✕ lo quita. Tu voz y el tono los "
-            "configuras después, desde Negocio → Brand Kit.",
+            "Haz clic en un valor para editarlo; la ✕ lo quita. Tu forma de hablar la "
+            "eliges después, en Tu marca.",
             size="1",
             color=T.TEXT_FAINT,
         ),
@@ -2920,7 +2920,7 @@ def brand_choice_index() -> rx.Component:
     vstack so there is room to grow into) instead of stopping short and leaving bare
     panel background below it."""
     return _wizard_shell(
-        page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
+        page_header("Crea tu marca", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
                 card(

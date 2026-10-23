@@ -99,7 +99,7 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "Ningún texto generado cumplió las reglas de tu marca (palabras prohibidas, "
         "promesas que no se pueden hacer, largo, emojis o hashtags), así que la pieza "
         "no se guardó. Reintenta: cada intento escribe textos nuevos.",
-        "Reintenta, o revisa las reglas en el Brand Kit",
+        "Reintenta, o revisa las reglas en Tu marca",
         "/brand",
     ),
     "route_blocked_by_policy": (
@@ -187,7 +187,7 @@ GAP_LABELS: dict[str, tuple[str, str]] = {
 }
 
 _FIX_LABELS: dict[str, str] = {
-    "/brand": "Completar en el Brand Kit",
+    "/brand": "Completar tu marca",
 }
 
 

@@ -1,7 +1,7 @@
 """Layout primitives: the app shell every business page is built from.
 
     app_shell(
-        page_header("Leads", "Personas captadas por tu funnel"),
+        page_header("Clientes interesados", "Personas que te dejaron sus datos"),
         page_body(...),
     )
 
@@ -46,7 +46,7 @@ MENTION_ICON = "qualify-mention"
 # the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
 # measurement — deliberately outside the colour zones.
 NAV_BASE: list[Item] = [
-    ("Conexiones", "link", "/connections", True),
+    ("Tus redes", "link", "/connections", True),
     # WA-12: the WhatsApp module (own number: connection, profile, QR, chats, menu).
     ("WhatsApp", "message-circle", "/whatsapp", True),
 ]
@@ -58,7 +58,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         [
             ("Menciones", MENTION_ICON, "/", True),
             # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
-            ("Interacciones", "film", "/inbox", True),
+            ("Comentarios", "film", "/inbox", True),
             # QUA-226: the private inbox of the connected accounts. Founder's placement
             # (2026-10-16): inside Escuchas, after Interacciones, before Creadores.
             ("Conversaciones", "messages-square", "/conversations", True),
@@ -73,23 +73,23 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
             # before the login and edited from Negocio → Brand Kit. The guest rail
             # keeps "Marca" as the entry to make it.
-            ("Crear pieza", "wand-sparkles", "/create", True),
-            ("Piezas", "layout-list", "/drafts", True),
-            ("Planificador", "calendar-days", "/planner", True),
+            ("Crear publicación", "wand-sparkles", "/create", True),
+            ("Por aprobar", "layout-list", "/drafts", True),
+            ("Tu semana", "calendar-days", "/planner", True),
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
-            ("Publicar", "upload", "/publish", True),
+            ("Publicar ahora", "upload", "/publish", True),
         ],
     ),
 ]
 
-NAV_LOOSE: list[Item] = [("Leads", "user-plus", "/leads", True)]
+NAV_LOOSE: list[Item] = [("Interesados", "user-plus", "/leads", True)]
 
 NAV_BUSINESS: list[Item] = [
-    ("Clarity", "activity", "/clarity", True),
-    ("Brand Kit", "swatch-book", "/brand/kit", True),
+    ("Tu página web", "activity", "/clarity", True),
+    ("Tu marca", "swatch-book", "/brand/kit", True),
     # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
     # the templates compose. Next to the Brand Kit — both are what the brand IS.
-    ("Catálogo", "package", "/catalog", True),
+    ("Tus productos", "package", "/catalog", True),
     # The account itself (2026-10-06): who is in, and changing the password.
     ("Configuración", "settings", "/settings", True),
 ]
@@ -410,12 +410,12 @@ def _guest_islands() -> rx.Component:
     """The rail of a pre-login Brand Kit (§ request 2026-10-02): no sections — every
     other page needs a login — only where the kit is being saved and the way into an
     account (the signup with that email adopts it)."""
-    # Same labels and routes as the logged-in rail's own entries ("Marca", and "Brand
-    # Kit" under "Negocio"), so the Brand Kit's own copy ("ve a Negocio → Brand Kit")
-    # holds for a guest too.
+    # "Tu marca" under "Negocio" is the same label and route as the logged-in rail's
+    # entry (m-24842958, N1: one name per place), so a pointer to it holds for a guest
+    # too. "Crea tu marca" is the creation entry (/brand), same words as its header.
     return rx.fragment(
         _island(
-            _nav_item("Marca", "palette", "/brand", True),
+            _nav_item("Crea tu marca", "palette", "/brand", True),
             rx.text(
                 "Guardando en ",
                 rx.text.strong(AuthState.guest_email),
@@ -429,7 +429,7 @@ def _guest_islands() -> rx.Component:
         rx.spacer(),
         _island(
             _zone_head("Negocio", "business"),
-            _nav_item("Brand Kit", "swatch-book", "/brand/kit", True),
+            _nav_item("Tu marca", "swatch-book", "/brand/kit", True),
             rx.divider(margin="0.15rem 0"),
             _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True),
             _nav_item("Iniciar sesión", "log-in", "/login", True),

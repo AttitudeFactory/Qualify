@@ -253,9 +253,9 @@ def _no_connections_state() -> rx.Component:
         "link-2-off",
         "No hay cuentas listas para monitorear",
         "Conecta una cuenta con el permiso de comentarios en "
-        "Conexiones para elegir qué contenido monitorear.",
+        "Tus redes para elegir qué contenido monitorear.",
         action=rx.link(
-            rx.button(rx.icon("link", size=16), "Ir a Conexiones", size="3"),
+            rx.button(rx.icon("link", size=16), "Ir a Tus redes", size="3"),
             href="/connections",
         ),
     )
@@ -1408,7 +1408,7 @@ def _replies_section() -> rx.Component:
 
 def inbox_topbar() -> rx.Component:
     return page_header(
-        "Interacciones",
+        "Comentarios",
         "Comentarios de tus Reels y publicaciones de las últimas 2 semanas — elige cuáles "
         "monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),

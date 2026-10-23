@@ -289,7 +289,7 @@ def brand_start_index() -> rx.Component:
     """The Brand Kit's first view, before any login (§ request 2026-10-02): the email the
     kit is saved to. The signup with the same email later opens with the kit in it."""
     return _auth_card(
-        rx.heading("Crea tu Brand Kit", size="4"),
+        rx.heading("Crea tu marca", size="4"),
         rx.text(
             "Sin crear cuenta. Lo guardamos con tu correo y, cuando te registres con ese "
             "mismo correo, tu cuenta ya lo tendrá.",

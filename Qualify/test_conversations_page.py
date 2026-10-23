@@ -13,11 +13,11 @@ from .ui.layout import NAV_ITEMS, NAV_ZONES
 _HERE = Path(__file__).parent
 
 
-def test_nav_item_sits_in_escuchas_after_interacciones_before_creadores() -> None:
+def test_nav_item_sits_in_escuchas_after_comentarios_before_creadores() -> None:
     assert ("Conversaciones", "messages-square", "/conversations", True) in NAV_ITEMS
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
     listen = zones["listen"]
-    assert listen.index("Conversaciones") == listen.index("Interacciones") + 1
+    assert listen.index("Conversaciones") == listen.index("Comentarios") + 1
     assert listen.index("Creadores") == listen.index("Conversaciones") + 1
     assert "Conversaciones" not in zones["publish"]
 
@@ -60,7 +60,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Responder",
         "Reconectar",
         "por verificar",
-        "Ir a Conexiones",
+        "Ir a Tus redes",
         "Aún no hay una cuenta de Instagram conectada",
         "Todavía no se han leído mensajes de esta cuenta",
         "Aún no hay conversaciones en esta cuenta",

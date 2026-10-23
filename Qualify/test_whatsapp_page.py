@@ -339,10 +339,10 @@ def test_route_is_registered_behind_login() -> None:
     assert "WhatsAppState.enter_page" in block
 
 
-def test_nav_item_sits_after_conexiones() -> None:
+def test_nav_item_sits_after_tus_redes() -> None:
     assert ("WhatsApp", "message-circle", "/whatsapp", True) in NAV_ITEMS
     labels = [label for label, *_ in NAV_BASE]
-    assert labels.index("WhatsApp") == labels.index("Conexiones") + 1
+    assert labels.index("WhatsApp") == labels.index("Tus redes") + 1
 
 
 def test_empty_vms_are_valid_defaults() -> None:

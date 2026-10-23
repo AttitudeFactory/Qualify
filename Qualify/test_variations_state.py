@@ -160,7 +160,7 @@ async def test_an_empty_catalog_says_where_to_add_products(
     monkeypatch.setattr(module, "catalog_products", lambda *_: ())
     await VariationsState.load.fn(state)
     assert not state.has_products
-    assert "Catálogo" in state.error
+    assert "Tus productos" in state.error
 
 
 # ---------------------------------------------------------------------------

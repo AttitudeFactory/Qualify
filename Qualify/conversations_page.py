@@ -1566,10 +1566,10 @@ def _no_accounts_state() -> rx.Component:
     return empty_state(
         "messages-square",
         "Aún no hay una cuenta de Instagram conectada",
-        "Conecta la cuenta de Instagram del negocio en Conexiones, concediendo el permiso "
+        "Conecta la cuenta de Instagram del negocio en Tus redes, concediendo el permiso "
         "de mensajes, y sus conversaciones privadas aparecerán aquí.",
         action=rx.link(
-            rx.button(rx.icon("link", size=T.ICON_SM), "Ir a Conexiones", size="2"),
+            rx.button(rx.icon("link", size=T.ICON_SM), "Ir a Tus redes", size="2"),
             href="/connections",
         ),
     )

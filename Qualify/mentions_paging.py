@@ -116,7 +116,7 @@ THROTTLED_NOTICE: Final = "La red social limitó las consultas. Inténtalo en un
 USAGE_PAUSED_NOTICE: Final = (
     "Pausado para no agotar el límite de consultas. Inténtalo en unos minutos."
 )
-CREDENTIAL_NOTICE: Final = "No se pudo acceder a la cuenta conectada. Revísala en Conexiones."
+CREDENTIAL_NOTICE: Final = "No se pudo acceder a la cuenta conectada. Revísala en Tus redes."
 STOPPED_TOAST: Final = "La actualización no se completó."
 # A run that started but has not reported for this long is considered dead: opening
 # the screen unlocks the button. Longer than any bounded run. (Today Reflex keeps state in

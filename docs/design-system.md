@@ -211,30 +211,30 @@ El Lab es dark-only: el oscuro es su material «liquid» al pie de la letra (bla
   │  ◎ Qualify │ │                                                │
   └────────────┘ │ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
   ┌────────────┐ │ │stat_card │ │stat_card │ │stat_card │  ← page_body (gutter PAGE_X)
-  │ Conexiones │ │ └──────────┘ └──────────┘ └──────────┘         │
+  │ Tus redes  │ │ └──────────┘ └──────────┘ └──────────┘         │
   └────────────┘ │ callout (si hay error de acción)               │
   ┌────────────┐ │ ┌────────────────────────────────────────────┐ │
   │ ESCUCHAS   │ │ │ card / tabla / lista …                     │ │
   │ Menciones  │ │ └────────────────────────────────────────────┘ │
-  │ Contenido  │ │                                                │
+  │ Comentarios│ │                                                │
   │ Creadores ·│ │                                                │
   │ Señales   ·│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
   │ PUBLICAS   │ │                                                │
-  │ Crear pieza│ │                                                │
-  │ Borradores │ │                                                │
-  │ Planificad.│ │                                                │
-  │ Publicar   │ │                                                │
+  │ Crear publ.│ │                                                │
+  │ Por aprobar│ │                                                │
+  │ Tu semana  │ │                                                │
+  │ Publ. ahora│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ Leads      │ │                                                │
+  │ Interesados│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
   │ NEGOCIO    │ │                                                │
-  │ Clarity    │ │                                                │
-  │ Brand Kit  │ │                                                │
-  │ Catálogo   │ │                                                │
+  │ Tu pág. web│ │                                                │
+  │ Tu marca   │ │                                                │
+  │ Tus product│ │                                                │
   │ Config.   ·│ │                                                │
   │ ───────────│ │                                                │
   │ ⇥ Salir    │ │                                                │
@@ -246,7 +246,7 @@ from .ui import app_shell, page_header, page_body
 
 def leads_index() -> rx.Component:
     return app_shell(
-        page_header("Leads", "Personas captadas por tu funnel", badge=rx.badge("12 leads", ...)),
+        page_header("Clientes interesados", "Personas que te dejaron sus datos para que las contactes", badge=rx.badge("12", ...)),
         page_body(_body()),
     )
 ```
@@ -263,11 +263,11 @@ El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son lo
 | Isla | Contiene | Tinte (lavado bajo el vidrio) |
 |---|---|---|
 | Negocio (arriba) | nombre del tenant, «Supported by ◎ Qualify» → `LANDING_URL`, control de zen | neutra |
-| Base | Conexiones — habilita las dos zonas, así que no pertenece a ninguna | neutra |
-| **Escuchas** (inbound) | Menciones · Contenido · Creadores · Señales | `accent` alfa 3, línea alfa 6 |
-| **Publicas** (outbound) | Crear pieza · Borradores · Planificador · Publicar | `iris` alfa 3, línea alfa 6 |
-| Suelta | Leads | neutra |
-| **Negocio** (pie) | Clarity · Brand Kit · Catálogo · Configuración · Salir | neutra |
+| Base | Tus redes — habilita las dos zonas, así que no pertenece a ninguna | neutra |
+| **Escuchas** (inbound) | Menciones · Comentarios · Conversaciones · Creadores · Señales | `accent` alfa 3, línea alfa 6 |
+| **Publicas** (outbound) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
+| Suelta | Interesados (página «Clientes interesados») | neutra |
+| **Negocio** (pie) | Tu página web · Tu marca · Tus productos · Configuración · Salir | neutra |
 
 **El menú es vidrio líquido** (`assets/qualify.css` «Liquid glass menu» + `assets/glass-nav.js`; adaptado de `real-liquid-glass-os-effect.html`, un dock horizontal, a nuestras islas verticales):
 
@@ -281,7 +281,7 @@ El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son lo
 Tres reglas que sostienen esto:
 
 1. **El tinte es superficie, no señal.** Se queda en alfa 3 (lavado) y alfa 6 (línea): agrupa, pero no puede confundirse con un estado (P1/P2). Subirlo es una decisión consciente, no un ajuste.
-2. **Clarity, Brand Kit y Catálogo viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, o son lo que la marca *es*, no conversación.
+2. **Tu página web, Tu marca y Tus productos viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, o son lo que la marca *es*, no conversación.
 3. **Salir es el único control de sesión** (`1 login = 1 negocio`, sin switch). Sin sesión (`/design`) el nombre cae a «Qualify».
 
 **Zen** (`NavState.zen`, botón en la isla del negocio o `⌘ .`): el rail se contrae a 72 px con muelle, las etiquetas se **revelan con máscara** (`clip-path`) en vez de fundirse, y el nombre aparece en la etiqueta de vidrio de arriba. Todo el colapso es **una clase** (`q-zen`) en el `nav`: las reglas viven en `assets/qualify.css`, no en condicionales de Python — así el navegador puede animarlo y no hay dos árboles que mantener. El estado vive en la sesión del servidor, nunca en el navegador: persistir en el cliente exigiría clave namespaced por tenant y purga en logout (regla firmada), y para un modo de vista no compensa.
@@ -331,7 +331,7 @@ Skin del kit (`.lq-badge`): todo `rx.badge` es píldora (radio 999px), peso 650,
 | `tag(label)` | `surface` gris | interés, fuente, scope, tema — metadata, no estado |
 | `removable_pill(label, on_remove, icon=None, leading=None, suggested=False)` | `surface` gris con ✕; `suggested=True` → `soft` acento | un valor que el operador cura y puede quitar: un hashtag, una palabra vetada, un archivo subido. `suggested` marca lo que propuso el producto y el operador aún no escribió. Nunca un tono: una pill quitable no es un veredicto |
 | `pill_editor(items, draft=, on_draft_change=, on_add=, on_remove=, placeholder=)` | pills + input con Enter / "+" | una lista que se arma de a un valor (listas del Brand Kit: ejemplos, CTAs, palabras vetadas, claims). `on_remove` recibe el índice. Sustituye a los textarea "uno por línea" |
-| badge de conteo (`rx.badge(..., variant="soft", color_scheme="gray")`) | `soft` gris | "12 leads" junto a un título |
+| badge de conteo (`rx.badge(..., variant="soft", color_scheme="gray")`) | `soft` gris | "12" junto al título «Clientes interesados» |
 
 **Tabla de decisión — ¿qué badge?**
 
@@ -460,11 +460,11 @@ Si el tenant no configuró (Clarity sin proyecto), la configuración sube arriba
 | Concepto | Palabra en UI | No usar |
 |---|---|---|
 | tenant | **negocio** | tenant, cuenta, workspace, empresa |
-| social_connection | **cuenta conectada** | conexión (salvo el título de la sección "Conexiones") |
+| social_connection | **cuenta conectada** (la pantalla se llama «Tus redes») | conexión |
 | earned mention | **mención** | post, publicación ajena |
 | own media a monitorear | **contenido** / **Reel** | inbox, media |
 | DM/comentario recibido | **mensaje** / **comentario** | thread |
-| lead | **lead** | prospecto, contacto |
+| lead | **cliente interesado** (menú: «Interesados») | lead, prospecto, contacto |
 | creator | **creador** | influencer (salvo copy de marketing) |
 | señal derivada | **señal** | evento, alerta (alerta = una señal que exige acción) |
 | Fecha de verificación | "Verificada: …" | "Last verified" |
@@ -473,7 +473,7 @@ Si el tenant no configuró (Clarity sin proyecto), la configuración sube arriba
 El botón dice "Publicar" → el estado dice "Publicando…" (con `loading_spinner("sm")`) → el toast dice "Publicado". El botón dice "Desconectar" → el diálogo se titula "Desconectar cuenta" → el estado queda "Revocada" (nombre del estado, no del verbo — está bien que difieran ahí, porque describe la fila, no la acción).
 
 ### 7.4 Empty states
-Título = el hecho, en presente ("Aún no conectas ninguna cuenta", "Todavía no hay leads"). Cuerpo = por qué importa + qué hacer, ≤ 2 frases. Si hay una acción que lo resuelve, es **el** botón `solid` de la página.
+Título = el hecho, en presente ("Aún no conectas ninguna cuenta", "Todavía no tienes clientes interesados"). Cuerpo = por qué importa + qué hacer, ≤ 2 frases. Si hay una acción que lo resuelve, es **el** botón `solid` de la página.
 
 ### 7.5 Errores
 Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca el código HTTP como único texto. Un mismo mensaje para todas las causas cuando la distinción no le sirve al operador (login: "Email o contraseña incorrectos." para todo — regla firmada, se conserva).

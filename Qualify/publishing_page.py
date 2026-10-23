@@ -555,7 +555,7 @@ def _posts_flow() -> rx.Component:
 
 def publish_topbar() -> rx.Component:
     return page_header(
-        "Publicar",
+        "Publicar ahora",
         "Publica de inmediato en una de tus cuentas conectadas: una "
         "publicación (imagen, reel o carrusel) o una Story",
     )

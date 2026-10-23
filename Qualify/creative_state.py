@@ -322,10 +322,10 @@ _OBJECTIVES = frozenset(o.value for o in BriefObjective)
 _INTENTS = frozenset(i.value for i in BriefIntent)
 #: When a piece lands (§ request 2026-10-09): what the toast says, and what the
 #: browser's own notification says when the tab is in the background.
-_GEN_READY_TOAST = "Tu pieza está lista. Revísala en Crear pieza o en Piezas."
-_GEN_FAILED_TOAST = "No se pudo generar la pieza. El detalle está en Crear pieza."
-_DRAFT_READY_TOAST = "Tu pieza ya está regenerada. Revísala en Piezas."
-_DRAFT_FAILED_TOAST = "No se pudo regenerar la pieza. El detalle está en Piezas."
+_GEN_READY_TOAST = "Tu pieza está lista. Revísala en Crear publicación o en Por aprobar."
+_GEN_FAILED_TOAST = "No se pudo generar la pieza. El detalle está en Crear publicación."
+_DRAFT_READY_TOAST = "Tu pieza ya está regenerada. Revísala en Por aprobar."
+_DRAFT_FAILED_TOAST = "No se pudo regenerar la pieza. El detalle está en Por aprobar."
 _ASK_NOTIFICATIONS_JS = (
     "if (window.Notification && Notification.permission === 'default') "
     "{ Notification.requestPermission(); }"
@@ -5236,7 +5236,7 @@ class CreativeState(rx.State):
             return
         async with self:
             self._apply_detail(vm)
-        yield rx.toast.success("POST aprobado: ya puedes programarlo en el Planificador.")
+        yield rx.toast.success("POST aprobado: ya puedes programarlo en Tu semana.")
 
     @rx.event
     def ask_reject(self, regenerate: bool) -> None:

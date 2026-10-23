@@ -651,7 +651,7 @@ def _delete_product_dialog() -> rx.Component:
             rx.alert_dialog.title("¿Eliminar este producto?"),
             rx.alert_dialog.description(
                 "«" + CatalogState.delete_product_name + "» desaparece del catálogo y de "
-                "Crear pieza. Las piezas que ya se hicieron con él se conservan.",
+                "Crear publicación. Las piezas que ya se hicieron con él se conservan.",
                 size="2",
             ),
             rx.flex(
@@ -806,7 +806,7 @@ def _loading() -> rx.Component:
 def catalog_index() -> rx.Component:
     return app_shell(
         page_header(
-            "Catálogo",
+            "Tus productos",
             "Tus productos con sus fotos reales: lo que las plantillas componen.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),

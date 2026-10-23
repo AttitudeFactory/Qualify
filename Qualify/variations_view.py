@@ -158,7 +158,7 @@ def _product_step() -> rx.Component:
                 "Aún no tienes productos",
                 "Variaciones parte de un producto real de tu catálogo: agrégalo con sus "
                 "fotos y vuelve aquí.",
-                rx.link(rx.button("Ir a Catálogo", size="2"), href="/catalog"),
+                rx.link(rx.button("Ir a Tus productos", size="2"), href="/catalog"),
             ),
         ),
         spacing="3",
@@ -901,7 +901,7 @@ def _archive_dialog() -> rx.Component:
             rx.alert_dialog.description(
                 "El grupo «" + VariationsState.archive_set_name + "» desaparece de la "
                 "lista. Sus propuestas pendientes se eliminan; las piezas ya aprobadas "
-                "se conservan en Piezas.",
+                "no se pierden.",
                 size="2",
             ),
             rx.flex(

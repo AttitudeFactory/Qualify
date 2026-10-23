@@ -61,7 +61,7 @@ from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay ningún tenant activo. Entra a Conexiones y elige uno primero."
+_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
 _NO_FILE = "Sube el video o la imagen de la Story antes de publicar."
