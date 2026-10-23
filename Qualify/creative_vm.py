@@ -172,27 +172,28 @@ class GapVM:
     fix_label: str
 
 
-#: Readiness gap name -> Spanish label. Kit gaps route to /brand; the voice gap to
-#: /brand/voice. Order of appearance is the backend's (highest impact first).
+#: Readiness gap name -> Spanish label. Every gap is fixed in the kit inside the
+#: session (/brand/kit, m-24842979). Order of appearance is the backend's (highest
+#: impact first).
 GAP_LABELS: dict[str, tuple[str, str]] = {
-    "positioning": ("Posicionamiento de la marca", "/brand"),
-    "audience": ("Audiencia objetivo", "/brand"),
-    "tone_axes": ("Ejes de tono", "/brand"),
-    "do_examples": ("Ejemplos de copy que SÍ suenan a la marca", "/brand"),
-    "dont_examples": ("Ejemplos de copy que NO suenan a la marca", "/brand"),
-    "cta_patterns": ("Patrones de llamado a la acción", "/brand"),
-    "palette_rgb": ("Paleta de colores", "/brand"),
-    "logo_asset_key": ("Logo de la marca", "/brand"),
-    "active_voice_profile": ("Perfil de voz aprobado", "/brand"),
+    "positioning": ("¿Qué te hace distinto?", "/brand/kit"),
+    "audience": ("¿Quién te compra?", "/brand/kit"),
+    "tone_axes": ("Cómo suena tu marca", "/brand/kit"),
+    "do_examples": ("Ejemplos de cómo sí hablas", "/brand/kit"),
+    "dont_examples": ("Ejemplos de cómo no hablas", "/brand/kit"),
+    "cta_patterns": ("Cómo invitas a comprar", "/brand/kit"),
+    "palette_rgb": ("Colores", "/brand/kit"),
+    "logo_asset_key": ("Logo", "/brand/kit"),
+    "active_voice_profile": ("Tu voz", "/brand/kit"),
 }
 
 _FIX_LABELS: dict[str, str] = {
-    "/brand": "Completar en Tu marca",
+    "/brand/kit": "Completar mi marca",
 }
 
 
 def gap_vm(key: str) -> GapVM:
-    label, route = GAP_LABELS.get(key, (key, "/brand"))
+    label, route = GAP_LABELS.get(key, (key, "/brand/kit"))
     return GapVM(key=key, label=label, fix_route=route, fix_label=_FIX_LABELS[route])
 
 

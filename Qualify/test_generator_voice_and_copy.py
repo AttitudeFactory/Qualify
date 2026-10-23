@@ -147,7 +147,7 @@ def test_the_flag_shows_on_the_form_and_sends_to_the_brand_kit() -> None:
 
     assert "kit_voice_missing" in str(generator_page())
     flag = str(_voice_flag())
-    assert "Configurar voz" in flag and "voz y tono" in flag
+    assert "Preparar mi voz" in flag and "no tiene su voz" in flag
     assert CreativeState.configure_voice.fn(CreativeState()) is not None  # rx.redirect
 
 

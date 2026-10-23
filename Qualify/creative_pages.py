@@ -898,7 +898,7 @@ def _gallery_card(post) -> rx.Component:
         rx.box(
             rx.button(
                 rx.icon("circle-x", size=15),
-                "Rechazar",
+                "Descartar",
                 variant="outline",
                 size="2",
                 width="100%",
@@ -929,10 +929,10 @@ def _gallery_card(post) -> rx.Component:
                         size="2",
                         disabled=busy,
                         on_click=GalleryState.ask_reject_post(post.post_id, post.title),
-                        aria_label="Rechazar",
+                        aria_label="Descartar",
                         **T.tone_scheme("error"),
                     ),
-                    content="Rechazar",
+                    content="Descartar",
                 ),
             ),
             view,
@@ -966,7 +966,9 @@ def _gallery_card(post) -> rx.Component:
                         rx.icon("snowflake", size=15),
                         rx.icon("flame", size=15),
                     ),
-                    rx.text(rx.cond(post.temperature == "cold", "Ya probada", "Nueva"), as_="span"),
+                    rx.text(
+                        rx.cond(post.temperature == "cold", "Ya probada", "Por probar"), as_="span"
+                    ),
                     class_name="q-temp q-temp--big q-temp--" + post.temperature,
                     title=rx.cond(
                         post.temperature == "cold",
@@ -2120,7 +2122,7 @@ def _reject_dialog() -> rx.Component:
                         ),
                         rx.button(
                             rx.icon("circle-x", size=15),
-                            "Sí, rechazar",
+                            "Sí, descartar",
                             size="2",
                             on_click=CreativeState.confirm_reject,
                             **T.tone_scheme("error"),
@@ -2232,11 +2234,11 @@ def _decision_bar_or_nothing() -> rx.Component:
                 _decision_card(
                     tone="red",
                     icon="circle-x",
-                    title="Rechazar",
+                    title="Descartar",
                     text="Descarta esta publicación. No se genera nada nuevo y no se publica.",
                     button=rx.button(
                         rx.icon("circle-x", size=15),
-                        "Rechazar",
+                        "Descartar",
                         variant="outline",
                         size="2",
                         width="100%",

@@ -231,8 +231,9 @@ def test_readiness_gaps_link_to_fix_screens() -> None:
     )
     assert vm.completeness_pct == 65
     routes = {gap.key: gap.fix_route for gap in vm.gaps}
-    assert routes["dont_examples"] == "/brand"
-    assert routes["active_voice_profile"] == "/brand"
+    assert routes["dont_examples"] == "/brand/kit"
+    assert routes["active_voice_profile"] == "/brand/kit"
+    assert {gap.fix_label for gap in vm.gaps} == {"Completar mi marca"}
     for gap in vm.gaps:
         assert gap.label and gap.fix_label
 

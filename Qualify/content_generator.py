@@ -3519,7 +3519,7 @@ def _context_ai_tools() -> rx.Component:
             ),
             rx.text(
                 "Ordenamos tu texto con lo que sabemos de tu marca, sin inventar precios ni "
-                "promociones. Revísalo antes de generar.",
+                "promociones. Revísalo antes de crear.",
                 size="1",
                 color=T.TEXT_MUTED,
                 flex="1",
@@ -4509,13 +4509,13 @@ def _voice_flag() -> rx.Component:
     return rx.hstack(
         rx.icon("mic-off", size=T.ICON_SM, color=T.tone_color("warn", 11), flex_shrink="0"),
         rx.text(
-            "Tu marca aún no tiene configurada su voz y tono: lo que generes sonará genérico.",
+            "Tu marca todavía no tiene su voz: lo que crees sonará genérico.",
             size="2",
             color=T.tone_color("warn", 11),
             flex="1",
         ),
         rx.button(
-            "Configurar voz",
+            "Preparar mi voz",
             rx.icon("arrow-right", size=14),
             size="1",
             variant="soft",

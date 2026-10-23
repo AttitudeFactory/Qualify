@@ -563,7 +563,7 @@ _GEN_POLL_SECONDS = 3.0
 _GEN_POLL_BUDGET_SECONDS = 20 * 60
 _MAX_PRODUCTS = 10
 _NOT_REJECTABLE = (
-    "Esta publicación ya no se puede rechazar: ya fue rechazada o aprobada. "
+    "Esta publicación ya no se puede descartar: ya fue descartada o aprobada. "
     "Actualiza la página para ver su estado."
 )
 _DRAFT_GONE = "Esa publicación no existe o ya no es visible para este negocio."
