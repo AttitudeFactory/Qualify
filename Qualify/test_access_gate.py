@@ -17,6 +17,7 @@ from .access_vm import (
     CODE_EMPTY,
     CONSENT_LABEL,
     INTEREST_SENT,
+    INTEREST_SENT_TITLE,
     interest_error_message,
     invite_token_from_text,
 )
@@ -53,7 +54,7 @@ def test_the_consent_label_is_the_stored_policy_text() -> None:
 
 def test_every_failure_says_what_to_do() -> None:
     for reason in ("consent", "full_name", "business_name", "whatsapp_phone"):
-        assert interest_error_message(reason).startswith(("Marca", "Escribe"))
+        assert interest_error_message(reason).startswith(("Marca", "Escribe", "Falta"))
     assert "Espera" in interest_error_message("rate_limited")
     assert "Inténtalo" in interest_error_message("anything-else")
 
@@ -89,6 +90,40 @@ def test_the_signup_without_invite_is_no_longer_a_dead_end() -> None:
     assert js(ACCESS_NOTICE) in rendered
     assert js("Qualify es solo por invitación") + '"' not in rendered  # no bare heading
     assert js(INTEREST_SENT) in str(access_gate("signup"))
+
+
+def test_after_sending_the_card_confirms_and_offers_the_code() -> None:
+    from .auth_pages import _invite_only, access_gate, brand_start_index
+
+    for rendered in (str(brand_start_index()), str(_invite_only())):
+        assert js(INTEREST_SENT_TITLE) in rendered
+    assert js("Ya tengo mi código") in str(access_gate("brand"))
+
+
+def test_the_code_button_says_where_it_goes() -> None:
+    from .auth_pages import _code_form
+
+    assert js("Empezar mi marca") in str(_code_form("brand"))
+    assert js("Empezar mi marca") not in str(_code_form("signup"))
+
+
+def test_the_consent_checkbox_is_not_browser_required() -> None:
+    from .auth_pages import _interest_form
+
+    # Radix hides the native control: `required` would block silently or in English.
+    rendered = str(_interest_form())
+    checkbox = rendered[rendered.index("RadixThemesCheckbox,") :]
+    checkbox = checkbox[: checkbox.index("},)")]
+    assert 'name:"consent"' in checkbox
+    assert "required" not in checkbox
+
+
+def test_the_signup_gate_has_one_login_exit_as_a_footer() -> None:
+    from .auth_pages import _invite_only
+
+    rendered = str(_invite_only())
+    assert js("Inicia sesión") in rendered
+    assert js("Iniciar sesión") not in rendered
 
 
 # ---- the code handler -------------------------------------------------------------

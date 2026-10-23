@@ -12,8 +12,8 @@ from __future__ import annotations
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 
-from .access_interest_state import MODE_FORM, MODE_SENT, AccessInterestState
-from .access_vm import ACCESS_NOTICE, CONSENT_LABEL, INTEREST_SENT
+from .access_interest_state import MODE_CODE, MODE_FORM, MODE_SENT, AccessInterestState
+from .access_vm import ACCESS_NOTICE, CONSENT_LABEL, INTEREST_SENT, INTEREST_SENT_TITLE
 from .auth_state import AuthState
 from .settings_vm import country_options
 from .ui import brand_mark, callout, card, loading_spinner
@@ -157,7 +157,20 @@ def country_select(field_id: str, **props) -> rx.Component:
 
 
 def _footer_link(prompt: str, label: str, href: str) -> rx.Component:
-    return rx.text(prompt, " ", rx.link(label, href=href), size="2", color=T.TEXT_MUTED)
+    # The link inside the sentence keeps a 44 px tap zone at phone width (N12).
+    return rx.text(
+        prompt,
+        " ",
+        rx.link(
+            label,
+            href=href,
+            display="inline-flex",
+            align_items="center",
+            min_height=_TAP,
+        ),
+        size="2",
+        color=T.TEXT_MUTED,
+    )
 
 
 def login_index() -> rx.Component:
@@ -397,7 +410,7 @@ def _code_form(next_step: str) -> rx.Component:
                 ),
                 rx.el.input(type="hidden", name="next", value=next_step),
                 rx.button(
-                    "Seguir",
+                    "Empezar mi marca" if next_step == "brand" else "Seguir",
                     type="submit",
                     width="100%",
                     size="3",
@@ -498,7 +511,7 @@ def _interest_form() -> rx.Component:
                         height=_TAP,
                         custom_attrs={"autoComplete": "tel", "inputMode": "tel"},
                     ),
-                    hint="Con el código de tu país, por ejemplo +58 414 123 4567.",
+                    hint="Con el código de tu país: +57 Colombia, +58 Venezuela, +598 Uruguay.",
                 ),
                 _honeypot(),
                 rx.text(
@@ -507,7 +520,9 @@ def _interest_form() -> rx.Component:
                             name="consent",
                             checked=AccessInterestState.consent,
                             on_change=AccessInterestState.set_consent,
-                            required=True,
+                            # Not `required`: Radix hides the real control, so the
+                            # browser would block silently (or in English); the
+                            # service answers with the Spanish sentence instead.
                             size="3",
                         ),
                         CONSENT_LABEL,
@@ -563,17 +578,23 @@ def access_gate(next_step: str) -> rx.Component:
         AccessInterestState.mode,
         (
             MODE_SENT,
-            callout(INTEREST_SENT, "ok", icon="message-circle"),
-        ),
-        (
-            MODE_FORM,
             rx.vstack(
-                callout(ACCESS_NOTICE, "info", icon="mail"),
-                _interest_form(),
-                spacing="4",
+                callout(INTEREST_SENT, "ok", icon="message-circle"),
+                rx.button(
+                    "Ya tengo mi código",
+                    variant="soft",
+                    width="100%",
+                    size="3",
+                    height=_TAP,
+                    on_click=AccessInterestState.back_to_code,
+                ),
+                spacing="3",
                 width="100%",
             ),
         ),
+        # The notice already did its job on the code view; the form opens on its
+        # own one-line introduction.
+        (MODE_FORM, _interest_form()),
         rx.vstack(
             callout(ACCESS_NOTICE, "info", icon="mail"),
             _code_form(next_step),
@@ -630,9 +651,13 @@ def brand_start_index() -> rx.Component:
     invitation's email (the signup later opens with the kit in it); without a code the
     visitor leaves their details instead of building a brand that could not be saved."""
     return _auth_card(
-        rx.heading("Crea tu marca", size="4"),
         rx.cond(
-            AccessInterestState.mode != MODE_SENT,
+            AccessInterestState.mode == MODE_SENT,
+            rx.heading(INTEREST_SENT_TITLE, size="4"),
+            rx.heading("Crea tu marca", size="4"),
+        ),
+        rx.cond(
+            AccessInterestState.mode == MODE_CODE,
             rx.text(
                 "Arma la identidad de tu negocio en cinco pasos. Al terminar creas tu "
                 "cuenta y la encuentras lista.",
@@ -659,9 +684,13 @@ def _invite_only() -> rx.Component:
     right here, and without one the visitor leaves their details."""
     return rx.vstack(
         rx.cond(
-            AuthState.guest_email != "",
-            rx.heading("Tu marca está guardada", size="4"),
-            rx.heading("Crea tu cuenta", size="4"),
+            AccessInterestState.mode == MODE_SENT,
+            rx.heading(INTEREST_SENT_TITLE, size="4"),
+            rx.cond(
+                AuthState.guest_email != "",
+                rx.heading("Tu marca está guardada", size="4"),
+                rx.heading("Crea tu cuenta", size="4"),
+            ),
         ),
         rx.cond(
             AuthState.invite_state == "invalid",
@@ -671,11 +700,7 @@ def _invite_only() -> rx.Component:
             ),
         ),
         access_gate("signup"),
-        rx.link(
-            rx.button("Iniciar sesión", variant="soft", width="100%", size="3", height=_TAP),
-            href="/login",
-            width="100%",
-        ),
+        _footer_link("¿Ya tienes cuenta?", "Inicia sesión", "/login"),
         spacing="4",
         width="100%",
     )

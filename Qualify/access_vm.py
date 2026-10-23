@@ -14,6 +14,8 @@ ACCESS_NOTICE = (
     "Qualify es solo por invitación. Si tienes tu código, escríbelo y sigue. "
     "Si no lo tienes, déjanos tus datos y te escribimos."
 )
+#: The card's title once the details are sent, on /brand/start and /registro alike.
+INTEREST_SENT_TITLE = "Recibimos tus datos"
 INTEREST_SENT = "Listo. Te escribimos por WhatsApp cuando tu invitación esté lista."
 #: The checkbox shows the very text stamped as the consent policy on every entry.
 CONSENT_LABEL = INTEREST_CONSENT_TEXT
@@ -21,7 +23,7 @@ CONSENT_LABEL = INTEREST_CONSENT_TEXT
 CODE_EMPTY = "Escribe o pega el código de tu invitación."
 CODE_DEAD = (
     "Ese código no sirve: venció, ya se usó o le falta algo. Cópialo otra vez del correo "
-    "de tu invitación o pide uno nuevo a quien te invitó."
+    "de tu invitación o toca «No tengo código» y te escribimos."
 )
 ACCESS_DOWN = "No pudimos revisar tu código. Inténtalo de nuevo en un momento."
 
@@ -30,7 +32,8 @@ _INTEREST_ERRORS = {
     "escribirte.",
     "full_name": "Escribe tu nombre.",
     "business_name": "Escribe el nombre de tu negocio.",
-    "whatsapp_phone": "Escribe tu WhatsApp con el código de tu país, por ejemplo +58 414 123 4567.",
+    "whatsapp_phone": "Falta el código de tu país. Escríbelo antes del número: +57 Colombia, "
+    "+58 Venezuela, +598 Uruguay. Por ejemplo, +58 414 123 4567.",
     "rate_limited": "Ya recibimos varios envíos desde aquí. Espera unos minutos y vuelve a "
     "intentarlo.",
     "not_configured": "No pudimos guardar tus datos en este momento. Inténtalo de nuevo más tarde.",
