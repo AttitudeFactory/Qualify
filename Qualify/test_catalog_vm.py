@@ -371,7 +371,13 @@ def test_remove_media_words() -> None:
     assert remove_media_title("video") == "¿Quitar este video?"
     plain = remove_media_description("image", is_primary=False)
     assert plain.startswith("Esta foto ya no se usará") and "principal" not in plain
-    assert "pasa a ser la principal" in remove_media_description("image", is_primary=True)
+    with_other = remove_media_description("image", is_primary=True, has_other_photo=True)
+    assert with_other.endswith("La siguiente foto pasa a ser la principal.")
+    only = remove_media_description("image", is_primary=True, has_other_photo=False)
+    assert only.endswith("Tu producto quedará sin foto hasta que subas otra.")
+    assert "Si tienes" not in with_other + only
+    video = remove_media_description("video", is_primary=False)
+    assert video.startswith("Este video") and "principal" not in video
 
 
 def test_no_photo_label_carries_pixel_sizes() -> None:

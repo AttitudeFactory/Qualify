@@ -1027,6 +1027,16 @@ def test_quitar_the_main_photo_says_who_takes_its_place_and_a_video_is_a_video()
     assert state.remove_media_text.startswith("Este video")
 
 
+def test_quitar_the_only_photo_says_the_product_is_left_without_one() -> None:
+    """UX review: Qualify knows whether another photo is left, so it says it outright."""
+    state = _with_media()
+    state.ask_remove_media("m1")
+    assert state.remove_media_text.endswith("La siguiente foto pasa a ser la principal.")
+    state.products = [_product(media=(_media("m1", primary=True),), photo_count=1)]
+    state.ask_remove_media("m1")
+    assert state.remove_media_text.endswith("Tu producto quedará sin foto hasta que subas otra.")
+
+
 def test_si_quitar_closes_the_dialog_and_runs_the_removal() -> None:
     state = _with_media()
     state.ask_remove_media("m2")

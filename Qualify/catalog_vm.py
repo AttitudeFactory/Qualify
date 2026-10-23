@@ -367,7 +367,7 @@ def editor_is_dirty(
 # -- the main photo and removing media (m-24842977) -----------------------------------
 
 #: The two tile actions, as words on the button (never only an icon).
-MAKE_PRIMARY = "Principal"
+MAKE_PRIMARY = "Hacer principal"
 REMOVE_MEDIA = "Quitar"
 REMOVE_CONFIRM = "Sí, quitar"
 REMOVE_STAY = "Volver"
@@ -378,13 +378,19 @@ def remove_media_title(media_type: str) -> str:
     return "¿Quitar este video?" if media_type == "video" else "¿Quitar esta foto?"
 
 
-def remove_media_description(media_type: str, *, is_primary: bool) -> str:
+def remove_media_description(
+    media_type: str, *, is_primary: bool, has_other_photo: bool = False
+) -> str:
     """What happens after «Sí, quitar», in the owner's words. When the main photo goes,
-    the next photo, if any, takes its place (`CatalogService.remove_media` promotes it)."""
+    the next photo takes its place (`CatalogService.remove_media` promotes it); when it
+    was the only photo, the product is left without one, and we say so plainly."""
     what = "Este video" if media_type == "video" else "Esta foto"
     text = f"{what} ya no se usará para crear publicaciones. Las que ya hiciste no cambian."
-    if is_primary:
-        text += " Si tienes otra foto, esa pasa a ser la principal."
+    if is_primary and media_type != "video":
+        if has_other_photo:
+            text += " La siguiente foto pasa a ser la principal."
+        else:
+            text += " Tu producto quedará sin foto hasta que subas otra."
     return text
 
 

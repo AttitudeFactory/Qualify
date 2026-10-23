@@ -565,7 +565,8 @@ def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
 #: guards against running twice, so the head copy in Qualify.py never stacks listeners.
 _RANK_DRAG_JS = asset_script("rank-drag.js")
 _ORDER_HINT = (
-    "Mantén pulsada una foto y arrástrala para cambiar el orden: la primera es la principal."
+    "Mantén pulsada la imagen de una foto y arrástrala para cambiar el orden: "
+    "la primera es la principal."
 )
 
 
@@ -624,6 +625,9 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
                     type="button",
                     min_height=_TOUCH_MIN,
                     width="100%",
+                    # «Hacer principal» may wrap to two lines on a narrow tile at 360 px.
+                    white_space="normal",
+                    line_height="1.2",
                     on_click=CatalogState.make_primary(item.media_id),
                     disabled=CatalogState.media_busy,
                     aria_label="Hacer principal " + item.filename,
@@ -1114,7 +1118,9 @@ def _grid() -> rx.Component:
 
 def _missing_photo_filter() -> rx.Component:
     """«Ver los 2 sin foto» narrows the list to what still needs a photo; «Ver todos
-    los productos» brings it back (m-24842977). A real toggle button, 44 px."""
+    los productos» brings it back (m-24842977). 44 px, full width on a phone. The label
+    already says what a tap does, so no `aria-pressed`; the warn tone only while it
+    invites the owner to finish, neutral once the filter is on."""
     return rx.cond(
         CatalogState.show_missing_filter,
         rx.button(
@@ -1128,9 +1134,11 @@ def _missing_photo_filter() -> rx.Component:
             size="2",
             type="button",
             min_height=_TOUCH_MIN,
+            width=rx.breakpoints(initial="100%", sm="auto"),
             on_click=CatalogState.toggle_missing_photo,
-            aria_pressed=rx.cond(CatalogState.missing_filter_on, "true", "false"),
-            **T.tone_scheme("warn"),
+            color_scheme=rx.cond(
+                CatalogState.missing_filter_on, T.tone_scale("neutral"), T.tone_scale("warn")
+            ),
         ),
     )
 
@@ -1214,9 +1222,9 @@ def catalog_index() -> rx.Component:
                     CatalogState.has_products,
                     section(
                         "Productos",
+                        _missing_photo_filter(),
                         _grid(),
                         description="Toca uno para editarlo y subirle fotos.",
-                        actions=[_missing_photo_filter()],
                     ),
                     _empty(),
                 ),

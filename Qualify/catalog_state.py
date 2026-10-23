@@ -271,7 +271,12 @@ class CatalogState(rx.State):
         item = _media_in(self.selected, self.remove_media_id)
         if item is None:
             return remove_media_description("image", is_primary=False)
-        return remove_media_description(item.media_type, is_primary=item.is_primary)
+        has_other_photo = self.selected is not None and any(
+            m.media_type == "image" and m.media_id != item.media_id for m in self.selected.media
+        )
+        return remove_media_description(
+            item.media_type, is_primary=item.is_primary, has_other_photo=has_other_photo
+        )
 
     @rx.var
     def new_step_counter(self) -> str:
