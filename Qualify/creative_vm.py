@@ -1282,6 +1282,7 @@ __all__ = [
     "creations_use_notice",
     "format_cost_label",
     "not_enough_creations_text",
+    "pieces_use_notice",
     "presenter_fallback_text",
     "gap_vm",
     "status_label",
@@ -1513,3 +1514,18 @@ def creations_use_notice(
 def presenter_fallback_text(seconds: int, weight: int) -> str:
     """The shorter presenter a short month still pays for (CREAR-5: 15 s, 13)."""
     return f"Te alcanza para el video de {seconds} segundos, que usa {weight} de tus creaciones."
+
+
+def pieces_use_notice(pieces: int, left: int, quota: int, weight: int = 1) -> str:
+    """«Variaciones»: what generating the kept ideas uses, or what is missing — the batch
+    is all or nothing (CREAR-5)."""
+    needed = pieces * weight
+    if needed > left:
+        return not_enough_creations_text(needed - left)
+    after = left - needed
+    if pieces == 1:
+        return f"Esta publicación usa {needed} de tus creaciones. Te quedarían {after} de {quota}."
+    return (
+        f"Estas {pieces} publicaciones usan {needed} de tus creaciones. "
+        f"Te quedarían {after} de {quota}."
+    )

@@ -11,6 +11,7 @@ from .creative_vm import (
     creations_use_notice,
     failure_vm,
     not_enough_creations_text,
+    pieces_use_notice,
     presenter_fallback_text,
 )
 
@@ -124,3 +125,13 @@ def test_other_kinds_keep_every_length() -> None:
     state = CreativeState()
     state.choose_category("script")
     assert state.duration_choices == ["15", "30", "45", "60"]
+
+
+def test_variations_say_what_the_kept_ideas_use_all_or_nothing() -> None:
+    assert pieces_use_notice(9, 18, 30) == (
+        "Estas 9 publicaciones usan 9 de tus creaciones. Te quedarían 9 de 30."
+    )
+    assert pieces_use_notice(1, 18, 30) == (
+        "Esta publicación usa 1 de tus creaciones. Te quedarían 17 de 30."
+    )
+    assert pieces_use_notice(10, 8, 30) == "Te faltan 2 creaciones este mes."

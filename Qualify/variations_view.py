@@ -822,13 +822,25 @@ def _angles_review() -> rx.Component:
                             rx.icon("wand-sparkles", size=15),
                             VariationsState.generate_label,
                             size="2",
+                            min_height="44px",
                             loading=VariationsState.generating,
+                            # CREAR-5: without enough creations nothing is generated
+                            disabled=VariationsState.creations_short,
                             on_click=VariationsState.generate_pieces,
                         ),
                         spacing="3",
                         align="center",
                         wrap="wrap",
                         width="100%",
+                    ),
+                ),
+                # CREAR-5: what the pieces use of the month and what would be left
+                rx.cond(
+                    VariationsState.can_generate & (VariationsState.creations_text != ""),
+                    rx.cond(
+                        VariationsState.creations_short,
+                        callout(VariationsState.creations_text, "warn"),
+                        callout(VariationsState.creations_text, "info", icon="sparkles"),
                     ),
                 ),
                 rx.cond(
