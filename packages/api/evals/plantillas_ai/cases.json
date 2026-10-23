@@ -1,0 +1,189 @@
+{
+  "_doc": "Matrix of the m-24849234 eval (Seedream 5.0 pro): block `color` = object photo x color reference, block `texture` = logo or word x texture image, block `flat` = the same logos filled with one flat color by Pillow (deterministic, cost 0). `path` is relative to ./imagenes/ (git-ignored: put the files there by hand), except for `fixture: true` entries, which are relative to the repository root and exist in git so a dry run resolves real files. Fixture cases carry their own `references`; the others use the block's. `expected_text` is what the later legibility check must read back. Only fictional brands or assets Qualify owns: no client photo or logo goes to a BytePlus preset model (see README).",
+  "blocks": {
+    "color": {
+      "references": [
+        {
+          "id": "paleta-atardecer-calido",
+          "path": "color/referencias/paleta-atardecer-calido.png"
+        },
+        {
+          "id": "paleta-bosque-verde",
+          "path": "color/referencias/paleta-bosque-verde.png"
+        },
+        {
+          "id": "paleta-oceano-azul",
+          "path": "color/referencias/paleta-oceano-azul.png"
+        }
+      ],
+      "cases": [
+        {
+          "id": "fix-muestra-1",
+          "path": "packages/render/public/sample/photo-1.jpg",
+          "fixture": true,
+          "references": [
+            {
+              "id": "fix-muestra-2-ref",
+              "path": "packages/render/public/sample/photo-2.jpg"
+            }
+          ]
+        },
+        {
+          "id": "fix-muestra-2",
+          "path": "packages/render/public/sample/photo-2.jpg",
+          "fixture": true,
+          "references": [
+            {
+              "id": "fix-muestra-1-ref",
+              "path": "packages/render/public/sample/photo-1.jpg"
+            }
+          ]
+        },
+        {
+          "id": "taza-ceramica-blanca",
+          "path": "color/objetos/taza-ceramica-blanca.jpg"
+        },
+        {
+          "id": "botella-acero",
+          "path": "color/objetos/botella-acero.jpg"
+        },
+        {
+          "id": "zapatilla-lona",
+          "path": "color/objetos/zapatilla-lona.jpg"
+        },
+        {
+          "id": "camiseta-algodon",
+          "path": "color/objetos/camiseta-algodon.jpg"
+        },
+        {
+          "id": "bolso-cuero",
+          "path": "color/objetos/bolso-cuero.jpg"
+        },
+        {
+          "id": "silla-madera",
+          "path": "color/objetos/silla-madera.jpg"
+        },
+        {
+          "id": "termo-plastico",
+          "path": "color/objetos/termo-plastico.jpg"
+        },
+        {
+          "id": "gorra-tela",
+          "path": "color/objetos/gorra-tela.jpg"
+        },
+        {
+          "id": "lampara-metal",
+          "path": "color/objetos/lampara-metal.jpg"
+        },
+        {
+          "id": "caja-carton",
+          "path": "color/objetos/caja-carton.jpg"
+        }
+      ]
+    },
+    "texture": {
+      "references": [
+        {
+          "id": "textura-madera-roble",
+          "path": "textura/texturas/textura-madera-roble.jpg"
+        },
+        {
+          "id": "textura-oro-cepillado",
+          "path": "textura/texturas/textura-oro-cepillado.jpg"
+        },
+        {
+          "id": "textura-marmol-blanco",
+          "path": "textura/texturas/textura-marmol-blanco.jpg"
+        },
+        {
+          "id": "textura-neon-rosa",
+          "path": "textura/texturas/textura-neon-rosa.jpg"
+        },
+        {
+          "id": "textura-cuero-marron",
+          "path": "textura/texturas/textura-cuero-marron.jpg"
+        }
+      ],
+      "cases": [
+        {
+          "id": "fix-qualify-icono",
+          "path": "assets/qualify-icon-email.png",
+          "fixture": true,
+          "expected_text": "Q",
+          "references": [
+            {
+              "id": "fix-muestra-1-tex",
+              "path": "packages/render/public/sample/photo-1.jpg"
+            }
+          ]
+        },
+        {
+          "id": "fix-qualify-marca",
+          "path": "assets/qualify-mark-email.png",
+          "fixture": true,
+          "expected_text": "Q",
+          "references": [
+            {
+              "id": "fix-muestra-2-tex",
+              "path": "packages/render/public/sample/photo-2.jpg"
+            }
+          ]
+        },
+        {
+          "id": "logo-brasa-norte",
+          "path": "textura/logos/logo-brasa-norte.png",
+          "expected_text": "BRASA NORTE"
+        },
+        {
+          "id": "logo-la-ceiba",
+          "path": "textura/logos/logo-la-ceiba.png",
+          "expected_text": "La Ceiba"
+        },
+        {
+          "id": "logo-habitat",
+          "path": "textura/logos/logo-habitat.png",
+          "expected_text": "Hábitat"
+        },
+        {
+          "id": "logo-panaderia-sol",
+          "path": "textura/logos/logo-panaderia-sol.png",
+          "expected_text": "PANADERÍA SOL"
+        },
+        {
+          "id": "logo-ruta-viajes",
+          "path": "textura/logos/logo-ruta-viajes.png",
+          "expected_text": "Ruta Viajes"
+        },
+        {
+          "id": "logo-taller-7",
+          "path": "textura/logos/logo-taller-7.png",
+          "expected_text": "TALLER 7"
+        },
+        {
+          "id": "logo-verde-vivo",
+          "path": "textura/logos/logo-verde-vivo.png",
+          "expected_text": "Verde Vivo"
+        },
+        {
+          "id": "logo-mar-y-sal",
+          "path": "textura/logos/logo-mar-y-sal.png",
+          "expected_text": "Mar y Sal"
+        },
+        {
+          "id": "logo-napa",
+          "path": "textura/logos/logo-napa.png",
+          "expected_text": "ÑAPA"
+        },
+        {
+          "id": "texto-gran-apertura",
+          "path": "textura/logos/texto-gran-apertura.png",
+          "expected_text": "¡Gran apertura!"
+        }
+      ]
+    },
+    "flat": {
+      "source_block": "texture",
+      "fill": "#C0392B"
+    }
+  }
+}
