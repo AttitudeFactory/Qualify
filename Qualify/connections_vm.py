@@ -268,7 +268,8 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
     "active": ("Instagram conectado.", "ok"),
     "degraded": (
         "La cuenta se conectó, pero Meta todavía no confirma el acceso. "
-        "En unos minutos toca «Comprobar ahora» en su tarjeta.",
+        "Si en unos minutos su tarjeta sigue diciendo «Hay que volver a conectarla», "
+        "toca «Volver a conectar».",
         "warn",
     ),
     "link_required": (

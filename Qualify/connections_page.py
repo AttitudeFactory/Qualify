@@ -346,7 +346,9 @@ def _ability_lines(conn: ConnectionVM) -> rx.Component:
             conn.cannot_do != "",
             rx.vstack(
                 _ability_line("Todavía no puedes:", conn.cannot_do, "circle-minus", "warn"),
-                _how_to_enable(conn),
+                # One way out per problem: when the hints callout below already offers
+                # the fix, «Cómo activarlo» would be a second button for the same thing.
+                rx.cond(conn.hints.length() > 0, rx.fragment(), _how_to_enable(conn)),
                 spacing="1",
                 align_items="start",
                 width="100%",
@@ -892,6 +894,8 @@ def support_drawer() -> rx.Component:
                 "Cancelar",
                 on_click=ConnectionsState.set_support_open(False),
                 variant="soft",
+                size="3",
+                min_height=_TAP,
                 **T.tone_scheme("neutral"),
             ),
             rx.spacer(),
@@ -900,6 +904,8 @@ def support_drawer() -> rx.Component:
                 "Enviar solicitud",
                 on_click=ConnectionsState.submit_support,
                 loading=ConnectionsState.support_sending,
+                size="3",
+                min_height=_TAP,
             ),
             width="100%",
             align="center",

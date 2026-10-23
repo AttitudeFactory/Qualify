@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from . import brand_minimal_vm
-from .capabilities import Capability, ScopeKey, assess_capabilities
+from .capabilities import CAPABILITY_LABELS, Capability, ScopeKey, assess_capabilities
 from .connections_provider import _format_health_checked_at, _format_verified_at
 from .connections_state import ConnectionsState
 from .connections_vm import (
@@ -45,6 +45,8 @@ _BANNED = (
     "stories",
     "tenant",
     "base de datos",
+    "Infraestructura",
+    "Sin reconocer",
 )
 
 
@@ -71,6 +73,20 @@ def test_no_technical_or_fsm_words_reach_the_screen(name: str) -> None:
     for text in _visible_strings(_HERE / name):
         for word in _BANNED:
             assert word not in text, f"{name}: «{word}» in {text!r}"
+
+
+@pytest.mark.parametrize("name", ("connections_provider.py", "capabilities.py"))
+def test_no_raw_meta_permission_labels_reach_the_screen(name: str) -> None:
+    for text in _visible_strings(_HERE / name):
+        for word in ("Infraestructura", "Sin reconocer", "Acceso a datos"):
+            assert word not in text, f"{name}: «{word}» in {text!r}"
+
+
+def test_the_same_thing_has_one_name_on_the_card() -> None:
+    assert CAPABILITY_LABELS[Capability.READ_COMMENTS] == "Ver comentarios"
+    assert CAPABILITY_LABELS[Capability.MANAGE_DMS] == "Ver mensajes"
+    assert CAPABILITY_LABELS[Capability.READ_INSIGHTS] == "Ver tus resultados"
+    assert CAPABILITY_LABELS[Capability.CONNECT_ACCOUNT] == "Tu cuenta está conectada"
 
 
 def test_the_three_states_are_words_with_a_tone() -> None:
@@ -203,5 +219,6 @@ def test_details_toggle_is_per_card() -> None:
 
 def test_the_profile_read_says_it_is_not_the_connection() -> None:
     assert brand_minimal_vm.PUBLIC_READ_NOTE == (
-        "Solo leemos lo que ya es público. Para publicar lo conectarás después."
+        "Solo miramos lo que ya es público en tu perfil. Para publicar desde Qualify, "
+        "conecta tu Instagram después en Tus redes."
     )

@@ -56,13 +56,13 @@ __all__ = [
 
 
 CAPABILITY_LABELS: dict[Capability, str] = {
-    Capability.CONNECT_ACCOUNT: "Conectar cuenta",
+    Capability.CONNECT_ACCOUNT: "Tu cuenta está conectada",
     Capability.PUBLISH_CONTENT: "Publicar reels (videos cortos) e historias",
-    Capability.READ_COMMENTS: "Leer comentarios",
+    Capability.READ_COMMENTS: "Ver comentarios",
     Capability.ANALYZE_COMMENTS: "Saber de qué hablan tus comentarios",
     Capability.REPLY_COMMENTS: "Responder comentarios",
-    Capability.MANAGE_DMS: "Mensajes directos",
-    Capability.READ_INSIGHTS: "Resultados de la cuenta",
+    Capability.MANAGE_DMS: "Ver mensajes",
+    Capability.READ_INSIGHTS: "Ver tus resultados",
     # WhatsApp (WA-05)
     Capability.WA_SEND: "Enviar mensajes de WhatsApp",
     Capability.WA_TEMPLATES: "Plantillas de mensajes",
