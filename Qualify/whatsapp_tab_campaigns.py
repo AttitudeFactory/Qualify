@@ -433,9 +433,8 @@ def _step_pacing() -> rx.Component:
         ),
         rx.cond(S.pacing_label != "", rx.text(S.pacing_label, size="2"), rx.fragment()),
         callout(
-            "Meta además limita cuántas promociones recibe cada persona: si "
-            "alguien ya recibió muchas, el envío se omite (código 131049) y no se reintenta "
-            "antes de 24 h.",
+            "Si alguien ya recibió muchas promociones esta semana, WhatsApp no le entrega la "
+            "tuya y no se te cobra.",
             "info",
         ),
         spacing="3",

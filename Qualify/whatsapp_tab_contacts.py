@@ -242,8 +242,8 @@ def contacts_tab() -> rx.Component:
             ),
         ),
         rx.text(
-            "Solo estos números pueden recibir tus promociones. Quien escribe STOP, BAJA o "
-            "CANCELAR sale de la lista solo.",
+            "Solo estos números pueden recibir tus promociones. Si alguien responde BAJA, "
+            "deja de recibir tus promociones.",
             size="2",
             color=T.TEXT_MUTED,
         ),

@@ -54,7 +54,8 @@ PAYMENT_FAILED = (
     "nueva para esos contactos."
 )
 SENDER_NOTICE = (
-    "Los envíos salen en segundo plano al ritmo elegido; actualiza para ver cómo avanzan."
+    "Los mensajes salen de a poco para cuidar tu número. Vuelve en unos minutos para ver "
+    "cuántos llegaron."
 )
 
 # --------------------------------------------------------------------------------------
@@ -103,7 +104,7 @@ _SEND_ERRORS: dict[str, str] = {
     "132015": "Plantilla pausada por baja calidad",
     "132016": "Plantilla desactivada por baja calidad",
     "130472": "Meta no la entregó (una prueba de promociones de Meta)",
-    "not_opted_in": "Ya no aceptaba recibir tus mensajes al enviar",
+    "not_opted_in": "No se envió: esta persona ya no acepta recibir tus mensajes",
     "campaign_cancelled": "Campaña cancelada",
 }
 

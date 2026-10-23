@@ -144,10 +144,10 @@ def _list() -> rx.Component:
             empty_state(
                 "file-text",
                 "Aún no hay plantillas en este número",
-                "Las plantillas son los mensajes que puedes enviar cuando pasaron más de 24 "
-                "horas desde el último mensaje del cliente, como una campaña. Crea la "
-                "primera, o pulsa «Ver si ya las aprobaron» para traer las que ya tienes en "
-                "Meta.",
+                "Estos mensajes, una vez que Meta los aprueba, te sirven para escribirle a un "
+                "cliente después de 24 horas o para enviar una promoción. Crea el primero. "
+                "Si ya tienes mensajes aprobados en Meta, toca «Ver si ya las aprobaron» y "
+                "aparecerán aquí.",
                 action=rx.button(
                     rx.icon("plus", size=16), "Nueva plantilla", on_click=S.open_form, size="3"
                 ),

@@ -91,7 +91,7 @@ def test_meta_codes_are_explained_with_the_code() -> None:
     assert "método de pago" in send_error_note("131042")
     assert send_error_note("999999") == "Meta rechazó el envío (código 999999)"
     note = send_error_note("not_opted_in", "sin opt-in vigente al encolar")
-    assert note.startswith("Ya no aceptaba")
+    assert note == "No se envió: esta persona ya no acepta recibir tus mensajes"
     assert "131042" in PAYMENT_FAILED
     assert RATE_CARD_NOTICE == "Tarifas de referencia pendientes: el costo es aproximado."
 
