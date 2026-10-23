@@ -35,6 +35,8 @@ from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any, Protocol
 
+from .planner_vm import time_label_12h
+
 # ======================================================================================
 # Copy and limits
 # ======================================================================================
@@ -97,7 +99,7 @@ _KIND_LABELS: dict[str, str] = {
     "button": "[botón]",
     "interactive": "[respuesta]",
     "order": "[pedido]",
-    "template": "[mensaje aprobado]",
+    "template": "[mensaje de WhatsApp]",
     "reaction": "[reacción]",
 }
 #: How long a resolved URL is reused. The public-media token lives 15 min
@@ -115,14 +117,13 @@ MEDIA_UNAVAILABLE_NOTICE = "No se pudo traer el archivo; reintentar"
 MEDIA_GONE_NOTICE = "Este mensaje ya no está disponible"
 MEDIA_RETRY = "Reintentar"
 # m-24842993: the owner never reads «ventana» or «plantillas» — say what happened and
-# send them to the approved messages (the Plantillas tab, `?tab=plantillas`, N5).
+# what comes next. A way to write first (an approved message from the chat) returns with
+# m-24848535; until then there is no link to a place where they still cannot write.
 WINDOW_CLOSED_NOTICE = (
     "Pasaron más de 24 horas desde su último mensaje. "
-    "WhatsApp solo deja escribirle con un mensaje aprobado."
+    "Cuando vuelva a escribirte, podrás responderle aquí."
 )
-WINDOW_CLOSED_LINK_LABEL = "Ver tus mensajes aprobados"
-WINDOW_CLOSED_LINK_HREF = "/whatsapp?tab=plantillas"
-WINDOW_CLOSED_PILL = "Pasaron 24 h"
+WINDOW_CLOSED_PILL = "Ya no puedes responderle"
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
 
@@ -298,7 +299,8 @@ def window_pill(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
 ) -> tuple[str, str]:
     """(label, tone) of the 24 h window: `ok` open, `warn` closing within the hour
-    («Cierra en 42 min»), `neutral` closed («Pasaron 24 h» — never «ventana»)."""
+    («Responde en los próximos 42 min»), `neutral` closed («Ya no puedes responderle»).
+    Worded by what the owner can do, never «ventana»."""
     if not is_open or closes_at is None:
         return WINDOW_CLOSED_PILL, "neutral"
     remaining = closes_at - now
@@ -306,8 +308,10 @@ def window_pill(
         return WINDOW_CLOSED_PILL, "neutral"
     if remaining < WINDOW_WARN_WITHIN:
         minutes = max(1, math.ceil(remaining.total_seconds() / 60))
-        return f"Cierra en {minutes} min", "warn"
-    return f"Abierta hasta {format_clock(closes_at, zone)}", "ok"
+        if minutes == 1:
+            return "Responde en el próximo minuto", "warn"
+        return f"Responde en los próximos {minutes} min", "warn"
+    return f"Puedes responder hasta {time_label_12h(_local(closes_at, zone))}", "ok"
 
 
 def mode_pill(automation_paused: bool) -> tuple[str, str]:
@@ -551,12 +555,11 @@ def resolution_after(url: str, now: datetime) -> MediaResolution:
 
 
 def failure_label(code: str | None) -> str:
-    """The `error`-tone line under a failed bubble: Meta's code only, never its text."""
-    if not code:
-        return "No se entregó"
+    """The `error`-tone line under a failed bubble. Neither Meta's text nor its code reach
+    the owner (the code stays in the outbox row and the logs)."""
     if code == "window_closed" or code in {"131047", "131026"}:
-        return f"No se entregó: pasaron más de 24 horas desde su último mensaje ({code})"
-    return f"No se entregó (código {code})"
+        return "No se entregó: pasaron más de 24 horas desde su último mensaje."
+    return "No se entregó"
 
 
 def _media_fields(

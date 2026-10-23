@@ -33,8 +33,6 @@ from .whatsapp_chats_vm import (
     MEDIA_URL_TTL,
     MEDIA_VIDEO,
     NO_MESSAGES_YET,
-    WINDOW_CLOSED_LINK_HREF,
-    WINDOW_CLOSED_LINK_LABEL,
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_PILL,
     AgentVM,
@@ -68,7 +66,6 @@ from .whatsapp_chats_vm import (
     validate_text,
     window_pill,
 )
-from .whatsapp_vm import TAB_TEMPLATES, resolve_tab
 
 ZONE = ZoneInfo("America/Bogota")
 NOW = datetime(2026, 10, 14, 17, 0, tzinfo=UTC)  # 12:00 in Bogotá
@@ -144,44 +141,44 @@ def test_vms_are_frozen_and_carry_no_raw_datetimes() -> None:
 
 def test_window_pill_open_is_ok_with_the_local_closing_time() -> None:
     label, tone = window_pill(True, NOW + timedelta(hours=5), NOW, ZONE)
-    assert (label, tone) == ("Abierta hasta 17:00", "ok")
+    assert (label, tone) == ("Puedes responder hasta 5:00 p. m.", "ok")
 
 
 def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
     label, tone = window_pill(True, NOW + timedelta(minutes=41, seconds=10), NOW, ZONE)
-    assert (label, tone) == ("Cierra en 42 min", "warn")
-    assert window_pill(True, NOW + timedelta(seconds=5), NOW, ZONE) == ("Cierra en 1 min", "warn")
+    assert (label, tone) == ("Responde en los próximos 42 min", "warn")
+    assert window_pill(True, NOW + timedelta(seconds=5), NOW, ZONE) == (
+        "Responde en el próximo minuto",
+        "warn",
+    )
 
 
 def test_window_pill_closed_is_neutral() -> None:
-    assert window_pill(False, None, NOW, ZONE) == ("Pasaron 24 h", "neutral")
+    assert window_pill(False, None, NOW, ZONE) == ("Ya no puedes responderle", "neutral")
     # A stale "open" whose instant already passed reads closed, not negative minutes.
     assert window_pill(True, NOW - timedelta(minutes=1), NOW, ZONE)[1] == "neutral"
 
 
-def test_window_closed_notice_says_what_happened_and_where_to_go() -> None:
-    """m-24842993: exact copy from the ticket; the way out is the approved messages."""
+def test_window_closed_notice_says_what_happened_and_what_comes_next() -> None:
+    """m-24842993: no link yet — writing first returns with m-24848535."""
     assert WINDOW_CLOSED_NOTICE == (
         "Pasaron más de 24 horas desde su último mensaje. "
-        "WhatsApp solo deja escribirle con un mensaje aprobado."
+        "Cuando vuelva a escribirte, podrás responderle aquí."
     )
-    assert WINDOW_CLOSED_LINK_LABEL == "Ver tus mensajes aprobados"
 
 
-def test_window_closed_link_opens_the_approved_messages_tab() -> None:
-    path, _, query = WINDOW_CLOSED_LINK_HREF.partition("?")
-    assert path == "/whatsapp"
-    tab = query.removeprefix("tab=")
-    assert query == f"tab={tab}"
-    assert tab == TAB_TEMPLATES
-    assert resolve_tab(tab) == TAB_TEMPLATES
+def test_failure_label_never_shows_codes() -> None:
+    expected = "No se entregó: pasaron más de 24 horas desde su último mensaje."
+    assert failure_label("window_closed") == expected
+    assert failure_label("131047") == expected
+    assert failure_label("130429") == "No se entregó"
+    assert failure_label(None) == "No se entregó"
 
 
 def test_closed_chat_copy_never_says_ventana_or_plantillas() -> None:
     """With the chat expired, nothing the owner reads names the internal concepts."""
     texts = [
         WINDOW_CLOSED_NOTICE,
-        WINDOW_CLOSED_LINK_LABEL,
         WINDOW_CLOSED_PILL,
         window_pill(False, None, NOW, ZONE)[0],
         failure_label("window_closed"),
@@ -307,14 +304,15 @@ def test_ticks_by_delivery_status() -> None:
         assert vm.error_label == ""
 
 
-def test_failed_tick_carries_the_meta_code() -> None:
+def test_failed_tick_explains_without_the_meta_code() -> None:
     vm = build_message_vm(
         _message(direction="outbound", delivery_status="failed", delivery_error_code="131026"),
         now=NOW,
         zone=ZONE,
     )
     assert vm.tick == "failed"
-    assert "131026" in vm.error_label
+    assert "131026" not in vm.error_label
+    assert vm.error_label.startswith("No se entregó: pasaron más de 24 horas")
 
 
 def test_inbound_has_no_tick_and_uncaptured_media_is_a_placeholder() -> None:
