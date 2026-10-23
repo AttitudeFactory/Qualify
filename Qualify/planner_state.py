@@ -59,6 +59,8 @@ from .planner_vm import (
     STEP_LAST,
     STEP_POST,
     STEP_WHEN,
+    SUBMIT_ASSIGN,
+    SUBMIT_RESCHEDULE,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
     VIEW_LIST,
@@ -326,9 +328,12 @@ class PlannerState(rx.State):
     form_goals: list[str] = []
     form_step: int = 0
     form_reached: int = 0
-    # m-24842985: the pieces whose «Más opciones» the owner opened (POST ids). A piece
-    # whose missing data sits there opens it on its own (`PlanRowVM.needs_more`).
+    # m-24842985: the pieces whose «Más opciones» is open (POST ids). A piece whose
+    # missing data sits there opens it ONCE on its own (`PlanRowVM.needs_more` turning
+    # true, `_sync_more_open`); after that the owner opens and closes it.
     more_open: list[str] = []
+    # The pieces whose `needs_more` was true at the last sync (to open only on the change).
+    more_auto: list[str] = []
     # QUA-118 drag & drop: the POST being dragged from «Sin programar» (the browser
     # drags, this only remembers what), and the `?post=` already turned into an open
     # drawer so a reload or a week change does not reopen it.
@@ -405,6 +410,14 @@ class PlannerState(rx.State):
     @rx.var
     def tz_city_label(self) -> str:
         return tz_option(self.tz_name, datetime.now(UTC)).city if self.tz_name else ""
+
+    @rx.var
+    def form_tz_city(self) -> str:
+        """m-24842985: the city of the zone «Programar» plans in (`view_tz or tz_name`,
+        the same one `rows_for_submit` uses) — said on «Confirmar» instead of the zone's
+        technical name."""
+        zone = self.view_tz or self.tz_name
+        return tz_option(zone, datetime.now(UTC)).city if zone else ""
 
     @rx.var
     def tz_results(self) -> list[TzOptionVM]:
@@ -639,9 +652,9 @@ class PlannerState(rx.State):
     @rx.var
     def form_submit_label(self) -> str:
         if self.form_mode == MODE_RESCHEDULE:
-            return "Guardar cambios"
+            return SUBMIT_RESCHEDULE
         n = self.form_event_count
-        return "Programar" if n <= 1 else f"Programar {n} publicaciones"
+        return SUBMIT_ASSIGN if n <= 1 else f"{SUBMIT_ASSIGN} {n} publicaciones"
 
     @rx.var
     def form_story_warnings(self) -> int:
@@ -1070,6 +1083,7 @@ class PlannerState(rx.State):
         self.form_step = STEP_POST
         self.form_reached = STEP_POST
         self.more_open = []
+        self.more_auto = []
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
@@ -1094,6 +1108,7 @@ class PlannerState(rx.State):
         if post is None or not post.schedulable or post_id in self.form_selected_ids:
             return False
         self.plan_items = [*self.plan_items, self._new_item(post)]
+        self._sync_more_open()
         return True
 
     def _update_item(self, post_id: str, **changes) -> None:
@@ -1101,6 +1116,16 @@ class PlannerState(rx.State):
             replace(item, **changes) if item.post_id == post_id else item
             for item in self.plan_items
         ]
+        self._sync_more_open()
+
+    def _sync_more_open(self) -> None:
+        """m-24842985: open «Más opciones» on its own when what a piece is missing sits
+        in there — once, when that becomes true; closing it afterwards stays closed."""
+        needing = [row.post_id for row in self.plan_rows if row.needs_more]
+        fresh = [p for p in needing if p not in self.more_auto]
+        if fresh:
+            self.more_open = [*self.more_open, *(p for p in fresh if p not in self.more_open)]
+        self.more_auto = needing
 
     def _item(self, post_id: str) -> PlanItem | None:
         return next((item for item in self.plan_items if item.post_id == post_id), None)
@@ -1357,6 +1382,7 @@ class PlannerState(rx.State):
             )
             for item in self.plan_items
         ]
+        self._sync_more_open()
 
     # QUA-143 — the piece's campaign: the POST's, applied only on «Confirmar».
 

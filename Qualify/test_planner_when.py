@@ -85,7 +85,14 @@ def test_the_confirmation_is_one_sentence_with_day_hour_and_account() -> None:
 
 
 def test_ahora_says_it_goes_out_in_the_next_minutes() -> None:
-    assert sale_line("", "", [_IG], now=True) == "Sale en unos minutos en Instagram @bianki"
+    assert (
+        sale_line("", "", [_IG], now=True)
+        == "Sale en Instagram @bianki unos minutos después de que toques «Programar»"
+    )
+    assert (
+        sale_line("", "", [_IG], now=True, button="Guardar cambios")
+        == "Sale en Instagram @bianki unos minutos después de que toques «Guardar cambios»"
+    )
     assert "Programar" in NOW_HINT  # it still waits for the owner's tap
     assert (
         scheduled_message(created=1, day_iso="2026-10-23", at="15:12", reschedule=False, now=True)
@@ -94,8 +101,8 @@ def test_ahora_says_it_goes_out_in_the_next_minutes() -> None:
 
 
 def test_where_it_goes_out_is_said_before_mas_opciones() -> None:
-    assert accounts_line([_IG]) == "Sale en @bianki (Instagram)"
-    assert accounts_line([_IG, _FB]) == "Sale en @bianki (Instagram) y Bianki Shawarma (Facebook)"
+    assert accounts_line([_IG]) == "Sale en Instagram @bianki"
+    assert accounts_line([_IG, _FB]) == "Sale en Instagram @bianki y Facebook Bianki Shawarma"
     assert accounts_line([]) == ""
 
 
@@ -139,7 +146,10 @@ def test_ahora_skips_the_date_checks_and_the_weekly_repetition() -> None:
     state.set_item_now("p1", True)
     row = state.plan_rows[0]
     assert row.error == "" and not row.repeat and row.event_count == 1
-    assert state.form_confirm_line == "Sale en unos minutos en Instagram @bianki"
+    assert (
+        state.form_confirm_line
+        == "Sale en Instagram @bianki unos minutos después de que toques «Programar»"
+    )
     state.set_item_now("p1", False)
     assert state.plan_rows[0].error == PLAN_DATE_PAST
 
@@ -182,6 +192,13 @@ def test_mas_opciones_opens_on_its_own_only_for_what_it_holds() -> None:
     state.toggle_item_connection("p1", "c1")  # no account left: that sits in «Más opciones»
     row = state.plan_rows[0]
     assert row.error == PLAN_ACCOUNT_REQUIRED and row.needs_more is True
+    assert state.more_open == ["p1"]  # it opened on its own...
+    state.set_item_more("p1", "")  # ...and the owner can close it
+    state.set_item_time("p1", "20:00")  # another change does not reopen it
+    assert state.more_open == []
+    state.toggle_item_connection("p1", "c1")  # fixed: the account is back
+    state.toggle_item_connection("p1", "c1")  # missing again: a new problem opens it once
+    assert state.more_open == ["p1"]
 
 
 def test_mas_opciones_remembers_who_opened_it() -> None:
@@ -221,4 +238,32 @@ def test_a_row_without_ahora_reads_as_before() -> None:
         today_iso="2026-10-23",
     )
     assert not row.now and row.when_label == "jue 29 oct · 7:00 p. m."
-    assert row.accounts_line == "Sale en @bianki (Instagram)"
+    assert row.accounts_line == "Sale en Instagram @bianki"
+
+
+def test_confirm_names_the_city_and_the_button_that_is_shown() -> None:
+    state = _state()
+    state.open_assign_for_post("p1")
+    assert state.form_tz_city == "Caracas"
+    state.view_tz = "America/Bogota"  # «Programar» plans in the week's zone: say that one
+    assert state.form_tz_city == "Bogotá"
+    drawer = inspect.getsource(planner_drawer._step_confirm)
+    assert "Zona horaria" not in drawer and "PlannerState.form_tz_city" in drawer
+    assert "PlannerState.form_submit_label" in inspect.getsource(planner_drawer._when_fields)
+
+
+def test_a_move_on_ahora_names_guardar_cambios() -> None:
+    row = build_plan_row(
+        PlanItem(post_id="p1", connection_ids=["c1"], now=True),
+        post=_post(),
+        connections=[_IG],
+        today_iso="2026-10-23",
+        reschedule=True,
+    )
+    assert row.sale_line.endswith("después de que toques «Guardar cambios»")
+
+
+def test_no_account_shows_the_way_to_tus_redes_outside_the_fold() -> None:
+    where = inspect.getsource(planner_drawer._where_line)
+    assert '"Ir a Tus redes"' in where and 'href="/connections"' in where
+    assert "No hay cuentas activas" not in inspect.getsource(planner_drawer._more_options)

@@ -1663,8 +1663,11 @@ def plan_item_error(
 
 NOW_LABEL = "Ahora"
 #: m-24842985: what «Ahora» means, said where it is chosen — the owner still taps
-#: «Programar»; it goes out in the next few minutes after that, never before.
+#: «Programar»; it goes out in the next few minutes after that, never before. The drawer
+#: names the button actually shown («Guardar cambios» on a move) with `now_hint`.
 NOW_HINT = "Sale unos minutos después de que toques «Programar»."
+SUBMIT_ASSIGN = "Programar"
+SUBMIT_RESCHEDULE = "Guardar cambios"
 #: The minutes «Ahora» leaves between the tap and the instant it is planned for, so the
 #: service (which refuses an instant already gone) never sees it in the past.
 NOW_LEAD_MINUTES = 1
@@ -1682,9 +1685,10 @@ def _platform_name(platform: str) -> str:
 
 
 def accounts_line(accounts: Iterable[ConnectionChoiceVM]) -> str:
-    """ "Sale en @cuenta (Instagram)" — the accounts already chosen, said before «Más
-    opciones» so the owner knows where it goes without opening it. "" with none."""
-    names = [f"{a.label} ({_platform_name(a.platform)})" for a in accounts]
+    """ "Sale en Instagram @cuenta" — the accounts already chosen, said before «Más
+    opciones» so the owner knows where it goes without opening it; the same words as
+    the confirmation sentence (`sale_line`). "" with none."""
+    names = [f"{_platform_name(a.platform)} {a.label}" for a in accounts]
     return f"Sale en {join_es(names)}" if names else ""
 
 
@@ -1708,15 +1712,17 @@ def sale_line(
     *,
     today_iso: str = "",
     now: bool = False,
+    button: str = SUBMIT_ASSIGN,
 ) -> str:
     """m-24842985 (N13): the confirmation in one sentence — «Sale el jueves 30 a las
     7:00 p. m. en Instagram @cuenta». The month is said only when it is not this month's
-    («el martes 3 de noviembre»); «Ahora» → «Sale en unos minutos en Instagram @cuenta».
+    («el martes 3 de noviembre»); «Ahora» → «Sale en Instagram @cuenta unos minutos
+    después de que toques «Programar»» — it goes out because the owner taps `button`.
     No final period: «p. m.» already ends it. "" without a valid date (and not «Ahora»)."""
     where = join_es([f"{_platform_name(a.platform)} {a.label}" for a in accounts])
     tail = f" en {where}" if where else ""
     if now:
-        return "Sale en unos minutos" + tail
+        return f"Sale{tail} unos minutos después de que toques «{button}»"
     try:
         day = date.fromisoformat(day_iso)
     except ValueError:
@@ -1863,7 +1869,14 @@ def build_plan_row(
         repeat_days=list(item.repeat_days),
         now=item.now,
         accounts_line=accounts_line(accounts),
-        sale_line=sale_line(item.date, item.time, accounts, today_iso=today_iso, now=item.now),
+        sale_line=sale_line(
+            item.date,
+            item.time,
+            accounts,
+            today_iso=today_iso,
+            now=item.now,
+            button=SUBMIT_RESCHEDULE if reschedule else SUBMIT_ASSIGN,
+        ),
         needs_more=error not in _WHEN_ERRORS,
         **campaign_fields,
     )

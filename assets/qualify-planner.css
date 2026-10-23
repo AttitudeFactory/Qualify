@@ -956,4 +956,5 @@
   .q-plan-card .rt-TextFieldRoot,
   .q-plan-more .rt-AccordionTrigger,
   .q-plan-more .rt-Button { min-height: 44px; }
+  .q-plan-link { display: inline-flex; align-items: center; min-height: 44px; }
 }

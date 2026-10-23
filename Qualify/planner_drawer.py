@@ -43,7 +43,6 @@ from .planner_vm import (
     AUTO_PUBLISH_NO_CONNECTION,
     EXPIRED_NOTE,
     KIND_ICONS,
-    NOW_HINT,
     NOW_LABEL,
     PLAN_GOALS,
     STEP_POST,
@@ -789,7 +788,12 @@ def _when_fields(row) -> rx.Component:
             row.now,
             rx.hstack(
                 rx.icon("info", size=14, flex_shrink="0", margin_top="2px"),
-                rx.text(NOW_HINT, size="2"),
+                rx.text(
+                    "Sale unos minutos después de que toques «"
+                    + PlannerState.form_submit_label
+                    + "».",
+                    size="2",
+                ),
                 align="start",
                 spacing="2",
                 color=T.TEXT_MUTED,
@@ -816,7 +820,7 @@ def _when_fields(row) -> rx.Component:
 
 
 def _where_line(row) -> rx.Component:
-    """Where it goes out, already chosen («Sale en @cuenta (Instagram)»), so the owner
+    """Where it goes out, already chosen («Sale en Instagram @cuenta»), so the owner
     does not have to open «Más opciones» to know it."""
     return rx.cond(
         row.accounts_line != "",
@@ -829,10 +833,23 @@ def _where_line(row) -> rx.Component:
         ),
         rx.cond(
             PlannerState.connections.length() == 0,
-            rx.text(
-                "No hay cuentas activas: conéctalas en Tus redes.",
-                size="2",
-                color=T.tone_color("warn", 11),
+            rx.vstack(
+                rx.text(
+                    "No hay cuentas activas: conéctalas en Tus redes.",
+                    size="2",
+                    color=T.tone_color("warn", 11),
+                ),
+                rx.link(
+                    rx.hstack(
+                        rx.text("Ir a Tus redes", size="2"),
+                        rx.icon("arrow-right", size=14),
+                        align="center",
+                        spacing="1",
+                    ),
+                    href="/connections",
+                    class_name="q-plan-link",
+                ),
+                spacing="1",
             ),
         ),
     )
@@ -863,22 +880,19 @@ def _more_options(row) -> rx.Component:
                     ),
                 ),
                 _destination_selector(row),
-                rx.box(
-                    _label("Canales"),
-                    rx.cond(
-                        PlannerState.connections.length() > 0,
+                # With no account at all, the warning and «Ir a Tus redes» sit above the
+                # fold (`_where_line`), so this box says nothing then.
+                rx.cond(
+                    PlannerState.connections.length() > 0,
+                    rx.box(
+                        _label("Canales"),
                         rx.flex(
                             rx.foreach(PlannerState.connections, lambda c: _account_chip(row, c)),
                             wrap="wrap",
                             gap="0.4rem",
                         ),
-                        rx.text(
-                            "No hay cuentas activas: conéctalas en Tus redes.",
-                            size="1",
-                            color=T.tone_color("warn", 11),
-                        ),
+                        width="100%",
                     ),
-                    width="100%",
                 ),
                 rx.cond(~PlannerState.form_is_reschedule, _plan_campaign(row)),
                 rx.box(
@@ -908,7 +922,7 @@ def _more_options(row) -> rx.Component:
             ),
             value="more",
         ),
-        value=rx.cond(PlannerState.more_open.contains(row.post_id) | row.needs_more, "more", ""),
+        value=rx.cond(PlannerState.more_open.contains(row.post_id), "more", ""),
         on_value_change=lambda v: PlannerState.set_item_more(row.post_id, v),
         collapsible=True,
         type="single",
@@ -1324,7 +1338,11 @@ def _step_confirm() -> rx.Component:
                 ),
                 rx.text(PlannerState.form_confirm_line, size="3", weight="medium"),
                 rx.text(
-                    "Zona horaria " + PlannerState.tz_name + " · Nada se publica antes de su hora.",
+                    "Hora de "
+                    + PlannerState.form_tz_city
+                    + " · Nada sale antes de que toques «"
+                    + PlannerState.form_submit_label
+                    + "».",
                     size="1",
                     opacity="0.8",
                 ),
