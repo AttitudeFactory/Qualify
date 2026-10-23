@@ -73,7 +73,7 @@ def seeded() -> dict[str, UUID]:
         app_id, user_id = app.id, user.id
 
     with tenant_session(TENANT) as session:
-        brand = Brand(tenant_id=TENANT, name="Polet Bubble Tea")
+        brand = Brand(tenant_id=TENANT, name="Polette")
         session.add(brand)
         session.flush()
         connection = SocialConnection(
@@ -233,7 +233,7 @@ def test_render_reads_the_thread_and_the_brand(seeded) -> None:
     greeting = service.list_for_connection(tenant_id=TENANT, connection_id=conn)[0]
     rendered = service.render(tenant_id=TENANT, template_id=greeting.id, thread_id=upsert.thread_id)
     # No profile synced yet: {nombre} stays visible for the person; the brand resolves.
-    assert rendered.text.startswith("¡Hola, {nombre}! Gracias por escribirnos a Polet Bubble Tea.")
+    assert rendered.text.startswith("¡Hola, {nombre}! Gracias por escribirnos a Polette.")
     assert rendered.unresolved == ("{nombre}",)
 
 

@@ -370,12 +370,14 @@ async def publish_version(
                 raise
     except WhatsAppApiError as exc:
         auth_error = exc.is_auth_error
-        notice = publish_notice(
-            graph_ok=False,
-            code=exc.code,
-            is_auth_error=exc.is_auth_error,
-            is_transport=exc.is_transport,
+        # Meta's code goes to the log only; the owner reads what to do next.
+        logger.warning(
+            "whatsapp menu automation rejected: code=%s auth=%s transport=%s",
+            exc.code,
+            exc.is_auth_error,
+            exc.is_transport,
         )
+        notice = publish_notice(graph_ok=False, is_auth_error=exc.is_auth_error)
     except ValueError:
         # The client's own limit check (its emoji rule is broader than the schema's).
         notice = publish_notice(graph_ok=False, rejected_locally=True)

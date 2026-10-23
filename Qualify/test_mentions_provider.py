@@ -265,7 +265,7 @@ def test_load_page_returns_the_scope_summary_apart_from_the_filtered_total(
     assert seen["summary_as_of"] == as_of
     assert vm.filtered_total == 14
     assert (vm.summary.total, vm.summary.pending, vm.summary.error) == (57, 50, 2)
-    assert (vm.page, vm.total_pages, vm.pages_label) == (2, 2, "Total de 2 páginas")
+    assert (vm.page, vm.total_pages, vm.pages_label) == (2, 2, "2 páginas")
 
 
 def test_day_and_time_are_also_given_apart_for_the_stacked_layout() -> None:

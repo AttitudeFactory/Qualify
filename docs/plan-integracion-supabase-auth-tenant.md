@@ -1,6 +1,6 @@
 # Plan — QUA-66: login real con Supabase Auth conectado a `tenant_id`
 
-**Fecha:** 2026-08-17 · **Estado:** `[PLAN — alcance confirmado por el fundador 2026-08-18]` — tres rulings del fundador incorporados: (1) **el primer negocio es Polet Bubble Tea** (`https://polet.attitudefactory.co/`); (2) **al registrar se asigna un `tenant_id` automáticamente** — el alta es autoservicio (`/signup` crea el tenant), no un CLI; (3) **los datos viven siempre en el Postgres propio** — no se migra nada a Supabase; Supabase es solo para registros/identidad.
+**Fecha:** 2026-08-17 · **Estado:** `[PLAN — alcance confirmado por el fundador 2026-08-18]` — tres rulings del fundador incorporados: (1) **el primer negocio es Polet (hoy Polette, helados de yogur)** (`https://polet.attitudefactory.co/`); (2) **al registrar se asigna un `tenant_id` automáticamente** — el alta es autoservicio (`/signup` crea el tenant), no un CLI; (3) **los datos viven siempre en el Postgres propio** — no se migra nada a Supabase; Supabase es solo para registros/identidad.
 **Objetivo en una frase:** reemplazar el selector de tenant de desarrollo por un login real (Supabase Auth) donde **cada credencial resuelve determinísticamente a un `tenant_id`**, de modo que el fundador pueda registrar **un** negocio propio, entrar logueado como ese negocio, y desarrollar el resto del módulo alrededor de ese nicho.
 **Hereda, sin renegociar:** el ruling firmado del fundador (2026-08-16) en [`modelo-negocio-operador-multi-emprendimiento.md`](modelo-negocio-operador-multi-emprendimiento.md) §6.1 — **`1 login = 1 tenant = 1 negocio`, sin switch**, cambio de negocio = logout + login con credenciales guardadas en el navegador, y los **6 criterios de higiene de logout** de ese doc. También la nota cross-historia de [`arquitectura.md`](arquitectura.md) §6 (~línea 336): la resolución «qué tenant posee este email» no puede ir por `tenant_session`.
 
@@ -75,19 +75,19 @@ Piezas clave:
 - **Test de resolución determinista** (criterio 6): dos usuarios fake con emails alias distintos → tenants distintos; un token sin `app_metadata.tenant_id` → login rechazado, nunca adivinado.
 - Adaptar los tests existentes de estados (hoy asumen el selector de dev) y dejar el gate raíz verde (base actual: 398 offline + 40 db).
 
-### F4 — Registro real de Polet Bubble Tea y validación manual
+### F4 — Registro real de Polette y validación manual
 
-1. Registrar el primer negocio **por la propia página `/signup`** (dogfooding del flujo completo, no por CLI): **Polet Bubble Tea** con `hlrd1993+polet@gmail.com`. Datos del negocio según lo ya verificado en [`estrategia-contenido-bianki-polet.md`](estrategia-contenido-bianki-polet.md) §1 `[V]`: bubble tea en Korner, San Cristóbal, Táchira (VE) — sitio `https://polet.attitudefactory.co/`; propuesta de defaults: país `VE`, tz `America/Caracas`, moneda `USD` (los precios del sitio están en dólares).
-2. Verificar que el signup dejó: fila en `tenants` (uuid nuevo auto-asignado), `users` con `auth_user_id`, `tenant_members` owner, `brands` «Polet Bubble Tea», y el usuario Supabase con `app_metadata.tenant_id` correcto.
+1. Registrar el primer negocio **por la propia página `/signup`** (dogfooding del flujo completo, no por CLI): **Polette** con `hlrd1993+polet@gmail.com`. Datos del negocio según lo ya verificado en [`estrategia-contenido-bianki-polet.md`](estrategia-contenido-bianki-polet.md) §1: helados de yogur (fundador, 2026-10-23) en Korner, San Cristóbal, Táchira (VE) — sitio `https://polet.attitudefactory.co/`; propuesta de defaults: país `VE`, tz `America/Caracas`, moneda `USD` (los precios del sitio están en dólares).
+2. Verificar que el signup dejó: fila en `tenants` (uuid nuevo auto-asignado), `users` con `auth_user_id`, `tenant_members` owner, `brands` «Polette», y el usuario Supabase con `app_metadata.tenant_id` correcto.
 3. Login manual en la app corriendo local: verificar que **solo** se pintan datos de ese tenant (conexiones, leads, clarity — nacerá vacío, que es lo correcto), guardar la credencial en el navegador.
 4. Logout → login como uno de los tenants sembrados (vía `just register-business` sobre PuntoServis): verificar en vivo el criterio «la sesión A nunca pinta datos del tenant B».
-5. A partir de aquí, todo el desarrollo del módulo se hace logueado como Polet — el selector de dev deja de existir, y el nicho de trabajo es el local de bubble tea (contenido, sellos/cupones, vitrina, Clarity del sitio `polet.attitudefactory.co`).
+5. A partir de aquí, todo el desarrollo del módulo se hace logueado como Polet — el selector de dev deja de existir, y el nicho de trabajo es el local de helados de yogur (contenido, sellos/cupones, vitrina, Clarity del sitio `polet.attitudefactory.co`).
 
 ## 3. Decisiones del fundador — resueltas (2026-08-18)
 
 | Pregunta | Ruling |
 |---|---|
-| ¿Qué negocio primero? | **Polet Bubble Tea** (`https://polet.attitudefactory.co/`) — el módulo se desarrolla alrededor de este negocio/nicho |
+| ¿Qué negocio primero? | **Polette** (`https://polet.attitudefactory.co/`) — el módulo se desarrolla alrededor de este negocio/nicho |
 | ¿Alta por CLI o autoservicio? | **Autoservicio: al registrar se asigna un `tenant_id` automáticamente** (el `/signup` crea el tenant). El CLI queda como herramienta fina sobre el mismo servicio |
 | ¿Supabase como DB? | **No, nunca** — los datos siempre en el Postgres propio; Supabase solo para registros/identidad |
 

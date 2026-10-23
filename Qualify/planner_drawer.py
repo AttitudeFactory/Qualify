@@ -1581,8 +1581,8 @@ def _detail_body() -> rx.Component:
                 callout(
                     "No se publicará hasta completarlo: "
                     + d.publish_note
-                    + " El evento sigue programado y se publica en el siguiente minuto en que "
-                    "esté listo.",
+                    + " La publicación sigue programada y sale en el siguiente minuto en que "
+                    "esté lista.",
                     "warn",
                 ),
             ),
@@ -1595,29 +1595,49 @@ def _detail_body() -> rx.Component:
             PlannerState.auto_publish,
             (
                 AUTO_PUBLISH_ACTIVE,
-                rx.hstack(
-                    rx.box(class_name="q-live-dot"),
-                    rx.text(
-                        "Publicación automática activa: un evento aprobado sale a su hora "
-                        "(se revisa cada minuto).",
-                        size="1",
-                        color=T.TEXT_MUTED,
+                # N13 (m-24842959): nothing goes out without the owner's approval, so the
+                # line names that approval and only shows for an approved, still
+                # scheduled publication — never a generic «automatic publishing» promise.
+                rx.cond(
+                    (d.approval_tone == "ok")
+                    & (d.status_tone == "info")
+                    & ~d.expired
+                    & (d.approved_line != ""),
+                    rx.hstack(
+                        rx.box(class_name="q-live-dot"),
+                        rx.text(
+                            d.approved_line,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                        align="center",
+                        spacing="2",
                     ),
-                    align="center",
-                    spacing="2",
                 ),
             ),
             (
                 AUTO_PUBLISH_NO_CONNECTION,
-                callout(
-                    "No hay una cuenta conectada y activa para publicar. Conéctala en "
-                    "Tus redes: los eventos se publicarán en cuanto lo esté.",
-                    "warn",
+                rx.vstack(
+                    callout(
+                        "Conecta tu cuenta en Tus redes para que esta publicación pueda salir.",
+                        "warn",
+                    ),
+                    rx.link(
+                        rx.hstack(
+                            rx.text("Ir a Tus redes", size="2"),
+                            rx.icon("arrow-right", size=14),
+                            align="center",
+                            spacing="1",
+                        ),
+                        href="/connections",
+                    ),
+                    spacing="2",
+                    width="100%",
                 ),
             ),
             callout(
-                "El servicio de publicación automática no está disponible en este "
-                "momento: los eventos no se publicarán a su hora.",
+                "Ahora mismo no podemos publicar a la hora programada. Tus publicaciones "
+                "siguen guardadas; revisa esta pantalla más tarde.",
                 "warn",
             ),
         ),

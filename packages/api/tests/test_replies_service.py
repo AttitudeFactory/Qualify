@@ -146,7 +146,7 @@ def test_generate_drafts_is_idempotent_on_rerun() -> None:
 
     assert first.drafts_created == 1
     # Second pass sees no candidates at all: MemoryReplyRepository's
-    # list_positive_comments_without_draft already excludes messages with a draft.
+    # list_reply_candidates already excludes messages with a draft.
     assert second.candidates_seen == 0
     assert second.drafts_created == 0
 

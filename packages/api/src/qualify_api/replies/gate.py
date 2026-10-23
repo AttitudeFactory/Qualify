@@ -4,42 +4,79 @@ whole point of naming it is that a comment must pass THIS, deterministically and
 testably, before any generator call is ever made. *"La IA lee el comentario y
 responde"* is not an acceptable path; this function is what stands in the way of it.
 
-v1 rule, comments tranche only (QUA-22's DM tranche stays out entirely — blocked by
-Advanced Access + Business Verification, see QUA-20/QUA-69 — this module has no
-DM-shaped input at all, not even a disabled one):
+Comments tranche only (QUA-22's DM tranche stays out entirely — blocked by Advanced
+Access + Business Verification, see QUA-20/QUA-69 — this module has no DM-shaped input
+at all, not even a disabled one). A comment passes when ALL of these hold:
 
-- `channel` must be `'comment'`. A DM-shaped input is refused with a reason that names
-  the real blocker, not a generic "wrong channel".
-- `sentiment_label` must be `'POS'` — QUA-22's own criterion, verbatim: "los
-  comentarios públicos entran después y sólo con polaridad positiva".
-- The comment text must be non-empty after stripping — same restriction QUA-21 AC5
-  already applies to sentiment analysis itself (`sentiment/service.py`): nothing
-  generates a reply to silence.
-- No draft may already exist for this comment — `UNIQUE(message_id)` enforces this at
-  the DB layer regardless; the gate re-checks it so a rejection carries a reason
-  instead of surfacing as a raw `IntegrityError`.
+- `channel` is `'comment'`. A DM-shaped input is refused with a reason that names the
+  real blocker, not a generic "wrong channel".
+- The comment text is non-empty after stripping — nothing generates a reply to silence.
+- No LIVE draft exists for this comment (0080's `uq_reply_draft_live_message`; the gate
+  re-checks it so a rejection carries a reason instead of a raw `IntegrityError`).
+  Regeneration (`ReplyService.regenerate`) evaluates the gate with this condition off,
+  because it replaces the live draft itself.
+- It has a signal that earns a public reply — either:
+  - `sentiment_label == 'POS'` (QUA-22: "sólo con polaridad positiva") → route
+    `sentiment`, the original thank-you reply; or
+  - commercial intent (Fase A, m-24789644) under the CURRENT intent version → route
+    `commercial`, the grounded reply of Fase B (m-24789645). A signal recorded under an
+    older version does not count: the classifier that produced it is no longer the one
+    this deployment trusts. When both hold, `commercial` wins — a «¡me encanta! ¿cuánto
+    cuesta?» must not reach the ungrounded thank-you generator.
+- Nobody already chose to answer it privately: a Fase C followup (`interaction_followups`)
+  in status `approved` means a person approved a DM to this comment's author (queued in
+  the outbox, maybe already sent, maybe with a public «Te escribimos por DM» notice). A
+  second, public reply from the business would duplicate that answer, so the comment
+  gets no public draft. An `open` followup (nobody decided yet) or a `discarded` one does
+  not block: the person still chooses between the two routes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
-COMMENT_CHANNEL = "comment"
-REQUIRED_SENTIMENT_LABEL = "POS"
+from qualify_api.sentiment.repository import AnalysisVersion
+
+COMMENT_CHANNEL: Final = "comment"
+REQUIRED_SENTIMENT_LABEL: Final = "POS"
+#: The `interaction_followups.status` that means "this comment is answered by DM".
+FOLLOWUP_APPROVED: Final = "approved"
+
+ROUTE_SENTIMENT: Final = "sentiment"
+ROUTE_COMMERCIAL: Final = "commercial"
+
+
+@dataclass(frozen=True)
+class IntentEvidence:
+    """The comment's Fase A signal as the gate needs it: whether it is commercial, and
+    under which analysis version it was recorded."""
+
+    commercial_intent: bool
+    version: AnalysisVersion
 
 
 @dataclass(frozen=True)
 class GateInput:
     channel: str
-    sentiment_label: str
+    # The current-version sentiment label; `""`/None when the comment has none.
+    sentiment_label: str | None
     comment_text: str | None
-    has_existing_draft: bool
+    has_live_draft: bool
+    intent: IntentEvidence | None = None
+    # The version this deployment classifies under (`intent.CURRENT_INTENT_VERSION`);
+    # None means intent is not considered at all (the QUA-22-only path).
+    current_intent_version: AnalysisVersion | None = None
+    # `interaction_followups.status` of the comment's followup, None if it has none.
+    followup_status: str | None = None
 
 
 @dataclass(frozen=True)
 class GateVerdict:
     passed: bool
     reason: str
+    # Which generator a passing comment goes to (`ROUTE_*`); None when it failed.
+    route: str | None = None
 
 
 def evaluate_gate(gate_input: GateInput) -> GateVerdict:
@@ -55,20 +92,51 @@ def evaluate_gate(gate_input: GateInput) -> GateVerdict:
                 "Verification (QUA-20/QUA-69), not a generative-gate decision"
             ),
         )
-    if gate_input.has_existing_draft:
-        return GateVerdict(passed=False, reason="a reply draft already exists for this comment")
-    if gate_input.sentiment_label != REQUIRED_SENTIMENT_LABEL:
+    if gate_input.comment_text is None or not gate_input.comment_text.strip():
+        return GateVerdict(passed=False, reason="comment text is empty or whitespace-only")
+    if gate_input.has_live_draft:
+        return GateVerdict(
+            passed=False, reason="a live reply draft already exists for this comment"
+        )
+    if gate_input.followup_status == FOLLOWUP_APPROVED:
         return GateVerdict(
             passed=False,
             reason=(
-                f"sentiment {gate_input.sentiment_label!r} is not "
-                f"{REQUIRED_SENTIMENT_LABEL!r} — only positive-sentiment comments get an "
-                "assisted draft (QUA-22)"
+                "a person already approved a private message (Fase C followup) for this "
+                "comment — it is answered by DM, not publicly"
             ),
         )
-    if gate_input.comment_text is None or not gate_input.comment_text.strip():
-        return GateVerdict(passed=False, reason="comment text is empty or whitespace-only")
-    return GateVerdict(
-        passed=True,
-        reason="comment channel, POS sentiment, non-empty text, no existing draft",
-    )
+
+    intent = gate_input.intent
+    current = gate_input.current_intent_version
+    commercial = intent is not None and intent.commercial_intent and current is not None
+    if commercial and intent is not None and current is not None and intent.version == current:
+        return GateVerdict(
+            passed=True,
+            reason=(
+                f"comment channel, commercial intent under {current.detector_version}, "
+                "non-empty text, no live draft, no approved DM followup"
+            ),
+            route=ROUTE_COMMERCIAL,
+        )
+    if gate_input.sentiment_label == REQUIRED_SENTIMENT_LABEL:
+        return GateVerdict(
+            passed=True,
+            reason="comment channel, POS sentiment, non-empty text, no live draft",
+            route=ROUTE_SENTIMENT,
+        )
+
+    sentiment = f"sentiment {gate_input.sentiment_label or 'none'!r} is not 'POS'"
+    if commercial and intent is not None and current is not None:
+        # Commercial, but recorded by a classifier this deployment no longer runs.
+        reason = (
+            f"{sentiment} and the commercial-intent signal is from "
+            f"{intent.version.detector_version}/{intent.version.pipeline_version}, not the "
+            f"current {current.detector_version}/{current.pipeline_version} — re-run intent"
+        )
+    else:
+        reason = (
+            f"{sentiment} and no current commercial intent — only positive (QUA-22) or "
+            "commercial (m-24789645) comments get an assisted draft"
+        )
+    return GateVerdict(passed=False, reason=reason)

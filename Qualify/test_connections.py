@@ -694,6 +694,26 @@ def test_guide_copy_avoids_anglicisms() -> None:
             assert word not in lowered, f"{word!r} in {text!r}"
 
 
+def test_guide_never_says_qualify_acts_on_its_own() -> None:
+    """N13 (m-24842959): assisted, never autonomous — the owner publishes and replies
+    from Qualify; the copy never says Qualify does it «por ti»."""
+    import inspect
+
+    from . import connections_page
+
+    messages = CONNECT_REQUIREMENTS[1]
+    assert messages.summary == (
+        "Sin este permiso no verás tus mensajes directos en Qualify ni podrás "
+        "responderlos desde aquí."
+    )
+    source = inspect.getsource(connections_page)
+    assert '"Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás "\n' in source
+    assert '"publicar ni responder mensajes desde Qualify."' in source
+    texts = [r.summary for r in CONNECT_REQUIREMENTS] + [source]
+    for text in texts:
+        assert "por ti" not in text.lower()
+
+
 # -- m-24840590: card hints ---------------------------------------------------------------
 
 _FB_LOGIN_SCOPES = [

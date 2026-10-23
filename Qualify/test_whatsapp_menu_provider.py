@@ -112,7 +112,7 @@ def test_create_from_the_example_saves_version_one() -> None:
     assert [v.label for v in detail.versions] == ["Versión 1"]
     assert detail.latest == BIANKI_DEMO_MENU
     assert detail.summary.published_label == "Sin publicar"
-    assert detail.summary.status_label == "Borrador"
+    assert detail.summary.status_label == "Sin publicar"
 
 
 def test_create_empty_saves_nothing() -> None:
@@ -159,7 +159,7 @@ def test_pause_toggles_the_status() -> None:
     assert detail.summary.is_paused and detail.summary.status_label == "En pausa"
     assert detail.summary.status_tone == "warn"
     detail = set_paused(TENANT, SCOPE, menu_id, False, repo=h.repo)
-    assert detail.summary.status_label == "Activo en el número"
+    assert detail.summary.status_label == "Respondiendo en tu WhatsApp"
 
 
 # --- publish ----------------------------------------------------------------------------
@@ -204,7 +204,10 @@ async def test_publish_with_a_graph_error_keeps_the_db_publish() -> None:
     outcome = await h.publish(menu_id, version_id)
 
     assert not outcome.graph_ok and not outcome.auth_error
-    assert outcome.notice == "Publicado en Qualify; WhatsApp no aceptó los atajos (código 100)."
+    assert outcome.notice.startswith(
+        "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+    )
+    assert "100" not in outcome.notice and "código" not in outcome.notice
     assert outcome.tone == "warn"
     assert h.degraded == [] and h.stored == []
     menu = h.repo.get_menu(tenant_id=TENANT, menu_id=menu_id)
@@ -217,7 +220,12 @@ async def test_publish_with_an_auth_error_degrades_the_connection() -> None:
     menu_id, version_id = _example_menu(h)
     outcome = await h.publish(menu_id, version_id)
     assert outcome.auth_error and outcome.tone == "error"
-    assert outcome.notice.startswith("Publicado en Qualify; WhatsApp no aceptó los atajos")
+    assert (
+        outcome.notice.startswith(
+            "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+        )
+        and "190" not in outcome.notice
+    )
     assert h.degraded == [(TENANT, CONNECTION)]
     assert outcome.detail.summary.is_published
 
@@ -230,7 +238,10 @@ async def test_publish_with_an_infrastructure_error_never_leaks_its_text() -> No
     outcome = await h.publish(menu_id, version_id)
     assert not outcome.graph_ok
     assert "secret-host" not in outcome.notice
-    assert outcome.notice.startswith("Publicado en Qualify; no pudimos enviar los atajos")
+    assert outcome.notice.startswith(
+        "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+    )
+    assert "Vuelve a tocar «Publicar en mi WhatsApp»" in outcome.notice
 
 
 async def test_publish_a_client_side_limit_refusal() -> None:

@@ -59,7 +59,7 @@ def _seed_pos_comment(
 ) -> tuple[UUID, CandidateComment, UUID]:
     """Seeds a connection + comment-channel thread + one inbound message + one POS
     `comment_sentiment_results` row under `version` — the exact shape
-    `list_positive_comments_without_draft` reads. Returns
+    `list_reply_candidates` reads (POS half). Returns
     `(connection_id, candidate, user_id)` — `user_id` is a REAL seeded row, required
     because `decided_by_user_id` carries a live FK to `users.id` (migration 0014); a
     random `uuid4()` would violate it, which is itself worth asserting once (see
@@ -148,8 +148,11 @@ def test_finds_the_seeded_pos_comment_and_creates_a_draft() -> None:
     connection_id, candidate, _user_id = _seed_pos_comment(TENANT_A, version)
     repo = PostgresReplyRepository()
 
-    candidates = repo.list_positive_comments_without_draft(
-        tenant_id=TENANT_A, connection_id=connection_id, version=version
+    candidates = repo.list_reply_candidates(
+        tenant_id=TENANT_A,
+        connection_id=connection_id,
+        sentiment_version=version,
+        intent_version=None,
     )
     assert [c.message_id for c in candidates] == [candidate.message_id]
 
@@ -165,8 +168,11 @@ def test_finds_the_seeded_pos_comment_and_creates_a_draft() -> None:
     assert created.status == "proposed"
 
     # The candidate no longer appears — a draft now exists for it.
-    remaining = repo.list_positive_comments_without_draft(
-        tenant_id=TENANT_A, connection_id=connection_id, version=version
+    remaining = repo.list_reply_candidates(
+        tenant_id=TENANT_A,
+        connection_id=connection_id,
+        sentiment_version=version,
+        intent_version=None,
     )
     assert remaining == ()
 
@@ -186,8 +192,11 @@ def test_a_soft_deleted_comment_is_never_a_draft_candidate() -> None:
         session.flush()
     repo = PostgresReplyRepository()
 
-    candidates = repo.list_positive_comments_without_draft(
-        tenant_id=TENANT_A, connection_id=connection_id, version=version
+    candidates = repo.list_reply_candidates(
+        tenant_id=TENANT_A,
+        connection_id=connection_id,
+        sentiment_version=version,
+        intent_version=None,
     )
 
     assert candidates == ()
@@ -644,8 +653,11 @@ def test_pending_drafts_carry_the_author_and_the_publication(  # m-24842989
     version = _fresh_version()
     connection_id, candidate, _user_id = _seed_pos_comment(TENANT_A, version)
     repo = PostgresReplyRepository()
-    (found,) = repo.list_positive_comments_without_draft(
-        tenant_id=TENANT_A, connection_id=connection_id, version=version
+    (found,) = repo.list_reply_candidates(
+        tenant_id=TENANT_A,
+        connection_id=connection_id,
+        sentiment_version=version,
+        intent_version=None,
     )
     assert found.author_username == "cliente.feliz"
     assert found.external_media_id == candidate.external_media_id

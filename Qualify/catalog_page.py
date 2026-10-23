@@ -4,7 +4,7 @@ The screen where the founder puts the real products of a brand with their real p
 and short clips — the one input the template engine cannot invent. Three blocks on one
 page, design-system §9.1 (`app_shell(page_header, page_body)`):
 
-1. **Nuevo producto** — a card with the form (name, category, description). Opens
+1. **Agregar producto** — a card with the form (name, category, description). Opens
    from the header's one solid action. No price: the founder dropped it from the
    catalog (2026-10-19); prices already stored stay in the DB, unused by this screen.
 2. **The editor** of the selected product — its fields, and its media: an upload zone
@@ -90,8 +90,8 @@ def _price_field(
             max_width="24rem",  # a price is a short number: not a field across the page
             align="center",
         ),
-        "Opcional. Si lo dejas vacío, las piezas no mostrarán ningún precio; si lo "
-        "escribes, se imprime exactamente así.",
+        "Opcional. Si lo dejas vacío, la publicación no muestra precio. Si lo escribes, "
+        "sale tal cual.",
     )
 
 
@@ -148,7 +148,7 @@ def _product_fields(
                 rows="3",
                 width="100%",
             ),
-            "Ayuda a escribir el gancho; no se imprime entera.",
+            "Nos ayuda a escribir el texto de la publicación. No se copia tal cual.",
         ),
         _price_field(price, on_price, currency, on_currency),
         spacing="3",
@@ -157,7 +157,7 @@ def _product_fields(
     )
 
 
-# -- Nuevo producto --------------------------------------------------------------------
+# -- Agregar producto --------------------------------------------------------------------
 
 
 def _new_product_form() -> rx.Component:
@@ -165,7 +165,7 @@ def _new_product_form() -> rx.Component:
         rx.form(
             rx.vstack(
                 rx.hstack(
-                    rx.heading("Nuevo producto", size="4", as_="h2"),
+                    rx.heading("Agregar producto", size="4", as_="h2"),
                     rx.spacer(),
                     rx.button(
                         rx.icon("x", size=T.ICON_SM),
@@ -293,13 +293,14 @@ def _new_media_field() -> rx.Component:
                 rx.vstack(
                     rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
                     rx.text(
-                        "Arrastra fotos y videos cortos del producto, o haz clic",
+                        "Toca para tomar una foto o elegirla de tu galería",
                         size="1",
                         text_align="center",
                         color=T.TEXT_MUTED,
                     ),
                     rx.text(
-                        "JPG, PNG, HEIC · MP4, MOV (hasta 15 s). Se procesan al crear el producto.",
+                        "Fotos o videos cortos (hasta 15 segundos). Se guardan al crear el "
+                        "producto.",
                         size="1",
                         text_align="center",
                         color=T.TEXT_FAINT,
@@ -437,13 +438,13 @@ def _upload_zone() -> rx.Component:
         rx.vstack(
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
             rx.text(
-                "Arrastra fotos y videos cortos del producto, o haz clic",
+                "Toca para tomar una foto o elegirla de tu galería",
                 size="1",
                 text_align="center",
                 color=T.TEXT_MUTED,
             ),
             rx.text(
-                "JPG, PNG, HEIC · MP4, MOV (hasta 15 s). Se corrigen y recortan solos.",
+                "Fotos o videos cortos (hasta 15 segundos).",
                 size="1",
                 text_align="center",
                 color=T.TEXT_FAINT,
@@ -462,12 +463,12 @@ def _upload_zone() -> rx.Component:
 
 def _upload_progress() -> rx.Component:
     """The running ingest: in the editor's media block while a product is open, and at
-    page level when the files dropped in the «Nuevo producto» form follow a product
+    page level when the files dropped in the «Agregar producto» form follow a product
     whose editor is not open."""
     return rx.vstack(
         progress_panel(
             CatalogState.upload_label,
-            "Corrigiendo y recortando cada archivo antes de guardarlo.",
+            "Acomodando cada foto para que se vea bien. Puedes seguir usando la pantalla.",
             value=CatalogState.upload_progress,
         ),
         rx.text(
@@ -491,7 +492,7 @@ def _media_block() -> rx.Component:
             rx.text("Fotos y videos", size="2", weight="medium"),
             rx.text(product.counts_label, size="1", color=T.TEXT_MUTED),
             rx.spacer(),
-            rx.text("Hasta 12", size="1", color=T.TEXT_FAINT),
+            rx.text("Puedes subir hasta 12", size="1", color=T.TEXT_FAINT),
             width="100%",
             align="center",
             spacing="2",
@@ -612,7 +613,7 @@ def _editor() -> rx.Component:
                     ),
                     rx.hstack(
                         rx.spacer(),
-                        # soft: the screen's one solid action is "Nuevo producto" (§5.5)
+                        # soft: the screen's one solid action is "Agregar producto" (§5.5)
                         rx.button(
                             rx.icon("save", size=T.ICON_SM),
                             "Guardar cambios",
@@ -650,8 +651,8 @@ def _delete_product_dialog() -> rx.Component:
         rx.alert_dialog.content(
             rx.alert_dialog.title("¿Eliminar este producto?"),
             rx.alert_dialog.description(
-                "«" + CatalogState.delete_product_name + "» desaparece del catálogo y de "
-                "Crear publicación. Las piezas que ya se hicieron con él se conservan.",
+                "«" + CatalogState.delete_product_name + "» ya no aparecerá para crear "
+                "publicaciones. Las publicaciones que ya hiciste con él no cambian.",
                 size="2",
             ),
             rx.flex(
@@ -781,12 +782,12 @@ def _grid() -> rx.Component:
 def _empty() -> rx.Component:
     return empty_state(
         "package",
-        "Aún no hay productos",
-        "Crea el primero y súbele dos o más fotos reales: con eso una plantilla ya "
-        "produce Reel, feed e historia.",
+        "Aún no tienes productos",
+        "Sube tu primer producto con dos o más fotos reales: con eso ya puedes crear "
+        "publicaciones e historias que se ven como lo que vendes.",
         rx.button(
             rx.icon("plus", size=T.ICON_SM),
-            "Nuevo producto",
+            "Agregar producto",
             size="2",
             on_click=CatalogState.open_form,
         ),
@@ -807,10 +808,10 @@ def catalog_index() -> rx.Component:
     return app_shell(
         page_header(
             "Tus productos",
-            "Tus productos con sus fotos reales: lo que las plantillas componen.",
+            "Sube la foto real de lo que vendes y úsala en tus publicaciones.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),
-                "Nuevo producto",
+                "Agregar producto",
                 size="2",
                 on_click=CatalogState.open_form,
                 disabled=CatalogState.form_open,
@@ -823,6 +824,19 @@ def catalog_index() -> rx.Component:
         ),
         page_body(
             rx.cond(CatalogState.error != "", callout(CatalogState.error, "error")),
+            # No brand yet: the error names the step, this is the way to it (m-24842971).
+            rx.cond(
+                CatalogState.needs_brand,
+                rx.link(
+                    rx.button(
+                        rx.icon("palette", size=T.ICON_SM),
+                        "Completar mi marca",
+                        size="2",
+                        variant="soft",
+                    ),
+                    href="/brand",
+                ),
+            ),
             # The ingest of the files dropped in the form runs with no editor open:
             # its progress and its failures show here, not in a panel nobody sees.
             rx.cond(

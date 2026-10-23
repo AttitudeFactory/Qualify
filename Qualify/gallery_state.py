@@ -34,10 +34,28 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar la galería. Inténtalo de nuevo."
-_REVIEW_FAILED = "No se pudo completar la acción. Abre el POST y vuelve a intentarlo."
+_REVIEW_FAILED = "No se pudo completar. Abre la publicación y vuelve a intentarlo."
+#: m-24842978: the same words here and on the publication's own page after approving —
+#: it is not out yet — with the way to choose when it goes out, when it can go out.
+APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
+APPROVED_NOT_READY_TOAST = "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale."
+APPROVED_TOAST_ACTION = "Elegir día y hora"
 _NO_PASSING_VARIANT = (
-    "Ninguna variante cumple las reglas de tu marca: abre el POST para editarla o regenerar."
+    "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
 )
+
+
+def schedule_readiness(posts: list[PostOptionVM], post_id: str) -> tuple[bool, str]:
+    """m-24842978: can this just-approved publication be given a day and time, and if
+    not, why (the evaluator's reason, as the card shows it)? An approved publication can
+    still be «aprobada pero no lista» (no connected account fits it, its media does not
+    suit any destination…). A publication missing from the list is not judged here:
+    Tu semana stays the gate and says why itself (pure — tested directly)."""
+    for post in posts:
+        if post.post_id == post_id:
+            return post.schedulable, post.readiness_note
+    return True, ""
+
 
 # The gallery's reading order: what can go out now first, then what needs you, then
 # history. A stable sort, so within a state the newest stays first.
@@ -180,10 +198,33 @@ class GalleryState(rx.State):
                 self.busy_post_id = ""
             yield rx.toast.error(_REVIEW_FAILED)
             return
+        # The grid is re-read now (not after the toast) so the toast can tell an
+        # approved publication that can be given a day and time from one that is
+        # «aprobada pero no lista» — and offer «Elegir día y hora» only to the first.
+        try:
+            data = await asyncio.to_thread(load_gallery, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — the approval stands; `load` says the rest
+            logger.warning("gallery reload after approve failed: %s", type(exc).__name__)
+            data = None
         async with self:
             self.busy_post_id = ""
-        yield rx.toast.success("POST aprobado: ya puedes programarlo en Tu semana.")
-        yield GalleryState.load
+            if data is not None:
+                self.posts = list(data.posts)
+                self.categories = list(data.categories)
+        ready, _note = schedule_readiness(list(data.posts) if data else [], post_id)
+        if ready:
+            yield rx.toast.success(
+                APPROVED_TOAST,
+                action={
+                    "label": APPROVED_TOAST_ACTION,
+                    "on_click": rx.redirect(f"/planner?post={post_id}"),
+                },
+            )
+        else:
+            # the card itself shows what is missing (`readiness_note`)
+            yield rx.toast.success(APPROVED_NOT_READY_TOAST)
+        if data is None:
+            yield GalleryState.load
 
     @rx.event
     def ask_reject_post(self, post_id: str, title: str) -> None:

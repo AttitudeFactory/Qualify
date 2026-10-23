@@ -262,8 +262,8 @@ CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
         key="messages",
         title="Permite el acceso a tus mensajes",
         summary=(
-            "Sin este permiso de Instagram, Qualify no puede leer ni responder tus "
-            "mensajes directos, aunque la cuenta esté conectada."
+            "Sin este permiso no verás tus mensajes directos en Qualify ni podrás "
+            "responderlos desde aquí."
         ),
         steps=[
             "En Instagram, abre tu perfil y toca el menú ☰ → Configuración y actividad.",

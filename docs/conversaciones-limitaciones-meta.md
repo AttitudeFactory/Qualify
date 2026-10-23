@@ -198,6 +198,8 @@ Cada operación de Meta que Fase C necesita y que no está verificada va detrás
 
 El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: QUA-226 lo verificó en producción y siempre está disponible.
 
+**Respuesta pública a un comentario comercial (Fase B, m-24789645).** Usa el mismo `POST /{ig-comment-id}/replies` y el mismo tiempo de espera de 60 s que el aviso público; no es una capacidad de esta tabla porque siempre pasa por un borrador aprobado. Probada en vivo el 2026-10-23 (`sent`, ≈ 6 s de Meta): [interacciones-fase-b-respuestas-comerciales.md](interacciones-fase-b-respuestas-comerciales.md) §7 y §10.
+
 **Vínculo de datos (`interaction_followups`, migración 0071).** Una fila por interacción (comentario o respuesta a historia): su intención comercial (`comment_intent_results`, si la abrió un análisis), el hilo privado del autor en Conversaciones, el envío que una persona aprobó (`conversation_outbox`) y el estado del aviso público, independiente del DM. El borrador sigue en `conversation_drafts` y la entrega en el outbox: aquí no se copian. El hilo privado se crea **solo cuando una persona aprueba un envío** (abrir una consulta no llena Conversaciones de hilos vacíos), y se puede crear antes de que la persona escriba porque el `from.id` de un comentario es el IGSID del autor (`ig-comment.md`), el mismo identificador que usan los DMs (`overview.md`: «specific to the person and the Instagram account»); R1 lo comprobó: el `recipient_id` que devolvió Meta es el `from.id` del comentario y el id del hilo DM del autor (2026-10-22).
 
 ### Respuesta privada a un comentario (PR 2) y cómo hacer R1

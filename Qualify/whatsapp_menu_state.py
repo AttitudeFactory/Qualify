@@ -12,7 +12,10 @@ costs nothing, a different number drops everything number-scoped first.
 
 **Editing is local and synchronous.** Every edit is a foreground handler that replaces a
 frozen form item and re-runs `validate_form` (the schema, in-process, microseconds), so
-the Spanish messages follow the keystrokes. Nothing is written until «Guardar versión».
+the Spanish messages follow the keystrokes. Nothing is written until «Publicar en mi
+WhatsApp» (saves the changes as a new version, then publishes it) or «Guardar sin
+publicar». `editing_version_id` is the saved version the editor shows while it has no
+changes — what «Publicar en mi WhatsApp» publishes when there is nothing to save.
 Indices arrive over the wire and are range-checked; a `field` name is whitelisted.
 
 **Everything that touches Postgres or Graph is a background event** (SQLAlchemy is
@@ -72,6 +75,7 @@ from .whatsapp_menu_vm import (
     MenuVersionVM,
     NodeForm,
     PreviewMessageVM,
+    can_publish,
     catalog_note,
     change_kind,
     definition_to_form,
@@ -81,6 +85,7 @@ from .whatsapp_menu_vm import (
     new_option,
     order_lines,
     preview_turn,
+    publish_confirm_lines,
     rename_node,
     unique_node_id,
     validate_form,
@@ -98,10 +103,13 @@ _PUBLISH_FAILED = "No se pudo publicar la versión. Vuelve a intentarlo en un mo
 _PAUSE_FAILED = "No se pudo cambiar la pausa del menú. Vuelve a intentarlo en un momento."
 _MENU_GONE = "Ese menú ya no está en este número. Actualizamos la lista."
 _NAME_TAKEN = "Ya hay un menú con ese nombre en este número."
-_SAVED = "Versión {n} guardada. Publícala cuando quieras que responda en WhatsApp."
-_PAUSED = "Menú en pausa: el número no responde solo hasta que lo reactives."
-_RESUMED = "Menú reactivado: vuelve a responder solo en el número."
-_DRAFT_EMPTY = "Menú nuevo: escribe el primer paso y guarda la versión."
+_SAVED = (
+    "Versión {n} guardada sin publicar. Tu WhatsApp aún no responde con ella: toca "
+    "«Publicar en mi WhatsApp» cuando quieras."
+)
+_PAUSED = "Menú en pausa: tu WhatsApp no responde con el menú hasta que lo reactives."
+_RESUMED = "Menú reactivado: tu WhatsApp vuelve a responder con el menú que escribiste."
+_DRAFT_EMPTY = "Menú nuevo: escribe el primer paso y publícalo en tu WhatsApp."
 
 _ENTRY_TABLES: dict[str, frozenset[str]] = {
     "keywords": frozenset({"word", "node"}),
@@ -188,7 +196,10 @@ class WhatsAppMenuState(rx.State):
     editing_from: str = ""  # «Editando a partir de la versión 3» — pre-formatted
     opening: bool = False
     saving: bool = False
-    publishing_version: str = ""
+    publishing: bool = False
+    editing_version_id: str = ""  # the saved version on screen while `dirty` is False
+    just_published: bool = False  # «listo» + the next step (the QR), until the next edit
+    versions_open: bool = False  # «Ver versiones anteriores»
     pausing: bool = False
     dirty: bool = False
 
@@ -267,6 +278,32 @@ class WhatsAppMenuState(rx.State):
     @rx.var
     def can_save(self) -> bool:
         return self.error_count == 0 and self.dirty and not self.saving and self.has_menu
+
+    @rx.var
+    def can_publish(self) -> bool:
+        return can_publish(
+            has_menu=self.has_menu,
+            error_count=self.error_count,
+            dirty=self.dirty,
+            editing_version_id=self.editing_version_id,
+            busy=self.saving or self.publishing,
+        )
+
+    @rx.var
+    def publish_confirm_lines(self) -> list[str]:
+        """The confirmation's case lines: save first / back to version n / re-send the
+        live one, and the other menu it replaces (only when one is answering)."""
+        version = next((v for v in self.versions if v.version_id == self.editing_version_id), None)
+        other = next(
+            (m.name for m in self.menus if m.is_published and m.menu_id != self.menu.menu_id),
+            "",
+        )
+        return publish_confirm_lines(
+            dirty=self.dirty,
+            version=version,
+            other_published_menu=other,
+            paused=self.menu.is_paused,
+        )
 
     @rx.var
     def ice_breakers_full(self) -> bool:
@@ -357,13 +394,18 @@ class WhatsAppMenuState(rx.State):
             self.selected_node = max(0, len(self.nodes) - 1)
         if edited:
             self.dirty = True
+            self.just_published = False
 
-    def _load_definition(self, definition: MenuDefinition | None, label: str) -> None:
+    def _load_definition(
+        self, definition: MenuDefinition | None, label: str, version_id: str = ""
+    ) -> None:
         form = definition_to_form(definition) if definition is not None else empty_form()
         self.selected_node = 0
         self._apply(form, edited=False)
         self.dirty = False
         self.editing_from = label
+        self.editing_version_id = version_id
+        self.just_published = False
         self._restart_preview()
 
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
@@ -381,7 +423,8 @@ class WhatsAppMenuState(rx.State):
                 if detail.versions
                 else _DRAFT_EMPTY
             )
-            self._load_definition(detail.latest, label)
+            newest = detail.versions[0].version_id if detail.versions else ""
+            self._load_definition(detail.latest, label, newest)
 
     def _reset_number_scoped(self) -> None:
         self.menus = []
@@ -389,6 +432,9 @@ class WhatsAppMenuState(rx.State):
         self.versions = []
         self.banner = ""
         self.editing_from = ""
+        self.editing_version_id = ""
+        self.just_published = False
+        self.versions_open = False
         self.dirty = False
         self._scope = {}
         self._catalog = []
@@ -742,26 +788,23 @@ class WhatsAppMenuState(rx.State):
         self._load_definition(
             MenuDefinition.model_validate(payload),
             f"Editando a partir de la {version.label.lower()}",
+            version_id,
         )
 
-    @rx.event(background=True)
-    async def save_current_version(self) -> None:
-        async with self:
-            if not self.can_save:
-                return
-            scope = self._scope_value()
-            if scope is None:
-                return
-            self.saving = True
-            self.banner = ""
-            payload = dict(self._valid_payload)
-            menu_id = self.menu.menu_id
-            _tenant, tenant_id, _email = await self._session()
-        if tenant_id is None:
-            async with self:
-                self.saving = False
-                self.banner, self.banner_tone = _NO_SESSION, "error"
-            return
+    @rx.event
+    def toggle_versions(self) -> None:
+        self.versions_open = not self.versions_open
+
+    @rx.event
+    def dismiss_next_step(self) -> None:
+        self.just_published = False
+
+    async def _save_outside_lock(
+        self, tenant_id: UUID, scope: NumberScope, menu_id: str, payload: dict[str, Any]
+    ) -> MenuDetail | None:
+        """Write `payload` as the menu's next version (outside the state lock). On success
+        the new version is on screen and the editor is clean; on failure the banner says
+        so, `saving` is cleared and None comes back."""
         try:
             detail = await asyncio.to_thread(save_version, tenant_id, scope, UUID(menu_id), payload)
         except ValidationError:
@@ -770,40 +813,83 @@ class WhatsAppMenuState(rx.State):
             async with self:
                 self.saving = False
                 self.banner, self.banner_tone = _SAVE_FAILED, "warn"
-            return
+            return None
         except (SQLAlchemyError, MenuNotFound) as exc:
             logger.error("whatsapp menu save failed: %s", type(exc).__name__)
             async with self:
                 self.saving = False
                 self.banner, self.banner_tone = _SAVE_FAILED, "error"
-            return
+            return None
         async with self:
             self.saving = False
             self.dirty = False
             self._show_detail(detail, load_form=False)
-            newest = detail.versions[0].label.lower() if detail.versions else ""
-            self.editing_from = f"Editando a partir de la {newest}" if newest else ""
-            number = newest.removeprefix("versión ").strip()
-            self.banner, self.banner_tone = _SAVED.format(n=number), "ok"
+            newest = detail.versions[0] if detail.versions else None
+            self.editing_version_id = newest.version_id if newest else ""
+            self.editing_from = f"Editando a partir de la {newest.label.lower()}" if newest else ""
+        return detail
 
     @rx.event(background=True)
-    async def publish(self, version_id: str) -> AsyncIterator[rx.event.EventSpec]:
+    async def save_current_version(self) -> None:
+        """«Guardar sin publicar» — the secondary action."""
         async with self:
-            if self.publishing_version or version_id not in {v.version_id for v in self.versions}:
+            if not self.can_save or self.publishing:
                 return
             scope = self._scope_value()
             if scope is None:
                 return
-            self.publishing_version = version_id
+            self.saving = True
             self.banner = ""
+            self.just_published = False
+            payload = dict(self._valid_payload)
             menu_id = self.menu.menu_id
+            _tenant, tenant_id, _email = await self._session()
+        if tenant_id is None:
+            async with self:
+                self.saving = False
+                self.banner, self.banner_tone = _NO_SESSION, "error"
+            return
+        detail = await self._save_outside_lock(tenant_id, scope, menu_id, payload)
+        if detail is None:
+            return
+        async with self:
+            label = detail.versions[0].label.lower() if detail.versions else ""
+            number = label.removeprefix("versión ").strip()
+            self.banner, self.banner_tone = _SAVED.format(n=number), "ok"
+
+    @rx.event(background=True)
+    async def publish_current(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Publicar en mi WhatsApp», after its confirmation: save the editor's changes as
+        a new version (when there are any), then publish the version on screen. One tap,
+        one outcome — the owner never has to find a second button to make it answer."""
+        async with self:
+            if not self.can_publish:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            must_save = self.dirty
+            self.saving = must_save
+            self.publishing = True
+            self.banner = ""
+            self.just_published = False
+            payload = dict(self._valid_payload)
+            menu_id = self.menu.menu_id
+            version_id = self.editing_version_id
             connection_id = await self._connection_id()
             _tenant, tenant_id, email = await self._session()
         if tenant_id is None:
             async with self:
-                self.publishing_version = ""
+                self.saving = self.publishing = False
                 self.banner, self.banner_tone = _NO_SESSION, "error"
             return
+        if must_save:
+            detail = await self._save_outside_lock(tenant_id, scope, menu_id, payload)
+            if detail is None or not detail.versions:
+                async with self:
+                    self.publishing = False
+                return
+            version_id = detail.versions[0].version_id
         try:
             user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
             outcome = await publish_version(
@@ -817,11 +903,11 @@ class WhatsAppMenuState(rx.State):
         except (SQLAlchemyError, MenuNotFound, MenuVersionNotFound) as exc:
             logger.error("whatsapp menu publish failed: %s", type(exc).__name__)
             async with self:
-                self.publishing_version = ""
+                self.publishing = False
                 self.banner, self.banner_tone = _PUBLISH_FAILED, "error"
             return
         async with self:
-            self.publishing_version = ""
+            self.publishing = False
             published = outcome.detail.summary.menu_id
             # Publishing demotes the number's other menus: their summaries are stale.
             self.menus = [
@@ -831,7 +917,12 @@ class WhatsAppMenuState(rx.State):
                 for m in self.menus
             ]
             self._show_detail(outcome.detail, load_form=False)
-            self.banner, self.banner_tone = outcome.notice, outcome.tone
+            # A clean publish says «listo» right where the owner tapped (the toolbar)
+            # with the next step (the QR); a partial failure shows only its banner — what
+            # to fix comes before what to do next.
+            self.just_published = outcome.graph_ok
+            if not outcome.graph_ok:
+                self.banner, self.banner_tone = outcome.notice, outcome.tone
         if outcome.auth_error:
             yield WhatsAppState.load_numbers
 
