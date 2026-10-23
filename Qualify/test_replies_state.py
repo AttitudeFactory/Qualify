@@ -182,7 +182,7 @@ def test_generate_drafts_log_detail_is_type_plus_only_safe_detail() -> None:
 
 
 # ----------------------------------------------------------------------------------
-# m-24789645 (Fase B, PR 3): «Regenerar» and the «Revisé el borrador» gate.
+# m-24789645 (Fase B, PR 3): «Regenerar» and the «Ya revisé estos puntos» gate.
 #
 # These run past `_resolve_ids`/`_acting_user` by replacing those two helpers (the
 # only `get_state` callers) with fakes on the class — what is left is exactly the

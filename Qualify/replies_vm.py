@@ -20,8 +20,8 @@ Old sentiment-era drafts have no grounding: every Fase B field stays empty and t
 looks as before.
 
 The send gate (`send_block_reason`) lives here too, so the state's handler and the tests
-share one rule: a draft that needs review is not sent until the person ticks «Revisé el
-borrador». It only ever ADDS a condition before the existing approval path; it never
+share one rule: a draft that needs review is not sent until the person ticks «Ya revisé
+estos puntos». It only ever ADDS a condition before the existing approval path; it never
 sends anything by itself.
 """
 
@@ -347,7 +347,7 @@ def send_block_reason(
 ) -> str:
     """Why «Aceptar y enviar» / «Guardar y enviar» must not go ahead yet, or `""`.
 
-    A draft that needs review goes only after the person ticked «Revisé el borrador»
+    A draft that needs review goes only after the person ticked «Ya revisé estos puntos»
     for THAT draft. A draft the list no longer holds is refused too (fail closed: the
     review state of what is on screen is unknown)."""
     for draft in drafts:
