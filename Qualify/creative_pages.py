@@ -33,7 +33,14 @@ from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
-from .post_card import campaign_badge, color_swatches, kind_chip, media_fill, viewable_src
+from .post_card import (
+    campaign_badge,
+    color_swatches,
+    kind_chip,
+    media_fill,
+    readiness_note,
+    viewable_src,
+)
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
@@ -871,7 +878,7 @@ def _gallery_card(post) -> rx.Component:
     """One POST of the gallery, picture first: its state on the media (a ready one is
     solid and glows, one that is not ready has a dashed frame), its temperature in big —
     Cold frosted, Hot in embers — and the actions it allows right on the card: review
-    («Aprobar» / «Rechazar») while it waits for you, «Programar» once it is ready."""
+    («Aprobar» / «Rechazar») while it waits for you, «Elegir día y hora» once it is ready."""
     busy = GalleryState.busy_post_id == post.post_id
     view = rx.link(
         rx.button(
@@ -912,7 +919,7 @@ def _gallery_card(post) -> rx.Component:
         ),
         rx.box(
             # request 2026-10-22: an approved piece can be thrown out too — unless it is
-            # already on the calendar; its own narrow column, so «Programar» keeps its width
+            # already on the calendar; its own narrow column, so «Elegir día y hora» keeps its width
             rx.cond(
                 (post.gallery_state == "schedulable") & ~post.in_calendar,
                 rx.tooltip(
@@ -933,7 +940,7 @@ def _gallery_card(post) -> rx.Component:
                 post.gallery_state == "schedulable",
                 rx.button(
                     rx.icon("calendar-plus", size=15),
-                    "Programar",
+                    "Elegir día y hora",
                     size="2",
                     width="100%",
                     on_click=GalleryState.assign(post.post_id),
@@ -2122,6 +2129,9 @@ def _reject_dialog() -> rx.Component:
 #: here says or suggests the publication is already out.
 APPROVED_TITLE = "Aprobada. Todavía no se publica."
 APPROVED_BODY = "Elige el día y la hora en que sale."
+#: …when it cannot be given a day and time yet («aprobada pero no lista»): the reason
+#: (`approved_note`, the evaluator's words) follows, and no way to a dead end is offered.
+APPROVED_NOT_READY_BODY = "Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_SCHEDULE = "Elegir día y hora"
 APPROVED_CREATE_ANOTHER = "Crear otra publicación"
 
@@ -2131,25 +2141,34 @@ _TAP_MIN_HEIGHT = "2.75rem"
 
 def _approved_next() -> rx.Component:
     """After approving (m-24842978, N3): say plainly that it is not out yet and take the
-    owner straight to choosing when it goes out — Tu semana opens on this publication."""
+    owner straight to choosing when it goes out — Tu semana opens on this publication.
+    If it cannot go out yet, say what is missing instead of offering that way."""
+    ready = CreativeState.approved_ready
     return _card(
         rx.hstack(
             rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
             rx.vstack(
                 rx.text(APPROVED_TITLE, class_name="q-rv-title"),
-                rx.text(APPROVED_BODY, class_name="q-rv-hint"),
+                rx.text(
+                    rx.cond(ready, APPROVED_BODY, APPROVED_NOT_READY_BODY),
+                    class_name="q-rv-hint",
+                ),
                 spacing="0",
             ),
             align="center",
             spacing="2",
         ),
+        rx.cond(~ready, readiness_note(CreativeState.approved_note)),
         rx.flex(
-            rx.button(
-                rx.icon("calendar-clock", size=16),
-                APPROVED_SCHEDULE,
-                size="3",
-                min_height=_TAP_MIN_HEIGHT,
-                on_click=CreativeState.go_schedule,
+            rx.cond(
+                ready,
+                rx.button(
+                    rx.icon("calendar-clock", size=16),
+                    APPROVED_SCHEDULE,
+                    size="3",
+                    min_height=_TAP_MIN_HEIGHT,
+                    on_click=CreativeState.go_schedule,
+                ),
             ),
             rx.button(
                 rx.icon("sparkles", size=16),
@@ -2208,6 +2227,7 @@ def _decision_bar_or_nothing() -> rx.Component:
                         variant="outline",
                         size="2",
                         width="100%",
+                        min_height=_TAP_MIN_HEIGHT,
                         disabled=~draft.can_reject,
                         **T.tone_scheme("error"),
                         on_click=CreativeState.ask_reject(False),
@@ -2225,6 +2245,7 @@ def _decision_bar_or_nothing() -> rx.Component:
                         variant="soft",
                         size="2",
                         width="100%",
+                        min_height=_TAP_MIN_HEIGHT,
                         disabled=~draft.can_regenerate,
                         **T.tone_scheme("warn"),
                         on_click=CreativeState.ask_reject(True),
@@ -2234,13 +2255,13 @@ def _decision_bar_or_nothing() -> rx.Component:
                     tone="green",
                     icon="circle-check",
                     title="Aprobar",
-                    text="Fija esta variante como el texto del POST. Queda lista para "
-                    "programarla en Tu semana.",
+                    text="Te quedas con esta versión. Después eliges el día y la hora en que sale.",
                     button=rx.button(
                         rx.icon("circle-check", size=15),
                         "Aprobar",
                         size="2",
                         width="100%",
+                        min_height=_TAP_MIN_HEIGHT,
                         disabled=~CreativeState.can_approve_now,
                         on_click=CreativeState.approve_selected,
                     ),

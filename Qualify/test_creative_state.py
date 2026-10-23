@@ -337,14 +337,71 @@ def _approvable_state(monkeypatch) -> CreativeState:
     return state
 
 
-async def _approve(monkeypatch, state: CreativeState) -> list:
+def _gallery_with(*, schedulable: bool, note: str = ""):
+    """What `load_gallery` would read right after approving: this publication, either
+    ready to be given a day and time or «aprobada pero no lista»."""
+    from .planner_provider import GalleryData
+    from .planner_vm import build_post_option
+
+    post = build_post_option(
+        post_id=str(_DRAFT_UUID),
+        title="Promo",
+        caption_excerpt="",
+        thumbnail_url="",
+        category="galeria",
+        approval="approved",
+        detail_href=f"/drafts/{_DRAFT_UUID}",
+        is_publishable=schedulable,
+        unpublishable_reason=note,
+        gallery_state="schedulable" if schedulable else "needs_action",
+    )
+    return GalleryData(posts=[post])
+
+
+async def _approve(monkeypatch, state: CreativeState, *, gallery=None) -> list:
     monkeypatch.setattr(CreativeState, "_route_draft_id", lambda self: _DRAFT_UUID)
     monkeypatch.setattr(
         creative_state_module,
         "approve_draft",
         lambda tenant_id, draft_id, variant_id, user_id: _approved_vm(state.draft),
     )
+    data = gallery if gallery is not None else _gallery_with(schedulable=True)
+    monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: data)
     return [event async for event in CreativeState.approve_selected.fn(state)]
+
+
+async def test_approved_but_not_ready_says_what_is_missing_and_offers_no_dead_end(
+    monkeypatch,
+) -> None:
+    state = _approvable_state(monkeypatch)
+    note = "Conecta una cuenta de Instagram para publicarla."
+    events = await _approve(monkeypatch, state, gallery=_gallery_with(schedulable=False, note=note))
+
+    assert state.show_approved_next is True
+    assert state.approved_ready is False
+    assert state.approved_note == note
+    toast = str(events[-1])
+    assert "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale." in toast
+    assert "Ahora elige" not in toast
+
+
+async def test_an_unreadable_readiness_still_offers_the_way_to_tu_semana(monkeypatch) -> None:
+    state = _approvable_state(monkeypatch)
+
+    def boom(tenant_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(CreativeState, "_route_draft_id", lambda self: _DRAFT_UUID)
+    monkeypatch.setattr(
+        creative_state_module,
+        "approve_draft",
+        lambda tenant_id, draft_id, variant_id, user_id: _approved_vm(state.draft),
+    )
+    monkeypatch.setattr(creative_state_module, "load_gallery", boom)
+    events = [event async for event in CreativeState.approve_selected.fn(state)]
+
+    assert state.show_approved_next is True and state.approved_ready is True
+    assert "Publicación aprobada. Ahora elige cuándo sale." in str(events[-1])
 
 
 async def test_approving_shows_the_next_step_and_a_toast_that_says_it_is_not_out(
@@ -411,8 +468,24 @@ def test_the_review_screen_swaps_the_decision_for_the_approved_card() -> None:
         "Elige el día y la hora en que sale.",
         "Elegir día y hora",
         "Crear otra publicación",
+        "Revisa lo que falta antes de elegir cuándo sale.",
+        "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
         "show_approved_next",
-        "2.75rem",  # N12: ≥ 44 px tap targets on a phone
+        "approved_ready",
+        "approved_note",
     ):
         # the compiled JSX escapes non-ASCII («í» → «í»)
         assert json.dumps(text)[1:-1] in rendered, text
+    # N12: ≥ 44 px tap targets on a phone — both card buttons and the three decisions
+    assert rendered.count("2.75rem") >= 5
+
+
+def test_the_gallery_card_offers_the_same_name_as_the_approved_card() -> None:
+    import json
+
+    from . import creative_pages
+    from .test_campaigns_ui import _PostVar
+
+    rendered = str(creative_pages._gallery_card(_PostVar))
+    assert json.dumps("Elegir día y hora")[1:-1] in rendered
+    assert '"Programar"' not in rendered

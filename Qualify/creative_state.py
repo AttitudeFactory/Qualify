@@ -117,6 +117,8 @@ from .creative_vm import (
     hashtag_list,
     seen_label,
 )
+from .gallery_state import APPROVED_NOT_READY_TOAST, APPROVED_TOAST, schedule_readiness
+from .planner_provider import load_gallery
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -562,8 +564,6 @@ _NOT_EDITABLE = (
     "No se guardó ningún cambio."
 )
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
-#: m-24842978: what accompanies the «Aprobada. Todavía no se publica.» card.
-APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
 _POLL_TIMEOUT = (
     "La generación lleva más de 5 minutos sin terminar. La bandeja mostrará el "
     "estado real cuando el sistema la marque como fallida."
@@ -934,6 +934,10 @@ class CreativeState(rx.State):
     # gives way to «Aprobada. Todavía no se publica.» and its way to Tu semana. Cleared
     # whenever a draft (re)loads, so it never claims a decision taken somewhere else.
     just_approved: bool = False
+    # …and whether it can be given a day and time yet: an approved publication can still
+    # be «aprobada pero no lista»; `approved_note` is why, in the evaluator's words.
+    approved_ready: bool = True
+    approved_note: str = ""
     action_error: str = ""
     poll_timed_out: bool = False
     poll_elapsed_label: str = ""
@@ -5241,12 +5245,23 @@ class CreativeState(rx.State):
             async with self:
                 self.action_error = _DB_ERROR
             return
+        # m-24842978: «Elegir día y hora» only for a publication Tu semana can plan. The
+        # same reader as the gallery; if it cannot be read the way is offered anyway and
+        # Tu semana, the real gate, says what is missing.
+        try:
+            gallery = await asyncio.to_thread(load_gallery, tenant_id)
+            ready, note = schedule_readiness(list(gallery.posts), str(draft_uuid))
+        except Exception as exc:  # noqa: BLE001 — the approval already stands
+            logger.warning("readiness after approve failed: %s", type(exc).__name__)
+            ready, note = True, ""
         async with self:
             self._apply_detail(vm)
             self.just_approved = True
-        # m-24842978: the toast goes with the card, never instead of it — and it never
-        # says or suggests the piece is already out.
-        yield rx.toast.success(APPROVED_TOAST)
+            self.approved_ready = ready
+            self.approved_note = note
+        # The toast goes with the card, never instead of it — and it never says or
+        # suggests the publication is already out.
+        yield rx.toast.success(APPROVED_TOAST if ready else APPROVED_NOT_READY_TOAST)
 
     @rx.var
     def show_approved_next(self) -> bool:
