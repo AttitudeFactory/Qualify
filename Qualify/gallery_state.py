@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar la galería. Inténtalo de nuevo."
 _REVIEW_FAILED = "No se pudo completar la acción. Abre el POST y vuelve a intentarlo."
+#: m-24842978: the same words as the POST's own page after approving — it is not out
+#: yet — with the way to choose when it goes out.
+APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
+APPROVED_TOAST_ACTION = "Elegir día y hora"
 _NO_PASSING_VARIANT = (
     "Ninguna variante cumple las reglas de tu marca: abre el POST para editarla o regenerar."
 )
@@ -182,7 +186,13 @@ class GalleryState(rx.State):
             return
         async with self:
             self.busy_post_id = ""
-        yield rx.toast.success("POST aprobado: ya puedes programarlo en Tu semana.")
+        yield rx.toast.success(
+            APPROVED_TOAST,
+            action={
+                "label": APPROVED_TOAST_ACTION,
+                "on_click": rx.redirect(f"/planner?post={post_id}"),
+            },
+        )
         yield GalleryState.load
 
     @rx.event

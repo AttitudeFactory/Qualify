@@ -218,3 +218,68 @@ def test_every_screen_that_approves_a_draft_says_why_a_price_blocks_it() -> None
         ("gallery_state.py", "quick_approve"),
     }
     assert all(ok for _, _, ok in callers), callers
+
+
+# --- «Aprobar» on a card says it is not out yet (m-24842978) ----------------------------
+
+
+async def test_quick_approve_toast_says_not_out_yet_and_offers_elegir_dia_y_hora(
+    monkeypatch,
+) -> None:
+    from uuid import UUID
+
+    from . import gallery_state as gallery_state_module
+    from .creative_state import APPROVED_TOAST as DRAFT_PAGE_TOAST
+    from .creative_vm import CopyVariantVM, DraftVM
+
+    post_id = "d0000000-0000-4000-8000-000000000002"
+    variant = CopyVariantVM(
+        variant_id="e0000000-0000-4000-8000-000000000002",
+        ordinal=0,
+        label="Variante 1",
+        hook="Gancho",
+        caption="Texto",
+        hashtags_text="",
+        cta="",
+        ads_primary_text="",
+        ads_headline="",
+        ads_description="",
+        has_ads=False,
+        passed=True,
+        failure_labels=(),
+        was_edited=False,
+        rendered_caption="Texto",
+    )
+    draft = DraftVM(
+        draft_id=post_id,
+        status="generated",
+        status_label="Por revisar",
+        status_tone="warn",
+        variants=(variant,),
+        can_approve=True,
+    )
+
+    async def fake_tenant(self):
+        return UUID("a0000000-0000-4000-8000-000000000001")
+
+    approved: list[UUID] = []
+    monkeypatch.setattr(GalleryState, "_tenant", fake_tenant)
+    monkeypatch.setattr(gallery_state_module, "acting_user_id", lambda tenant_id: tenant_id)
+    monkeypatch.setattr(gallery_state_module, "draft_detail", lambda tenant_id, draft_id: draft)
+    monkeypatch.setattr(
+        gallery_state_module,
+        "approve_draft",
+        lambda tenant_id, draft_id, variant_id, user_id: approved.append(draft_id),
+    )
+
+    state = GalleryState()
+    events = [e async for e in GalleryState.quick_approve.fn(state, post_id)]
+
+    assert approved == [UUID(post_id)]
+    assert gallery_state_module.APPROVED_TOAST == DRAFT_PAGE_TOAST  # one wording, both places
+    toast = str(events[0])
+    assert "Publicación aprobada. Ahora elige cuándo sale." in toast
+    # the action button, wired to Tu semana's drawer on this publication
+    assert "label='Elegir día y hora'" in toast and '["onClick"]' in toast
+    assert f"/planner?post={post_id}" in toast
+    assert "POST aprobado" not in toast
