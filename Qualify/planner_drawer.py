@@ -1805,16 +1805,6 @@ def _detail_body() -> rx.Component:
         ),
     )
     return rx.vstack(
-        # m-24842987 (N7): on a phone the panel is the whole screen; its way back
-        # names where it goes — the same week, in the same view.
-        rx.button(
-            rx.icon("chevron-left", size=T.ICON_MD),
-            BACK_TO_WEEK,
-            variant="ghost",
-            size="3",
-            min_height="44px",
-            on_click=PlannerState.set_detail_open(False),
-        ),
         stage,
         rx.vstack(
             rx.text(d.title, size="5", weight="bold", line_height="1.25"),
@@ -1841,7 +1831,7 @@ def _detail_body() -> rx.Component:
                 # Stays in Qualify (N9: no ↗) and comes back with «‹ Tu semana».
                 rx.link(
                     rx.button(
-                        "Abrir en Por aprobar",
+                        "Ver publicación",
                         size="2",
                         variant="ghost",
                         min_height="44px",
@@ -2007,15 +1997,33 @@ def event_panel() -> rx.Component:
     modal): the POST itself — media, text, format, Cold/Hot — when and where it goes
     out, its tags, and what can be done with it. Confirmations happen in the footer."""
     return drawer(
-        rx.cond(
-            PlannerState.detail_loading,
-            # content loading (the POST, its media, dates): a skeleton, never a spinner
-            rx.box(skeleton_card(5), padding="0.5rem 0", width="100%"),
-            rx.cond(
-                PlannerState.detail_error != "",
-                callout(PlannerState.detail_error, "error"),
-                _detail_body(),
+        rx.vstack(
+            # m-24842987 (N7): on a phone the panel is the whole screen; its way back
+            # names where it goes — the same week, in the same view. Outside the
+            # loading/error branches so it is always there; phone only, since on a
+            # wide screen the week shows behind and the panel's X already says it.
+            rx.el.div(
+                rx.button(
+                    rx.icon("chevron-left", size=T.ICON_MD),
+                    BACK_TO_WEEK,
+                    variant="ghost",
+                    size="3",
+                    min_height="44px",
+                    on_click=PlannerState.set_detail_open(False),
+                ),
+                class_name="q-narrow-only",
             ),
+            rx.cond(
+                PlannerState.detail_loading,
+                # content loading (the POST, its media, dates): a skeleton, never a spinner
+                rx.box(skeleton_card(5), padding="0.5rem 0", width="100%"),
+                rx.cond(
+                    PlannerState.detail_error != "",
+                    callout(PlannerState.detail_error, "error"),
+                    _detail_body(),
+                ),
+            ),
+            width="100%",
         ),
         open=PlannerState.detail_open,
         on_open_change=PlannerState.set_detail_open,

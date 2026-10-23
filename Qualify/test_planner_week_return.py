@@ -140,9 +140,10 @@ def test_filters_count_what_is_not_on_its_default() -> None:
     state.connection_filter = "c1"
     state.tag_filter = ["t1", "t2"]
     state.view_tz = "America/Caracas"
-    assert state.filters_active_count == 3
-    state.connection_filter = ALL_CONNECTIONS
+    # The zone hides no publication: it is not a filter in the count.
     assert state.filters_active_count == 2
+    state.connection_filter = ALL_CONNECTIONS
+    assert state.filters_active_count == 1
 
 
 def test_closing_filters_drops_half_typed_searches_and_open_confirmations() -> None:
@@ -172,7 +173,19 @@ def _source(name: str) -> str:
 def test_nothing_in_tu_semana_says_click_or_hover() -> None:
     page = _source("planner_page.py")
     assert "Clic para ver" not in page
-    assert "Toca para ver y cambiar" in page
+    assert "Toca para ver y cambiar" not in page
+    assert "Ábrela para ver y cambiar" in page
+
+
+def test_filter_rows_are_real_buttons_reachable_by_keyboard() -> None:
+    page = _source("planner_page.py")
+    assert 'role="checkbox"' not in page
+    assert 'role="button"' not in page.split("def _tz_row", 1)[1].split("def ", 1)[0]
+
+
+def test_the_panel_names_the_ficha_like_the_rest_of_tu_semana() -> None:
+    drawer = _source("planner_drawer.py")
+    assert "Abrir en Por aprobar" not in drawer
 
 
 def test_account_tags_and_zone_live_behind_filtros_not_on_the_bar() -> None:

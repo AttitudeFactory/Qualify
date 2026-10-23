@@ -393,12 +393,9 @@ class PlannerState(rx.State):
 
     @rx.var
     def filters_active_count(self) -> int:
-        """How many of «Filtros» are not on their default: account, tags, zone."""
-        return (
-            int(self.connection_filter != ALL_CONNECTIONS)
-            + int(bool(self.tag_filter))
-            + int(bool(self.view_tz))
-        )
+        """How many of «Filtros» hide publications: account and tags. The zone hides
+        nothing, so it is not counted (it is said under the week's dates instead)."""
+        return int(self.connection_filter != ALL_CONNECTIONS) + int(bool(self.tag_filter))
 
     @rx.var
     def unscheduled_count(self) -> int:

@@ -211,7 +211,7 @@ def _chip_detail(event) -> rx.Component:
             rx.flex(rx.foreach(event.tags, tag_badge_plain), wrap="wrap", gap="0.25rem"),
         ),
         readiness_note(event.readiness_note),
-        rx.text("Toca para ver y cambiar", size="1", color=T.TEXT_FAINT),
+        rx.text("Ábrela para ver y cambiar", size="1", color=T.TEXT_FAINT),
         spacing="2",
         width="17rem",
     )
@@ -918,29 +918,30 @@ def _filters_button() -> rx.Component:
     )
 
 
+def _week_arrow(icon: str, label: str, on_click: rx.event.EventHandler) -> rx.Component:
+    return rx.icon_button(
+        rx.icon(icon, size=T.ICON_MD),
+        size="3",
+        variant="ghost",
+        color_scheme="gray",
+        aria_label=label,
+        min_width=_TOUCH_MIN,
+        min_height=_TOUCH_MIN,
+        on_click=on_click,
+    )
+
+
 def _week_bar() -> rx.Component:
     """«‹ ›», «Hoy», «Por programar» and its count — one line at 360 px, before the week
     (m-24842987): four 44 px targets and nothing else."""
     return rx.hstack(
-        rx.icon_button(
-            rx.icon("chevron-left", size=T.ICON_MD),
-            size="3",
-            variant="ghost",
-            color_scheme="gray",
-            aria_label="Semana anterior",
-            min_width=_TOUCH_MIN,
-            min_height=_TOUCH_MIN,
-            on_click=PlannerState.previous_week,
-        ),
-        rx.icon_button(
-            rx.icon("chevron-right", size=T.ICON_MD),
-            size="3",
-            variant="ghost",
-            color_scheme="gray",
-            aria_label="Semana siguiente",
-            min_width=_TOUCH_MIN,
-            min_height=_TOUCH_MIN,
-            on_click=PlannerState.next_week,
+        # «‹ ›» closer together (spacing 1): slack for a two-digit «Por programar»
+        # count at 360 px, without shrinking any target below 44 px.
+        rx.hstack(
+            _week_arrow("chevron-left", "Semana anterior", PlannerState.previous_week),
+            _week_arrow("chevron-right", "Semana siguiente", PlannerState.next_week),
+            spacing="1",
+            align="center",
         ),
         rx.button(
             "Hoy",
@@ -974,6 +975,12 @@ def _toolbar() -> rx.Component:
             rx.vstack(
                 rx.heading(PlannerState.month_label, size="4", as_="h2"),
                 rx.text(PlannerState.week_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                # The zone moved into «Filtros»; when it is not the business's own,
+                # it stays in sight so nobody plans another city's hours unaware.
+                rx.cond(
+                    PlannerState.view_tz != "",
+                    rx.text("Horas de " + PlannerState.tz_city_label, size="1", color=T.TEXT_MUTED),
+                ),
                 spacing="0",
                 min_width="0",
             ),
@@ -1018,10 +1025,27 @@ def _tag_filter_row(tag) -> rx.Component:
     «¿Eliminar?» — the confirmation lives where the tap was, no dialog."""
     selected = PlannerState.tag_filter.contains(tag.id)
     row = rx.hstack(
-        rx.checkbox(checked=selected, size="2", pointer_events="none"),
-        tag_dot(tag),
-        rx.text(tag.name, size="2", style=_ONE_LINE),
-        rx.spacer(),
+        # A real button (keyboard: Tab + Enter/Space); the trash sits beside it, not
+        # inside it, so a screen reader announces each one on its own.
+        rx.button(
+            # An icon, not rx.checkbox: Radix's checkbox is itself a <button>.
+            rx.cond(
+                selected,
+                rx.icon("square-check", size=T.ICON_SM),
+                rx.icon("square", size=T.ICON_SM),
+            ),
+            tag_dot(tag),
+            rx.text(tag.name, size="2", style=_ONE_LINE),
+            variant="ghost",
+            color_scheme="gray",
+            size="2",
+            flex="1",
+            min_width="0",
+            justify="start",
+            min_height=_TOUCH_MIN,
+            aria_pressed=selected,
+            on_click=PlannerState.toggle_tag_filter(tag.id),
+        ),
         rx.icon_button(
             rx.icon("trash-2", size=T.ICON_SM),
             size="3",
@@ -1030,13 +1054,8 @@ def _tag_filter_row(tag) -> rx.Component:
             aria_label="Eliminar etiqueta",
             min_width=_TOUCH_MIN,
             min_height=_TOUCH_MIN,
-            # stop_propagation: the row itself toggles the filter.
-            on_click=PlannerState.ask_delete_tag(tag.id, tag.name).stop_propagation,
+            on_click=PlannerState.ask_delete_tag(tag.id, tag.name),
         ),
-        on_click=PlannerState.toggle_tag_filter(tag.id),
-        cursor="pointer",
-        role="checkbox",
-        aria_checked=selected,
         align="center",
         spacing="2",
         width="100%",
@@ -1135,7 +1154,8 @@ def _tags_filter() -> rx.Component:
 
 def _tz_row(option) -> rx.Component:
     selected = option.value == PlannerState.tz_name
-    return rx.hstack(
+    # A real button: Tab + Enter/Space reach it, not only a tap or a click.
+    return rx.button(
         rx.box(
             rx.cond(selected, rx.icon("check", size=T.ICON_SM)),
             width="1rem",
@@ -1150,11 +1170,11 @@ def _tz_row(option) -> rx.Component:
         rx.spacer(),
         rx.text("(" + option.offset_label + ")", size="1", color=T.TEXT_MUTED, flex_shrink="0"),
         on_click=PlannerState.choose_tz(option.value),
-        cursor="pointer",
-        role="button",
+        variant="ghost",
+        color_scheme="gray",
+        size="2",
         aria_pressed=selected,
-        align="center",
-        spacing="2",
+        justify="start",
         width="100%",
         min_height=_TOUCH_MIN,
         padding="0 0.5rem",
@@ -1207,7 +1227,7 @@ def _filters_drawer() -> rx.Component:
         on_open_change=PlannerState.set_filters_open,
         title="Filtros",
         icon="sliders-horizontal",
-        description="Elige qué publicaciones ves en tu semana.",
+        description="Elige qué publicaciones ves y con qué hora.",
         footer=rx.hstack(
             rx.spacer(),
             rx.button(
