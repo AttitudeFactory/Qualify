@@ -168,7 +168,7 @@ Por eso un commit solo tiene imágenes en GHCR si `deploy` lo construyó. Si alg
 | Ver por qué falló uno | `gh run view <id> --log-failed` |
 | Qué commit está en producción | `ssh qualify-prod 'readlink /opt/qualify/current'` |
 | Contenedores + salud | `just deploy-status qualify-prod` |
-| Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|webhook-worker\|whatsapp-worker\|postgres\|redis]` |
+| Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|webhook-worker\|whatsapp-worker\|conversations-worker\|calendar-worker\|postgres\|redis]` |
 | Respaldo de la base ahora | `just deploy-backup qualify-prod` |
 | Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
 | Instalar o actualizar el proxy de entrada (`deploy/edge/`) | `just edge-install qualify-prod` |
@@ -239,7 +239,7 @@ Qué hace:
 
 - Copia **sólo las claves nombradas**. Las demás de `.env.prod` no se tocan.
 - Antes de escribir deja un respaldo `/opt/qualify/.env.prod.bak-<UTC>` y conserva los 10 más recientes.
-- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod` (`api`, `reflex`, `webhook-worker` y `calendar-worker` si está activo) y no reinicia `postgres`, `redis` ni `caddy`. No construye imágenes ni corre `migrate`. Son unos 10 s, y al final imprime la salud del sitio.
+- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod`: `api`, `reflex`, `webhook-worker`, `whatsapp-worker`, `conversations-worker` y `calendar-worker`. No reinicia `postgres`, `redis` ni `caddy`, que no leen ese archivo (tampoco `render`, si su perfil está activo). No construye imágenes ni corre `migrate`. Son unos 15 s (medido el 2026-10-23), y al final imprime la salud del sitio.
 - Los valores viajan por el stdin de ssh, nunca por argumentos ni por la terminal.
 - Desde un worktree lee el `.env` del checkout principal. Otro archivo: `QUALIFY_ENV_SOURCE=/ruta/.env just env-push …`.
 - Una clave nueva llega a los contenedores sin tocar el compose, porque el compose les pasa `.env.prod` completo.
