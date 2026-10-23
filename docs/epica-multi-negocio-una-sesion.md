@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-23 · **Estado:** `[HISTORIAS · sin implementar · pendiente del ADR de S0]` · **Meegle:** épica [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (mapa de tickets en §4)
 **Decisión del fundador (Herwin, 2026-10-23, explícita):** se **revierte** la regla firmada «1 login = 1 tenant = 1 negocio, sin switch» ([`modelo-negocio-operador-multi-emprendimiento.md`](modelo-negocio-operador-multi-emprendimiento.md) §6.1, 2026-08-16). Objetivo nuevo: un dueño maneja varios negocios (tenants separados) desde **una** sesión, con un selector para cambiar. Primer caso real: un mismo dueño con **Bianki** (shawarma y ensaladas) y **Polette** (helados de yogur), que se manejan por separado.
-**Producción hoy (después de la limpieza ordenada por el fundador, 2026-10-23):** solo quedan dos tenants, «Zapatería» (IG qualifymkt.co) y «Raul Dev Games»; POLETTE y los 5 «Mi marca» se borran junto con sus logins de Supabase, así que **no existe ningún login previo de Polette ni de Bianki**. Ninguna cuenta de IG/FB está en dos tenants. No hay datos que separar: S8 se cerró como «no aplica».
+**Producción hoy (chequeo de solo lectura, 2026-10-23):** existen 8 tenants, cada uno con 1 marca y 1 dueño. Bianki no existe; POLETTE es su propio tenant con su login `+polette`. Las únicas 2 conexiones de IG están en tenants distintos. No hay datos que separar: S8 se cerró como «no aplica». **Limpieza decidida y pendiente:** el 2026-10-23 el fundador decidió dejar solo «Zapatería» (IG qualifymkt.co) y «Raul Dev Games» y borrar POLETTE y los 5 «Mi marca» con sus logins de Supabase. Todavía **no se ejecutó**: falta el respaldo y la confirmación del fundador.
 **Restricción — única puerta de entrada (fundador, 2026-10-23):** un cliente entra a Qualify **solo** por el ítem «Alta de cliente» de Lark/Meegle (skill `meegle-altas`). Agregar un negocio a un login existente también se dispara solo desde ese ítem (S7). Nunca autoservicio, nunca una invitación desde la app.
 **Revisión técnica:** principal-architect, 2026-10-23. Las historias de §3 son su corte, revisado contra el código en `main`. Las líneas de código citadas abajo se comprobaron en disco el mismo día.
 
@@ -66,7 +66,7 @@ Owner = área que lo construye; Assignee en Meegle: Herwin hasta que se reparta 
 | **S5** | Revisión de membresía al cargar la página y antes de publicar/enviar + auditoría de cada cambio | backend-engineer | S4 | P1 · M |
 | **S6** | Una cuenta de IG/FB no puede estar activa en dos negocios + revisión del enrutamiento de webhooks | backend-engineer | — (en paralelo) | P2 · M |
 | **S7** | Campo «Inicio de sesión existente» en el «Alta de cliente»: invitación de tipo «agregar negocio» → tenant nuevo con el mismo login como owner; sin el campo y con correo ya registrado, el Alta falla a la vista | backend + reflex-ui | S1 | P1 · M |
-| ~~**S8**~~ | ~~Separar los datos de Bianki y Polette si hoy comparten tenant~~ — **cerrada, no aplica**: Bianki nunca existió en producción y POLETTE se borra en la limpieza del 2026-10-23 | — | — | — |
+| ~~**S8**~~ | ~~Separar los datos de Bianki y Polette si hoy comparten tenant~~ — **cerrada, no aplica**: Bianki no existe en producción y POLETTE ya es su propio tenant (chequeo del 2026-10-23) | — | — | — |
 
 S3, S4 y S7 llevan la nota «Sugerencias de UX»: se corre el subagente `ux-designer` sobre el diff antes de abrir el PR (`qualify-pr` paso 5).
 
@@ -115,7 +115,7 @@ Los enlaces «Bloqueado por» de Meegle siguen la columna «Depende de» de §3.
 ## 6. Preguntas abiertas para el fundador
 
 1. **TTL de la revisión de membresía (S5):** propuesta 60 s al cargar páginas; publicar y enviar siempre se revisan sin caché. ¿Te sirve?
-2. **¿Qué inicio de sesión usa el dueño de Polette y Bianki? (S2)** Se crea desde cero en el primer Alta y el segundo Alta se le vincula. Recomendación: un correo neutro, sin el nombre de ningún negocio, porque va a abrir los dos.
+2. **¿Qué inicio de sesión usa el dueño de Polette y Bianki? (S2)** Una vez hecha la limpieza (que borra el login `+polette`), se crea desde cero en el primer Alta y el segundo Alta se le vincula. Recomendación: un correo neutro, sin el nombre de ningún negocio, porque va a abrir los dos.
 3. ~~¿Aparcar S7?~~ **Respondida (2026-10-23):** no. El Alta es la única puerta de entrada, así que S7 es el mecanismo del primer caso (S2) y sube a P1.
 4. ~~Cuenta de IG/FB ya activa en dos negocios: ¿cuál se la queda?~~ **Respondida por producción (2026-10-23):** ninguna cuenta está en dos tenants hoy (las 2 conexiones de IG están en tenants distintos), así que el índice único global de S6 se puede crear sin limpiar datos.
 
