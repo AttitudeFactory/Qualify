@@ -443,7 +443,7 @@ def test_the_ux_review_fixes_are_on_the_card() -> None:
 def test_the_notice_messages_use_the_same_words_as_the_card() -> None:
     from . import followups_state as fs
 
-    for text in (fs._NOTICE_EMPTY, fs._NOTICE_TOO_LONG, fs._NOTICE_QUEUED):
+    for text in (fs._NOTICE_EMPTY, fs._NOTICE_TOO_LONG):
         assert "aviso público" not in text and "en su comentario" in text
 
 
@@ -453,7 +453,7 @@ def test_the_notice_messages_use_the_same_words_as_the_card() -> None:
 def _sending(state: FollowupsState, c: FollowupCardVM, *, notice: bool = False) -> None:
     """What `approve` leaves once the outbox has the message."""
     state.done_author = c.author
-    state.done_note = "Tu mensaje privado a @ana sale en unos segundos."
+    state.done_note = ""
     state.delivery, state.delivery_id = DELIVERY_SENDING, c.followup_id
     state.delivery_card = [c]
     state.delivery_text = "Hola Ana, cuesta 50.000"
@@ -495,7 +495,7 @@ def test_a_sent_message_says_listo() -> None:
     assert state._settle(c.followup_id, DELIVERY_SENT) is True  # noqa: SLF001
     assert state.delivery_sent
     assert state.done_text == "Listo. Le escribiste a @ana. No queda nadie más esperando."
-    assert state.done_note == "Lo que dejamos en su comentario aparece en unos segundos."
+    assert state.done_note == "Tu aviso en su comentario aparece en unos segundos."
     assert state.undelivered == []
 
 
@@ -575,3 +575,18 @@ def test_the_panel_renders_every_outcome() -> None:
     for text in ("Entendido", "q-spinner", "delivery_card", "undelivered", "Tu mensaje:"):
         assert text in rendered, text
     assert "Reintentar" not in rendered  # ATENDER-9 decides it
+
+
+def test_the_ux_review_of_the_send_status_is_on_the_card() -> None:
+    """m-24849131 UX review: the way back stays while it goes out, one live region
+    announces every outcome, and approving adds no second line under «Enviando…»."""
+    import inspect
+
+    from . import followups_state as fs
+    from .followups_page import _back_while_sending, _outcome_line
+
+    assert "Volver a comentarios" in str(_back_while_sending().render())
+    assert "Siguiente" not in str(_back_while_sending().render())
+    outcome = str(_outcome_line().render())
+    assert outcome.count("aria-live") + outcome.count("ariaLive") == 1
+    assert "queued_message" not in inspect.getsource(fs.FollowupsState.approve.fn)  # type: ignore[attr-defined]

@@ -270,9 +270,10 @@ def test_the_chat_reply_toast_names_the_person() -> None:
 def test_the_private_message_toast_names_the_person() -> None:
     assert queued_message("@ana") == "Tu mensaje privado a @ana sale en unos segundos."
     assert queued_message("Cliente") == "Tu mensaje privado sale en unos segundos."
-    # m-24842991 (N3): the queued line is the confirmation card's note, not a toast.
+    # m-24842991 (N3): no toast; m-24849131 UX review: while it goes out the card
+    # says only «Enviando a @ana…», so approving leaves no note under it.
     source = inspect.getsource(followups_state.FollowupsState.approve.fn)
-    assert "self.done_note = message" in source
+    assert 'self.done_note = ""' in source
     assert "rx.toast.info(message" not in source and "rx.toast.success(message" not in source
 
 

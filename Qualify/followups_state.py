@@ -100,7 +100,6 @@ _EMPTY = "Escribe el mensaje antes de aprobarlo."
 _TOO_LONG = "El mensaje es demasiado largo (máximo 1000 caracteres)."
 _NOTICE_EMPTY = "Escribe lo que dejamos en su comentario o desmarca la casilla."
 _NOTICE_TOO_LONG = "Lo que dejamos en su comentario es demasiado largo (máximo 300 caracteres)."
-_NOTICE_QUEUED = " Lo que dejamos en su comentario aparece cuando el mensaje salga."
 _SEND_FAILED = "No pudimos enviar el mensaje. Vuelve a intentarlo en un momento."
 _DISCARD_FAILED = "No pudimos descartar la consulta. Vuelve a intentarlo en un momento."
 
@@ -502,12 +501,11 @@ class FollowupsState(rx.State):
             )
             queued = True
             # N3: the confirmation stays on screen with the next step — not a toast.
-            message = queued_message(card.author if card else "") + (
-                _NOTICE_QUEUED if notice_text else ""
-            )
+            # UX review (m-24849131): «Enviando a @ana…» says it all; the notice is
+            # mentioned only once the message is out (NOTICE_AFTER_SENT).
             async with self:
                 self.done_author = card.author if card else ""
-                self.done_note = message
+                self.done_note = ""
                 # m-24849131: «Listo» only once the outbox says it went out.
                 self.delivery, self.delivery_id = DELIVERY_SENDING, followup_id
                 self.delivery_card = [card] if card else []

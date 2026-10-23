@@ -485,39 +485,41 @@ def _what_was_sent(c: FollowupCardVM) -> rx.Component:
 def _outcome_line() -> rx.Component:
     """One line per outcome: sending (spinner), sent (ok), refused (error), unknown
     (warning). Tones only, through the design system."""
-    return rx.cond(
-        F.delivery_pending,
-        rx.hstack(
-            loading_spinner("sm"),
-            rx.text(F.done_text, size="3", weight="medium"),
-            spacing="2",
-            align="center",
-            role="status",
-            aria_live="polite",
-        ),
+    return rx.box(
         rx.cond(
-            F.delivery_sent,
+            F.delivery_pending,
             rx.hstack(
-                rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                loading_spinner("sm"),
                 rx.text(F.done_text, size="3", weight="medium"),
                 spacing="2",
-                align="start",
-                role="status",
-                aria_live="polite",
+                align="center",
             ),
             rx.cond(
-                F.delivery_failed,
-                callout(F.done_text, "error"),
-                callout(F.done_text, "warn"),
+                F.delivery_sent,
+                rx.hstack(
+                    rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                    rx.text(F.done_text, size="3", weight="medium"),
+                    spacing="2",
+                    align="start",
+                ),
+                rx.cond(
+                    F.delivery_failed,
+                    callout(F.done_text, "error"),
+                    callout(F.done_text, "warn"),
+                ),
             ),
         ),
+        # UX review (m-24849131): one live region, so all four outcomes are announced.
+        role="status",
+        aria_live="polite",
+        width="100%",
     )
 
 
 def _done() -> rx.Component:
     """N3: the task ends with «Listo», the next query (solid) and the way back (soft;
-    solid when nobody is left) — but only once the send's result is known
-    (m-24849131): while it goes out the card stays, with no way past it."""
+    solid when nobody is left) — but «Siguiente» only once the send's result is
+    known (m-24849131): while it goes out the card stays, with only the way back."""
     return card(
         rx.vstack(
             _outcome_line(),
@@ -531,11 +533,22 @@ def _done() -> rx.Component:
                 rx.fragment(),
                 rx.foreach(F.delivery_card, _what_was_sent),
             ),
-            rx.cond(F.delivery_pending, rx.fragment(), _done_actions()),
+            rx.cond(F.delivery_pending, _back_while_sending(), _done_actions()),
             spacing="3",
             width="100%",
         ),
         id="consulta-listo",
+    )
+
+
+def _back_while_sending() -> rx.Component:
+    """UX review (m-24849131, N3): while it goes out only «Siguiente» is held back —
+    the way out stays, and the result still reaches the list through `undelivered`."""
+    return _row(
+        rx.link(
+            rx.button("Volver a comentarios", variant="soft", size="2", **_TAP),
+            href=COMMENTS_HREF,
+        ),
     )
 
 

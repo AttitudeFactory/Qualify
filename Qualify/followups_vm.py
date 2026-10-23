@@ -175,7 +175,7 @@ DELIVERY_UNKNOWN: Final = "unknown"
 DELIVERY_UNKNOWN_TEXT: Final = "No sabemos si salió. Revísalo en Instagram."
 #: The next step after a refusal: there is no «Reintentar» here (ATENDER-9 decides it).
 DELIVERY_FAILED_NEXT: Final = "Puedes escribirle desde Instagram."
-NOTICE_AFTER_SENT: Final = "Lo que dejamos en su comentario aparece en unos segundos."
+NOTICE_AFTER_SENT: Final = "Tu aviso en su comentario aparece en unos segundos."
 
 
 def _who(author: str) -> str:
