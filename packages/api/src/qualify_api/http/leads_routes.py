@@ -21,6 +21,13 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
+from qualify_api.leads.interest import (
+    AccessInterestService,
+    InterestInvalid,
+    InterestNotConfigured,
+    InterestRateLimited,
+    InterestRequest,
+)
 from qualify_api.leads.service import (
     FormNotFound,
     LeadIntakeService,
@@ -34,6 +41,11 @@ router = APIRouter(prefix="/api/leads", tags=["leads"])
 def get_leads_service() -> LeadIntakeService:
     """Overridden in tests and wired at app startup — same seam as `get_connect_service`."""
     raise NotImplementedError("leads service dependency is not configured")
+
+
+def get_interest_service() -> AccessInterestService:
+    """MARCA-5: the house tenant's interest form. Wired at app startup like the above."""
+    raise NotImplementedError("interest service dependency is not configured")
 
 
 def _client_key(request: Request) -> str:
@@ -155,3 +167,49 @@ def intake(
         promo_text=accepted.promo_text,
         whatsapp_url=accepted.whatsapp_url,
     )
+
+
+class InterestRequestBody(BaseModel):
+    """MARCA-5 (m-24842968): a visitor without an invitation asks to be contacted.
+    The tenant is never in the request: it is the house tenant of the setting
+    `QUALIFY_INTEREST_TENANT_ID`, so this surface cannot write into anyone else's."""
+
+    full_name: str = Field(min_length=1, max_length=120)
+    business_name: str = Field(min_length=1, max_length=120)
+    whatsapp_phone: str = Field(min_length=8, max_length=32)
+    # The type is the policy, as in `LeadIntakeRequest`: consent=false fails validation.
+    consent: Literal[True]
+    # Honeypot. Rendered hidden by the form; a human never fills it.
+    website: str = ""
+
+
+class InterestResponse(BaseModel):
+    ok: bool = True
+
+
+@router.post("/interest", response_model=InterestResponse, status_code=201)
+def interest(
+    body: InterestRequestBody,
+    request: Request,
+    service: AccessInterestService = Depends(get_interest_service),
+) -> InterestResponse:
+    try:
+        service.submit(
+            InterestRequest(
+                full_name=body.full_name,
+                business_name=body.business_name,
+                whatsapp_phone=body.whatsapp_phone,
+                consent=body.consent,
+                honeypot=body.website,
+            ),
+            client_key=_client_key(request),
+        )
+    except InterestRateLimited:
+        raise HTTPException(status_code=429, detail="too many requests") from None
+    except InterestInvalid as exc:
+        # The field name only — never the value: the phone number is personal data.
+        raise HTTPException(status_code=422, detail=f"invalid {exc.field}") from None
+    except InterestNotConfigured:
+        raise HTTPException(status_code=503, detail="interest form not configured") from None
+    # The honeypot case answers the same 201: the bot learns nothing.
+    return InterestResponse()
