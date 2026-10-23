@@ -1,5 +1,5 @@
 {
-  "_doc": "Matrix of the m-24849234 eval (Seedream 5.0 pro): block `color` = object photo x color reference, block `texture` = logo or word x texture image, block `flat` = the same logos filled with one flat color by Pillow (deterministic, cost 0). `path` is relative to ./imagenes/ (git-ignored: put the files there by hand), except for `fixture: true` entries, which are relative to the repository root and exist in git so a dry run resolves real files. Fixture cases carry their own `references`; the others use the block's. `expected_text` is what the later legibility check must read back. Only fictional brands or assets Qualify owns: no client photo or logo goes to a BytePlus preset model (see README).",
+  "_doc": "Matrix of the m-24849234 eval (Seedream 5.0 pro): block `color` = object photo x color reference, block `texture` = logo or word x texture image, block `flat` = the same logo x texture pairs as a flat finish made by Pillow (the silhouette at 1080 px filled with the texture; deterministic, cost 0). `path` is relative to ./imagenes/ (git-ignored: put the files there by hand), except for `fixture: true` cases, which are relative to the repository root, must sit under an allowlisted fixture root (assets/, packages/render/public/sample/, packages/api/evals/plantillas_ai/fixtures/) and exist in git so a dry run resolves real files. Fixture cases carry their own `references` (which inherit `fixture`); the others use the block's. A color case may give a `mask` path (white = object, same path rules). `expected_text` is what the legibility check must read back. Only fictional brands or assets Qualify owns: no client photo or logo goes to a BytePlus preset model (see README).",
   "blocks": {
     "color": {
       "references": [
@@ -18,24 +18,25 @@
       ],
       "cases": [
         {
+          "id": "fix-objeto-disco",
+          "path": "packages/api/evals/plantillas_ai/fixtures/objeto-disco.png",
+          "fixture": true,
+          "mask": "packages/api/evals/plantillas_ai/fixtures/objeto-disco-mascara.png",
+          "references": [
+            {
+              "id": "fix-paleta-menta-coral-cobre",
+              "path": "packages/api/evals/plantillas_ai/fixtures/paleta-menta-coral-cobre.png"
+            }
+          ]
+        },
+        {
           "id": "fix-muestra-1",
           "path": "packages/render/public/sample/photo-1.jpg",
           "fixture": true,
           "references": [
             {
-              "id": "fix-muestra-2-ref",
-              "path": "packages/render/public/sample/photo-2.jpg"
-            }
-          ]
-        },
-        {
-          "id": "fix-muestra-2",
-          "path": "packages/render/public/sample/photo-2.jpg",
-          "fixture": true,
-          "references": [
-            {
-              "id": "fix-muestra-1-ref",
-              "path": "packages/render/public/sample/photo-1.jpg"
+              "id": "fix-paleta-menta-coral-cobre",
+              "path": "packages/api/evals/plantillas_ai/fixtures/paleta-menta-coral-cobre.png"
             }
           ]
         },
@@ -106,6 +107,18 @@
       ],
       "cases": [
         {
+          "id": "fix-luma",
+          "path": "packages/api/evals/plantillas_ai/fixtures/luma-wordmark.png",
+          "fixture": true,
+          "expected_text": "LUMA",
+          "references": [
+            {
+              "id": "fix-textura-rayas-cobre",
+              "path": "packages/api/evals/plantillas_ai/fixtures/textura-rayas-cobre.png"
+            }
+          ]
+        },
+        {
           "id": "fix-qualify-icono",
           "path": "assets/qualify-icon-email.png",
           "fixture": true,
@@ -114,18 +127,6 @@
             {
               "id": "fix-muestra-1-tex",
               "path": "packages/render/public/sample/photo-1.jpg"
-            }
-          ]
-        },
-        {
-          "id": "fix-qualify-marca",
-          "path": "assets/qualify-mark-email.png",
-          "fixture": true,
-          "expected_text": "Q",
-          "references": [
-            {
-              "id": "fix-muestra-2-tex",
-              "path": "packages/render/public/sample/photo-2.jpg"
             }
           ]
         },
@@ -182,8 +183,7 @@
       ]
     },
     "flat": {
-      "source_block": "texture",
-      "fill": "#C0392B"
+      "source_block": "texture"
     }
   }
 }

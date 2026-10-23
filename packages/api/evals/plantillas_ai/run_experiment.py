@@ -134,9 +134,8 @@ def _print_table(full: Sequence[Any], planned: Sequence[Any]) -> None:
 
 def _fixture_paths(item: Any) -> list[str]:
     root = REPO_ROOT.resolve()
-    return [
-        image.resolve(IMAGES_DIR, REPO_ROOT).relative_to(root).as_posix() for image in item.images
-    ]
+    images = (*item.images, *((item.mask,) if item.mask else ()))
+    return [image.resolve(IMAGES_DIR, REPO_ROOT).relative_to(root).as_posix() for image in images]
 
 
 def _models(args: argparse.Namespace) -> list[str]:
@@ -272,7 +271,7 @@ def _paid_run(args: argparse.Namespace, tt: Any, table: Any) -> int:
     plan = _plan_or_exit_code(args, tt, table)
     if isinstance(plan, int):
         return plan
-    planned, missing, cases = plan
+    planned, missing, _ = plan
     if missing:
         _report_missing(missing)
         return 2
@@ -285,9 +284,7 @@ def _paid_run(args: argparse.Namespace, tt: Any, table: Any) -> int:
     if not key:
         print("QUALIFY_BYTEPLUS_ARK_API_KEY is not set", file=sys.stderr)
         return 2
-    report = run_paid(
-        planned, tt, ledger=sc.SpendLedger(args.max_usd), api_key=key, args=args, cases=cases
-    )
+    report = run_paid(planned, tt, ledger=sc.SpendLedger(args.max_usd), api_key=key, args=args)
     return exit_code(report)
 
 
@@ -408,6 +405,33 @@ def _money(ledger: Any) -> dict[str, Decimal]:
     }
 
 
+def _after_generation(
+    item: Any, paths: Sequence[Path], result: bytes, out_dir: Path, name: str, reader: Any
+) -> dict[str, Any]:
+    """The offline checks of a generated image, added to its record (only on the paid
+    path, after the vendor answered — never in a dry run). Color: the metrics and the
+    recomposed image (`<name>~recompuesto.png`); texture: the legibility, «pendiente»
+    without a reader (the reader backed by Claude's vision arrives in PR 3). A failed
+    check is recorded as `metricas_error` and never loses the generated image."""
+    from qualify_api.evals import image_metrics as im
+
+    fields: dict[str, Any] = {}
+    try:
+        if item.block == "color":
+            mask = item.mask.resolve(IMAGES_DIR, REPO_ROOT).read_bytes() if item.mask else None
+            metrics = im.color_transfer_metrics(
+                paths[0].read_bytes(), result, paths[1].read_bytes(), mask
+            )
+            fields["metricas"] = metrics.as_record()
+            if metrics.recomposed_png is not None:
+                _output(out_dir, f"{name}~recompuesto.png").write_bytes(metrics.recomposed_png)
+        elif item.block == "texture":
+            fields["legibilidad"] = im.legibility_record(reader, result, item.expected_text)
+    except Exception as exc:  # the image is already saved: keep it, record why
+        fields["metricas_error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return fields
+
+
 def _run_item(
     call: Any,
     tt: Any,
@@ -415,10 +439,10 @@ def _run_item(
     ledger: Any,
     inner: Any,
     out_dir: Path,
-    fill: tuple[int, int, int],
     base_url: str,
     api_key: str,
     size: str,
+    reader: Any = None,
 ) -> dict[str, Any]:
     """One planned item. A failure is recorded on the item, never raised — except
     `CeilingExceededError`, which stops the run."""
@@ -430,9 +454,12 @@ def _run_item(
     before = _money(ledger)
     try:
         paths = [image.resolve(IMAGES_DIR, REPO_ROOT) for image in item.images]
-        if call.quote is None:
-            target = _output(out_dir, f"{name}.png")
-            target.write_bytes(tt.flat_fill(paths[0].read_bytes(), fill))
+        if call.quote is None:  # the flat finish: offline, free, with its checks
+            from qualify_api.evals.image_metrics import flat_texture_fill
+
+            flat = flat_texture_fill(paths[0].read_bytes(), paths[1].read_bytes())
+            _output(out_dir, f"{name}.png").write_bytes(flat.png)
+            record["metricas"] = flat.as_record()
         else:
             target = _output(out_dir, f"{name}.jpg")
             transport = sc.LedgerTransport(inner, ledger, call.quote, label=item.id)
@@ -444,8 +471,10 @@ def _run_item(
                 tt.build_request(item, model_id=call.model_id, size=size, images=images),
                 api_key=api_key,
             )
-            target.write_bytes(result.payload["images"][0])
+            generated = result.payload["images"][0]
+            target.write_bytes(generated)
             record["model_revision"] = result.model_revision
+            record.update(_after_generation(item, paths, generated, out_dir, name, reader))
         record["estado"] = "hecho"
     except sc.CeilingExceededError as exc:
         record["estado"] = "rechazado por el tope"
@@ -475,13 +504,14 @@ def run_paid(
     api_key: str,
     args: argparse.Namespace,
     inner_transport: Any = None,
-    cases: Any = None,
+    reader: Any = None,
 ) -> dict[str, Any]:
     """Run `planned` in order and ALWAYS write `results/<stamp>.json`, whatever happens
     (the spend record is never lost). Every planned item ends in the report: done,
     failed, refused by the ceiling, or «omitido». Money is reported per item and in
     total without clamping. One inner HTTP transport serves the whole run and is closed
-    once at the end."""
+    once at the end. `reader` (a `LegibilityReader`) reads the texture items back; None
+    records their legibility as «pendiente»."""
     import httpx
     from qualify_creative.adapters.byteplus_ark import BASE_URL
 
@@ -493,7 +523,6 @@ def run_paid(
     inner = inner_transport if inner_transport is not None else httpx.HTTPTransport()
     report: dict[str, Any] = {}
     try:
-        fill = (cases or tt.load_cases(HERE / "cases.json")).flat_fill
         for call in planned:
             key = f"{call.item.id}@{call.model_id}"
             if stopped and call.quote is not None:  # free items never touch the ledger
@@ -505,10 +534,10 @@ def run_paid(
                 ledger=ledger,
                 inner=inner,
                 out_dir=out_dir,
-                fill=fill,
                 base_url=base_url,
                 api_key=api_key,
                 size=args.size,
+                reader=reader,
             )
             items[key] = record
             if record["estado"] == "rechazado por el tope":
@@ -522,8 +551,9 @@ def run_paid(
         for call in planned:  # anything the loop never reached
             items.setdefault(f"{call.item.id}@{call.model_id}", _omitted(call, tt))
         for record in items.values():  # error texts may carry machine paths
-            if record.get("error"):
-                record["error"] = _scrub(record["error"], args.results_dir)
+            for text_field in ("error", "metricas_error"):
+                if record.get(text_field):
+                    record[text_field] = _scrub(record[text_field], args.results_dir)
         stopped = _scrub(stopped, args.results_dir)
         unexpected = _scrub(unexpected, args.results_dir)
         money = _money(ledger)
