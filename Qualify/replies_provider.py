@@ -20,7 +20,7 @@ only) — there is no code path here that could show a DM draft even by accident
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -43,11 +43,13 @@ from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
-from .replies_vm import DraftVM, build_draft_vm
+from .inbox_vm import CandidateMediaVM
+from .replies_vm import PUBLICATION_ALT_FALLBACK, DraftVM, build_draft_vm
 
 __all__ = [
     "DraftVM",
     "GenerationSummaryVM",
+    "PUBLICATION_ALT_FALLBACK",
     "RegenerationRefused",
     "UnknownDraft",
     "acting_user",
@@ -91,25 +93,40 @@ def build_queue(
     zone: ZoneInfo,
     signals: Mapping[UUID, IntentSignal] | None = None,
     reliable: Mapping[IntentClass, bool] | None = None,
+    candidates: Iterable[CandidateMediaVM] = (),
 ) -> list[DraftVM]:
     """The review queue as VMs. A commercial draft (it carries a grounding record) gets
-    its comment's current intent chips; a sentiment-era draft gets none."""
+    its comment's current intent chips; a sentiment-era draft gets none.
+
+    m-24842989: `candidates` is the inbox's ALREADY-loaded candidate list — the only
+    source of a publication picture, since the inbox stores none (Meta's URLs expire).
+    Same cross-reference `inbox_provider._to_reel_summary_vm` does for the Reel cards:
+    zero new queries, zero new Meta calls. A publication outside the 2-week list gets
+    no thumbnail."""
     signals = signals or {}
+    by_media_id = {c.external_media_id: c for c in candidates}
     return [
         build_draft_vm(
             r,
             zone=zone,
             signal=signals.get(r.message_id) if r.grounding is not None else None,
             reliable=reliable or {},
+            media=by_media_id.get(r.external_media_id),
         )
         for r in records
     ]
 
 
-def pending_drafts(*, tenant_id: UUID, connection_id: UUID) -> list[DraftVM]:
+def pending_drafts(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    candidates: Iterable[CandidateMediaVM] = (),
+) -> list[DraftVM]:
     """The review queue: `status == 'proposed'` only. Blocking DB reads — callers on
     the event loop must run it off-thread, same convention `inbox_provider`'s
-    synchronous read seams already establish.
+    synchronous read seams already establish. `candidates` is `InboxState.candidates`
+    (already loaded) — the drafts' thumbnails come from there, see `build_queue`.
 
     For the commercial drafts (m-24789645) one extra read: the comments' intent signals
     under `CURRENT_INTENT_VERSION` and the per-class reliability, the same pair the
@@ -120,7 +137,13 @@ def pending_drafts(*, tenant_id: UUID, connection_id: UUID) -> list[DraftVM]:
     commercial = [r.message_id for r in records if r.grounding is not None]
     signals = _current_signals(tenant_id=tenant_id, message_ids=commercial) if commercial else {}
     reliable = class_reliability(CURRENT_INTENT_VERSION.detector_version) if signals else {}
-    return build_queue(records, zone=_tenant_zone(tenant_id), signals=signals, reliable=reliable)
+    return build_queue(
+        records,
+        zone=_tenant_zone(tenant_id),
+        signals=signals,
+        reliable=reliable,
+        candidates=candidates,
+    )
 
 
 def regenerate_draft(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> str:

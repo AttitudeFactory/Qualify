@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
-from qualify_api.inbox.models import Message, Thread
+from qualify_api.inbox.models import Message, MonitoredMedia, Thread
 from qualify_api.replies.repository import CandidateComment, PostgresReplyRepository
 from qualify_api.sentiment.models import CommentSentimentResult
 from qualify_api.sentiment.repository import AnalysisVersion
@@ -109,6 +109,7 @@ def _seed_pos_comment(
             connection_id=connection_id,
             external_message_id=source_id,
             direction="inbound",
+            author_username="cliente.feliz",
             text="Me encanta, excelente servicio!",
             shape_version="ig-comment-shapes-1.0.0",
         )
@@ -136,6 +137,8 @@ def _seed_pos_comment(
             text=message.text or "",
             sentiment_result_id=result.id,
             sentiment_label="POS",
+            author_username="cliente.feliz",
+            external_media_id=thread.external_thread_id,
         )
     return connection_id, candidate, user_id
 
@@ -640,3 +643,48 @@ def test_catalog_grounding_carries_product_ids_and_updated_at() -> None:
     # Another tenant grounds on nothing for this connection (RLS).
     _ensure_tenant(TENANT_B, "t-replies-e2e-b")
     assert catalog_grounding_for(TENANT_B, connection_id).products == ()
+
+
+def test_pending_drafts_carry_the_author_and_the_publication(  # m-24842989
+) -> None:
+    """The review queue joins `threads` (media id) and, outer, `monitored_media`
+    (caption): without a media row the draft still shows, caption empty; with one, the
+    caption comes through. The candidate query carries author + media id too."""
+    version = _fresh_version()
+    connection_id, candidate, _user_id = _seed_pos_comment(TENANT_A, version)
+    repo = PostgresReplyRepository()
+    (found,) = repo.list_reply_candidates(
+        tenant_id=TENANT_A,
+        connection_id=connection_id,
+        sentiment_version=version,
+        intent_version=None,
+    )
+    assert found.author_username == "cliente.feliz"
+    assert found.external_media_id == candidate.external_media_id
+
+    repo.create_draft(
+        tenant_id=TENANT_A,
+        connection_id=connection_id,
+        candidate=found,
+        gate_reason="test",
+        generator_version="qua22.1:test-model",
+        generated_text="¡Gracias!",
+    )
+    (pending,) = repo.list_pending_drafts(tenant_id=TENANT_A, connection_id=connection_id)
+    assert pending.author_username == "cliente.feliz"
+    assert pending.external_media_id == candidate.external_media_id
+    assert pending.media_caption == ""
+
+    with tenant_session(TENANT_A) as session:
+        session.add(
+            MonitoredMedia(
+                tenant_id=TENANT_A,
+                connection_id=connection_id,
+                external_media_id=candidate.external_media_id,
+                is_monitored=True,
+                caption="Shawarma de pollo",
+            )
+        )
+        session.commit()
+    (pending,) = repo.list_pending_drafts(tenant_id=TENANT_A, connection_id=connection_id)
+    assert pending.media_caption == "Shawarma de pollo"
