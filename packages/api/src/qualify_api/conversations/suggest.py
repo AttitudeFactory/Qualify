@@ -16,7 +16,9 @@ send is still, and only, `ConversationService.reply(..., approval=HumanApproval(
    model was allowed to say. The model is told to use nothing else; it must also report
    whether it did. `needs_review` is True when it says it could not ground a claim OR
    when a cheap local check disagrees (a price-looking token in the reply with no price
-   in the grounding).
+   in the grounding). The grounding types (`Grounding`, `GroundedProduct`,
+   `grounding_from_products`) live in `qualify_api.assisted.grounding` since m-24789645
+   — shared with the public comment drafts — and are re-exported here unchanged.
 3. **Cost is provenance.** Model id, revision, tokens and USD are written on the row
    (QUA-144), computed by `claude_tools.Meter` from the response, never estimated.
 
@@ -33,12 +35,18 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, Protocol
 from uuid import UUID
 
+from qualify_api.assisted.grounding import (
+    GroundedProduct,
+    Grounding,
+    GroundingProvider,
+    grounding_from_products,
+)
 from qualify_api.claude_tools import (
     ClaudeToolError,
     ClientFactory,
@@ -103,52 +111,6 @@ SYSTEM_PROMPT: Final = (
 )
 
 _PRICE_TOKEN = re.compile(r"(\$|€|Bs\.?|USD|COP|VES|EUR)\s?\d|\d+\s?(\$|€|USD|COP|VES|EUR|Bs)")
-
-
-@dataclass(frozen=True)
-class GroundedProduct:
-    name: str
-    price_label: str = ""
-    category: str = ""
-    description: str = ""
-
-
-@dataclass(frozen=True)
-class Grounding:
-    """The facts a tenant has validated and the model may state. Serialized onto the
-    draft (`as_record`) so a reviewer sees exactly what the model was given."""
-
-    business_name: str | None = None
-    products: tuple[GroundedProduct, ...] = ()
-
-    @property
-    def has_prices(self) -> bool:
-        return any(p.price_label for p in self.products)
-
-    def as_record(self) -> dict[str, Any]:
-        return {
-            "business_name": self.business_name,
-            "products": [
-                {"name": p.name, "price": p.price_label, "category": p.category}
-                for p in self.products
-            ],
-        }
-
-    def as_prompt(self) -> str:
-        lines = [f"Nombre del negocio: {self.business_name or '(no indicado)'}"]
-        if self.products:
-            lines.append("Productos (nombre — precio — categoría — descripción):")
-            for p in self.products:
-                price = p.price_label or "precio no indicado"
-                desc = p.description.strip()[:160] if p.description else ""
-                lines.append(f"- {p.name} — {price} — {p.category or '-'} — {desc or '-'}")
-        else:
-            lines.append("Productos: ninguno validado (no afirmes nada sobre productos).")
-        return "\n".join(lines)
-
-
-GroundingProvider = Callable[[UUID, UUID], Grounding]
-"""`(tenant_id, connection_id) -> Grounding`: resolved per draft, under RLS."""
 
 
 @dataclass(frozen=True)
@@ -429,26 +391,6 @@ class ConversationDraftService:
             decided_by_user_id=user_id,
             now=self.clock(),
         )
-
-
-def grounding_from_products(
-    business_name: str | None, products: Sequence[Mapping[str, Any]]
-) -> Grounding:
-    """Build a `Grounding` from plain product dicts (`name`, `price_label`, `category`,
-    `description`) — the shape the composition layer gets from the catalog."""
-    return Grounding(
-        business_name=(business_name or "").strip() or None,
-        products=tuple(
-            GroundedProduct(
-                name=str(p.get("name", "")).strip(),
-                price_label=str(p.get("price_label", "") or ""),
-                category=str(p.get("category", "") or ""),
-                description=str(p.get("description", "") or ""),
-            )
-            for p in products
-            if str(p.get("name", "")).strip()
-        ),
-    )
 
 
 __all__ = [

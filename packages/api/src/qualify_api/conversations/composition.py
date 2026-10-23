@@ -31,6 +31,7 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
+from qualify_api.assisted.grounding import catalog_grounding_for
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.resolver import AuthenticatedClient
 from qualify_api.conversations.contracts import ChannelRegistry, SourceConnection
@@ -47,7 +48,6 @@ from qualify_api.conversations.suggest import (
     ClaudeDraftGenerator,
     ConversationDraftService,
     Grounding,
-    grounding_from_products,
 )
 from qualify_api.conversations.sync import ConversationSyncService
 from qualify_api.conversations.templates import (
@@ -233,37 +233,11 @@ def production_sync_service() -> ConversationSyncService:
 
 
 def grounding_for(tenant_id: UUID, connection_id: UUID) -> Grounding:
-    """The validated facts a draft may state: the brand's name and its active products
-    (`brand_products`, QUA-144's catalog), both read under RLS. A connection without a
-    brand grounds on nothing — the generator is told so and must not assert products."""
-    from qualify_api.catalog.models import BrandProduct  # noqa: PLC0415
-    from qualify_api.catalog.read import price_label  # noqa: PLC0415
-    from qualify_api.tenancy.models import Brand  # noqa: PLC0415
-
-    with tenant_session(tenant_id) as session:
-        brand_id = session.execute(
-            select(SocialConnection.brand_id).where(SocialConnection.id == connection_id)
-        ).scalar_one_or_none()
-        if brand_id is None:
-            return Grounding()
-        name = session.execute(select(Brand.name).where(Brand.id == brand_id)).scalar_one_or_none()
-        rows = list(
-            session.scalars(
-                select(BrandProduct)
-                .where(BrandProduct.brand_id == brand_id, BrandProduct.is_active.is_(True))
-                .order_by(BrandProduct.position, BrandProduct.name)
-            )
-        )
-        products = [
-            {
-                "name": p.name,
-                "price_label": price_label(p.price_amount, p.price_currency or ""),
-                "category": p.category or "",
-                "description": p.description or "",
-            }
-            for p in rows
-        ]
-    return grounding_from_products(name, products)
+    """The validated facts a draft may state: the brand's name and its active products,
+    each with its catalog id and `updated_at` (m-24789645). The loader itself lives in
+    `qualify_api.assisted.grounding` — shared with the public comment drafts; this name
+    stays because Conversaciones and Fase C (followups) are wired to it."""
+    return catalog_grounding_for(tenant_id, connection_id)
 
 
 @cache

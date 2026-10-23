@@ -50,6 +50,9 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+# `HumanApproval` / `ApprovalRequired` live in `qualify_api.assisted.approval` since
+# m-24789645 (the public comment reply demands the same object); re-exported here.
+from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.conversations.contracts import MEDIA_TYPE_STICKER, REPLY_MEDIA_TYPES
 from qualify_api.conversations.models import OUTBOX_CHANNELS, OUTBOX_KINDS
 
@@ -80,10 +83,6 @@ def payload_text(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-class ApprovalRequired(PermissionError):
-    """A send was requested without a human approval. There is no code path around it."""
-
-
 #: Called inside `enqueue`'s transaction with `(session, item_id)` — `session` is None
 #: for the in-memory repository. Raising aborts the enqueue.
 OnEnqueued = Callable[[Any, UUID], None]
@@ -106,22 +105,6 @@ class PrivateReplyTarget:
             raise ValueError("a private reply needs the comment it answers")
         if not isinstance(self.deadline, datetime):
             raise ValueError("a private reply needs its deadline")
-
-
-@dataclass(frozen=True)
-class HumanApproval:
-    """Who approved this exact text, and when. `draft_id` links back to the assisted
-    draft when the text came from one (E4); a hand-written reply has none."""
-
-    user_id: UUID
-    approved_at: datetime
-    draft_id: UUID | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.user_id, UUID):
-            raise ApprovalRequired("an approval needs the approving user's id")
-        if not isinstance(self.approved_at, datetime):
-            raise ApprovalRequired("an approval needs the instant it was given")
 
 
 @dataclass(frozen=True)

@@ -142,8 +142,19 @@ def test_decide_and_send_decides_before_it_ever_calls_send() -> None:
     Meta (`send_draft`), with no path that reaches `send_draft` first."""
     source = inspect.getsource(RepliesState._decide_and_send)
     decide_index = source.index("decide_draft,\n")
-    send_index = source.index("await send_draft(tenant_id=tenant_id")
+    send_index = source.index("await send_draft(")
     assert decide_index < send_index
+
+
+def test_decide_and_send_hands_send_draft_an_approval_from_the_session_user() -> None:
+    """m-24789645 criterion 1 at the UI layer: the send carries a `HumanApproval` built
+    from the logged-in person (session email → `users.id`), never the tenant owner."""
+    source = inspect.getsource(RepliesState._decide_and_send)
+    after_send = source[source.index("await send_draft(") :]
+    assert "approval=approval_for(user_id=user_id, draft_id=resolved_draft_id)" in after_send
+    assert "user_id = await self._acting_user(tenant_id)" in source
+    assert "auth.user_email" in inspect.getsource(RepliesState._acting_user)
+    assert "import acting_user_id" not in inspect.getsource(replies_state_module)
 
 
 def test_generate_drafts_log_detail_is_type_plus_only_safe_detail() -> None:

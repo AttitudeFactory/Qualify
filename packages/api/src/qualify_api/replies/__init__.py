@@ -9,11 +9,15 @@ Pipeline: `gate.evaluate_gate` (cheap, pure, pre-generator) → `ReplyDraftProvi
 (migration 0014, write-ahead) → human decision (`accepted`/`edited`/`discarded`) →
 `send` (write-ahead again, then the real Meta call via `replies/client.py`).
 
+**No send without a `HumanApproval`** (m-24789645): `send_draft(..., approval=...)` and
+`ReplyService.send` require one naming the draft, or raise `ApprovalRequired`.
+
 `generate_drafts`/`list_pending_drafts`/`decide_draft`/`send_draft` are the published
 seams for HTTP/Reflex — plain functions over ids, no HTTP hop internally, same role
 `sentiment.analyze_pending_comments`/`inbox.sync_comments` have for their own modules.
 """
 
+from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.replies.composition import (
     current_reply_generator_version,
     decide_draft,
@@ -25,6 +29,7 @@ from qualify_api.replies.composition import (
 from qualify_api.replies.gate import GateInput, GateVerdict, evaluate_gate
 from qualify_api.replies.repository import (
     CandidateComment,
+    DraftProvenance,
     DraftRecord,
     MemoryReplyRepository,
     PostgresReplyRepository,
@@ -35,15 +40,19 @@ from qualify_api.replies.service import (
     GenerationSummary,
     ReplyService,
     UnknownDraft,
+    require_approval,
 )
 
 __all__ = [
+    "ApprovalRequired",
     "CandidateComment",
     "DecisionResult",
+    "DraftProvenance",
     "DraftRecord",
     "GateInput",
     "GateVerdict",
     "GenerationSummary",
+    "HumanApproval",
     "MemoryReplyRepository",
     "PostgresReplyRepository",
     "ReplyRepository",
@@ -55,5 +64,6 @@ __all__ = [
     "generate_drafts",
     "list_pending_drafts",
     "production_reply_service",
+    "require_approval",
     "send_draft",
 ]

@@ -7,12 +7,13 @@ panel's lifecycle (generate → decide → send) is independent of the
 Reel-monitoring/comment-sync flow `InboxState` owns, same reasoning `mentions_provider`
 stays its own module rather than growing `InboxState` further.
 
-**Acting user: `connections_provider.acting_user_id`, same as `creative_state.py`.**
-There is no per-session user id on `AuthState` yet (it carries `session_tenant_id`
-only) — every other write flow in this app that needs one (Brand Kit approvals,
-content drafts) resolves it the same way: the tenant's `owner` row, read fresh through
-`tenant_session` so it can only ever resolve to that tenant's own user. Not invented
-for this file; reused exactly as `creative_state.py` already established it.
+**Acting user: the logged-in person (m-24789645).** `AuthState.user_email` resolved to
+this tenant's `users.id` through `replies_provider.acting_user` — the same resolution
+Conversaciones uses for its `HumanApproval`, read through `tenant_session` so it can only
+ever resolve to that tenant's own user. It stamps the decision (`decided_by_user_id`)
+and the `HumanApproval` the send demands (`replies_provider.approval_for`). It used to
+be the tenant's `owner` row (`connections_provider.acting_user_id`), which attributed
+every approval to the owner whoever clicked.
 
 **Two Reflex background-task constraints, both hit and fixed during manual testing
 (2026-09-04) — neither is optional, both are enforced at runtime, not just style:**
@@ -58,16 +59,26 @@ from qualify_api.claude_tools import ClaudeToolError
 from qualify_api.replies.service import UnknownDraft
 
 from .auth_state import AuthState
-from .connections_provider import acting_user_id
 from .inbox_state import InboxState
-from .replies_provider import DraftVM, decide_draft, generate_drafts, pending_drafts, send_draft
+from .replies_provider import (
+    DraftVM,
+    acting_user,
+    approval_for,
+    decide_draft,
+    generate_drafts,
+    pending_drafts,
+    send_draft,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay ningún tenant activo. Entra a Conexiones y elige uno primero."
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la página e intenta de nuevo."
-_NO_ACTING_USER = "Este tenant no tiene un usuario asignado todavía."
+_NO_ACTING_USER = (
+    "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
+    "Pide al equipo de Qualify que lo revise."
+)
 _GENERATE_FAILED = "No se pudieron generar los borradores. Intenta de nuevo en unos minutos."
 _DECIDE_FAILED = "No se pudo guardar la decisión. Actualiza la lista e intenta de nuevo."
 _SEND_FAILED = "No se pudo enviar la respuesta a Meta. El borrador quedó marcado para revisión."
@@ -131,6 +142,14 @@ class RepliesState(rx.State):
             auth = await self.get_state(AuthState)
             inbox = await self.get_state(InboxState)
             return tenant_uuid(auth.session_tenant_id), _try_uuid(inbox.selected_connection_id)
+
+    async def _acting_user(self, tenant_id: UUID) -> UUID | None:
+        """The logged-in person's `users.id` (session email → `users`), or None. Same
+        `get_state`-inside-`async with self:` rule as `_resolve_ids`."""
+        async with self:
+            auth = await self.get_state(AuthState)
+            email = auth.user_email
+        return await asyncio.to_thread(acting_user, tenant_id, email)
 
     @rx.event(background=True)
     async def load_pending_drafts(self) -> None:
@@ -262,7 +281,7 @@ class RepliesState(rx.State):
                 self.action_error = _NO_TENANT if tenant_id is None else _DECIDE_FAILED
             return
 
-        user_id = await asyncio.to_thread(acting_user_id, tenant_id)
+        user_id = await self._acting_user(tenant_id)
         if user_id is None:
             async with self:
                 self.busy_draft_id = ""
@@ -286,7 +305,11 @@ class RepliesState(rx.State):
             return
 
         try:
-            await send_draft(tenant_id=tenant_id, draft_id=resolved_draft_id)
+            await send_draft(
+                tenant_id=tenant_id,
+                draft_id=resolved_draft_id,
+                approval=approval_for(user_id=user_id, draft_id=resolved_draft_id),
+            )
         except UnknownDraft:
             async with self:
                 self.busy_draft_id = ""
@@ -324,7 +347,7 @@ class RepliesState(rx.State):
                 self.action_error = _NO_TENANT if tenant_id is None else _DECIDE_FAILED
             return
 
-        user_id = await asyncio.to_thread(acting_user_id, tenant_id)
+        user_id = await self._acting_user(tenant_id)
         if user_id is None:
             async with self:
                 self.busy_draft_id = ""

@@ -164,3 +164,48 @@ def test_send_a_proposed_draft_is_rejected(harness: Harness) -> None:
 def test_send_unknown_draft_is_404(harness: Harness) -> None:
     response = harness.http.post(f"/api/replies/{uuid4()}/send", headers=AUTH)
     assert response.status_code == 404
+
+
+def test_send_route_hands_the_service_an_approval_from_the_principal(harness: Harness) -> None:
+    """m-24789645 criterion 1 at the HTTP edge: the authenticated request IS the approval
+    — the route builds a `HumanApproval` for THIS draft and THIS principal, and the
+    service refuses without one."""
+    from qualify_api.assisted.approval import HumanApproval
+
+    harness.seed()
+    harness.http.post(
+        "/api/replies/generate", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+    draft_id = harness.http.get(
+        "/api/replies/pending", params={"connection_id": str(CONNECTION)}, headers=AUTH
+    ).json()[0]["id"]
+    harness.http.post(
+        f"/api/replies/{draft_id}/decide", json={"decision": "accepted"}, headers=AUTH
+    )
+    seen: list[HumanApproval] = []
+
+    async def spy(*, tenant_id: UUID, draft_id: UUID, approval: HumanApproval):  # noqa: ANN202
+        seen.append(approval)
+        return await harness.service.send(tenant_id=tenant_id, draft_id=draft_id, approval=approval)
+
+    harness.http.app.dependency_overrides[replies_routes.get_send_draft] = lambda: spy
+
+    sent = harness.http.post(f"/api/replies/{draft_id}/send", headers=AUTH)
+
+    assert sent.status_code == 200, sent.text
+    assert len(seen) == 1
+    assert seen[0].user_id == USER
+    assert seen[0].draft_id == UUID(draft_id)
+
+
+def test_send_route_maps_a_refused_approval_to_403(harness: Harness) -> None:
+    from qualify_api.assisted.approval import ApprovalRequired
+
+    async def refuse(**_: object) -> None:
+        raise ApprovalRequired("no approval")
+
+    harness.http.app.dependency_overrides[replies_routes.get_send_draft] = lambda: refuse
+
+    response = harness.http.post(f"/api/replies/{uuid4()}/send", headers=AUTH)
+
+    assert response.status_code == 403

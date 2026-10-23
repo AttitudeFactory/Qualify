@@ -11,17 +11,28 @@ copy.
 `settled_at` set) or `send_ambiguous` (deliberately NOT terminal — see migration
 0014's docstring). `discarded` is terminal directly from `proposed`.
 
-**Idempotency.** `UNIQUE(message_id)` means at most one draft ever exists per comment
-in this v1 — `create_draft` returns `None` (not an exception) when one already exists,
-same "no raw IntegrityError leaks upstream" discipline `record_sentiment_result`
-already follows for its own unique index.
+**Idempotency.** At most one LIVE draft exists per comment (0080's partial unique index
+`uq_reply_draft_live_message`; `models.LIVE_STATUSES`) — `create_draft` returns `None`
+(not an exception) when one already exists, same "no raw IntegrityError leaks upstream"
+discipline `record_sentiment_result` already follows for its own unique index. A
+discarded or refused (`send_failed`) draft leaves room for a new one; generation itself
+still skips any comment with ANY draft (`list_positive_comments_without_draft`,
+`has_draft`), so nothing is regenerated automatically — a new draft after a discard is a
+deliberate act (m-24789645 PR 3, «Regenerar»).
+
+**Provenance (0080).** `create_draft` takes an optional `DraftProvenance` — grounding,
+review verdict, unsupported claims, model/cost, the Fase A intent result — and every
+`DraftRecord` carries it back. The sentiment-era path passes none: those columns stay
+NULL / false.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Protocol
+from decimal import Decimal
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
@@ -29,12 +40,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.inbox.models import Message, Thread
-from qualify_api.replies.models import CommentReplyDraft
+from qualify_api.replies.models import DEAD_STATUSES, CommentReplyDraft
 from qualify_api.sentiment.models import CommentSentimentResult
 from qualify_api.sentiment.repository import AnalysisVersion
 
 _COMMENT_CHANNEL = "comment"
 _INBOUND = "inbound"
+_LIVE_INDEX = "uq_reply_draft_live_message"
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,26 @@ class CandidateComment:
     text: str
     sentiment_result_id: UUID
     sentiment_label: str
+
+
+@dataclass(frozen=True)
+class DraftProvenance:
+    """What 0080 lets a draft record about how it was made. All optional: the
+    sentiment-era generator reports none of it. `unsupported_claims=None` means "not
+    judged"; `()` means "judged, nothing unsupported"."""
+
+    grounding: Mapping[str, Any] | None = None
+    needs_review: bool = False
+    unsupported_claims: tuple[str, ...] | None = None
+    model_id: str | None = None
+    model_revision: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: Decimal | None = None
+    intent_result_id: UUID | None = None
+
+
+_NO_PROVENANCE = DraftProvenance()
 
 
 @dataclass(frozen=True)
@@ -79,10 +111,25 @@ class DraftRecord:
     external_reply_id: str | None
     send_error_code: str | None
     settled_at: datetime | None
+    # 0080 (m-24789645) — NULL/false/empty on sentiment-era drafts.
+    grounding: Mapping[str, Any] | None = None
+    needs_review: bool = False
+    unsupported_claims: tuple[str, ...] = ()
+    model_id: str | None = None
+    model_revision: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: Decimal | None = None
+    intent_result_id: UUID | None = None
 
     @property
     def is_settled(self) -> bool:
         return self.settled_at is not None
+
+    @property
+    def is_live(self) -> bool:
+        """Holds the comment's one live draft (0080) — see `models.LIVE_STATUSES`."""
+        return self.status not in DEAD_STATUSES
 
 
 class ReplyRepository(Protocol):
@@ -96,7 +143,13 @@ class ReplyRepository(Protocol):
         already `proposed` before its comment was deleted — see `list_pending_drafts`."""
         ...
 
-    def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool: ...
+    def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool:
+        """Whether the comment has ANY draft, live or not — what generation skips on."""
+        ...
+
+    def get_live_draft(self, *, tenant_id: UUID, message_id: UUID) -> DraftRecord | None:
+        """The comment's one live draft (status not in `DEAD_STATUSES`), if any."""
+        ...
 
     def create_draft(
         self,
@@ -107,9 +160,12 @@ class ReplyRepository(Protocol):
         gate_reason: str,
         generator_version: str,
         generated_text: str,
+        provenance: DraftProvenance | None = None,
     ) -> DraftRecord | None:
-        """Returns the new row, or `None` if `UNIQUE(message_id)` already holds — same
-        never-raises-on-duplicate discipline `record_sentiment_result` follows."""
+        """Returns the new row, or `None` if the comment already has a LIVE draft
+        (`uq_reply_draft_live_message`) — same never-raises-on-duplicate discipline
+        `record_sentiment_result` follows. Any other integrity error (a foreign key, a
+        CHECK) propagates: it is a bug, not a race."""
         ...
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None: ...
@@ -177,7 +233,36 @@ def _row_to_record(row: CommentReplyDraft, *, comment_text: str = "") -> DraftRe
         external_reply_id=row.external_reply_id,
         send_error_code=row.send_error_code,
         settled_at=row.settled_at,
+        grounding=dict(row.grounding) if isinstance(row.grounding, dict) else None,
+        needs_review=bool(row.needs_review),
+        unsupported_claims=tuple(str(c) for c in (row.unsupported_claims or [])),
+        model_id=row.model_id,
+        model_revision=row.model_revision,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        cost_usd=row.cost_usd,
+        intent_result_id=row.intent_result_id,
     )
+
+
+def _provenance_columns(provenance: DraftProvenance) -> dict[str, Any]:
+    claims = provenance.unsupported_claims
+    return {
+        "grounding": dict(provenance.grounding) if provenance.grounding is not None else None,
+        "needs_review": provenance.needs_review,
+        "unsupported_claims": list(claims) if claims is not None else None,
+        "model_id": provenance.model_id,
+        "model_revision": provenance.model_revision,
+        "input_tokens": provenance.input_tokens,
+        "output_tokens": provenance.output_tokens,
+        "cost_usd": provenance.cost_usd,
+        "intent_result_id": provenance.intent_result_id,
+    }
+
+
+def _is_live_duplicate(exc: IntegrityError) -> bool:
+    constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    return constraint == _LIVE_INDEX
 
 
 class PostgresReplyRepository:
@@ -229,6 +314,16 @@ class PostgresReplyRepository:
             ).first()
         return existing is not None
 
+    def get_live_draft(self, *, tenant_id: UUID, message_id: UUID) -> DraftRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                select(CommentReplyDraft).where(
+                    CommentReplyDraft.message_id == message_id,
+                    CommentReplyDraft.status.not_in(DEAD_STATUSES),
+                )
+            ).one_or_none()
+        return _row_to_record(row) if row is not None else None
+
     def create_draft(
         self,
         *,
@@ -238,6 +333,7 @@ class PostgresReplyRepository:
         gate_reason: str,
         generator_version: str,
         generated_text: str,
+        provenance: DraftProvenance | None = None,
     ) -> DraftRecord | None:
         row = CommentReplyDraft(
             tenant_id=tenant_id,
@@ -250,14 +346,17 @@ class PostgresReplyRepository:
             generator_version=generator_version,
             generated_text=generated_text,
             status="proposed",
+            **_provenance_columns(provenance or _NO_PROVENANCE),
         )
         with tenant_session(tenant_id) as session:
             session.add(row)
             try:
                 session.flush()
-            except IntegrityError:
+            except IntegrityError as exc:
                 session.rollback()
-                return None
+                if _is_live_duplicate(exc):
+                    return None
+                raise
             session.commit()
             session.refresh(row)
             # The candidate already carries the comment's text — no extra query needed
@@ -376,7 +475,8 @@ class MemoryReplyRepository:
 
     def __init__(self) -> None:
         self._drafts: dict[UUID, DraftRecord] = {}
-        self._by_message: dict[UUID, UUID] = {}
+        # Every draft ever made per comment, oldest first (live or not).
+        self._by_message: dict[UUID, list[UUID]] = {}
         self._candidates: dict[UUID, tuple[CandidateComment, ...]] = {}
 
     def seed_candidates(
@@ -403,7 +503,15 @@ class MemoryReplyRepository:
 
     def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool:
         del tenant_id
-        return message_id in self._by_message
+        return bool(self._by_message.get(message_id))
+
+    def get_live_draft(self, *, tenant_id: UUID, message_id: UUID) -> DraftRecord | None:
+        del tenant_id
+        for draft_id in self._by_message.get(message_id, []):
+            record = self._drafts[draft_id]
+            if record.is_live:
+                return record
+        return None
 
     def create_draft(
         self,
@@ -414,9 +522,11 @@ class MemoryReplyRepository:
         gate_reason: str,
         generator_version: str,
         generated_text: str,
+        provenance: DraftProvenance | None = None,
     ) -> DraftRecord | None:
-        if candidate.message_id in self._by_message:
+        if self.get_live_draft(tenant_id=tenant_id, message_id=candidate.message_id):
             return None
+        p = provenance or _NO_PROVENANCE
         record = DraftRecord(
             id=uuid4(),
             tenant_id=tenant_id,
@@ -438,9 +548,18 @@ class MemoryReplyRepository:
             external_reply_id=None,
             send_error_code=None,
             settled_at=None,
+            grounding=dict(p.grounding) if p.grounding is not None else None,
+            needs_review=p.needs_review,
+            unsupported_claims=tuple(p.unsupported_claims or ()),
+            model_id=p.model_id,
+            model_revision=p.model_revision,
+            input_tokens=p.input_tokens,
+            output_tokens=p.output_tokens,
+            cost_usd=p.cost_usd,
+            intent_result_id=p.intent_result_id,
         )
         self._drafts[record.id] = record
-        self._by_message[candidate.message_id] = record.id
+        self._by_message.setdefault(candidate.message_id, []).append(record.id)
         return record
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
