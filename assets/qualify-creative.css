@@ -250,14 +250,17 @@
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
 .q-gcard-note { color: var(--amber-11); background: var(--amber-a2); border-radius: var(--q-radius-control); padding: 0.35rem 0.5rem; }
-.q-gcard-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.6rem 0.9rem 0.9rem; }
-.q-gcard-actions > :only-child { grid-column: 1 / -1; }
-.q-gcard-actions--review { grid-template-columns: 1fr 1fr; }
-/* An approved piece not yet scheduled (2026-10-22): the ✕ beside «Ver POST» on the first
-   row, «Programar» whole on the second — three in one row clipped the verb. */
-.q-gcard-actions--ready { grid-template-columns: auto 1fr; }
-.q-gcard-actions--ready > :last-child { grid-column: 1 / -1; }
-.q-gcard-actions--review > :last-child { grid-column: 1 / -1; }
+/* m-24842981: ONE main button per card, full width, and «Descartar» under it as a quiet
+   text button when the publication can still be thrown out. */
+.q-gcard-actions { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.6rem 0.9rem 0.9rem; }
+/* The picture opens the publication: a block link, no underline, no hover-only cue. */
+a.q-gcard-media { display: block; text-decoration: none; color: inherit; }
+/* N12: on a phone (or any touch screen) every target on the card and the state
+   filters is at least 44 px tall. */
+@media (max-width: 640px), (pointer: coarse) {
+  .q-gcard-actions .rt-Button,
+  .q-gfilter.rt-Button { min-height: 44px; }
+}
 
 
 /* The file bar under the review media. */

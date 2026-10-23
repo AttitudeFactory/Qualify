@@ -4,11 +4,18 @@ runtime beyond state objects, no database."""
 
 from __future__ import annotations
 
+import ast
+import textwrap
+
 from qualify_api.planner.gallery import GalleryState as DerivedState
 
 from .gallery_state import GalleryState
 from .planner_state import MODE_ASSIGN, PlannerState
 from .planner_vm import (
+    CARD_ACTION_REVIEW,
+    CARD_ACTION_SCHEDULE,
+    CARD_ACTION_VIEW,
+    CARD_STATES,
     GALLERY_FILTER_ALL,
     GALLERY_LABELS,
     GALLERY_STATE_FILTERS,
@@ -16,8 +23,11 @@ from .planner_vm import (
     CategoryOptionVM,
     ConnectionChoiceVM,
     build_post_option,
+    card_state,
     category_options,
     filter_posts,
+    history_help,
+    history_word,
 )
 
 
@@ -44,22 +54,118 @@ def _post(post_id: str, *, state: str = "schedulable", category: str = "galeria"
 def test_gallery_labels_are_the_five_post_states_and_none_of_the_event_words() -> None:
     assert {s.value for s in DerivedState} == set(GALLERY_LABELS)
     words = {label for label, _tone in GALLERY_LABELS.values()}
-    assert words == {"Borrador", "Por completar", "Listo", "Usado", "Desechado"}
+    assert words == {"Creándose", "Le falta algo", "Lista para programar", "Ya salió", "Descartada"}
     assert words.isdisjoint({"Programado", "Pendiente", "Publicado", "Vencido", "Fallido"})
-    assert [value for value, _label in GALLERY_STATE_FILTERS] == list(GALLERY_LABELS)
+    # m-24842981: the filters are the card's states — «Por revisar» split out first
+    assert [label for _value, label in GALLERY_STATE_FILTERS] == [
+        "Por revisar",
+        "Le falta algo",
+        "Lista para programar",
+        "Ya salió",
+        "Descartada",
+        "Creándose",
+    ]
 
 
 def test_the_card_carries_state_word_tone_and_history_badges() -> None:
     post = _post("p1", state="schedulable", times_published=3, has_live_event=True)
-    assert (post.gallery_label, post.gallery_tone) == ("Listo", "ok")
-    assert post.used_count == 3 and post.in_calendar is True  # Listo + Usado ×3 + En calendario
+    assert (post.gallery_label, post.gallery_tone) == ("Lista para programar", "ok")
+    assert post.used_count == 3 and post.in_calendar is True
     used = _post("p2", state="used", times_published=1)
-    assert (used.gallery_label, used.gallery_tone) == ("Usado", "info")
+    assert (used.gallery_label, used.gallery_tone) == ("Ya salió", "info")
     draft = _post("p3", state="draft", approval="not_ready", is_publishable=False)
-    assert (draft.gallery_label, draft.gallery_tone) == ("Borrador", "neutral")
+    assert (draft.gallery_label, draft.gallery_tone) == ("Creándose", "neutral")
     assert not draft.schedulable
     unknown = _post("p4", state="")
     assert (unknown.gallery_label, unknown.gallery_tone) == ("", "neutral")
+    assert unknown.card_state == ""
+
+
+# --- m-24842981 (CREAR-3): the state in words and ONE main button per card --------------
+
+
+def test_each_card_state_has_its_words_and_its_one_main_button() -> None:
+    cases = {
+        "review": _post("a", state="needs_action", lifecycle_status="generated"),
+        "missing": _post(
+            "b", state="needs_action", approval="approved", lifecycle_status="approved"
+        ),
+        "ready": _post("c", state="schedulable"),
+        "used": _post("d", state="used", times_published=1),
+        "discarded": _post("e", state="discarded", approval="rejected"),
+        "drafting": _post("f", state="draft", approval="not_ready", lifecycle_status="drafting"),
+    }
+    seen = {
+        key: (p.card_state, p.card_label, p.card_action, p.card_action_label)
+        for key, p in cases.items()
+    }
+    assert seen == {
+        "review": ("review", "Por revisar", CARD_ACTION_REVIEW, "Revisar"),
+        "missing": ("missing", "Le falta algo", CARD_ACTION_REVIEW, "Ver qué falta"),
+        "ready": ("ready", "Lista para programar", CARD_ACTION_SCHEDULE, "Elegir día y hora"),
+        "used": ("used", "Ya salió", CARD_ACTION_VIEW, "Ver"),
+        "discarded": ("discarded", "Descartada", CARD_ACTION_VIEW, "Ver"),
+        "drafting": ("drafting", "Creándose", CARD_ACTION_VIEW, "Ver"),
+    }
+    # the drawer's pill prints the same words as the card
+    assert cases["review"].gallery_label == "Por revisar"
+
+
+def test_waiting_for_review_wins_over_what_else_is_missing() -> None:
+    assert card_state("needs_action", waiting_review=True) == CARD_STATES["review"]
+    assert card_state("needs_action", waiting_review=False) == CARD_STATES["missing"]
+    assert card_state("schedulable", waiting_review=True) == CARD_STATES["ready"]
+    assert card_state("nonsense", waiting_review=False) is None
+
+
+def test_history_word_and_its_visible_help() -> None:
+    assert (history_word(0), history_help(0)) == (
+        "Por probar",
+        "Todavía no ha salido en tus redes.",
+    )
+    assert (history_word(1), history_help(1)) == ("Por probar", "Salió 1 vez en tus redes.")
+    assert (history_word(3), history_help(3)) == (
+        "Ya probada",
+        "Ya salió 3 veces en tus redes: se puede repetir sin problema.",
+    )
+    post = _post("a", state="schedulable", times_published=3)
+    assert (post.history_word, post.history_help) == (history_word(3), history_help(3))
+
+
+def test_the_gallery_card_prints_no_cold_hot_or_evergreen_and_no_title_only_help() -> None:
+    """m-24842981: no visible «Cold», «Hot» nor «evergreen» on «Por aprobar» and its
+    publication page, and the help is not in a `title=` attribute."""
+    import inspect
+
+    from . import creative_pages
+
+    sources = [
+        inspect.getsource(fn)
+        for fn in (
+            creative_pages._gallery_state_badge,
+            creative_pages._card_main_button,
+            creative_pages._gallery_card,
+            creative_pages._history_line,
+            creative_pages.drafts_index,
+        )
+    ]
+    strings = [
+        node.value
+        for src in sources
+        for node in ast.walk(ast.parse(textwrap.dedent(src)))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    # "cold" / "hot" in lower case are the temperature keys (class names, comparisons)
+    for s in strings:
+        tokens = s.replace("·", " ").split()
+        assert "Cold" not in tokens and "Hot" not in tokens, s
+        assert "evergreen" not in s.lower(), s
+    for src in sources:
+        tree = ast.parse(textwrap.dedent(src))
+        assert not any(isinstance(k, ast.keyword) and k.arg == "title" for k in ast.walk(tree))
+    words = {label for _key, label in GALLERY_STATE_FILTERS}
+    words |= {s.action_label for s in CARD_STATES.values()}
+    assert not any(w in " ".join(words) for w in ("Cold", "Hot", "evergreen", "POST"))
 
 
 def test_the_media_label_names_medium_and_format() -> None:
@@ -87,7 +193,7 @@ def test_filter_posts_by_state_and_category() -> None:
     ]
     assert [p.post_id for p in filter_posts(posts, state="used", category="all")] == ["c"]
     assert [p.post_id for p in filter_posts(posts, state="all", category="reel")] == ["a", "c"]
-    assert [p.post_id for p in filter_posts(posts, state="draft", category="reel")] == []
+    assert [p.post_id for p in filter_posts(posts, state="drafting", category="reel")] == []
     assert category_options(posts) == [
         CategoryOptionVM(value="reel", label="Reel"),
         CategoryOptionVM(value="galeria", label="Galería"),
@@ -104,9 +210,9 @@ def test_gallery_state_filters_count_and_clear() -> None:
     ]
     assert state.total_count == 3 and state.visible_count == 3 and not state.is_filtered
     assert state.state_counts["all"] == 3
-    assert state.state_counts["schedulable"] == 2 and state.state_counts["discarded"] == 1
-    assert state.state_counts["draft"] == 0
-    state.set_state_filter("schedulable")
+    assert state.state_counts["ready"] == 2 and state.state_counts["discarded"] == 1
+    assert state.state_counts["drafting"] == 0 and state.state_counts["review"] == 0
+    state.set_state_filter("ready")
     state.set_category_filter("reel")
     assert [p.post_id for p in state.visible] == ["a"] and state.is_filtered
     state.set_state_filter("nonsense")  # unknown → all

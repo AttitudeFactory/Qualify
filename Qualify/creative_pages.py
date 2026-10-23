@@ -32,7 +32,13 @@ from .creative_vm import (
 from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
-from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
+from .planner_vm import (
+    CARD_ACTION_REVIEW,
+    CARD_ACTION_SCHEDULE,
+    CARD_ACTION_VIEW,
+    GALLERY_FILTER_ALL,
+    GALLERY_STATE_FILTERS,
+)
 from .post_card import (
     campaign_badge,
     color_swatches,
@@ -849,112 +855,104 @@ def create_index() -> rx.Component:
 # /drafts — the POST gallery (QUA-118)
 
 
-_GALLERY_STATE_ICON = {
-    "schedulable": "circle-check",
-    "needs_action": "circle-alert",
-    "draft": "pencil-line",
+# m-24842981 (CREAR-3): one glyph per card state (`planner_vm.CARD_STATES`).
+_CARD_STATE_ICON = {
+    "review": "eye",
+    "missing": "circle-alert",
+    "ready": "circle-check",
     "used": "history",
     "discarded": "circle-x",
+    "drafting": "loader",
+}
+# The glyph on each card's one main button, by what it does (`planner_vm.CARD_ACTION_*`).
+_CARD_ACTION_ICON = {
+    CARD_ACTION_REVIEW: "pencil-line",
+    CARD_ACTION_SCHEDULE: "calendar-plus",
+    CARD_ACTION_VIEW: "eye",
 }
 
 
 def _gallery_state_badge(post) -> rx.Component:
-    """The POST's state on its media: glyph + word, in the state's tone."""
+    """The publication's state on its media, in words: glyph + «Por revisar» · «Le falta
+    algo» · «Lista para programar» · «Ya salió» · «Descartada» (m-24842981)."""
     return rx.box(
         rx.match(
-            post.gallery_state,
-            *[(key, rx.icon(icon, size=12)) for key, icon in _GALLERY_STATE_ICON.items()],
+            post.card_state,
+            *[(key, rx.icon(icon, size=12)) for key, icon in _CARD_STATE_ICON.items()],
             rx.icon("circle", size=12),
         ),
-        rx.text(
-            rx.cond(post.gallery_state == "schedulable", "Listo para publicar", post.gallery_label),
-            as_="span",
-        ),
+        rx.text(post.card_label, as_="span"),
         class_name="q-gstate q-gstate--" + post.gallery_state,
     )
 
 
-def _gallery_card(post) -> rx.Component:
-    """One POST of the gallery, picture first: its state on the media (a ready one is
-    solid and glows, one that is not ready has a dashed frame), its temperature in big —
-    Cold frosted, Hot in embers — and the actions it allows right on the card: review
-    («Aprobar» / «Rechazar») while it waits for you, «Elegir día y hora» once it is ready."""
-    busy = GalleryState.busy_post_id == post.post_id
-    view = rx.link(
-        rx.button(
+def _card_main_button(post) -> rx.Component:
+    """The card's ONE main button (m-24842981): «Revisar» while it waits for you,
+    «Programar» once it is ready, «Ver» when there is nothing left to do. Solid when it
+    asks something of the owner, soft when it only shows."""
+
+    def icon() -> rx.Component:
+        return rx.match(
+            post.card_action,
+            *[(key, rx.icon(name, size=15)) for key, name in _CARD_ACTION_ICON.items()],
             rx.icon("eye", size=15),
-            "Ver publicación",
-            variant="soft",
-            color_scheme="gray",
+        )
+
+    return rx.cond(
+        post.card_action == CARD_ACTION_SCHEDULE,
+        rx.button(
+            icon(),
+            post.card_action_label,
             size="2",
             width="100%",
-            white_space="nowrap",  # never «Ver / publicación» on two lines in a narrow card
+            on_click=GalleryState.assign(post.post_id),
         ),
-        href=post.detail_href,
-        width="100%",
+        rx.link(
+            rx.cond(
+                post.card_action == CARD_ACTION_REVIEW,
+                rx.button(icon(), post.card_action_label, size="2", width="100%"),
+                rx.button(
+                    icon(),
+                    post.card_action_label,
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    width="100%",
+                ),
+            ),
+            href=post.detail_href,
+            width="100%",
+        ),
     )
-    actions = rx.cond(
-        post.can_review,
-        rx.box(
+
+
+def _gallery_card(post) -> rx.Component:
+    """One publication of «Por aprobar», picture first: its state in words on the media
+    (a ready one is solid, one that is not ready has a dashed frame), whether it is
+    already proven («Ya probada» / «Por probar», with the visible help in the body), and
+    ONE main button for what the owner has to do with it (m-24842981). «Descartar» stays
+    as a quiet text button while it can still be thrown out; the picture opens it."""
+    busy = GalleryState.busy_post_id == post.post_id
+    can_discard = post.can_review | ((post.gallery_state == "schedulable") & ~post.in_calendar)
+    actions = rx.box(
+        _card_main_button(post),
+        rx.cond(
+            can_discard,
             rx.button(
                 rx.icon("circle-x", size=15),
                 "Descartar",
-                variant="outline",
+                variant="ghost",
                 size="2",
                 width="100%",
                 disabled=busy,
-                **T.tone_scheme("error"),
                 on_click=GalleryState.ask_reject_post(post.post_id, post.title),
-            ),
-            rx.button(
-                rx.icon("circle-check", size=15),
-                "Aprobar",
-                size="2",
-                width="100%",
-                loading=busy,
-                on_click=GalleryState.quick_approve(post.post_id),
-            ),
-            view,
-            class_name="q-gcard-actions q-gcard-actions--review",
-        ),
-        rx.box(
-            # request 2026-10-22: an approved piece can be thrown out too — unless it is
-            # already on the calendar; its own narrow column, so «Elegir día y hora» keeps its width
-            rx.cond(
-                (post.gallery_state == "schedulable") & ~post.in_calendar,
-                rx.tooltip(
-                    rx.icon_button(
-                        rx.icon("circle-x", size=15),
-                        variant="soft",
-                        size="2",
-                        disabled=busy,
-                        on_click=GalleryState.ask_reject_post(post.post_id, post.title),
-                        aria_label="Descartar",
-                        **T.tone_scheme("error"),
-                    ),
-                    content="Descartar",
-                ),
-            ),
-            view,
-            rx.cond(
-                post.gallery_state == "schedulable",
-                rx.button(
-                    rx.icon("calendar-plus", size=15),
-                    "Elegir día y hora",
-                    size="2",
-                    width="100%",
-                    on_click=GalleryState.assign(post.post_id),
-                ),
-            ),
-            class_name=rx.cond(
-                (post.gallery_state == "schedulable") & ~post.in_calendar,
-                "q-gcard-actions q-gcard-actions--ready",
-                "q-gcard-actions",
+                **T.tone_scheme("error"),
             ),
         ),
+        class_name="q-gcard-actions",
     )
     return rx.box(
-        rx.box(
+        rx.link(
             media_fill(post.thumbnail_url, post.video_url, post.kind),
             rx.box(class_name="q-gcard-shade"),
             rx.box(_gallery_state_badge(post), class_name="q-gcard-tl"),
@@ -966,24 +964,13 @@ def _gallery_card(post) -> rx.Component:
                         rx.icon("snowflake", size=15),
                         rx.icon("flame", size=15),
                     ),
-                    rx.text(
-                        rx.cond(post.temperature == "cold", "Ya probada", "Por probar"), as_="span"
-                    ),
+                    rx.text(post.history_word, as_="span"),
                     class_name="q-temp q-temp--big q-temp--" + post.temperature,
-                    title=rx.cond(
-                        post.temperature == "cold",
-                        "Ya salió "
-                        + post.used_count.to_string()
-                        + " veces en tus redes: se puede repetir sin problema.",
-                        rx.cond(
-                            post.used_count > 0,
-                            "Salió 1 vez en tus redes.",
-                            "Todavía no ha salido en tus redes.",
-                        ),
-                    ),
                 ),
             ),
             rx.box(kind_chip(post.kind, post.kind_label, glass=True), class_name="q-gcard-bl"),
+            href=post.detail_href,
+            aria_label="Abrir «" + post.title + "»",
             class_name="q-gcard-media",
         ),
         rx.box(
@@ -1001,14 +988,6 @@ def _gallery_card(post) -> rx.Component:
             rx.flex(
                 rx.text(post.media_label, size="1", color=T.TEXT_MUTED),
                 rx.cond(
-                    post.used_count > 0,
-                    rx.box(
-                        rx.icon("history", size=11),
-                        "Usado ×" + post.used_count.to_string(),
-                        class_name="q-gmeta",
-                    ),
-                ),
-                rx.cond(
                     post.in_calendar,
                     rx.box(
                         rx.icon("calendar-check", size=11), "En calendario", class_name="q-gmeta"
@@ -1017,6 +996,11 @@ def _gallery_card(post) -> rx.Component:
                 wrap="wrap",
                 gap="0.4rem",
                 align="center",
+            ),
+            # m-24842981: what «Ya probada» / «Por probar» means, in sight (never `title=`)
+            rx.cond(
+                post.history_help != "",
+                rx.text(post.history_help, size="1", color=T.TEXT_MUTED),
             ),
             rx.cond(
                 post.readiness_note != "",
@@ -1104,6 +1088,7 @@ def _state_chip(value: str, label: str) -> rx.Component:
             radius="full",
             on_click=GalleryState.set_state_filter(value),
             aria_pressed="true",
+            class_name="q-gfilter",
         ),
         rx.button(
             label,
@@ -1114,6 +1099,7 @@ def _state_chip(value: str, label: str) -> rx.Component:
             radius="full",
             on_click=GalleryState.set_state_filter(value),
             aria_pressed="false",
+            class_name="q-gfilter",
         ),
     )
 
@@ -1164,9 +1150,9 @@ def _gallery_empty() -> rx.Component:
 
 
 def drafts_index() -> rx.Component:
-    """The gallery: every POST of the brand as a card with its state (Borrador · Por
-    completar · Listo · Usado · Desechado), filters, and «Asignar» into the
-    Planificador's drawer (QUA-118 AC 1 / AC 3)."""
+    """The gallery: every POST of the brand as a card with its state in words (Por
+    revisar · Le falta algo · Lista para programar · Ya salió · Descartada · Creándose,
+    m-24842981), filters, and «Programar» into the Planificador's drawer (QUA-118)."""
     return _screen(
         "Por aprobar",
         "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
@@ -2432,6 +2418,29 @@ def _campaign_field() -> rx.Component:
     )
 
 
+def _history_line() -> rx.Component:
+    """m-24842981: «Ya probada» / «Por probar» on the publication's own page, with its
+    help in sight: «Ya salió 3 veces en tus redes: se puede repetir sin problema.»
+    Nothing while the publication is still being made, failed, or the count is unknown."""
+    return rx.cond(
+        (CreativeState.draft_history_help != "")
+        & ~CreativeState.draft.is_drafting
+        & ~CreativeState.draft.is_failed,
+        rx.hstack(
+            rx.cond(
+                CreativeState.draft_history_word == "Ya probada",
+                tone_badge(CreativeState.draft_history_word, "info", icon="snowflake"),
+                tone_badge(CreativeState.draft_history_word, "neutral", icon="flame"),
+            ),
+            rx.text(CreativeState.draft_history_help, size="2", color=T.TEXT_MUTED),
+            align="center",
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
+    )
+
+
 def draft_detail_index() -> rx.Component:
     return _screen(
         "Revisar publicación",
@@ -2466,6 +2475,7 @@ def draft_detail_index() -> rx.Component:
                         ),
                         _campaign_field(),
                         _retention_notice(),
+                        _history_line(),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),

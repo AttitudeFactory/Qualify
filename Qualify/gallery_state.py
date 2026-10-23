@@ -1,7 +1,8 @@
 """State for `/drafts` — the POST gallery (QUA-118).
 
-Every POST of the brand as a card with its derived state (Borrador · Por completar ·
-Listo · Usado · Desechado), filters by state and category, and «Asignar», which hands
+Every POST of the brand as a card with its state in words (Por revisar · Le falta algo ·
+Lista para programar · Ya salió · Descartada · Creándose, m-24842981), filters by that
+state and by category, and «Programar», which hands
 the POST to the Planificador's own drawer (`/planner?post=<id>`) — the gallery never
 plans anything itself and never duplicates the assign flow.
 
@@ -99,8 +100,8 @@ class GalleryState(rx.State):
         """How many POSTs each state filter would show — the number on each chip."""
         counts = {value: 0 for value, _label in GALLERY_STATE_FILTERS}
         counts[GALLERY_FILTER_ALL] = len(self.posts)
-        for post in self.posts:
-            counts[post.gallery_state] = counts.get(post.gallery_state, 0) + 1
+        for post in self.posts:  # by the card's state (m-24842981), as the filters
+            counts[post.card_state] = counts.get(post.card_state, 0) + 1
         return counts
 
     @rx.var

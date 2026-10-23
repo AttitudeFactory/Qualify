@@ -579,17 +579,92 @@ class ConnectionChoiceVM:
 
 # QUA-118: the POST's five gallery states (`planner.gallery.GalleryState`) as the card
 # prints them — a different entity from the five event states, deliberately other words.
+# m-24842981 (CREAR-3): the owner's words. «needs_action» covers two different jobs for
+# the owner — a publication waiting for their review («Por revisar», `CARD_STATES`) and
+# an approved one that cannot go out yet («Le falta algo») — so the card splits it.
 GALLERY_LABELS: dict[str, tuple[str, str]] = {
-    "draft": ("Borrador", "neutral"),
-    "needs_action": ("Por completar", "warn"),
-    "schedulable": ("Listo", "ok"),
-    "used": ("Usado", "info"),
-    "discarded": ("Desechado", "error"),
+    "draft": ("Creándose", "neutral"),
+    "needs_action": ("Le falta algo", "warn"),
+    "schedulable": ("Lista para programar", "ok"),
+    "used": ("Ya salió", "info"),
+    "discarded": ("Descartada", "error"),
 }
 GALLERY_FILTER_ALL = "all"
+
+
+@dataclass(frozen=True)
+class CardStateVM:
+    """What a «Por aprobar» card says about a publication (m-24842981): its state in
+    words and tone, and its ONE main button — what the owner has to do with it."""
+
+    key: str
+    label: str
+    tone: str
+    action: str  # CARD_ACTION_*: what the main button does
+    action_label: str
+
+
+CARD_ACTION_REVIEW = "review"  # opens the publication's page
+CARD_ACTION_SCHEDULE = "schedule"  # hands it to Tu semana to choose day and time
+CARD_ACTION_VIEW = "view"  # opens the publication's page, nothing to do
+
+#: The ready card's button keeps the name CREAR-1 (m-24842978) gave this same step —
+#: it opens Tu semana, where «Programar» is the final, confirming verb (navigation map
+#: §3); the ticket's table said «Programar», flagged to the founder in the PR.
+SCHEDULE_ACTION_LABEL = "Elegir día y hora"
+
+# In the order the filters show them: what needs the owner first, history last.
+CARD_STATES: dict[str, CardStateVM] = {
+    s.key: s
+    for s in (
+        CardStateVM("review", "Por revisar", "warn", CARD_ACTION_REVIEW, "Revisar"),
+        CardStateVM("missing", "Le falta algo", "warn", CARD_ACTION_REVIEW, "Ver qué falta"),
+        CardStateVM(
+            "ready", "Lista para programar", "ok", CARD_ACTION_SCHEDULE, SCHEDULE_ACTION_LABEL
+        ),
+        CardStateVM("used", "Ya salió", "info", CARD_ACTION_VIEW, "Ver"),
+        CardStateVM("discarded", "Descartada", "error", CARD_ACTION_VIEW, "Ver"),
+        CardStateVM("drafting", "Creándose", "neutral", CARD_ACTION_VIEW, "Ver"),
+    )
+}
+_CARD_STATE_BY_GALLERY: dict[str, str] = {
+    "draft": "drafting",
+    "needs_action": "missing",
+    "schedulable": "ready",
+    "used": "used",
+    "discarded": "discarded",
+}
 GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
-    (value, label) for value, (label, _tone) in GALLERY_LABELS.items()
+    (key, state.label) for key, state in CARD_STATES.items()
 )
+
+
+def card_state(gallery_state: str, *, waiting_review: bool) -> CardStateVM | None:
+    """The card's state (m-24842981): a publication generated and waiting for the
+    owner is «Por revisar» whatever else it lacks — reviewing comes first."""
+    key = _CARD_STATE_BY_GALLERY.get(gallery_state)
+    if key is None:
+        return None
+    if gallery_state == "needs_action" and waiting_review:
+        key = "review"
+    return CARD_STATES[key]
+
+
+def history_help(times_published: int) -> str:
+    """The visible help under «Ya probada» / «Por probar» (m-24842981): how many times
+    the publication already went out — on the card and on its own page, never only in
+    a tooltip (N12). The threshold is the temperature's (`COLD_MIN_USES`)."""
+    n = max(times_published, 0)
+    if n >= COLD_MIN_USES:
+        return f"Ya salió {n} veces en tus redes: se puede repetir sin problema."
+    if n == 1:
+        return "Salió 1 vez en tus redes."
+    return "Todavía no ha salido en tus redes."
+
+
+def history_word(times_published: int) -> str:
+    """«Ya probada» / «Por probar» (m-24842981, the words approved in wave 1)."""
+    return "Ya probada" if max(times_published, 0) >= COLD_MIN_USES else "Por probar"
 
 
 @dataclass(frozen=True)
@@ -778,6 +853,15 @@ class PostOptionVM:
     # 15-day window, «Contenido eliminado» (neutral) once the files are gone; "" otherwise.
     retention_label: str = ""
     retention_tone: str = "neutral"
+    # m-24842981 (CREAR-3): the «Por aprobar» card — its state in words (`CARD_STATES`),
+    # its one main button, and the visible help under «Ya probada» / «Por probar».
+    card_state: str = ""
+    card_label: str = ""
+    card_tone: str = "neutral"
+    card_action: str = CARD_ACTION_VIEW
+    card_action_label: str = "Ver"
+    history_word: str = ""
+    history_help: str = ""
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1059,6 +1143,9 @@ def build_post_option(
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
     chips = list(outputs)
     g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
+    card = card_state(gallery_state, waiting_review=lifecycle_status == "generated")
+    if card is not None:  # the same words on every surface that prints the state
+        g_label, g_tone = card.label, card.tone
     kind, aspect = frame_shape(category or "", "")
     ratio = aspect.replace(" / ", ":")
     medium = "Video" if video_url else "Imagen"
@@ -1098,16 +1185,23 @@ def build_post_option(
         event_count=event_count,
         retention_label=r_label,
         retention_tone=r_tone,
+        card_state=card.key if card is not None else "",
+        card_label=card.label if card is not None else "",
+        card_tone=card.tone if card is not None else "neutral",
+        card_action=card.action if card is not None else CARD_ACTION_VIEW,
+        card_action_label=card.action_label if card is not None else "Ver",
+        history_word=history_word(times_published),
+        history_help=history_help(times_published),
     )
 
 
 def filter_posts(posts: Iterable[PostOptionVM], *, state: str, category: str) -> list[PostOptionVM]:
-    """The gallery's filters: by derived state and by raw category; `GALLERY_FILTER_ALL`
-    (or "") means no filter on that axis."""
+    """The gallery's filters: by the card's state (`CARD_STATES`, m-24842981) and by raw
+    category; `GALLERY_FILTER_ALL` (or "") means no filter on that axis."""
     return [
         post
         for post in posts
-        if (state in ("", GALLERY_FILTER_ALL) or post.gallery_state == state)
+        if (state in ("", GALLERY_FILTER_ALL) or post.card_state == state)
         and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
     ]
 

@@ -18,7 +18,11 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
-from qualify_api.planner.composition import production_planner_service, tenant_timezone
+from qualify_api.planner.composition import (
+    production_planner_service,
+    production_post_reader,
+    tenant_timezone,
+)
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
 from qualify_api.planner.heartbeat import production_heartbeat_store, worker_covers
@@ -306,6 +310,15 @@ def event_destination(event: EventRecord, post: PostSummary | None) -> str:
 class GalleryData:
     posts: list[PostOptionVM] = field(default_factory=list)
     categories: list[CategoryOptionVM] = field(default_factory=list)
+
+
+def times_published(tenant_id: UUID, post_id: UUID) -> int | None:
+    """How many times this publication already went out (m-24842981: the help under
+    «Ya probada» / «Por probar» on its own page), from the same reader the gallery uses
+    (RLS-scoped). None when it is not a publication of this tenant. Blocking (DB) —
+    run off the event loop."""
+    post = production_post_reader().get(tenant_id=tenant_id, post_id=post_id)
+    return post.times_published if post is not None else None
 
 
 def load_gallery(tenant_id: UUID) -> GalleryData:
