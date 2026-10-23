@@ -1610,11 +1610,35 @@ def test_event_panel_copy_is_assisted_never_autonomous() -> None:
     from . import planner_drawer
 
     source = inspect.getsource(planner_drawer)
-    assert '"Aprobada por ti: sale el "' in source
-    assert '"Conecta tu Instagram en Tus redes para que esta publicación pueda salir."' in source
+    assert "d.approved_line" in source
+    assert '"Conecta tu cuenta en Tus redes para que esta publicación pueda salir."' in source
+    assert '"Ir a Tus redes"' in source and 'href="/connections"' in source
     assert '"Ahora mismo no podemos publicar a la hora programada. Tus publicaciones "' in source
-    assert '"esperan; te avisamos cuando vuelva."' in source
+    assert '"siguen guardadas; revisa esta pantalla más tarde."' in source
+    assert "te avisamos" not in source
     assert "automática" not in source.lower()
     # String literals only (comments and identifiers may still say «event»).
     literals = re.findall(r'"([^"\\]*)"', source)
     assert not [text for text in literals if "evento" in text.lower()]
+
+
+def test_approved_line_names_the_owner_long_date_and_hour() -> None:
+    """N13 (m-24842959): long weekday and month, «a la» at one o'clock, "" without date."""
+    from .planner_vm import EventDetailVM, approved_line
+
+    assert (
+        approved_line("2026-09-28", "15:00")
+        == "Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m."
+    )
+    assert (
+        approved_line("2026-10-03", "13:30")
+        == "Aprobada por ti: sale el sábado 3 de octubre a la 1:30 p. m."
+    )
+    assert approved_line("2026-10-03", "01:05").endswith("a la 1:05 a. m.")
+    assert approved_line("", "15:00") == ""
+    detail = EventDetailVM(local_date="2026-09-28", local_time="09:00")
+    assert (
+        detail.approved_line == "Aprobada por ti: sale el lunes 28 de septiembre a las 9:00 a. m."
+    )
+    assert EventDetailVM().approved_line == ""
+    assert dataclasses.replace(detail, local_time="13:00").approved_line.endswith("a la 1:00 p. m.")

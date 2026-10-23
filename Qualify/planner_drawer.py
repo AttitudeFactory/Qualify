@@ -1602,15 +1602,11 @@ def _detail_body() -> rx.Component:
                     (d.approval_tone == "ok")
                     & (d.status_tone == "info")
                     & ~d.expired
-                    & (d.when_label != ""),
+                    & (d.approved_line != ""),
                     rx.hstack(
                         rx.box(class_name="q-live-dot"),
                         rx.text(
-                            "Aprobada por ti: sale el "
-                            + d.when_label.split(" · ")[0].lower()
-                            + " a las "
-                            + d.when_label.split(" · ")[1].split(" (")[0]
-                            + ".",
+                            d.approved_line,
                             size="1",
                             color=T.TEXT_MUTED,
                         ),
@@ -1621,14 +1617,27 @@ def _detail_body() -> rx.Component:
             ),
             (
                 AUTO_PUBLISH_NO_CONNECTION,
-                callout(
-                    "Conecta tu Instagram en Tus redes para que esta publicación pueda salir.",
-                    "warn",
+                rx.vstack(
+                    callout(
+                        "Conecta tu cuenta en Tus redes para que esta publicación pueda salir.",
+                        "warn",
+                    ),
+                    rx.link(
+                        rx.hstack(
+                            rx.text("Ir a Tus redes", size="2"),
+                            rx.icon("arrow-right", size=14),
+                            align="center",
+                            spacing="1",
+                        ),
+                        href="/connections",
+                    ),
+                    spacing="2",
+                    width="100%",
                 ),
             ),
             callout(
                 "Ahora mismo no podemos publicar a la hora programada. Tus publicaciones "
-                "esperan; te avisamos cuando vuelva.",
+                "siguen guardadas; revisa esta pantalla más tarde.",
                 "warn",
             ),
         ),
