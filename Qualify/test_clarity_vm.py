@@ -49,9 +49,9 @@ DOCS_PAYLOAD = [
 
 def test_headline_stats_sum_across_dimension_rows() -> None:
     stats = _headline_stats(DOCS_PAYLOAD)
-    assert ["Visitas", "301,496"] in stats
-    assert ["Visitas de robots", "39,445"] in stats
-    assert ["Personas", "402,569"] in stats
+    assert ["Visitas", "301.496"] in stats
+    assert ["Visitas de robots", "39.445"] in stats
+    assert ["Personas", "402.569"] in stats
 
 
 def test_headline_stats_survive_non_numeric_counts() -> None:
@@ -145,7 +145,7 @@ def test_friction_cards_traffic_light_by_volume() -> None:
     # 12 events >= the act-now threshold → "bad", and the affected share is surfaced.
     assert cards["Toques repetidos con enojo"].status == "bad"
     assert cards["Toques repetidos con enojo"].total == "12"
-    assert cards["Toques repetidos con enojo"].affected == "8% de las visitas"
+    assert cards["Toques repetidos con enojo"].affected == "8 % de las visitas"
     # 2 events under both thresholds → "warn"; 0 events → "ok" with no percentage.
     assert cards["Toques en cosas que no hacen nada"].status == "warn"
     assert cards["Fallas de la página"].status == "ok"
@@ -155,8 +155,9 @@ def test_friction_cards_traffic_light_by_volume() -> None:
 def test_action_items_rank_worst_first_and_skip_zero_rows() -> None:
     actions = _action_items(FRICTION_PAYLOAD)
     assert [action.severity for action in actions] == ["alta", "media"]
-    assert actions[0].title == "Toques repetidos con enojo en https://example.com/reservas"
-    assert "12 veces en 45 visitas (8% de las visitas)" in actions[0].detail
+    assert actions[0].title == "Toques repetidos con enojo en /reservas"
+    assert actions[0].url == "https://example.com/reservas"
+    assert "12 veces en 45 visitas (8 % de las visitas)" in actions[0].detail
     # The zero-count ScriptErrorCount row must not produce an actionable.
     assert all("JavaScript" not in action.title for action in actions)
 

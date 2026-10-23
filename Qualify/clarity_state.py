@@ -12,8 +12,8 @@ screen only reads; it never renders a configuration field.
 
 RESULTADOS-3 (m-24843001): the reading screen has no window/breakdown selector, no
 refresh button and no remaining-quota badge. `load` spends at most one live request a
-(UTC) day on its own (`clarity_vm.needs_daily_refresh`), always 3 days by page; the
-service's daily budget is enforced server-side and never shown. Each urgent problem
+day (business time zone) on its own (`clarity_vm.needs_daily_refresh`), always 3 days by
+page; the service's daily budget is enforced server-side and never shown. Each urgent problem
 carries «Avisar al equipo», a support ticket like Configuración's «Escribir al equipo».
 """
 
@@ -139,6 +139,11 @@ class ClarityState(rx.State):
         return self.config_loaded and not self.config.configured and not self.load_error
 
     @rx.var
+    def token_rejected(self) -> bool:
+        """The one error that needs a person: show the way to Configuración."""
+        return self.action_error == _TOKEN_REJECTED
+
+    @rx.var
     def has_urgent(self) -> bool:
         return len(self.snapshot.urgent) > 0
 
@@ -247,7 +252,12 @@ class ClarityState(rx.State):
 
         try:
             ticket = await asyncio.to_thread(
-                alert_team, resolved, contact_email=email, title=item.title, detail=item.detail
+                alert_team,
+                resolved,
+                contact_email=email,
+                title=item.title,
+                detail=item.detail,
+                url=item.url,
             )
         except InvalidSupportRequest:
             async with self:

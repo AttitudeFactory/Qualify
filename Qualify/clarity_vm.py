@@ -16,8 +16,10 @@ never read back), so no screen ever shows it. Pure functions, tested offline.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import date, datetime
 from typing import Literal
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 WebsiteStep = Literal["connected", "ask", "no_site", "ask_team"]
 
@@ -59,8 +61,8 @@ def website_step(*, configured: bool, answer: str) -> WebsiteStep:
 #
 # The owner reads two numbers (visits, people) for the last 3 days and the urgent
 # problems, each with «Avisar al equipo». No window or breakdown selector and no
-# remaining-quota badge: the screen refreshes itself at most once a (UTC) day — the
-# service's daily request budget is the system's business, never the owner's.
+# remaining-quota badge: the screen refreshes itself at most once a day, counted in the
+# business's time zone — the service's daily request budget is never the owner's.
 
 #: What the automatic daily read asks Clarity for: 3 days broken down by page, so every
 #: problem says where it happened.
@@ -84,6 +86,9 @@ NOT_CONNECTED_BODY = (
 GO_TO_SETTINGS = "Ir a Configuración"
 NO_DATA_TITLE = "Todavía no hay datos de tu página web"
 NO_DATA_BODY = "Los traemos solos una vez al día. Vuelve a mirar mañana."
+BACK_HOME = "Volver al inicio"
+LOOKING_TODAY = "Buscando los datos de hoy…"
+HOME_PAGE = "tu página de inicio"
 ALL_NUMBERS = "Ver todos los números"
 RECORDINGS_LINK = "Ver grabaciones de las visitas en Clarity ↗"
 
@@ -94,12 +99,94 @@ TEAM_ALERT_SCREEN = "website_problem"
 HEADLINE_LABELS = ("Visitas", "Personas")
 
 
-def needs_daily_refresh(fetched_at: datetime | None, now: datetime) -> bool:
+#: The tenant's zone when none is stored — same default as `conversations_provider`.
+DEFAULT_TIMEZONE = "America/Bogota"
+
+_MONTHS = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+
+def _zone(tz: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz or DEFAULT_TIMEZONE)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def local_day(moment: datetime, tz: str = DEFAULT_TIMEZONE) -> date:
+    """The calendar day `moment` falls on in the business's time zone."""
+    return moment.astimezone(_zone(tz)).date()
+
+
+def needs_daily_refresh(
+    fetched_at: datetime | None, now: datetime, tz: str = DEFAULT_TIMEZONE
+) -> bool:
     """Whether the reading screen should spend its one automatic request today: never
-    read yet, or the last read happened on an earlier UTC day."""
+    read yet, or the last read happened on an earlier day in the business's zone."""
     if fetched_at is None:
         return True
-    return fetched_at.astimezone(UTC).date() < now.astimezone(UTC).date()
+    return local_day(fetched_at, tz) < local_day(now, tz)
+
+
+def day_label(moment: datetime, tz: str = DEFAULT_TIMEZONE) -> str:
+    """«15 de agosto» in the business's zone — no clock and no zone code on screen."""
+    day = local_day(moment, tz)
+    return f"{day.day} de {_MONTHS[day.month - 1]}"
+
+
+def date_line(fetched_at: datetime, now: datetime, tz: str = DEFAULT_TIMEZONE) -> str:
+    """«Datos de hoy.» or «Datos del 22 de octubre.» — the first line of the screen."""
+    if local_day(fetched_at, tz) == local_day(now, tz):
+        return "Datos de hoy."
+    return f"Datos del {day_label(fetched_at, tz)}."
+
+
+def es_int(value: int) -> str:
+    """«1.240» — thousands with a dot, as read in Colombia, Venezuela and Uruguay."""
+    return f"{value:,}".replace(",", ".")
+
+
+def es_percent(value: float) -> str:
+    """«13 %» — whole percentages are easier to read than «12,5%»."""
+    if 0 < value < 0.5:
+        return "menos de 1 %"
+    return f"{int(value + 0.5)} %"  # half up: 12,5 → 13
+
+
+def es_number(raw: str) -> str:
+    """A raw table cell in local notation: «1.240», «12,5»; anything else unchanged."""
+    text = raw.strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return raw
+    if number.is_integer() and "e" not in text.lower():
+        return es_int(int(number))
+    formatted = f"{number:,.1f}"
+    return formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def page_path(url: str) -> str:
+    """«/reservas» from «https://www.bianki.com/reservas?utm_source=ig#x» — the owner
+    recognises the page, not the address; «/» or nothing is «tu página de inicio»."""
+    text = url.strip()
+    if not text:
+        return ""
+    parts = urlsplit(text if "://" in text or text.startswith("/") else f"//{text}")
+    path = parts.path.rstrip("/")
+    return path or HOME_PAGE
 
 
 def window_label(num_of_days: int) -> str:
@@ -109,6 +196,8 @@ def window_label(num_of_days: int) -> str:
     return f"Últimos {num_of_days} días"
 
 
-def team_alert_message(title: str, detail: str) -> str:
-    """The support ticket text behind «Avisar al equipo» for one urgent problem."""
-    return f"Problema urgente en la página web del negocio: {title}. {detail}".strip()
+def team_alert_message(title: str, detail: str, url: str = "") -> str:
+    """The support ticket text behind «Avisar al equipo» for one urgent problem. The
+    full address goes to the team (it helps whoever fixes it), never to the screen."""
+    text = f"Problema urgente en la página web del negocio: {title}. {detail}".strip()
+    return f"{text} Dirección completa: {url}" if url else text

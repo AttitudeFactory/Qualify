@@ -206,13 +206,19 @@ def _snapshot_caption() -> rx.Component:
     return rx.hstack(
         rx.icon("clock", size=14, color=T.TEXT_FAINT),
         rx.text(
-            "Datos del " + ClarityState.snapshot.fetched_at + ". " + W.UPDATES_DAILY,
+            ClarityState.snapshot.date_line + " " + W.UPDATES_DAILY,
             size="1",
             color=T.TEXT_MUTED,
         ),
         rx.cond(
             ClarityState.is_refreshing,
-            loading_spinner("sm"),
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text(W.LOOKING_TODAY, size="1", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+                role="status",
+            ),
             rx.fragment(),
         ),
         spacing="2",
@@ -256,7 +262,12 @@ def _metric_table(table: MetricTableVM) -> rx.Component:
 
 
 def _empty_state() -> rx.Component:
-    return empty_state("bar-chart-3", W.NO_DATA_TITLE, W.NO_DATA_BODY)
+    return empty_state(
+        "bar-chart-3",
+        W.NO_DATA_TITLE,
+        W.NO_DATA_BODY,
+        action=rx.link(rx.button(W.BACK_HOME, size="3", min_height="44px"), href="/"),
+    )
 
 
 def _not_connected() -> rx.Component:
@@ -277,6 +288,14 @@ def _messages() -> rx.Component:
         rx.cond(
             ClarityState.action_error != "",
             callout(ClarityState.action_error, "error"),
+            rx.fragment(),
+        ),
+        rx.cond(
+            ClarityState.token_rejected,
+            rx.link(
+                rx.button(W.GO_TO_SETTINGS, size="3", min_height="44px"),
+                href="/settings#tu-pagina-web",
+            ),
             rx.fragment(),
         ),
         rx.cond(
