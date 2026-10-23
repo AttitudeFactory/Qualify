@@ -54,15 +54,20 @@ from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("marca", "Marca", "compass", "Qué te hace distinto, quién te compra y tu documento de marca."),
     ("brandboard", "Logo", "image", "Las versiones de tu logo y los otros elementos."),
-    ("tipografia", "Tipografía", "type", "La letra con la que se te reconoce."),
+    ("tipografia", "Tu letra", "type", "La letra con la que se te reconoce."),
     ("paleta", "Colores", "palette", "Los colores con los que se te reconoce."),
     ("voz", "Voz y tono", "mic", "Tu voz grabada y cómo suena tu marca."),
-    ("habla", "Cómo habla", "message-circle", "Ejemplos que sí, que no y cómo invitas a comprar."),
+    (
+        "habla",
+        "Cómo hablas",
+        "message-circle",
+        "Ejemplos de lo que sí dices, lo que no y cómo invitas a comprar.",
+    ),
     (
         "nunca",
-        "Lo que nunca dice",
+        "Lo que nunca dices",
         "shield-alert",
-        "Palabras vetadas y promesas que no puedes hacer.",
+        "Palabras que nunca usas y promesas que no puedes hacer.",
     ),
 )
 SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
@@ -97,8 +102,21 @@ class BrandEditState(rx.State):
         connect.details_loaded = False
 
     @rx.event
-    def toggle_referentes(self) -> None:
+    def toggle_referentes(self) -> rx.event.EventSpec | None:
+        """Fold or unfold «Negocios parecidos al tuyo»; folding brings its title back into
+        view, so on a phone the owner is not left at the bottom of a long list."""
         self.referentes_open = not self.referentes_open
+        if not self.referentes_open:
+            return rx.scroll_to("seccion-referentes")
+        return None
+
+    @rx.event
+    async def open_and_show(self, key: str) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Editar mi marca»: open a section and bring it into view — on a phone it sits
+        below the voice row and the avatar, so the result of the tap must be seen (N12)."""
+        await self._open(key)
+        if self.open_section == key:
+            yield rx.scroll_to(f"seccion-{key}")
 
     @rx.event
     async def open_voice(self) -> AsyncIterator[rx.event.EventSpec | None]:
@@ -435,9 +453,14 @@ def _voice_row() -> rx.Component:
 
 
 def _referentes_summary() -> rx.Component:
-    count = BrandConnectState.discovered_accounts.length()
+    """The folded count — the same condition as `_referentes_body`, so the summary never
+    says «Todavía no hay…» over a list: the sorted accounts count when nothing discovered
+    came back."""
+    discovered = BrandConnectState.discovered_accounts.length()
+    count = rx.cond(discovered > 0, discovered, BrandConnectState.account_buckets.length())
+    has_referentes = (discovered > 0) | BrandConnectState.has_sorted
     return rx.cond(
-        count > 0,
+        has_referentes,
         rx.text(
             count,
             rx.cond(count == 1, " negocio guardado", " negocios guardados"),
@@ -555,13 +578,14 @@ def brand_edit_index() -> rx.Component:
     return app_shell(
         page_header(
             "Tu marca",
-            "Tu marca por partes. Toca «Cambiar» en lo que quieras editar y guárdalo.",
+            "Tus colores, tu logo y tu forma de hablar, para que todo lo que crees salga con tu "
+            "estilo. Toca «Cambiar» en lo que quieras.",
             rx.button(
                 rx.icon("pencil", size=T.ICON_SM),
                 "Editar mi marca",
                 variant="soft",
                 size="3",
-                on_click=BrandEditState.open("marca"),
+                on_click=BrandEditState.open_and_show("marca"),
             ),
             title_size="7",
         ),

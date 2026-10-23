@@ -77,6 +77,10 @@ def test_the_page_opens_on_the_summary_not_on_the_ranking() -> None:
 def test_the_kit_sections_use_the_owner_words() -> None:
     titles = {key: title for key, title, _icon, _blurb in SECTIONS}
     assert titles["brandboard"] == "Logo" and titles["paleta"] == "Colores"
+    # one voice: the owner is «tú» everywhere, no designer or rulebook words
+    assert titles["tipografia"] == "Tu letra"
+    assert titles["habla"] == "Cómo hablas" and titles["nunca"] == "Lo que nunca dices"
+    assert "vetadas" not in " ".join(blurb for *_rest, blurb in SECTIONS)
     blurbs = " ".join(blurb for *_rest, blurb in SECTIONS)
     assert "promesas que no puedes hacer" in blurbs
 
@@ -110,10 +114,42 @@ def test_preparar_mi_voz_opens_voz_y_tono_and_scrolls_to_it(monkeypatch) -> None
 def test_the_referentes_section_folds_and_unfolds() -> None:
     editor = BrandEditState()
     assert editor.referentes_open is False
-    BrandEditState.toggle_referentes.fn(editor)
+    assert BrandEditState.toggle_referentes.fn(editor) is None
     assert editor.referentes_open is True
-    BrandEditState.toggle_referentes.fn(editor)
+    folded = BrandEditState.toggle_referentes.fn(editor)
     assert editor.referentes_open is False
+    # closing brings the section's title back into view (a long list on a phone)
+    assert "seccion-referentes" in str(folded)
+
+
+def test_editar_mi_marca_opens_marca_and_scrolls_to_it(monkeypatch) -> None:
+    """UX review: on a phone «Marca» sits below the voice row and the avatar, so the
+    header button must bring the opened section into view."""
+    states = _states()
+    editor = _bind(states, monkeypatch)
+
+    async def run() -> list[Any]:
+        return [spec async for spec in BrandEditState.open_and_show.fn(editor, "marca")]
+
+    fired = asyncio.run(run())
+    assert editor.open_section == "marca"
+    assert "seccion-marca" in str(fired)
+    assert "open_and_show" in str(brand_edit_index())
+
+
+def test_the_header_says_what_the_owner_gains() -> None:
+    rendered = str(brand_edit_index())
+    assert "para que todo lo que crees salga con tu" in rendered
+    assert "Tu marca por partes" not in rendered
+
+
+def test_the_folded_referentes_count_follows_the_same_rule_as_the_body() -> None:
+    """UX review: sorted accounts with an empty discovered list must not read «Todavía no
+    hay negocios guardados» over a list — the summary uses the body's condition."""
+    from . import brand_kit_editor as editor
+
+    summary = str(editor._referentes_summary())
+    assert "has_sorted" in summary and "account_buckets" in summary
 
 
 def test_the_voice_comes_first_until_it_is_saved_or_cloned() -> None:
