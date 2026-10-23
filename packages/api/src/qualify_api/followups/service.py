@@ -202,7 +202,10 @@ class FollowupService:
         if origin.deleted:
             raise OriginNotSupported("El mensaje se borró en Instagram.")
         if not origin.author_external_id:
-            raise OriginNotSupported("Instagram no nos dijo quién escribió este mensaje.")
+            raise OriginNotSupported(
+                "Instagram no nos dijo quién escribió este mensaje. "
+                "Contéstale directamente desde Instagram."
+            )
         if origin.channel == COMMENT_CHANNEL:
             return OriginKind.COMMENT
         if origin.channel == CHANNEL_DM:

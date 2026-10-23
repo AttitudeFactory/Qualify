@@ -348,7 +348,8 @@ def test_with_the_capability_off_a_story_reply_is_not_continued() -> None:
     # NAV-11 (m-24849129): the owner reads plain words; the R3 evidence stays in `reason`
     # of the registry, not on screen
     assert exc.value.reason == (
-        "Contestar a quien respondió una historia todavía no está activo en tu cuenta."
+        "Contestar a quien respondió una historia todavía no está disponible. Mientras tanto, "
+        "contéstale desde Instagram."
     )
 
 

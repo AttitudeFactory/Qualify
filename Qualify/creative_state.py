@@ -151,7 +151,21 @@ _STALE_PROPOSAL = "Esa propuesta ya no está vigente. Recargamos el estado real.
 _BRIEF_NOT_READY = (
     "Completa tu marca (colores, logo y forma de hablar) para que todo salga con tu estilo."
 )
-_ROUTE_BLOCKED = "Tu marca no permite crear la imagen de esa forma: "
+_ROUTE_BLOCKED = (
+    "Tu marca no permite crear la imagen de esa forma. Elige otra opción para la imagen."
+)
+# ImagePolicy.reason_for's fallback says the same thing again: never append it.
+_ROUTE_BLOCKED_DEFAULT_DETAIL = "No habilitada para esta marca."
+
+
+def route_blocked_text(detail: str) -> str:
+    """What the owner reads when the brand's image policy refuses a route."""
+    detail = (detail or "").strip()
+    if not detail or detail == _ROUTE_BLOCKED_DEFAULT_DETAIL:
+        return _ROUTE_BLOCKED
+    return f"{_ROUTE_BLOCKED} {detail}"
+
+
 #: NAV-11 (m-24849129): the brief's own refusal is an English invariant ("a template needs
 #: at least one product photo"), so the owner reads this and the log keeps the detail.
 _BRIEF_INVALID = (
@@ -4941,7 +4955,7 @@ class CreativeState(rx.State):
         except RouteBlockedByPolicy as exc:
             async with self:
                 self.is_submitting = False
-                self.create_error = _ROUTE_BLOCKED + exc.detail
+                self.create_error = route_blocked_text(exc.detail)
             return None
         except (ValidationError, ValueError) as exc:
             # the validators' messages only — never `input_value`, which holds the form

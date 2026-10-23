@@ -281,7 +281,8 @@ def test_private_reply_is_unavailable_while_its_capability_is_off() -> None:
     assert options.private_reply.available is False
     # NAV-11 (m-24849129): the card shows the owner's words, never the switch's name
     assert options.private_reply.reason == (
-        "Responder en privado a un comentario todavía no está activo en tu cuenta."
+        "Responder en privado a un comentario todavía no está disponible. Mientras tanto, "
+        "contéstale desde Instagram."
     )
     assert "QUALIFY_" not in options.private_reply.reason
     with pytest.raises(RouteUnavailable) as exc:
@@ -504,3 +505,13 @@ async def test_a_recipient_other_than_the_thread_is_logged_and_kept(
     assert "igsid-someone-else" not in caplog.text  # ids of people never go to logs
     [row] = world.outbox.rows.values()
     assert row.recipient_external_id == "igsid-someone-else"
+
+
+def test_an_unknown_author_tells_the_owner_where_to_answer() -> None:
+    world = World()
+    with pytest.raises(OriginNotSupported) as exc:
+        world.open(_variant(world, author_external_id=None))
+    assert exc.value.reason == (
+        "Instagram no nos dijo quién escribió este mensaje. "
+        "Contéstale directamente desde Instagram."
+    )

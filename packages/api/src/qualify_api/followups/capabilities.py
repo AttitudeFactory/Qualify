@@ -79,7 +79,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             CapabilityState.VERIFIED,
             "La respuesta privada a un comentario (un solo mensaje, dentro de 7 días) se "
             "verificó con Meta el 2026-10-22 (R1).",
-            "Responder en privado a un comentario todavía no está activo en tu cuenta.",
+            "Responder en privado a un comentario todavía no está disponible. Mientras tanto, "
+            "contéstale desde Instagram.",
         ),
         CapabilitySpec(
             Capability.STORY_COMMENTS,
@@ -95,7 +96,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             CapabilityState.VERIFIED,
             "Qualify lee a qué historia responde un mensaje directo y le contesta por DM; "
             "verificado con Meta el 2026-10-22 (R3).",
-            "Contestar a quien respondió una historia todavía no está activo en tu cuenta.",
+            "Contestar a quien respondió una historia todavía no está disponible. Mientras tanto, "
+            "contéstale desde Instagram.",
         ),
         CapabilitySpec(
             Capability.PUBLIC_NOTICE,
@@ -104,7 +106,7 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             "El aviso público «Te enviamos la información por DM 💬» (una respuesta pública "
             "al comentario, solo tras confirmar el mensaje privado) se verificó con Meta el "
             "2026-10-22 (R4).",
-            "El aviso en el comentario todavía no está activo en tu cuenta.",
+            "El aviso en el comentario todavía no está disponible.",
         ),
     )
 }

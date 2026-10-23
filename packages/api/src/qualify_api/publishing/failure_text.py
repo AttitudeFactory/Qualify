@@ -34,7 +34,7 @@ CAROUSEL_ITEM_TEXT: Final = (
 )
 REFUSED_TEXT: Final = "Instagram no aceptó la publicación. Vuelve a intentarlo en unos minutos."
 UPLOAD_TEXT: Final = "El archivo no llegó a Instagram. Vuelve a intentarlo en unos minutos."
-GENERIC_TEXT: Final = "No se pudo publicar. Vuelve a intentarlo en un momento."
+GENERIC_TEXT: Final = "No pudimos publicar. Vuelve a intentarlo en un momento."
 
 
 def failure_text(code: str | None) -> str:

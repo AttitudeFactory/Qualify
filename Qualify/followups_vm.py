@@ -135,7 +135,8 @@ def time_left(closes_at: datetime, now: datetime) -> str:
 
 
 def _blocked(option: RouteOption) -> str:
-    return f"{ROUTE_LABELS[option.route]}: {option.reason}"
+    # each reason already names its route: the card and the toast say the same thing
+    return option.reason
 
 
 def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> FollowupCardVM:
