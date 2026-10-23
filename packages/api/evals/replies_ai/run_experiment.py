@@ -8,9 +8,9 @@ Measures, on a labeled comment set (`qualify_api.evals.comment_replies` schema):
 3. the candidate classifier (`replies.triage.ClaudeCommentTriager`, Haiku 5.5, one call
    for sentiment + kind + needs_reply) per class, on one split;
 4. the candidate drafts (`replies.any_comment_drafts`, through the grounded generator):
-   automatic flags (price vs catalog, invented-looking data, third person) and a review
-   sheet (CSV) a PERSON fills with «usable / invented / third person»; `--score-review`
-   folds that sheet back in.
+   automatic flags (price vs catalog, invented-looking data, third person, a repeated
+   opening) and a review sheet (CSV) a PERSON fills with «usable / invented / third
+   person / promete o admite»; `--score-review` folds that sheet back in.
 
 Steps 2-4 SPEND REAL MONEY (Claude calls), so this is run by hand, never in CI:
 
@@ -218,6 +218,7 @@ def _write_sheet(path: Path, results: list[Any]) -> None:
                     "",
                     "",
                     "",
+                    "",
                 ]
             )
 
@@ -269,6 +270,7 @@ def _score_review(sheet: Path, results_file: Path, golden: list[Any]) -> dict[st
                 usable=parse_verdict(v.get("usable", "")),
                 invented=parse_verdict(v.get("invented", "")),
                 third_person=parse_verdict(v.get("third_person", "")),
+                promises_or_admits=parse_verdict(v.get("promete_o_admite", "")),
                 error=row["error"],
             )
         )

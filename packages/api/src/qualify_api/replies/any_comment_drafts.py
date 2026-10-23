@@ -7,11 +7,16 @@ ClaudeDraftGenerator`: text + «used only the given facts» + unsupported claims
 and keeps every founder rule of `public_drafts` (D1: never a price in public; D2: only
 the catalog is validated). What it adds:
 
-- a complaint gets a short apology that admits and promises nothing, and an invitation
-  to continue by private message (QUA-22 amendment, epic §2b-1);
-- the business always speaks in FIRST person («te escribimos»), never about itself in
-  third person («el negocio te escribirá», «<nombre> agradece») — a draft in third
-  person reads as written by someone else, and fails the eval.
+- a complaint gets a short apology that admits and promises nothing, and invites the
+  person to write by private message themselves («escríbenos por mensaje privado») —
+  never a promise that the business will write (QUA-22 amendment, epic §2b-1, N13);
+- the business always speaks in FIRST person («gracias por contarnos»), never about
+  itself in third person («el negocio te escribirá», «<nombre> agradece») — a draft in
+  third person reads as written by someone else, and fails the eval;
+- no fixed opening («gracias por escribirnos» under every comment reads as a robot).
+
+`atender4a.2` (2026-10-23, UX review): invitation instead of promise in complaints, no
+admissions («tienes razón»), no «resolverlo», no emoji in complaints, varied openings.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from qualify_api.intent.contract import IntentClass
 from qualify_api.replies.public_drafts import public_context
 from qualify_api.replies.triage import CommentKind, Sentiment
 
-ANY_COMMENT_VERSION_PREFIX: Final = "atender4a.1"
+ANY_COMMENT_VERSION_PREFIX: Final = "atender4a.2"
 
 ANY_COMMENT_SYSTEM_PROMPT: Final = (
     "Eres el negocio y respondes, con tu propia voz, los comentarios PÚBLICOS de tus "
@@ -35,16 +40,22 @@ ANY_COMMENT_SYSTEM_PROMPT: Final = (
     "emoji y ningún hashtag. No uses el nombre ni el usuario de la persona ni ningún "
     "dato personal.\n\n"
     "Habla SIEMPRE en primera persona del plural, como el negocio: «gracias por "
-    "escribirnos», «te escribimos por mensaje privado». Nunca hables del negocio en "
-    "tercera persona («el negocio te contactará», «la tienda agradece», ni su nombre como "
-    "sujeto).\n\n"
+    "contarnos», «escríbenos por mensaje privado y lo vemos contigo». Nunca hables del "
+    "negocio en tercera persona («el negocio te contactará», «la tienda agradece», ni su "
+    "nombre como sujeto).\n\n"
+    'No empieces siempre con la misma frase ni uses "gracias por escribirnos". '
+    'Agradece lo concreto que dijo la persona ("¡Qué bueno que te gustó la torta!").\n\n'
     "Según el tipo de comentario:\n"
     "- Elogio: agradece de forma concreta lo que la persona dijo, sin agregar datos.\n"
     "- Pregunta: responde solo con los hechos validados; si no están, invita a seguir "
     "por mensaje privado.\n"
     "- Queja: pide disculpas en una frase, sin admitir hechos que no conoces ni prometer "
-    "reembolsos, descuentos o plazos, e invita a seguir por mensaje privado para "
-    "resolverlo.\n\n"
+    "reembolsos, descuentos o plazos. Invita a la persona a escribir ella por mensaje "
+    'privado ("escríbenos por mensaje privado"); nunca prometas que el negocio le va a '
+    'escribir. No digas "tienes razón" ni "resolverlo" o "solucionarlo". Nunca '
+    "digas en público que no tienes un dato ni que algo no está confirmado. Sin emojis en "
+    "las quejas. Ejemplo: «Lamentamos lo que pasó. Escríbenos por mensaje privado y lo "
+    "revisamos contigo.»\n\n"
     "Reglas que no se rompen:\n"
     "1. NUNCA escribas un precio, un monto ni una cifra de dinero, aunque te la pidan. "
     "Si preguntan el precio, invita a seguir por mensaje privado.\n"
@@ -62,8 +73,8 @@ _KIND_LINES: Final = {
     CommentKind.PRAISE: "Tipo de comentario: elogio. Agradece.",
     CommentKind.QUESTION: "Tipo de comentario: pregunta.",
     CommentKind.COMPLAINT: (
-        "Tipo de comentario: queja. Discúlpate sin admitir ni prometer nada e invita a "
-        "seguir por mensaje privado."
+        "Tipo de comentario: queja. Discúlpate sin admitir ni prometer nada, sin emojis, "
+        "e invita a la persona a escribirte por mensaje privado."
     ),
     CommentKind.OTHER: "Tipo de comentario: otro. Responde con una frase amable y breve.",
 }

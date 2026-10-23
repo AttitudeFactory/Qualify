@@ -21,10 +21,12 @@ from qualify_api.evals.comment_replies import (
     evaluate_classifier,
     evaluate_drafts,
     evaluate_needs_reply_baseline,
+    opening,
     parse_golden,
     parse_verdict,
     price_check,
     third_person_flags,
+    top_opening,
 )
 from qualify_api.replies.triage import CommentKind, Sentiment, Triage
 
@@ -169,7 +171,7 @@ def test_invented_data_is_flagged_for_the_reviewer() -> None:
 
 def _draft(label: Label, *, usable: bool | None, **kw: object) -> DraftResult:
     return DraftResult(
-        text="¡Gracias!",
+        text=str(kw.get("text", "¡Gracias!")),
         comment=_g(label),
         model_id="m",
         prompt_version="v",
@@ -178,7 +180,17 @@ def _draft(label: Label, *, usable: bool | None, **kw: object) -> DraftResult:
         usable=usable,
         invented=kw.get("invented", False if usable is not None else None),  # type: ignore[arg-type]
         third_person=False if usable is not None else None,
+        promises_or_admits=kw.get(  # type: ignore[arg-type]
+            "promises_or_admits", False if usable is not None else None
+        ),
     )
+
+
+def _varied(label: Label, n: int, *, usable: bool, **kw: object) -> list[DraftResult]:
+    return [
+        _draft(label, usable=usable, text=f"Respuesta distinta {i} {label.kind}", **kw)
+        for i in range(n)
+    ]
 
 
 def test_drafts_pending_until_a_person_reviews_every_one() -> None:
@@ -187,20 +199,45 @@ def test_drafts_pending_until_a_person_reviews_every_one() -> None:
 
 def test_drafts_pass_and_fail_on_the_usable_bars() -> None:
     good = (
-        [_draft(POS_PRAISE, usable=True)] * 10
-        + [_draft(NEG_COMPLAINT, usable=True)] * 4
-        + [_draft(NEG_COMPLAINT, usable=False)]
+        _varied(POS_PRAISE, 10, usable=True)
+        + _varied(NEG_COMPLAINT, 4, usable=True)
+        + _varied(NEG_COMPLAINT, 1, usable=False)
     )
     assert evaluate_drafts(good).status == "passed"  # neg 0.80 meets its bar
-    bad = [_draft(POS_PRAISE, usable=True)] * 8 + [_draft(POS_PRAISE, usable=False)] * 2
+    bad = _varied(POS_PRAISE, 8, usable=True) + _varied(POS_PRAISE, 2, usable=False)
     assert evaluate_drafts(bad).status == "failed"  # pos 0.80 < 0.90
 
 
 def test_one_invented_draft_fails_everything() -> None:
-    drafts = [_draft(POS_PRAISE, usable=True)] * 9 + [
-        _draft(POS_PRAISE, usable=True, invented=True)
-    ]
+    drafts = _varied(POS_PRAISE, 9, usable=True) + [_draft(POS_PRAISE, usable=True, invented=True)]
     assert evaluate_drafts(drafts).status == "failed"
+
+
+def test_one_draft_that_promises_or_admits_fails_everything() -> None:
+    drafts = _varied(POS_PRAISE, 9, usable=True) + [
+        _draft(NEG_COMPLAINT, usable=True, promises_or_admits=True, text="Tienes razón")
+    ]
+    report = evaluate_drafts(drafts)
+    assert report.promises_or_admits == 1 and report.status == "failed"
+
+
+def test_a_repeated_opening_fails_from_ten_drafts_on() -> None:
+    same = [
+        _draft(POS_PRAISE, usable=True, text=f"¡Gracias por escribirnos! Nota {i}")
+        for i in range(3)
+    ]
+    drafts = _varied(POS_PRAISE, 7, usable=True) + same
+    report = evaluate_drafts(drafts)
+    assert report.top_opening == "gracias por escribirnos"
+    assert report.top_opening_share == 0.3 and report.status == "failed"
+    # Two of ten (20 %) is still within the bar; below ten drafts it is not checked.
+    assert evaluate_drafts(_varied(POS_PRAISE, 8, usable=True) + same[:2]).status == "passed"
+    assert evaluate_drafts(same).status == "passed"
+
+
+def test_opening_ignores_case_punctuation_and_emoji() -> None:
+    assert opening("¡Qué BUENO que te gustó! 🙏") == "qué bueno que"
+    assert top_opening(["", "Hola a ti", "hola, a ti también"]) == ("hola a ti", 1.0)
 
 
 def test_parse_verdict() -> None:
