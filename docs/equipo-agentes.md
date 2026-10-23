@@ -15,7 +15,7 @@ Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 
 **Regla del fundador (2026-10-22): el código y las tareas con muchos logs SIEMPRE van a un subagente**, en Opus 5.5 para escribir código o en el modelo que mejor encaje para leer logs o buscar. El hilo principal coordina, decide y resume (`qualify-lead`).
 
-## Subagentes (8)
+## Subagentes (9)
 
 | Agente | Modelo | Dueño de (rutas) | Skills precargadas |
 |---|---|---|---|
@@ -27,6 +27,7 @@ Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 | `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history |
 | `market-analyst` | sonnet | Oferta: `docs/*research*`, `*alternativas*`, `ingenieria-inversa-*`, `dolores-*`, `apis-*`, `costos-*`, `comparativa-*` · Vector: `docs/oportunidades-mercado-*.md` · Demanda: `docs/demanda-ventas-*.md` | context |
 | `product-owner` | opus | `docs/backlog-*.md`, `docs/epica-*.md`, tickets de Meegle (Features, Issues, Altas) | context, backlog, copy-es, meegle-ticket, meegle, meegle-altas, lark-admin |
+| `ux-designer` | opus | `docs/perfil-cliente-pyme.md`, `docs/ux-*.md`, skill `qualify-ux`; revisión de experiencia local antes de abrir cada PR que toca lo que ve el cliente; sus sugerencias van a la sección «Sugerencias de UX» del PR (solo sugiere, no escribe código de la app) | context, ux, copy-es, design:user-research, design:design-critique, design:ux-copy, design:accessibility-review |
 
 Todos precargan además `durable-findings`. `product-owner` es dueño de los tickets de Meegle y de `docs/backlog-*.md` / `docs/epica-*.md` (vía `qualify-backlog`); el hilo principal le delega y corre el desafío del arquitecto y datasci.
 
@@ -39,7 +40,8 @@ Todos precargan además `durable-findings`. `product-owner` es dueño de los tic
 | `qualify-pr` | Ticket → rama → checks → PR → nunca mergear; tabla de CI; presupuesto de Actions | Todos |
 | `qualify-dev-env` | Recetas `just`, tests, trampas del venv, workers que actúan de verdad | Ingenieros |
 | `qualify-migration` | Revisiones Alembic con RLS, numeración, reversibilidad | backend, architect |
-| `qualify-copy-es` | Textos para clientes en español sin anglicismos | creative, UI |
+| `qualify-copy-es` | Textos para clientes en español sin anglicismos | creative, UI, ux |
+| `qualify-ux` | Lista de chequeo de experiencia: beneficios en vez de funcionalidades, palabras prohibidas, pasos cortos por dominio, accesibilidad y celular, cómo reportar en un PR | ux, UI |
 | `qualify-measure` | Golden sets, evals, costo, documentar cada prueba de modelo | datasci, creative |
 | `qualify-prod-ops` | Producción, despliegues, secretos, incidentes | platform |
 | `qualify-backlog` | De evidencia a historias y tickets | Hilo principal |

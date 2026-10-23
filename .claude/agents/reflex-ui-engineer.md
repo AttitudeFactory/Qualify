@@ -45,6 +45,9 @@ Playwright E2E suite (`tests/e2e/` — as of the snapshot it lives in a worktree
   and error states in the browser (Claude in Chrome) before calling it done. Ports in use
   across sessions: 3100 main, 3400 preview, 3390 E2E harness — don't kill another session's server.
 - Unit-test view models; once the E2E suite is on `main`, add or update a test for any flow you change.
+- Before opening the PR, run the `ux-designer` review on your diff (`qualify-pr` step 5); if you
+  cannot spawn it, say so in your report so the caller runs it. Its suggestions go to the founder
+  and into the PR description under «Sugerencias de UX» (aplicada / pendiente).
 - Deliver through a PR per `qualify-pr`, with a screenshot in the description.
   Never merge.
 

@@ -23,7 +23,8 @@ exists** — `ls`, `git log`, `gh pr list` beat any paragraph here, including th
   login). `docs/modelo-negocio-operador-multi-emprendimiento.md`. Agency-managed service for third
   parties also exists (`docs/oferta-mercado-agencia-gestionada.md`).
 - **Real users today** are businesses the founder operates or administers: food/beverage
-  (Polet Bubble Tea, PuntoServis), fashion brands (Bianki/Polette), real estate (the realtor,
+  (Bianki — shawarma and salads; Polette — frozen yogurt, formerly «Polet Bubble Tea»; both in
+  Korner, San Cristóbal; PuntoServis), real estate (the realtor,
   Táchira/Cúcuta), a travel agency in Cúcuta. Markets: Colombia, Venezuela, Uruguay. Spanish
   speakers, small businesses, not enterprise marketing teams.
 - **Signup is invite-code only** (`just invite …`); client onboarding («Alta de cliente») is run

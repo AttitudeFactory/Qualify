@@ -11,10 +11,11 @@ description: How a change reaches main in Qualify — Meegle ticket first, branc
 2. **Branch** `<type>/m-<id>-<slug>` off an up-to-date `origin/main` — the id must be right before the first push. Never commit or push to `main`.
 3. **Conventional Commits in English**; end commit messages with the attribution line the session gives you.
 4. **Checks before opening:** `just ci-lint`, `just ci-test`; `just test-db` (needs `just up`) if SQL changed; `just render-smoke` / `npm run typecheck` if `packages/render` changed.
-5. **Open the PR over REST** (`gh api repos/AttitudeFactory/Qualify/pulls …` — GraphQL is blocked in cloud sessions): title ends in `(m-<id>)`, description starts with `Resolves m-<id>`, says why, what and how to verify, and anything the founder must do before merging (secrets, server prep, auto-deploy off).
-6. **Move the ticket to RESOLVED by hand** (`get_transitable_states` → `transition_state`); Meegle's completion rules do not fire yet.
-7. **Never merge.** Agents never run `gh pr merge` nor `just merge --admin`. The founder merges with `just merge <pr>`.
-8. In a squad, only the lead opens the PR; teammates leave changes in the tree.
+5. **UX review — mandatory before `gh pr create` on any PR touching client-facing paths** (`Qualify/**`, `assets/**`, and client-string sources: message/reply/WhatsApp templates, invite and mail copy in `packages/api`): run the `ux-designer` subagent on the diff (local only — there is no UX job in GitHub Actions, founder 2026-10-23). **Always show its suggestions to the founder in the same turn**, and paste them into the PR description under a **«Sugerencias de UX»** section, each marked *aplicada* or *pendiente* with the reason. Suggestions only, never blocking; if it finds nothing, the section says «Sin sugerencias».
+6. **Open the PR over REST** (`gh api repos/AttitudeFactory/Qualify/pulls …` — GraphQL is blocked in cloud sessions): title ends in `(m-<id>)`, description starts with `Resolves m-<id>`, says why, what and how to verify, and anything the founder must do before merging (secrets, server prep, auto-deploy off).
+7. **Move the ticket to RESOLVED by hand** (`get_transitable_states` → `transition_state`); Meegle's completion rules do not fire yet.
+8. **Never merge.** Agents never run `gh pr merge` nor `just merge --admin`. The founder merges with `just merge <pr>`.
+9. In a squad, only the lead opens the PR; teammates leave changes in the tree.
 
 ## Reference (moved from CLAUDE.md on 2026-10-22)
 

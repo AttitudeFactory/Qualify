@@ -1,5 +1,7 @@
 # Estrategia de contenido — Bianki Gaucha y Polet Bubble Tea
 
+> **`[DESACTUALIZADO]` La oferta de los dos negocios cambió — afirmación del fundador, 2026-10-05 y 2026-10-23.** **Bianki** es una tienda de **shawarma y ensaladas** y **Polet** pasó a llamarse **Polette**, una tienda de **helados de yogur**. La tabla del §1 ya refleja eso; el resto del documento (pizza al corte, chivitos, bubble tea, perlas, Gen Z) describe la oferta de agosto. Lo que sigue vigente es el razonamiento sobre rutas de imagen: `GENERATE` fuera para producto, `FROM_UPLOAD` como caballo de batalla, foto real de la comida. Plan actual de los dos pilotos: [plan-mvp-plantillas-remotion.md](plan-mvp-plantillas-remotion.md).
+
 **Fecha:** 2026-08-16 · **Estado:** `[RECOMENDACIÓN — para decisión del fundador]`
 **Pregunta que responde:** para estos dos negocios concretos, ¿qué ruta de imagen (`GENERATE` / `FROM_UPLOAD` / `RESTYLE_UPLOAD`), qué features del [Motor de Contenido de Marca](diseno-motor-contenido-marca.md) y qué APIs?
 **Método:** lectura de los dos sitios en vivo (2026-08-16) + investigación de mercado sobre contenido de food & beverage local, backlash de imagen generada en restauración, y política de divulgación de IA de Meta para anunciantes.
@@ -17,9 +19,9 @@
 
 ## 1. Qué son los dos negocios `[V]`
 
-| | **Bianki Gaucha** | **Polet Bubble Tea** |
+| | **Bianki** | **Polette** (antes Polet Bubble Tea) |
 |---|---|---|
-| Qué vende | Comida callejera uruguaya/brasileña: pizza al corte, chivitos, salgados. Más suscripción de jugos y catering de oficina | Bubble tea: milk tea, fruit tea, toppings (tapioca, popping boba) |
+| Qué vende | **Shawarma y ensaladas** (fundador, 2026-10-23). *En agosto: pizza al corte, chivitos, salgados, jugos y catering de oficina* | **Helados de yogur** (fundador, 2026-10-23). *En agosto: bubble tea* |
 | Dónde | Korner, San Cristóbal, Táchira · 7:00–21:00 | Korner, San Cristóbal, Táchira · 11:00–21:00 — **puerta con puerta con Bianki** |
 | Precios | $1.20–$7.00 · combos $3–8 · catering $9–40/semana | $4.00 la bebida · Combo Dúo $7 · **Combo Vecino (bebida + pizza) $6** · Pack Fiesta $35 |
 | Cliente | Oficinistas y profesionales urbanos; B2B para catering | Millennials y Gen Z; consumo social y compartible |

@@ -81,7 +81,9 @@ module by module, the signed decisions and the house rules.
   table and briefs: **`qualify-lead`** skill.
 - **Subagents** (`.claude/agents/`, each preloads its `qualify-*` skills): `backend-engineer`,
   `creative-engineer`, `reflex-ui-engineer`, `platform-engineer`, `data-scientist-fde`,
-  `principal-architect`, `market-analyst`, `product-owner`. Ownership map: `docs/equipo-agentes.md`.
+  `principal-architect`, `market-analyst`, `product-owner`, `ux-designer` (UX only: client profile,
+  research, mockups, and the mandatory local suggestions-only review before opening any PR that
+  touches client-facing paths). Ownership map: `docs/equipo-agentes.md`.
 - **Squads** are skills the founder triggers: `/qualify-team-dev`, `/qualify-team-po`,
   `/qualify-team-research`. Agent teams (experimental) are off.
 - **Every change ships as a PR with its Meegle ticket; nobody but the founder merges**
@@ -98,6 +100,7 @@ module by module, the signed decisions and the house rules.
 | `qualify-dev-env` | `just` recipes, tests, venv/uv traps, running workers locally |
 | `qualify-migration` | Any Alembic revision (RLS, numbering, reversibility) |
 | `qualify-copy-es` | Any text a client reads |
+| `qualify-ux` | Designing or reviewing a screen or flow: benefits not features, atomic steps, mobile |
 | `qualify-measure` | Changing a prompt/model/vendor, building an eval, documenting a model test |
 | `qualify-prod-ops` | Production, deploys, secrets, outages |
 | `qualify-lark-admin` | Meegle work items and space config, Lark admin — via MCP, `meegle`/`lark-cli` or Chrome |
