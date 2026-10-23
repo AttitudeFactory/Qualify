@@ -158,14 +158,15 @@ jobs:
             if [ -s pip-audit.md ]; then cat pip-audit.md; else echo "_No known vulnerabilities in the locked default groups._"; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # One call, bounded: the registry's advisories endpoint sometimes hangs, and two calls with
+      # npm's default 5-minute fetch timeout ate the whole 10-minute job (2026-10-22, PR #206).
       - name: npm audit (packages/render, high+)
         id: npm-audit
         if: hashFiles('packages/render/package-lock.json') != ''
         continue-on-error: true
+        timeout-minutes: 3
         working-directory: packages/render
-        run: |
-          npm audit --audit-level=high --json > ../../npm-audit.json || true
-          npm audit --audit-level=high
+        run: npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 > ../../npm-audit.json
       - name: npm audit summary
         if: always() && hashFiles('packages/render/package-lock.json') != ''
         env:
@@ -174,8 +175,11 @@ jobs:
           {
             echo "## npm audit (packages/render) — informational, high+"
             echo "- step outcome: **${OUTCOME}**"
-            if [ -f npm-audit.json ]; then
-              jq -r '.metadata.vulnerabilities | to_entries | map("- \(.key): \(.value)") | .[]' npm-audit.json
+            if [ -s npm-audit.json ]; then
+              # An unreachable registry yields `{"error": ...}` with no `metadata`.
+              jq -r 'if .metadata then .metadata.vulnerabilities | to_entries | map("- \(.key): \(.value)") | .[]
+                     else "- npm audit did not complete: \(.error.summary // "no report")" end' npm-audit.json ||
+                echo "- npm audit wrote an unreadable report"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

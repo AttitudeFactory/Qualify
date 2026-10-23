@@ -88,17 +88,41 @@ jobs:
         with:
           # The PR's own commits for gitleaks; history is small, the fetch takes seconds.
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+
+      # --- docs-only PRs: not a `paths-ignore`, on purpose. A skipped workflow would leave
+      # `test` unreported (`just merge` refuses) and would skip the per-PR gitleaks scan, and a
+      # secret pasted into docs/ is still a leak. Instead the job reports green after gitleaks
+      # alone (~1 billed minute instead of the whole gate). Nothing under these paths is read
+      # by code or tests; CLAUDE.md is (test_whatsapp_worker.py), so it is NOT listed.
+      - name: Scope — docs-only PR?
+        id: scope
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          code=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" |
+            grep -vE '^(docs|bitacora|reference|\.claude|\.agents)/|^(README|AGENTS)\.md$|^mkdocs\.yml$' || true)
+          if [ -z "$code" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Docs-only PR: lint, tests and the migration gate are skipped (gitleaks still runs)."
+          fi
+
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        if: steps.scope.outputs.docs_only != 'true'
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --locked
+      - if: steps.scope.outputs.docs_only != 'true'
+        run: uv sync --locked
 
       # --- lint (was the `lint` job). `github` format = inline annotations on the PR diff,
       # which replaces the reviewdog job that used to run in review.yml.
       - name: ruff check
+        if: steps.scope.outputs.docs_only != 'true'
         run: uv run ruff check . --output-format=github
       - name: ruff format --check
+        if: steps.scope.outputs.docs_only != 'true'
         run: uv run ruff format --check .
 
       # --- secrets in THIS PR's commits (BLOCKING). Full history: security.yml, daily.
@@ -121,20 +145,21 @@ jobs:
       # --- offline unit tests: no Postgres/Redis, no vendors, no model weights. Default
       # groups only (backend + crm + dev) — the `ml`/torch group is NEVER installed in CI.
       - name: pytest (offline) with coverage
+        if: steps.scope.outputs.docs_only != 'true'
         run: >-
           uv run pytest -m "not integration and not db and not slow"
           --cov=packages/api/src --cov=packages/shared/src --cov=packages/scraper/src
           --cov=packages/creative/src --cov=Qualify
           --cov-report=xml:coverage.xml --cov-report=term-missing:skip-covered
       - name: Coverage summary (per package)
-        if: always()
+        if: always() && steps.scope.outputs.docs_only != 'true'
         run: |
           # If pytest aborted before writing `.coverage`, the script prints a fallback.
           uv run coverage json -o coverage.json || true
           uv run python .github/scripts/coverage_summary.py coverage.json > coverage-summary.md
           cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
-        if: always()
+        if: always() && steps.scope.outputs.docs_only != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
@@ -144,7 +169,7 @@ jobs:
             coverage-summary.md
           retention-days: 14
       - name: Post / refresh the coverage comment on the PR
-        if: always() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && steps.scope.outputs.docs_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -163,8 +188,10 @@ jobs:
       # `alembic upgrade head` -> `downgrade base` -> `upgrade head` must land clean
       # (`just migrate-down` is a repo gate — ADR 27).
       - name: alembic upgrade head (fresh database)
+        if: steps.scope.outputs.docs_only != 'true'
         run: uv run alembic upgrade head
       - name: alembic downgrade base (reversibility gate)
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           uv run alembic downgrade base
           current=$(uv run alembic current 2>/dev/null | tr -d '[:space:]')
@@ -172,6 +199,8 @@ jobs:
             echo "::error::downgrade base left revision '$current' applied"; exit 1
           fi
       - name: alembic upgrade head (again, after downgrade)
+        if: steps.scope.outputs.docs_only != 'true'
         run: uv run alembic upgrade head
       - name: pytest -m db
+        if: steps.scope.outputs.docs_only != 'true'
         run: uv run pytest -m "db and not integration and not slow"
