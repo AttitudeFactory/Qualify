@@ -313,3 +313,22 @@ Prueba en local contra la API real de Meta, con la conexión de `@rauldevgames` 
 6. **Desplegar el arreglo del tiempo de espera** de `replies/client.py` antes de encender `public_notice`.
 7. **Acceso Standard:** todo lo anterior funciona solo con personas con rol en la app. Para clientes reales hace falta Advanced Access y App Review de esos permisos (QUA-140, QUA-142).
 
+
+## 8. Preguntas iniciales, botones y respuestas rápidas (m-24789472, PR 2)
+
+Cuando la persona **toca** una opción en vez de escribir, Qualify guarda el mensaje como cualquier otro (el texto es el título de la opción) y además **qué tocó**: `messages.choice_kind` y `messages.choice_payload` (migración 0082). Nada de esto responde solo: la respuesta sigue siendo un borrador que una persona aprueba.
+
+| Vía | Contrato (corpus, **no verificado en vivo**) | Qué hace Qualify |
+| --- | --- | --- |
+| Respuesta rápida | `message` normal con `text` = título y `quick_reply.payload` (`instagram-messaging/features/quick-replies.md`) | Mensaje entrante + `choice_kind = 'quick_reply'` y el payload |
+| Pregunta inicial (Ice Breaker), botón de plantilla, menú persistente | ítem `postback {mid, title, payload}` en `entry[].messaging[]` (`webhooks.md` «Messaging postbacks»). `mid` viene desde Graph v11.0 (`webhooks.md`, tabla de campos; changelog v11.0); el ejemplo de `features/ice-breakers.md` aún lo omite | Mensaje entrante con texto = `title`; el tipo sale del prefijo del payload: `QF_` pregunta inicial, `QFB_` botón, `QFM_` menú, otro = botón (`conversations/choices.py`). Sin `mid`: id sintético `qf-postback:` + sha256(remitente, timestamp, payload, título) |
+| Sincronización (`GET /{conversation-id}/messages`) | El nodo Message (`graph-api/reference/message.md`) **no tiene** campo de postback ni de respuesta rápida. El changelog v11.0 da a entender que el postback sí figura en el historial con el mismo `mid` (por eso Meta añadió `mid` al webhook) | Nunca trae tipo ni payload. Si la sincronización guardó el `mid` antes, el webhook (o su reproducción) completa `choice_kind`/`choice_payload` en la **misma** fila; nunca se duplica ni se reemplaza un par ya guardado |
+
+**Qué debe hacer el fundador antes de una prueba real (R5):**
+
+1. En el panel de la app, webhooks de **Instagram**: suscribir el campo **`messaging_postbacks`** (`features/ice-breakers.md`: «subscribe your app to the `messaging_postbacks` webhook under the Instagram topic»). Sin esto, las preguntas iniciales y los botones no llegan; las respuestas rápidas sí (van por `messages`). No es un campo de Página: `connections/page_subscription.py` no lo cambia.
+2. Configurar preguntas iniciales con payload `QF_*` (PR 3 lo hará desde Qualify; mientras tanto, a mano por la API de Ice Breakers).
+3. Un tester toca una pregunta inicial desde el teléfono (no existen en escritorio): comprobar que llega con `mid`, que el hilo muestra el mensaje y en la base `choice_kind = 'ice_breaker'`. Pegar aquí la fecha y la forma observada (sin tokens ni textos de usuario).
+4. Comprobar en la sincronización si el postback figura en `GET /{conversation-id}/messages` y con qué `message`: es la parte que el corpus no muestra.
+
+**Reproducir los postbacks que ya llegaron** (quedaron `unsupported` / `not_a_message` en `meta_webhook_events`, se guardan 29 días): `just webhook-requeue-postbacks [--account <ig_id>]` cuenta cuáles volverían (no cambia nada); con `--execute` los devuelve a la cola y el `webhook-worker` los convierte en mensajes, uno por `mid`. Repetirlo no duplica nada.

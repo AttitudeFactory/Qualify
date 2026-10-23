@@ -105,6 +105,11 @@ class RemoteMessage:
     # URL it gave (signed, expiring). `None` for any message that is not a story reply.
     story_reply_id: str | None = None
     story_reply_url: str | None = None
+    # m-24789472 (PR 2): the option an inbound DM was tapped from instead of typed —
+    # `conversations.choices.CHOICE_KINDS` and the payload Meta sent back. Only the
+    # webhook knows them (the Message node has neither): `None` from the poll.
+    choice_kind: str | None = None
+    choice_payload: str | None = None
 
 
 def story_reference(value: Any) -> tuple[str, str | None] | None:
