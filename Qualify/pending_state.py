@@ -35,7 +35,7 @@ from .pending_vm import (
     badge_text,
     clamp,
     entry_aria_label,
-    menu_button_aria_label,
+    more_button_aria_label,
     title_script,
 )
 from .tenant import tenant_uuid
@@ -73,13 +73,19 @@ class PendingState(rx.State):
     def total(self) -> int:
         return self._counts().total
 
+    # m-24842964 (NAV-7): «Más» on the phone's bottom bar counts what waits only
+    # behind the drawer (WhatsApp + Por aprobar).
     @rx.var
-    def total_badge(self) -> str:
-        return badge_text(self.total)
+    def more_badge(self) -> str:
+        return badge_text(self._counts().more)
 
     @rx.var
-    def menu_button_aria(self) -> str:
-        return menu_button_aria_label(self.total)
+    def more_urgent(self) -> bool:
+        return self._counts().more_is_urgent
+
+    @rx.var
+    def more_aria(self) -> str:
+        return more_button_aria_label(self._counts().more)
 
     @rx.var
     def respond_aria(self) -> str:

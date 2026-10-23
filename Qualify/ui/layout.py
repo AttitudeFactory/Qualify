@@ -134,6 +134,29 @@ NAV_ITEMS: list[Item] = [
     *NAV_BUSINESS,
 ]
 
+# m-24842964 (NAV-7, docs/design-system.md §4.4): the phone's bottom bar. Four accesses
+# taken from the sidebar's own entries — same icon and route (N1), so when a hub moves
+# (NAV-4, ATENDER-1) the bar follows on its own — then «Más», which opens the drawer.
+# «Crear» is the one approved short form of «Crear publicación» (decision 5).
+BOTTOM_BAR_SOURCE: tuple[str, ...] = ("Inicio", "Por responder", "Crear publicación", "Tu semana")
+BOTTOM_BAR_SHORT_FORM: dict[str, str] = {"Crear publicación": "Crear"}
+MORE_LABEL = "Más"
+MORE_ICON = "menu"
+# What «Más» counts: the counted entries that live only behind the drawer.
+MORE_COUNTED: tuple[str, ...] = ("WhatsApp", "Por aprobar")
+SIDEBAR_ID = "q-sidebar"
+
+
+def _menu_entry(label: str) -> Item:
+    return next(item for item in NAV_ITEMS if item[0] == label)
+
+
+# (shown label, the sidebar label it comes from, icon, route).
+NAV_BOTTOM: list[tuple[str, str, str, str]] = [
+    (BOTTOM_BAR_SHORT_FORM.get(label, label), label, icon, route)
+    for label, icon, route, _enabled in map(_menu_entry, BOTTOM_BAR_SOURCE)
+]
+
 # `⌘ .` / `Ctrl .` toggles zen. Registered once per document: the sidebar mounts on every
 # page, so the guard is what keeps it from stacking listeners.
 _ZEN_SHORTCUT = """
@@ -530,6 +553,8 @@ def sidebar() -> rx.Component:
             ),
         ),
         aria_label="Secciones",
+        # The bottom bar's «Más» names the drawer it opens (`aria-controls`).
+        id=SIDEBAR_ID,
         on_mount=PendingState.on_shell_mount,
         class_name=rx.cond(
             NavState.zen,
@@ -635,31 +660,134 @@ def page_body(
         # This is what lets a page hand a child `flex="1"` and have it reach the panel's
         # bottom edge without doing any `100vh` arithmetic of its own (see `app_shell`).
         flex="1 0 auto",
-        class_name="q-settle",
+        # `q-page-body`: on a phone the shell reserves the bottom bar's height at its
+        # foot (assets/qualify.css, "Bottom bar"), so no page writes it by hand.
+        class_name="q-settle q-page-body",
     )
 
 
-def _mobile_nav_toggle() -> rx.Component:
-    """Hamburger button that opens the sidebar as an overlay drawer on a phone
-    viewport. Lives OUTSIDE the sidebar (unlike `_zen_toggle`) precisely because the
-    drawer is closed by default there — a control to open it can't live inside the
-    thing it opens. Hidden on wider viewports by `.q-mobile-nav-toggle` in
-    `assets/qualify.css`; nothing renders it there, `display: none` just keeps it
-    out of the layout and off the tab order isn't needed since it's unreachable
-    visually, but staying simple: the CSS rule is the only gate."""
-    return rx.el.button(
-        rx.icon("menu", size=T.ICON_MD),
-        # m-24842963 UX review: on a phone the tab title is out of sight, so the
-        # button carries the total of what waits (same tone_badge, nothing at 0).
-        rx.cond(
-            PendingState.total_badge != "",
-            rx.box(tone_badge(PendingState.total_badge, "warn"), class_name="q-menu-count"),
+def _route_is_current(route: str) -> rx.Var:
+    """Whether the current page is ``route`` or one of its own views (``/planner/…``
+    marks «Tu semana»). Home is matched exactly: every route starts with ``/``."""
+    path = NavState.router.page.path
+    if route == HOME_ROUTE:
+        return path == route
+    return (path == route) | path.startswith(f"{route}/")
+
+
+def _bottom_badge(text: rx.Var | str, tone: str) -> rx.Component:
+    """A count on the icon's corner (absolute, like the old menu button's): the cell
+    keeps its size and nothing is drawn at 0."""
+    if isinstance(text, str):
+        return rx.box(tone_badge(text, tone), class_name="q-menu-count") if text else rx.fragment()
+    return rx.cond(text != "", rx.box(tone_badge(text, tone), class_name="q-menu-count"))
+
+
+def _bottom_cell_body(
+    icon: str, label: str, active: rx.Var | bool, badge: rx.Component | None
+) -> rx.Component:
+    return rx.box(
+        rx.box(
+            nav_icon(icon, T.ICON_MD),
+            *([badge] if badge is not None else []),
+            class_name="q-bottom-icon",
         ),
-        id="q-mobile-nav-toggle",
-        on_click=NavState.toggle_mobile_nav,
-        class_name="q-mobile-nav-toggle",
-        aria_label=PendingState.menu_button_aria,
+        rx.el.span(label, class_name="q-bottom-label"),
+        class_name="q-bottom-cell",
+        custom_attrs={"data-active": rx.cond(active, "true", "false")},
     )
+
+
+def bottom_bar_link(
+    label: str,
+    icon: str,
+    route: str,
+    *,
+    active: rx.Var | bool,
+    badge: rx.Component | None = None,
+    aria_label: rx.Var | str | None = None,
+) -> rx.Component:
+    """One of the bar's four accesses: a real link, `aria-current` on the active one."""
+    return rx.link(
+        _bottom_cell_body(icon, label, active, badge),
+        href=route,
+        underline="none",
+        class_name="q-bottom-link",
+        aria_current=rx.cond(active, "page", ""),
+        **({"aria_label": aria_label} if aria_label is not None else {}),
+        on_click=NavState.close_mobile_nav,
+    )
+
+
+def bottom_bar_more(
+    *,
+    active: rx.Var | bool,
+    badge: rx.Component | None = None,
+    aria_label: rx.Var | str = MORE_LABEL,
+    expanded: rx.Var | bool = False,
+    interactive: bool = True,
+) -> rx.Component:
+    """«Más»: a button, not a link — it opens the drawer, it does not navigate."""
+    return rx.el.button(
+        _bottom_cell_body(MORE_ICON, MORE_LABEL, active, badge),
+        type="button",
+        class_name="q-bottom-link q-bottom-more",
+        aria_label=aria_label,
+        aria_expanded=rx.cond(expanded, "true", "false"),
+        aria_controls=SIDEBAR_ID,
+        **({"on_click": NavState.toggle_mobile_nav} if interactive else {}),
+    )
+
+
+def bottom_bar_frame(*cells: rx.Component, demo: bool = False) -> rx.Component:
+    """The bar's island. ``demo`` renders it in the flow (the `/design` sample)
+    instead of fixed to the bottom of a phone screen."""
+    return rx.el.nav(
+        *cells,
+        aria_label="Accesos rápidos (muestra)" if demo else "Accesos rápidos",
+        class_name="q-bottom-bar q-bottom-bar--demo" if demo else "q-bottom-bar",
+    )
+
+
+def _bottom_bar() -> rx.Component:
+    """The phone's bottom bar (m-24842964, NAV-7, docs/design-system.md §4.4): Inicio ·
+    Por responder · Crear · Tu semana, then «Más», which opens the same drawer the ☰
+    button used to. Only at ≤ 640 px (`.q-bottom-bar` in assets/qualify.css); above,
+    the sidebar gives the same accesses. The counts are the menu's (`NAV_COUNTERS`),
+    never read again here; «Más» carries what waits only inside the drawer."""
+    actives = [_route_is_current(route) for _label, _source, _icon, route in NAV_BOTTOM]
+    cells: list[rx.Component] = []
+    for (label, source, icon, route), active in zip(NAV_BOTTOM, actives, strict=True):
+        counter = NAV_COUNTERS.get(source)
+        cells.append(
+            bottom_bar_link(
+                label,
+                icon,
+                route,
+                active=active,
+                badge=_bottom_badge(counter[0], counter[1]) if counter else None,
+                aria_label=counter[2] if counter else None,
+            )
+        )
+    on_none = ~actives[0]
+    for active in actives[1:]:
+        on_none = on_none & ~active
+    more_badge = rx.cond(
+        PendingState.more_urgent,
+        _bottom_badge(PendingState.more_badge, "warn"),
+        _bottom_badge(PendingState.more_badge, "neutral"),
+    )
+    cells.append(
+        bottom_bar_more(
+            # Every page has a cell that says «you are here»: one outside the four
+            # (Tu marca, WhatsApp, Por aprobar…) lights «Más».
+            active=on_none,
+            badge=more_badge,
+            aria_label=PendingState.more_aria,
+            expanded=NavState.mobile_open,
+        )
+    )
+    return bottom_bar_frame(*cells)
 
 
 def _mobile_nav_backdrop() -> rx.Component:
@@ -706,7 +834,7 @@ def _refraction_filter() -> rx.Component:
 
 def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
-    then the body blocks. ``rail=False`` drops the sidebar (and its phone toggle): the
+    then the body blocks. ``rail=False`` drops the sidebar (and the phone's bottom bar): the
     panel alone, for a flow that is only its views — the Brand Kit wizard (§ request
     2026-10-02: "solo las views, más nada").
 
@@ -730,11 +858,7 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
     `creative_wizard_pages.py` was restored from another worktree while this file kept
     the new model — if you are reverting one of the two, revert both.
     """
-    chrome = (
-        [_mobile_nav_toggle(), rx.cond(NavState.mobile_open, _mobile_nav_backdrop()), sidebar()]
-        if rail
-        else []
-    )
+    chrome = [rx.cond(NavState.mobile_open, _mobile_nav_backdrop()), sidebar()] if rail else []
     return rx.hstack(
         _refraction_filter(),
         *chrome,
@@ -762,6 +886,8 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
             margin=f"{T.GAP} {T.GAP} {T.GAP} 0" if rail else T.GAP,
             overflow="hidden auto",
         ),
+        # After <main>: a screen reader and the keyboard reach the content first.
+        *([_bottom_bar()] if rail else []),
         width="100%",
         spacing="0",
         align_items="start",

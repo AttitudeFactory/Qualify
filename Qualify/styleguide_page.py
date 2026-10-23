@@ -43,6 +43,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.layout import NAV_BOTTOM, bottom_bar_frame, bottom_bar_link, bottom_bar_more
 from .ui.state import NavState
 
 
@@ -1074,6 +1075,28 @@ def _flow() -> rx.Component:
     )
 
 
+def _bottom_bar_sample() -> rx.Component:
+    """The phone's bottom bar (m-24842964, docs/design-system.md §4.4) at 360 px, with a
+    count on «Por responder» and «Tu semana» as the current page. The real one only
+    shows at ≤ 640 px, fixed to the bottom; this one sits in the flow."""
+    cells = []
+    for label, _source, icon, route in NAV_BOTTOM:
+        badge = (
+            rx.box(tone_badge("3", "warn"), class_name="q-menu-count")
+            if label == "Por responder"
+            else None
+        )
+        cells.append(bottom_bar_link(label, icon, route, active=label == "Tu semana", badge=badge))
+    cells.append(
+        bottom_bar_more(
+            active=False,
+            badge=rx.box(tone_badge("2", "neutral"), class_name="q-menu-count"),
+            interactive=False,
+        )
+    )
+    return rx.box(bottom_bar_frame(*cells, demo=True), width="100%")
+
+
 def _components_section() -> rx.Component:
     return section(
         "Componentes",
@@ -1087,6 +1110,10 @@ def _components_section() -> rx.Component:
             weight="medium",
         ),
         _four(),
+        rx.text(
+            "Barra inferior del celular (solo ≤ 640 px — NAV-7, §4.4)", size="2", weight="medium"
+        ),
+        _bottom_bar_sample(),
         rx.text("Flujo por pasos (stepper + drawer — QUA-118)", size="2", weight="medium"),
         _flow(),
         rx.text(
