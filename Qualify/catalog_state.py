@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_BRAND = "Primero completa tu marca (logo y colores) y vuelve a subir tus productos."
-_DB_ERROR = "No pudimos guardar ahora. Revisa tu conexión e inténtalo otra vez en un minuto."
+_DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
 _PRODUCT_GONE = "Ese producto ya no está en tu catálogo. Actualiza la página."
@@ -68,7 +68,7 @@ _STAGING_TTL_S = 6 * 60 * 60
 
 
 class CatalogState(rx.State):
-    """State for /catalog: the list, the "Nuevo producto" form, and one product's
+    """State for /catalog: the list, the "Agregar producto" form, and one product's
     editor (fields + media) at a time."""
 
     products: list[ProductVM] = []
@@ -76,7 +76,7 @@ class CatalogState(rx.State):
     error: str = ""
     _brand_id: str = ""
 
-    # -- the "Nuevo producto" form ------------------------------------------------------
+    # -- the "Agregar producto" form ------------------------------------------------------
     form_open: bool = False
     new_name: str = ""
     new_description: str = ""

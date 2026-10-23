@@ -545,3 +545,5 @@ def test_a_missing_brand_shows_the_way_to_complete_it() -> None:
     )
     state.error = catalog_state_module._DB_ERROR
     assert not state.needs_brand
+    # Load and save share it: no «base de datos», no blame on the owner's connection.
+    assert state.error == "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."

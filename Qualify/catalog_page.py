@@ -4,7 +4,7 @@ The screen where the founder puts the real products of a brand with their real p
 and short clips — the one input the template engine cannot invent. Three blocks on one
 page, design-system §9.1 (`app_shell(page_header, page_body)`):
 
-1. **Nuevo producto** — a card with the form (name, category, description). Opens
+1. **Agregar producto** — a card with the form (name, category, description). Opens
    from the header's one solid action. No price: the founder dropped it from the
    catalog (2026-10-19); prices already stored stay in the DB, unused by this screen.
 2. **The editor** of the selected product — its fields, and its media: an upload zone
@@ -157,7 +157,7 @@ def _product_fields(
     )
 
 
-# -- Nuevo producto --------------------------------------------------------------------
+# -- Agregar producto --------------------------------------------------------------------
 
 
 def _new_product_form() -> rx.Component:
@@ -165,7 +165,7 @@ def _new_product_form() -> rx.Component:
         rx.form(
             rx.vstack(
                 rx.hstack(
-                    rx.heading("Nuevo producto", size="4", as_="h2"),
+                    rx.heading("Agregar producto", size="4", as_="h2"),
                     rx.spacer(),
                     rx.button(
                         rx.icon("x", size=T.ICON_SM),
@@ -463,7 +463,7 @@ def _upload_zone() -> rx.Component:
 
 def _upload_progress() -> rx.Component:
     """The running ingest: in the editor's media block while a product is open, and at
-    page level when the files dropped in the «Nuevo producto» form follow a product
+    page level when the files dropped in the «Agregar producto» form follow a product
     whose editor is not open."""
     return rx.vstack(
         progress_panel(
@@ -613,7 +613,7 @@ def _editor() -> rx.Component:
                     ),
                     rx.hstack(
                         rx.spacer(),
-                        # soft: the screen's one solid action is "Nuevo producto" (§5.5)
+                        # soft: the screen's one solid action is "Agregar producto" (§5.5)
                         rx.button(
                             rx.icon("save", size=T.ICON_SM),
                             "Guardar cambios",
@@ -783,7 +783,7 @@ def _empty() -> rx.Component:
     return empty_state(
         "package",
         "Aún no tienes productos",
-        "Sube tu primer producto con una o dos fotos reales: con eso ya puedes crear "
+        "Sube tu primer producto con dos o más fotos reales: con eso ya puedes crear "
         "publicaciones e historias que se ven como lo que vendes.",
         rx.button(
             rx.icon("plus", size=T.ICON_SM),
