@@ -33,11 +33,33 @@ from .whatsapp_contacts_vm import SOURCE_KEYS
 from .whatsapp_templates_vm import SendVariable, TemplateVM, variable_id, variable_label
 from .whatsapp_vm import format_timestamp
 
-STEPS: tuple[str, ...] = ("Plantilla", "Variables", "Audiencia", "Ritmo", "Revisar")
-STEP_TEMPLATE, STEP_VARIABLES, STEP_AUDIENCE, STEP_PACING, STEP_REVIEW = range(5)
+#: m-24842996 (WHATSAPP-5): three steps in the owner's words — the message (approved
+#: message + its blanks), who receives it (everyone by default, filters folded away) and
+#: the review (how many, how long, about how much) with «Enviar ahora».
+STEPS: tuple[str, ...] = ("Mensaje", "A quién", "Revisar")
+STEP_MESSAGE, STEP_AUDIENCE, STEP_REVIEW = range(3)
 
 DEFAULT_MAX_PER_MINUTE = 30
 MAX_PER_MINUTE = 1000
+#: «Más opciones» of «A quién»: the pace is a choice, never a number to type.
+PACE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("10", "Despacio: 10 por minuto"),
+    ("30", "Normal: 30 por minuto (recomendado)"),
+    ("60", "Más rápido: 60 por minuto"),
+)
+PACE_KEYS = frozenset(key for key, _label in PACE_OPTIONS)
+
+#: «¿A quién?»: everyone who accepted (the default) or only those who joined since a day.
+SCOPE_ALL = "todos"
+SCOPE_SINCE = "desde"
+SCOPES = frozenset({SCOPE_ALL, SCOPE_SINCE})
+
+#: WhatsApp's per-person marketing limit, without its code (ticket m-24842996).
+PER_USER_LIMIT_NOTICE = (
+    "Si alguien ya recibió muchas promociones esta semana, WhatsApp no le entrega la tuya y "
+    "no se le cobra."
+)
+SEE_REPLIES = "Ver respuestas en Chats"
 
 RATE_CARD_NOTICE = "Tarifas de referencia pendientes: el costo es aproximado."
 #: m-24842994: «opt-in» in the owner's words.
@@ -48,7 +70,7 @@ PAYMENT_NOTICE = (
 )
 PAYMENT_FAILED = (
     "Meta no dejó salir algunos mensajes porque tu cuenta de WhatsApp Business no tiene un "
-    "método de pago válido (código 131042). Agrégalo en la configuración de pagos de tu "
+    "método de pago válido. Agrégalo en la configuración de pagos de tu "
     "cuenta de Meta; "
     "los mensajes que no salieron no se vuelven a enviar solos, así que crea una campaña "
     "nueva para esos contactos."
@@ -89,7 +111,9 @@ _SEND_STATUS: dict[str, tuple[str, str]] = {
 ERROR_PER_USER_LIMIT = "131049"
 ERROR_PAYMENT = "131042"
 _SEND_ERRORS: dict[str, str] = {
-    ERROR_PER_USER_LIMIT: "Meta limita cuántas promociones recibe cada persona: inténtalo en 24 h",
+    ERROR_PER_USER_LIMIT: (
+        "Ya recibió muchas promociones esta semana: WhatsApp no se la entregó y no se cobró"
+    ),
     ERROR_PAYMENT: "La cuenta de WhatsApp Business no tiene un método de pago válido",
     "131026": "No se pudo entregar: el número no usa WhatsApp o no aceptó sus términos",
     "131050": "La persona pidió no recibir promociones",
@@ -118,11 +142,11 @@ def send_status_display(status: str) -> tuple[str, str]:
 
 
 def send_error_note(error_code: str | None, service_note: str | None = None) -> str:
-    """One line for a failed/skipped send: Spanish meaning + the Meta code."""
+    """One line for a failed/skipped send, in the owner's words. Never the Meta code
+    (m-24842996: no error codes on screen); the code stays in the database."""
     if not error_code:
         return service_note or ""
-    meaning = _SEND_ERRORS.get(error_code) or service_note or "Meta rechazó el envío"
-    return f"{meaning} (código {error_code})" if error_code.isdigit() else meaning
+    return _SEND_ERRORS.get(error_code) or "WhatsApp no dejó salir este mensaje"
 
 
 # --------------------------------------------------------------------------------------
@@ -332,13 +356,40 @@ def variable_fields(
     ]
 
 
+_MONTHS = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+
+def default_campaign_name(today: date) -> str:
+    """The name a promotion gets when the owner leaves it blank: «Promoción del 23 de
+    octubre»."""
+    return f"Promoción del {today.day} de {_MONTHS[today.month - 1]}"
+
+
+def campaign_name(raw: str, today: date) -> str:
+    return raw.strip() or default_campaign_name(today)
+
+
 def validate_basics(name: str, template: TemplateVM | None) -> str:
-    if not name.strip():
-        return "Ponle un nombre a la campaña (solo lo ve tu equipo)."
+    """Step «Mensaje»: an approved message must be chosen. The name is optional (a blank
+    one becomes `default_campaign_name`)."""
+    del name  # optional since m-24842996
     if template is None:
-        return "Elige una plantilla aprobada."
+        return "Elige uno de tus mensajes aprobados."
     if template.status.upper() != "APPROVED":
-        return "La plantilla aún no está aprobada por Meta."
+        return "Ese mensaje aún no está aprobado por WhatsApp."
     if template.wizard_block:
         return template.wizard_block
     return ""
@@ -398,6 +449,64 @@ def audience_filter_json(form: AudienceForm) -> tuple[dict[str, Any], str]:
     return out, ""
 
 
+def audience_form_for(
+    *,
+    scope: str,
+    since: str,
+    brand_id: str,
+    sources: Sequence[str],
+    until: str,
+    phone_prefixes: str,
+) -> AudienceForm:
+    """«¿A quién?» → the filter form. «A todos» ignores the «desde» day; the folded
+    «Más filtros» (marca, origen, hasta, prefijos) apply in both cases."""
+    return AudienceForm(
+        brand_id=brand_id,
+        sources=tuple(sources),
+        captured_from=since if scope == SCOPE_SINCE else "",
+        captured_to=until,
+        phone_prefixes=phone_prefixes,
+    )
+
+
+def validate_scope(scope: str, since: str) -> str:
+    if scope == SCOPE_SINCE and not since:
+        return "Elige desde qué día se sumaron."
+    return ""
+
+
+def everyone_label(total: int) -> str:
+    """The default choice of «¿A quién?»."""
+    if total < 0:
+        return "A todos tus clientes que aceptaron recibir tus mensajes"
+    return f"A todos tus clientes que aceptaron ({format_count(total)})"
+
+
+def pace_value(raw: str) -> int:
+    """The pace chosen in «Más opciones»; anything else is the default (30)."""
+    return int(raw) if raw in PACE_KEYS else DEFAULT_MAX_PER_MINUTE
+
+
+def sending_time(recipients: int, per_minute: int) -> str:
+    """«unos 3 minutos» / «un minuto» / «unas 2 horas» — "" when there is nothing to send."""
+    if recipients <= 0 or per_minute <= 0:
+        return ""
+    minutes = math.ceil(recipients / per_minute)
+    if minutes == 1:
+        return "un minuto"
+    if minutes < 60:
+        return f"unos {minutes} minutos"
+    hours = round(minutes / 60)
+    return "una hora" if hours <= 1 else f"unas {hours} horas"
+
+
+def pace_explanation(recipients: int, per_minute: int) -> str:
+    """The review's sentence on pace (ticket m-24842996)."""
+    duration = sending_time(recipients, per_minute)
+    head = f"Se envían de a poco ({format_count(per_minute)} por minuto) para cuidar tu número"
+    return f"{head}: tarda {duration}." if duration else f"{head}."
+
+
 def validate_pacing(raw: str) -> tuple[int, str]:
     try:
         value = int(raw.strip())
@@ -412,14 +521,6 @@ def rate_label(per_minute: int) -> str:
     return f"{format_count(per_minute)} mensaje{'s' if per_minute != 1 else ''} por minuto"
 
 
-def pacing_hint(recipients: int, per_minute: int) -> str:
-    if recipients <= 0 or per_minute <= 0:
-        return ""
-    minutes = math.ceil(recipients / per_minute)
-    duration = f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60} min"
-    return f"≈ {duration} para enviar a {format_count(recipients)} contactos."
-
-
 def audience_count_label(count: int) -> str:
     if count < 0:
         return ""
@@ -432,11 +533,11 @@ def audience_count_label(count: int) -> str:
 
 def launch_message(*, enqueued: int, skipped: int, audience: int) -> str:
     if audience == 0:
-        return "La campaña está en curso, pero no quedó nadie por enviar."
+        return "Tu promoción está en curso, pero no quedó nadie por enviar."
     parts = [f"{format_count(enqueued)} mensajes por salir"]
     if skipped:
         parts.append(f"{format_count(skipped)} sin enviar (ya no aceptaban recibir tus mensajes)")
-    return "Empezamos a enviar la campaña: " + ", ".join(parts) + ". " + SENDER_NOTICE
+    return "Empezamos a enviar tu promoción: " + ", ".join(parts) + ". " + SENDER_NOTICE
 
 
 def retry_after_label(count: int) -> str:
@@ -444,8 +545,9 @@ def retry_after_label(count: int) -> str:
         return ""
     return (
         f"{format_count(count)} envío{'s' if count != 1 else ''} omitido"
-        f"{'s' if count != 1 else ''} porque Meta limita cuántas promociones recibe cada "
-        "persona (código 131049): no se vuelven a intentar antes de 24 horas."
+        f"{'s' if count != 1 else ''} porque esas personas ya recibieron muchas promociones "
+        "esta semana: WhatsApp no se las entregó y no se cobraron. No se vuelven a intentar "
+        "antes de 24 horas."
     )
 
 
