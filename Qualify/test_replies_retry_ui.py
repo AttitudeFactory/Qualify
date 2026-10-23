@@ -244,7 +244,9 @@ async def test_a_second_retry_is_refused_in_plain_words(monkeypatch: pytest.Monk
     state.retry_drafts = [_failed_vm("transient")]
 
     events = await _collect(RepliesState.retry_send.fn(state, _DRAFT))
-    assert state.action_error.startswith("Esa respuesta ya se volvió a enviar.")
+    assert state.action_error.startswith("Esta respuesta ya se está volviendo a enviar.")
+    # It must not invite another tap: a second retry could answer the person twice.
+    assert "vuelve a intentarlo" not in state.action_error
     assert "already" not in state.action_error
     assert RepliesState.load_pending_drafts in events
 
@@ -291,3 +293,12 @@ def test_the_failed_replies_come_before_the_ones_waiting_for_approval() -> None:
     section = _src(inbox_page._replies_section)
     assert section.index("_retry_list()") < section.index("_replies_list()")
     assert inbox_page._retry_list() is not None
+
+
+def test_the_passing_failure_toast_says_where_the_reply_went() -> None:
+    """UX review: the card leaves the queue and reappears above, in its own block."""
+    from Qualify.replies_vm import RETRY_BUSY_LABEL, RETRY_SECTION_TITLE, SEND_TRANSIENT_TOAST
+
+    assert SEND_TRANSIENT_TOAST.startswith("Tu respuesta no salió: Instagram no respondió.")
+    assert f"«{RETRY_SECTION_TITLE}»" in SEND_TRANSIENT_TOAST
+    assert RETRY_BUSY_LABEL == "Reintentando…"

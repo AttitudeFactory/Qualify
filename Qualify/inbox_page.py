@@ -1524,7 +1524,7 @@ def _retry_card(draft: DraftVM) -> rx.Component:
     return card(
         rx.vstack(
             rx.hstack(
-                tone_badge(RETRY_BADGE, "error", icon="circle-alert"),
+                tone_badge(RETRY_BADGE, "warn", icon="circle-alert"),
                 rx.spacer(),
                 rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
                 align="center",
@@ -1574,7 +1574,7 @@ def _retry_list() -> rx.Component:
     return rx.cond(
         RepliesState.has_retry_drafts,
         rx.vstack(
-            rx.text(RETRY_SECTION_TITLE, size="2", weight="medium"),
+            rx.heading(RETRY_SECTION_TITLE, as_="h3", size="3", weight="medium"),
             rx.foreach(RepliesState.retry_drafts, _retry_card),
             spacing="3",
             width="100%",

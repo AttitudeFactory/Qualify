@@ -88,6 +88,7 @@ from .replies_provider import (
 )
 from .replies_vm import (
     SEND_REFUSED,
+    SEND_TRANSIENT_TOAST,
     SEND_UNKNOWN,
     generation_message,
     regenerate_error_message,
@@ -450,7 +451,7 @@ class RepliesState(rx.State):
             else (_SEND_REFUSED if sent.status == "send_failed" else _SEND_FAILED)
         )
         if sent.can_retry:
-            return [rx.toast.error(message, duration=_RESULT_TOAST_DURATION_MS)]
+            return [rx.toast.error(SEND_TRANSIENT_TOAST, duration=_RESULT_TOAST_DURATION_MS)]
         self.action_error = message
         return []
 

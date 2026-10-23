@@ -121,11 +121,17 @@ _REGENERATE_ANSWERED_BY_DM: Final = (
 # ATENDER-9 (m-24849130) — what the owner reads when a reply did not go out. Exact copy
 # signed by the founder (2026-10-23, §2b-5 and §2b-7a).
 SEND_TRANSIENT: Final = "Tu respuesta no salió: Instagram no respondió."
+# The toast after a passing failure also says where the reply went (UX review): the card
+# leaves the approval queue and reappears above it, often out of view at 360 px.
+SEND_TRANSIENT_TOAST: Final = (
+    "Tu respuesta no salió: Instagram no respondió. "
+    "Puedes reintentarla arriba, en «Respuestas que no salieron»."
+)
 SEND_COMMENT_DELETED: Final = "Borraron ese comentario. Ya no se puede responder."
 SEND_REFUSED: Final = "Tu respuesta no salió. Respóndela en Instagram."
 SEND_UNKNOWN: Final = "No sabemos si salió. Revísalo en Instagram."
 RETRY_LABEL: Final = "Reintentar"
-RETRY_BUSY_LABEL: Final = "Reintentando..."
+RETRY_BUSY_LABEL: Final = "Reintentando…"
 RETRY_SECTION_TITLE: Final = "Respuestas que no salieron"
 RETRY_BADGE: Final = "No salió"
 _SEND_MESSAGES: Final[Mapping[str, str]] = {
@@ -134,7 +140,11 @@ _SEND_MESSAGES: Final[Mapping[str, str]] = {
     "refused": SEND_REFUSED,
     "unknown": SEND_UNKNOWN,
 }
-_RETRY_ALREADY: Final = "Esa respuesta ya se volvió a enviar. " + _REFRESH_HINT
+# No _REFRESH_HINT here: «vuelve a intentarlo» would invite a second public reply.
+_RETRY_ALREADY: Final = (
+    "Esta respuesta ya se está volviendo a enviar. "
+    "Toca «Actualizar respuestas» (↻) para ver cómo quedó."
+)
 
 _MONTHS: Final = (
     "ene",
