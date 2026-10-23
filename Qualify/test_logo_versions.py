@@ -29,7 +29,7 @@ def test_tu_brandboard_has_the_versions_the_plus_and_nothing_else() -> None:
         assert f"brand_logo_{key}" in rendered
         assert name in rendered
     assert wiz._EXTRA_UPLOAD_ID in rendered
-    assert "Stickers, patrones" in rendered
+    assert "patrones, mascota" in rendered
     assert "Tienes un brief" not in rendered
     assert "Arrastra tu brandboard" not in rendered  # no whole-brandboard upload
 

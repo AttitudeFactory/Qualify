@@ -120,7 +120,7 @@ def _finish_background_task(task: asyncio.Task) -> None:
         logger.warning("background task failed: %s", task.exception())
 
 
-_NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
+_NO_SESSION = "Tu sesión se cerró. Vuelve a entrar para seguir."
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 _FONT_TOO_LARGE = (
     f"El archivo de fuente pesa más de {brand_fonts.MAX_FONT_BYTES // (1024 * 1024)} MB."
@@ -142,15 +142,16 @@ _FONT_TOO_LARGE = (
 #: ¿Quién es la marca?'s heading — one constant, both flows. Carries the brief now.
 _IDENTITY_HEADING = (
     "¿Quién es la marca?",
-    "Lo que define su lugar y a quién le habla. Si tienes un brief, súbelo y lo rellenamos.",
+    "Qué te hace distinto y quién te compra. Si tienes un documento de tu marca, súbelo "
+    "y lo completamos.",
 )
 
 #: Tipografía's title + subtitle, shared by the three flows so the copy cannot drift.
 _TYPOGRAPHY_HEADING = ("Tipografía", "La letra con la que se te reconoce, antes que el color.")
 STEPS: tuple[tuple[str, str], ...] = (
     _IDENTITY_HEADING,
-    ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
-    ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
+    ("¿Ya tienes logo?", "De tu respuesta depende el siguiente paso."),
+    ("Tu logo", "Lo usaremos en cada publicación que crees."),
     # Tipografía — its own view right before Paleta de colores (§ request 2026-10-05):
     # the family names (and, optionally, the files) of the brand's type faces, editable
     # whether or not a brandboard was uploaded. Optional: nothing blocks Continuar.
@@ -167,7 +168,7 @@ _M_LOGO_STEP = 2
 _M_TYPOGRAPHY_STEP = 3
 _M_PALETTE_STEP = 4
 assert STEPS[_M_IDENTITY_STEP] == _IDENTITY_HEADING
-assert STEPS[_M_LOGO_STEP][0] == "Tu brandboard"
+assert STEPS[_M_LOGO_STEP][0] == "Tu logo"
 assert STEPS[_M_TYPOGRAPHY_STEP] == _TYPOGRAPHY_HEADING
 assert STEPS[_M_PALETTE_STEP][0] == "Paleta de colores"
 assert _M_TYPOGRAPHY_STEP + 1 == _M_PALETTE_STEP
@@ -185,7 +186,9 @@ _MAX_EXTRAS_PER_DROP = 10
 #: What a logo version's card and the "+" take — an image.
 #: `detect_fonts`'s notes (Spanish, product voice).
 _FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipografía."
-_FONTS_NO_KEY = "La detección de tipografía no está configurada en este entorno."
+_FONTS_NO_KEY = (
+    "Ahora no podemos leer la tipografía de tu logo. Escríbela tú o inténtalo más tarde."
+)
 _FONTS_NO_IMAGE = "No podemos leer la tipografía de un SVG: sube una versión en PNG, JPG o WebP."
 _FONTS_FAILED = "No pudimos leer la tipografía de tu logo. Escríbela o inténtalo de nuevo."
 #: What reading an uploaded font FILE found (§ request 2026-10-05, `check_font_file`).
@@ -199,7 +202,7 @@ def font_file_message(family: str, open_source: bool | None) -> tuple[str, str]:
         return _FONT_FILE_UNNAMED, "info"
     if open_source is True:
         return (
-            f"Detectamos «{family}» en tu archivo. Es open source: está en Google Fonts.",
+            f"Detectamos «{family}» en tu archivo. Es de uso libre: está en Google Fonts.",
             "ok",
         )
     if open_source is False:
@@ -1383,14 +1386,14 @@ def _identity_editor() -> tuple[rx.Component, ...]:
             ~brand_documents.BrandDocumentState.brief_busy,
             rx.fragment(
                 _labeled_area(
-                    "Posicionamiento",
+                    "¿Qué te hace distinto?",
                     CreativeState.kit_positioning,
                     CreativeState.set_kit_positioning,
                     "Ej.: Cafetería de especialidad en Cúcuta que tuesta su propio café de "
                     "Santander y te lo sirve en menos de 5 minutos.",
                 ),
                 _labeled_area(
-                    "Audiencia",
+                    "¿Quién te compra?",
                     CreativeState.kit_audience,
                     CreativeState.set_kit_audience,
                     "Ej.: Oficinistas de 25 a 40 años del centro de Cúcuta que quieren un "
@@ -1405,7 +1408,7 @@ def _identity_editor() -> tuple[rx.Component, ...]:
 #: their copy cannot drift (§ request 2026-09-29: "ya tengo uno o generar").
 BRANDBOARD_ANSWERS: tuple[tuple[str, str, str], ...] = (
     ("si", "Ya tengo uno", "Súbelo en el siguiente paso y lo usaremos tal cual."),
-    ("no", "Generar uno", "Te haremos tres preguntas para generarlo."),
+    ("no", "Ayúdame a crearlo", "Te hacemos tres preguntas y lo creamos contigo."),
 )
 
 
@@ -1616,7 +1619,7 @@ def _context_field(
     return rx.text_area(
         value=value,
         on_change=on_change,
-        placeholder="Ej.: Va en los stories y sobre fondos oscuros; nunca encima de fotos.",
+        placeholder="Ej.: Va en las historias y sobre fondos oscuros; nunca encima de fotos.",
         size="2",
         rows="2",
         width="100%",
@@ -1766,7 +1769,7 @@ def _add_extra_button() -> rx.Component:
             ),
             rx.text("Añadir más", size="2", weight="medium"),
             rx.text(
-                "Stickers, patrones, mascota, íconos… cualquier otro elemento de tu marca.",
+                "Calcomanías, patrones, mascota, íconos… cualquier otro elemento de tu marca.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -2400,7 +2403,7 @@ _KIT_LISTS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "cta",
-        "Patrones de llamado a la acción",
+        "Cómo invitas a comprar",
         "Cómo pides que te escriban, compren o visiten.",
         "Pide el tuyo por WhatsApp y pásalo a recoger",
     ),
@@ -2412,8 +2415,8 @@ _KIT_LISTS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "claims",
-        "Claims prohibidos",
-        "Promesas o comparaciones que la marca no puede hacer.",
+        "Promesas que no puedes hacer",
+        "Por ejemplo, decir que eres el mejor o compararte con otro negocio.",
         "el mejor café de Colombia",
     ),
 )
@@ -2669,8 +2672,8 @@ def _step_confirm() -> rx.Component:
     return _step_body(
         _confirm_section(
             "Tu marca",
-            _recap_row("Posicionamiento", CreativeState.kit_positioning),
-            _recap_row("Audiencia", CreativeState.kit_audience),
+            _recap_row("¿Qué te hace distinto?", CreativeState.kit_positioning),
+            _recap_row("¿Quién te compra?", CreativeState.kit_audience),
             _palette_recap_row(),
             _recap_row("Tipografía", CreativeState.kit_typography_summary),
         ),
@@ -2686,8 +2689,7 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.text(
-            "Haz clic en un valor para editarlo; la ✕ lo quita. Tu forma de hablar la "
-            "eliges después, en Tu marca.",
+            "Toca un valor para cambiarlo. Tu forma de hablar la eliges después, en «Tu marca».",
             size="1",
             color=T.TEXT_FAINT,
         ),
@@ -3351,7 +3353,10 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # Tu rubro y ubicación (2026-09-11) — the input the creator discovery on
     # Resultados e insights needs; its hashtags are created on arrival from the
     # account's own description, category and latest posts (§ 2026-10-05).
-    ("Tu rubro y ubicación", "Así buscamos referentes de tu sector, tu país y tu ciudad."),
+    (
+        "Tu rubro y ubicación",
+        "Así buscamos negocios parecidos al tuyo en tu sector, tu país y tu ciudad.",
+    ),
     _IDENTITY_HEADING,
     # ¿Tienes logo? / Tu logo — ALWAYS shown, right before Paleta de colores (§ request
     # 2026-09-16). They used to be skipped whenever the scraped profile had a picture,
@@ -3360,15 +3365,18 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # seed the palette on the next screen (`handle_logo_upload`). Same copy + renderers
     # the manual flow uses (`_step_has_logo`/`_step_logo`) via `_connect_step_has_logo`,
     # so the two flows cannot drift.
-    ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
-    ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
+    ("¿Ya tienes logo?", "De tu respuesta depende el siguiente paso."),
+    ("Tu logo", "Lo usaremos en cada publicación que crees."),
     _TYPOGRAPHY_HEADING,  # § request 2026-10-05, see the manual flow's STEPS
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
     # Referente, competencia o detractor (§ request 2026-09-11, "algo divertido antes
     # del resultado"): the accounts the discovery found, sorted by the operator into
     # three buckets by drag and drop or a tap. Optional — nothing blocks Continuar.
-    ("Referente, competencia o detractor", "Arrastra cada cuenta a su flecha, o toca la flecha."),
+    (
+        "¿Cómo ves estas cuentas?",
+        "Toca la flecha de cada cuenta, o arrástrala: te inspira, compite contigo o no va contigo.",
+    ),
     ("Así se ve tu cuenta hoy", "Revisa y termina."),
 )
 CONNECT_LAST = len(CONNECT_STEPS) - 1
@@ -3391,20 +3399,20 @@ assert CONNECT_STEPS[_PROFILE_STEP][0] == "Esto es lo que vemos"
 assert CONNECT_STEPS[_ACCOUNT_KIND_STEP][0] == "¿Eres influencer o una marca?"
 assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
 assert CONNECT_STEPS[_IDENTITY_STEP] == _IDENTITY_HEADING
-assert CONNECT_STEPS[_LOGO_QUESTION_STEP][0] == "¿Tienes brandboard?"
-assert CONNECT_STEPS[_LOGO_UPLOAD_STEP][0] == "Tu brandboard"
+assert CONNECT_STEPS[_LOGO_QUESTION_STEP][0] == "¿Ya tienes logo?"
+assert CONNECT_STEPS[_LOGO_UPLOAD_STEP][0] == "Tu logo"
 assert CONNECT_STEPS[_TYPOGRAPHY_STEP] == _TYPOGRAPHY_HEADING
 assert CONNECT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
 assert _LOGO_UPLOAD_STEP + 1 == _TYPOGRAPHY_STEP and _TYPOGRAPHY_STEP + 1 == _PALETTE_STEP
 assert _PALETTE_STEP + 1 == _CONNECT_CONFIRM_STEP
 assert CONNECT_STEPS[_CONNECT_CONFIRM_STEP][0] == "¿Todo correcto?"
-assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
+assert CONNECT_STEPS[_SORT_STEP][0] == "¿Cómo ves estas cuentas?"
 
 #: The three buckets of the sort step — (key, title, blurb, icon).
 BUCKETS: tuple[tuple[str, str, str, str], ...] = (
-    ("referente", "Referentes", "Te inspiran, te gustaría parecerte.", "star"),
-    ("competencia", "Competencia", "Le hablan a tu misma audiencia.", "swords"),
-    ("detractor", "Detractores", "No van con tu marca.", "thumbs-down"),
+    ("referente", "Te inspira", "Te gustaría parecerte a esta cuenta.", "star"),
+    ("competencia", "Compite contigo", "Le vende a tu mismo público.", "swords"),
+    ("detractor", "No va contigo", "No se parece a tu marca.", "thumbs-down"),
 )
 #: Where each bucket sits around the deck — the way the ghost card flies.
 _FLY_DIRECTION = {"referente": "left", "competencia": "right", "detractor": "down"}
@@ -3436,7 +3444,7 @@ _RankCard = DragCard
 #: business to list on Maps and a location the discovery should use.
 ACCOUNT_KINDS: tuple[tuple[str, str, str], ...] = (
     ("marca", "Soy una marca o negocio", "Te preguntaremos tu rubro y dónde estás."),
-    ("influencer", "Soy creador o influencer", "Buscaremos referentes de tu temática."),
+    ("influencer", "Soy creador o influencer", "Buscaremos cuentas parecidas a la tuya."),
     ("ambas", "Las dos cosas", "Creas contenido y además tienes un negocio."),
 )
 
@@ -3467,7 +3475,7 @@ def add_pills(
         present.add(slug)
     if dropped:
         cap = creator_discovery.CHOSEN_HASHTAGS
-        return out, f"Caben {cap} hashtags: quita alguno para agregar otro."
+        return out, f"Caben {cap} etiquetas: quita alguna para agregar otra."
     return out, ""
 
 
@@ -3490,8 +3498,8 @@ def merge_suggestions(
     out, note = add_pills(kept, suggested)
     if not choice.tags:
         note = (
-            "No encontramos hashtags en lo que tu cuenta publica. Agrega los tuyos: "
-            "con ellos buscamos."
+            "No encontramos etiquetas en lo que publica tu cuenta. Agrega las tuyas: "
+            "con ellas buscamos."
         )
     return out, note
 
@@ -3591,10 +3599,10 @@ def _hashtags_db_first(
         proposal = _generate_from_account(account)
     if proposal is None or not proposal.tags:
         if not account.has_content:
-            return None, "Escribe tu rubro (o elige una categoría) y te sugerimos hashtags."
+            return None, "Escribe tu rubro (o elige una categoría) y te sugerimos etiquetas."
         return None, (
-            "No encontramos hashtags para tu rubro ni en tus publicaciones. Agrega los tuyos: "
-            "con ellos buscamos."
+            "No encontramos etiquetas para tu rubro ni en tus publicaciones. Agrega las "
+            "tuyas: con ellas buscamos."
         )
     if tenant_id is not None and seed.terms:
         try:
@@ -3637,9 +3645,9 @@ def manual_outcome(
 ) -> tuple[str, str]:
     """The pop-up after a manual add: what happened, in the operator's words, and its
     tone — `warn` when the profile was not found or Claude thinks it does not fit."""
-    title = next((t for b, t, _, _ in BUCKETS if b == bucket), "Referentes")
+    title = next((t for b, t, _, _ in BUCKETS if b == bucket), "Te inspira")
     who = card.get("handle") or "La cuenta"
-    parts = [f"Agregamos {who} a {title}."]
+    parts = [f"Agregamos {who} a «{title}»."]
     tone = "ok"
     if result.missing:
         network = card.get("network") or ""
@@ -4124,7 +4132,7 @@ class BrandConnectState(rx.State):
             tag = normalize_tag(raw)
         except ValueError:
             # the input stays open with the text, so it can be fixed
-            self.hashtag_note = "Un hashtag es una sola palabra, sin espacios."
+            self.hashtag_note = "Una etiqueta es una sola palabra, sin espacios."
             return
         self.new_hashtag = ""
         self.adding_hashtag = False
@@ -4549,7 +4557,7 @@ class BrandConnectState(rx.State):
         for key in creator_discovery.PHASES:
             if note := self._phase_note(key):
                 return note
-        return "No encontramos referentes para tu rubro todavía." if self.discovery_ran else ""
+        return "Todavía no encontramos negocios parecidos al tuyo." if self.discovery_ran else ""
 
     @rx.var
     def profile_avatar_src(self) -> str:
@@ -4648,7 +4656,7 @@ class BrandConnectState(rx.State):
 
     @rx.var
     def stage_title(self) -> str:
-        titles = {"sector": "Referentes del sector", "national": "Nacionales", "local": "Locales"}
+        titles = {"sector": "En tu sector", "national": "En tu país", "local": "En tu ciudad"}
         return self._phase_title(self.stage_key) or titles[self.stage_key]
 
     @rx.var
@@ -4684,9 +4692,9 @@ class BrandConnectState(rx.State):
         after it. Phase fields are read by NAME (`_phase_title`/`_phase_note`), so
         each landing recomputes this — see the dependency note above them."""
         generic = {
-            "sector": "Referentes del sector",
-            "national": "Referentes nacionales",
-            "local": "Referentes locales",
+            "sector": "En tu sector",
+            "national": "En tu país",
+            "local": "En tu ciudad",
         }
         rows: list[dict[str, str]] = []
         running_taken = False
@@ -5543,7 +5551,7 @@ class BrandConnectState(rx.State):
             async with self:
                 if self.discovery_run_id == my_id:
                     self.discovery_error = (
-                        "No pudimos buscar referentes ahora. Inténtalo más tarde."
+                        "No pudimos buscar negocios parecidos ahora. Inténtalo más tarde."
                     )
         finally:
             if runner is not None:
@@ -6034,7 +6042,7 @@ def _connect_step_rubro() -> rx.Component:
     return rx.cond(
         BrandConnectState.suggesting_hashtags & BrandConnectState.filling_rubro,
         progress_panel(
-            "Preparando tu rubro y tus hashtags",
+            "Preparando tu rubro y tus etiquetas",
             "Leemos tu descripción, tu categoría y tus últimas publicaciones.",
             steps=None,
             creep_seconds=20,
@@ -6112,7 +6120,7 @@ def _rubro_fields() -> rx.Component:
         rx.text(
             rx.cond(
                 BrandConnectState.is_fresh_start,
-                "Con esto buscamos referentes de tu sector, de tu país y de tu ciudad.",
+                "Con esto buscamos negocios parecidos al tuyo en tu sector, tu país y tu ciudad.",
                 "Lo completamos con lo que leímos de tu perfil. Corrígelo si hace falta.",
             ),
             size="2",
@@ -6129,7 +6137,7 @@ def _hashtag_pill_body(item: rx.Var[dict[str, str]], *, suggested: bool) -> rx.C
         rx.fragment(rx.el.span("#", margin_right="2px"), item["tag"]),
         BrandConnectState.remove_hashtag(item["tag"]),
         suggested=suggested,
-        remove_label="Quitar este hashtag",
+        remove_label="Quitar esta etiqueta",
     )
 
 
@@ -6151,7 +6159,7 @@ def _rubro_hashtags_block() -> rx.Component:
     return rx.cond(
         BrandConnectState.suggesting_hashtags,
         progress_panel(
-            "Buscando hashtags para tu rubro",
+            "Buscando etiquetas para tu rubro",
             "En nuestro catálogo, luego en tus publicaciones y, si no hay, los creamos.",
             steps=None,
             creep_seconds=15,
@@ -6162,7 +6170,7 @@ def _rubro_hashtags_block() -> rx.Component:
 
 def _rubro_hashtags_editor() -> rx.Component:
     return rx.vstack(
-        rx.text("Hashtags para buscar referentes", size="2", weight="medium"),
+        rx.text("Etiquetas para buscar negocios parecidos", size="2", weight="medium"),
         # § request 2026-09-30: no input until the "+" is pressed — the pills, then a
         # "+" at their end; pressing it swaps the "+" for the input (Enter adds,
         # Escape or leaving it empty puts the "+" back).
@@ -6177,7 +6185,7 @@ def _rubro_hashtags_editor() -> rx.Component:
                     color_scheme="gray",
                     size="1",
                     radius="full",
-                    aria_label="Agregar hashtag",
+                    aria_label="Agregar etiqueta",
                     margin_y="0.25rem",
                 ),
             ),
@@ -6214,7 +6222,7 @@ def _rubro_hashtags_editor() -> rx.Component:
             rx.cond(
                 BrandConnectState.rubro_hashtags.length() > 0,
                 rx.text(
-                    "Buscaremos referentes con estos hashtags. Quita los que no encajen.",
+                    "Buscaremos negocios parecidos con estas etiquetas. Quita las que no encajen.",
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
@@ -6702,8 +6710,8 @@ def _ranking_panel() -> rx.Component:
         ),
         _script_on_mount(_RANK_DRAG_JS),
         rx.grid(
-            _ranking_grid("Referentes", "referente", BrandConnectState.ranked_referentes),
-            _ranking_grid("Competencia", "competencia", BrandConnectState.ranked_competencia),
+            _ranking_grid("Te inspiran", "referente", BrandConnectState.ranked_referentes),
+            _ranking_grid("Compiten contigo", "competencia", BrandConnectState.ranked_competencia),
             columns=rx.breakpoints(initial="1", md="2"),
             spacing="5",
             width="100%",
@@ -6743,7 +6751,7 @@ def _discovery_section() -> rx.Component:
             ~BrandConnectState.discovery_ran,
             rx.button(
                 rx.icon("search", size=T.ICON_SM),
-                "Buscar referentes",
+                "Buscar negocios parecidos",
                 variant="soft",
                 size="2",
                 radius=_CONTROL_RADIUS,
@@ -6991,9 +6999,9 @@ def _deck_ghost() -> rx.Component:
 #: Referentes to the LEFT, Competencia to the RIGHT, Detractores BELOW, matching
 #: `_FLY_DIRECTION`.
 _DECK_ZONES: tuple[tuple[str, str, str, str, str], ...] = (
-    ("referente", "Referentes", "Te inspiran", "arrow-left", "left"),
-    ("competencia", "Competencia", "Tu misma audiencia", "arrow-right", "right"),
-    ("detractor", "Detractores", "No van con tu marca", "arrow-down", "down"),
+    ("referente", "Te inspira", "Te gustaría parecerte", "arrow-left", "left"),
+    ("competencia", "Compite contigo", "Le vende a tu público", "arrow-right", "right"),
+    ("detractor", "No va contigo", "No se parece a tu marca", "arrow-down", "down"),
 )
 #: The sort step is not a field list: its three panels reach the card's own edges
 #: (§ request 2026-09-14, "que ocupen hasta los bordes"), so `brand_connect_index`
@@ -7373,7 +7381,7 @@ def _manual_form() -> rx.Component:
                         BrandConnectState.manual_bucket,
                         BrandConnectState.set_manual_bucket,
                         tuple((key, title) for key, title, _, _ in BUCKETS),
-                        "Referente",
+                        "Te inspira",
                     ),
                     flex="1 1 8rem",
                 ),
@@ -7524,7 +7532,7 @@ def _referentes_loading() -> rx.Component:
     # § 2026-10-01: the same progress screen as the voice analysis and the hashtags,
     # its bar moving one category at a time
     return progress_panel(
-        "Buscando referentes para tu marca",
+        "Buscando negocios parecidos al tuyo",
         "En cuanto termine podrás clasificarlos. Puede tardar unos minutos.",
         value=BrandConnectState.discovery_percent,
         steps=BrandConnectState.discovery_progress,

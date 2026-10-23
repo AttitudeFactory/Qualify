@@ -18,14 +18,14 @@ def test_the_card_renders_with_its_placeholder_and_a_switch_gated_button() -> No
     out = str(panel.brand_avatar_card().render())
     assert "Tu avatar animado" in out
     # the render escapes non-ASCII (á), so an ASCII stretch of the placeholder
-    assert "cuando conectemos la generaci" in out
+    assert "una mascota para tu marca, dibujada" in out
     assert "Regenerar" in out  # present in the tree, behind `BrandAvatarState.enabled`
     assert "brand_avatar_state" in out and "enabled" in out
 
 
 def test_the_editor_shows_the_avatar_above_the_sections() -> None:
     out = str(_edit_view().render())
-    assert out.index("Tu avatar animado") < out.index("Posicionamiento, audiencia")
+    assert out.index("Tu avatar animado") < out.index("te compra y tu documento de marca")
 
 
 def test_finishing_the_kit_starts_nothing_while_off(monkeypatch: pytest.MonkeyPatch) -> None:

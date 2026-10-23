@@ -53,11 +53,11 @@ from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
-_SAVED = "Brand Kit guardado: tu marca, tus archivos y tus respuestas."
-_NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-_KIT_FAILED = "No se pudo guardar el Brand Kit. Inténtalo de nuevo."
+_SAVED = "Tu marca quedó guardada."
+_NO_SESSION = "Tu sesión se cerró. Vuelve a entrar para seguir."
+_KIT_FAILED = "No pudimos guardar tu marca. Inténtalo de nuevo."
 _FILES_FAILED = (
-    "Guardamos tu marca, pero no los archivos del brandboard (logo y elementos). "
+    "Guardamos tu marca, pero no los archivos de tu logo y tus elementos. "
     "Inténtalo de nuevo en un momento."
 )
 #: An R2 object key keeps ASCII only — on top of `safe_upload_name` (basename, no

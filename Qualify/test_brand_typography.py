@@ -54,7 +54,7 @@ def test_tipografia_is_its_own_step_right_before_the_palette_in_every_flow() -> 
     ):
         assert steps[index][0] == "Tipografía"
         assert steps[index + 1][0] == "Paleta de colores"
-        assert steps[index - 1][0] == "Tu brandboard"
+        assert steps[index - 1][0] == "Tu logo"
     keys = [key for key, *_ in SECTIONS]  # the editor's sections keep the same order
     assert keys.index("brandboard") + 1 == keys.index("tipografia")
     assert keys.index("tipografia") + 1 == keys.index("paleta")
@@ -182,7 +182,7 @@ async def test_a_dropped_font_file_fills_the_name_and_asks_google_fonts(
 
 def test_the_font_file_toast_says_whether_it_is_open_source() -> None:
     assert wiz.font_file_message("Lato", True) == (
-        "Detectamos «Lato» en tu archivo. Es open source: está en Google Fonts.",
+        "Detectamos «Lato» en tu archivo. Es de uso libre: está en Google Fonts.",
         "ok",
     )
     message, tone = wiz.font_file_message("Marca Sans", False)

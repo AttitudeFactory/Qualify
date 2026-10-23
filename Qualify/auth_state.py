@@ -68,10 +68,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
-_BAD_CREDENTIALS = "Email o contraseña incorrectos."  # one message for every cause, on purpose
+_BAD_CREDENTIALS = "Correo o contraseña incorrectos."  # one message for every cause, on purpose
 _INCOMPLETE = (
     "El registro de esta cuenta quedó incompleto. Repite el registro con el mismo "
-    "email y contraseña para completarlo."
+    "correo y contraseña para completarlo."
 )
 _AUTH_DOWN = "No se pudo verificar la sesión. Inténtalo de nuevo en un momento."
 _RATE_LIMITED = "Demasiados intentos seguidos. Espera un minuto y vuelve a intentarlo."
