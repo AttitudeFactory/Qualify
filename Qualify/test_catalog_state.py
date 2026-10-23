@@ -726,6 +726,8 @@ def _nav(events: Any) -> list[tuple[str, Any, bool]]:
     found: list[tuple[str, Any, bool]] = []
     for spec in events or []:
         fn = getattr(getattr(spec, "handler", None), "fn", None)
+        if getattr(fn, "__qualname__", "") not in ("_redirect", "_call_script"):
+            continue  # toasts and the like
         args = {name._js_expr: value._var_value for name, value in getattr(spec, "args", ())}
         if getattr(fn, "__qualname__", "") == "_redirect":
             found.append(("redirect", args["path"], bool(args["replace"])))
@@ -867,7 +869,9 @@ async def test_a_refused_guardar_y_salir_stays_with_the_reason(monkeypatch) -> N
     state.request_close()
     state.save_and_leave()
     events = await _drain(CatalogState.save_product.fn(state))
-    assert updated == [] and events == []
+    assert updated == [] and _nav(events) == []
+    # the reason is also a toast: on the phone the line under the fields may be out of view
+    assert len(events) == 1 and state.edit_error in str(events[0])
     assert state.editor_open and "nombre" in state.edit_error.lower()
     assert state._leave_target == "" and not state.leave_open
 
@@ -919,7 +923,27 @@ async def test_a_link_opens_the_product_and_a_stranger_id_falls_back_to_the_list
     fresh = _state(monkeypatch)
     events = await _drain(CatalogState.load_catalog.fn(fresh))
     assert _nav(events) == [("redirect", "/catalog", True)]
+    assert "Aquí tienes los que sí están" in str(events[1])  # N3: say what happened
     assert not fresh.editor_open
+
+
+async def test_a_photo_change_never_overwrites_a_price_being_corrected(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """UX review: correct the price, add a photo — the refresh after the upload keeps
+    the typed price and «¿Salir sin guardar?» still guards it."""
+    monkeypatch.setattr(catalog_state_module, "add_media", lambda *_a, **_k: None)
+    updated: list[dict[str, Any]] = []
+    state = _editor(monkeypatch, updated, _product(price_amount="12000"))
+    state.set_edit_price("15000")
+    photo = tmp_path / "foto.jpg"
+    photo.write_bytes(b"x")
+    state._pending = [(str(photo), "foto.jpg", str(_PRODUCT_ID))]
+
+    await _drain(CatalogState.ingest_pending.fn(state))
+
+    assert state.edit_price == "15000" and state.edit_dirty
+    assert updated == []
 
 
 def test_retyping_the_same_values_is_not_a_change(monkeypatch) -> None:

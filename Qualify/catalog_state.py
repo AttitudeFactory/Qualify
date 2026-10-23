@@ -68,7 +68,8 @@ _NO_BRAND = "Primero completa tu marca (logo y colores) y vuelve a subir tus pro
 _DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
-_PRODUCT_GONE = "Ese producto ya no está en tu catálogo. Actualiza la página."
+_PRODUCT_GONE = "Ese producto ya no está en tus productos. Vuelve a la lista."
+_LINK_GONE = "Ese producto ya no está en tus productos. Aquí tienes los que sí están."
 _SAVED = "Cambios guardados."
 _ORDER_SAVED = "Orden guardado: la primera foto es la principal."
 _DELETED = "Producto eliminado."
@@ -345,8 +346,11 @@ class CatalogState(rx.State):
                 self.error = _DB_ERROR
             return
         async with self:
+            # A photo change refreshes the list too: never overwrite a name or price the
+            # owner is still correcting (m-24842976 UX review).
+            keep = self.edit_dirty
             self.products = list(products)
-            if self.selected_id and self.selected is not None:
+            if self.selected_id and self.selected is not None and not keep:
                 self._fill_editor(self.selected)
 
     # -- the new-product form ---------------------------------------------------------------
@@ -683,9 +687,12 @@ class CatalogState(rx.State):
             return []
         product = self._find(wanted)
         if product is None:
-            # another business's product, a deleted one, a typo: the list, quietly
+            # another business's product, a deleted one, a typo: the list, with a word why
             if final and not self.selected_id:
-                return [rx.redirect(_CATALOG_PATH, replace=True)]
+                return [
+                    rx.redirect(_CATALOG_PATH, replace=True),
+                    rx.toast.info(_LINK_GONE, duration=_TOAST_MS),
+                ]
             return []
         if self.selected_id and self.edit_dirty:
             if not self.leave_open:
@@ -903,9 +910,10 @@ class CatalogState(rx.State):
 
     def _stay_after_refusal(self) -> list[rx.event.EventSpec]:
         """A save that did not land keeps the editor open, and forgets where
-        «Guardar y salir» was going."""
+        «Guardar y salir» was going. On the phone the reason under the fields may be
+        out of view, so it is said as a toast too."""
         self._leave_target = ""
-        return self._restore_url()
+        return [*self._restore_url(), rx.toast.error(self.edit_error, duration=_TOAST_MS)]
 
     # -- media --------------------------------------------------------------------------
 

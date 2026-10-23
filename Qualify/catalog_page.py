@@ -1041,6 +1041,7 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
         ),
         type="button",
         aria_label="Editar " + product.name,
+        aria_current=rx.cond(selected, "true", "false"),
         on_click=CatalogState.select_product(product.product_id),
         class_name=rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card"),
         padding="0.75rem",
