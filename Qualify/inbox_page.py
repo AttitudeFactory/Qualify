@@ -1151,8 +1151,36 @@ def _review_reason_row(reason: str) -> rx.Component:
     )
 
 
+def _review_note_row(note: str) -> rx.Component:
+    """A soft note (a class the classifier is not sure about): a hint, not an alarm —
+    neutral icon, faint text, no badge, no gate."""
+    return rx.hstack(
+        rx.icon("info", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
+        rx.text(note, size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align="start",
+    )
+
+
 def _draft_review_notes(draft: DraftVM) -> rx.Component:
-    """Why this draft needs review, one plain sentence per reason."""
+    """Why this draft needs review (one plain sentence per blocking reason, warn tone),
+    then the soft notes in a quieter style."""
+    return rx.fragment(
+        _draft_blocking_reasons(draft),
+        rx.cond(
+            draft.review_notes.length() > 0,
+            rx.vstack(
+                rx.foreach(draft.review_notes, _review_note_row),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+    )
+
+
+def _draft_blocking_reasons(draft: DraftVM) -> rx.Component:
     return rx.cond(
         draft.needs_review,
         rx.vstack(

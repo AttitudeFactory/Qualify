@@ -18,9 +18,10 @@ reply is read by everyone under the post.
   location and hours are in no table a tenant validated: a comment asking about them gets
   a draft that does not state such data, and the draft always needs review.
 
-## When a draft needs review (`review_reasons`)
+## Review reasons (`review_reasons`) and when a draft needs review
 
-Any of these, each recorded by code on the draft (`grounding.review_reasons`):
+Every reason is recorded by code on the draft (`grounding.review_reasons`). The BLOCKING
+ones set `needs_review` («Requiere revisión»; `is_blocking_reason`):
 
 - `model_unsupported` — the model says it used something outside the facts, or listed a
   claim it could not ground (e.g. a product the catalog does not have);
@@ -29,11 +30,16 @@ Any of these, each recorded by code on the draft (`grounding.review_reasons`):
 - `empty_catalog` — no validated product at all, so nothing product-related is grounded;
 - `price_unknown` — a price was asked and no catalog product has one, so even «te
   escribimos por DM con el precio» promises a figure nobody validated;
+
+One reason is a SOFT NOTE only (founder decision, 2026-10-23): recorded so the screen can
+show it, but it does not set `needs_review`:
+
 - `unreliable:<class>` — the classifier is not reliable for that class under its
-  detector version (`intent.reliability`). Fail closed, like `reliability.py` itself:
-  the class steers what the reply answers and withholds, so when it may be wrong a
-  person checks the reply addresses what was really asked. It does not block the draft
-  — the gate uses only `commercial_intent`, which is measured reliable.
+  detector version (`intent.reliability`), so the person may want to check the reply
+  answers what was really asked. It never blocks the draft either — the gate uses only
+  `commercial_intent`, which is measured reliable.
+
+Any code `is_blocking_reason` does not know counts as blocking (fail closed).
 """
 
 from __future__ import annotations
@@ -89,6 +95,22 @@ UNVALIDATED_CLASSES: Final = frozenset(
 
 ReliabilityReader = Callable[[str], Mapping[IntentClass, bool]]
 
+#: Review-reason codes that are only a note («clase no fiable»), never «Requiere
+#: revisión». Matched as a prefix (`unreliable:<class>`).
+SOFT_REASON_PREFIXES: Final = ("unreliable:",)
+
+
+def is_blocking_reason(code: str) -> bool:
+    """Whether a review-reason code makes the draft «Requiere revisión». Only the soft
+    notes (`SOFT_REASON_PREFIXES`) do not; every other code — including one this version
+    does not know — is blocking, so a new or misspelled reason fails closed."""
+    return not code.startswith(SOFT_REASON_PREFIXES)
+
+
+def needs_review_for(reasons: Sequence[str]) -> bool:
+    """`needs_review` for a draft with these review reasons: any blocking one."""
+    return any(is_blocking_reason(code) for code in reasons)
+
 
 def parse_classes(names: Sequence[str]) -> tuple[IntentClass, ...]:
     """Stored class names back into `IntentClass`, dropping any this code no longer
@@ -129,7 +151,8 @@ def review_reasons(
     classes: Sequence[IntentClass],
     reliable: Mapping[IntentClass, bool],
 ) -> tuple[str, ...]:
-    """Every reason this public draft needs review, in a stable order; empty = none.
+    """Every review reason of this public draft (blocking and soft), in a stable order;
+    empty = none. `needs_review_for` turns them into the flag.
     `grounding` is the FULL catalog grounding (with prices), not the public view."""
     reasons: list[str] = []
     if not used_only_given_facts or any(c.strip() for c in unsupported_claims):
@@ -187,11 +210,14 @@ __all__ = [
     "PUBLIC_GENERATOR_VERSION",
     "PUBLIC_GENERATOR_VERSION_PREFIX",
     "PUBLIC_SYSTEM_PROMPT",
+    "SOFT_REASON_PREFIXES",
     "UNVALIDATED_CLASSES",
     "ReliabilityReader",
     "comment_message",
     "cost_decimal",
     "grounding_record",
+    "is_blocking_reason",
+    "needs_review_for",
     "parse_classes",
     "public_context",
     "review_reasons",

@@ -10,7 +10,9 @@ What a draft card shows, and why:
   decision D1), so showing it next to the draft would read as if the reply said it.
 - **«Requiere revisión»** with each `review_reasons` code in plain Spanish
   (`review_reason_label`). Unknown codes fall back to a generic line instead of leaking
-  a code to the screen.
+  a code to the screen. Only BLOCKING codes (`public_drafts.is_blocking_reason`) make the
+  badge and the «Ya revisé estos puntos» gate; a soft one (`unreliable:*`, founder
+  2026-10-23) is a quiet note (`review_note_label`) and the draft stays sendable.
 - **The intent chips** with reliability, the same `IntentChipVM` the comment list uses
   (Fase A) — only for drafts that came from the commercial path.
 
@@ -33,6 +35,7 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.assisted.grounding import Grounding
 from qualify_api.intent import COMMERCIAL_CLASSES, INTENT_CLASS_LABELS, IntentClass, IntentSignal
+from qualify_api.replies.public_drafts import is_blocking_reason
 from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
 from .inbox_vm import IntentChipVM
@@ -85,6 +88,10 @@ _UNVALIDATED_TAIL: Final = (
 )
 
 REVIEW_REASON_FALLBACK: Final = "Hay algo en este borrador que conviene revisar antes de enviarlo."
+REVIEW_NOTE_FALLBACK: Final = (
+    "Puede que no hayamos entendido bien qué preguntan: mira que la respuesta conteste lo "
+    "que pidieron."
+)
 
 _REGENERATE_FAILED: Final = "No pudimos proponer otra respuesta. Intenta de nuevo en unos minutos."
 _REGENERATE_DECIDED: Final = "Este borrador ya se envió o se descartó. " + _REFRESH_HINT
@@ -146,7 +153,10 @@ class DraftVM:
     # m-24789645 — the commercial path (the draft carries a grounding record).
     is_commercial: bool = False
     needs_review: bool = False
+    # Blocking reasons (warn tone, they ask for «Ya revisé estos puntos»)...
     review_reasons: list[str] = field(default_factory=list)
+    # ... and soft notes (`unreliable:*`): a quiet hint, never a block.
+    review_notes: list[str] = field(default_factory=list)
     unsupported_claims: str = ""
     sources_count: int = 0
     sources_head: list[SourceProductVM] = field(default_factory=list)
@@ -209,20 +219,38 @@ def review_reason_label(code: str) -> str:
                 return REVIEW_REASON_FALLBACK
             head = f"Preguntan por {label}"
         return head + _UNVALIDATED_TAIL
-    if kind == "unreliable" and cls:
-        label = _class_label(cls)
-        if not label:
-            return REVIEW_REASON_FALLBACK
-        return (
-            f"No estamos seguros de que pregunten por «{label}»; revisa que el borrador "
-            "responda lo que pidieron."
-        )
+    if kind == "unreliable":
+        return review_note_label(code)
     return REVIEW_REASON_FALLBACK
 
 
+def review_note_label(code: str) -> str:
+    """A SOFT reason (`unreliable:<class>`, founder 2026-10-23): a hint shown in a quiet
+    style, never an alarm and never a reason to block the send."""
+    _kind, _, cls = (code or "").strip().partition(":")
+    label = _class_label(cls) if cls else ""
+    if not label:
+        return REVIEW_NOTE_FALLBACK
+    return (
+        f"No estamos seguros de que pregunten por «{label}»: mira que la respuesta conteste "
+        "lo que pidieron."
+    )
+
+
+def _codes(raw: Sequence[object]) -> list[str]:
+    return [str(code).strip() for code in raw if str(code).strip()]
+
+
 def review_reason_labels(codes: Sequence[object]) -> list[str]:
-    """Every code translated, in order, without repeating a line."""
-    labels = [review_reason_label(str(code)) for code in codes if str(code).strip()]
+    """Every BLOCKING code translated, in order, without repeating a line. A code this
+    version does not know is blocking (`is_blocking_reason`, fail closed)."""
+    labels = [review_reason_label(c) for c in _codes(codes) if is_blocking_reason(c)]
+    return list(dict.fromkeys(labels))
+
+
+def review_note_labels(codes: Sequence[object]) -> list[str]:
+    """Every SOFT code as a quiet hint, in order, without repeating a line."""
+    labels = [review_note_label(c) for c in _codes(codes) if not is_blocking_reason(c)]
     return list(dict.fromkeys(labels))
 
 
@@ -278,10 +306,16 @@ def build_draft_vm(
 ) -> DraftVM:
     grounding = record.grounding
     is_commercial = grounding is not None
-    codes = grounding.get("review_reasons") if isinstance(grounding, Mapping) else None
-    reasons = review_reason_labels(codes) if isinstance(codes, list) else []
-    # Fail closed: a recorded reason means review even if the flag was not set.
-    needs_review = bool(record.needs_review) or bool(reasons)
+    raw = grounding.get("review_reasons") if isinstance(grounding, Mapping) else None
+    codes = _codes(raw) if isinstance(raw, list) else []
+    reasons = review_reason_labels(codes)
+    notes = review_note_labels(codes)
+    # «Requiere revisión» follows the BLOCKING reasons only, so a draft stored with
+    # `needs_review=True` for a soft reason alone (before the founder's 2026-10-23
+    # change) stops blocking too. Fail closed: a blocking reason means review even if
+    # the flag was not set, and a flagged draft that recorded no reason at all still
+    # asks for review with the generic line.
+    needs_review = bool(reasons) or (bool(record.needs_review) and not codes)
     if needs_review and not reasons:
         reasons = [REVIEW_REASON_FALLBACK]
     sources = source_products(grounding, zone) if is_commercial else []
@@ -298,6 +332,7 @@ def build_draft_vm(
         is_commercial=is_commercial,
         needs_review=needs_review,
         review_reasons=reasons,
+        review_notes=notes,
         unsupported_claims=(UNSUPPORTED_PREFIX + " · ".join(claims)) if claims else "",
         sources_count=len(sources),
         sources_head=sources[:SOURCES_VISIBLE],

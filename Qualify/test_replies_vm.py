@@ -130,10 +130,66 @@ def test_unreliable_reason_names_the_class_in_spanish() -> None:
 
 @pytest.mark.parametrize(
     "code",
-    ["", "   ", "something_new", "unvalidated:", "unvalidated:teleport", "unreliable:x", "a:b"],
+    ["", "   ", "something_new", "unvalidated:", "unvalidated:teleport", "a:b"],
 )
 def test_unknown_codes_fall_back_gracefully(code: str) -> None:
     assert vm.review_reason_label(code) == vm.REVIEW_REASON_FALLBACK
+
+
+@pytest.mark.parametrize("code", ["unreliable:x", "unreliable:"])
+def test_an_unknown_soft_class_falls_back_to_a_soft_hint(code: str) -> None:
+    assert vm.review_note_label(code) == vm.REVIEW_NOTE_FALLBACK
+    assert vm.review_note_labels([code]) == [vm.REVIEW_NOTE_FALLBACK]
+    assert vm.review_reason_labels([code]) == []
+
+
+def test_the_soft_note_reads_as_a_hint_not_an_alarm() -> None:
+    note = vm.review_note_label("unreliable:store")
+    assert note == (
+        "No estamos seguros de que pregunten por «tienda»: mira que la respuesta conteste "
+        "lo que pidieron."
+    )
+    for alarm in ("revisa", "Requiere", "no fiable", "error", "!"):
+        assert alarm not in note
+
+
+# -- blocking vs soft reasons (founder, 2026-10-23) ---------------------------------------
+
+
+def _from_codes(codes: list[str], *, needs_review: bool) -> vm.DraftVM:
+    grounding = {"products": [_product("Combo")], "review_reasons": codes}
+    return vm.build_draft_vm(_record(grounding=grounding, needs_review=needs_review), zone=_ZONE)
+
+
+@pytest.mark.parametrize("stored_flag", [True, False])
+def test_an_unreliable_only_draft_is_a_note_and_stays_sendable(stored_flag: bool) -> None:
+    """`stored_flag=True` is a draft written before the change: it stops blocking too."""
+    draft = _from_codes(["unreliable:store", "unreliable:hours"], needs_review=stored_flag)
+    assert draft.needs_review is False  # no badge, no checkbox
+    assert draft.review_reasons == []
+    assert draft.review_notes == [
+        vm.review_note_label("unreliable:store"),
+        vm.review_note_label("unreliable:hours"),
+    ]
+    assert vm.send_block_reason([draft], draft.id, []) == ""
+
+
+def test_unreliable_plus_a_blocking_reason_asks_for_the_tick_and_shows_both() -> None:
+    draft = _from_codes(["price_token", "unreliable:product"], needs_review=True)
+    assert draft.needs_review is True
+    assert draft.review_reasons == [vm.review_reason_label("price_token")]
+    assert draft.review_notes == [vm.review_note_label("unreliable:product")]
+    assert vm.send_block_reason([draft], draft.id, []) == vm.REVIEW_CONFIRM_REQUIRED
+    assert vm.send_block_reason([draft], draft.id, [draft.id]) == ""
+
+
+@pytest.mark.parametrize("stored_flag", [True, False])
+def test_an_unknown_code_still_blocks(stored_flag: bool) -> None:
+    draft = _from_codes(["something_new", "unreliable:price"], needs_review=stored_flag)
+    assert draft.needs_review is True
+    assert draft.review_reasons == [vm.REVIEW_REASON_FALLBACK]
+    assert draft.review_notes == [vm.review_note_label("unreliable:price")]
+    assert vm.send_block_reason([draft], draft.id, []) == vm.REVIEW_CONFIRM_REQUIRED
 
 
 def test_unvalidated_class_known_to_intent_but_not_listed_still_reads_well() -> None:
