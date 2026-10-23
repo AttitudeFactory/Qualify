@@ -25,6 +25,8 @@ from .layout import (
     tenant_block,
 )
 from .primitives import (
+    DragCard,
+    asset_script,
     callout,
     card,
     chat_bubble,
@@ -74,6 +76,8 @@ __all__ = [
     "dropzone",
     "empty_state",
     "kv",
+    "DragCard",
+    "asset_script",
     "loading_spinner",
     "media_thumb",
     "progress_panel",

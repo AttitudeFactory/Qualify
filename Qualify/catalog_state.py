@@ -33,9 +33,10 @@ from .catalog_provider import (
     CatalogError,
     add_media,
     create_product,
+    deactivate_product,
     list_products,
     remove_media,
-    set_primary,
+    reorder_media,
     update_product,
 )
 from .catalog_vm import ProductVM, currency_from_choice, parse_price_input
@@ -50,8 +51,13 @@ _DB_ERROR = "No se pudo hablar con la base de datos. Inténtalo de nuevo en un m
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
 _PRODUCT_GONE = "Ese producto ya no existe o no es visible para este negocio."
-_CREATED = "Producto creado. Ahora súbele sus fotos."
+_CREATED = "Producto creado. Tócalo para editarlo o subirle fotos."
+_CREATED_WITH_FILES = "Producto creado. Guardando sus fotos…"
 _SAVED = "Cambios guardados."
+_ORDER_SAVED = "Orden guardado: la primera foto es la principal."
+_DELETED = "Producto eliminado."
+#: How long a confirmation stays in the corner.
+_TOAST_MS = 4000
 
 #: Where a dropped file waits between the foreground upload handler and the background
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
@@ -68,7 +74,6 @@ class CatalogState(rx.State):
     products: list[ProductVM] = []
     loading: bool = False
     error: str = ""
-    notice: str = ""
     _brand_id: str = ""
 
     # -- the "Nuevo producto" form ------------------------------------------------------
@@ -86,6 +91,11 @@ class CatalogState(rx.State):
     #: 2026-10-19: «no me deja poner la imagen de una vez»): their names, shown as chips;
     #: parked in staging and ingested as soon as the product is created.
     new_files: list[str] = []
+    #: The same files as the form shows them (request 2026-10-22: a thumbnail, not a
+    #: name): `{"name", "key", "kind"}` — `key` is the staged file under the upload dir,
+    #: so `rx.get_upload_url` previews it; `kind` is image / video / file (HEIC and the
+    #: like, which a browser cannot draw before the ingest converts them).
+    new_previews: list[dict[str, str]] = []
     _new_pending: list[list[str]] = []
 
     # -- the selected product's editor -------------------------------------------------
@@ -97,6 +107,8 @@ class CatalogState(rx.State):
     edit_currency: str = ""
     edit_error: str = ""
     edit_saving: bool = False
+    #: «Eliminar producto» (request 2026-10-22): the dialog is open while this names it.
+    delete_product_name: str = ""
 
     # -- media uploads ----------------------------------------------------------------
     uploading: bool = False
@@ -109,6 +121,10 @@ class CatalogState(rx.State):
     #: is selected when its turn comes.
     _pending: list[list[str]] = []
     media_busy: bool = False
+    #: The tile lifted by `assets/rank-drag.js` (`media_pick`), until `media_drop`.
+    media_dragging: str = ""
+    #: The order a drop (or «Hacer principal») asked for, waiting for `sync_media_order`.
+    _media_order: list[str] = []
 
     # -- derived ------------------------------------------------------------------------
 
@@ -214,7 +230,6 @@ class CatalogState(rx.State):
     def open_form(self) -> None:
         self.form_open = True
         self.form_error = ""
-        self.notice = ""
 
     @rx.event
     def close_form(self) -> None:
@@ -230,6 +245,11 @@ class CatalogState(rx.State):
                 pass
         self._new_pending = []
         self.new_files = []
+        self.new_previews = []
+
+    def _sync_new_files(self) -> None:
+        self.new_files = [name for _, name in self._new_pending]
+        self.new_previews = [_preview_row(path, name) for path, name in self._new_pending]
 
     @rx.event
     async def handle_new_media(self, files: list[rx.UploadFile]) -> None:
@@ -238,7 +258,7 @@ class CatalogState(rx.State):
         parked = await self._park(files)
         if parked:
             self._new_pending = [*self._new_pending, *parked]
-            self.new_files = [name for _, name in self._new_pending]
+            self._sync_new_files()
 
     @rx.event
     def remove_new_file(self, index: int) -> None:
@@ -251,7 +271,7 @@ class CatalogState(rx.State):
         except OSError:
             pass
         self._new_pending = [p for i, p in enumerate(self._new_pending) if i != index]
-        self.new_files = [name for _, name in self._new_pending]
+        self._sync_new_files()
 
     @rx.event
     def set_new_name(self, value: str) -> None:
@@ -333,11 +353,13 @@ class CatalogState(rx.State):
             self.new_category = ""
             self.new_price = ""
             self.new_currency = ""
-            self.notice = _CREATED
-            self.selected_id = str(product_id)
-            if self.selected is not None:
-                self._fill_editor(self.selected)
             files = self._new_pending
+            self.new_previews = []
+            # The editor does NOT open on the new product (request 2026-10-22): only its
+            # card shows, and a tap on the card opens the editor. The files dropped in
+            # the form still follow it — their progress shows at page level.
+            self.selected_id = ""
+            created = _CREATED_WITH_FILES if files else _CREATED
             self._new_pending = []
             self.new_files = []
             if files:
@@ -348,6 +370,8 @@ class CatalogState(rx.State):
                 self.upload_done = 0
                 self.upload_total = len(self._pending)
                 self.upload_error = ""
+        # a transient confirmation, bottom right (request 2026-10-22: not a band up top)
+        yield rx.toast.success(created, duration=_TOAST_MS)
         if files:
             yield CatalogState.ingest_pending
 
@@ -365,7 +389,6 @@ class CatalogState(rx.State):
         """Open one product's editor (fields + media). Selecting the open one closes it."""
         self.edit_error = ""
         self.upload_error = ""
-        self.notice = ""
         if self.selected_id == product_id:
             self.selected_id = ""
             return
@@ -373,6 +396,53 @@ class CatalogState(rx.State):
         product = self.selected
         if product is not None:
             self._fill_editor(product)
+
+    @rx.event
+    def ask_delete_product(self) -> None:
+        product = self.selected
+        if product is not None:
+            self.delete_product_name = product.name
+
+    @rx.event
+    def set_delete_product_open(self, value: bool) -> None:
+        if not value:
+            self.delete_product_name = ""
+
+    @rx.event(background=True)
+    async def confirm_delete_product(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The open product leaves the catalog; the editor closes on its card's absence."""
+        async with self:
+            self.delete_product_name = ""
+            if self.media_busy or self.edit_saving or not self.selected_id:
+                return
+            self.edit_saving = True
+            product_id = UUID(self.selected_id)
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.edit_saving = False
+            return
+        tenant_id, brand_id, _ = ids
+        try:
+            await asyncio.to_thread(deactivate_product, tenant_id, product_id)
+        except KeyError:
+            async with self:
+                self.edit_saving = False
+                self.edit_error = _PRODUCT_GONE
+            return
+        except SQLAlchemyError as exc:
+            logger.error("product delete failed: %s", type(exc).__name__)
+            async with self:
+                self.edit_saving = False
+                self.edit_error = _DB_ERROR
+            return
+        async with self:
+            self.selected_id = ""
+            self.edit_error = ""
+        await self._refresh(tenant_id, brand_id)
+        async with self:
+            self.edit_saving = False
+        yield rx.toast.success(_DELETED, duration=_TOAST_MS)
 
     @rx.event
     def close_editor(self) -> None:
@@ -402,7 +472,7 @@ class CatalogState(rx.State):
         self.edit_currency = currency_from_choice(value)
 
     @rx.event(background=True)
-    async def save_product(self) -> None:
+    async def save_product(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             if self.edit_saving or not self.selected_id:
                 return
@@ -456,8 +526,12 @@ class CatalogState(rx.State):
             return
         await self._refresh(tenant_id, brand_id)
         async with self:
+            # Saving closes the editor (request 2026-10-22): the card is what is left,
+            # with the saved name and price on it.
             self.edit_saving = False
-            self.notice = _SAVED
+            self.edit_error = ""
+            self.selected_id = ""
+        yield rx.toast.success(_SAVED, duration=_TOAST_MS)
 
     # -- media --------------------------------------------------------------------------
 
@@ -560,9 +634,75 @@ class CatalogState(rx.State):
             self.upload_total = 0
             self.upload_error = " · ".join(failures)
 
+    # -- the order of the media: the first photo is the primary (request 2026-10-22) ----
+
+    @rx.event
+    def media_pick(self, media_id: str) -> None:
+        """A tile was lifted (`assets/rank-drag.js` fires `dragstart` on it); `media_drop`
+        on the tile it is released over does the move."""
+        self.media_dragging = media_id
+
+    @rx.event
+    def media_drop(self, target_id: str) -> rx.event.EventSpec | None:
+        source, self.media_dragging = self.media_dragging, ""
+        if not source or source == target_id:
+            return None
+        return self._place(source, target_id)
+
+    @rx.event
+    def make_primary(self, media_id: str) -> rx.event.EventSpec | None:
+        """«Hacer principal» = put it first: the order IS the choice."""
+        return self._place(media_id, None)
+
+    def _place(self, media_id: str, before: str | None) -> rx.event.EventSpec | None:
+        """`media_id` takes `before`'s slot as the grid showed it (the front when None):
+        the same remove-then-insert `rank-drag.js` animates, so the screen never snaps
+        back. The new order waits in `_media_order` for `sync_media_order`."""
+        product = self.selected
+        if product is None:
+            return None
+        ids = [m.media_id for m in product.media]
+        if media_id not in ids or (before is not None and before not in ids):
+            return None
+        target = ids.index(before) if before is not None else 0
+        ids.remove(media_id)
+        ids.insert(target, media_id)
+        self._media_order = ids
+        return CatalogState.sync_media_order
+
     @rx.event(background=True)
-    async def make_primary(self, media_id: str) -> None:
-        await self._media_action(media_id, set_primary)
+    async def sync_media_order(self) -> AsyncIterator[rx.event.EventSpec]:
+        async with self:
+            if self.media_busy or not self.selected_id or not self._media_order:
+                return
+            self.media_busy = True
+            self.upload_error = ""
+            product_id = UUID(self.selected_id)
+            order = list(self._media_order)
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.media_busy = False
+            return
+        tenant_id, brand_id, _ = ids
+        failed = False
+        try:
+            await asyncio.to_thread(reorder_media, tenant_id, product_id, order)
+        except KeyError:  # UnknownProduct: the media changed under us
+            failed = True
+            async with self:
+                self.upload_error = _PRODUCT_GONE
+        except SQLAlchemyError as exc:
+            failed = True
+            logger.error("media reorder failed: %s", type(exc).__name__)
+            async with self:
+                self.upload_error = _DB_ERROR
+        await self._refresh(tenant_id, brand_id)
+        async with self:
+            self.media_busy = False
+            self._media_order = []
+        if not failed:
+            yield rx.toast.success(_ORDER_SAVED, duration=_TOAST_MS)
 
     @rx.event(background=True)
     async def delete_media(self, media_id: str) -> None:
@@ -593,6 +733,23 @@ class CatalogState(rx.State):
         await self._refresh(tenant_id, brand_id)
         async with self:
             self.media_busy = False
+
+
+_BROWSER_IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_VIDEOS = {".mp4", ".mov", ".m4v", ".webm"}
+
+
+def _preview_row(path_str: str, name: str) -> dict[str, str]:
+    """How the form draws one staged file: its key under the upload dir (what
+    `rx.get_upload_url` serves) and whether a browser can show it as a picture."""
+    suffix = Path(name).suffix.lower()
+    kind = "image" if suffix in _BROWSER_IMAGES else ("video" if suffix in _VIDEOS else "file")
+    try:
+        key = Path(path_str).resolve().relative_to(rx.get_upload_dir().resolve()).as_posix()
+    except ValueError:  # parked somewhere else (tests): nothing to preview
+        key = ""
+        kind = "file"
+    return {"name": name, "key": key, "kind": kind}
 
 
 def _staging_dir(tenant_id: UUID) -> Path:

@@ -29,7 +29,9 @@ from .catalog_vm import (
     ProductVM,
 )
 from .ui import (
+    DragCard,
     app_shell,
+    asset_script,
     callout,
     card,
     dropzone,
@@ -81,10 +83,11 @@ def _price_field(
                 list(CURRENCY_OPTIONS),
                 value=rx.cond(currency == "", NO_CURRENCY, currency),
                 on_change=on_currency,
-                width="10rem",
+                width="8rem",
             ),
             spacing="2",
             width="100%",
+            max_width="24rem",  # a price is a short number: not a field across the page
             align="center",
         ),
         "Opcional. Si lo dejas vacío, las piezas no mostrarán ningún precio; si lo "
@@ -108,25 +111,33 @@ def _product_fields(
 ) -> rx.Component:
     """The same fields for creating and for editing a product."""
     return rx.vstack(
-        _field(
-            "Nombre",
-            rx.input(
-                value=name,
-                on_change=on_name,
-                placeholder="Ej.: Shawarma mixto",
-                width="100%",
-                auto_focus=name_autofocus,
+        # name and category share a row from `md` (request 2026-10-22: the form read as
+        # a plain stack of full-width fields); the description keeps the whole width
+        rx.grid(
+            _field(
+                "Nombre",
+                rx.input(
+                    value=name,
+                    on_change=on_name,
+                    placeholder="Ej.: Shawarma mixto",
+                    width="100%",
+                    auto_focus=name_autofocus,
+                ),
+                "Es lo único obligatorio.",
             ),
-            "Es lo único obligatorio.",
-        ),
-        _field(
-            "Categoría",
-            rx.input(
-                value=category,
-                on_change=on_category,
-                placeholder="Ej.: shawarmas, helados, combos",
-                width="100%",
+            _field(
+                "Categoría",
+                rx.input(
+                    value=category,
+                    on_change=on_category,
+                    placeholder="Ej.: shawarmas, helados, combos",
+                    width="100%",
+                ),
+                "Agrupa productos parecidos.",
             ),
+            columns=rx.breakpoints(initial="1", md="2"),
+            spacing="3",
+            width="100%",
         ),
         _field(
             "Descripción",
@@ -188,10 +199,13 @@ def _new_product_form() -> rx.Component:
                 ),
                 rx.hstack(
                     rx.spacer(),
+                    # the pair every dialog of the system uses (§7): Cancelar soft, with
+                    # its icon, the same size as the verb beside it
                     rx.button(
+                        rx.icon("x", size=T.ICON_SM),
                         "Cancelar",
-                        variant="ghost",
-                        color_scheme=T.tone_scale("neutral"),
+                        variant="soft",
+                        color_scheme="gray",
                         size="2",
                         type="button",
                         on_click=CatalogState.close_form,
@@ -219,32 +233,52 @@ def _new_product_form() -> rx.Component:
     )
 
 
-def _new_file_chip(name: rx.Var[str], index: rx.Var[int]) -> rx.Component:
-    return rx.hstack(
-        rx.icon("paperclip", size=12, color=T.TEXT_MUTED),
-        rx.text(
-            name,
-            size="1",
-            max_width="12rem",
-            white_space="nowrap",
-            overflow="hidden",
-            text_overflow="ellipsis",
-            title=name,
+def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
+    """One file waiting in the form, as the editor will show it (request 2026-10-22: the
+    picture, not its name): the thumbnail — or the kit's frame with a clip / file glyph —
+    and under it the name and the × that takes it out before anything is uploaded."""
+    return rx.box(
+        media_thumb(
+            rx.get_upload_url(row["key"]),
+            has=row["kind"] == "image",
+            size=None,
+            width="100%",
+            height="6.5rem",
+            alt=row["name"],
+            icon=rx.cond(row["kind"] == "video", "film", "file-image"),
         ),
-        rx.icon_button(
-            rx.icon("x", size=12),
-            variant="ghost",
-            color_scheme=T.tone_scale("neutral"),
-            size="1",
-            type="button",
-            on_click=CatalogState.remove_new_file(index),
-            aria_label="Quitar " + name,
+        rx.hstack(
+            rx.text(
+                row["name"],
+                size="1",
+                color=T.TEXT_MUTED,
+                white_space="nowrap",
+                overflow="hidden",
+                text_overflow="ellipsis",
+                min_width="0",
+                title=row["name"],
+            ),
+            rx.spacer(),
+            rx.tooltip(
+                rx.icon_button(
+                    rx.icon("x", size=12),
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="1",
+                    type="button",
+                    on_click=CatalogState.remove_new_file(index),
+                    aria_label="Quitar " + row["name"],
+                ),
+                content="Quitar",
+            ),
+            class_name="q-catalog-tile-foot",
+            align="center",
+            spacing="1",
+            width="100%",
         ),
-        spacing="1",
-        align="center",
-        padding="0.1rem 0.25rem 0.1rem 0.5rem",
-        border=T.BORDER,
-        border_radius="999px",
+        class_name="q-catalog-tile",
+        key=row["key"] + row["name"],
+        width="100%",
     )
 
 
@@ -283,11 +317,13 @@ def _new_media_field() -> rx.Component:
                 variant="compact",
             ),
             rx.cond(
-                CatalogState.new_files.length() > 0,
-                rx.flex(
-                    rx.foreach(CatalogState.new_files, _new_file_chip),
-                    wrap="wrap",
-                    gap="0.4rem",
+                CatalogState.new_previews.length() > 0,
+                rx.box(
+                    rx.foreach(CatalogState.new_previews, _new_file_tile),
+                    display="grid",
+                    grid_template_columns="repeat(auto-fill, minmax(8.5rem, 1fr))",
+                    gap="0.6rem",
+                    width="100%",
                 ),
             ),
             spacing="2",
@@ -299,9 +335,19 @@ def _new_media_field() -> rx.Component:
 # -- the editor -----------------------------------------------------------------------------
 
 
+#: The ranking's pointer script (`ui.asset_script`), run when the editor mounts; it
+#: guards against running twice, so the head copy in Qualify.py never stacks listeners.
+_RANK_DRAG_JS = asset_script("rank-drag.js")
+_ORDER_HINT = (
+    "Mantén pulsada una foto y arrástrala para cambiar el orden: la primera es la principal."
+)
+
+
 def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
+    """One picture or clip: the image fills the tile, «Principal» sits in its corner,
+    and a bar over its foot carries the format and the two actions (star / trash)."""
     src = rx.get_upload_url(item.key)
-    return rx.box(
+    return DragCard.create(
         rx.box(
             rx.cond(
                 item.media_type == "video",
@@ -313,7 +359,7 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
                     src,
                     size=None,
                     width="100%",
-                    height="var(--q-catalog-thumb-h, 9.5rem)",
+                    height="var(--q-catalog-thumb-h, 8rem)",
                     alt=item.filename,
                 ),
             ),
@@ -322,13 +368,15 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
                 rx.box(
                     tone_badge("Principal", "accent", icon="star"),
                     position="absolute",
-                    top="0.4rem",
-                    left="0.4rem",
+                    top="0.45rem",
+                    left="0.45rem",
                 ),
             ),
             position="relative",
             width="100%",
         ),
+        # Under the picture, on a solid surface (request 2026-10-22: over a dark photo the
+        # words vanished): the format, and the two actions as buttons in their tone.
         rx.hstack(
             rx.text(
                 rx.cond(item.media_type == "video", "Video", "Foto"),
@@ -340,29 +388,45 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
             rx.spacer(),
             rx.cond(
                 (item.media_type == "image") & ~item.is_primary,
-                rx.button(
-                    rx.icon("star", size=12),
-                    "Principal",
-                    variant="ghost",
-                    size="1",
-                    on_click=CatalogState.make_primary(item.media_id),
-                    disabled=CatalogState.media_busy,
-                    title="Usar como foto principal",
+                rx.tooltip(
+                    rx.icon_button(
+                        rx.icon("star", size=13),
+                        variant="soft",
+                        size="1",
+                        on_click=CatalogState.make_primary(item.media_id),
+                        disabled=CatalogState.media_busy,
+                        aria_label="Hacer principal",
+                    ),
+                    content="Hacer principal",
                 ),
             ),
-            rx.icon_button(
-                rx.icon("trash-2", size=12),
-                variant="ghost",
-                color_scheme=T.tone_scale("neutral"),
-                size="1",
-                on_click=CatalogState.delete_media(item.media_id),
-                disabled=CatalogState.media_busy,
-                aria_label="Quitar",
+            rx.tooltip(
+                rx.icon_button(
+                    rx.icon("trash-2", size=13),
+                    variant="soft",
+                    size="1",
+                    on_click=CatalogState.delete_media(item.media_id),
+                    disabled=CatalogState.media_busy,
+                    aria_label="Quitar",
+                    **T.tone_scheme("error"),
+                ),
+                content="Quitar",
             ),
-            width="100%",
+            class_name="q-catalog-tile-foot",
             align="center",
             spacing="1",
+            width="100%",
         ),
+        # `.q-rank-card` is what the drag script moves; `.q-catalog-tile` its look here
+        class_name="q-rank-card q-catalog-tile",
+        custom_attrs={
+            "data-rank-group": "catalog-media",
+            "data-rank-key": item.media_id,
+            "role": "listitem",
+            "aria-label": item.filename,
+        },
+        on_drag_start=CatalogState.media_pick(item.media_id),
+        on_drop=CatalogState.media_drop(item.media_id),
         key=item.media_id,
         width="100%",
     )
@@ -396,50 +460,65 @@ def _upload_zone() -> rx.Component:
     )
 
 
+def _upload_progress() -> rx.Component:
+    """The running ingest: in the editor's media block while a product is open, and at
+    page level when the files dropped in the «Nuevo producto» form follow a product
+    whose editor is not open."""
+    return rx.vstack(
+        progress_panel(
+            CatalogState.upload_label,
+            "Corrigiendo y recortando cada archivo antes de guardarlo.",
+            value=CatalogState.upload_progress,
+        ),
+        rx.text(
+            CatalogState.upload_current,
+            size="1",
+            color=T.TEXT_FAINT,
+            text_align="center",
+            class_name="q-mono",
+        ),
+        spacing="1",
+        width="100%",
+        align="center",
+    )
+
+
 def _media_block() -> rx.Component:
     product = CatalogState.selected
     return rx.vstack(
         rx.hstack(
+            rx.icon("images", size=T.ICON_SM, color=T.TEXT_MUTED),
             rx.text("Fotos y videos", size="2", weight="medium"),
             rx.text(product.counts_label, size="1", color=T.TEXT_MUTED),
             rx.spacer(),
-            rx.text("Hasta 12 por producto", size="1", color=T.TEXT_FAINT),
+            rx.text("Hasta 12", size="1", color=T.TEXT_FAINT),
             width="100%",
-            align="baseline",
+            align="center",
             spacing="2",
         ),
-        rx.cond(
-            CatalogState.uploading,
-            rx.vstack(
-                progress_panel(
-                    CatalogState.upload_label,
-                    "Corrigiendo y recortando cada archivo antes de guardarlo.",
-                    value=CatalogState.upload_progress,
-                ),
-                rx.text(
-                    CatalogState.upload_current,
-                    size="1",
-                    color=T.TEXT_FAINT,
-                    text_align="center",
-                    class_name="q-mono",
-                ),
-                spacing="1",
-                width="100%",
-                align="center",
-            ),
-            _upload_zone(),
-        ),
+        rx.cond(CatalogState.uploading, _upload_progress(), _upload_zone()),
         rx.cond(
             CatalogState.upload_error != "",
             rx.text(CatalogState.upload_error, size="1", color=T.tone_color("error", 11)),
         ),
         rx.cond(
             product.media.length() > 0,
-            rx.grid(
-                rx.foreach(product.media, _media_tile),
-                columns=rx.breakpoints(initial="2", sm="3", md="4"),
-                spacing="3",
+            # as many small tiles as fit: each one a thumbnail, never a quarter of the
+            # screen (request 2026-10-22)
+            rx.vstack(
+                rx.box(
+                    rx.foreach(product.media, _media_tile),
+                    display="grid",
+                    grid_template_columns="repeat(auto-fill, minmax(8.5rem, 1fr))",
+                    gap="0.6rem",
+                    width="100%",
+                    role="list",
+                ),
+                rx.text(_ORDER_HINT, size="1", color=T.TEXT_FAINT),
+                rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
+                spacing="2",
                 width="100%",
+                align_items="start",
             ),
             rx.text(
                 "Todavía no tiene fotos. La primera que subas queda como principal.",
@@ -454,65 +533,154 @@ def _media_block() -> rx.Component:
 
 
 def _editor() -> rx.Component:
+    """The selected product: its picture and name up top, then two panels — the fields
+    (with «Guardar cambios» under them) and its media — side by side from `lg`."""
     product = CatalogState.selected
     return card(
         rx.vstack(
             rx.hstack(
+                media_thumb(
+                    rx.get_upload_url(product.primary_photo_key),
+                    has=product.primary_photo_key != "",
+                    size="3.25rem",
+                    alt=product.name,
+                    icon="package",
+                ),
                 rx.vstack(
                     rx.heading(product.name, size="4", as_="h2"),
-                    rx.text(product.slug, size="1", color=T.TEXT_FAINT, class_name="q-mono"),
-                    spacing="0",
+                    rx.hstack(
+                        rx.cond(
+                            product.price_label != "",
+                            tone_badge(product.price_label, "ok", icon="tag"),
+                        ),
+                        tone_badge(product.counts_label, "neutral"),
+                        spacing="2",
+                        align="center",
+                        wrap="wrap",
+                    ),
+                    spacing="1",
                     align_items="start",
+                    min_width="0",
                 ),
                 rx.spacer(),
+                # request 2026-10-22: a product can be deleted from here (a dialog first:
+                # it leaves every list; the pieces already made keep their provenance)
+                rx.button(
+                    rx.icon("trash-2", size=T.ICON_SM),
+                    "Eliminar",
+                    variant="soft",
+                    size="1",
+                    on_click=CatalogState.ask_delete_product,
+                    **T.tone_scheme("error"),
+                ),
                 rx.button(
                     rx.icon("x", size=T.ICON_SM),
                     "Cerrar",
-                    variant="ghost",
-                    color_scheme=T.tone_scale("neutral"),
+                    variant="soft",
+                    color_scheme="gray",
                     size="1",
                     on_click=CatalogState.close_editor,
                 ),
                 width="100%",
                 align="center",
+                spacing="2",
+                wrap="wrap",
             ),
-            _product_fields(
-                name=CatalogState.edit_name,
-                on_name=CatalogState.set_edit_name,
-                category=CatalogState.edit_category,
-                on_category=CatalogState.set_edit_category,
-                description=CatalogState.edit_description,
-                on_description=CatalogState.set_edit_description,
-                price=CatalogState.edit_price,
-                on_price=CatalogState.set_edit_price,
-                currency=CatalogState.edit_currency,
-                on_currency=CatalogState.set_edit_currency,
-            ),
-            rx.cond(
-                CatalogState.edit_error != "",
-                rx.text(CatalogState.edit_error, size="1", color=T.tone_color("error", 11)),
-            ),
-            rx.hstack(
-                rx.spacer(),
-                # soft: the screen's one solid action is "Nuevo producto" (§5.5)
-                rx.button(
-                    rx.icon("save", size=T.ICON_SM),
-                    "Guardar cambios",
-                    variant="soft",
-                    size="2",
-                    on_click=CatalogState.save_product,
-                    loading=CatalogState.edit_saving,
+            rx.box(
+                rx.vstack(
+                    rx.hstack(
+                        rx.icon("pencil-line", size=T.ICON_SM, color=T.TEXT_MUTED),
+                        rx.text("Datos del producto", size="2", weight="medium"),
+                        spacing="2",
+                        align="center",
+                    ),
+                    _product_fields(
+                        name=CatalogState.edit_name,
+                        on_name=CatalogState.set_edit_name,
+                        category=CatalogState.edit_category,
+                        on_category=CatalogState.set_edit_category,
+                        description=CatalogState.edit_description,
+                        on_description=CatalogState.set_edit_description,
+                        price=CatalogState.edit_price,
+                        on_price=CatalogState.set_edit_price,
+                        currency=CatalogState.edit_currency,
+                        on_currency=CatalogState.set_edit_currency,
+                    ),
+                    rx.cond(
+                        CatalogState.edit_error != "",
+                        rx.text(CatalogState.edit_error, size="1", color=T.tone_color("error", 11)),
+                    ),
+                    rx.hstack(
+                        rx.spacer(),
+                        # soft: the screen's one solid action is "Nuevo producto" (§5.5)
+                        rx.button(
+                            rx.icon("save", size=T.ICON_SM),
+                            "Guardar cambios",
+                            variant="soft",
+                            size="2",
+                            on_click=CatalogState.save_product,
+                            loading=CatalogState.edit_saving,
+                        ),
+                        width="100%",
+                    ),
+                    spacing="3",
+                    width="100%",
+                    align_items="start",
+                    class_name="q-catalog-panel",
                 ),
+                rx.vstack(_media_block(), class_name="q-catalog-panel", width="100%"),
+                display="grid",
+                grid_template_columns=rx.breakpoints(
+                    initial="minmax(0, 1fr)", lg="minmax(0, 1fr) 24rem"
+                ),
+                gap="1rem",
                 width="100%",
             ),
-            rx.divider(),
-            _media_block(),
             spacing="4",
             width="100%",
             align_items="start",
         ),
         padding="1.25rem 1.5rem",
         key=CatalogState.selected_id,
+    )
+
+
+def _delete_product_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("¿Eliminar este producto?"),
+            rx.alert_dialog.description(
+                "«" + CatalogState.delete_product_name + "» desaparece del catálogo y de "
+                "Crear pieza. Las piezas que ya se hicieron con él se conservan.",
+                size="2",
+            ),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        rx.icon("arrow-left", size=15),
+                        "Volver",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.icon("trash-2", size=15),
+                        "Sí, eliminar",
+                        size="2",
+                        on_click=CatalogState.confirm_delete_product,
+                        **T.tone_scheme("error"),
+                    ),
+                ),
+                justify="end",
+                gap="0.75rem",
+                margin_top="1.25rem",
+            ),
+            max_width="28rem",
+        ),
+        open=CatalogState.delete_product_name != "",
+        on_open_change=CatalogState.set_delete_product_open,
     )
 
 
@@ -557,6 +725,16 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
                 ),
                 rx.spacer(),
                 rx.text(product.counts_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                # The whole card is the button (no nested control): the chip only says
+                # what the tap does, with «Editar» on hover (request 2026-10-22).
+                rx.tooltip(
+                    rx.box(
+                        rx.icon("pencil", size=T.ICON_SM),
+                        class_name="q-catalog-edit",
+                        aria_hidden="true",
+                    ),
+                    content="Editar",
+                ),
                 width="100%",
                 align="center",
             ),
@@ -630,12 +808,19 @@ def catalog_index() -> rx.Component:
         ),
         page_body(
             rx.cond(CatalogState.error != "", callout(CatalogState.error, "error")),
+            # The ingest of the files dropped in the form runs with no editor open:
+            # its progress and its failures show here, not in a panel nobody sees.
             rx.cond(
-                CatalogState.notice != "",
-                callout(CatalogState.notice, "ok", icon="circle-check"),
+                CatalogState.uploading & (CatalogState.selected_id == ""),
+                card(_upload_progress(), padding="1rem 1.25rem"),
+            ),
+            rx.cond(
+                (CatalogState.upload_error != "") & (CatalogState.selected_id == ""),
+                callout(CatalogState.upload_error, "error"),
             ),
             rx.cond(CatalogState.form_open, _new_product_form()),
             rx.cond(CatalogState.selected, _editor()),
+            _delete_product_dialog(),
             rx.cond(
                 CatalogState.loading,
                 _loading(),

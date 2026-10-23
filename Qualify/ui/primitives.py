@@ -15,11 +15,14 @@ it. The rules, in short (full text in docs/design-system.md §5):
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal
 
 import reflex as rx
 
 from . import tokens as T
+
+_ASSETS = Path(__file__).resolve().parents[2] / "assets"
 
 # ---------------------------------------------------------------------------------------
 # Surfaces
@@ -430,6 +433,22 @@ _SPINNER_SIZES: dict[str, tuple[str, str]] = {
     "md": ("2.25rem", "3px"),  # a standalone wait (default)
     "lg": ("3.5rem", "4px"),  # a full-panel wait — e.g. the Brand Kit wizard's own
 }
+
+
+class DragCard(rx.el.Div):
+    """A card `assets/rank-drag.js` can move: the script dispatches a synthetic
+    `dragstart` on the lifted card and a `drop` on the one it is released over, so the
+    two triggers are declared here. Give it `class_name="q-rank-card"`, a
+    `data-rank-key` and a `data-rank-group` (only cards of one group trade places)."""
+
+    on_drag_start: rx.EventHandler[rx.event.no_args_event_spec]
+    on_drop: rx.EventHandler[rx.event.no_args_event_spec]
+
+
+def asset_script(name: str) -> str:
+    """The text of a script under `assets/`, to run with `rx.call_script` when a screen
+    mounts (the head copy may be dropped around hydration on older Reflex)."""
+    return (_ASSETS / name).read_text(encoding="utf-8")
 
 
 def loading_spinner(size: str = "md") -> rx.Component:
