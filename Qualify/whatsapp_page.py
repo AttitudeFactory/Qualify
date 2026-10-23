@@ -61,6 +61,7 @@ from .whatsapp_vm import (
     NUMBER_SUBS,
     PROMOTION_SUBS,
     QR_CHANNELS,
+    REVIEW_ACTION,
     SECTION_NUMBER,
     SECTION_PROMOTIONS,
     SECTIONS,
@@ -424,6 +425,33 @@ def _details(number: rx.Var) -> rx.Component:
     )
 
 
+def _review_request() -> rx.Component:
+    """N8 for a number that fails: the same support request as the no-number state."""
+    return rx.vstack(
+        rx.cond(
+            WhatsAppState.connect_request_notice != "",
+            callout(WhatsAppState.connect_request_notice, "ok"),
+            rx.button(
+                rx.icon("send", size=16),
+                REVIEW_ACTION,
+                on_click=WhatsAppState.request_connection,
+                loading=WhatsAppState.connect_request_sending,
+                size="3",
+                width=rx.breakpoints(initial="100%", sm="auto"),
+                **_TAP,
+            ),
+        ),
+        rx.cond(
+            WhatsAppState.connect_request_error != "",
+            callout(WhatsAppState.connect_request_error, "error"),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def connection_tab() -> rx.Component:
     """Tu número › Estado: one line first (it works, or what to do), details folded."""
     number = WhatsAppState.selected_number
@@ -442,6 +470,7 @@ def connection_tab() -> rx.Component:
                     spacing="3",
                 ),
                 banner(number.health_label, number.health_tone),
+                rx.cond(WhatsAppState.number_needs_help, _review_request(), rx.fragment()),
                 _details(number),
                 spacing="3",
                 width="100%",

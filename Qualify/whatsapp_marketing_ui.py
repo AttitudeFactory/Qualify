@@ -70,6 +70,7 @@ def ghost_refresh(label: str, on_click: Any, loading: rx.Var[bool] | bool = Fals
         loading=loading,
         variant="ghost",
         size="1",
+        min_height="44px",  # N12: a thumb target, also in the section heads
         **T.tone_scheme("neutral"),
     )
 

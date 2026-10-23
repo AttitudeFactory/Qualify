@@ -47,6 +47,7 @@ from .whatsapp_campaigns_vm import (
     SendVM,
     VariableFieldVM,
 )
+from .whatsapp_chats_vm import CREATE_APPROVED_LABEL
 from .whatsapp_contacts_vm import SOURCES
 from .whatsapp_marketing_ui import (
     card_line,
@@ -92,9 +93,10 @@ def _campaign_row(c: CampaignRowVM) -> rx.Component:
         rx.table.cell(rx.text(c.created_at, size="1", color=T.TEXT_MUTED, class_name="q-nums")),
         rx.table.cell(
             rx.button(
-                "Ver",
+                "Ver resultados",
                 rx.icon("chevron-right", size=T.ICON_SM),
                 on_click=S.open_detail(c.campaign_id),
+                custom_attrs={"aria-label": "Ver resultados de " + c.name},
                 variant="ghost",
                 size="1",
                 **T.tone_scheme("neutral"),
@@ -128,9 +130,10 @@ def _campaign_card(c: CampaignRowVM) -> rx.Component:
                 ),
             ),
             rx.button(
-                "Ver",
+                "Ver resultados",
                 rx.icon("chevron-right", size=T.ICON_SM),
                 on_click=S.open_detail(c.campaign_id),
+                custom_attrs={"aria-label": "Ver resultados de " + c.name},
                 variant="soft",
                 size="2",
                 width="100%",
@@ -157,7 +160,7 @@ def _campaigns_table() -> rx.Component:
         rx.table.root(
             rx.table.header(
                 rx.table.row(
-                    rx.table.column_header_cell("Campaña"),
+                    rx.table.column_header_cell("Promoción"),
                     rx.table.column_header_cell("Estado"),
                     _num_header("Enviados"),
                     _num_header("Entregados"),
@@ -200,7 +203,7 @@ def _list() -> rx.Component:
         ),
         rx.cond(
             S.failed,
-            retry_button("Volver a leer las campañas", S.reload),
+            retry_button("Volver a leer las promociones", S.reload),
             skeleton_rows(3, height="3.5rem"),
         ),
     )
@@ -356,10 +359,25 @@ def _step_message() -> rx.Component:
                     width="100%",
                     align_items="start",
                 ),
-                callout(
-                    "Aún no tienes mensajes aprobados en este número. Crea uno en «Plantillas» "
-                    "y espera la aprobación de WhatsApp (puede tardar hasta 24 horas).",
-                    "info",
+                rx.vstack(
+                    callout(
+                        "Aún no tienes mensajes aprobados en este número. Crea uno en "
+                        "«Mensajes aprobados» y espera la aprobación de WhatsApp (puede "
+                        "tardar hasta 24 horas).",
+                        "info",
+                    ),
+                    rx.button(
+                        rx.icon("plus", size=16),
+                        CREATE_APPROVED_LABEL,
+                        on_click=S.create_approved_message,
+                        variant="soft",
+                        size="3",
+                        min_height="44px",
+                        width=rx.breakpoints(initial="100%", sm="auto"),
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
                 ),
             ),
         ),
@@ -925,7 +943,7 @@ def campaigns_tab() -> rx.Component:
     return rx.vstack(
         tone_banner(S.banner, S.banner_tone),
         section_head(
-            "Campañas",
+            "Promociones enviadas",
             ghost_refresh("Actualizar", S.reload),
             rx.button(
                 rx.icon("plus", size=16),

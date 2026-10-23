@@ -58,6 +58,7 @@ from .whatsapp_vm import (
     CONNECT_REQUEST_NO_EMAIL,
     CONNECT_REQUEST_SAVED,
     CONNECT_REQUEST_SENT,
+    CONNECT_REVIEW_MESSAGE,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
     GRAPH_UNAVAILABLE,
@@ -73,6 +74,7 @@ from .whatsapp_vm import (
     WhatsAppNumberVM,
     compose_qr_message,
     graph_error_notice,
+    needs_help,
     panel_section,
     panel_sub,
     resolve_panel,
@@ -219,6 +221,11 @@ class WhatsAppState(rx.State):
                 return number
         return EMPTY_NUMBER
 
+    @rx.var
+    def number_needs_help(self) -> bool:
+        """Revoked, degraded or paused by Meta: «Pedir que revisen mi WhatsApp» (N8)."""
+        return needs_help(self.selected_number.health_label)
+
     # Perfil/QR content renders ONLY once it was read for the number on screen. An
     # empty form after a failed read would let «Guardar» wipe the real profile on Meta
     # with blanks, and an empty QR list would claim "no codes" when the read failed.
@@ -316,6 +323,7 @@ class WhatsAppState(rx.State):
             auth = await self.get_state(AuthState)
             email = (auth.user_email or "").strip()
             session_tenant_id = auth.session_tenant_id
+            message = CONNECT_REVIEW_MESSAGE if self.number_needs_help else CONNECT_REQUEST_MESSAGE
             self.connect_request_error = ""
             if "@" not in email:
                 self.connect_request_error = CONNECT_REQUEST_NO_EMAIL
@@ -333,7 +341,7 @@ class WhatsAppState(rx.State):
                 tenant_id,
                 contact_email=email,
                 contact_whatsapp="",
-                message=CONNECT_REQUEST_MESSAGE,
+                message=message,
                 context={"screen": "whatsapp"},
             )
         except (InvalidSupportRequest, SQLAlchemyError) as exc:

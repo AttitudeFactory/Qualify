@@ -428,3 +428,18 @@ def test_ux_review_copy() -> None:
     assert '"Cancelar"' not in source and "Con la fecha de hoy" not in source
     assert "sin tu toque" not in source
     assert "S.review_name" in source
+
+
+def test_ux_review_names_and_jumps() -> None:
+    """UX review (m-24842998): one name per place, «Ver resultados» says of which
+    promotion, and the wizard without approved messages jumps to «Mensajes aprobados»."""
+    import pathlib
+
+    here = pathlib.Path(__file__).parent
+    tab = (here / "whatsapp_tab_campaigns.py").read_text()
+    assert '"Promociones enviadas"' in tab and '"Campañas"' not in tab
+    assert "«Plantillas»" not in tab and "on_click=S.create_approved_message" in tab
+    assert tab.count('"aria-label": "Ver resultados de " + c.name') == 2
+    state = (here / "whatsapp_campaigns_state.py").read_text()
+    start = state.index("def create_approved_message(")
+    assert "WhatsAppState.select_tab(TAB_TEMPLATES)" in state[start : start + 800]

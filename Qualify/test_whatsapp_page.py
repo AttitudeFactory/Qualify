@@ -37,6 +37,7 @@ from .whatsapp_vm import (
     NUMBER_SUBS,
     PROMOTION_SUBS,
     QR_CHANNELS,
+    REVIEW_ACTION,
     SECTIONS,
     TAB_ACTIVITY,
     TAB_CAMPAIGNS,
@@ -60,6 +61,7 @@ from .whatsapp_vm import (
     graph_error_notice,
     health_display,
     name_status_display,
+    needs_help,
     panel_section,
     panel_sub,
     platform_status_display,
@@ -410,8 +412,22 @@ def test_the_number_in_one_line(
     assert label
     if tone == "ok":
         assert label == "Tu WhatsApp funciona bien ✓"
-    if status in {"degraded", "revoked"}:
-        assert label == WHATSAPP_RECONNECT_HINT  # the administrative hint, never «Reconectar»
+    if status in {"degraded", "revoked"} or platform == "BANNED":
+        # UX review: the owner reads what happened and gets a button to ask for help,
+        # never the administrative «vuelva a ejecutar la conexión» hint.
+        assert label != WHATSAPP_RECONNECT_HINT and "Pide que" in label
+        assert needs_help(label)
+    else:
+        assert not needs_help(label)
+
+
+def test_a_failing_number_offers_the_review_request() -> None:
+    assert needs_help(_number(status="revoked").health_label)
+    assert needs_help(_number(status="degraded").health_label)
+    assert not needs_help(_number().health_label)
+    source = (_HERE / "whatsapp_page.py").read_text()
+    assert "rx.cond(WhatsAppState.number_needs_help, _review_request()" in source
+    assert REVIEW_ACTION == "Pedir que revisen mi WhatsApp"
 
 
 def test_number_vm_carries_its_line() -> None:

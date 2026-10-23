@@ -201,7 +201,7 @@ def _list() -> rx.Component:
             _templates_list(),
             empty_state(
                 "file-text",
-                "Aún no hay plantillas en este número",
+                "Aún no tienes mensajes aprobados en este número",
                 "Estos mensajes, una vez que Meta los aprueba, te sirven para escribirle a un "
                 "cliente después de 24 horas o para enviar una promoción. Crea el primero. "
                 "Si ya tienes mensajes aprobados en Meta, toca «Ver si ya las aprobaron» y "
@@ -213,7 +213,7 @@ def _list() -> rx.Component:
         ),
         rx.cond(
             S.failed,
-            retry_button("Volver a leer las plantillas", S.reload),
+            retry_button("Volver a leer los mensajes aprobados", S.reload),
             skeleton_rows(4, height="3.5rem"),
         ),
     )
@@ -739,13 +739,13 @@ def templates_tab() -> rx.Component:
     return rx.vstack(
         tone_banner(S.banner, S.banner_tone),
         section_head(
-            "Plantillas",
+            "Mensajes aprobados",
             ghost_refresh("Ver si ya las aprobaron", S.sync, loading=S.syncing),
             rx.button(rx.icon("plus", size=16), FORM_TITLE, on_click=S.open_form, size="3", **_TAP),
         ),
         rx.text(
-            "Las plantillas son los mensajes aprobados por Meta que puedes enviar cuando el "
-            "cliente no te ha escrito en las últimas 24 h — por ejemplo, en una campaña. "
+            "Son los mensajes que Meta aprueba para escribirle a un cliente que no te ha "
+            "escrito en las últimas 24 horas, por ejemplo para enviarle una promoción. "
             + REVIEW_NOTICE,
             size="2",
             color=T.TEXT_MUTED,

@@ -262,9 +262,16 @@ def platform_status_display(status: str | None) -> tuple[str, str]:
 
 HEALTH_OK = "Tu WhatsApp funciona bien ✓"
 HEALTH_PENDING = "Tu WhatsApp todavía se está conectando. Vuelve a mirar en un rato."
+HEALTH_REVOKED = (
+    "Tu WhatsApp se desconectó y no está recibiendo mensajes. Pide que lo vuelvan a "
+    "conectar y el equipo de Qualify lo hace contigo."
+)
+HEALTH_DEGRADED = (
+    "Tu WhatsApp tiene un problema de conexión y algunos mensajes pueden no llegar. "
+    "Pide que lo revisen."
+)
 HEALTH_BLOCKED = (
-    "Meta pausó tu número y por ahora no puede enviar mensajes. Pide ayuda al equipo de "
-    "Qualify para revisarlo."
+    "Meta pausó tu número y por ahora no puede enviar mensajes. Pide que lo revisen y te ayudamos."
 )
 HEALTH_LOW_QUALITY = (
     "Varios clientes marcaron tus mensajes como no deseados. Envía menos promociones "
@@ -278,9 +285,9 @@ def health_display(
 ) -> tuple[str, str]:
     """(line, tone) for the number: the worst problem first, else «funciona bien»."""
     if status == "revoked":
-        return WHATSAPP_RECONNECT_HINT, "error"
+        return HEALTH_REVOKED, "error"
     if status == "degraded":
-        return WHATSAPP_RECONNECT_HINT, "warn"
+        return HEALTH_DEGRADED, "warn"
     if status == "pending":
         return HEALTH_PENDING, "info"
     if platform_status_display(platform_status)[1] == "error":
@@ -288,6 +295,18 @@ def health_display(
     if (quality_rating or "").upper() == "RED":
         return HEALTH_LOW_QUALITY, "warn"
     return HEALTH_OK, "ok"
+
+
+# The three lines the owner cannot fix alone: each one offers «Pedir que revisen mi
+# WhatsApp» (N8), the same support request as the no-number state.
+_HELP_LINES = frozenset({HEALTH_REVOKED, HEALTH_DEGRADED, HEALTH_BLOCKED})
+REVIEW_ACTION = "Pedir que revisen mi WhatsApp"
+CONNECT_REVIEW_MESSAGE = "Mi WhatsApp tiene un problema en Qualify. Por favor revísenlo."
+
+
+def needs_help(health_label: str) -> bool:
+    """True when the number's line asks the owner to request help from the team."""
+    return health_label in _HELP_LINES
 
 
 # Without a connected number (N8): what the owner gains, and the next step, a request
