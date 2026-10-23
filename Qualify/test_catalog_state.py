@@ -492,3 +492,56 @@ def test_load_sweeps_orphaned_staging_files(monkeypatch, tmp_path: Path) -> None
     os.utime(fresh, (now - 60,) * 2)
     catalog_state_module._sweep_staging(_PRODUCT_ID, now=now)
     assert not old.exists() and fresh.exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. the owner's words (m-24842971)
+
+_COPY_SOURCES = ("catalog_page.py", "catalog_state.py", "catalog_vm.py")
+# Words from the team, not the owner (qualify-ux §3, docs/ux-auditoria-2026-10/m2 #5, #10).
+_BANNED = ("plantilla", "feed", "pieza", "gancho", "provisionad", "story", "base de datos")
+
+
+def _visible_strings(source: str) -> list[str]:
+    """Every string literal in the module except docstrings — what can reach the screen."""
+    import ast
+
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.ClassDef | ast.AsyncFunctionDef)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+
+
+def test_the_catalog_speaks_the_owners_words() -> None:
+    here = Path(catalog_state_module.__file__).parent
+    for name in _COPY_SOURCES:
+        for text in _visible_strings((here / name).read_text(encoding="utf-8")):
+            lowered = text.lower()
+            for word in _BANNED:
+                assert word not in lowered, f"{name}: «{word}» in {text!r}"
+            # «reel» only as «reel (video corto)» (founder decision 11).
+            assert "reel" not in lowered.replace("reel (video corto)", ""), (name, text)
+
+
+def test_a_missing_brand_shows_the_way_to_complete_it() -> None:
+    state = CatalogState()
+    assert not state.needs_brand
+    state.error = catalog_state_module._NO_BRAND
+    assert state.needs_brand
+    assert state.error == (
+        "Primero completa tu marca (logo y colores) y vuelve a subir tus productos."
+    )
+    state.error = catalog_state_module._DB_ERROR
+    assert not state.needs_brand
