@@ -36,7 +36,7 @@ What the page says that the service decides elsewhere:
 - **«Respuestas rápidas»** (m-24789472) adds up to 13 short options under the message
   being written, sent with it once approved; a template **with buttons** shows them
   read-only under the box and goes out as one message with buttons. Either one says
-  plainly when this deployment cannot send it yet («Por verificar»);
+  plainly when this deployment cannot send it yet (a notice, never the state badge);
 - **«Preguntas iniciales»** (m-24789472), in the header next to the account, opens the
   account's Instagram Ice Breakers drawer (`ice_breakers_panel.py`): edit, save, and —
   after a confirmation — publish to or remove from Instagram;
@@ -55,6 +55,7 @@ import reflex as rx
 
 from .conversations_state import ConversationsState
 from .conversations_vm import (
+    BUTTON_KINDS,
     BUTTON_LINK,
     BUTTON_REPLY,
     BUTTONS_HINT,
@@ -1223,24 +1224,29 @@ def _field(label: str, control: rx.Component, counter: rx.Var[str]) -> rx.Compon
 
 def _form_button_row(b: ButtonVM, i: rx.Var[int]) -> rx.Component:
     """One button of the template being written: what it does, its text (≤ 20) and,
-    for «Abrir enlace», the https page it opens."""
+    for «Abrir una página», the https page it opens."""
     return card(
         rx.vstack(
             rx.hstack(
-                rx.select.root(
-                    rx.select.trigger(aria_label="Qué hace el botón", min_width="11rem"),
-                    rx.select.content(
-                        rx.select.item("Responder", value=BUTTON_REPLY),
-                        rx.select.item("Abrir enlace", value=BUTTON_LINK),
+                rx.vstack(
+                    rx.text("Qué hace el botón", size="2", weight="medium"),
+                    rx.select.root(
+                        rx.select.trigger(aria_label="Qué hace el botón", min_width="12rem"),
+                        rx.select.content(
+                            rx.select.item(BUTTON_KINDS[BUTTON_REPLY][0], value=BUTTON_REPLY),
+                            rx.select.item(BUTTON_KINDS[BUTTON_LINK][0], value=BUTTON_LINK),
+                        ),
+                        value=b.kind,
+                        on_change=lambda value: S.set_template_button_kind(i, value),
+                        size="2",
                     ),
-                    value=b.kind,
-                    on_change=lambda value: S.set_template_button_kind(i, value),
-                    size="2",
+                    spacing="1",
+                    min_width="0",
                 ),
                 rx.spacer(),
                 _template_tool("trash-2", "Quitar el botón", on_click=S.remove_template_button(i)),
                 width="100%",
-                align="center",
+                align="end",
             ),
             _field(
                 "Texto del botón",
@@ -1618,7 +1624,7 @@ def _applied_buttons() -> rx.Component:
                     gap="0.4rem",
                 ),
                 rx.text(
-                    "Solo se ven en la app de Instagram del teléfono.",
+                    "Solo se ven en la aplicación de Instagram del celular.",
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
@@ -1751,16 +1757,7 @@ def _quick_replies_panel() -> rx.Component:
                         callout(QUICK_REPLIES_WITH_BUTTONS, "info"),
                         _quick_replies_editor(),
                     ),
-                    callout(
-                        rx.hstack(
-                            rx.text(S.quick_replies_feature.notice, size="2"),
-                            tone_badge(S.quick_replies_feature.state_label, "warn"),
-                            spacing="2",
-                            align="center",
-                            flex_wrap="wrap",
-                        ),
-                        "info",
-                    ),
+                    callout(S.quick_replies_feature.notice, "info"),
                 ),
                 spacing="2",
                 width="100%",

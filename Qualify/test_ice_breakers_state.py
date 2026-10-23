@@ -14,7 +14,9 @@ Pins:
 4. Publish/remove ask first, then reach Instagram with the person's id; publishing saves
    unsaved edits first.
 5. With the capability off, publish/remove are disabled and refused; editing still works.
-6. A remote failure is shown (the status says why); «Comprobar» failing shows its message.
+6. A remote failure is shown (the status says why); «Ver qué muestra Instagram ahora»
+   failing shows its message.
+8. Closing with unsaved edits asks first: «Guardar» saves then closes, «Descartar» drops.
 7. Restore asks first; logout resets this state; the panel uses the design system.
 """
 
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,6 +49,7 @@ from qualify_api.followups.capabilities import Capabilities, Capability
 from . import ice_breakers_provider as provider
 from .auth_state import AuthState
 from .ice_breakers_state import IceBreakersState
+from .ice_breakers_vm import CONFIRM_CLOSE, UNAVAILABLE_NOTE
 
 _HERE = Path(__file__).parent
 TENANT = UUID("a0000000-0000-4000-8000-0000000000a1")
@@ -215,7 +219,11 @@ async def test_capability_off_disables_publish_and_remove_but_not_editing() -> N
     world = _world(OFF)
     state = await _opened(world)
     assert state.available is False
-    assert state.unavailable_reason == OFF.reason and state.availability_label == "Por verificar"
+    # The registry's reason (a deployment switch, the team's check) never reaches the
+    # browser: it is a backend-only var, kept for the logs.
+    assert state._unavailable_reason == OFF.reason
+    assert "unavailable_reason" not in IceBreakersState.vars
+    assert "availability_label" not in IceBreakersState.vars
     assert state.can_publish is False and state.can_remove is False
     state.ask_confirm("publish")
     state.ask_confirm("remove")
@@ -288,6 +296,42 @@ def test_move_and_discard_are_local() -> None:
     assert state.rows[0].payload == first and not state.dirty
 
 
+async def test_closing_with_unsaved_edits_asks_first() -> None:
+    world = _world()
+    state = await _opened(world)
+    state.set_panel_open(False)  # nothing to lose: it closes
+    assert state.panel_open is False
+    state.panel_open = True
+
+    state.set_question(0, "¿Qué combo te provoca?")
+    state.set_panel_open(False)
+    assert state.panel_open is True and state.confirming == "close"
+    assert state.confirm_message == "Tienes cambios sin guardar."
+    await _drain(IceBreakersState.confirm.fn(state))  # «close» is not a remote action
+    assert world.client.calls == [] and state.confirming == "close"
+
+    await _drain(IceBreakersState.save_and_close.fn(state))
+    assert state.panel_open is False and not state.dirty
+    assert world.repo.rows[CONN].items[0].question == "¿Qué combo te provoca?"
+
+
+async def test_save_and_close_stays_open_on_a_refusal_and_discard_drops() -> None:
+    world = _world()
+    state = await _opened(world)
+    state.set_question(1, "   ")
+    state.set_panel_open(False)
+    await _drain(IceBreakersState.save_and_close.fn(state))
+    assert state.panel_open is True and state.confirming == ""
+    assert state.rows[1].error == MESSAGES["question_empty"]
+
+    state.set_panel_open(False)
+    assert state.confirming == "close"
+    state.discard_and_close()
+    assert state.panel_open is False and not state.dirty
+    assert [r.question for r in state.rows] == [i.question for i in DEFAULT_ITEMS]
+    assert world.repo.rows[CONN].items == DEFAULT_ITEMS
+
+
 def test_logout_resets_this_state() -> None:
     assert "IceBreakersState" in inspect.getsource(AuthState.logout.fn)
 
@@ -306,12 +350,22 @@ def test_the_page_renders_the_panel() -> None:
     from .conversations_page import conversations_index
 
     rendered = str(conversations_index().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
     for text in (
         "Preguntas iniciales",
         "Publicar en Instagram",
-        "Comprobar en Instagram",
+        "Ver qué muestra Instagram ahora",
         "Quitar de Instagram",
-        "Restaurar las preguntas por defecto",
+        "Volver a las preguntas sugeridas",
         "Agregar pregunta",
+        UNAVAILABLE_NOTE,
+        CONFIRM_CLOSE,
+        "Descartar",
     ):
-        assert text in rendered, text
+        assert present(text), text
+    for hidden in ("QUALIFY_ICE_BREAKERS", "R6", "Publicar y quitar todavía"):
+        assert not present(hidden), hidden

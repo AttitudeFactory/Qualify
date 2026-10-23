@@ -104,7 +104,7 @@ async def test_an_ice_breaker_lands_once_and_enqueues_nothing(intake, seeded) ->
     thread, messages = _thread_messages(repo, seeded, item["sender"]["id"])
     assert len(messages) == 1
     [message] = messages
-    assert (message.direction, message.text) == ("inbound", "¿Cuánto cuesta?")
+    assert (message.direction, message.text) == ("inbound", "¿Quieres consultar un precio?")
     assert (message.choice_kind, message.choice_payload) == (CHOICE_ICE_BREAKER, "QF_PRECIO")
     assert message.choice_label == "Pregunta inicial: Precio"
     assert thread.last_inbound_at == AT

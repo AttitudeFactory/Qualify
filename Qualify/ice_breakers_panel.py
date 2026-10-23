@@ -89,28 +89,9 @@ def _explanation() -> rx.Component:
 
 
 def _unavailable() -> rx.Component:
-    return rx.cond(
-        S.available,
-        rx.fragment(),
-        callout(
-            rx.vstack(
-                rx.text(UNAVAILABLE_NOTE, size="2"),
-                rx.cond(
-                    S.availability_label != "",
-                    tone_badge(S.availability_label, "warn", icon="circle-help"),
-                    rx.fragment(),
-                ),
-                rx.cond(
-                    S.unavailable_reason != "",
-                    rx.text(S.unavailable_reason, size="1", color=T.TEXT_MUTED),
-                    rx.fragment(),
-                ),
-                spacing="2",
-                width="100%",
-            ),
-            "info",
-        ),
-    )
+    """One plain notice. The capability's state and reason (a deployment switch, the
+    team's check) are for logs and the team, never for the owner."""
+    return rx.cond(S.available, rx.fragment(), callout(UNAVAILABLE_NOTE, "info"))
 
 
 def _tool(icon: str, label: str, **props) -> rx.Component:
@@ -118,7 +99,7 @@ def _tool(icon: str, label: str, **props) -> rx.Component:
         rx.icon_button(
             rx.icon(icon, size=T.ICON_SM),
             variant="ghost",
-            size="2",
+            size="3",
             type="button",
             aria_label=label,
             **T.tone_scheme("neutral"),
@@ -241,7 +222,7 @@ def _questions() -> rx.Component:
         ),
         rx.button(
             rx.icon("list-restart", size=T.ICON_SM),
-            "Restaurar las preguntas por defecto",
+            "Volver a las preguntas sugeridas",
             on_click=S.ask_confirm("restore"),
             disabled=~S.can_restore,
             variant="ghost",
@@ -295,12 +276,43 @@ def _body() -> rx.Component:
     )
 
 
+def _close_block() -> rx.Component:
+    """Closing with unsaved edits asks first, in place: keep them or let them go."""
+    return rx.vstack(
+        rx.text(S.confirm_message, size="2", weight="medium"),
+        rx.hstack(
+            rx.button(
+                "Descartar",
+                on_click=S.discard_and_close,
+                variant="soft",
+                size="2",
+                type="button",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.button(
+                rx.icon("check", size=T.ICON_SM),
+                "Guardar",
+                on_click=S.save_and_close,
+                loading=S.working == "save",
+                size="2",
+                type="button",
+            ),
+            spacing="2",
+            justify="end",
+            width="100%",
+            flex_wrap="wrap",
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
 def _confirm_block() -> rx.Component:
     yes_label = rx.match(
         S.confirming,
         ("publish", "Sí, publicar"),
         ("remove", "Sí, quitar"),
-        "Sí, restaurar",
+        "Sí, volver a las sugeridas",
     )
     return rx.vstack(
         rx.text(S.confirm_message, size="2", weight="medium"),
@@ -364,7 +376,7 @@ def _actions() -> rx.Component:
         rx.flex(
             rx.button(
                 rx.icon("scan-search", size=T.ICON_SM),
-                "Comprobar en Instagram",
+                "Ver qué muestra Instagram ahora",
                 on_click=S.check_remote,
                 loading=S.working == "check",
                 disabled=(S.busy & (S.working != "check")) | ~S.ready,
@@ -389,17 +401,6 @@ def _actions() -> rx.Component:
             justify="end",
             width="100%",
         ),
-        rx.cond(
-            S.ready & ~S.available,
-            rx.text(
-                "Publicar y quitar todavía no están disponibles.",
-                size="1",
-                color=T.TEXT_MUTED,
-                text_align="right",
-                width="100%",
-            ),
-            rx.fragment(),
-        ),
         spacing="2",
         width="100%",
     )
@@ -414,7 +415,12 @@ def ice_breakers_panel() -> rx.Component:
         title=S.panel_title,
         icon="message-circle-question",
         description="Preguntas listas para que te escriban con un toque.",
-        footer=rx.cond(S.confirming != "", _confirm_block(), _actions()),
+        footer=rx.match(
+            S.confirming,
+            ("", _actions()),
+            ("close", _close_block()),
+            _confirm_block(),
+        ),
     )
 
 

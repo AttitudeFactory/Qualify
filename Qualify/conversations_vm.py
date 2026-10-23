@@ -1170,8 +1170,8 @@ BUTTON_REPLY = "postback"
 BUTTON_LINK = "web_url"
 #: What each kind of button is called on screen, and its icon.
 BUTTON_KINDS: dict[str, tuple[str, str]] = {
-    BUTTON_REPLY: ("Responder", "reply"),
-    BUTTON_LINK: ("Abrir enlace", "external-link"),
+    BUTTON_REPLY: ("Responder con un toque", "reply"),
+    BUTTON_LINK: ("Abrir una página", "external-link"),
 }
 
 
@@ -1329,13 +1329,13 @@ MAX_BUTTON_TITLE_CHARS = 20
 MAX_BUTTON_TEXT_CHARS = 640
 
 QUICK_REPLIES_HINT = (
-    "Son opciones para que la persona responda con un toque. Solo se ven en la app de "
-    "Instagram del teléfono y desaparecen cuando toca una."
+    "Son opciones para que la persona responda con un toque. Solo se ven en la aplicación "
+    "de Instagram del celular y desaparecen cuando toca una."
 )
 BUTTONS_HINT = (
     "Con botones, la plantilla sale en un solo mensaje de hasta "
-    f"{MAX_BUTTON_TEXT_CHARS} caracteres. Los botones solo se ven en la app de Instagram "
-    "del teléfono."
+    f"{MAX_BUTTON_TEXT_CHARS} caracteres. Los botones solo se ven en la aplicación de "
+    "Instagram del celular."
 )
 QUICK_REPLIES_WITH_BUTTONS = (
     "Un mensaje con botones no lleva respuestas rápidas. Quita los botones para usarlas."
@@ -1353,8 +1353,8 @@ BUTTONS_OFF_FORM_NOTICE = (
 @dataclass(frozen=True)
 class FeatureVM:
     """Whether the composer may send one kind of interactive message, and — when not —
-    the plain sentence and the state badge («Por verificar»). Built from the service's
-    `Availability`; its `reason` names a deployment switch and is never shown."""
+    the plain sentence. Built from the service's `Availability`; its `reason` names a
+    deployment switch and `state_label` the team's verdict — neither is shown."""
 
     enabled: bool
     notice: str

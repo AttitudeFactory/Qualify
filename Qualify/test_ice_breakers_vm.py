@@ -123,6 +123,9 @@ def test_confirmations_say_what_changes() -> None:
     assert "ya no verán" in vm.confirm_text("remove")
     assert "se pierde" in vm.confirm_text("restore")
     assert vm.confirm_text("otra cosa") == ""
+    assert vm.confirm_text("close") == "Tienes cambios sin guardar."
+    assert "close" not in vm.CONFIRM_KINDS  # never a remote action
+    assert "sugeridas" in vm.confirm_text("restore")
 
 
 def test_copy_has_no_english_words() -> None:
@@ -134,5 +137,6 @@ def test_copy_has_no_english_words() -> None:
             *map(vm.confirm_text, vm.CONFIRM_KINDS),
         ]
     ).lower()
-    for word in ("ice breaker", "post", "inbox", "feed", "chatbot", "bot ", "payload"):
+    assert "aplicación de instagram del celular" in texts
+    for word in ("ice breaker", "post", "inbox", "feed", "chatbot", "bot ", "payload", " app "):
         assert word not in texts

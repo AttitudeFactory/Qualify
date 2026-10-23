@@ -160,7 +160,7 @@ MESSAGES: Final[dict[str, str]] = {
     ERR_THREAD_NOT_FOUND: "No encontramos esa conversación. Vuelve a abrirla.",
     ERR_BODY_TOO_LONG_FOR_BUTTONS: (
         f"Un mensaje con botones puede tener hasta {MAX_BUTTONS_BODY_CHARS} caracteres. "
-        "Acórtalo o quita los botones."
+        "Acórtalo o envíalo sin botones."
     ),
     # The button errors (`buttons_empty`, `button_title_too_long`, …) of `interactive`.
     **INTERACTIVE_MESSAGES,

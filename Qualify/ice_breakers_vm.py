@@ -48,7 +48,7 @@ _MONTHS: Final = (
 #: The explanation at the top of the panel (qualify-ux: what the owner gets, then the
 #: limits that matter — phone only, a person answers).
 EXPLANATION: Final = (
-    "Cuando alguien abre un chat con tu cuenta desde la aplicación de Instagram en el "
+    "Cuando alguien abre un chat con tu cuenta desde la aplicación de Instagram del "
     "celular, ve estas preguntas y puede tocar una para escribirte sin pensar qué decir. "
     "En la computadora no aparecen."
 )
@@ -57,8 +57,8 @@ ANSWER_NOTE: Final = (
     "Nada se contesta solo."
 )
 UNAVAILABLE_NOTE: Final = (
-    "Por ahora puedes preparar y guardar tus preguntas. Publicarlas en Instagram todavía "
-    "no está disponible."
+    "Ya puedes preparar y guardar tus preguntas. Estamos terminando de probar la "
+    "publicación con Instagram."
 )
 CONFIRM_PUBLISH: Final = (
     "Vas a cambiar lo que ve cualquier persona que abra un chat con tu cuenta en "
@@ -69,9 +69,10 @@ CONFIRM_REMOVE: Final = (
     "preguntas quedan guardadas aquí para publicarlas otra vez. ¿Quitarlas de Instagram?"
 )
 CONFIRM_RESTORE: Final = (
-    "Vas a cambiar tus preguntas por las cuatro que te proponemos. Lo que escribiste se "
-    "pierde. ¿Restaurarlas?"
+    "Vas a cambiar tus preguntas por las cuatro que te sugerimos. Lo que escribiste se "
+    "pierde. ¿Volver a las preguntas sugeridas?"
 )
+CONFIRM_CLOSE: Final = "Tienes cambios sin guardar."
 
 CONFIRM_KINDS: Final = frozenset({"publish", "remove", "restore"})
 
@@ -268,6 +269,7 @@ def confirm_text(kind: str) -> str:
         "publish": CONFIRM_PUBLISH,
         "remove": CONFIRM_REMOVE,
         "restore": CONFIRM_RESTORE,
+        "close": CONFIRM_CLOSE,
     }.get(kind, "")
 
 
@@ -277,6 +279,7 @@ def question_count(rows: Sequence[QuestionRowVM]) -> str:
 
 __all__ = [
     "ANSWER_NOTE",
+    "CONFIRM_CLOSE",
     "CONFIRM_KINDS",
     "EMPTY_STATUS",
     "EXPLANATION",

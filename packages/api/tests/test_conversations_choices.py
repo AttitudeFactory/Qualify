@@ -92,12 +92,16 @@ ICE_BREAKER = {
     "sender": {"id": "igsid-alice"},
     "recipient": {"id": IGID},
     "timestamp": TS,
-    "postback": {"mid": "mid.ib.1", "title": "¿Cuánto cuesta?", "payload": "QF_PRECIO"},
+    "postback": {
+        "mid": "mid.ib.1",
+        "title": "¿Quieres consultar un precio?",
+        "payload": "QF_PRECIO",
+    },
 }
 # `features/ice-breakers.md`: the same item, as documented there, without `mid`.
 ICE_BREAKER_NO_MID = {
     **ICE_BREAKER,
-    "postback": {"title": "¿Cuánto cuesta?", "payload": "QF_PRECIO"},
+    "postback": {"title": "¿Quieres consultar un precio?", "payload": "QF_PRECIO"},
 }
 # `features/quick-replies.md`: the title is the text, the payload rides along.
 QUICK_REPLY = {
@@ -130,20 +134,45 @@ def world():
 @pytest.mark.parametrize(
     ("kind", "payload", "title", "label"),
     [
-        (CHOICE_ICE_BREAKER, "QF_PRECIO", "¿Cuánto cuesta?", "Pregunta inicial: Precio"),
+        (
+            CHOICE_ICE_BREAKER,
+            "QF_PRECIO",
+            "¿Quieres consultar un precio?",
+            "Pregunta inicial: Precio",
+        ),
         (
             CHOICE_ICE_BREAKER,
             "QF_PRODUCTO",
-            "¿Qué productos tienen?",
+            "¿Qué producto te interesa?",
             "Pregunta inicial: Productos",
         ),
+        # The owner rewrote a default question and kept its payload: the thread names
+        # what the person saw, never the default's short name.
+        (
+            CHOICE_ICE_BREAKER,
+            "QF_PRECIO",
+            "¿Hacen domicilios?",
+            "Pregunta inicial: ¿Hacen domicilios?",
+        ),
+        (
+            CHOICE_ICE_BREAKER,
+            "QF_PRECIO",
+            "  ¿quieres CONSULTAR un precio? ",
+            "Pregunta inicial: Precio",
+        ),
+        (CHOICE_ICE_BREAKER, "QF_PRECIO", None, "Pregunta inicial: Precio"),
         (
             CHOICE_ICE_BREAKER,
             "QF_UBICACION_HORARIO",
             None,
             "Pregunta inicial: Ubicación y horario",
         ),
-        (CHOICE_ICE_BREAKER, "QF_CATALOGO", "x", "Pregunta inicial: Catálogo"),
+        (
+            CHOICE_ICE_BREAKER,
+            "QF_CATALOGO",
+            "¿Quieres conocer el catálogo?",
+            "Pregunta inicial: Catálogo",
+        ),
         # A QF_ payload that is not a default: the title the person saw.
         (CHOICE_ICE_BREAKER, "QF_ENVIOS", "¿Hacen envíos?", "Pregunta inicial: ¿Hacen envíos?"),
         (CHOICE_QUICK_REPLY, "QFQ_SI", "Sí", "Respuesta rápida: Sí"),
@@ -236,7 +265,7 @@ def test_an_ice_breaker_postback_parses_as_an_inbound_message() -> None:
     assert conversation == RemoteConversation(counterpart_external_id="igsid-alice")
     assert message.external_message_id == "mid.ib.1"
     assert message.direction == "inbound"
-    assert message.text == "¿Cuánto cuesta?"
+    assert message.text == "¿Quieres consultar un precio?"
     assert message.posted_at == AT
     assert message.author_external_id == "igsid-alice"
     assert (message.choice_kind, message.choice_payload) == (CHOICE_ICE_BREAKER, "QF_PRECIO")
@@ -260,7 +289,10 @@ def test_a_postback_without_mid_gets_a_deterministic_synthetic_id() -> None:
     assert first.external_message_id == again.external_message_id
     assert first.external_message_id.startswith(SYNTHETIC_POSTBACK_PREFIX)
     assert first.external_message_id == synthetic_postback_mid(
-        sender_id="igsid-alice", timestamp=TS, payload="QF_PRECIO", title="¿Cuánto cuesta?"
+        sender_id="igsid-alice",
+        timestamp=TS,
+        payload="QF_PRECIO",
+        title="¿Quieres consultar un precio?",
     )
     # Another tap — another instant, another option — is another message.
     later = {**ICE_BREAKER_NO_MID, "timestamp": TS + 1}
@@ -437,7 +469,7 @@ def _poll(sync: ConversationSyncService, message: RemoteMessage) -> bool:
 
 async def test_poll_first_then_the_webhook_enriches_the_same_row(world) -> None:
     repo, sync, handler = world
-    assert _poll(sync, _poll_copy("mid.ib.1", "¿Cuánto cuesta?")) is True
+    assert _poll(sync, _poll_copy("mid.ib.1", "¿Quieres consultar un precio?")) is True
     assert _poll(sync, _poll_copy("mid.qr.1", "Sí")) is True
     [before, _] = _messages(repo)
     assert before.choice_kind is None
@@ -454,7 +486,7 @@ async def test_poll_first_then_the_webhook_enriches_the_same_row(world) -> None:
 async def test_webhook_first_then_the_poll_keeps_the_choice(world) -> None:
     repo, sync, handler = world
     await handler(_event(ICE_BREAKER))
-    assert _poll(sync, _poll_copy("mid.ib.1", "¿Cuánto cuesta?")) is False
+    assert _poll(sync, _poll_copy("mid.ib.1", "¿Quieres consultar un precio?")) is False
     [message] = _messages(repo)
     assert (message.choice_kind, message.choice_payload) == (CHOICE_ICE_BREAKER, "QF_PRECIO")
 
@@ -519,8 +551,10 @@ async def test_a_tap_steers_the_draft_as_context_and_stays_a_proposal(world) -> 
     draft = _draft_service(repo, gen).suggest(tenant_id=TENANT, thread_id=thread.id)
 
     [call] = gen.kwargs
-    assert call["context"] == choice_context(CHOICE_ICE_BREAKER, "QF_PRECIO", "¿Cuánto cuesta?")
-    assert "pregunta inicial «¿Cuánto cuesta?» (QF_PRECIO: Precio)" in call["context"]
+    assert call["context"] == choice_context(
+        CHOICE_ICE_BREAKER, "QF_PRECIO", "¿Quieres consultar un precio?"
+    )
+    assert "pregunta inicial «¿Quieres consultar un precio?» (QF_PRECIO: Precio)" in call["context"]
     assert draft.status is DraftStatus.PROPOSED  # a person still decides
     assert draft.grounding["choice"] == {"kind": CHOICE_ICE_BREAKER, "payload": "QF_PRECIO"}
 

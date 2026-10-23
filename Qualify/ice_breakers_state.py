@@ -13,10 +13,10 @@ added here goes out with `payload == ""` (the service names it). The service's r
 (`IceBreakerError`) land under the question their `index` names.
 
 **Instagram is touched only after a confirmation** in place («Publicar en Instagram»,
-«Quitar de Instagram»; «Restaurar las preguntas por defecto» asks too, since it drops
+«Quitar de Instagram»; «Volver a las preguntas sugeridas» asks too, since it drops
 what was written). Publishing saves unsaved edits first, then publishes the draft — the
 `user_id` that pressed the button travels with it. With the `ice_breakers` capability
-off, both buttons are disabled with the reason; «Comprobar en Instagram» (a read) stays.
+off, both buttons are disabled with the reason; «Ver qué muestra Instagram ahora» (a read) stays.
 A remote failure is recorded by the service (`IceBreakerRemoteError.config`) and the
 status line shows it.
 
@@ -72,7 +72,7 @@ _SAVE_FAILED = "No pudimos guardar tus preguntas. Vuelve a intentarlo en un mome
 _ACTION_FAILED = "Algo falló al hablar con Instagram. Inténtalo de nuevo en unos minutos."
 
 _SAVED = "Guardamos tus preguntas."
-_RESTORED = "Volviste a las cuatro preguntas que te proponemos. Ya están guardadas."
+_RESTORED = "Volviste a las preguntas sugeridas. Ya están guardadas."
 _PUBLISHED = "Listo: tus preguntas ya están en Instagram."
 _REMOVED = "Quitamos tus preguntas de Instagram."
 _CHECKED = "Revisamos lo que muestra Instagram."
@@ -106,11 +106,12 @@ class IceBreakersState(rx.State):
     dirty: bool = False  # the rows differ from the saved draft
     form_error: str = ""  # a refusal that names no row
     status: StatusVM = EMPTY_STATUS
-    remote_error: str = ""  # «Comprobar en Instagram» failed
+    remote_error: str = ""  # «Ver qué muestra Instagram ahora» failed
 
     available: bool = False
-    unavailable_reason: str = ""
-    availability_label: str = ""
+    # The capability's reason names a deployment switch and the team's check: kept for
+    # the logs, never sent to the browser (the panel shows one plain notice instead).
+    _unavailable_reason: str = ""
 
     confirming: str = ""  # "publish" | "remove" | "restore" | ""
     working: str = ""  # "save" | "publish" | "remove" | "restore" | "check" | ""
@@ -239,9 +240,23 @@ class IceBreakersState(rx.State):
 
     @rx.event
     def set_panel_open(self, value: bool) -> None:
-        self.panel_open = bool(value)
-        if not self.panel_open:
-            self.confirming = ""
+        """Closing with unsaved edits asks first, in place («Guardar» / «Descartar»)."""
+        if bool(value):
+            self.panel_open = True
+            return
+        if self.dirty and self.ready:
+            self.confirming = "close"
+            return
+        self.panel_open = False
+        self.confirming = ""
+
+    @rx.event
+    def discard_and_close(self) -> None:
+        """«Descartar» on close: the edits go, the saved draft stays."""
+        if self.working:
+            return
+        self._edited(build_rows(self._saved))
+        self.panel_open = False
 
     @rx.event(background=True)
     async def load(self) -> None:
@@ -276,8 +291,9 @@ class IceBreakersState(rx.State):
                 return  # another account was opened meanwhile; its own load wins
             self._apply(config)
             self.available = bool(availability.enabled)
-            self.unavailable_reason = availability.reason if not availability.enabled else ""
-            self.availability_label = availability.state_label
+            self._unavailable_reason = availability.reason if not availability.enabled else ""
+            if not availability.enabled:
+                logger.info("ice breakers publishing off: %s", availability.reason)
             self.loading = False
             self.loaded = True
 
@@ -349,6 +365,17 @@ class IceBreakersState(rx.State):
 
     @rx.event(background=True)
     async def save(self) -> AsyncIterator[rx.event.EventSpec]:
+        async for event in self._save_flow(close=False):
+            yield event
+
+    @rx.event(background=True)
+    async def save_and_close(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Guardar» on close: save, then close — unless the service refuses, in which
+        case the panel stays open with the refusal under its question."""
+        async for event in self._save_flow(close=True):
+            yield event
+
+    async def _save_flow(self, *, close: bool) -> AsyncIterator[Any]:
         async with self:
             if self.working or not self.ready:
                 return
@@ -362,6 +389,9 @@ class IceBreakersState(rx.State):
                     self.form_error = _NO_SESSION
                 return
             if await self._save(*context, items):
+                if close:
+                    async with self:
+                        self.panel_open = False
                 yield rx.toast.success(_SAVED, duration=_TOAST_MS)
         finally:
             async with self:
@@ -448,7 +478,7 @@ class IceBreakersState(rx.State):
         except IceBreakerUnavailable as exc:
             async with self:
                 self.available = False
-                self.unavailable_reason = exc.reason
+                self._unavailable_reason = exc.reason
             yield rx.toast.warning(exc.message, duration=_TOAST_MS)
             return
         except IceBreakerRemoteError as exc:
@@ -474,7 +504,7 @@ class IceBreakersState(rx.State):
         yield rx.toast.success(done, duration=_TOAST_MS)
 
     # ==================================================================================
-    # «Comprobar en Instagram» (a read; works with the capability off)
+    # «Ver qué muestra Instagram ahora» (a read; works with the capability off)
     # ==================================================================================
 
     @rx.event(background=True)

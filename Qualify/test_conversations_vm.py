@@ -705,7 +705,8 @@ def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
 @pytest.mark.parametrize(
     ("kind", "payload", "text", "label"),
     [
-        ("ice_breaker", "QF_PRECIO", "¿Cuánto cuesta?", "Pregunta inicial: Precio"),
+        ("ice_breaker", "QF_PRECIO", "¿Quieres consultar un precio?", "Pregunta inicial: Precio"),
+        ("ice_breaker", "QF_PRECIO", "¿Hacen domicilios?", "Pregunta inicial: ¿Hacen domicilios?"),
         ("ice_breaker", "QF_OTRA", "¿Hacen envíos?", "Pregunta inicial: ¿Hacen envíos?"),
         ("quick_reply", "SI", "Sí", "Respuesta rápida: Sí"),
         ("button", "QFB_VER_CATALOGO", "Ver catálogo", "Botón: Ver catálogo"),
@@ -735,7 +736,7 @@ def test_a_tapped_last_message_previews_as_its_origin() -> None:
     row = build_thread_row(
         view,
         ThreadExtra(
-            preview="¿Cuánto cuesta?",
+            preview="¿Quieres consultar un precio?",
             preview_direction="inbound",
             preview_choice_kind="ice_breaker",
             preview_choice_payload="QF_PRECIO",

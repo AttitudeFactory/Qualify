@@ -82,7 +82,6 @@ DEFAULT_ICE_BREAKERS: Final[tuple[DefaultIceBreaker, ...]] = (
     DefaultIceBreaker("QF_CATALOGO", "Catálogo", "¿Quieres conocer el catálogo?"),
 )
 
-_DEFAULT_LABELS: Final[dict[str, str]] = {ib.payload: ib.label for ib in DEFAULT_ICE_BREAKERS}
 
 #: The first words of each origin label, in the client's Spanish (qualify-copy-es).
 CHOICE_LABEL_PREFIXES: Final[dict[str, str]] = {
@@ -128,15 +127,37 @@ def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
 
+def _default_name(kind: str | None, payload: str | None, title: str | None) -> str | None:
+    """The default Ice Breaker's short name — only while the person tapped the question
+    Qualify suggested. An owner may rewrite a default question and keep its payload
+    («¿Quieres consultar un precio?» → «¿Hacen domicilios?», still `QF_PRECIO`); the
+    short name would then describe a question nobody saw. No title → the name stands."""
+    if kind != CHOICE_ICE_BREAKER:
+        return None
+    default = default_ice_breaker(payload)
+    if default is None:
+        return None
+    if title and title.strip() and _question_key(title) != _question_key(default.question):
+        return None
+    return default.label
+
+
+def _question_key(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
 def choice_label(kind: str | None, payload: str | None, title: str | None) -> str | None:
     """The origin line of a tapped message, or `None` when it was typed.
 
-    The readable part is the default Ice Breaker's Spanish name for a `QF_*` default
-    payload, else the title the person saw (the message text), else nothing — a payload
-    is an internal key and is never shown to the client.
+    The readable part is the default Ice Breaker's Spanish name when the person tapped
+    that default question as Qualify suggested it, else the title the person saw (the
+    message text), else nothing — a payload is an internal key and is never shown to the
+    client.
 
     >>> choice_label("ice_breaker", "QF_PRECIO", "¿Quieres consultar un precio?")
     'Pregunta inicial: Precio'
+    >>> choice_label("ice_breaker", "QF_PRECIO", "¿Hacen domicilios?")
+    'Pregunta inicial: ¿Hacen domicilios?'
     >>> choice_label("quick_reply", "SI", "Sí")
     'Respuesta rápida: Sí'
     >>> choice_label("button", "QFB_VER_CATALOGO", "Ver catálogo")
@@ -147,7 +168,7 @@ def choice_label(kind: str | None, payload: str | None, title: str | None) -> st
     prefix = CHOICE_LABEL_PREFIXES.get(kind or "")
     if prefix is None:
         return None
-    readable = _DEFAULT_LABELS.get(payload or "") if kind == CHOICE_ICE_BREAKER else None
+    readable = _default_name(kind, payload, title)
     if readable is None and title and title.strip():
         readable = _clip(title, _LABEL_TEXT_CHARS)
     return f"{prefix}: {readable}" if readable else prefix
@@ -171,7 +192,7 @@ def choice_context(kind: str | None, payload: str | None, title: str | None) -> 
         return None
     shown = f" «{_clip(title, _LABEL_TEXT_CHARS)}»" if title and title.strip() else ""
     key = _clip(payload, _CONTEXT_PAYLOAD_CHARS) if payload else None
-    default = _DEFAULT_LABELS.get(payload or "") if kind == CHOICE_ICE_BREAKER else None
+    default = _default_name(kind, payload, title)
     if key and default:
         key = f"{key}: {default}"
     return (
