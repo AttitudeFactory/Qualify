@@ -56,6 +56,8 @@ from .whatsapp_menu_vm import (
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
     PUBLISH_CONFIRM_BUTTON,
+    PUBLISHED_BUT_PAUSED,
+    RESUME_BUTTON,
     SAVE_ONLY_BUTTON,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
@@ -272,7 +274,12 @@ def _menu_row(menu: MenuSummaryVM) -> rx.Component:
             rx.icon("list-tree", size=T.ICON_MD, color=T.TEXT_MUTED),
             rx.vstack(
                 rx.text(menu.name, size="2", weight="medium"),
-                rx.text(menu.published_label, size="1", color=T.TEXT_MUTED),
+                # Unpublished: the status pill already says «Sin publicar».
+                rx.cond(
+                    menu.is_published,
+                    rx.text(menu.published_label, size="1", color=T.TEXT_MUTED),
+                    rx.fragment(),
+                ),
                 spacing="0",
                 align_items="start",
                 min_width="0",
@@ -439,6 +446,35 @@ def _next_step() -> rx.Component:
     )
 
 
+def _published_but_paused() -> rx.Component:
+    """Published while paused: the pause stays, so «listo» would be false. Say so, and
+    offer the resume as the one solid action (the same handler as the switch)."""
+    return rx.vstack(
+        callout(PUBLISHED_BUT_PAUSED, "warn"),
+        rx.flex(
+            rx.button(
+                rx.icon("play", size=T.ICON_SM),
+                RESUME_BUTTON,
+                on_click=S.toggle_pause(False),
+                loading=S.pausing,
+                size="3",
+            ),
+            rx.button(
+                "Seguir editando",
+                on_click=S.dismiss_next_step,
+                variant="soft",
+                size="3",
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="2",
+            wrap="wrap",
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _toolbar() -> rx.Component:
     return card(
         rx.vstack(
@@ -455,7 +491,11 @@ def _toolbar() -> rx.Component:
                 spacing="1",
                 align_items="start",
             ),
-            rx.cond(S.just_published, _next_step(), _actions()),
+            rx.cond(
+                S.just_published,
+                rx.cond(S.menu.is_paused, _published_but_paused(), _next_step()),
+                _actions(),
+            ),
             rx.hstack(
                 rx.switch(
                     checked=S.menu.is_paused,

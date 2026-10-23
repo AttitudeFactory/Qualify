@@ -298,7 +298,12 @@ class WhatsAppMenuState(rx.State):
             (m.name for m in self.menus if m.is_published and m.menu_id != self.menu.menu_id),
             "",
         )
-        return publish_confirm_lines(dirty=self.dirty, version=version, other_published_menu=other)
+        return publish_confirm_lines(
+            dirty=self.dirty,
+            version=version,
+            other_published_menu=other,
+            paused=self.menu.is_paused,
+        )
 
     @rx.var
     def ice_breakers_full(self) -> bool:

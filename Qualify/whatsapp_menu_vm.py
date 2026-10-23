@@ -1186,29 +1186,43 @@ PUBLISH_CONFIRM_RESEND = (
     "atajos y los comandos."
 )
 PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de responder y este toma su lugar."
+PUBLISH_CONFIRM_PAUSED = (
+    "Tu menú está en pausa: después de publicar, tócalo en «Reanudar el menú» para que responda."
+)
 NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para el mostrador"
+# Publishing keeps the pause (the backend does not touch it): «listo» would be false.
+PUBLISHED_BUT_PAUSED = "Publicamos el menú, pero está en pausa: no responde hasta que lo reanudes."
+RESUME_BUTTON = "Reanudar el menú"
 
 
 def publish_confirm_lines(
-    *, dirty: bool, version: MenuVersionVM | None, other_published_menu: str
+    *,
+    dirty: bool,
+    version: MenuVersionVM | None,
+    other_published_menu: str,
+    paused: bool = False,
 ) -> list[str]:
     """The case-specific lines under `PUBLISH_CONFIRM`: what happens to the version on
     screen (`version` is the saved one the editor shows; ignored while `dirty`, since a
     new one is saved first), then — only when another menu of the number is the one
-    answering — that it gets replaced."""
+    answering — that it gets replaced, and — only when this menu is paused — that it
+    stays paused until resumed (so «ya está respondiendo» is not said of it)."""
     lines: list[str] = []
     if dirty:
         lines.append(PUBLISH_CONFIRM_SAVES)
     elif version is not None:
         number = version.label.removeprefix("Versión ").strip()
         if version.is_live:
-            lines.append(PUBLISH_CONFIRM_RESEND)
+            if not paused:
+                lines.append(PUBLISH_CONFIRM_RESEND)
         elif version.published_at:
             lines.append(PUBLISH_CONFIRM_BACK_TO.format(n=number))
         else:
             lines.append(PUBLISH_CONFIRM_STARTS_WITH.format(n=number))
     if other_published_menu.strip():
         lines.append(PUBLISH_CONFIRM_REPLACES.format(name=other_published_menu.strip()))
+    if paused:
+        lines.append(PUBLISH_CONFIRM_PAUSED)
     return lines
 
 
@@ -1415,6 +1429,8 @@ __all__ = [
     "PUBLISH_CONFIRM",
     "PUBLISH_CONFIRM_BACK_TO",
     "PUBLISH_CONFIRM_BUTTON",
+    "PUBLISH_CONFIRM_PAUSED",
+    "PUBLISHED_BUT_PAUSED",
     "PUBLISH_CONFIRM_RESEND",
     "PUBLISH_CONFIRM_STARTS_WITH",
     "PUBLISH_PARTIAL",
@@ -1422,6 +1438,7 @@ __all__ = [
     "PUBLISH_CONFIRM_SAVES",
     "REPLY_BUTTON",
     "REPLY_LIST",
+    "RESUME_BUTTON",
     "SAVE_ONLY_BUTTON",
     "TEMPLATE_EMPTY",
     "TEMPLATE_FAST_FOOD",

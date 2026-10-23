@@ -6,6 +6,7 @@ confirmation); «Guardar sin publicar» is the secondary; after publishing the o
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -22,6 +23,8 @@ from .whatsapp_menu_vm import (
     PUBLISH_CONFIRM,
     PUBLISH_OK,
     PUBLISH_PARTIAL,
+    PUBLISHED_BUT_PAUSED,
+    RESUME_BUTTON,
     SAVE_ONLY_BUTTON,
     MenuSummaryVM,
     MenuVersionVM,
@@ -387,3 +390,79 @@ def test_the_state_feeds_the_confirmation_from_the_number_s_menus(
         "Tu WhatsApp empieza a responder con la versión 1.",
         "Tu menú «Almuerzos» deja de responder y este toma su lugar.",
     ]
+
+
+# --- publishing a paused menu (the pause stays: «listo» would be false) -------------------
+
+
+def _paused(detail: MenuDetail, *, paused: bool = True) -> MenuDetail:
+    return dataclasses.replace(
+        detail,
+        summary=dataclasses.replace(
+            detail.summary,
+            is_paused=paused,
+            status_label="En pausa" if paused else "Respondiendo en tu WhatsApp",
+            status_tone="warn" if paused else "ok",
+        ),
+    )
+
+
+async def test_publishing_a_paused_menu_offers_to_resume_instead_of_listo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    calls: list[str] = []
+    clean = _fake_publish(calls)
+
+    async def publish_paused(*args: object, **kw: object) -> PublishOutcome:
+        outcome = await clean(*args, **kw)  # type: ignore[operator]
+        return dataclasses.replace(outcome, detail=_paused(outcome.detail))
+
+    monkeypatch.setattr(module, "publish_version", publish_paused)
+
+    await _run(WhatsAppMenuState.publish_current, state)
+
+    # the toolbar shows the paused box (view: just_published & menu.is_paused)
+    assert state.just_published and state.menu.is_paused
+
+    # «Reanudar el menú» is the existing pause handler; once resumed, the «listo» + QR
+    # step is true and takes its place
+    resumed = []
+
+    def set_paused(tenant_id: UUID, scope: object, menu_id: UUID, paused: bool) -> MenuDetail:
+        resumed.append(paused)
+        return _paused(_detail([_version(V1, 1, live=True)], published=True), paused=paused)
+
+    monkeypatch.setattr(module, "set_paused", set_paused)
+    await WhatsAppMenuState.toggle_pause.fn(_Proxy(state), False)
+    assert resumed == [False]
+    assert state.just_published and not state.menu.is_paused
+
+
+def test_the_confirmation_warns_when_the_menu_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
+    paused_line = (
+        "Tu menú está en pausa: después de publicar, tócalo en «Reanudar el menú» para que "
+        "responda."
+    )
+    live = _version(V1, 1, live=True)
+    assert publish_confirm_lines(
+        dirty=False, version=live, other_published_menu="", paused=True
+    ) == [paused_line]  # never «ya está respondiendo» for a paused menu
+    assert paused_line not in publish_confirm_lines(
+        dirty=False, version=live, other_published_menu=""
+    )
+    state = _state(monkeypatch)
+    state.menu = dataclasses.replace(state.menu, is_paused=True)
+    assert state.publish_confirm_lines[-1] == paused_line
+
+
+def test_the_paused_box_and_its_resume_button_render() -> None:
+    from . import whatsapp_tab_menu
+
+    rendered = str(whatsapp_tab_menu.menu_tab().render())
+    for text in (PUBLISHED_BUT_PAUSED, RESUME_BUTTON):
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        assert text in rendered or escaped in rendered, text
+    assert PUBLISHED_BUT_PAUSED == (
+        "Publicamos el menú, pero está en pausa: no responde hasta que lo reanudes."
+    )
