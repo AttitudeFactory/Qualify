@@ -181,7 +181,7 @@ Tests que lo prueban (todos `-m db`, contra el Postgres de compose):
 
 ## 10. Prueba real (criterio 3) — 2026-10-23
 
-`[HECHA 2026-10-23 · local contra la API real de Meta · visible en Instagram: por confirmar]`
+`[HECHA 2026-10-23 · local contra la API real de Meta · visible en Instagram: confirmado]`
 
 | Campo | Valor |
 |---|---|
@@ -195,7 +195,7 @@ Tests que lo prueban (todos `-m db`, contra el Postgres de compose):
 | Aprobación | «Aceptar y enviar» por el usuario con sesión iniciada. Log: `replies.send draft_id=0c222719-… approved_by=d2bcd063-…` |
 | Resultado | Estado `sent`, `external_reply_id = 17931155721421749`, `send_error_code` vacío |
 | Tiempo de Meta | ≈ 6 s (aprobado 15:30:49 UTC → `sent_at` 15:30:55 UTC): más que los 5 s por defecto de httpx, dentro de los 60 s de #215 |
-| Visible bajo el comentario en Instagram | **Por confirmar** (lo confirma el fundador) |
+| Visible bajo el comentario en Instagram | **Sí** (confirmado por el fundador el 2026-10-23) |
 
 Qué demuestra:
 
