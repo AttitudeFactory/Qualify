@@ -205,6 +205,14 @@
   background: var(--q-field-fill);
   box-shadow: inset 0 1px 0 var(--q-card-hi);
 }
+/* The product's next steps (m-24842972): «Crear publicación con este producto» beside
+   «Guardar cambios», and «Listo»'s two buttons. On a phone each button takes the full
+   row and is a 44 px target (N12). */
+@media (max-width: 30rem) {
+  .q-catalog-actions > a,
+  .q-catalog-actions > .rt-Button { flex: 1 1 100%; }
+  .q-catalog-actions .rt-Button { width: 100%; min-height: 44px; white-space: normal; }
+}
 /* One media tile: the picture on top; under it, on the control surface, the format and
    the two actions (always legible, whatever the picture). */
 .q-catalog-tile {

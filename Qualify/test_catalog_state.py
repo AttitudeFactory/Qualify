@@ -156,8 +156,10 @@ async def test_creating_a_product_closes_the_form_and_leaves_the_editor_closed(
     assert state.form_open is False and state.saving is False
     assert state.new_name == "" and state.new_category == ""
     assert state.selected_id == "" and state.selected is None
-    # said in a toast (request 2026-10-22), not in a band at the top of the page
-    assert len(events) == 1 and "creado" in str(events[0]) and "success" in str(events[0])
+    # N3 (m-24842972): «Listo» stays on the page with the next step instead of a toast
+    assert events == []
+    assert state.created_id == str(_PRODUCT_ID) and state.created is not None
+    assert state.created_href == f"/create?producto={_PRODUCT_ID}"
 
 
 async def test_files_dropped_in_the_form_follow_the_new_product(monkeypatch, tmp_path) -> None:
@@ -179,7 +181,8 @@ async def test_files_dropped_in_the_form_follow_the_new_product(monkeypatch, tmp
 
     events = await _drain(CatalogState.submit_new_product.fn(state))
 
-    assert events[-1] == CatalogState.ingest_pending and "fotos" in str(events[0])
+    assert events == [CatalogState.ingest_pending]
+    assert state.created_id == str(_PRODUCT_ID)
     assert state._pending == [[str(first), "a.jpg", str(_PRODUCT_ID)]]
     assert state.upload_total == 1
     assert state.new_files == [] and state.selected_id == ""
@@ -547,3 +550,41 @@ def test_a_missing_brand_shows_the_way_to_complete_it() -> None:
     assert not state.needs_brand
     # Load and save share it: no «base de datos», no blame on the owner's connection.
     assert state.error == "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
+
+
+# ---------------------------------------------------------------------------
+# m-24842972 (PRODUCTOS-1): «Crear publicación con este producto»
+
+
+def test_the_editor_links_to_create_with_the_open_product() -> None:
+    state = CatalogState()
+    assert state.selected_create_href == ""
+    state.products = [_product(photo_count=1, primary_photo_key="k.jpg")]
+    state.select_product(str(_PRODUCT_ID))
+    assert state.selected_create_href == f"/create?producto={_PRODUCT_ID}"
+
+
+def test_the_listo_notice_goes_when_the_owner_moves_on() -> None:
+    state = CatalogState()
+    state.products = [_product()]
+    for leave in (
+        state.dismiss_created,
+        state.open_form,
+        lambda: state.select_product(str(_PRODUCT_ID)),
+    ):
+        state.created_id = str(_PRODUCT_ID)
+        state.selected_id = ""
+        leave()
+        assert state.created_id == "" and state.created is None and state.created_href == ""
+
+
+def test_the_create_with_product_button_says_why_it_is_off() -> None:
+    """Without a photo the button is off and says «Primero súbele una foto» in plain
+    text under it — never only on hover (N12)."""
+    from . import catalog_page
+
+    source = Path(catalog_page.__file__).read_text(encoding="utf-8")
+    assert "Crear publicación con este producto" in source
+    assert "NEEDS_PHOTO_REASON" in source and "disabled=True" in source
+    assert "Listo, tu producto ya está guardado." in source
+    assert "¿Hacemos una publicación con él?" in source

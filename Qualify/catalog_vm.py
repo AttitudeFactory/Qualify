@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
+from uuid import UUID
 
 #: What the upload zone accepts: photos of any type the normalizer reads, and the two
 #: phone video containers (`qualify_creative.video.normalize` transcodes both to H.264).
@@ -232,3 +233,35 @@ def build_product_vm(product: _ProductLike) -> ProductVM:
         counts_label=counts_label(product.photo_count, product.video_count),
         media=tuple(build_media_vm(m) for m in sorted(product.media, key=lambda m: m.position)),
     )
+
+
+# -- «Crear publicación con este producto» (m-24842972, PRODUCTOS-1) --------------------
+#: The query parameter `/create` reads to open with a catalog product already chosen.
+CREATE_PRODUCT_PARAM = "producto"
+#: Why the button is off on a product with no photo: said under it, never hover-only.
+NEEDS_PHOTO_REASON = "Primero súbele una foto"
+#: What the button says while the photos dropped in the form are still being saved.
+SAVING_PHOTOS_REASON = "Guardando sus fotos…"
+
+
+def create_with_product_href(product_id: str) -> str:
+    """`/create?producto=<id>` — the generator opens with this product chosen (N3)."""
+    return f"/create?{CREATE_PRODUCT_PARAM}={product_id}"
+
+
+def product_id_from_query(params: object) -> str:
+    """The product `?producto=` names, as a canonical UUID string — or "" when it is
+    missing or not a UUID. Whether it is THIS business's product is not decided here:
+    the generator only picks it if the tenant's own catalog (read under RLS) lists it,
+    so another tenant's id or a deleted one is ignored without an error."""
+    getter = getattr(params, "get", None)
+    raw = getter(CREATE_PRODUCT_PARAM, "") if callable(getter) else ""
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else ""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(UUID(text))
+    except ValueError:
+        return ""

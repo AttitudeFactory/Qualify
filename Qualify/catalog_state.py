@@ -39,7 +39,12 @@ from .catalog_provider import (
     reorder_media,
     update_product,
 )
-from .catalog_vm import ProductVM, currency_from_choice, parse_price_input
+from .catalog_vm import (
+    ProductVM,
+    create_with_product_href,
+    currency_from_choice,
+    parse_price_input,
+)
 from .creative_provider import acting_user_id, default_brand_id
 from .tenant import tenant_uuid
 
@@ -51,8 +56,6 @@ _DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
 _PRODUCT_GONE = "Ese producto ya no está en tu catálogo. Actualiza la página."
-_CREATED = "Producto creado. Tócalo para editarlo o subirle fotos."
-_CREATED_WITH_FILES = "Producto creado. Guardando sus fotos…"
 _SAVED = "Cambios guardados."
 _ORDER_SAVED = "Orden guardado: la primera foto es la principal."
 _DELETED = "Producto eliminado."
@@ -126,11 +129,34 @@ class CatalogState(rx.State):
     #: The order a drop (or «Hacer principal») asked for, waiting for `sync_media_order`.
     _media_order: list[str] = []
 
+    # -- «Listo» after «Crear producto» (m-24842972, N3) ------------------------------
+    #: The product just created: the page says «Listo» with the next step (make a
+    #: publication with it) until the owner moves on. "" when there is nothing to say.
+    created_id: str = ""
+
     # -- derived ------------------------------------------------------------------------
 
     @rx.var
     def selected(self) -> ProductVM | None:
         return next((p for p in self.products if p.product_id == self.selected_id), None)
+
+    @rx.var
+    def created(self) -> ProductVM | None:
+        """The product «Listo» talks about, as the list holds it now — so its photos
+        count as soon as the ingest stores them."""
+        if not self.created_id:
+            return None
+        return next((p for p in self.products if p.product_id == self.created_id), None)
+
+    @rx.var
+    def created_href(self) -> str:
+        """«Crear publicación» after creating: `/create?producto=<id>`."""
+        return create_with_product_href(self.created_id) if self.created_id else ""
+
+    @rx.var
+    def selected_create_href(self) -> str:
+        """The editor's «Crear publicación con este producto»: `/create?producto=<id>`."""
+        return create_with_product_href(self.selected_id) if self.selected_id else ""
 
     @rx.var
     def has_products(self) -> bool:
@@ -212,6 +238,7 @@ class CatalogState(rx.State):
         async with self:
             self.products = list(products)
             self.loading = False
+            self.created_id = ""
             if self.selected_id and self.selected is None:
                 self.selected_id = ""
 
@@ -236,6 +263,12 @@ class CatalogState(rx.State):
     def open_form(self) -> None:
         self.form_open = True
         self.form_error = ""
+        self.created_id = ""
+
+    @rx.event
+    def dismiss_created(self) -> None:
+        """«Listo»'s «Seguir en Tus productos»: the notice goes, the list stays."""
+        self.created_id = ""
 
     @rx.event
     def close_form(self) -> None:
@@ -365,7 +398,9 @@ class CatalogState(rx.State):
             # card shows, and a tap on the card opens the editor. The files dropped in
             # the form still follow it — their progress shows at page level.
             self.selected_id = ""
-            created = _CREATED_WITH_FILES if files else _CREATED
+            # N3 (m-24842972): «Listo» stays on the page with the next step — make a
+            # publication with it — instead of a toast that vanishes.
+            self.created_id = str(product_id)
             self._new_pending = []
             self.new_files = []
             if files:
@@ -376,8 +411,6 @@ class CatalogState(rx.State):
                 self.upload_done = 0
                 self.upload_total = len(self._pending)
                 self.upload_error = ""
-        # a transient confirmation, bottom right (request 2026-10-22: not a band up top)
-        yield rx.toast.success(created, duration=_TOAST_MS)
         if files:
             yield CatalogState.ingest_pending
 
@@ -395,6 +428,7 @@ class CatalogState(rx.State):
         """Open one product's editor (fields + media). Selecting the open one closes it."""
         self.edit_error = ""
         self.upload_error = ""
+        self.created_id = ""
         if self.selected_id == product_id:
             self.selected_id = ""
             return

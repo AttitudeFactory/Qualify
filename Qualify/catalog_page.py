@@ -24,7 +24,9 @@ from .catalog_state import CatalogState
 from .catalog_vm import (
     CURRENCY_OPTIONS,
     MEDIA_ACCEPT,
+    NEEDS_PHOTO_REASON,
     NO_CURRENCY,
+    SAVING_PHOTOS_REASON,
     ProductMediaVM,
     ProductVM,
 )
@@ -533,6 +535,102 @@ def _media_block() -> rx.Component:
     )
 
 
+def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
+    """The editor's «Crear publicación con este producto» (m-24842972): soft, beside
+    «Guardar cambios», a real link to `/create?producto=<id>` so the generator opens
+    with this product chosen. Off with its reason said under the row («Primero súbele
+    una foto», never hover-only, N12) while the product has no photo."""
+    label = "Crear publicación con este producto"
+    return rx.cond(
+        product.photo_count > 0,
+        rx.link(
+            rx.button(rx.icon("sparkles", size=T.ICON_SM), label, variant="soft", size="2"),
+            href=CatalogState.selected_create_href,
+        ),
+        rx.button(
+            rx.icon("sparkles", size=T.ICON_SM),
+            label,
+            variant="soft",
+            size="2",
+            disabled=True,
+        ),
+    )
+
+
+def _created_notice() -> rx.Component:
+    """«Listo» after «Crear producto» (N3, m-24842972): what happened in the owner's
+    words, ONE solid button to the next job — a publication with this product — and a
+    soft one to stay on the list. While the product has no photo the button is off and
+    says why: still saving the photos dropped in the form, or none yet."""
+    product = CatalogState.created
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                rx.vstack(
+                    rx.heading("Listo, tu producto ya está guardado.", size="4", as_="h2"),
+                    rx.text(
+                        "¿Hacemos una publicación con él?",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    min_width="0",
+                ),
+                spacing="3",
+                align="start",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.button(
+                    "Seguir en Tus productos",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="3",
+                    on_click=CatalogState.dismiss_created,
+                ),
+                rx.cond(
+                    product.photo_count > 0,
+                    rx.link(
+                        rx.button(
+                            rx.icon("sparkles", size=T.ICON_SM),
+                            "Crear publicación",
+                            size="3",
+                        ),
+                        href=CatalogState.created_href,
+                    ),
+                    rx.button(
+                        rx.icon("sparkles", size=T.ICON_SM),
+                        "Crear publicación",
+                        size="3",
+                        disabled=True,
+                    ),
+                ),
+                spacing="2",
+                justify="end",
+                wrap="wrap",
+                width="100%",
+                class_name="q-catalog-actions",
+            ),
+            rx.cond(
+                product.photo_count == 0,
+                rx.text(
+                    rx.cond(CatalogState.uploading, SAVING_PHOTOS_REASON, NEEDS_PHOTO_REASON),
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    width="100%",
+                    text_align="right",
+                ),
+            ),
+            spacing="3",
+            width="100%",
+        ),
+        padding="1.25rem 1.5rem",
+        role="status",
+    )
+
+
 def _editor() -> rx.Component:
     """The selected product: its picture and name up top, then two panels — the fields
     (with «Guardar cambios» under them) and its media — side by side from `lg`."""
@@ -613,6 +711,7 @@ def _editor() -> rx.Component:
                     ),
                     rx.hstack(
                         rx.spacer(),
+                        _create_with_product_button(product),
                         # soft: the screen's one solid action is "Agregar producto" (§5.5)
                         rx.button(
                             rx.icon("save", size=T.ICON_SM),
@@ -623,6 +722,19 @@ def _editor() -> rx.Component:
                             loading=CatalogState.edit_saving,
                         ),
                         width="100%",
+                        spacing="2",
+                        wrap="wrap",
+                        class_name="q-catalog-actions",
+                    ),
+                    rx.cond(
+                        product.photo_count == 0,
+                        rx.text(
+                            NEEDS_PHOTO_REASON,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                            width="100%",
+                            text_align="right",
+                        ),
                     ),
                     spacing="3",
                     width="100%",
@@ -848,6 +960,7 @@ def catalog_index() -> rx.Component:
                 callout(CatalogState.upload_error, "error"),
             ),
             rx.cond(CatalogState.form_open, _new_product_form()),
+            rx.cond(CatalogState.created, _created_notice()),
             rx.cond(CatalogState.selected, _editor()),
             _delete_product_dialog(),
             rx.cond(

@@ -67,6 +67,7 @@ from .campaign_provider import (
     suggested_color,
 )
 from .campaign_provider import error_message as campaign_error_message
+from .catalog_vm import product_id_from_query
 from .creative_provider import (
     acting_user_id,
     approve_draft,
@@ -3553,6 +3554,25 @@ class CreativeState(rx.State):
         async with self:
             self.catalog_items = [dict(item) for item in items]
             self.catalog_loading = False
+            self._apply_product_from_query()
+
+    def _apply_product_from_query(self) -> None:
+        """«Crear publicación con este producto» (m-24842972): `/create?producto=<id>`
+        opens with that product chosen and the product screen answered, so the owner
+        lands on «¿Qué quieres crear?» («Cambiar» beside the product goes back). The id
+        is only taken when THIS business's catalog — read under RLS — lists it: another
+        tenant's product, a deleted one or a malformed id is ignored without an error,
+        and the screen opens as usual on the product picker."""
+        try:
+            wanted = product_id_from_query(self.router.url.query_parameters)
+        except AttributeError:  # no router outside a request (tests, background start)
+            wanted = ""
+        if not wanted or not any(i.get("id") == wanted for i in self.catalog_items):
+            return
+        self.product_tab = "catalog"
+        if self.selected_product_id != wanted:
+            self.choose_product(wanted)
+        self.product_confirmed = True
 
     @rx.event
     def choose_product(self, product_id: str) -> None:
