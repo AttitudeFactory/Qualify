@@ -30,6 +30,13 @@ decides.
 review verdict, unsupported claims, model/cost, the Fase A intent result — and every
 `DraftRecord` carries it back. The sentiment-era path passes none: those columns stay
 NULL / false.
+
+**«Reintentar» (ATENDER-9, m-24849130).** A draft that failed for a passing reason
+(`send_failed` with a `transient:` code, `replies.failures`) stays on screen through
+`list_retryable_drafts` while it is the comment's NEWEST draft. `clone_for_retry` copies
+its approved text into a NEW `accepted`/`edited` draft — the new id is the retry's
+idempotency key, and the live index makes a second tap a no-op (`None`). The failed row
+itself is never rewritten: its error code stays as the record of what happened.
 """
 
 from __future__ import annotations
@@ -45,9 +52,11 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import Text, and_, column, false, func, or_, select, table, update
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 
 from qualify_api.inbox.models import Message, MonitoredMedia, Thread
 from qualify_api.intent.models import CommentIntentResult
+from qualify_api.replies.failures import TRANSIENT_PREFIX
 from qualify_api.replies.models import DEAD_STATUSES, CommentReplyDraft
 from qualify_api.sentiment.models import CommentSentimentResult
 from qualify_api.sentiment.repository import AnalysisVersion
@@ -257,6 +266,23 @@ class ReplyRepository(Protocol):
         self, *, tenant_id: UUID, connection_id: UUID
     ) -> tuple[DraftRecord, ...]:
         """`status = 'proposed'` only — the human review queue."""
+        ...
+
+    def list_retryable_drafts(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> tuple[DraftRecord, ...]:
+        """ATENDER-9: `send_failed` drafts with a passing (`transient:`) failure that are
+        still their comment's newest draft — what «Reintentar» is offered on."""
+        ...
+
+    def clone_for_retry(
+        self, *, tenant_id: UUID, draft_id: UUID, decided_by_user_id: UUID
+    ) -> DraftRecord | None:
+        """In ONE transaction: if `draft_id` is a passing failure and still its comment's
+        newest draft, create a new `accepted` (or `edited`, when the approved text differs
+        from the generated one) draft with the same text, decided by `decided_by_user_id`.
+        Returns it, or None when there is nothing to retry (a second tap, a decision made
+        meanwhile, another live draft) — nothing is written in that case."""
         ...
 
     def decide_draft(
@@ -487,6 +513,68 @@ def _new_row(
     )
 
 
+def _retry_decision(final_text: str | None, generated_text: str) -> str:
+    """What the owner had approved: the text as generated, or their edit."""
+    return "edited" if final_text is not None and final_text != generated_text else "accepted"
+
+
+def _retry_row(old: CommentReplyDraft, *, decided_by_user_id: UUID) -> CommentReplyDraft:
+    """The new draft «Reintentar» sends: the same comment, text and provenance as the
+    failed one, decided again — now — by the person who tapped."""
+    return CommentReplyDraft(
+        tenant_id=old.tenant_id,
+        connection_id=old.connection_id,
+        message_id=old.message_id,
+        source_id=old.source_id,
+        sentiment_result_id=old.sentiment_result_id,
+        sentiment_label=old.sentiment_label,
+        gate_reason=old.gate_reason,
+        generator_version=old.generator_version,
+        generated_text=old.generated_text,
+        final_text=old.final_text or old.generated_text,
+        status=_retry_decision(old.final_text, old.generated_text),
+        decided_at=datetime.now(UTC),
+        decided_by_user_id=decided_by_user_id,
+        grounding=old.grounding,
+        needs_review=old.needs_review,
+        unsupported_claims=old.unsupported_claims,
+        model_id=old.model_id,
+        model_revision=old.model_revision,
+        input_tokens=old.input_tokens,
+        output_tokens=old.output_tokens,
+        cost_usd=old.cost_usd,
+        intent_result_id=old.intent_result_id,
+    )
+
+
+def _with_context_select() -> Any:
+    """A draft with what its card shows: the comment (text, author), the publication's
+    media id (the comment thread's `external_thread_id`) and, outer, its caption."""
+    return (
+        select(CommentReplyDraft, Message, Thread.external_thread_id, MonitoredMedia.caption)
+        .join(Message, Message.id == CommentReplyDraft.message_id)
+        .join(Thread, Thread.id == Message.thread_id)
+        .outerjoin(
+            MonitoredMedia,
+            (MonitoredMedia.connection_id == Thread.connection_id)
+            & (MonitoredMedia.external_media_id == Thread.external_thread_id),
+        )
+    )
+
+
+def _records_with_context(rows: Any) -> tuple[DraftRecord, ...]:
+    return tuple(
+        _row_to_record(
+            draft,
+            comment_text=message.text or "",
+            author_username=message.author_username or "",
+            external_media_id=media_id or "",
+            media_caption=caption or "",
+        )
+        for draft, message, media_id, caption in rows
+    )
+
+
 class PostgresReplyRepository:
     def list_reply_candidates(
         self,
@@ -670,32 +758,79 @@ class PostgresReplyRepository:
         read through the same `tenant_session`."""
         with tenant_session(tenant_id) as session:
             rows = session.execute(
-                select(
-                    CommentReplyDraft, Message, Thread.external_thread_id, MonitoredMedia.caption
-                )
-                .join(Message, Message.id == CommentReplyDraft.message_id)
-                .join(Thread, Thread.id == Message.thread_id)
-                .outerjoin(
-                    MonitoredMedia,
-                    (MonitoredMedia.connection_id == Thread.connection_id)
-                    & (MonitoredMedia.external_media_id == Thread.external_thread_id),
-                )
+                _with_context_select()
                 .where(
                     CommentReplyDraft.connection_id == connection_id,
                     CommentReplyDraft.status == "proposed",
                 )
                 .order_by(CommentReplyDraft.created_at)
             ).all()
-        return tuple(
-            _row_to_record(
-                draft,
-                comment_text=message.text or "",
-                author_username=message.author_username or "",
-                external_media_id=media_id or "",
-                media_caption=caption or "",
+        return _records_with_context(rows)
+
+    def list_retryable_drafts(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> tuple[DraftRecord, ...]:
+        newer = aliased(CommentReplyDraft)
+        has_newer = (
+            select(newer.id)
+            .where(
+                newer.message_id == CommentReplyDraft.message_id,
+                newer.created_at > CommentReplyDraft.created_at,
             )
-            for draft, message, media_id, caption in rows
+            .exists()
         )
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                _with_context_select()
+                .where(
+                    CommentReplyDraft.connection_id == connection_id,
+                    CommentReplyDraft.status == "send_failed",
+                    CommentReplyDraft.send_error_code.startswith(TRANSIENT_PREFIX),
+                    ~has_newer,
+                )
+                .order_by(CommentReplyDraft.created_at)
+            ).all()
+        return _records_with_context(rows)
+
+    def clone_for_retry(
+        self, *, tenant_id: UUID, draft_id: UUID, decided_by_user_id: UUID
+    ) -> DraftRecord | None:
+        with tenant_session(tenant_id) as session:
+            # The row lock serializes two taps; the second then sees the first's new
+            # draft as "newer" (or trips the live index) and writes nothing.
+            old = session.scalars(
+                select(CommentReplyDraft)
+                .where(
+                    CommentReplyDraft.id == draft_id,
+                    CommentReplyDraft.status == "send_failed",
+                    CommentReplyDraft.send_error_code.startswith(TRANSIENT_PREFIX),
+                )
+                .with_for_update()
+            ).one_or_none()
+            if old is None:
+                session.rollback()
+                return None
+            newer = session.execute(
+                select(CommentReplyDraft.id).where(
+                    CommentReplyDraft.message_id == old.message_id,
+                    CommentReplyDraft.created_at > old.created_at,
+                )
+            ).first()
+            if newer is not None:
+                session.rollback()
+                return None
+            row = _retry_row(old, decided_by_user_id=decided_by_user_id)
+            session.add(row)
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                session.rollback()
+                if _is_live_duplicate(exc):
+                    return None
+                raise
+            session.commit()
+            session.refresh(row)
+            return _row_to_record(row)
 
     def _require(self, session, tenant_id: UUID, draft_id: UUID) -> CommentReplyDraft:
         row = session.get(CommentReplyDraft, draft_id)
@@ -944,6 +1079,52 @@ class MemoryReplyRepository:
             for d in self._drafts.values()
             if d.connection_id == connection_id and d.status == "proposed"
         )
+
+    def _is_newest(self, record: DraftRecord) -> bool:
+        return self._by_message.get(record.message_id, [])[-1:] == [record.id]
+
+    def list_retryable_drafts(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> tuple[DraftRecord, ...]:
+        del tenant_id
+        return tuple(
+            d
+            for d in self._drafts.values()
+            if d.connection_id == connection_id
+            and d.status == "send_failed"
+            and (d.send_error_code or "").startswith(TRANSIENT_PREFIX)
+            and self._is_newest(d)
+        )
+
+    def clone_for_retry(
+        self, *, tenant_id: UUID, draft_id: UUID, decided_by_user_id: UUID
+    ) -> DraftRecord | None:
+        old = self._drafts.get(draft_id)
+        if (
+            old is None
+            or old.status != "send_failed"
+            or not (old.send_error_code or "").startswith(TRANSIENT_PREFIX)
+            or not self._is_newest(old)
+            or self.get_live_draft(tenant_id=tenant_id, message_id=old.message_id) is not None
+        ):
+            return None
+        now = datetime.now(UTC)
+        record = replace(
+            old,
+            id=uuid4(),
+            final_text=old.final_text or old.generated_text,
+            status=_retry_decision(old.final_text, old.generated_text),
+            created_at=now,
+            decided_at=now,
+            decided_by_user_id=decided_by_user_id,
+            sent_at=None,
+            external_reply_id=None,
+            send_error_code=None,
+            settled_at=None,
+        )
+        self._drafts[record.id] = record
+        self._by_message.setdefault(record.message_id, []).append(record.id)
+        return record
 
     def _require(self, draft_id: UUID) -> DraftRecord:
         record = self._drafts.get(draft_id)

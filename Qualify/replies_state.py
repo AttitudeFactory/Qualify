@@ -49,6 +49,13 @@ in a second sitting. That is a real, disclosed gap for a fast-follow, not silent
 assumed away — `qualify_api.replies` itself supports the two-step flow (`decide` then
 `send` are separate service calls); only this UI collapses them.
 
+**«Reintentar» (ATENDER-9, m-24849130).** A reply that did not go out because
+Instagram did not answer stays on screen (`retry_drafts`, read with the queue) with
+«Reintentar». `retry_send` runs only on that tap (N13), behind the same one-action-at-a-
+time guard (`busy_draft_id`); the backend makes a NEW approved draft for it, so a second
+tap — here or in another tab — is refused instead of answering twice. A deleted comment,
+another refusal or an unknown outcome is said once (`action_error`) and never retried.
+
 Every handler below only ever touches comment-channel drafts — `qualify_api.replies`
 has no DM code path at all (QUA-20/QUA-69 stay untouched, see that module's own
 docstring).
@@ -75,9 +82,19 @@ from .replies_provider import (
     generate_drafts,
     pending_drafts,
     regenerate_draft,
+    retry_draft,
+    retryable_drafts,
     send_draft,
 )
-from .replies_vm import generation_message, regenerate_error_message, send_block_reason
+from .replies_vm import (
+    SEND_REFUSED,
+    SEND_UNKNOWN,
+    generation_message,
+    regenerate_error_message,
+    retry_error_message,
+    send_block_reason,
+    send_failure_message,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -90,14 +107,14 @@ _NO_ACTING_USER = (
 )
 _GENERATE_FAILED = "No pudimos preparar las respuestas. Intenta de nuevo en unos minutos."
 _DECIDE_FAILED = "No se pudo guardar la decisión. Actualiza la lista e intenta de nuevo."
-# m-24842989: a decided draft leaves the «proposed» queue BEFORE the Meta call
-# (`decide_draft` moves it to accepted/edited, the send to sending/sent/send_failed/
-# send_ambiguous), and nothing regenerates a comment that already has a draft — so a
-# failed reply does NOT stay on screen to retry. The copy says what is true: it may or
-# may not be out, and the owner checks (or answers) on Instagram itself.
-_SEND_FAILED = "No sabemos si salió. Revísalo en Instagram."
-# The platform refused it (`send_failed`): it did not go out, and left the list.
-_SEND_REFUSED = "Tu respuesta no salió. Respóndela en Instagram."
+# m-24842989 / ATENDER-9: a decided draft leaves the «proposed» queue BEFORE the Meta
+# call. Unknown outcome (`send_ambiguous`, or the call itself raised): it may or may not
+# be out, so the owner checks on Instagram — never «Reintentar», it could answer twice.
+_SEND_FAILED = SEND_UNKNOWN
+# A definite refusal that is not passing (`send_failed`, not `transient:`): it did not go
+# out, and the owner answers on Instagram itself. The passing failure and the deleted
+# comment have their own sentences (`replies_vm.send_failure_message`).
+_SEND_REFUSED = SEND_REFUSED
 _RESULT_TOAST_DURATION_MS = 6000
 
 
@@ -162,9 +179,18 @@ class RepliesState(rx.State):
     regenerating_draft_id: str = ""
     reviewed_draft_ids: list[str] = []
 
+    # ATENDER-9: replies that did not go out because Instagram did not answer, each with
+    # «Reintentar», and the one being retried right now (it also holds `busy_draft_id`).
+    retry_drafts: list[DraftVM] = []
+    retrying_draft_id: str = ""
+
     @rx.var
     def has_pending_drafts(self) -> bool:
         return len(self.drafts) > 0
+
+    @rx.var
+    def has_retry_drafts(self) -> bool:
+        return len(self.retry_drafts) > 0
 
     async def _resolve_ids(self) -> tuple[UUID | None, UUID | None]:
         """`(tenant_id, connection_id)` — both `None`-safe; callers branch on whichever
@@ -203,6 +229,7 @@ class RepliesState(rx.State):
                 self.is_loading = False
                 self.load_error = _NO_TENANT if tenant_id is None else _UNKNOWN_CONNECTION
                 self.drafts = []
+                self.retry_drafts = []
             return
         # m-24842989: the publication thumbnails come from the inbox's already-loaded
         # candidates (`load_screen`/`select_connection` load them before chaining here).
@@ -216,14 +243,22 @@ class RepliesState(rx.State):
                 connection_id=connection_id,
                 candidates=candidates,
             )
+            failed = await asyncio.to_thread(
+                retryable_drafts,
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                candidates=candidates,
+            )
         except Exception as exc:
             logger.error("pending_drafts failed: %s", type(exc).__name__)
             async with self:
                 self.load_error = _UNKNOWN_CONNECTION
                 self.drafts = []
+                self.retry_drafts = []
         else:
             async with self:
                 self.drafts = drafts
+                self.retry_drafts = failed
         finally:
             async with self:
                 self.is_loading = False
@@ -398,7 +433,78 @@ class RepliesState(rx.State):
         # draft as `send_failed` / `send_ambiguous` and returns it. Only `sent` is «Listo».
         if sent.status != "sent":
             async with self:
-                self.action_error = _SEND_REFUSED if sent.status == "send_failed" else _SEND_FAILED
+                events = self._report_failure(sent)
+            for event in events:
+                yield event
+            return
+        yield rx.toast.success(sent_message(author), duration=_RESULT_TOAST_DURATION_MS)
+
+    def _report_failure(self, sent: DraftVM) -> list[rx.event.EventSpec]:
+        """ATENDER-9: what the owner reads when a reply did not go out — the kind's one
+        sentence (`_SEND_REFUSED` / `_SEND_FAILED` for refusals and unknown outcomes). A
+        passing failure is shown on its own card with «Reintentar» (the list was just
+        re-read), so here it only gets a toast; the others go to the callout."""
+        message = (
+            send_failure_message(sent.failure)
+            if sent.failure
+            else (_SEND_REFUSED if sent.status == "send_failed" else _SEND_FAILED)
+        )
+        if sent.can_retry:
+            return [rx.toast.error(message, duration=_RESULT_TOAST_DURATION_MS)]
+        self.action_error = message
+        return []
+
+    @rx.event(background=True)
+    async def retry_send(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
+        """«Reintentar» (ATENDER-9): only on the owner's tap, only for a passing failure
+        (the backend checks it again). One action at a time (`busy_draft_id`), and the
+        backend refuses a second retry of the same reply, so nothing goes out twice."""
+        async with self:
+            if self.busy_draft_id:
+                return
+            self.busy_draft_id = draft_id
+            self.retrying_draft_id = draft_id
+            self.action_error = ""
+            author = next((d.author_username for d in self.retry_drafts if d.id == draft_id), "")
+
+        resolved_draft_id = _try_uuid(draft_id)
+        tenant_id, _connection_id = await self._resolve_ids()
+        if tenant_id is None or resolved_draft_id is None:
+            async with self:
+                self.busy_draft_id = ""
+                self.retrying_draft_id = ""
+                self.action_error = _NO_TENANT if tenant_id is None else _DECIDE_FAILED
+            return
+
+        user_id = await self._acting_user(tenant_id)
+        if user_id is None:
+            async with self:
+                self.busy_draft_id = ""
+                self.retrying_draft_id = ""
+                self.action_error = _NO_ACTING_USER
+            return
+
+        try:
+            sent = await retry_draft(
+                tenant_id=tenant_id, draft_id=resolved_draft_id, user_id=user_id
+            )
+        except Exception as exc:
+            logger.error("retry_draft failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = retry_error_message(exc)
+            yield RepliesState.load_pending_drafts
+            return
+        finally:
+            async with self:
+                self.busy_draft_id = ""
+                self.retrying_draft_id = ""
+
+        yield RepliesState.load_pending_drafts
+        if sent.status != "sent":
+            async with self:
+                events = self._report_failure(sent)
+            for event in events:
+                yield event
             return
         yield rx.toast.success(sent_message(author), duration=_RESULT_TOAST_DURATION_MS)
 
