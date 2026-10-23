@@ -128,10 +128,10 @@ def test_a_product_without_price_carries_the_note() -> None:
 def test_the_plan_says_creations_never_money() -> None:
     """CREAR-5 (decision 8): the owner reads creations of the month, never dollars."""
     plan = build_plan_vm(AngleSetPlan(count=10, image_unit_usd=Decimal("0.035")))
-    assert plan.images_label == "10 imágenes · hasta 10 de tus creaciones"
+    assert plan.images_label == "10 publicaciones · usan hasta 10 de tus creaciones"
     assert "$" not in plan.images_label and "$" not in plan.note
     assert build_plan_vm(AngleSetPlan(count=10, image_unit_usd=Decimal(0))).images_label == (
-        "10 imágenes · hasta 10 de tus creaciones"
+        "10 publicaciones · usan hasta 10 de tus creaciones"
     )
 
 

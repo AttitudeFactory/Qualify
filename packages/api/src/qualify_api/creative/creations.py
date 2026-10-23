@@ -67,6 +67,9 @@ class CreationsBalance:
     quota: int
     used: int
     weights_version: str
+    #: The day the quota renews (the next month's first day, tenant's timezone); None
+    #: when the ledger does not know the tenant's month.
+    renews_on: date | None = None
 
     @property
     def left(self) -> int:
@@ -107,6 +110,13 @@ def month_start(now: datetime, zone: str) -> date:
     return date(local.year, local.month, 1)
 
 
+def next_month_start(period: date) -> date:
+    """The first day of the month after `period` — when the quota renews."""
+    if period.month == 12:
+        return date(period.year + 1, 1, 1)
+    return date(period.year, period.month + 1, 1)
+
+
 def _brand_lock_key(brand_id: UUID) -> int:
     """A stable signed 64-bit key for `pg_advisory_xact_lock` (one per brand)."""
     return int.from_bytes(brand_id.bytes[:8], "big", signed=True)
@@ -144,7 +154,10 @@ class PostgresCreationsLedger:
             period = self._period(session, tenant_id)
             used = self._used(session, tenant_id, brand_id, period)
         return CreationsBalance(
-            quota=self._weights.monthly_quota, used=used, weights_version=self._weights.version
+            quota=self._weights.monthly_quota,
+            used=used,
+            weights_version=self._weights.version,
+            renews_on=next_month_start(period),
         )
 
     def charge(

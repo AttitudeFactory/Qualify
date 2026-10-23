@@ -20,6 +20,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
@@ -1284,6 +1285,7 @@ __all__ = [
     "not_enough_creations_text",
     "pieces_use_notice",
     "presenter_fallback_text",
+    "renewal_day_label",
     "gap_vm",
     "status_label",
     "status_tone",
@@ -1482,11 +1484,49 @@ def creations_left_label(left: int, quota: int) -> str:
     return f"Te quedan {left} de {quota} este mes"
 
 
-def not_enough_creations_text(missing: int) -> str:
-    """«Te faltan 2 creaciones este mes.» — nothing is created, never half of it."""
+_MONTHS_LONG = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+#: What the owner can still do when the month is short (UX review 2026-10-23, N8).
+SHORT_ADVICE_SIMPLER = "Elige algo más sencillo, como una imagen, o espera"
+SHORT_ADVICE_FEWER_IDEAS = "Descarta algunas ideas o espera"
+
+
+def renewal_day_label(day: date | None) -> str:
+    """«1 de noviembre» — the day the month's creations renew ("" when unknown)."""
+    if day is None:
+        return ""
+    return f"{day.day} de {_MONTHS_LONG[day.month - 1]}"
+
+
+def not_enough_creations_text(
+    missing: int, *, quota: int = 0, renews: str = "", advice: str = ""
+) -> str:
+    """«Te faltan 2 creaciones este mes.» — nothing is created, never half of it — plus
+    what to do now (UX review 2026-10-23): `advice` (what else the owner can make) and
+    the day the `quota` renews. Without a quota only the first sentence is said."""
     if missing == 1:
-        return "Te falta 1 creación este mes."
-    return f"Te faltan {missing} creaciones este mes."
+        short = "Te falta 1 creación este mes."
+    else:
+        short = f"Te faltan {missing} creaciones este mes."
+    if quota <= 0:
+        return short
+    when = renews or "próximo mes"
+    if advice:
+        return f"{short} {advice} al {when}, cuando se renuevan tus {quota}."
+    return f"{short} El {when} se renuevan tus {quota}."
 
 
 def creations_use_notice(
@@ -1516,12 +1556,19 @@ def presenter_fallback_text(seconds: int, weight: int) -> str:
     return f"Te alcanza para el video de {seconds} segundos, que usa {weight} de tus creaciones."
 
 
-def pieces_use_notice(pieces: int, left: int, quota: int, weight: int = 1) -> str:
+def pieces_use_notice(
+    pieces: int, left: int, quota: int, weight: int = 1, *, renews: str = ""
+) -> str:
     """«Variaciones»: what generating the kept ideas uses, or what is missing — the batch
     is all or nothing (CREAR-5)."""
     needed = pieces * weight
     if needed > left:
-        return not_enough_creations_text(needed - left)
+        return not_enough_creations_text(
+            needed - left,
+            quota=quota,
+            renews=renews,
+            advice=SHORT_ADVICE_FEWER_IDEAS if left > 0 else "",
+        )
     after = left - needed
     if pieces == 1:
         return f"Esta publicación usa {needed} de tus creaciones. Te quedarían {after} de {quota}."

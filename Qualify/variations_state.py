@@ -286,6 +286,8 @@ class VariationsState(rx.State):
     #: CREAR-5: the month's creations (-1 = no quota wired: nothing is said).
     creations_left: int = -1
     creations_quota: int = 0
+    #: The day it renews («1 de noviembre»; "" = unknown).
+    creations_renews: str = ""
 
     @rx.var
     def creations_text(self) -> str:
@@ -293,7 +295,12 @@ class VariationsState(rx.State):
         missing, in which case nothing is generated."""
         if self.creations_left < 0 or not self.pending_count:
             return ""
-        return pieces_use_notice(self.pending_count, self.creations_left, self.creations_quota)
+        return pieces_use_notice(
+            self.pending_count,
+            self.creations_left,
+            self.creations_quota,
+            renews=self.creations_renews,
+        )
 
     @rx.var
     def creations_short(self) -> bool:
@@ -306,14 +313,16 @@ class VariationsState(rx.State):
             logger.warning("variations: creations unreadable: %s", type(exc).__name__)
             return
         async with self:
-            self.creations_left, self.creations_quota = balance if balance else (-1, 0)
+            self.creations_left, self.creations_quota, self.creations_renews = (
+                balance if balance else (-1, 0, "")
+            )
 
     @rx.var
     def generate_label(self) -> str:
         pending = self.pending_count
         if pending == 1:
-            return "Generar 1 pieza"
-        return f"Generar {pending} piezas"
+            return "Crear 1 publicación"
+        return f"Crear {pending} publicaciones"
 
     @rx.var
     def has_sets(self) -> bool:

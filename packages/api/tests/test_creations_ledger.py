@@ -19,6 +19,7 @@ from qualify_api.creative.creations import (
     InMemoryCreationsLedger,
     NotEnoughCreations,
     month_start,
+    next_month_start,
     not_enough_text,
 )
 from qualify_api.creative.creations_report import ChargeRow, build_report, render
@@ -128,6 +129,11 @@ def test_the_month_is_the_tenants_month() -> None:
     assert month_start(now, "America/Bogota") == date(2026, 10, 1)
     assert month_start(now, "UTC") == date(2026, 11, 1)
     assert month_start(now, "Not/AZone") == date(2026, 11, 1)
+
+
+def test_the_quota_renews_on_the_next_months_first_day() -> None:
+    assert next_month_start(date(2026, 10, 1)) == date(2026, 11, 1)
+    assert next_month_start(date(2026, 12, 1)) == date(2027, 1, 1)
 
 
 def test_what_the_owner_reads_when_the_month_cannot_pay() -> None:

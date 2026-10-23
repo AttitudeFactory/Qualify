@@ -93,6 +93,7 @@ from .creative_vm import (
     draft_kind_label,
     failure_label,
     purged_label,
+    renewal_day_label,
     retention_notice,
 )
 from .piece_download import issue_download_path
@@ -963,23 +964,26 @@ def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UU
     return _detail_to_vm(tenant_id, detail)
 
 
-def creations_balance(tenant_id: UUID, brand_id: UUID) -> tuple[int, int] | None:
-    """«Creaciones del mes» (CREAR-5): (left, quota), or None when no quota is wired —
-    the screens then say nothing about creations."""
+def creations_balance(tenant_id: UUID, brand_id: UUID) -> tuple[int, int, str] | None:
+    """«Creaciones del mes» (CREAR-5): (left, quota, renews) — `renews` the day the
+    quota renews as the owner reads it («1 de noviembre», "" when unknown) — or None
+    when no quota is wired: the screens then say nothing about creations."""
     balance = production_content_service().creations_balance(tenant_id=tenant_id, brand_id=brand_id)
-    return None if balance is None else (balance.left, balance.quota)
+    if balance is None:
+        return None
+    return balance.left, balance.quota, renewal_day_label(balance.renews_on)
 
 
 def regeneration_creations(
     tenant_id: UUID, brand_id: UUID, draft_id: UUID
-) -> tuple[int, int, int] | None:
-    """What «Pedir otra versión» of a draft uses: (weight, left, quota), or None."""
+) -> tuple[int, int, int, str] | None:
+    """What «Pedir otra versión» of a draft uses: (weight, left, quota, renews), or None."""
     service = production_content_service()
     price = service.regeneration_price(tenant_id=tenant_id, draft_id=draft_id)
     balance = service.creations_balance(tenant_id=tenant_id, brand_id=brand_id)
     if price is None or balance is None:
         return None
-    return price.weight, balance.left, balance.quota
+    return price.weight, balance.left, balance.quota, renewal_day_label(balance.renews_on)
 
 
 def reject_draft(

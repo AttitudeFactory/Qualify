@@ -112,6 +112,7 @@ from .creative_vm import (
     HOOK_LIMIT,
     KIND_LABELS,
     PRESENTER_TOO_LONG,
+    SHORT_ADVICE_SIMPLER,
     VIDEO_TYPE_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
@@ -3522,6 +3523,7 @@ class CreativeState(rx.State):
             self.media_carousel = False
         if key in ("avatar_video", "animated_avatar_video"):
             self.video_engine = configured_video_engine()
+            self._fit_duration()
             loads: list[rx.event.EventHandler] = []
             if self.video_engine == "omnihuman" and not self.voice_options:
                 loads.append(CreativeState.load_voice_options)
@@ -4748,6 +4750,25 @@ class CreativeState(rx.State):
     #: The month's balance; -1 = no quota wired (the screens say nothing about it).
     creations_left: int = -1
     creations_quota: int = 0
+    #: The day it renews, as the owner reads it («1 de noviembre»; "" = unknown).
+    creations_renews: str = ""
+
+    def _not_enough_text(self, missing: int) -> str:
+        """«Te faltan N…» plus what to do now: something simpler — only when anything is
+        left at all — or wait until the quota renews (UX review 2026-10-23)."""
+        return not_enough_creations_text(
+            missing,
+            quota=self.creations_quota,
+            renews=self.creations_renews,
+            advice=SHORT_ADVICE_SIMPLER if self.creations_left > 0 else "",
+        )
+
+    def _fit_duration(self) -> None:
+        """A length the month no longer pays for is not left chosen: the longest one it
+        still pays for is (UX review 2026-10-23, §4.4 values already filled in)."""
+        choices = self._duration_choices()
+        if choices and self.media_duration not in choices:
+            self.media_duration = choices[-1]
 
     def _is_presenter(self) -> bool:
         return is_presenter_request(self.brief_kind, self.video_engine)
@@ -4782,7 +4803,7 @@ class CreativeState(rx.State):
                 return _PRESENTER_LENGTHS
             return PRESENTER_TOO_LONG
         if price.weight > self.creations_left:
-            return not_enough_creations_text(price.weight - self.creations_left)
+            return self._not_enough_text(price.weight - self.creations_left)
         return ""
 
     @rx.var
@@ -4833,6 +4854,9 @@ class CreativeState(rx.State):
     def duration_choices(self) -> list[str]:
         """The lengths offered: a presenter is priced up to 30 s, and under a short
         month only the lengths it still pays for (CREAR-5) — at least the shortest."""
+        return self._duration_choices()
+
+    def _duration_choices(self) -> list[str]:
         if not is_presenter_request(self.brief_kind, self.video_engine):
             return list(_DURATIONS)
         table = load_weights()
@@ -4856,9 +4880,10 @@ class CreativeState(rx.State):
             return
         async with self:
             if balance is None:
-                self.creations_left, self.creations_quota = -1, 0
+                self.creations_left, self.creations_quota, self.creations_renews = -1, 0, ""
             else:
-                self.creations_left, self.creations_quota = balance
+                self.creations_left, self.creations_quota, self.creations_renews = balance
+                self._fit_duration()
 
     # -- «Resumen» (§ request 2026-10-20): every option's last view, where Generar is ------
 
@@ -5345,7 +5370,7 @@ class CreativeState(rx.State):
             await self._refresh_creations(tenant_id, brand_id)
             async with self:
                 self.is_submitting = False
-                self.create_error = not_enough_creations_text(exc.missing)
+                self.create_error = self._not_enough_text(exc.missing)
             return None
         except CreationNotOffered:
             async with self:
@@ -5732,10 +5757,10 @@ class CreativeState(rx.State):
             if quote is None:
                 self.regen_creations_text, self.regen_creations_short = "", False
                 return
-            weight, left, quota = quote
+            weight, left, quota, renews = quote
             self.regen_creations_short = weight > left
             self.regen_creations_text = (
-                not_enough_creations_text(weight - left)
+                not_enough_creations_text(weight - left, quota=quota, renews=renews)
                 if weight > left
                 else creations_use_notice(weight, left, quota, subject="La nueva versión")
             )
@@ -5790,9 +5815,14 @@ class CreativeState(rx.State):
             return
         except NotEnoughCreations as exc:
             # CREAR-5: the month cannot pay another version — the piece stays as it was
-            async with self:
-                self.action_error = not_enough_creations_text(exc.missing)
             await self._load_regen_creations(tenant_id, brand_id, draft_uuid)
+            async with self:
+                # the dialog's own sentence carries the day the quota renews
+                self.action_error = (
+                    self.regen_creations_text
+                    if self.regen_creations_short
+                    else not_enough_creations_text(exc.missing)
+                )
             return
         except SQLAlchemyError as exc:
             logger.error("reject failed: %s", type(exc).__name__)

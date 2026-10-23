@@ -75,7 +75,7 @@ DRAFT_TONES: dict[str, str] = {
 #: Shown on a set whose product has no catalog price (requirement 8).
 NO_PRICE_TEXT = "Este producto no tiene precio en el catálogo: las piezas no mostrarán ninguno."
 #: CREAR-5 (decision 8): creations of the month, never money.
-PLAN_NOTE = "Proponer las ideas no usa tus creaciones del mes; cada imagen que generes usa 1."
+PLAN_NOTE = "Proponer las ideas no usa tus creaciones del mes; cada publicación que crees usa 1."
 INTERRUPTED_TEXT = "La generación se interrumpió. Puedes reintentarla: no se cuenta dos veces."
 
 
@@ -156,7 +156,7 @@ def build_product_check_vm(product: AngleProduct) -> ProductCheckVM:
 @dataclass(frozen=True)
 class PlanVM:
     count: int
-    images_label: str  # "10 imágenes · hasta 10 de tus creaciones" — never money (CREAR-5)
+    images_label: str  # "10 publicaciones · usan hasta 10 de tus creaciones" (CREAR-5)
     note: str
 
 
@@ -164,7 +164,7 @@ def build_plan_vm(plan: AngleSetPlan) -> PlanVM:
     """What the ideas will make, in creations: each image is one (`pesos-creaciones-v1`);
     the dollars are the team's (decision 8)."""
     weight = weight_for_request("static_flyer").weight
-    images = f"{plan.count} imágenes · hasta {plan.count * weight} de tus creaciones"
+    images = f"{plan.count} publicaciones · usan hasta {plan.count * weight} de tus creaciones"
     return PlanVM(
         count=plan.count,
         images_label=images,

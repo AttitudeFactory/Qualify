@@ -45,8 +45,8 @@ _INTRO = (
     "enfoque. Te proponemos diez ideas; tú decides cuáles siguen."
 )
 _NEXT_STEP = (
-    "Revisa las propuestas y descarta las que no te convenzan. Después genera las "
-    "imágenes de los ángulos que queden: cada una usa 1 de tus creaciones del mes."
+    "Revisa las ideas y descarta las que no te convenzan. Después crea las publicaciones "
+    "de las que queden: cada una usa 1 de tus creaciones del mes."
 )
 _POLL_TIMEOUT = (
     "Algunas publicaciones llevan demasiado tiempo. Vuelve a abrir este grupo más tarde o "
@@ -813,6 +813,16 @@ def _angles_review() -> rx.Component:
                     ),
                 ),
                 rx.cond(VariationsState.poll_timed_out, callout(_POLL_TIMEOUT, "warn")),
+                # CREAR-5: what the pieces use of the month, read before the button (on a phone
+                # the reason a disabled button is off must not fall below it)
+                rx.cond(
+                    VariationsState.can_generate & (VariationsState.creations_text != ""),
+                    rx.cond(
+                        VariationsState.creations_short,
+                        callout(VariationsState.creations_text, "warn"),
+                        callout(VariationsState.creations_text, "info", icon="sparkles"),
+                    ),
+                ),
                 rx.cond(
                     VariationsState.can_generate,
                     rx.hstack(
@@ -832,15 +842,6 @@ def _angles_review() -> rx.Component:
                         align="center",
                         wrap="wrap",
                         width="100%",
-                    ),
-                ),
-                # CREAR-5: what the pieces use of the month and what would be left
-                rx.cond(
-                    VariationsState.can_generate & (VariationsState.creations_text != ""),
-                    rx.cond(
-                        VariationsState.creations_short,
-                        callout(VariationsState.creations_text, "warn"),
-                        callout(VariationsState.creations_text, "info", icon="sparkles"),
                     ),
                 ),
                 rx.cond(
