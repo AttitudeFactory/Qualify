@@ -1603,24 +1603,51 @@ def _inbox() -> rx.Component:
     )
 
 
+def _guarded(content: rx.Component) -> rx.Component:
+    """Load error → retry; accounts loading → skeleton; no account → how to connect one;
+    else `content`."""
+    return rx.cond(
+        S.load_error != "",
+        rx.vstack(
+            callout(S.load_error, "error"),
+            _retry_button("Reintentar", S.load_accounts),
+            width="100%",
+            spacing="3",
+        ),
+        rx.cond(
+            ~S.accounts_loaded,
+            rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
+            rx.cond(S.show_no_accounts, _no_accounts_state(), content),
+        ),
+    )
+
+
 def _body() -> rx.Component:
     return page_body(
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
-        rx.cond(
-            S.load_error != "",
-            rx.vstack(
-                callout(S.load_error, "error"),
-                _retry_button("Reintentar", S.load_accounts),
-                width="100%",
-                spacing="3",
-            ),
-            rx.cond(
-                ~S.accounts_loaded,
-                rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
-                rx.cond(S.show_no_accounts, _no_accounts_state(), _inbox()),
-            ),
+        _guarded(_inbox()),
+    )
+
+
+def messages_tab() -> rx.Component:
+    """m-24842990: the «Mensajes» tab of «Por responder» — the private inbox without the
+    Mensajes / Consultas toggle (the queries are the «Quieren comprar» tab there). The
+    account selector and the pending badge move from the page header into the tab."""
+    return rx.vstack(
+        _heartbeat(),
+        rx.script(src="/qualify-voice.js"),
+        rx.hstack(
+            account_selector(),
+            _pending_badge(),
+            spacing="3",
+            align="center",
+            wrap="wrap",
+            width="100%",
         ),
+        _guarded(_chats()),
+        spacing="4",
+        width="100%",
     )
 
 

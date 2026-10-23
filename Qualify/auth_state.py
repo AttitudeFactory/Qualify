@@ -818,6 +818,7 @@ class AuthState(rx.State):
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
             from .replies_state import RepliesState
+            from .responder_state import ResponderState
             from .state import DashboardState
             from .stories_state import StoriesState
             from .trending_state import TrendingState
@@ -834,6 +835,8 @@ class AuthState(rx.State):
             for state_cls in (
                 ConnectionsState,
                 LeadsState,
+                # m-24842990 «Por responder»: the open tab and the tenant's pending counts
+                ResponderState,
                 ClarityState,
                 InboxState,
                 PublishState,

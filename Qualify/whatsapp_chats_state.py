@@ -332,6 +332,9 @@ class WhatsAppChatsState(rx.State):
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
         """Tab root `on_mount`: entry or number switch."""
+        # m-24842990: «Por responder» › «Ver» opens the chats on «Sin leer» (N11).
+        if self.router.url.query_parameters.get("filtro") == "sin-leer":
+            self.filter_key = FILTER_UNREAD
         shell = await self.get_state(WhatsAppState)
         connection_id = shell.selected_connection_id
         if not connection_id:

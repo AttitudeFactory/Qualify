@@ -141,9 +141,11 @@ _UNSUPPORTED_SURFACE = (
 
 
 def is_inbox_path(path: str) -> bool:
-    """Whether the tab is on the inbox screen (`/inbox`, with or without the trailing
-    slash the production build adds). Used to keep a late sync toast off other pages."""
-    return path.rstrip("/") == "/inbox"
+    """Whether the tab is on the comments screen (`/responder` since m-24842990, whose
+    «Comentarios» tab holds it; `/inbox` only redirects there), with or without the
+    trailing slash the production build adds. Used to keep a late sync toast off other
+    pages."""
+    return path.rstrip("/") in ("/responder", "/inbox")
 
 
 # `MediaNotEligible.reason` -> message; any other reason keeps `_NOT_ELIGIBLE`.
@@ -1081,7 +1083,8 @@ class InboxState(rx.State):
             except Exception as exc:  # noqa: BLE001
                 logger.error("reply_by_dm failed: %s", type(exc).__name__)
                 return rx.toast.error(_REPLY_BY_DM_FAILED, duration=_RESULT_TOAST_DURATION_MS)
-            return rx.redirect(f"/conversations?consulta={followup_id}")
+            # m-24842990: the query card lives in «Por responder» › Quieren comprar.
+            return rx.redirect(f"/responder?tab=comprar&consulta={followup_id}")
         finally:
             async with self:
                 self.replying_dm_id = ""
