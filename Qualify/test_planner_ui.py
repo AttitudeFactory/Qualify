@@ -1599,3 +1599,22 @@ def test_stored_goals_read_as_labels_in_plan_order() -> None:
 
     assert goal_labels(["followers", "likes"]) == ["Likes", "Seguidores"]
     assert goal_labels([]) == [] and goal_labels(None) == []
+
+
+def test_event_panel_copy_is_assisted_never_autonomous() -> None:
+    """N13 (m-24842959): the panel names the owner's approval, never «publicación
+    automática», and no visible text of the drawer says «evento»."""
+    import inspect
+    import re
+
+    from . import planner_drawer
+
+    source = inspect.getsource(planner_drawer)
+    assert '"Aprobada por ti: sale el "' in source
+    assert '"Conecta tu Instagram en Tus redes para que esta publicación pueda salir."' in source
+    assert '"Ahora mismo no podemos publicar a la hora programada. Tus publicaciones "' in source
+    assert '"esperan; te avisamos cuando vuelva."' in source
+    assert "automática" not in source.lower()
+    # String literals only (comments and identifiers may still say «event»).
+    literals = re.findall(r'"([^"\\]*)"', source)
+    assert not [text for text in literals if "evento" in text.lower()]
