@@ -769,7 +769,11 @@ def _message(m: MessageVM) -> rx.Component:
             rx.box(
                 _story_reply(m),
                 chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
-                class_name="q-wa-msg q-wa-msg--in q-conv-msg",
+                class_name=rx.cond(
+                    m.story_reply_label != "",
+                    "q-wa-msg q-wa-msg--in q-conv-msg q-conv-msg--story",
+                    "q-wa-msg q-wa-msg--in q-conv-msg",
+                ),
             ),
         ),
         _seen_footer(m),
