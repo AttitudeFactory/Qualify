@@ -194,13 +194,16 @@ class ReplyRepository(Protocol):
         connection_id: UUID,
         sentiment_version: AnalysisVersion,
         intent_version: AnalysisVersion | None,
+        any_comment: bool = False,
     ) -> tuple[CandidateComment, ...]:
         """Every inbound, comment-channel message of the connection, not soft-deleted
         (QUA-101: a comment Meta no longer returns never becomes a NEW draft candidate),
         with no `comment_reply_drafts` row at all (a discarded draft is NOT regenerated
         by the batch — that is `supersede_draft`'s explicit act), and with a
         `sentiment_version` POS row OR an `intent_version` commercial row. With
-        `intent_version=None` only the POS half applies (the QUA-22 behaviour)."""
+        `intent_version=None` only the POS half applies (the QUA-22 behaviour).
+        `any_comment` (ATENDER-4b, the per-tenant setting): ANY current sentiment or
+        intent row qualifies, whatever its label — the triage and the gate decide."""
         ...
 
     def get_reply_candidate(
@@ -583,6 +586,7 @@ class PostgresReplyRepository:
         connection_id: UUID,
         sentiment_version: AnalysisVersion,
         intent_version: AnalysisVersion | None,
+        any_comment: bool = False,
     ) -> tuple[CandidateComment, ...]:
         has_any_draft = (
             select(CommentReplyDraft.id).where(CommentReplyDraft.message_id == Message.id).exists()
@@ -592,12 +596,18 @@ class PostgresReplyRepository:
             if intent_version is not None
             else false()
         )
+        signal = or_(CommentSentimentResult.label == "POS", commercial)
+        if any_comment:
+            # ATENDER-4b: any stored analysis row (`ck_reply_draft_has_signal` needs one).
+            signal = or_(
+                CommentSentimentResult.id.is_not(None), CommentIntentResult.id.is_not(None)
+            )
         stmt = (
             _candidate_select(sentiment_version=sentiment_version, intent_version=intent_version)
             .where(
                 Message.connection_id == connection_id,
                 ~has_any_draft,
-                or_(CommentSentimentResult.label == "POS", commercial),
+                signal,
             )
             .order_by(Message.posted_at.asc().nulls_last(), Message.id)
         )
@@ -946,8 +956,11 @@ class MemoryReplyRepository:
         connection_id: UUID,
         sentiment_version: AnalysisVersion,
         intent_version: AnalysisVersion | None,
+        any_comment: bool = False,
     ) -> tuple[CandidateComment, ...]:
-        del tenant_id, sentiment_version, intent_version  # seeded candidates are current
+        # Seeded candidates are current, and the gate judges every one (`any_comment`
+        # only widens the SQL filter, which this repo does not have).
+        del tenant_id, sentiment_version, intent_version, any_comment
         candidates = self._candidates.get(connection_id, ())
         return tuple(c for c in candidates if c.message_id not in self._by_message)
 
