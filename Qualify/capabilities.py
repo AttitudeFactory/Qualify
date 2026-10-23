@@ -57,12 +57,12 @@ __all__ = [
 
 CAPABILITY_LABELS: dict[Capability, str] = {
     Capability.CONNECT_ACCOUNT: "Conectar cuenta",
-    Capability.PUBLISH_CONTENT: "Publicar reels y stories",
+    Capability.PUBLISH_CONTENT: "Publicar reels (videos cortos) e historias",
     Capability.READ_COMMENTS: "Leer comentarios",
-    Capability.ANALYZE_COMMENTS: "Analizar sentiment y temas",
+    Capability.ANALYZE_COMMENTS: "Saber de qué hablan tus comentarios",
     Capability.REPLY_COMMENTS: "Responder comentarios",
-    Capability.MANAGE_DMS: "Bandeja de mensajes directos",
-    Capability.READ_INSIGHTS: "Métricas de la cuenta",
+    Capability.MANAGE_DMS: "Mensajes directos",
+    Capability.READ_INSIGHTS: "Resultados de la cuenta",
     # WhatsApp (WA-05)
     Capability.WA_SEND: "Enviar mensajes de WhatsApp",
     Capability.WA_TEMPLATES: "Plantillas de mensajes",
@@ -77,22 +77,20 @@ CAPABILITY_DISABLED_REASONS: dict[Capability, str] = {
         "apoya todo lo demás."
     ),
     Capability.PUBLISH_CONTENT: (
-        "No concediste el permiso de publicación. La lectura, los comentarios y los "
-        "mensajes no se ven afectados."
+        "No concediste el permiso para publicar. Los comentarios y los mensajes siguen funcionando."
     ),
     Capability.READ_COMMENTS: "No concediste el permiso de comentarios.",
     Capability.ANALYZE_COMMENTS: (
-        "No concediste el permiso de comentarios; sin él no se puede analizar el "
-        "sentiment ni los temas."
+        "No concediste el permiso de comentarios; sin él no podemos decirte de qué "
+        "hablan tus comentarios."
     ),
     Capability.REPLY_COMMENTS: ("No concediste el permiso para moderar y responder comentarios."),
     Capability.MANAGE_DMS: (
-        "No concediste el permiso de mensajes directos. La publicación, los "
-        "comentarios y el listening siguen funcionando."
+        "No concediste el permiso de mensajes directos. Publicar y los comentarios "
+        "siguen funcionando."
     ),
     Capability.READ_INSIGHTS: (
-        "No concediste el permiso de métricas de la cuenta; las métricas no entran "
-        "en el permiso básico."
+        "No concediste el permiso de resultados de la cuenta; no entra en el permiso básico."
     ),
     # WhatsApp (WA-05): the "permission" here is on the system-user token the
     # administrator generated in Meta Business Settings, not on a consent screen.

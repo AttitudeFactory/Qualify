@@ -56,6 +56,11 @@ STEPS: tuple[tuple[str, str, str], ...] = (
         "Así escribimos tus publicaciones: como le hablas a tus clientes.",
     ),
 )
+#: Under the profile read of Tus redes (m-24842969): reading a public profile is not the
+#: Meta connection that lets Qualify publish — said once, so the owner is not left
+#: wondering why Tus redes asks again later.
+PUBLIC_READ_NOTE = "Solo leemos lo que ya es público. Para publicar lo conectarás después."
+
 STEP_NAMES: tuple[str, ...] = tuple(name for name, _title, _subtitle in STEPS)
 TOTAL_STEPS = len(STEPS)
 FIRST_STEP = STEP_NAMES[0]

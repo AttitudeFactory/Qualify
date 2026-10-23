@@ -274,7 +274,7 @@ def test_vm_falls_back_when_username_or_brand_is_missing() -> None:
 
 def test_never_verified_connection_reads_honestly() -> None:
     vm = _to_vm(_row(last_verified_at=None), "PuntoServis")
-    assert vm.last_verified_at == "Nunca verificada"
+    assert vm.last_verified_at == "Sin fecha"
 
 
 def test_never_health_checked_connection_reads_honestly() -> None:
@@ -282,7 +282,7 @@ def test_never_health_checked_connection_reads_honestly() -> None:
     "Verificar ahora" click has ever happened. Distinct fallback copy from
     `last_verified_at`'s own — the two must never be conflated."""
     vm = _to_vm(_row(), "PuntoServis")
-    assert vm.last_health_checked_at == "Sin verificar"
+    assert vm.last_health_checked_at == "Todavía no"
     assert vm.last_health_checked_at != vm.last_verified_at
 
 
@@ -291,7 +291,7 @@ def test_health_checked_at_is_formatted_like_verified_at() -> None:
     stored column (`last_health_checked_at`, not `last_verified_at`)."""
     checked_at = datetime(2026, 8, 21, 16, 33, tzinfo=UTC)
     vm = _to_vm(_row(last_health_checked_at=checked_at), "PuntoServis")
-    assert vm.last_health_checked_at == "21 Aug 2026, 16:33"
+    assert vm.last_health_checked_at == "21 ago 2026, 16:33"
 
 
 def test_health_check_click_is_visible_even_when_last_verified_at_is_unchanged() -> None:
@@ -303,7 +303,7 @@ def test_health_check_click_is_visible_even_when_last_verified_at_is_unchanged()
         _row(last_verified_at=unchanged_verified_at, last_health_checked_at=None),
         "PuntoServis",
     )
-    assert vm.last_health_checked_at == "Sin verificar"
+    assert vm.last_health_checked_at == "Todavía no"
 
     vm_after_click = _to_vm(
         _row(

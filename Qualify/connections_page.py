@@ -12,6 +12,9 @@ import reflex as rx
 from .connections_state import GUIDE_ELEMENT_ID, ConnectionsState
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
+    CONNECTED_BODY,
+    CONNECTED_TITLE,
+    STATUS_LABELS,
     WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
     ConnectionHintVM,
@@ -33,14 +36,19 @@ from .ui import (
 )
 from .ui import tokens as T
 
+#: m-24842969: a tap target is at least 44 px (N12); a Radix size-3 button is 40 px.
+_TAP = "44px"
+
 
 def status_badge(status: rx.Var[str]) -> rx.Component:
-    """active | degraded | revoked — icon + label, never color alone."""
+    """Funciona | Hay que volver a conectarla | Desconectada — icon + words, never colour
+    alone, and never the FSM's own words (m-24842969)."""
     return rx.match(
         status,
-        ("active", tone_badge("Activa", "ok", icon="circle-check", size="2")),
-        ("degraded", tone_badge("Degradada", "warn", icon="triangle-alert", size="2")),
-        ("revoked", tone_badge("Revocada", "error", icon="circle-x", size="2")),
+        *[
+            (key, tone_badge(label, tone, icon=icon, size="2"))
+            for key, (label, tone, icon) in STATUS_LABELS.items()
+        ],
         tone_badge(status, "neutral", size="2"),
     )
 
@@ -60,25 +68,21 @@ def _data_access_badge(state: rx.Var[str], message: rx.Var[str]) -> rx.Component
 
 
 def verify_now_button(conn: ConnectionVM) -> rx.Component:
-    """QUA-91: one on-demand `/debug_token` check. Shown only for an `active`
-    connection — a `degraded` one already shows "Reconectar" as its primary action, and
-    the whole point of this button is to catch a problem BEFORE it degrades. Manual
-    only: nothing renders or fires this on a timer.
+    """QUA-91: one on-demand `/debug_token` check («Comprobar ahora»). Shown only for an
+    `active` connection, inside «Más detalles» — the whole point is to catch a problem
+    BEFORE it degrades. Manual only: nothing renders or fires this on a timer.
 
-    `loading=` is keyed to THIS card's id (`checking_connection_ids.contains(conn.id)`,
-    same per-row pattern `InboxState.toggling_media_ids` already uses) — not a
-    page-wide flag, so a click on one connection's button never shows every other
-    card's button as busy too. Radix's `loading` prop is what gives the spinner AND
-    the disabled-while-in-flight state in one prop; no separate `disabled=` needed.
-    """
+    `loading=` is keyed to THIS card's id (`checking_connection_ids.contains(conn.id)`),
+    so a click on one card never shows every other card's button as busy too."""
     return rx.button(
-        rx.icon("shield-check", size=14),
-        "Verificar ahora",
+        rx.icon("refresh-cw", size=15),
+        "Comprobar ahora",
         on_click=ConnectionsState.check_health_now(conn.id),
         loading=ConnectionsState.checking_connection_ids.contains(conn.id),
         variant="soft",
         **T.tone_scheme("neutral"),
-        size="1",
+        size="3",
+        min_height=_TAP,
     )
 
 
@@ -86,22 +90,10 @@ def _scope_chip(label: rx.Var[str]) -> rx.Component:
     return tag(label)
 
 
-def _provisional_mark() -> rx.Component:
-    """Honest 'por verificar' marker for capabilities resting on the Meta doc bug."""
-    return rx.tooltip(
-        tone_badge("por verificar", "warn", icon="circle-help"),
-        content=(
-            "Esta capacidad depende de una fila de la documentación de Meta que "
-            "aún no está verificada por una segunda fuente."
-        ),
-    )
-
-
 def _enabled_capability(cap: CapabilityVM) -> rx.Component:
     return rx.hstack(
         rx.icon("circle-check", size=15, color=T.tone_color("ok", 9)),
         rx.text(cap.label, size="2"),
-        rx.cond(cap.provisional, _provisional_mark(), rx.fragment()),
         spacing="2",
         align="center",
         width="100%",
@@ -112,12 +104,7 @@ def _disabled_capability(cap: CapabilityVM) -> rx.Component:
     return rx.hstack(
         rx.icon("circle-x", size=15, color=T.TEXT_FAINT),
         rx.vstack(
-            rx.hstack(
-                rx.text(cap.label, size="2", color=T.TEXT_MUTED),
-                rx.cond(cap.provisional, _provisional_mark(), rx.fragment()),
-                spacing="2",
-                align="center",
-            ),
+            rx.text(cap.label, size="2", color=T.TEXT_MUTED),
             rx.text(cap.reason, size="1", color=T.TEXT_MUTED),
             spacing="0",
             align_items="start",
@@ -157,17 +144,18 @@ def _instagram_degraded_banner() -> rx.Component:
     return callout(
         rx.hstack(
             rx.text(
-                "La conexión dejó de responder. Reconéctala para restaurar el "
-                "acceso a esta cuenta.",
+                "Instagram dejó de responderle a Qualify. Vuelve a conectarla para seguir "
+                "publicando y viendo tus comentarios desde aquí.",
                 size="2",
             ),
             rx.spacer(),
             rx.button(
                 rx.icon("refresh-cw", size=15),
-                "Reconectar",
+                "Volver a conectar",
                 on_click=ConnectionsState.start_connect_flow,
                 variant="soft",
-                size="2",
+                size="3",
+                min_height=_TAP,
                 **T.tone_scheme("warn"),
             ),
             width="100%",
@@ -191,16 +179,18 @@ def _instagram_revoked_banner() -> rx.Component:
     return callout(
         rx.hstack(
             rx.text(
-                "El acceso fue revocado. Vuelve a conectar la cuenta para reactivarla.",
+                "Esta cuenta está desconectada. Conéctala de nuevo para publicar y ver "
+                "tus comentarios desde aquí.",
                 size="2",
             ),
             rx.spacer(),
             rx.button(
                 rx.icon("plug", size=15),
-                "Volver a conectar",
+                "Conectar de nuevo",
                 on_click=ConnectionsState.start_connect_flow,
                 variant="soft",
-                size="2",
+                size="3",
+                min_height=_TAP,
                 **T.tone_scheme("error"),
             ),
             width="100%",
@@ -225,7 +215,8 @@ def _hint_row(hint: ConnectionHintVM) -> rx.Component:
             hint.step_number,
             on_click=ConnectionsState.show_guide_step(hint.step_key),
             variant="ghost",
-            size="1",
+            size="2",
+            min_height=_TAP,
             color_scheme="gray",
         ),
         spacing="1",
@@ -247,7 +238,8 @@ def _hints_callout(conn: ConnectionVM) -> rx.Component:
                 "Volver a conectar",
                 on_click=ConnectionsState.reconnect_for_permissions,
                 variant="soft",
-                size="2",
+                size="3",
+                min_height=_TAP,
                 **T.tone_scheme("warn"),
             ),
             spacing="3",
@@ -268,21 +260,28 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
                 "Desconectar",
                 variant="soft",
                 **T.tone_scheme("neutral"),
-                size="2",
+                size="3",
+                min_height=_TAP,
             ),
         ),
         rx.alert_dialog.content(
-            rx.alert_dialog.title("Desconectar cuenta"),
+            rx.alert_dialog.title("¿Desconectar esta cuenta?"),
             rx.alert_dialog.description(
                 rx.text(
-                    "Se revocará el acceso de Qualify a ",
+                    "Ya no podrás publicar ni ver los comentarios de ",
                     rx.text.strong(conn.external_username),
-                    ". Podrás volver a conectarla más tarde.",
+                    " desde Qualify. Puedes conectarla de nuevo cuando quieras.",
                 ),
             ),
             rx.flex(
                 rx.alert_dialog.cancel(
-                    rx.button("Cancelar", variant="soft", **T.tone_scheme("neutral")),
+                    rx.button(
+                        "Cancelar",
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP,
+                        **T.tone_scheme("neutral"),
+                    ),
                 ),
                 rx.alert_dialog.action(
                     # The confirmation of a destructive action: solid in the error
@@ -290,135 +289,216 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
                     rx.button(
                         "Desconectar",
                         on_click=ConnectionsState.disconnect_connection(conn.id),
+                        size="3",
+                        min_height=_TAP,
                         **T.tone_scheme("error"),
                     ),
                 ),
                 spacing="3",
                 margin_top="1rem",
                 justify="end",
+                wrap="wrap",
             ),
         ),
     )
 
 
+def _ability_line(label: str, value: rx.Var[str], icon: str, tone: str) -> rx.Component:
+    """«Puedes: publicar · ver comentarios» — the label carries the meaning, the icon
+    only repeats it (never colour alone)."""
+    return rx.hstack(
+        rx.icon(icon, size=16, color=T.tone_color(tone, 9), flex_shrink="0", margin_top="2px"),
+        rx.text(rx.text.strong(label), " ", value, size="2"),
+        spacing="2",
+        align="start",
+        width="100%",
+    )
+
+
+def _how_to_enable(conn: ConnectionVM) -> rx.Component:
+    """«Cómo activarlo»: the guide step that turns the missing things on — or, for a
+    WhatsApp number (connected by the Qualify team), «Pedir ayuda 1:1»."""
+    return rx.cond(
+        conn.cannot_step_key != "",
+        rx.button(
+            rx.icon("list-checks", size=15),
+            "Cómo activarlo",
+            on_click=ConnectionsState.show_guide_step(conn.cannot_step_key),
+            variant="ghost",
+            size="2",
+            min_height=_TAP,
+            color_scheme="gray",
+        ),
+        help_button("3"),
+    )
+
+
+def _ability_lines(conn: ConnectionVM) -> rx.Component:
+    """The two lines the owner reads first (m-24842969): what works today, and what does
+    not yet with the step that turns it on."""
+    return rx.vstack(
+        rx.cond(
+            conn.can_do != "",
+            _ability_line("Puedes:", conn.can_do, "circle-check", "ok"),
+            rx.fragment(),
+        ),
+        rx.cond(
+            conn.cannot_do != "",
+            rx.vstack(
+                _ability_line("Todavía no puedes:", conn.cannot_do, "circle-minus", "warn"),
+                _how_to_enable(conn),
+                spacing="1",
+                align_items="start",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _detail_row(icon: str, label: str, value: rx.Var[str]) -> rx.Component:
+    return rx.hstack(
+        rx.icon(icon, size=14, color=T.TEXT_FAINT, flex_shrink="0", margin_top="3px"),
+        rx.text(label, value, size="2", color=T.TEXT_MUTED),
+        spacing="2",
+        align="start",
+    )
+
+
+def _details(conn: ConnectionVM) -> rx.Component:
+    """«Más detalles»: dates, permissions and the full list — for whoever wants them,
+    out of the owner's first read (m-24842969)."""
+    return rx.vstack(
+        _detail_row("building-2", "Negocio: ", conn.brand),
+        _detail_row("clock", "Conectada: ", conn.last_verified_at),
+        _detail_row("refresh-cw", "Última comprobación: ", conn.last_health_checked_at),
+        rx.cond(conn.status == "active", verify_now_button(conn), rx.fragment()),
+        rx.cond(
+            conn.granted_scopes.length() > 0,
+            rx.vstack(
+                rx.text("Permisos que diste", size="1", color=T.TEXT_MUTED),
+                rx.hstack(
+                    rx.foreach(conn.granted_scopes, _scope_chip),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="1",
+                align_items="start",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            conn.enabled_capabilities.length() > 0,
+            rx.vstack(
+                rx.text("Funciona", size="1", color=T.TEXT_MUTED),
+                rx.foreach(conn.enabled_capabilities, _enabled_capability),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            conn.disabled_capabilities.length() > 0,
+            rx.vstack(
+                rx.text("Todavía no funciona", size="1", color=T.TEXT_MUTED),
+                rx.foreach(conn.disabled_capabilities, _disabled_capability),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        spacing="3",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _details_toggle(conn: ConnectionVM) -> rx.Component:
+    is_open = ConnectionsState.open_detail_ids.contains(conn.id)
+    return rx.button(
+        rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=15),
+        rx.cond(is_open, "Menos detalles", "Más detalles"),
+        on_click=ConnectionsState.toggle_details(conn.id),
+        variant="ghost",
+        size="2",
+        min_height=_TAP,
+        color_scheme="gray",
+        aria_expanded=is_open,
+    )
+
+
 def connection_card(conn: ConnectionVM) -> rx.Component:
+    """One account, read in this order (m-24842969): which account and whether it works
+    (in words), what it can and cannot do yet, the fix when something is off, and only
+    then — behind «Más detalles» — dates and permissions."""
     return card(
         rx.vstack(
-            # Header: platform + username + status
-            rx.hstack(
-                platform_badge(conn.platform),
-                rx.heading(conn.external_username, size="4", as_="h2"),
-                rx.spacer(),
-                rx.cond(conn.status == "active", verify_now_button(conn), rx.fragment()),
+            # One column on a phone (N12): the name and the state wrap instead of
+            # squeezing each other.
+            rx.flex(
+                rx.hstack(
+                    platform_badge(conn.platform),
+                    rx.heading(conn.external_username, size="4", as_="h2", word_break="break-all"),
+                    spacing="2",
+                    align="center",
+                    min_width="0",
+                ),
                 status_badge(conn.status),
+                justify="between",
+                align="center",
+                wrap="wrap",
+                gap="2",
                 width="100%",
-                align="center",
             ),
-            rx.hstack(
-                rx.icon("building-2", size=14, color=T.TEXT_FAINT),
-                rx.text(conn.brand, size="2", color=T.TEXT_MUTED),
-                rx.text("·", color=T.TEXT_FAINT),
-                rx.icon("clock", size=14, color=T.TEXT_FAINT),
-                rx.text(
-                    "Verificada: ",
-                    conn.last_verified_at,
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="2",
-                align="center",
-            ),
-            # QUA-91: distinct from "Verificada:" above (that is `last_verified_at`, the
-            # connect-flow verification, QUA-16) — this is the last manual "Verificar
-            # ahora" click. Without this line a click ran /debug_token for real but
-            # nothing on screen ever showed it happened.
-            rx.hstack(
-                rx.icon("shield-check", size=14, color=T.TEXT_FAINT),
-                rx.text(
-                    "Última verificación de acceso: ",
-                    conn.last_health_checked_at,
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="2",
-                align="center",
-            ),
-            # QUA-91: independent of the FSM-driven banners below — never shown at the
-            # same time as claiming the connection is `degraded`.
+            _ability_lines(conn),
+            # QUA-91: independent of the FSM-driven banners below.
             _data_access_badge(conn.data_access_state, conn.data_access_message),
             # m-24840590: what this account is missing, each with its guide step.
             rx.cond(conn.hints.length() > 0, _hints_callout(conn), rx.fragment()),
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
-            # Granted scopes.
-            rx.cond(
-                conn.granted_scopes.length() > 0,
-                rx.vstack(
-                    rx.text("Permisos concedidos", size="1", color=T.TEXT_MUTED),
-                    rx.hstack(
-                        rx.foreach(conn.granted_scopes, _scope_chip),
-                        spacing="2",
-                        wrap="wrap",
-                    ),
-                    spacing="1",
-                    align_items="start",
-                    width="100%",
-                ),
-                rx.fragment(),
-            ),
-            # Capabilities: enabled then disabled-with-reason.
             rx.divider(),
-            rx.cond(
-                conn.enabled_capabilities.length() > 0,
-                rx.vstack(
-                    rx.text("Disponible", size="1", color=T.TEXT_MUTED),
-                    rx.foreach(conn.enabled_capabilities, _enabled_capability),
-                    spacing="2",
-                    align_items="start",
-                    width="100%",
-                ),
-                rx.fragment(),
+            rx.flex(
+                _details_toggle(conn),
+                rx.cond(conn.status != "revoked", disconnect_action(conn), rx.fragment()),
+                justify="between",
+                align="center",
+                wrap="wrap",
+                gap="2",
+                width="100%",
             ),
             rx.cond(
-                conn.disabled_capabilities.length() > 0,
-                rx.vstack(
-                    rx.text(
-                        "Deshabilitado",
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.foreach(conn.disabled_capabilities, _disabled_capability),
-                    spacing="2",
-                    align_items="start",
-                    width="100%",
-                ),
-                rx.fragment(),
-            ),
-            # Disconnect (hidden once already revoked).
-            rx.cond(
-                conn.status != "revoked",
-                rx.hstack(rx.spacer(), disconnect_action(conn), width="100%"),
+                ConnectionsState.open_detail_ids.contains(conn.id),
+                _details(conn),
                 rx.fragment(),
             ),
             spacing="3",
             align_items="start",
             width="100%",
         ),
-        padding="1.25rem 1.5rem",
+        padding="1.25rem",
     )
 
 
 def _empty_state() -> rx.Component:
     return empty_state(
         "link-2-off",
-        "Aún no conectas ninguna cuenta",
-        "Conecta tu primera red social para empezar a escuchar y responder desde Qualify.",
+        "Todavía no conectas tu Instagram",
+        "Conéctalo para aprobar tus publicaciones y publicarlas desde aquí, y ver tus "
+        "comentarios y mensajes.",
         action=rx.button(
             rx.icon("plus", size=16),
             "Conectar cuenta",
             on_click=ConnectionsState.start_connect_flow,
             size="3",
+            min_height=_TAP,
             margin_top="0.5rem",
         ),
     )
@@ -433,14 +513,18 @@ def help_button(size: str = "2") -> rx.Component:
         on_click=ConnectionsState.open_support,
         variant="soft",
         size=size,
+        min_height=_TAP,
         **T.tone_scheme("neutral"),
     )
 
 
 def connections_topbar() -> rx.Component:
+    # m-24842969: the ticket proposes «Tu Instagram y Facebook» as the title; N1 keeps
+    # the h1 equal to the menu entry («Tus redes», `ui/layout.py`), so the networks are
+    # named in the subtitle instead.
     return page_header(
         "Tus redes",
-        "Revisa que tus redes sociales estén conectadas y con los permisos que Qualify necesita.",
+        "Tu Instagram y Facebook. Conéctalos para aprobar y publicar desde aquí.",
         help_button(),
     )
 
@@ -449,6 +533,43 @@ def _action_error() -> rx.Component:
     """Error from a connect/disconnect action, shown ABOVE the list rather than
     replacing it: the connections on screen are still valid, one action failed."""
     return callout(ConnectionsState.action_error, "warn")
+
+
+def connected_panel() -> rx.Component:
+    """«Instagram conectado» (m-24842969, N3): the result in plain words, ONE solid
+    button to the next job — back to where the owner came from (`?volver=`, N4) or on to
+    «Crear una publicación» — and a soft one to stay and look at the account."""
+    return callout(
+        rx.vstack(
+            rx.heading(CONNECTED_TITLE, size="4", as_="h2"),
+            rx.text(CONNECTED_BODY, size="2"),
+            rx.flex(
+                rx.button(
+                    rx.icon("sparkles", size=16),
+                    ConnectionsState.continue_label,
+                    on_click=ConnectionsState.continue_after_connect,
+                    size="3",
+                    min_height=_TAP,
+                ),
+                rx.button(
+                    "Ver mis redes",
+                    on_click=ConnectionsState.dismiss_connected,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP,
+                    **T.tone_scheme("neutral"),
+                ),
+                gap="3",
+                wrap="wrap",
+                margin_top="0.25rem",
+            ),
+            spacing="2",
+            align_items="start",
+            width="100%",
+        ),
+        "ok",
+        icon="circle-check",
+    )
 
 
 def _connect_notice() -> rx.Component:
@@ -513,7 +634,8 @@ def connect_guidance_panel() -> rx.Component:
                     "Volver a conectar",
                     on_click=ConnectionsState.retry_connect,
                     variant="soft",
-                    size="2",
+                    size="3",
+                    min_height=_TAP,
                     **T.tone_scheme("warn"),
                 ),
                 help_button(),
@@ -563,7 +685,8 @@ def _requirement_row(requirement: ConnectRequirementVM, number: int) -> rx.Compo
                     rx.cond(is_open, "Ocultar", "¿Cómo lo hago?"),
                     on_click=ConnectionsState.toggle_requirement(requirement.key),
                     variant="ghost",
-                    size="1",
+                    size="2",
+                    min_height=_TAP,
                     color_scheme="gray",
                     aria_expanded=is_open,
                     margin_top="0.375rem",
@@ -616,7 +739,8 @@ def connect_requirements_card() -> rx.Component:
                         "Ocultar",
                         on_click=ConnectionsState.toggle_checklist,
                         variant="ghost",
-                        size="1",
+                        size="2",
+                        min_height=_TAP,
                         color_scheme="gray",
                     ),
                     rx.fragment(),
@@ -635,7 +759,8 @@ def connect_requirements_card() -> rx.Component:
                     rx.icon("plus", size=16),
                     "Conectar cuenta",
                     on_click=ConnectionsState.start_connect_flow,
-                    size="2",
+                    size="3",
+                    min_height=_TAP,
                 ),
                 rx.fragment(),
             ),
@@ -672,11 +797,13 @@ def _folded_checklist() -> rx.Component:
             "Ver la guía de conexión",
             on_click=ConnectionsState.toggle_checklist,
             variant="ghost",
-            size="1",
+            size="2",
+            min_height=_TAP,
             color_scheme="gray",
         ),
         spacing="2",
         align="center",
+        wrap="wrap",
         width="100%",
     )
 
@@ -788,7 +915,11 @@ def _connections_body() -> rx.Component:
             rx.fragment(),
         ),
         rx.cond(ConnectionsState.has_guidance, connect_guidance_panel(), rx.fragment()),
-        rx.cond(ConnectionsState.connect_notice != "", _connect_notice(), rx.fragment()),
+        rx.cond(
+            ConnectionsState.connected_ok,
+            connected_panel(),
+            rx.cond(ConnectionsState.connect_notice != "", _connect_notice(), rx.fragment()),
+        ),
         rx.cond(ConnectionsState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             ConnectionsState.show_checklist,

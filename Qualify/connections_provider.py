@@ -55,20 +55,34 @@ from .connections_vm import (
 _NO_BRAND_LABEL = "Sin marca"
 
 
+_MONTHS_ES = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic")
+
+# m-24842969: the fallbacks the owner reads under «Más detalles» — plain words, never
+# «Nunca verificada» / «Sin verificar».
+NEVER_CONNECTED_AT = "Sin fecha"
+NEVER_CHECKED_AT = "Todavía no"
+
+
+def _format_when(value: datetime) -> str:
+    """«21 ago 2026, 16:33» — Spanish month names whatever the server's locale
+    (`strftime("%b")` printed «Aug»)."""
+    return f"{value.day:02d} {_MONTHS_ES[value.month - 1]} {value.year}, {value:%H:%M}"
+
+
 def _format_verified_at(value: datetime | None) -> str:
     """Pre-format server-side — the frontend never receives a raw datetime var."""
     if value is None:
-        return "Nunca verificada"
-    return value.strftime("%d %b %Y, %H:%M")
+        return NEVER_CONNECTED_AT
+    return _format_when(value)
 
 
 def _format_health_checked_at(value: datetime | None) -> str:
     """QUA-91: same pre-format discipline as `_format_verified_at`, distinct fallback
-    copy — "Sin verificar" reads as "nobody has run a health-check yet", never as
-    "Nunca verificada" (which is `last_verified_at`'s own, unrelated concept)."""
+    copy — «Todavía no» reads as "nobody has pressed «Comprobar ahora» yet", never as
+    `last_verified_at`'s own, unrelated fallback."""
     if value is None:
-        return "Sin verificar"
-    return value.strftime("%d %b %Y, %H:%M")
+        return NEVER_CHECKED_AT
+    return _format_when(value)
 
 
 def _data_access_warning(
