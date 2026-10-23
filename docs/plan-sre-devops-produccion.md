@@ -18,11 +18,12 @@ Deploy de `main` (`d226124`, árbol idéntico al release previo `8a31f78`) con `
 
 Hoy **no hay deploy automático**: mergear a `main` no despliega. El deploy es manual desde la Mac del fundador.
 
-## 2. Remotion (servicio `render`) — no está orquestado en producción
+## 2. Remotion (servicio `render`) — listo para producción, falta encenderlo
 
-- Está **definido** en `deploy/docker-compose.prod.yml` como perfil opcional `render`, pero en el servidor `COMPOSE_PROFILES` está vacío: **el contenedor no existe y su imagen nunca se construyó allí**. El generador por plantillas (`ContentKind.TEMPLATE`) falla en producción con error claro.
-- El runbook pide **CX33** (4 vCPU · 8 GB) para activarlo: Chromium pide ~1 GB al renderizar y el CX23 tiene ~2,9 GB disponibles con el stack actual. **Es una decisión del fundador** (costo del servidor), no de la sesión.
-- Huecos de orquestación aunque se active: `deploy.sh status` no chequea `render` (`/health` con `bundleReady`); `api`/`reflex` no lo declaran en `depends_on`; el CI construye la imagen de render sólo si el PR toca `packages/render/**` y nunca la publica; el build de la imagen (descarga de Chrome Headless Shell) correría en el servidor de producción.
+- Está **definido** en `deploy/docker-compose.prod.yml` como perfil opcional `render`. Hasta encenderlo, en el servidor `COMPOSE_PROFILES` está vacío: el contenedor no existe y el generador por plantillas (`ContentKind.TEMPLATE`, «Plantilla de marca» / «Plantilla») falla en producción con error claro (la app consulta `/health` antes de cobrar).
+- **Orquestado desde m-24803289** (decisión del fundador, 2026-10-23): el workflow `deploy` construye y publica `qualify-render:<sha>` (arm64) en cada deploy, nunca en el servidor; con el perfil activo, `server-deploy.sh` la baja y espera el contenedor `healthy` (el `HEALTHCHECK` de la imagen exige `bundleReady`) antes del veredicto; `render` tiene `mem_limit` de 1,5 GB; `deploy.sh status` muestra su salud en `docker compose ps`.
+- Lo que falta son **dos pasos del fundador**: agrandar el servidor a 4 vCPU · 8 GB (CX33 o el equivalente de su misma arquitectura, que es aarch64): Chromium pide ~1 GB al renderizar y el CX23 tiene ~2,9 GB disponibles con el stack actual; y agregar `COMPOSE_PROFILES=render` a `/opt/qualify/.env.prod`.
+- Queda abierto: `api`/`reflex` no lo declaran en `depends_on` (a propósito: sin render el resto de la app sigue andando).
 
 ## 3. Brechas contra el ejemplo oficial de Reflex
 
@@ -43,7 +44,7 @@ Referencia: `reflex-dev/reflex` → `docker-example/production-compose` (Dockerf
 | 3 | ✅ Construir la imagen `deploy/Dockerfile` (targets `app` y `web`) **en el CI** — hoy ningún job la construye, un Dockerfile roto sólo se descubre al desplegar | PR | — |
 | 4 | ⏳ CD (preparado, §5; espera decisión y secretos del fundador): al quedar `main` en verde, Actions construye `app`/`web`(/`render`) y los publica en GHCR por SHA; el servidor sólo hace `pull` + `up`. Nunca compilar en producción. Rollback = desplegar el SHA anterior | PR | secretos de GitHub (llave ssh de deploy restringida, token GHCR) → **fundador** |
 | 5 | Despliegue sin caída del backend: con Redis como state manager (punto 3.2) arrancar el `reflex` nuevo, esperar `healthy` y recién entonces retirar el viejo | PR | 1, 2, decisión 3.2 |
-| 6 | `render` en producción: chequeo de `/health` en `deploy.sh`, imagen desde GHCR, límites de memoria (`mem_limit`) para que un render no tumbe Postgres | PR | decisión CX23→CX33 → **fundador** |
+| 6 | ✅ (m-24803289) `render` en producción: chequeo de salud en `server-deploy.sh`, imagen desde GHCR, límite de memoria (`mem_limit`) para que un render no tumbe Postgres. Falta encenderlo (§2) | PR | servidor de 8 GB + `COMPOSE_PROFILES=render` → **fundador** |
 | 7 | SRE: monitoreo externo de `/ping` y `/api/...` con alerta, respaldos fuera del servidor (R2 + `age`, `plan-cicd-staging.md` §5.6), backups de Hetzner activados (QUA-121) | PR + fundador | — |
 | 8 | Medir un deploy **con** cambio de código (antes y después de 1/3/4) y dejar los números en este documento | medición | acceso ssh → **fundador** |
 
@@ -128,7 +129,7 @@ Probado en la sesión con un registro local en lugar de GHCR, sobre un "servidor
 - **Falla después del `up`** (chequeos de salud): el release nuevo queda corriendo, `current` apunta a él y el workflow sale en rojo. Se recupera revirtiendo.
 - **Re-deploy del sha al que ya apunta `current`:** reutiliza el release sin borrarlo.
 - El release incluye `backup-db.sh`, que el cron nocturno ejecuta desde `current/deploy/` (antes `.dockerignore` excluía `deploy/*.sh` del contexto; ningún target de la app los copia).
-- **Con el perfil `render` activo,** el CD se niega.
+- **Con el perfil `render` activo,** el CD baja también `qualify-render:<sha>` y espera el contenedor `healthy` antes de los chequeos; un sha anterior a m-24803289 no tiene esa imagen y el script se niega antes de tocar nada.
 
 **Lo que no se pudo probar acá:** el push real a GHCR (el proxy de la sesión bloquea las descargas de GHCR) y el ssh real. Lo prueba el primer *Run workflow* del fundador.
 

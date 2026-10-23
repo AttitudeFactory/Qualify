@@ -79,7 +79,7 @@ Corte esperado: unos segundos para los dos dominios, una sola vez. Vuelta atrás
 1. <https://console.hetzner.cloud> → proyecto (crear uno "Qualify" si no existe) → **Add Server**.
 2. **Location:** la más cercana a los usuarios con stock (Ashburn `ash` o Hillsboro `hil` para LatAm; Falkenstein/Nuremberg si no). La disponibilidad cambia por ubicación — si un tipo sale "unavailable", probar otra.
 3. **Image:** Ubuntu **24.04**.
-4. **Type:** *Shared vCPU · x86*. **El CX22 ya no se vende** (Hetzner renovó la línea y subió precios el 2026-06-15, ver [`plan-cicd-staging.md`](plan-cicd-staging.md) §5.8): su equivalente es el **CX23** (2 vCPU · 4 GB · 40 GB). Alcanza para este compose **sin** el perfil `render`. Si se va a activar Remotion, usar **CX33** (4 vCPU · 8 GB). x86, no ARM (CAX): la imagen de Remotion/Chromium es x86.
+4. **Type:** *Shared vCPU · x86*. **El CX22 ya no se vende** (Hetzner renovó la línea y subió precios el 2026-06-15, ver [`plan-cicd-staging.md`](plan-cicd-staging.md) §5.8): su equivalente es el **CX23** (2 vCPU · 4 GB · 40 GB). Alcanza para este compose **sin** el perfil `render`. Si se va a activar Remotion, usar **CX33** (4 vCPU · 8 GB). Ojo con la arquitectura: el servidor de producción resultó ser **aarch64** (el primer deploy por CI falló con una imagen amd64, 2026-10-06), y por eso todas las imágenes, render incluido, se construyen para `linux/arm64`. Remotion soporta Chrome Headless Shell en Linux arm64; al agrandar, elegir el plan de 4 vCPU · 8 GB de la **misma** arquitectura que el servidor actual.
 5. **Networking:** IPv4 pública (sí) + IPv6.
 6. **SSH keys:** *Add SSH key* → pegar la pública del Mac (`cat ~/.ssh/id_ed25519.pub`; si no existe, `ssh-keygen -t ed25519`). Así no se crea contraseña de root.
 7. **Firewalls (opcional, gratis):** crear uno con entrantes TCP 22, 80, 443 y UDP 443. El script también configura `ufw` en el propio servidor.
@@ -253,7 +253,7 @@ Operación:
 | Comandos a mano en el servidor | el alias `dc` de arriba, que ya agrega `--env-file deploy/release.env` cuando existe (sin él, Compose buscaría `qualify-app:latest` y compilaría en el servidor) |
 
 Límites:
-- **Perfil `render`:** el CD se niega si `COMPOSE_PROFILES` incluye `render`, porque su imagen todavía no se publica (punto 6 del plan). Mientras tanto, ese caso se despliega con `just deploy`.
+- **Perfil `render`:** desde m-24803289 el workflow publica `qualify-render:<sha>` (arm64) en cada deploy. Si `COMPOSE_PROFILES` incluye `render`, `server-deploy.sh` también la baja y, después del `up`, espera hasta ~2,5 min a que el contenedor quede `healthy` (bundle de Remotion listo); si no, el deploy sale en rojo con el release ya vivo, como cualquier chequeo. Un sha anterior a ese PR no se puede desplegar con el perfil activo (no tiene imagen de render): el script lo dice antes de tocar nada. Activarlo son dos pasos del fundador: agrandar el servidor (abajo) y agregar `COMPOSE_PROFILES=render` a `/opt/qualify/.env.prod`.
 - **`calendar-worker`:** siempre activo desde 2026-10-21 (m-24828928); cada despliegue lo recrea como a los demás workers. Los perfiles (hoy sólo `render`) salen sólo de `.env.prod`.
 
 ## 8. Respaldos de Postgres
@@ -352,7 +352,7 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`
 
 > **`calendar-worker` ya no es opcional (2026-10-21, m-24828928).** Era un perfil que nunca se activó en el servidor, y como el worker embebido de `reflex` está **forzado a `off`**, ninguna publicación programada salía en producción. Ahora es un servicio siempre activo, como `whatsapp-worker`: el ejecutor del Planificador (QUA-111) **publica de verdad**, pero sólo lo que una persona aprobó y programó. Al arrancar, su primer tick publica lo aprobado y vencido que siga dentro de la ventana de 24 h (`EXECUTION_WINDOW`); lo más viejo expira. Alcance por defecto `--all-tenants`; para limitarlo: `QUALIFY_CALENDAR_WORKER_SCOPE=--tenant=<uuid>`. Cada tick deja un latido en Redis que el Planificador lee (QUA-118), así que la pantalla muestra el servicio como disponible.
 
-- **`render`** — servicio Remotion (Node + Chromium headless) para el generador por plantillas. Pide ~1 GB de RAM al renderizar: en un CX23 hay riesgo de quedarse sin memoria; usar CX33. Sin él, el generador por plantillas falla con error claro; el resto de la app no se entera.
+- **`render`** — servicio Remotion (Node + Chromium headless) para el generador por plantillas. Pide ~1 GB de RAM al renderizar (tope `mem_limit` de 1,5 GB, para que un render no tumbe Postgres): en un CX23 hay riesgo de quedarse sin memoria; usar CX33. Sin él, el generador por plantillas falla con error claro; el resto de la app no se entera.
 
 ## 11. Pendientes conocidos (no bloquean el despliegue)
 

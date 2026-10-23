@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Pull-based deploy, run ON THE SERVER as the ssh forced command of the CI deploy key
 # (docs/plan-sre-devops-produccion.md §5, punto 4). GitHub Actions has already built and
-# pushed, tagged with the full commit sha, three images to GHCR: qualify-app, qualify-web
-# and qualify-deploy (the commit's deploy/ directory, `--target deploy-bundle`). This script
-# never builds and never reads anything from the ssh client but the requested sha.
+# pushed, tagged with the full commit sha, four images to GHCR: qualify-app, qualify-web,
+# qualify-deploy (the commit's deploy/ directory, `--target deploy-bundle`) and
+# qualify-render (packages/render). This script never builds and never reads anything from
+# the ssh client but the requested sha.
 #
 # Installed once by the founder (it must NOT live inside a release dir, which the deploy
 # itself replaces):
@@ -25,9 +26,10 @@
 # commit that CI published. Publishing to GHCR takes write access to the repository, which
 # can already change what production runs.
 #
-# Steps: pull the 3 images -> release dir from qualify-deploy (staged, then moved into place)
-# -> `run --rm -T migrate` (skipped by `rollback`) -> `up -d` (only if migrate exited 0) ->
-# /opt/qualify/current -> health checks. A failure BEFORE `up` (pull, bundle, migrate) exits
+# Steps: pull the images (qualify-render only when COMPOSE_PROFILES enables `render`) ->
+# release dir from qualify-deploy (staged, then moved into place) -> `run --rm -T migrate`
+# (skipped by `rollback`) -> `up -d` (only if migrate exited 0) -> /opt/qualify/current ->
+# render healthy (when on) -> health checks. A failure BEFORE `up` (pull, bundle, migrate) exits
 # non-zero with the running stack and `current` untouched. After `up` the new release is
 # live and `current` points at it — so `dc` commands match what runs — and a failed health
 # check exits non-zero: recover by deploying (or rolling back to) the previous sha.
@@ -64,15 +66,25 @@ sha=${request[1]}
 # covers a manual run of the forced command. (`just deploy` from the Mac does not take it.)
 exec 9>"$ROOT/.deploy.lock"
 flock -n 9 || die "another deploy is running on this server"
-# CI publishes qualify-app and qualify-web only. qualify-render joins with punto 6 of the
-# plan; until then a stack with the `render` profile is deployed with `just deploy`.
+# Profiles come from .env.prod alone (compose reads COMPOSE_PROFILES from the env file).
+# CI publishes qualify-render for every sha since m-24803289; it is pulled — and waited
+# for after `up` — only when the profile is on, so a server without it pays nothing.
 profiles=$( (grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" || true) | tail -n 1 | cut -d= -f2-)
-[[ ,$profiles, != *,render,* ]] ||
-  die "COMPOSE_PROFILES enables render, whose image CI does not publish yet — use \`just deploy\`"
+images=(qualify-app qualify-web qualify-deploy)
+render=false
+if [[ ,$profiles, == *,render,* ]]; then
+  render=true
+  images+=(qualify-render)
+fi
 
-echo "==> Pulling ${IMAGE_PREFIX}qualify-{app,web,deploy}:$sha"
-for image in qualify-app qualify-web qualify-deploy; do
-  docker pull --quiet "$IMAGE_PREFIX$image:$sha" >/dev/null
+echo "==> Pulling ${IMAGE_PREFIX}{$(IFS=,; echo "${images[*]}")}:$sha"
+for image in "${images[@]}"; do
+  docker pull --quiet "$IMAGE_PREFIX$image:$sha" >/dev/null || {
+    [[ $image != qualify-render ]] ||
+      die "no ${IMAGE_PREFIX}qualify-render:$sha in GHCR (a commit from before CI published it?):" \
+        "deploy a newer sha, or take \`render\` out of COMPOSE_PROFILES first"
+    die "could not pull $IMAGE_PREFIX$image:$sha"
+  }
 done
 
 release=$ROOT/releases/$sha
@@ -115,6 +127,24 @@ dc up -d --no-build --remove-orphans
 ln -sfn "$release" "$ROOT/current"
 echo "==> $ROOT/current -> $sha"
 
+# Render is healthy only once its Remotion bundle is ready (the image's HEALTHCHECK asks
+# /health for bundleReady), so a release whose render cannot start fails the deploy here,
+# before the pruning, like any other health check. Its start period plus retries give up
+# after ~90 s; wait a bit longer than that.
+if $render; then
+  echo "==> Waiting for render to be healthy"
+  health=missing
+  for _ in $(seq 1 60); do
+    cid=$(dc ps -q render)
+    health=$( [[ -n $cid ]] && docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" || echo missing)
+    [[ $health == healthy || $health == unhealthy ]] && break
+    sleep 2.5
+  done
+  [[ $health == healthy ]] ||
+    die "render is $health after up (see \`dc logs render\`): the release is live without templates"
+  echo "    render healthy"
+fi
+
 # The verdict of the deploy is the health of what is now serving — so it comes BEFORE
 # the housekeeping below, which must never turn a live, healthy release into a red run.
 "$release/deploy/healthcheck.sh" "$ENV_FILE"
@@ -134,7 +164,7 @@ touch "$release"
 # Tagged images are not "dangling", so `image prune` alone would keep every sha ever
 # deployed (the app image's /app layer is ~0.5 GB per commit). Drop the tags of releases
 # pruned above; rolling back to one of them pulls it from GHCR again.
-for image in qualify-app qualify-web qualify-deploy; do
+for image in qualify-app qualify-web qualify-deploy qualify-render; do
   docker image ls --format '{{.Tag}}' "$IMAGE_PREFIX$image" | while read -r tag; do
     [[ $tag =~ ^[0-9a-f]{40}$ && ! -d $ROOT/releases/$tag ]] || continue
     docker image rm "$IMAGE_PREFIX$image:$tag" >/dev/null || true
