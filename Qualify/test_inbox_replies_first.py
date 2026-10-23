@@ -180,6 +180,9 @@ def test_the_reply_messages_are_plain_and_truthful() -> None:
     assert replies_state._GENERATE_FAILED == (
         "No pudimos preparar las respuestas. Intenta de nuevo en unos minutos."
     )
+    # Founder's decision 2026-10-23: short failure texts.
+    assert replies_state._SEND_REFUSED == "Tu respuesta no salió. Respóndela en Instagram."
+    assert replies_state._SEND_FAILED == "No sabemos si salió. Revísalo en Instagram."
     # A decided draft leaves the queue before the Meta call: never promise it «sigue aquí».
     for message in (replies_state._SEND_FAILED, replies_state._SEND_REFUSED):
         assert "Sigue aquí" not in message and "Meta" not in message and "borrador" not in message
