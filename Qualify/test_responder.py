@@ -29,6 +29,8 @@ from .responder_vm import (
     legacy_target,
     resolve_tab,
     tab_href,
+    tab_vms,
+    whatsapp_tab_text,
 )
 
 _HERE = Path(__file__).parent
@@ -134,7 +136,36 @@ def test_all_clear_only_when_nobody_waits_anywhere() -> None:
     assert not all_clear(PendingCounts(whatsapp=1))
     assert ALL_CLEAR_TITLE == "¡Al día! No hay nadie esperando tu respuesta."
     assert ALL_CLEAR_HREF == "/create"
-    assert ALL_CLEAR_ACTION == "Crear la próxima publicación"
+    assert ALL_CLEAR_ACTION == "Crear publicación"
+
+
+def test_the_tab_labels_carry_their_figure() -> None:
+    labels = [t.label for t in tab_vms(PendingCounts(messages=3, buyers=1, whatsapp=4))]
+    assert labels == [
+        "Mensajes · 3",
+        "Quieren comprar · 1",
+        "Comentarios",
+        "WhatsApp · 4",
+        "Interesados",
+    ]
+    assert [t.label for t in tab_vms()] == [label for _key, label in TABS]
+
+
+@pytest.mark.parametrize(
+    ("count", "text"),
+    [
+        (0, "Nadie te espera en WhatsApp. Cuando alguien te escriba, lo verás aquí."),
+        (1, "1 persona espera tu respuesta en WhatsApp."),
+        (4, "4 personas esperan tu respuesta en WhatsApp."),
+    ],
+)
+def test_whatsapp_tab_text(count: int, text: str) -> None:
+    assert whatsapp_tab_text(count) == text
+
+
+def test_the_comments_row_uses_a_comment_icon() -> None:
+    rows = count_rows(PendingCounts())
+    assert {r.key: r.icon for r in rows}[TAB_COMMENTS] == "message-square-text"
 
 
 def test_the_counts_are_read_off_the_event_loop() -> None:
@@ -208,7 +239,9 @@ def test_the_page_renders_header_tabs_counts_and_all_clear() -> None:
         "WhatsApp",
         "Interesados",
         "Reintentar",
-        "Abrir los chats sin responder",
+        "Responder en WhatsApp",
+        "Chats de WhatsApp",
+        "Estás viendo",
         "Quién te espera",
     ):
         assert _present(rendered, text), text
@@ -225,5 +258,6 @@ def test_targets_are_thumb_sized_and_nothing_is_hover_only() -> None:
     """N12: every button of the page is ≥ 44 px; no tooltip/hover card carries content."""
     source = (_HERE / "responder_page.py").read_text(encoding="utf-8")
     assert source.count("min_height=_TARGET") >= 5
+    assert "interactive=True" in source  # the whole count row is the target (N11)
     assert '_TARGET = "44px"' in source
     assert "tooltip" not in source and "hover_card" not in source

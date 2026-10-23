@@ -61,8 +61,16 @@ ALL_CLEAR_BODY: Final = (
     "Cuando alguien te escriba o comente, lo verás aquí. Mientras tanto, prepara tu "
     "próxima publicación."
 )
-ALL_CLEAR_ACTION: Final = "Crear la próxima publicación"
+ALL_CLEAR_ACTION: Final = "Crear publicación"
 ALL_CLEAR_HREF: Final = "/create"
+
+#: The WhatsApp tab: how many wait, and one button straight to the chats.
+WHATSAPP_TAB_TITLE: Final = "Chats de WhatsApp"
+WHATSAPP_TAB_ACTION: Final = "Responder en WhatsApp"
+WHATSAPP_NOBODY: Final = "Nadie te espera en WhatsApp. Cuando alguien te escriba, lo verás aquí."
+
+#: The visible label over the phone's tab select.
+TAB_SELECT_LABEL: Final = "Estás viendo"
 
 COUNTS_FAILED: Final = (
     "No pudimos contar quién espera tu respuesta. Revisa tu conexión y toca «Reintentar»."
@@ -104,6 +112,42 @@ class CountRowVM:
     action_label: str
 
 
+@dataclass(frozen=True)
+class TabVM:
+    key: str
+    label: str
+
+
+def tab_label(label: str, count: int) -> str:
+    """A tab's label with its figure («Mensajes · 3»), so what waits in another list shows
+    without opening it; with nobody waiting, only the name."""
+    return f"{label} · {count}" if count > 0 else label
+
+
+def tab_vms(counts: PendingCounts | None = None) -> list[TabVM]:
+    """The five tabs in order, with their figure once the counts are in. Interesados is
+    never counted."""
+    figures = (
+        {}
+        if counts is None
+        else {
+            TAB_MESSAGES: counts.messages,
+            TAB_BUYERS: counts.buyers,
+            TAB_COMMENTS: counts.comments,
+            TAB_WHATSAPP: counts.whatsapp,
+        }
+    )
+    return [TabVM(key=key, label=tab_label(label, figures.get(key, 0))) for key, label in TABS]
+
+
+def whatsapp_tab_text(count: int) -> str:
+    if count <= 0:
+        return WHATSAPP_NOBODY
+    if count == 1:
+        return "1 persona espera tu respuesta en WhatsApp."
+    return f"{count} personas esperan tu respuesta en WhatsApp."
+
+
 def count_label(count: int) -> str:
     if count <= 0:
         return "Al día"
@@ -130,7 +174,7 @@ def count_rows(counts: PendingCounts) -> list[CountRowVM]:
         ),
         (
             TAB_COMMENTS,
-            "film",
+            "message-square-text",
             "Comentarios con respuesta lista para aprobar",
             counts.comments,
             tab_href(TAB_COMMENTS),

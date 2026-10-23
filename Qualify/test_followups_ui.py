@@ -210,7 +210,8 @@ def test_conversations_loads_the_queries_on_entry_and_shows_the_toggle() -> None
 
     rendered = str(conversations_index().render())
     assert "Mensajes" in rendered
-    assert "No hay consultas pendientes" in rendered
+    assert "esperando para comprar" in rendered and "Ver comentarios" in rendered
+    assert "/responder?tab=comentarios" in rendered
 
 
 def test_the_state_accepts_only_known_views_and_known_cards() -> None:

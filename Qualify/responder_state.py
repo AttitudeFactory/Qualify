@@ -37,11 +37,14 @@ from .responder_vm import (
     TAB_LEADS,
     TAB_MESSAGES,
     CountRowVM,
+    TabVM,
     all_clear,
     count_rows,
     legacy_target,
     resolve_tab,
     tab_href,
+    tab_vms,
+    whatsapp_tab_text,
 )
 from .tenant import tenant_uuid
 
@@ -57,6 +60,12 @@ class ResponderState(rx.State):
     counts_loaded: bool = False
     counts_error: str = ""
     is_all_clear: bool = False
+    #: The five tabs, each label with its figure once the counts are in («Mensajes · 3»).
+    tabs: list[TabVM] = tab_vms()
+    whatsapp_text: str = whatsapp_tab_text(0)
+    #: The address carried `?tab=` (the owner came from a «Ver» or picked a tab): on a
+    #: phone the list goes first and «Quién te espera» stays out of the way.
+    has_tab_param: bool = False
 
     @rx.var
     def show_counts_skeleton(self) -> bool:
@@ -71,7 +80,9 @@ class ResponderState(rx.State):
         """`/responder` on_load, after `AuthState.require_login`: pick the tab from
         `?tab=`, refresh the counts and load only the open tab's list."""
         params = self.router.url.query_parameters
-        self.active_tab = resolve_tab(str(params.get("tab", "") or ""))
+        requested_tab = str(params.get("tab", "") or "")
+        self.active_tab = resolve_tab(requested_tab)
+        self.has_tab_param = requested_tab.strip() != ""
         events: list[rx.event.EventSpec] = [ResponderState.load_counts]
         if self.active_tab == TAB_MESSAGES:
             if str(params.get(FILTER_PARAM, "") or "") == FILTER_PENDING:
@@ -134,4 +145,6 @@ class ResponderState(rx.State):
                 return  # a logout/login raced this read: never show another session's
             self.rows = count_rows(counts)
             self.is_all_clear = all_clear(counts)
+            self.tabs = tab_vms(counts)
+            self.whatsapp_text = whatsapp_tab_text(counts.whatsapp)
             self.counts_loaded = True

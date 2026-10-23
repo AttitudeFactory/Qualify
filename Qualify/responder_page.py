@@ -38,10 +38,13 @@ from .responder_vm import (
     TAB_COMMENTS,
     TAB_LEADS,
     TAB_MESSAGES,
+    TAB_SELECT_LABEL,
     TAB_WHATSAPP,
-    TABS,
     WHATSAPP_CHATS_HREF,
+    WHATSAPP_TAB_ACTION,
+    WHATSAPP_TAB_TITLE,
     CountRowVM,
+    TabVM,
 )
 from .ui import (
     app_shell,
@@ -68,45 +71,53 @@ _TARGET = "44px"
 
 
 def _count_row(row: CountRowVM) -> rx.Component:
-    return card(
-        rx.flex(
-            rx.hstack(
-                rx.icon(row.icon, size=T.ICON_MD, color=T.TEXT_MUTED, flex_shrink="0"),
-                rx.vstack(
-                    rx.text(row.label, size="2", weight="medium"),
-                    rx.cond(
-                        row.tone == "warn",
-                        tone_badge(row.count_label, "warn", icon="bell"),
-                        tone_badge(row.count_label, "ok", icon="check"),
+    """The whole row opens its list (N11: the figure itself is the way in); «Ver ›» is
+    only the visual hint, not a second link."""
+    return rx.link(
+        card(
+            rx.flex(
+                rx.hstack(
+                    rx.icon(row.icon, size=T.ICON_MD, color=T.TEXT_MUTED, flex_shrink="0"),
+                    rx.vstack(
+                        rx.text(
+                            row.label, size="2", weight="medium", color=T.tone_color("neutral", 12)
+                        ),
+                        rx.cond(
+                            row.tone == "warn",
+                            tone_badge(row.count_label, "warn", icon="bell"),
+                            tone_badge(row.count_label, "ok", icon="check"),
+                        ),
+                        spacing="1",
+                        align_items="start",
                     ),
-                    spacing="1",
-                    align_items="start",
+                    spacing="3",
+                    align="center",
+                    flex="1",
+                    min_width="0",
                 ),
-                spacing="3",
-                align="center",
-                flex="1",
-                min_width="0",
-            ),
-            rx.link(
-                rx.button(
-                    row.action_label,
+                rx.hstack(
+                    rx.text(row.action_label, size="2", weight="medium"),
                     rx.icon("chevron-right", size=T.ICON_SM),
-                    variant="soft",
-                    size="3",
-                    min_height=_TARGET,
-                    width="100%",
+                    spacing="1",
+                    align="center",
+                    color=T.tone_color("accent", 11),
+                    flex_shrink="0",
                 ),
-                href=row.href,
-                aria_label=row.action_label + ": " + row.label,
-                flex_shrink="0",
+                direction="row",
+                gap="3",
+                align="center",
+                justify="between",
+                width="100%",
+                min_height=_TARGET,
             ),
-            direction="row",
-            gap="3",
-            align="center",
-            justify="between",
-            width="100%",
+            padding="0.875rem 1rem",
+            interactive=True,
         ),
-        padding="0.875rem 1rem",
+        href=row.href,
+        aria_label=row.label + ": " + row.count_label,
+        underline="none",
+        display="block",
+        width="100%",
     )
 
 
@@ -164,12 +175,22 @@ def _counts() -> rx.Component:
 # ======================================================================================
 
 
+def _segment(tab: TabVM) -> rx.Component:
+    return rx.segmented_control.item(tab.label, value=tab.key)
+
+
+def _option(tab: TabVM) -> rx.Component:
+    return rx.select.item(tab.label, value=tab.key)
+
+
 def _tab_strip() -> rx.Component:
+    """Each label carries its figure («Quieren comprar · 1») so what waits in another
+    list shows without opening it."""
     return rx.box(
         # md and up: the segmented control every tabbed screen of the app uses.
         rx.box(
             rx.segmented_control.root(
-                *[rx.segmented_control.item(label, value=key) for key, label in TABS],
+                rx.foreach(R.tabs, _segment),
                 value=R.active_tab,
                 on_change=R.select_tab,
                 size="3",
@@ -178,17 +199,23 @@ def _tab_strip() -> rx.Component:
             display=["none", "none", "block"],
         ),
         # Phones: one select, full width — five segments would need a sideways scroll.
-        rx.box(
+        # A visible label says it is the way to the other lists, not a form field.
+        rx.vstack(
+            rx.text(
+                TAB_SELECT_LABEL,
+                size="2",
+                color=T.TEXT_MUTED,
+                as_="label",
+            ),
             rx.select.root(
                 rx.select.trigger(width="100%", min_height=_TARGET, aria_label="Qué ver"),
-                rx.select.content(
-                    *[rx.select.item(label, value=key) for key, label in TABS],
-                ),
+                rx.select.content(rx.foreach(R.tabs, _option)),
                 value=R.active_tab,
                 on_change=R.select_tab,
                 size="3",
             ),
-            display=["block", "block", "none"],
+            spacing="1",
+            display=["flex", "flex", "none"],
             width="100%",
         ),
         width="100%",
@@ -200,19 +227,14 @@ def _whatsapp_tab() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.icon("message-circle", size=T.ICON_MD, color=T.TEXT_MUTED),
-                rx.heading("Tus chats de WhatsApp", size="4", as_="h2"),
+                rx.heading(WHATSAPP_TAB_TITLE, size="4", as_="h2"),
                 spacing="2",
                 align="center",
             ),
-            rx.text(
-                "Los chats de WhatsApp se responden en WhatsApp › Chats, junto con la "
-                "respuesta automática y las promociones de tu número.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
+            rx.text(R.whatsapp_text, size="2", color=T.TEXT_MUTED),
             rx.link(
                 rx.button(
-                    "Abrir los chats sin responder",
+                    WHATSAPP_TAB_ACTION,
                     rx.icon("chevron-right", size=T.ICON_SM),
                     size="3",
                     min_height=_TARGET,
@@ -254,11 +276,22 @@ def responder_header() -> rx.Component:
     )
 
 
+def _who_is_waiting() -> rx.Component:
+    """On a phone, «Quién te espera» shows only on the way in (`/responder` with no
+    `?tab=`): after a «Ver» the owner lands on the list, not on the figures again. The
+    figures still travel in the tab labels. From md up it always shows."""
+    return rx.cond(
+        R.has_tab_param,
+        rx.box(section("Quién te espera", _counts()), display=["none", "none", "block"]),
+        section("Quién te espera", _counts()),
+    )
+
+
 def responder_index() -> rx.Component:
     return app_shell(
         responder_header(),
         page_body(
-            section("Quién te espera", _counts()),
+            _who_is_waiting(),
             rx.vstack(_tab_strip(), _tab_body(), spacing="4", width="100%"),
         ),
     )
