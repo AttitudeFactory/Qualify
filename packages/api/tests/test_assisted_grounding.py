@@ -28,12 +28,12 @@ def test_as_record_carries_each_products_source() -> None:
         [
             {
                 "product_id": PRODUCT,
-                "name": "Bubble tea taro",
+                "name": "Helado de yogur con fresas",
                 "price_label": "$4.5",
                 "price_amount": Decimal("4.50"),
                 "currency": "USD",
-                "category": "bebidas",
-                "description": "Con perlas",
+                "category": "helados",
+                "description": "Con granola",
                 "updated_at": UPDATED,
             }
         ],
@@ -44,11 +44,11 @@ def test_as_record_carries_each_products_source() -> None:
         "products": [
             {
                 "product_id": str(PRODUCT),
-                "name": "Bubble tea taro",
+                "name": "Helado de yogur con fresas",
                 "price": "$4.5",
                 "price_amount": "4.50",
                 "currency": "USD",
-                "category": "bebidas",
+                "category": "helados",
                 "updated_at": UPDATED.isoformat(),
             }
         ],

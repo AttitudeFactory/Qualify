@@ -5,7 +5,7 @@ page uses. Typical uses:
 
     # Register a brand-new business (assigns a tenant_id automatically):
     uv run python -m qualify_api.auth.provision register \
-        --name "Polet Bubble Tea" --email hlrd1993+polet@gmail.com \
+        --name "Polette" --email hlrd1993+polet@gmail.com \
         --country VE --timezone America/Caracas --currency USD
 
     # Give one of the seeded tenants a login:

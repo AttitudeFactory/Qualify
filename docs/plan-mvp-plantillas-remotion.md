@@ -4,10 +4,10 @@
 
 **Fecha:** 2026-10-05 · **Estado:** `[PLAN — para ejecución; decisiones del fundador del 2026-10-05 incorporadas]`
 **Qué reemplaza:** el render Pillow del Motor de Contenido de Marca (diseño §1.9, D15) y el tipo «Imagen tipo flyer». **Qué replica:** el modelo de ElevenCreative Templates, leído en la fuente ([backlog §7](backlog-motor-plantillas-remotion.md)).
-**Pilotos:** **Bianki** (shawarma) y **Polette** (helado de yogurt), los dos emprendimientos del fundador en Korner, San Cristóbal. Un tenant, dos marcas. **Confirmado por el fundador el 2026-10-05 como decisión final para las dos marcas.**
+**Pilotos:** **Bianki** (shawarma) y **Polette** (helado de yogurt), los dos emprendimientos del fundador en Korner, San Cristóbal: **un mismo dueño que las maneja por separado, como dos marcas, con un solo inicio de sesión** (fundador, 2026-10-23; cómo encaja con `1 login = 1 tenant` está pendiente: [diseño §7.7](diseno-motor-contenido-marca.md)). **Confirmado por el fundador el 2026-10-05 como decisión final para las dos marcas.**
 **Historias:** [backlog-motor-plantillas-remotion.md](backlog-motor-plantillas-remotion.md) (`MP-00…13`); este plan las ordena en fases y les da el contrato.
 
-> **Nota sobre los pilotos.** Los docs de agosto ([estrategia Bianki/Polet](estrategia-contenido-bianki-polet.md)) describen a Bianki como pizza al corte y chivitos, y a Polet (hoy **Polette**) como bubble tea. El fundador confirmó el 2026-10-05 que la oferta final es shawarma y helado de yogurt. Se toma esa decisión; la **Fase 1 incluye refrescar el catálogo de producto y el brand kit de las dos marcas** con las fotos reales que él suba, que es exactamente lo que el módulo necesita para existir.
+> **Nota sobre los pilotos.** Los docs de agosto describían otra oferta; la [estrategia de contenido](estrategia-contenido-bianki-polet.md) ya está corregida. El fundador confirmó el 2026-10-05 (y de nuevo el 2026-10-23) que la oferta final es shawarma y ensaladas (Bianki) y helado de yogur (Polette, antes Polet). Se toma esa decisión; la **Fase 1 incluye refrescar el catálogo de producto y el brand kit de las dos marcas** con las fotos reales que él suba, que es exactamente lo que el módulo necesita para existir.
 
 ---
 
@@ -241,7 +241,7 @@ Una **campaña** es la unidad que convierte el catálogo en semanas de contenido
 | El copy rompe el puerto (gancho largo, precio con formato raro) | textos cortados en la pieza | Validación contra el manifiesto antes de cotizar; el prompt declara los límites; `invalid_parameters` como fallo tipado |
 | El costo por pieza en el VPS es cero y el estimado deja de significar algo | el usuario ve «USD 0,00» en todas las opciones Remotion | El estimado muestra tiempo de render y, si algún día hay Lambda o licencia, su costo; HeyGen y UGC siguen con costo real. La comparación entre opciones sigue siendo honesta |
 | Un cuarto colaborador entra y la licencia gratuita deja de aplicar | headcount 4 | Regla escrita en `MP-05`; Automators a USD 100/mes |
-| Los pilotos cambiaron de oferta y los docs no | brand kit habla de bubble tea, el catálogo tiene helado de yogurt | Refrescar brand kit y catálogo en Fase 1, con el fundador en la pantalla |
+| Los pilotos cambiaron de oferta y los docs no | el brand kit tiene la oferta de agosto, el catálogo tiene helado de yogurt | Refrescar brand kit y catálogo en Fase 1, con el fundador en la pantalla |
 
 ---
 
