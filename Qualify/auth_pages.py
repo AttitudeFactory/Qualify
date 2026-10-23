@@ -13,8 +13,12 @@ import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 
 from .auth_state import AuthState
+from .settings_vm import country_options
 from .ui import brand_mark, callout, card, loading_spinner
 from .ui import tokens as T
+
+# N12 (m-24842967): every control on the access screens is at least 44 px tall.
+_TAP = "2.75rem"
 
 
 def _auth_card(*children: rx.Component) -> rx.Component:
@@ -22,8 +26,8 @@ def _auth_card(*children: rx.Component) -> rx.Component:
     the app ground — `.q-ground`, the same Noir scene `app_shell` lays under the rail
     and the panel, so the login does not open on a bare page. `.q-auth-stage`
     (assets/qualify-listen.css) gives the card the overlay elevation a surface with no
-    panel under it needs. Nothing here touches the inputs: placeholders stay the
-    labels and the browser's autocomplete is left alone (signed ruling §6.1)."""
+    panel under it needs. Nothing here touches the inputs' autocomplete (signed ruling
+    §6.1); the signup labels each field above it (`_labeled`, m-24842967)."""
     return rx.center(
         card(
             rx.vstack(
@@ -55,6 +59,8 @@ def email_field(placeholder: str = "Correo", **props) -> rx.Component:
         custom_attrs={"autoComplete": "username", "autoCapitalize": "none", "spellCheck": "false"},
         required=True,
         width="100%",
+        size="3",
+        height=_TAP,
         **props,
     )
 
@@ -64,6 +70,7 @@ def password_field(
     *,
     name: str = "password",
     new: bool = False,
+    **props,
 ) -> rx.Component:
     """A password input with an eye toggle. `new=True` asks the password manager for a
     suggestion (`new-password`); otherwise it offers the saved one (`current-password`)."""
@@ -74,7 +81,12 @@ def password_field(
                 type="button",
                 variant="ghost",
                 color_scheme="gray",
-                size="1",
+                size="2",
+                # N12 (m-24842967): a 44 px target for a thumb, not the 24 px icon alone.
+                # Radix's ghost button is content-box with padding: border-box keeps it 44.
+                width="44px",
+                height="44px",
+                box_sizing="border-box",
                 on_click=AuthState.toggle_show_password,
                 aria_label=rx.cond(
                     AuthState.show_password, "Ocultar contraseña", "Mostrar contraseña"
@@ -89,6 +101,44 @@ def password_field(
         custom_attrs={"autoComplete": "new-password" if new else "current-password"},
         required=True,
         width="100%",
+        size="3",
+        height=_TAP,
+        **props,
+    )
+
+
+def labeled_field(
+    label: str, field_id: str, control: rx.Component, *, hint: str = ""
+) -> rx.Component:
+    """A field with its label visible above it (m-24842967): a placeholder disappears
+    the moment the owner starts typing, a label does not. `html_for` ties the two, so
+    tapping the label focuses the field and screen readers announce it."""
+    return rx.vstack(
+        rx.el.label(
+            rx.text(label, size="2", weight="medium", color=T.TEXT_STRONG),
+            html_for=field_id,
+        ),
+        control,
+        rx.text(hint, size="1", color=T.TEXT_MUTED) if hint else rx.fragment(),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def country_select(field_id: str, **props) -> rx.Component:
+    """«¿En qué país está tu negocio?»: the three markets, posted as `country` (ISO code).
+    Zone and currency are deduced from it (`qualify_api.tenancy.locale`)."""
+    return rx.select.root(
+        rx.select.trigger(placeholder="Elige tu país", id=field_id, width="100%", height=_TAP),
+        rx.select.content(
+            *[
+                rx.select.item(option["label"], value=option["value"])
+                for option in country_options()
+            ]
+        ),
+        size="3",
+        **props,
     )
 
 
@@ -124,6 +174,8 @@ def login_index() -> rx.Component:
                     "Entrar",
                     type="submit",
                     width="100%",
+                    size="3",
+                    height=_TAP,
                     loading=AuthState.is_authenticating,
                 ),
                 spacing="3",
@@ -140,6 +192,8 @@ def login_index() -> rx.Component:
                 "Crear mi marca",
                 variant="soft",
                 width="100%",
+                size="3",
+                height=_TAP,
             ),
             href="/brand/start",
             width="100%",
@@ -187,7 +241,13 @@ def forgot_index() -> rx.Component:
                     color=T.TEXT_MUTED,
                 ),
                 rx.link(
-                    rx.button("Volver a iniciar sesión", variant="soft", width="100%"),
+                    rx.button(
+                        "Volver a iniciar sesión",
+                        variant="soft",
+                        width="100%",
+                        size="3",
+                        height=_TAP,
+                    ),
                     href="/login",
                     width="100%",
                 ),
@@ -209,6 +269,8 @@ def forgot_index() -> rx.Component:
                             "Enviarme el enlace",
                             type="submit",
                             width="100%",
+                            size="3",
+                            height=_TAP,
                             loading=AuthState.is_authenticating,
                         ),
                         spacing="3",
@@ -249,6 +311,8 @@ def reset_index() -> rx.Component:
                                 "Guardar y entrar",
                                 type="submit",
                                 width="100%",
+                                size="3",
+                                height=_TAP,
                                 loading=AuthState.is_authenticating,
                             ),
                             spacing="3",
@@ -266,7 +330,7 @@ def reset_index() -> rx.Component:
                 rx.vstack(
                     _error_banner(),
                     rx.link(
-                        rx.button("Pedir un enlace nuevo", width="100%"),
+                        rx.button("Pedir un enlace nuevo", width="100%", size="3", height=_TAP),
                         href="/forgot",
                         width="100%",
                     ),
@@ -318,6 +382,8 @@ def brand_start_index() -> rx.Component:
                     "Empezar",
                     type="submit",
                     width="100%",
+                    size="3",
+                    height=_TAP,
                     loading=AuthState.is_authenticating,
                 ),
                 spacing="3",
@@ -348,7 +414,7 @@ def _invite_only() -> rx.Component:
             ),
         ),
         rx.link(
-            rx.button("Iniciar sesión", variant="soft", width="100%"),
+            rx.button("Iniciar sesión", variant="soft", width="100%", size="3", height=_TAP),
             href="/login",
             width="100%",
         ),
@@ -398,46 +464,62 @@ def _signup_form() -> rx.Component:
         _error_banner(),
         rx.form(
             rx.vstack(
-                rx.input(
-                    placeholder="Nombre del negocio",
-                    name="business_name",
-                    default_value=AuthState.invite_business,
-                    required=True,
-                    width="100%",
-                    # Remount when the invite resolves (see the email field below).
-                    key=AuthState.invite_business,
-                ),
-                email_field(
-                    "Correo del negocio (uno por negocio)",
-                    default_value=rx.cond(
-                        invited,
-                        AuthState.invite_email,
-                        AuthState.guest_email,
-                    ),
-                    read_only=invited,
-                    # Remount when the invite resolves: `default_value` only applies on mount,
-                    # and the invite is read in on_load, after the form is already on screen.
-                    key=AuthState.invite_email,
-                ),
-                password_field("Contraseña (mínimo 8 caracteres)", new=True),
-                rx.hstack(
-                    rx.input(placeholder="País", name="country", default_value="VE", width="100%"),
+                # m-24842967: exactly four labelled fields, one column at any width; the
+                # zone and the currency are deduced from the country.
+                labeled_field(
+                    "Nombre del negocio",
+                    "signup-business",
                     rx.input(
-                        placeholder="Zona horaria",
-                        name="timezone",
-                        default_value="America/Caracas",
+                        id="signup-business",
+                        placeholder="Ej.: Heladería La Esquina",
+                        name="business_name",
+                        default_value=AuthState.invite_business,
+                        required=True,
                         width="100%",
+                        size="3",
+                        height=_TAP,
+                        custom_attrs={"autoComplete": "organization"},
+                        # Remount when the invite resolves (see the email field below).
+                        key=AuthState.invite_business,
                     ),
-                    rx.input(
-                        placeholder="Moneda", name="currency", default_value="USD", width="100%"
+                ),
+                labeled_field(
+                    "Correo del negocio",
+                    "signup-email",
+                    email_field(
+                        "tu@negocio.com",
+                        id="signup-email",
+                        default_value=rx.cond(
+                            invited,
+                            AuthState.invite_email,
+                            AuthState.guest_email,
+                        ),
+                        read_only=invited,
+                        # Remount when the invite resolves: `default_value` only applies on
+                        # mount, and the invite is read in on_load, after the form is
+                        # already on screen.
+                        key=AuthState.invite_email,
                     ),
-                    spacing="2",
-                    width="100%",
+                    hint="Uno por negocio: con este correo entras siempre.",
+                ),
+                labeled_field(
+                    "Contraseña",
+                    "signup-password",
+                    password_field("Mínimo 8 caracteres", new=True, id="signup-password"),
+                ),
+                labeled_field(
+                    "¿En qué país está tu negocio?",
+                    "signup-country",
+                    country_select("signup-country", name="country", required=True),
+                    hint="Con esto ponemos tu hora y tu moneda. Puedes cambiarlas en "
+                    "Configuración.",
                 ),
                 rx.button(
                     rx.cond(invited, "Crear mi cuenta", "Registrar y entrar"),
                     type="submit",
                     width="100%",
+                    size="3",
+                    height=_TAP,
                     loading=AuthState.is_authenticating,
                 ),
                 spacing="3",
