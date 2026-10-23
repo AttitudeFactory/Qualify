@@ -23,6 +23,8 @@ from Qualify.pending_vm import (
     badge_text,
     clamp,
     count_to_approve,
+    entry_aria_label,
+    menu_button_aria_label,
     title_prefix,
     title_script,
     titled,
@@ -206,7 +208,8 @@ def test_logout_resets_the_counts() -> None:
         ("Qualify.followups_state", "FollowupsState", ["approve", "discard"]),
         ("Qualify.whatsapp_chats_state", "WhatsAppChatsState", ["_send"]),
         ("Qualify.gallery_state", "GalleryState", ["quick_approve", "confirm_reject_post"]),
-        ("Qualify.creative_state", "CreativeState", ["approve_selected"]),
+        ("Qualify.creative_state", "CreativeState", ["approve_selected", "reject_current"]),
+        ("Qualify.conversations_state", "ConversationsState", ["load_conversation"]),
         ("Qualify.planner_state", "PlannerState", ["submit_form", "confirm_cancel"]),
     ],
 )
@@ -218,3 +221,52 @@ def test_counting_actions_refresh_the_menu(module: str, state: str, handlers: li
         member = cls.__dict__.get(name) or getattr(cls, name)
         fn = getattr(member, "fn", member)
         assert "PendingState.refresh_now" in inspect.getsource(fn), f"{state}.{name}"
+
+
+# -- UX review (m-24842963): the number never goes alone, and the phone sees it ---------
+
+
+@pytest.mark.parametrize(
+    ("label", "count", "spoken"),
+    [
+        ("Por responder", 0, "Por responder"),
+        ("Por responder", 1, "Por responder: 1 persona espera tu respuesta"),
+        ("Por responder", 3, "Por responder: 3 personas esperan tu respuesta"),
+        ("WhatsApp", 1, "WhatsApp: 1 chat sin responder"),
+        ("WhatsApp", 2, "WhatsApp: 2 chats sin responder"),
+        ("Por aprobar", 1, "Por aprobar: 1 publicación espera tu aprobación"),
+        ("Por aprobar", 4, "Por aprobar: 4 publicaciones esperan tu aprobación"),
+        ("Tu semana", 1, "Tu semana: 1 publicación aprobada sin día"),
+        ("Tu semana", 2, "Tu semana: 2 publicaciones aprobadas sin día"),
+        ("Tu semana", 150, "Tu semana: 99+ publicaciones aprobadas sin día"),
+        ("Tus productos", 5, "Tus productos"),
+    ],
+)
+def test_each_count_is_spoken_with_what_it_counts(label: str, count: int, spoken: str) -> None:
+    assert entry_aria_label(label, count) == spoken
+
+
+def test_the_phone_menu_button_says_how_much_waits() -> None:
+    assert menu_button_aria_label(0) == "Abrir el menú"
+    assert menu_button_aria_label(1) == "Abrir el menú. 1 cosa te espera"
+    assert menu_button_aria_label(5) == "Abrir el menú. 5 cosas te esperan"
+    rendered = str(layout._mobile_nav_toggle().render())
+    assert "total_badge" in rendered and "menu_button_aria" in rendered
+    assert "q-menu-count" in rendered
+
+
+def test_only_people_waiting_are_shown_in_the_warning_tone() -> None:
+    tones = {label: tone for label, (_text, tone, _aria) in layout.NAV_COUNTERS.items()}
+    assert tones == {
+        "Por responder": "warn",
+        "WhatsApp": "warn",
+        "Por aprobar": "neutral",
+        "Tu semana": "neutral",
+    }
+
+
+def test_counted_entries_carry_their_spoken_name() -> None:
+    rendered = str(layout._nav_item("Por aprobar", "check", "/gallery", True).render())
+    assert "approve_aria" in rendered
+    plain = str(layout._nav_item("Tus productos", "package", "/catalog", True).render())
+    assert "_aria" not in plain

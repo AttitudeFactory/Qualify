@@ -5353,6 +5353,7 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != vm.draft_id
             if should_poll:
                 self._polling_draft_id = vm.draft_id
+        yield PendingState.refresh_now  # m-24842963: discarded or regenerated, recount
         if should_poll:
             # the regeneration says "listo" even from another tab (pendientes §5)
             yield rx.call_script(_ASK_NOTIFICATIONS_JS)

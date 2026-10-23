@@ -112,13 +112,14 @@ NAV_BUSINESS: list[Item] = [
 ]
 
 # m-24842963 (NAV-6, N11): the entries that carry a pending count, by label (a label
-# keeps its count when its route changes, e.g. «Por responder» → /responder). The
-# badge is the `warn` tone_badge Conversaciones already uses; at 0 it is not rendered.
-NAV_COUNTERS: dict[str, rx.Var] = {
-    "Por responder": PendingState.respond_badge,
-    "WhatsApp": PendingState.whatsapp_badge,
-    "Por aprobar": PendingState.approve_badge,
-    "Tu semana": PendingState.schedule_badge,
+# keeps its count when its route changes, e.g. «Por responder» → /responder):
+# (badge text, tone, spoken name). `warn` only where people wait for an answer;
+# `neutral` (the tone of «Pronto») where nothing is urgent. At 0 nothing is rendered.
+NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
+    "Por responder": (PendingState.respond_badge, "warn", PendingState.respond_aria),
+    "WhatsApp": (PendingState.whatsapp_badge, "warn", PendingState.whatsapp_aria),
+    "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
+    "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),
 }
 
 # The foot block's head (guide §3): the business setup, touched rarely.
@@ -291,12 +292,13 @@ def _nav_row(
 def _count_badge(label: str) -> rx.Component | None:
     """The pending count of an entry (N11), or None for an entry that has none. Shown
     only above 0; hidden in zen like «Pronto» (the tab title still carries the total)."""
-    text = NAV_COUNTERS.get(label)
-    if text is None:
+    counter = NAV_COUNTERS.get(label)
+    if counter is None:
         return None
+    text, tone, _spoken = counter
     return rx.cond(
         text != "",
-        rx.box(tone_badge(text, "warn"), class_name="q-soon", margin_left="auto"),
+        rx.box(tone_badge(text, tone), class_name="q-soon", margin_left="auto"),
     )
 
 
@@ -323,6 +325,9 @@ def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
         width="100%",
         underline="none",
         aria_current=rx.cond(active, "page", ""),
+        # N10: the count is announced with what it counts («Por aprobar: 3
+        # publicaciones esperan tu aprobación»); only on counted entries.
+        **({"aria_label": NAV_COUNTERS[label][2]} if enabled and label in NAV_COUNTERS else {}),
         # No-op on desktop (the drawer is never open there); on a phone viewport
         # this is what makes picking a page also close the overlay instead of
         # leaving it covering the page that just loaded underneath it.
@@ -644,10 +649,16 @@ def _mobile_nav_toggle() -> rx.Component:
     visually, but staying simple: the CSS rule is the only gate."""
     return rx.el.button(
         rx.icon("menu", size=T.ICON_MD),
+        # m-24842963 UX review: on a phone the tab title is out of sight, so the
+        # button carries the total of what waits (same tone_badge, nothing at 0).
+        rx.cond(
+            PendingState.total_badge != "",
+            rx.box(tone_badge(PendingState.total_badge, "warn"), class_name="q-menu-count"),
+        ),
         id="q-mobile-nav-toggle",
         on_click=NavState.toggle_mobile_nav,
         class_name="q-mobile-nav-toggle",
-        aria_label="Abrir el menú",
+        aria_label=PendingState.menu_button_aria,
     )
 
 

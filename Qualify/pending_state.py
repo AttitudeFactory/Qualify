@@ -30,7 +30,14 @@ import reflex as rx
 
 from .auth_state import AuthState
 from .pending_provider import read_attention, read_publications
-from .pending_vm import MenuCounts, badge_text, clamp, title_script
+from .pending_vm import (
+    MenuCounts,
+    badge_text,
+    clamp,
+    entry_aria_label,
+    menu_button_aria_label,
+    title_script,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -65,6 +72,30 @@ class PendingState(rx.State):
     @rx.var
     def total(self) -> int:
         return self._counts().total
+
+    @rx.var
+    def total_badge(self) -> str:
+        return badge_text(self.total)
+
+    @rx.var
+    def menu_button_aria(self) -> str:
+        return menu_button_aria_label(self.total)
+
+    @rx.var
+    def respond_aria(self) -> str:
+        return entry_aria_label("Por responder", self.respond)
+
+    @rx.var
+    def whatsapp_aria(self) -> str:
+        return entry_aria_label("WhatsApp", self.whatsapp)
+
+    @rx.var
+    def approve_aria(self) -> str:
+        return entry_aria_label("Por aprobar", self.approve)
+
+    @rx.var
+    def schedule_aria(self) -> str:
+        return entry_aria_label("Tu semana", self.schedule)
 
     @rx.var
     def respond_badge(self) -> str:

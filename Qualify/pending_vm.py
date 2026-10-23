@@ -63,6 +63,40 @@ def badge_text(count: int) -> str:
     return f"{BADGE_CAP}+" if count > BADGE_CAP else str(count)
 
 
+# What each counted entry announces to a screen reader (N10: a number never goes alone).
+# (singular, plural) — the plural carries «{n}».
+_ENTRY_SPOKEN: dict[str, tuple[str, str]] = {
+    "Por responder": ("1 persona espera tu respuesta", "{n} personas esperan tu respuesta"),
+    "WhatsApp": ("1 chat sin responder", "{n} chats sin responder"),
+    "Por aprobar": (
+        "1 publicación espera tu aprobación",
+        "{n} publicaciones esperan tu aprobación",
+    ),
+    "Tu semana": ("1 publicación aprobada sin día", "{n} publicaciones aprobadas sin día"),
+}
+
+
+def entry_aria_label(label: str, count: int) -> str:
+    """The spoken name of a menu entry: «Por aprobar: 3 publicaciones esperan tu
+    aprobación», or just the entry's name at 0 (or for an entry without a count)."""
+    count = clamp(count)
+    spoken = _ENTRY_SPOKEN.get(label)
+    if spoken is None or count == 0:
+        return label
+    one, many = spoken
+    return f"{label}: {one if count == 1 else many.format(n=badge_text(count))}"
+
+
+def menu_button_aria_label(total: int) -> str:
+    """The phone's menu button, which carries the total of what waits."""
+    total = clamp(total)
+    if total == 0:
+        return "Abrir el menú"
+    if total == 1:
+        return "Abrir el menú. 1 cosa te espera"
+    return f"Abrir el menú. {badge_text(total)} cosas te esperan"
+
+
 def count_to_approve(posts: Iterable[PostSummary]) -> int:
     """Publications waiting for the owner's approval — a generated draft not yet
     approved or rejected. An approved one that still lacks something is not counted
@@ -130,6 +164,8 @@ __all__ = [
     "badge_text",
     "clamp",
     "count_to_approve",
+    "entry_aria_label",
+    "menu_button_aria_label",
     "title_prefix",
     "title_script",
     "titled",

@@ -799,8 +799,9 @@ class ConversationsState(rx.State):
         return self.close_conversation()
 
     @rx.event(background=True)
-    async def load_conversation(self) -> None:
+    async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:
         await self._read_conversation(silent=False, mark_read=True)
+        yield PendingState.refresh_now  # m-24842963: opening marks it read, the count drops
 
     async def _read_conversation(self, *, silent: bool, mark_read: bool = False) -> None:
         async with self:
