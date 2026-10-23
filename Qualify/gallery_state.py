@@ -182,7 +182,7 @@ class GalleryState(rx.State):
             return
         async with self:
             self.busy_post_id = ""
-        yield rx.toast.success("POST aprobado: ya puedes programarlo en el Planificador.")
+        yield rx.toast.success("POST aprobado: ya puedes programarlo en Tu semana.")
         yield GalleryState.load
 
     @rx.event

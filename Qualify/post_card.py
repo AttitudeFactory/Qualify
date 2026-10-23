@@ -303,7 +303,7 @@ def history_badges(post: rx.Var) -> rx.Component:
                 color_scheme=T.tone_scale("info"),
                 size="1",
                 radius="full",
-                title="Veces publicado desde el Planificador",
+                title="Veces publicado desde Tu semana",
             ),
         ),
         rx.cond(

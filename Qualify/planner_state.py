@@ -84,7 +84,7 @@ from .tenant import tenant_uuid
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
-_LOAD_FAILED = "No se pudo cargar el Planificador. Inténtalo de nuevo."
+_LOAD_FAILED = "No se pudo cargar Tu semana. Inténtalo de nuevo."
 _FORM_INCOMPLETE = "Elige al menos un POST y completa su fecha, hora y cuenta."
 _POST_REQUIRED = "Elige al menos un POST listo para publicar."
 

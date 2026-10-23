@@ -60,7 +60,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Responder",
         "Reconectar",
         "por verificar",
-        "Ir a Conexiones",
+        "Ir a Tus redes",
         "Aún no hay una cuenta de Instagram conectada",
         "Todavía no se han leído mensajes de esta cuenta",
         "Aún no hay conversaciones en esta cuenta",

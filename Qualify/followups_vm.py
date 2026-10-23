@@ -52,7 +52,7 @@ ROUTE_NOTES: Final = {
 }
 TRIGGER_LABELS: Final = {
     FollowupTrigger.INTENT: "Intención comercial",
-    FollowupTrigger.MANUAL: "Abierta desde Interacciones",
+    FollowupTrigger.MANUAL: "Abierta desde Comentarios",
 }
 CAPTION_CHARS: Final = 120
 STORY_WHERE: Final = "tu historia"

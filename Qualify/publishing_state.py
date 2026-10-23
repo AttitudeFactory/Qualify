@@ -73,7 +73,7 @@ from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay ningún tenant activo. Entra a Conexiones y elige uno primero."
+_NO_TENANT = "No hay ningún tenant activo. Entra a Tus redes y elige uno primero."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
 _NOT_CONFIGURED = "El almacenamiento (R2) todavía no está configurado en este entorno."

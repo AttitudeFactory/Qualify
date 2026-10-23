@@ -829,7 +829,7 @@ def _plan_card(row) -> rx.Component:
                     gap="0.4rem",
                 ),
                 rx.text(
-                    "No hay cuentas activas: conéctalas en Conexiones.",
+                    "No hay cuentas activas: conéctalas en Tus redes.",
                     size="1",
                     color=T.tone_color("warn", 11),
                 ),
@@ -1611,7 +1611,7 @@ def _detail_body() -> rx.Component:
                 AUTO_PUBLISH_NO_CONNECTION,
                 callout(
                     "No hay una cuenta conectada y activa para publicar. Conéctala en "
-                    "Conexiones: los eventos se publicarán en cuanto lo esté.",
+                    "Tus redes: los eventos se publicarán en cuanto lo esté.",
                     "warn",
                 ),
             ),
@@ -1648,7 +1648,7 @@ def _detail_body() -> rx.Component:
                 d.detail_href != "",
                 rx.link(
                     rx.hstack(
-                        rx.text("Abrir en Piezas", size="1"),
+                        rx.text("Abrir en Por aprobar", size="1"),
                         rx.icon("external-link", size=12),
                         align="center",
                         spacing="1",

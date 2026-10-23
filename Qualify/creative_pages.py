@@ -2178,7 +2178,7 @@ def _decision_bar() -> rx.Component:
                     icon="circle-check",
                     title="Aprobar",
                     text="Fija esta variante como el texto del POST. Queda lista para "
-                    "programarla en el Planificador.",
+                    "programarla en Tu semana.",
                     button=rx.button(
                         rx.icon("circle-check", size=15),
                         "Aprobar",

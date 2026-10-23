@@ -120,7 +120,7 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay ningún tenant activo. Entra a Conexiones y elige uno primero."
+_NO_TENANT = "No hay ningún tenant activo. Entra a Tus redes y elige uno primero."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _LOAD_FAILED = "No se pudo cargar el contenido reciente. Revisa la conexión con Instagram."
 _TOGGLE_FAILED = "No se pudo actualizar el monitoreo. Intenta de nuevo."
@@ -157,7 +157,7 @@ _NO_CONNECTION_SELECTED = "Elige primero una cuenta de Instagram."
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
-    "Esta cuenta está desconectada. Reconéctala en Conexiones para sincronizar sus comentarios."
+    "Esta cuenta está desconectada. Reconéctala en Tus redes para sincronizar sus comentarios."
 )
 # A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
 _SYNC_META_FAILED = (
@@ -175,7 +175,7 @@ _SYNC_BUDGET_EXHAUSTED = (
 # the time this reaches the UI (Conexiones already shows "Reconectar"), so this message
 # points there instead of repeating the generic sync-failed copy.
 _CONNECTION_AUTH_EXPIRED = (
-    "Tu conexión con Instagram dejó de funcionar. Reconéctala en Conexiones e intenta de nuevo."
+    "Tu conexión con Instagram dejó de funcionar. Reconéctala en Tus redes e intenta de nuevo."
 )
 _SYNC_ALREADY_RUNNING = "Ya hay una sincronización en curso. Los resultados aparecerán al terminar."
 _ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."

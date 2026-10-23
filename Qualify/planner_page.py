@@ -716,7 +716,7 @@ def _unscheduled_panel() -> rx.Component:
             ),
             rx.vstack(
                 rx.text("No hay POSTs pendientes de planificar.", size="2", color=T.TEXT_MUTED),
-                rx.link(rx.button("Crear pieza", size="1", variant="soft"), href="/create"),
+                rx.link(rx.button("Crear publicación", size="1", variant="soft"), href="/create"),
                 spacing="2",
                 padding="1rem 0",
             ),
@@ -1134,7 +1134,7 @@ def planner_index() -> rx.Component:
             rx.cond(
                 ~PlannerState.has_connections & ~PlannerState.loading,
                 callout(
-                    "No hay cuentas activas. Conecta o reactiva una en Conexiones para "
+                    "No hay cuentas activas. Conecta o reactiva una en Tus redes para "
                     "poder planificar.",
                     "warn",
                 ),

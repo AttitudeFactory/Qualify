@@ -68,7 +68,7 @@ _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesió
 _NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
 _LOAD_FAILED = "No se pudo cargar tu catálogo. Inténtalo de nuevo."
 _NO_PRODUCTS = (
-    "Tu catálogo todavía no tiene productos. Agrégalos en Catálogo para usar Variaciones."
+    "Tu catálogo todavía no tiene productos. Agrégalos en Tus productos para usar Variaciones."
 )
 _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."

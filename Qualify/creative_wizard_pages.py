@@ -2522,7 +2522,7 @@ def _step_confirm() -> rx.Component:
         ),
         rx.text(
             "Haz clic en un valor para editarlo; la ✕ lo quita. Tu voz y el tono los "
-            "configuras después, desde Negocio → Brand Kit.",
+            "configuras después, desde Tu negocio → Tu marca.",
             size="1",
             color=T.TEXT_FAINT,
         ),

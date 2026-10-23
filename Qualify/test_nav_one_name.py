@@ -95,6 +95,65 @@ def test_menu_label_header_and_tab_title_are_the_same_name(label: str, route: st
     assert header.search(page_source), f"{_PAGE_SOURCE[route]} has no h1 «{name}»"
 
 
+# A text that SENDS the owner to a place names it with the menu's word (N1): «en Piezas»,
+# «Ir a Conexiones», «desde el Planificador», «Negocio → Brand Kit»… Concept uses («tu
+# Brand Kit no permite…») are the domain copy tickets' and are not matched here.
+_OLD_PLACE = r"(?:Piezas|Planificador|Catálogo|Conexiones|Interacciones|Crear pieza|Brand Kit)"
+_OLD_DESTINATION = re.compile(
+    r"(?:\b(?:en|a|de|desde)\s+(?:el\s+|mi\s+)?«?" + _OLD_PLACE + r"»?(?=[\s.,:;»]|$)"
+    r"|→\s*" + _OLD_PLACE + r"|^Crear pieza$)"
+)
+
+
+def _client_strings() -> list[tuple[str, int, str]]:
+    """Every string literal of the app's modules (tests excluded), docstrings skipped."""
+    found: list[tuple[str, int, str]] = []
+    for path in sorted(_HERE.rglob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                found.append((path.name, node.lineno, node.value))
+    return found
+
+
+def test_no_text_sends_the_owner_to_a_place_by_its_old_name() -> None:
+    offenders = [
+        f"{name}:{line}: {text!r}"
+        for name, line, text in _client_strings()
+        if _OLD_DESTINATION.search(text)
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_the_destination_check_catches_the_old_forms() -> None:
+    for text in (
+        "Revísala en Piezas.",
+        "Ir a Conexiones",
+        "ya puedes programarlo en el Planificador.",
+        "desde Negocio → Brand Kit.",
+        "búscalos en «Catálogo» o súbelos.",
+        "Ir a mi Brand Kit",
+        "Crear pieza",
+    ):
+        assert _OLD_DESTINATION.search(text), text
+    for concept in ("Lo que tu Brand Kit no permite", "Es una regla de tu Brand Kit."):
+        assert not _OLD_DESTINATION.search(concept), concept
+
+
 def test_no_menu_entry_or_tab_title_uses_an_old_name() -> None:
     names = [label for label, *_ in NAV_ITEMS] + list(_tab_titles().values())
     for name in names:

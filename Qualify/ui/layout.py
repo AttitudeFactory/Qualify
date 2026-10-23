@@ -1,7 +1,7 @@
 """Layout primitives: the app shell every business page is built from.
 
     app_shell(
-        page_header("Clientes interesados", "Personas captadas por tu funnel"),
+        page_header("Clientes interesados", "Personas que te dejaron sus datos"),
         page_body(...),
     )
 

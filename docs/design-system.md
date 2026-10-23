@@ -246,7 +246,7 @@ from .ui import app_shell, page_header, page_body
 
 def leads_index() -> rx.Component:
     return app_shell(
-        page_header("Clientes interesados", "Personas que mostraron interés en tu negocio", badge=rx.badge("12", ...)),
+        page_header("Clientes interesados", "Personas que te dejaron sus datos para que las contactes", badge=rx.badge("12", ...)),
         page_body(_body()),
     )
 ```
