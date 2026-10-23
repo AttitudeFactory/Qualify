@@ -33,6 +33,9 @@ What the page says that the service decides elsewhere:
   box with its text for this person (`{nombre}`, `{marca}`), a line says what is still to
   complete («[precio]»), and it leaves only through «Responder». «Administrar plantillas»
   opens a drawer to create, edit, delete (confirmed in place) and reorder them;
+- **«Preguntas iniciales»** (m-24789472), in the header next to the account, opens the
+  account's Instagram Ice Breakers drawer (`ice_breakers_panel.py`): edit, save, and —
+  after a confirmation — publish to or remove from Instagram;
 - every real bubble has **«Eliminar para mí»** on hover: Instagram's API offers a
   business neither unsend nor edit, so «para todos» and «editar» do not exist here;
 - the conversation shows its **newest 50 messages** (`MESSAGES_PAGE`); older history is a
@@ -73,6 +76,8 @@ from .conversations_vm import (
 )
 from .followups_page import followups_panel, followups_toggle
 from .followups_state import FollowupsState
+from .ice_breakers_panel import ice_breakers_panel
+from .ice_breakers_panel import open_button as ice_breakers_button
 from .ui import (
     app_shell,
     callout,
@@ -227,11 +232,18 @@ def _pending_badge() -> rx.Component:
     )
 
 
+def _ice_breakers_door() -> rx.Component:
+    """«Preguntas iniciales» (m-24789472) of the selected account: here, because their
+    taps arrive in this inbox and the account is already chosen in this header."""
+    return rx.cond(S.has_accounts, ice_breakers_button(S.selected_connection_id), rx.fragment())
+
+
 def conversations_header() -> rx.Component:
     return page_header(
         "Conversaciones",
         "Los mensajes privados que llegan a tus cuentas conectadas, en una sola bandeja.",
         account_selector(),
+        _ice_breakers_door(),
         badge=_pending_badge(),
     )
 
@@ -1623,6 +1635,7 @@ def _body() -> rx.Component:
     return page_body(
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
+        ice_breakers_panel(),
         rx.cond(
             S.load_error != "",
             rx.vstack(
