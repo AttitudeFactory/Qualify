@@ -21,6 +21,14 @@ Indices arrive over the wire and are range-checked; a `field` name is whiteliste
 **Everything that touches Postgres or Graph is a background event** (SQLAlchemy is
 synchronous; a Graph round trip can take seconds) — same rule as `WhatsAppState`.
 
+**The menu in four steps** (m-24848536) is the default view: `guided` reads the four
+steps' fields off the same form, and every guided handler is a pure `guided_*` function
+of `whatsapp_menu_vm.py` passed through `_apply` — «Atrás», «Siguiente» and «Más opciones
+(avanzado)» only move `guided_step` / `advanced_open`, so nothing typed is lost. Step ids
+are generated on creation and never edited; a step is renamed through its `title`. The
+time from opening a menu to publishing it from the four steps is logged
+(`whatsapp_menu_guided_publish`) — the ≤ 5 min goal is measured, not enforced.
+
 **The preview runs the real engine** (`engine.step`) over the brand's real catalog, on a
 snapshot of the definition taken at «Reiniciar»: editing while a conversation is open
 cannot pull a node out from under it; the panel says when the snapshot is stale.
@@ -30,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from decimal import Decimal
@@ -59,35 +68,58 @@ from .whatsapp_menu_provider import (
     user_id_for,
 )
 from .whatsapp_menu_vm import (
+    EMPTY_GUIDED,
     EMPTY_MENU,
+    GUIDED_HELP,
+    GUIDED_STEPS,
+    GUIDED_TITLES,
     KIND_BUTTONS,
     KIND_KEYS,
+    KIND_LABELS,
     KIND_LIST,
     NONE_VALUE,
     REPLY_LIST,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    CatalogRowVM,
     CommandForm,
+    GuidedVM,
     IceBreakerForm,
     KeywordForm,
     MenuForm,
     MenuSummaryVM,
     MenuVersionVM,
+    NodeChoiceVM,
     NodeForm,
     PreviewMessageVM,
     can_publish,
     catalog_note,
+    catalog_rows,
     change_kind,
     definition_to_form,
     empty_form,
+    fresh_node_id,
+    guided_add_button,
+    guided_remove_button,
+    guided_review,
+    guided_set_address,
+    guided_set_address_prompt,
+    guided_set_button_action,
+    guided_set_button_label,
+    guided_set_button_text,
+    guided_set_greeting,
+    guided_set_products_intro,
+    guided_set_question,
+    guided_step_label,
+    guided_use_buttons,
+    guided_view,
     issues_summary,
     new_node,
     new_option,
+    node_choices,
     order_lines,
     preview_turn,
     publish_confirm_lines,
-    rename_node,
-    unique_node_id,
     validate_form,
     validate_menu_name,
 )
@@ -116,9 +148,11 @@ _ENTRY_TABLES: dict[str, frozenset[str]] = {
     "ice_breakers": frozenset({"text", "node"}),
     "commands": frozenset({"name", "hint", "node"}),
 }
+# No "node_id": a step's id is generated when it is created and never edited
+# (m-24848536); renaming a step edits its "title".
 _NODE_FIELDS = frozenset(
     {
-        "node_id",
+        "title",
         "body",
         "header",
         "footer",
@@ -217,6 +251,11 @@ class WhatsAppMenuState(rx.State):
     error_count: int = 0
     selected_node: int = 0
 
+    # -- the menu in four steps (m-24848536) --------------------------------------------
+    guided_step: int = 1
+    advanced_open: bool = False  # «Más opciones (avanzado)»: the full editor
+    catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
+
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
     preview_text: str = ""
@@ -233,6 +272,8 @@ class WhatsAppMenuState(rx.State):
     _valid_payload: dict[str, Any] = {}
     _preview_payload: dict[str, Any] = {}
     _preview_thread: dict[str, Any] = {}
+    _guided_started_at: float = 0.0  # wall clock when the menu was opened (measurement)
+    _guided_used_advanced: bool = False
 
     # ==================================================================================
     # Computed vars
@@ -247,8 +288,53 @@ class WhatsAppMenuState(rx.State):
         return [n.node_id for n in self.nodes if n.node_id.strip()]
 
     @rx.var
-    def handoff_node_ids(self) -> list[str]:
-        return [n.node_id for n in self.nodes if n.kind == "handoff" and n.node_id.strip()]
+    def node_choices(self) -> list[NodeChoiceVM]:
+        """«Lleva a» entries: the value is the step id, the owner reads its name."""
+        return node_choices(self.nodes)
+
+    @rx.var
+    def handoff_choices(self) -> list[NodeChoiceVM]:
+        return node_choices(self.nodes, handoffs_only=True)
+
+    @rx.var
+    def guided(self) -> GuidedVM:
+        if not self.nodes:
+            return EMPTY_GUIDED
+        # Every field read through `self.` here (not via `_form()`), so the computed var's
+        # dependency tracking sees each one.
+        form = MenuForm(
+            welcome=self.welcome,
+            on_first_message=self.on_first_message,
+            start_node=self.start_node,
+            fallback_node=self.fallback_node,
+            keywords=list(self.keywords),
+            ice_breakers=list(self.ice_breakers),
+            commands=list(self.commands),
+            nodes=list(self.nodes),
+            entry_errors=dict(self.entry_errors),
+            menu_errors=list(self.menu_errors),
+        )
+        return guided_view(form, self.error_count)
+
+    @rx.var
+    def guided_step_text(self) -> str:
+        return guided_step_label(self.guided_step)
+
+    @rx.var
+    def guided_title(self) -> str:
+        return GUIDED_TITLES[min(max(self.guided_step, 1), GUIDED_STEPS) - 1]
+
+    @rx.var
+    def guided_help(self) -> str:
+        return GUIDED_HELP[min(max(self.guided_step, 1), GUIDED_STEPS) - 1]
+
+    @rx.var
+    def guided_review(self) -> list[str]:
+        return guided_review(self.guided, len(self.catalog))
+
+    @rx.var
+    def catalog_count(self) -> int:
+        return len(self.catalog)
 
     @rx.var
     def selected(self) -> NodeForm:
@@ -407,6 +493,9 @@ class WhatsAppMenuState(rx.State):
         self.editing_version_id = version_id
         self.just_published = False
         self._restart_preview()
+        self.guided_step = 1
+        self._guided_started_at = time.time()
+        self._guided_used_advanced = self.advanced_open
 
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
         self.menu = detail.summary
@@ -438,6 +527,7 @@ class WhatsAppMenuState(rx.State):
         self.dirty = False
         self._scope = {}
         self._catalog = []
+        self.catalog = []
         self._payloads = {}
         self.catalog_text = ""
         self.nodes = []
@@ -504,6 +594,7 @@ class WhatsAppMenuState(rx.State):
                 "brand_name": scope.brand_name,
             }
             self._catalog = _catalog_rows(catalog)
+            self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
             self.menus = menus
             self.loaded_for = connection_id
@@ -685,7 +776,8 @@ class WhatsAppMenuState(rx.State):
         if kind not in KIND_KEYS:
             return
         form = self._form()
-        node = new_node(kind, unique_node_id(form, kind if kind != "order_summary" else "resumen"))
+        title = KIND_LABELS[kind]
+        node = new_node(kind, fresh_node_id(form, title), title)
         self._apply(replace(form, nodes=[*form.nodes, node]))
         self.selected_node = len(self.nodes) - 1
 
@@ -706,13 +798,9 @@ class WhatsAppMenuState(rx.State):
         if not 0 <= index < len(self.nodes):
             return
         form = self._form()
-        if field == "node_id":
-            form = rename_node(form, index, value.strip().lower())
-        else:
-            nodes = list(form.nodes)
-            nodes[index] = replace(nodes[index], **{field: value})
-            form = replace(form, nodes=nodes)
-        self._apply(form)
+        nodes = list(form.nodes)
+        nodes[index] = replace(nodes[index], **{field: value})
+        self._apply(replace(form, nodes=nodes))
 
     @rx.event
     def set_node_kind(self, kind: str) -> None:
@@ -772,6 +860,83 @@ class WhatsAppMenuState(rx.State):
             return
         options[option] = replace(options[option], **{field: value})
         self._replace_options(options)
+
+    # ==================================================================================
+    # The menu in four steps (m-24848536)
+    # ==================================================================================
+
+    @rx.event
+    def guided_go(self, step: int) -> None:
+        if isinstance(step, int) and 1 <= step <= GUIDED_STEPS:
+            self.guided_step = step
+
+    @rx.event
+    def guided_next(self) -> None:
+        self.guided_step = min(GUIDED_STEPS, self.guided_step + 1)
+
+    @rx.event
+    def guided_back(self) -> None:
+        self.guided_step = max(1, self.guided_step - 1)
+
+    @rx.event
+    def set_advanced(self, value: bool) -> None:
+        """«Más opciones (avanzado)» ↔ «Volver a los 4 pasos»: same form, other view."""
+        self.advanced_open = bool(value)
+        if self.advanced_open:
+            self._guided_used_advanced = True
+
+    @rx.event
+    def set_guided_greeting(self, value: str) -> None:
+        if isinstance(value, str):
+            self._apply(guided_set_greeting(self._form(), value))
+
+    @rx.event
+    def set_guided_question(self, value: str) -> None:
+        if isinstance(value, str):
+            self._apply(guided_set_question(self._form(), value))
+
+    @rx.event
+    def set_guided_button_label(self, button: int, value: str) -> None:
+        if isinstance(button, int) and isinstance(value, str):
+            self._apply(guided_set_button_label(self._form(), button, value))
+
+    @rx.event
+    def set_guided_button_action(self, button: int, action: str) -> None:
+        if isinstance(button, int) and isinstance(action, str):
+            self._apply(guided_set_button_action(self._form(), button, action))
+
+    @rx.event
+    def set_guided_button_text(self, button: int, value: str) -> None:
+        if isinstance(button, int) and isinstance(value, str):
+            self._apply(guided_set_button_text(self._form(), button, value))
+
+    @rx.event
+    def add_guided_button(self) -> None:
+        self._apply(guided_add_button(self._form()))
+
+    @rx.event
+    def remove_guided_button(self, button: int) -> None:
+        if isinstance(button, int):
+            self._apply(guided_remove_button(self._form(), button))
+
+    @rx.event
+    def use_guided_buttons(self) -> None:
+        self._apply(guided_use_buttons(self._form()))
+
+    @rx.event
+    def set_guided_products_intro(self, value: str) -> None:
+        if isinstance(value, str):
+            self._apply(guided_set_products_intro(self._form(), value))
+
+    @rx.event
+    def set_guided_address(self, choice: str) -> None:
+        if isinstance(choice, str):
+            self._apply(guided_set_address(self._form(), choice))
+
+    @rx.event
+    def set_guided_address_prompt(self, value: str) -> None:
+        if isinstance(value, str):
+            self._apply(guided_set_address_prompt(self._form(), value))
 
     # ==================================================================================
     # Versions
@@ -923,6 +1088,15 @@ class WhatsAppMenuState(rx.State):
             self.just_published = outcome.graph_ok
             if not outcome.graph_ok:
                 self.banner, self.banner_tone = outcome.notice, outcome.tone
+            if self._guided_started_at:
+                # m-24848536: how long an owner takes from opening the menu to publishing
+                # it (goal ≤ 5 min from the template; measured, never enforced).
+                logger.info(
+                    "whatsapp_menu_guided_publish seconds=%d advanced=%s",
+                    int(time.time() - self._guided_started_at),
+                    self._guided_used_advanced,
+                )
+                self._guided_started_at = 0.0
         if outcome.auth_error:
             yield WhatsAppState.load_numbers
 
