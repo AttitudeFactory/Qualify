@@ -1,5 +1,7 @@
-"""Inbox content screen (Fase 1 Parte 4-B, B2 UI slice) — Reels from the last 2 weeks,
-with a switch to turn monitoring on/off per Reel.
+"""Comentarios screen (`/inbox`). Since m-24842989 the body follows the owner's job:
+(1) «Respuestas listas para aprobar», (2) «Comentarios por publicación», (3) the search
+strip and, folded behind «Más opciones», which publications to review — the per-Reel
+monitoring switches this screen started as (Fase 1 Parte 4-B, B2 UI slice).
 
 Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
 follow the design-system tones (docs/design-system.md). Adds the `/inbox` route only.
@@ -18,7 +20,7 @@ there is to make the monitoring decision visible and actionable, not to redesign
 screen.
 
 `_sync_section()` (2026-08-15, promoted to permanent architecture 2026-08-19 — QUA-89)
-renders the comment-sync controls: a manual "Sincronizar comentarios" button plus a
+renders the comment-sync controls: a manual «Buscar comentarios nuevos» button plus a
 hidden `rx.moment` heartbeat that calls the SAME `InboxState.sync_comments` every 5
 minutes while this screen is mounted. See `inbox_state.py`'s module docstring for why one
 handler backing both triggers is what gives them a single shared loading state and
@@ -100,7 +102,12 @@ def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
 
 def _connection_selector() -> rx.Component:
     return rx.select.root(
-        rx.select.trigger(placeholder="Elige una cuenta de Instagram", width="260px"),
+        rx.select.trigger(
+            placeholder="Elige una cuenta de Instagram",
+            width="100%",
+            max_width="260px",
+            class_name="q-inbox-tap",
+        ),
         rx.select.content(
             rx.foreach(InboxState.connections, _connection_item),
         ),
@@ -148,10 +155,10 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
             _thumbnail(candidate),
             rx.vstack(
                 rx.text(
-                    rx.cond(candidate.caption != "", candidate.caption, "Sin caption"),
+                    rx.cond(candidate.caption != "", candidate.caption, "Sin texto"),
                     size="2",
                     weight="medium",
-                    max_width="380px",
+                    max_width="100%",
                     overflow="hidden",
                     text_overflow="ellipsis",
                     white_space="nowrap",
@@ -177,11 +184,13 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
                     ),
                     spacing="2",
                     align="center",
+                    wrap="wrap",
                 ),
                 spacing="1",
                 align_items="start",
+                flex="1",
+                min_width="0",
             ),
-            rx.spacer(),
             _monitoring_switch(candidate),
             spacing="3",
             align="center",
@@ -290,12 +299,56 @@ def _candidates_body() -> rx.Component:
     )
 
 
+def _review_choice_section() -> rx.Component:
+    """«Qué publicaciones revisar» — the per-Reel monitoring switches. Configuration,
+    not the job the owner came for, so it lives last and folded (m-24842989)."""
+    return section(
+        "Qué publicaciones revisar",
+        rx.cond(InboxState.action_error != "", _action_error(), rx.fragment()),
+        rx.cond(InboxState.load_error != "", _load_error(), _candidates_body()),
+        description=(
+            "Elige de qué publicaciones de las últimas 2 semanas quieres que busquemos comentarios."
+        ),
+    )
+
+
+def _more_options() -> rx.Component:
+    """m-24842989 (qualify-ux §6, N6): the advanced settings behind «Más opciones» —
+    same folded `rx.accordion` the Clarity screen uses for its configuration. Closed by
+    default: the switches only appear when the owner opens it."""
+    return rx.accordion.root(
+        rx.accordion.item(
+            header="Más opciones: qué publicaciones revisar",
+            content=_review_choice_section(),
+            value="more",
+        ),
+        collapsible=True,
+        type="single",
+        variant="ghost",
+        width="100%",
+        class_name="q-inbox-more",
+    )
+
+
+def _connected_body() -> rx.Component:
+    """m-24842989: the order follows the owner's job, not the setup — (1) the replies
+    ready to approve, (2) the comments by publication, (3) the search strip and, folded,
+    which publications to review. The sync strip stays mounted outside the accordion so
+    its 5-minute heartbeat keeps running while «Más opciones» is closed."""
+    return rx.vstack(
+        _replies_section(),
+        _comments_section(),
+        _sync_section(),
+        _more_options(),
+        spacing="5",
+        width="100%",
+        align_items="start",
+        class_name="q-inbox-main",
+    )
+
+
 def _body() -> rx.Component:
     return page_body(
-        # Inside the body (not between header and body): it shares the body's width cap
-        # and gutter, so it lines up with the cards below instead of running edge to edge.
-        rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
-        rx.cond(InboxState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             InboxState.connections_error != "",
             _connections_error(),
@@ -305,16 +358,10 @@ def _body() -> rx.Component:
                 rx.cond(
                     ~InboxState.has_connections,
                     _no_connections_state(),
-                    rx.cond(
-                        InboxState.load_error != "",
-                        _load_error(),
-                        _candidates_body(),
-                    ),
+                    _connected_body(),
                 ),
             ),
         ),
-        rx.cond(InboxState.has_connections, _comments_section(), rx.fragment()),
-        rx.cond(InboxState.has_connections, _replies_section(), rx.fragment()),
     )
 
 
@@ -332,16 +379,21 @@ def _body() -> rx.Component:
 def _intent_chip(chip: IntentChipVM) -> rx.Component:
     """One intent class (m-24789644, B3). A class the golden-set measurement does not
     back is still shown — hiding it would hide the comment's best guess — but in the
-    warning tone and suffixed «no fiable», with the reason on hover."""
+    warning tone and suffixed «revísalo», with the reason as visible text below it."""
     return rx.cond(
         chip.reliable,
         rx.cond(chip.commercial, tone_badge(chip.label, "info"), tone_badge(chip.label, "neutral")),
-        rx.tooltip(
-            tone_badge(chip.label + " · no fiable", "warn"),
-            content=(
-                "Esta clase todavía no alcanza la precisión mínima medida; "
-                "revísala antes de actuar."
+        # m-24842989 (m5 hallazgo 10, N12): the explanation is visible text under the
+        # badge, never a tooltip — a phone has no hover.
+        rx.vstack(
+            tone_badge(chip.label + " · revísalo", "warn"),
+            rx.text(
+                "Aún no estamos seguros de esta etiqueta. Lee el comentario antes de actuar.",
+                size="1",
+                color=T.TEXT_MUTED,
             ),
+            spacing="1",
+            align_items="start",
         ),
     )
 
@@ -372,7 +424,7 @@ def _reply_by_dm_button(comment: CommentVM) -> rx.Component:
         rx.icon("send", size=T.ICON_SM),
         "Responder por DM",
         variant="soft",
-        size="1",
+        size="2",
         loading=InboxState.replying_dm_id == comment.message_id,
         disabled=InboxState.replying_dm_id != "",
         on_click=InboxState.reply_by_dm(comment.message_id),
@@ -416,6 +468,7 @@ def _comment_card(comment: CommentVM) -> rx.Component:
                 spacing="2",
                 align="center",
                 width="100%",
+                wrap="wrap",
             ),
             spacing="2",
             align_items="start",
@@ -555,10 +608,10 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
             _reel_thumbnail(reel),
             rx.vstack(
                 rx.text(
-                    rx.cond(reel.caption != "", reel.caption, "Sin caption"),
+                    rx.cond(reel.caption != "", reel.caption, "Sin texto"),
                     size="2",
                     weight="medium",
-                    max_width="380px",
+                    max_width="100%",
                     overflow="hidden",
                     text_overflow="ellipsis",
                     white_space="nowrap",
@@ -583,8 +636,9 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
                 _reel_sentiment_chips(reel),
                 spacing="2",
                 align_items="start",
+                flex="1 1 12rem",
+                min_width="0",
             ),
-            rx.spacer(),
             rx.button(
                 "Ver comentarios",
                 on_click=lambda: InboxState.select_reel(reel.thread_id),
@@ -594,6 +648,7 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
             spacing="3",
             align="center",
             width="100%",
+            wrap="wrap",
         ),
         padding="1rem 1.25rem",
         # Full width of the body: every row's switch/actions line up on one right edge
@@ -677,7 +732,7 @@ def _reel_detail_header() -> rx.Component:
                 _reel_thumbnail(reel),
                 rx.vstack(
                     rx.text(
-                        rx.cond(reel.caption != "", reel.caption, "Sin caption"),
+                        rx.cond(reel.caption != "", reel.caption, "Sin texto"),
                         size="3",
                         weight="medium",
                     ),
@@ -687,10 +742,12 @@ def _reel_detail_header() -> rx.Component:
                         mono(reel.external_thread_id, size="1"),
                         spacing="2",
                         align="center",
+                        wrap="wrap",
                     ),
                     _reel_sentiment_chips(reel),
                     spacing="1",
                     align_items="start",
+                    min_width="0",
                 ),
                 spacing="3",
                 align="center",
@@ -724,7 +781,7 @@ def _sentiment_filter_item(value: str, label: str) -> rx.Component:
 
 def _sentiment_filter_select() -> rx.Component:
     return rx.select.root(
-        rx.select.trigger(width="180px"),
+        rx.select.trigger(width="100%", max_width="180px", class_name="q-inbox-tap"),
         rx.select.content(
             *[_sentiment_filter_item(value, label) for value, label in _SENTIMENT_FILTER_OPTIONS]
         ),
@@ -744,7 +801,7 @@ _INTENT_FILTER_OPTIONS = [
 
 def _intent_filter_select() -> rx.Component:
     return rx.select.root(
-        rx.select.trigger(width="240px"),
+        rx.select.trigger(width="100%", max_width="240px", class_name="q-inbox-tap"),
         rx.select.content(
             *[_sentiment_filter_item(value, label) for value, label in _INTENT_FILTER_OPTIONS]
         ),
@@ -761,7 +818,9 @@ def _comment_search_input() -> rx.Component:
         value=InboxState.search_query,
         on_change=InboxState.set_search_query,
         size="2",
-        width="260px",
+        width="100%",
+        max_width="320px",
+        class_name="q-inbox-tap",
     )
 
 
@@ -895,20 +954,26 @@ def _analyze_error_block() -> rx.Component:
 
 
 def _comments_section() -> rx.Component:
+    # m-24842989: second block, under the replies ready to approve. Its actions sit in
+    # a wrapping row of their own, not in the title row, so they never squeeze the
+    # title at 360 px (N12).
     return section(
-        "Comentarios",
+        "Comentarios por publicación",
+        rx.hstack(
+            _analyze_now_button(),
+            _analyze_intent_button(),
+            spacing="2",
+            wrap="wrap",
+        ),
         _analyze_error_block(),
         _analyze_intent_error_block(),
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
-            "Comentarios sincronizados, agrupados por Reel o publicación, con el sentimiento "
-            "y la intención comercial ya analizados cuando existen. Cada uno se monitorea "
-            "14 días desde que se "
-            "publicó; al vencer deja de sincronizarse, pero su caption y sus comentarios "
-            'se conservan, marcado como "No monitoreado · vencido".'
+            "Tus comentarios agrupados por publicación. Revisamos cada publicación durante "
+            "2 semanas desde que la subes; después dejamos de buscar comentarios nuevos, "
+            "pero los que ya tienes se quedan aquí."
         ),
-        actions=[_analyze_now_button(), _analyze_intent_button()],
     )
 
 
@@ -919,7 +984,7 @@ def _sync_now_button() -> rx.Component:
             loading_spinner("sm"),
             rx.icon("refresh-cw", size=16),
         ),
-        rx.cond(InboxState.is_syncing, "Sincronizando...", "Sincronizar comentarios"),
+        rx.cond(InboxState.is_syncing, "Buscando...", "Buscar comentarios nuevos"),
         on_click=InboxState.sync_comments("manual"),
         disabled=~InboxState.can_sync,
         size="2",
@@ -976,17 +1041,18 @@ def _sync_section() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.text(
-                    "Los comentarios se sincronizan automáticamente cada 5 minutos "
-                    "mientras estás en esta pantalla.",
+                    "Buscamos comentarios nuevos cada 5 minutos mientras tienes esta "
+                    "pantalla abierta.",
                     size="2",
                     color=T.TEXT_MUTED,
+                    flex="1 1 14rem",
                 ),
-                rx.spacer(),
                 _sync_now_button(),
                 _polling_timer(),
                 spacing="2",
                 align="center",
                 width="100%",
+                wrap="wrap",
             ),
             _sync_error_block(),
             spacing="2",
@@ -1013,7 +1079,7 @@ def _generate_drafts_button() -> rx.Component:
             loading_spinner("sm"),
             rx.icon("sparkles", size=16),
         ),
-        rx.cond(RepliesState.is_generating, "Generando...", "Generar borradores"),
+        rx.cond(RepliesState.is_generating, "Preparando...", "Preparar respuestas"),
         on_click=RepliesState.generate_drafts,
         disabled=RepliesState.is_generating,
         size="2",
@@ -1022,7 +1088,7 @@ def _generate_drafts_button() -> rx.Component:
 
 
 def _refresh_drafts_button() -> rx.Component:
-    """A secondary page control next to "Generar borradores": an icon button on the glass
+    """A secondary page control next to «Preparar respuestas»: an icon button on the glass
     control material (`soft`, gray — §5.5), same height as its neighbour, instead of a
     bare `ghost` text link that read as a different kind of thing. Icon-only, so it
     carries `aria_label` and a tooltip with the same words."""
@@ -1038,9 +1104,9 @@ def _refresh_drafts_button() -> rx.Component:
             size="2",
             variant="soft",
             color_scheme="gray",
-            aria_label="Actualizar borradores",
+            aria_label="Actualizar respuestas",
         ),
-        content="Actualizar borradores",
+        content="Actualizar respuestas",
     )
 
 
@@ -1069,49 +1135,53 @@ def _replies_load_error_block() -> rx.Component:
 
 
 def _replies_empty_state() -> rx.Component:
+    # N8: an empty state always has a way out — here, preparing the replies.
     return empty_state(
         "message-square-text",
-        "Sin borradores pendientes",
-        'Haz clic en "Generar borradores" para redactar respuestas a los comentarios '
-        "positivos que todavía no tienen una.",
+        "No hay respuestas por aprobar",
+        "Cuando te comenten, prepara aquí las respuestas y apruébalas una por una.",
+        action=_generate_drafts_button(),
     )
 
 
 def _draft_view_mode(draft: DraftVM) -> rx.Component:
-    """Read-only: the generated text plus the two actions that decide it in one click
-    — see `replies_state.py`'s module docstring for why accept/edit and send are
-    folded together in this v1."""
+    """Read-only: the prepared text plus the actions that decide it in one tap — see
+    `replies_state.py`'s module docstring for why approve and send are folded together
+    in this v1. N13: nothing is answered until the owner presses «Aprobar y responder».
+    Main actions at `size="3"`, and the row wraps, so each one stays a ≥ 44 px target
+    at 360 px (N12, `.q-inbox-main` in qualify-inbox.css)."""
     is_busy = RepliesState.busy_draft_id == draft.id
     return rx.vstack(
         chat_bubble(rx.text(draft.generated_text, size="2"), direction="out"),
         rx.hstack(
             rx.button(
-                rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=14)),
-                "Aceptar y enviar",
+                rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
+                "Aprobar y responder",
                 on_click=RepliesState.accept_and_send(draft.id),
                 disabled=is_busy,
-                size="1",
+                size="3",
                 variant="soft",
                 **T.tone_scheme("ok"),
             ),
             rx.button(
-                rx.icon("pencil", size=14),
+                rx.icon("pencil", size=16),
                 "Editar",
                 on_click=RepliesState.start_edit(draft.id, draft.generated_text),
                 disabled=is_busy,
-                size="1",
+                size="3",
                 variant="surface",
             ),
             rx.button(
-                rx.icon("x", size=14),
+                rx.icon("x", size=16),
                 "Descartar",
                 on_click=RepliesState.discard_draft(draft.id),
                 disabled=is_busy,
-                size="1",
+                size="3",
                 variant="ghost",
                 **T.tone_scheme("error"),
             ),
             spacing="2",
+            wrap="wrap",
         ),
         spacing="2",
         width="100%",
@@ -1130,11 +1200,11 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
         ),
         rx.hstack(
             rx.button(
-                rx.cond(is_busy, loading_spinner("sm"), rx.icon("send", size=14)),
-                "Guardar y enviar",
+                rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
+                "Aprobar y responder",
                 on_click=RepliesState.save_and_send(draft.id),
                 disabled=is_busy,
-                size="1",
+                size="3",
                 variant="soft",
                 **T.tone_scheme("ok"),
             ),
@@ -1142,10 +1212,11 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
                 "Cancelar",
                 on_click=RepliesState.cancel_edit,
                 disabled=is_busy,
-                size="1",
+                size="3",
                 variant="ghost",
             ),
             spacing="2",
+            wrap="wrap",
         ),
         spacing="2",
         width="100%",
@@ -1154,12 +1225,13 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
 
 
 def _draft_card(draft: DraftVM) -> rx.Component:
+    """One reply waiting for approval: the comment it answers, then the prepared reply.
+    No internal id on screen (m5 hallazgo 5) — `source_id` used to be shown here."""
     is_editing = RepliesState.editing_draft_id == draft.id
     return card(
         rx.vstack(
             rx.hstack(
                 sentiment_badge(draft.sentiment_label),
-                mono(draft.source_id, size="1"),
                 rx.spacer(),
                 rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
                 align="center",
@@ -1179,7 +1251,9 @@ def _draft_card(draft: DraftVM) -> rx.Component:
             rx.cond(is_editing, _draft_edit_mode(draft), _draft_view_mode(draft)),
             spacing="2",
             align_items="start",
-        )
+            width="100%",
+        ),
+        width="100%",
     )
 
 
@@ -1195,27 +1269,38 @@ def _replies_list() -> rx.Component:
     )
 
 
+def _replies_title() -> str:
+    """«Respuestas listas para aprobar ({n})» — n is the queue on screen (m-24842989)."""
+    return f"Respuestas listas para aprobar ({RepliesState.drafts.length()})"
+
+
 def _replies_section() -> rx.Component:
+    """m-24842989: FIRST block of the screen — the people waiting come before any
+    configuration. Its actions sit in a wrapping row under the title (N12)."""
     return section(
-        "Borradores asistidos",
+        _replies_title(),
+        rx.hstack(
+            _refresh_drafts_button(),
+            _generate_drafts_button(),
+            spacing="2",
+            wrap="wrap",
+        ),
         _replies_load_error_block(),
         _replies_generate_error_block(),
         _replies_action_error_block(),
         _replies_list(),
         description=(
-            "Respuestas ya redactadas para comentarios positivos en contenido propio. "
-            "Nada se envía sin que lo apruebes o edites primero — el borrador nunca "
-            "se publica por su cuenta."
+            "Revisa cada respuesta. Solo se publica en Instagram cuando pulsas "
+            "«Aprobar y responder»."
         ),
-        actions=[_refresh_drafts_button(), _generate_drafts_button()],
     )
 
 
 def inbox_topbar() -> rx.Component:
     return page_header(
         "Comentarios",
-        "Comentarios de tus Reels y publicaciones de las últimas 2 semanas — elige cuáles "
-        "monitorear",
+        "Lo que te comentaron en tus publicaciones de las últimas 2 semanas, con la "
+        "respuesta lista para que la apruebes.",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
     )
 

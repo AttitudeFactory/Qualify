@@ -239,7 +239,9 @@ def test_the_sync_toast_uses_the_same_wording_as_the_heading() -> None:
 
 
 def test_the_sync_strip_lives_inside_the_body_not_between_header_and_body() -> None:
-    assert "_sync_section()" in inspect.getsource(inbox_page._body)
+    # m-24842989: the strip moved down, into the connected body `_body()` renders.
+    assert "_connected_body()" in inspect.getsource(inbox_page._body)
+    assert "_sync_section()" in inspect.getsource(inbox_page._connected_body)
     assert "_sync_section()" not in inspect.getsource(inbox_page.inbox_index)
 
 
@@ -256,13 +258,13 @@ def test_the_drafts_refresh_control_is_a_labelled_secondary_icon_button() -> Non
     source = inspect.getsource(inbox_page._refresh_drafts_button)
     assert "rx.icon_button(" in source
     assert 'variant="soft"' in source and 'color_scheme="gray"' in source
-    assert 'aria_label="Actualizar borradores"' in source
+    assert 'aria_label="Actualizar respuestas"' in source
     assert 'variant="ghost"' not in source
 
 
 def test_the_picker_copy_no_longer_says_reels_only() -> None:
     source = inspect.getsource(inbox_page)
-    assert "Reels y publicaciones de las últimas 2 semanas" in source
+    assert "tus publicaciones de las últimas 2 semanas" in source
     assert "Sin Reels ni publicaciones en las últimas 2 semanas" in source
     assert '"Reels de las últimas 2 semanas' not in source
 
