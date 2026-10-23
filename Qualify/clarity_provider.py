@@ -25,40 +25,90 @@ _ENGAGEMENT_METRIC = "EngagementTime"
 # names mean nothing to a tenant, so the translation IS the feature.
 _FRICTION_METRICS: dict[str, tuple[str, str, str]] = {
     "RageClickCount": (
-        "Rage clicks",
-        "Clics repetidos y frustrados sobre un mismo elemento.",
-        "Un botón o enlace parece no responder. Revisa la grabación en Clarity y "
-        "arregla (o quita) el elemento que la gente golpea sin resultado.",
+        "Toques repetidos con enojo",
+        "La gente tocó varias veces lo mismo porque no respondía.",
+        "Un botón o enlace parece no funcionar. Mira la grabación en Clarity y pide "
+        "que lo arreglen o lo quiten.",
     ),
     "DeadClickCount": (
-        "Clics muertos",
-        "Clics sobre cosas que no hacen nada.",
-        "Algo parece clicable sin serlo (texto subrayado, imagen, tarjeta). "
-        "Conviértelo en enlace real o cambia su estilo para que no invite al clic.",
+        "Toques en cosas que no hacen nada",
+        "Tocaron algo que parece un botón, pero no lo es.",
+        "Algo parece un botón sin serlo (un texto, una foto, una tarjeta). Pide que lo "
+        "conviertan en enlace o que cambien cómo se ve.",
     ),
     "ErrorClickCount": (
-        "Clics con error",
-        "Clics que dispararon un error de JavaScript.",
-        "Una acción del usuario está rompiendo el sitio. Abre la sesión en Clarity "
-        "para ver qué clic lo provoca y pásalo a quien mantenga el sitio.",
+        "Toques que rompieron la página",
+        "Al tocar algo, la página falló.",
+        "Algo que la gente toca hace fallar la página. Mira la grabación en Clarity y "
+        "avísale a quien te hizo la página.",
     ),
     "ScriptErrorCount": (
-        "Errores de JavaScript",
-        "Errores del código del sitio durante la sesión.",
-        "El sitio está fallando aunque el usuario no haga nada raro. "
-        "Prioridad alta para el desarrollador del sitio.",
+        "Fallas de la página",
+        "La página falló sola, sin que la gente hiciera nada raro.",
+        "Avísale a quien te hizo la página: esto es urgente.",
     ),
     "QuickbackClick": (
-        "Rebotes rápidos",
-        "Entraron a una página y volvieron atrás de inmediato.",
-        "La página no era lo que esperaban: revisa el título/enlace que los trajo "
-        "o el primer pantallazo de esa página.",
+        "Entraron y se fueron enseguida",
+        "Abrieron una página y volvieron atrás de inmediato.",
+        "La página no era lo que esperaban. Revisa el enlace que los trajo y lo primero "
+        "que se ve al abrirla.",
     ),
     "ExcessiveScroll": (
-        "Scroll excesivo",
-        "Desplazamiento de más buscando algo que no aparece.",
-        "Lo que buscan está muy abajo o no está. Sube el contenido clave o añade accesos directos.",
+        "Bajaron mucho buscando algo",
+        "Bajaron y bajaron buscando algo que no encontraban.",
+        "Lo que buscan está muy abajo o no está. Pon lo importante más arriba.",
     ),
+}
+
+# Owner-facing names for the other metrics and for the API's column keys (the raw tables
+# under «Ver todos los números»). Unknown keys fall back to the API's own name.
+_METRIC_LABELS: dict[str, str] = {
+    _HEADLINE_METRIC: "Visitas",
+    _ENGAGEMENT_METRIC: "Tiempo que se quedaron",
+    "ScrollDepth": "Hasta dónde bajaron",
+    "PopularPages": "Páginas más vistas",
+    "Browser": "Navegador",
+    "Device": "Dispositivo",
+    "OS": "Sistema",
+    "Country": "País",
+    "PageTitle": "Título de la página",
+    "ReferrerUrl": "De dónde llegaron",
+    **{name: label for name, (label, _hint, _advice) in _FRICTION_METRICS.items()},
+}
+
+# Dimension names as the Data Export API spells them (request values) → what the owner
+# reads. The state's select offers the Spanish names and maps them back.
+DIMENSION_LABELS: dict[str, str] = {
+    "URL": "Página",
+    "Device": "Dispositivo",
+    "OS": "Sistema",
+    "Browser": "Navegador",
+    "Source": "De dónde llegaron",
+    "Channel": "Canal",
+}
+
+_COLUMN_LABELS: dict[str, str] = {
+    **DIMENSION_LABELS,
+    "Url": "Página",
+    "Country": "País",
+    "Medium": "Medio",
+    "Campaign": "Campaña",
+    "PageTitle": "Título de la página",
+    "ReferrerUrl": "De dónde llegaron",
+    "totalSessionCount": "Visitas",
+    "totalBotSessionCount": "Visitas automáticas (no son personas)",
+    "distinctUserCount": "Personas",
+    "distantUserCount": "Personas",
+    "pagesPerSessionPercentage": "Páginas por visita",
+    "PagesPerSessionPercentage": "Páginas por visita",
+    "sessionsCount": "Visitas",
+    "sessionsWithMetricPercentage": "% de visitas con esto",
+    "sessionsWithoutMetricPercentage": "% de visitas sin esto",
+    "subTotal": "Veces",
+    "totalTime": "Tiempo total",
+    "activeTime": "Tiempo que se quedaron",
+    "averageScrollDepth": "Cuánto bajaron (promedio)",
+    "visitsCount": "Visitas",
 }
 
 
@@ -86,7 +136,7 @@ class FrictionCardVM:
 
     label: str
     total: str  # formatted count, e.g. "12"
-    affected: str  # "8% de sesiones" or "" when zero
+    affected: str  # "8% de las visitas" or "" when zero
     status: str  # "ok" | "warn" | "bad"
     hint: str  # one-liner: what this signal means
 
@@ -97,7 +147,7 @@ class ActionItemVM:
     'qué atender ahora' list. Plain strings only — this reaches the browser."""
 
     severity: str  # "alta" | "media"
-    title: str  # "Rage clicks en /reservas"
+    title: str  # "Toques repetidos con enojo en /reservas"
     detail: str  # counts + the recommended action, in Spanish
 
 
@@ -105,7 +155,7 @@ class ActionItemVM:
 class SnapshotVM:
     fetched_at: str  # "2026-08-15 14:03 UTC"; "" when no snapshot exists
     window: str  # "últimas 72 h"
-    dimensions: str  # "URL · Device" or ""
+    dimensions: str  # "Página · Dispositivo" or ""
     stats: list[list[str]] = field(default_factory=list)  # [label, value] pairs
     friction: list[FrictionCardVM] = field(default_factory=list)
     actions: list[ActionItemVM] = field(default_factory=list)
@@ -153,7 +203,7 @@ def _to_vm(snapshot: SnapshotRow) -> SnapshotVM:
     return SnapshotVM(
         fetched_at=snapshot.fetched_at.strftime("%Y-%m-%d %H:%M UTC"),
         window=_WINDOW_LABEL.get(snapshot.num_of_days, f"{snapshot.num_of_days} días"),
-        dimensions=" · ".join(snapshot.dimensions),
+        dimensions=" · ".join(DIMENSION_LABELS.get(d, d) for d in snapshot.dimensions),
         stats=_headline_stats(snapshot.payload),
         friction=_friction_cards(snapshot.payload),
         actions=_action_items(snapshot.payload),
@@ -181,13 +231,13 @@ def _headline_stats(payload: list[dict]) -> list[list[str]]:
     # Accept both — rows carry one or the other, never both.
     users = _sum_of(rows, "distinctUserCount") + _sum_of(rows, "distantUserCount")
     stats = [
-        ["Sesiones", f"{sessions:,}"],
-        ["Sesiones bot", f"{bots:,}"],
-        ["Usuarios únicos", f"{users:,}"],
+        ["Visitas", f"{sessions:,}"],
+        ["Visitas automáticas (no son personas)", f"{bots:,}"],
+        ["Personas", f"{users:,}"],
     ]
     engagement = _metric_rows(payload, _ENGAGEMENT_METRIC)
     if engagement:
-        stats.append(["Tiempo activo", _format_seconds(_sum_of(engagement, "activeTime"))])
+        stats.append(["Tiempo que se quedaron", _format_seconds(_sum_of(engagement, "activeTime"))])
     return stats
 
 
@@ -214,7 +264,7 @@ def _friction_cards(payload: list[dict]) -> list[FrictionCardVM]:
             status, affected = "ok", ""
         else:
             status = "bad" if (pct >= _BAD_PCT or total >= _BAD_TOTAL) else "warn"
-            affected = f"{pct:g}% de sesiones" if pct else ""
+            affected = f"{pct:g}% de las visitas" if pct else ""
         cards.append(
             FrictionCardVM(
                 label=label, total=f"{total:,}", affected=affected, status=status, hint=hint
@@ -236,12 +286,12 @@ def _action_items(payload: list[dict]) -> list[ActionItemVM]:
             sessions = _as_int(row.get("sessionsCount"))
             where = str(row.get("Url", "") or "").strip()
             severity = "alta" if (pct >= _BAD_PCT or events >= _BAD_TOTAL) else "media"
-            title = f"{label} en {where}" if where else f"{label} en el sitio"
-            counts = f"{events:,} eventos"
+            title = f"{label} en {where}" if where else f"{label} en tu página"
+            counts = "1 vez" if events == 1 else f"{events:,} veces"
             if sessions:
-                counts += f" en {sessions:,} sesiones"
+                counts += " en 1 visita" if sessions == 1 else f" en {sessions:,} visitas"
             if pct:
-                counts += f" ({pct:g}% afectadas)"
+                counts += f" ({pct:g}% de las visitas)"
             item = ActionItemVM(severity=severity, title=title, detail=f"{counts}. {advice}")
             scored.append((0 if severity == "alta" else 1, -events, item))
     scored.sort(key=lambda entry: entry[:2])
@@ -258,10 +308,10 @@ def _traffic_note(payload: list[dict]) -> str:
         return ""
     humans = _sum_of(rows, "totalSessionCount") - _sum_of(rows, "totalBotSessionCount")
     if 0 <= humans < _LOW_SAMPLE_SESSIONS:
-        label = "1 sesión real" if humans == 1 else f"{humans} sesiones reales"
+        label = "1 visita de una persona" if humans == 1 else f"{humans} visitas de personas"
         return (
-            f"Solo {label} en la ventana — con tan poco tráfico, "
-            "los porcentajes no son concluyentes todavía."
+            f"Solo hubo {label} en estos días. Son muy pocas para sacar conclusiones: "
+            "vuelve a mirar cuando tengas más visitas."
         )
     return ""
 
@@ -293,7 +343,8 @@ def _sum_of(rows: list[dict], key: str) -> int:
 def _metric_table(metric: dict) -> MetricTableVM:
     """Flatten one metric into header + string rows. Column order: dimension-ish keys
     (non-numeric values) first so the breakdown label leads each row."""
-    name = str(metric.get("metricName", ""))
+    raw_name = str(metric.get("metricName", ""))
+    name = _METRIC_LABELS.get(raw_name, raw_name)
     rows_in = [row for row in metric.get("information", []) if isinstance(row, dict)]
     if not rows_in:
         return MetricTableVM(name=name)
@@ -315,6 +366,6 @@ def _metric_table(metric: dict) -> MetricTableVM:
     ordered = sorted(columns, key=numericness)
     return MetricTableVM(
         name=name,
-        columns=ordered,
+        columns=[_COLUMN_LABELS.get(column, column) for column in ordered],
         rows=[[str(row.get(column, "")) for column in ordered] for row in rows_in],
     )

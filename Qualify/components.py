@@ -92,7 +92,7 @@ def topbar() -> rx.Component:
     # several channels; the channel of each one is its own column, never the page title.
     return page_header(
         "Menciones",
-        "Publicaciones y comentarios de tus redes sociales que mencionan tu cuenta.",
+        "Lo que la gente publica o comenta cuando etiqueta a tu negocio.",
     )
 
 
@@ -224,14 +224,23 @@ def _link_cell(mention: MentionRow) -> rx.Component:
         mention.permalink != "",
         rx.link(
             rx.hstack(
-                rx.text("Ver", size="2", weight="medium"),
+                rx.text(
+                    rx.match(
+                        mention.platform,
+                        ("instagram", "Ver en Instagram"),
+                        ("facebook", "Ver en Facebook"),
+                        "Ver en la red social",
+                    ),
+                    size="2",
+                    weight="medium",
+                ),
                 rx.icon("arrow-up-right", size=T.ICON_SM),
                 spacing="1",
                 align="center",
             ),
             href=mention.permalink,
             is_external=True,
-            aria_label="Ver la mención en su red social",
+            aria_label="Ver la mención en su red social (se abre en otra pestaña)",
             white_space="nowrap",
             underline="hover",
         ),
@@ -395,7 +404,7 @@ def mentions_table() -> rx.Component:
                         "Mención", min_width=_MENTION_COL_WIDTH, padding_right=_MENTION_GUTTER
                     ),
                     rx.table.column_header_cell("Sentimiento"),
-                    rx.table.column_header_cell("Likes", text_align="right"),
+                    rx.table.column_header_cell("Me gusta", text_align="right"),
                 )
             ),
             rx.table.body(
@@ -512,9 +521,9 @@ def notices() -> rx.Component:
         rx.cond(
             DashboardState.list_changed,
             rx.hstack(
-                callout("La lista cambió desde la última carga.", "warn", flex="1"),
+                callout("Hay cambios en esta lista.", "warn", flex="1"),
                 rx.button(
-                    "Actualizar",
+                    "Ver",
                     size="2",
                     variant="soft",
                     on_click=DashboardState.go_to_page("1"),
