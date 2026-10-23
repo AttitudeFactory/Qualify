@@ -12,7 +12,8 @@ page, design-system §9.1 (`app_shell(page_header, page_body)`):
    screen on a phone, with its own address (`/catalog?producto=<id>`, N5) so the phone's
    «atrás» closes it and leaves the list where it was. Its fields, and its media: an
    upload zone that takes photos AND short videos (both normalized at upload by the
-   service), the tiles with a "Principal" badge, "Hacer principal" and "Quitar". Leaving
+   service), the tiles with a «Principal» badge and the words «Principal» and «Quitar»
+   (m-24842977: 44 px, «Quitar» asks «¿Quitar esta foto?» first). Leaving
    with unsaved changes asks «¿Salir sin guardar?» first.
 3. **The grid** of products as cards: primary photo, name, category, counts — each card
    a real button that says «Editar» in words (never only on hover).
@@ -32,6 +33,7 @@ from .catalog_vm import (
     LEAVE_STAY,
     LEAVE_TITLE,
     MAIN_CURRENCIES,
+    MAKE_PRIMARY,
     MEDIA_ACCEPT,
     MISSING_PHOTO,
     NEW_PRODUCT_STEP_ICONS,
@@ -39,6 +41,9 @@ from .catalog_vm import (
     NO_CURRENCY,
     OTHER_CURRENCIES,
     OTHER_CURRENCY_GROUP,
+    REMOVE_CONFIRM,
+    REMOVE_MEDIA,
+    REMOVE_STAY,
     STEP_DONE,
     STEP_NAME,
     STEP_PHOTO,
@@ -566,7 +571,8 @@ _ORDER_HINT = (
 
 def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
     """One picture or clip: the image fills the tile, «Principal» sits in its corner,
-    and a bar over its foot carries the format and the two actions (star / trash)."""
+    and under it the format and the two actions in words, «Principal» and «Quitar»
+    (m-24842977); «Quitar» asks first."""
     src = rx.get_upload_url(item.key)
     return DragCard.create(
         rx.box(
@@ -597,8 +603,10 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
             width="100%",
         ),
         # Under the picture, on a solid surface (request 2026-10-22: over a dark photo the
-        # words vanished): the format, and the two actions as buttons in their tone.
-        rx.hstack(
+        # words vanished): the format, then the two actions as words, each its own
+        # full-width row of 44 px with a gap between them, so a thumb on a phone never
+        # hits «Quitar» when it meant «Principal» (m-24842977).
+        rx.vstack(
             rx.text(
                 rx.cond(item.media_type == "video", "Video", "Foto"),
                 rx.cond(item.meta_label != "", rx.text.span(" · ", item.meta_label), ""),
@@ -606,37 +614,38 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
                 color=T.TEXT_MUTED,
                 class_name="q-nums",
             ),
-            rx.spacer(),
             rx.cond(
                 (item.media_type == "image") & ~item.is_primary,
-                rx.tooltip(
-                    rx.icon_button(
-                        rx.icon("star", size=13),
-                        variant="soft",
-                        size="1",
-                        on_click=CatalogState.make_primary(item.media_id),
-                        disabled=CatalogState.media_busy,
-                        aria_label="Hacer principal",
-                    ),
-                    content="Hacer principal",
+                rx.button(
+                    rx.icon("star", size=T.ICON_SM),
+                    MAKE_PRIMARY,
+                    variant="soft",
+                    size="2",
+                    type="button",
+                    min_height=_TOUCH_MIN,
+                    width="100%",
+                    on_click=CatalogState.make_primary(item.media_id),
+                    disabled=CatalogState.media_busy,
+                    aria_label="Hacer principal " + item.filename,
                 ),
             ),
-            rx.tooltip(
-                rx.icon_button(
-                    rx.icon("trash-2", size=13),
-                    variant="soft",
-                    size="1",
-                    on_click=CatalogState.delete_media(item.media_id),
-                    disabled=CatalogState.media_busy,
-                    aria_label="Quitar",
-                    **T.tone_scheme("error"),
-                ),
-                content="Quitar",
+            rx.button(
+                rx.icon("trash-2", size=T.ICON_SM),
+                REMOVE_MEDIA,
+                variant="soft",
+                size="2",
+                type="button",
+                min_height=_TOUCH_MIN,
+                width="100%",
+                on_click=CatalogState.ask_remove_media(item.media_id),
+                disabled=CatalogState.media_busy,
+                aria_label="Quitar " + item.filename,
+                **T.tone_scheme("error"),
             ),
             class_name="q-catalog-tile-foot",
-            align="center",
-            spacing="1",
+            spacing="2",
             width="100%",
+            align_items="stretch",
         ),
         # `.q-rank-card` is what the drag script moves; `.q-catalog-tile` its look here
         class_name="q-rank-card q-catalog-tile",
@@ -963,6 +972,50 @@ def _delete_product_dialog() -> rx.Component:
     )
 
 
+def _remove_media_dialog() -> rx.Component:
+    """«¿Quitar esta foto?» (m-24842977): «Volver» first and on Esc, «Sí, quitar» as
+    the destructive verb. Stacked full-width on a phone (N12)."""
+    big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(CatalogState.remove_media_title_text),
+            rx.alert_dialog.description(CatalogState.remove_media_text, size="2"),
+            rx.box(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        rx.icon("arrow-left", size=T.ICON_SM),
+                        REMOVE_STAY,
+                        variant="soft",
+                        color_scheme="gray",
+                        type="button",
+                        **big,
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.icon("trash-2", size=T.ICON_SM),
+                        REMOVE_CONFIRM,
+                        type="button",
+                        on_click=CatalogState.confirm_remove_media,
+                        **T.tone_scheme("error"),
+                        **big,
+                    ),
+                ),
+                display="grid",
+                grid_template_columns=rx.breakpoints(
+                    initial="minmax(0, 1fr)", sm="repeat(2, minmax(0, 1fr))"
+                ),
+                gap="0.75rem",
+                margin_top="1.25rem",
+                width="100%",
+            ),
+            max_width="28rem",
+        ),
+        open=CatalogState.remove_media_open,
+        on_open_change=CatalogState.set_remove_media_open,
+    )
+
+
 # -- the grid -------------------------------------------------------------------------------
 
 
@@ -1052,10 +1105,33 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
 
 def _grid() -> rx.Component:
     return rx.grid(
-        rx.foreach(CatalogState.products, _product_card),
+        rx.foreach(CatalogState.visible_products, _product_card),
         columns=rx.breakpoints(initial="1", sm="2", md="3", lg="4"),
         spacing="3",
         width="100%",
+    )
+
+
+def _missing_photo_filter() -> rx.Component:
+    """«Ver los 2 sin foto» narrows the list to what still needs a photo; «Ver todos
+    los productos» brings it back (m-24842977). A real toggle button, 44 px."""
+    return rx.cond(
+        CatalogState.show_missing_filter,
+        rx.button(
+            rx.cond(
+                CatalogState.missing_filter_on,
+                rx.icon("list", size=T.ICON_SM),
+                rx.icon("camera", size=T.ICON_SM),
+            ),
+            CatalogState.missing_filter_label,
+            variant="soft",
+            size="2",
+            type="button",
+            min_height=_TOUCH_MIN,
+            on_click=CatalogState.toggle_missing_photo,
+            aria_pressed=rx.cond(CatalogState.missing_filter_on, "true", "false"),
+            **T.tone_scheme("warn"),
+        ),
     )
 
 
@@ -1130,6 +1206,7 @@ def catalog_index() -> rx.Component:
             _editor_drawer(),
             _leave_dialog(),
             _delete_product_dialog(),
+            _remove_media_dialog(),
             rx.cond(
                 CatalogState.loading,
                 _loading(),
@@ -1139,6 +1216,7 @@ def catalog_index() -> rx.Component:
                         "Productos",
                         _grid(),
                         description="Toca uno para editarlo y subirle fotos.",
+                        actions=[_missing_photo_filter()],
                     ),
                     _empty(),
                 ),

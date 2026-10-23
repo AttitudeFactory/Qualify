@@ -19,6 +19,8 @@ Pins:
    «Atrás» keeps what was typed (N6), «Listo» after saving with the way to Crear, the
    business's own currency as the start, refused files in the owner's words, and no
    «arrastra» / «haz clic» / format siglas on the main path.
+9. m-24842977: «Principal» and «Quitar» in words at 44 px, «Quitar» asks first, no
+   pixel sizes, and «3 productos · 1 sin foto» with a filter to the ones missing it.
 """
 
 from __future__ import annotations
@@ -208,7 +210,7 @@ def _media(media_id: str, *, primary: bool = False, position: int = 0) -> Produc
         filename=f"{media_id}.jpg",
         is_primary=primary,
         position=position,
-        meta_label="1080×1350",
+        meta_label="",
     )
 
 
@@ -480,7 +482,7 @@ async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
                 filename="a.jpg",
                 is_primary=True,
                 position=0,
-                meta_label="1080×1350",
+                meta_label="",
             ),
         )
         return (_product(media=media, photo_count=1, counts_label="1 foto"),)
@@ -973,3 +975,106 @@ def test_the_card_is_a_button_that_says_editar() -> None:
     for words in ("¿Salir sin guardar?", "Volver", "Guardar y salir"):
         # the compiled page escapes non-ASCII the way JSON does («¿» → ¿)
         assert json.dumps(words)[1:-1] in rendered
+
+
+# ---------------------------------------------------------------------------
+# 9. m-24842977: the main photo and removing media without mistakes
+
+
+def _with_media() -> CatalogState:
+    state = CatalogState()
+    state.products = [
+        _product(
+            media=(
+                _media("m1", primary=True),
+                _media("m2", position=1),
+                ProductMediaVM(
+                    media_id="v1",
+                    media_type="video",
+                    key="uploads/t/catalog/p/v1.mp4",
+                    filename="v1.mp4",
+                    is_primary=False,
+                    position=2,
+                    meta_label="7 s",
+                ),
+            ),
+            photo_count=2,
+            video_count=1,
+        )
+    ]
+    state.selected_id = str(_PRODUCT_ID)
+    return state
+
+
+def test_quitar_asks_first_and_volver_removes_nothing() -> None:
+    state = _with_media()
+    assert not state.remove_media_open
+    state.ask_remove_media("m2")
+    assert state.remove_media_open
+    assert state.remove_media_title_text == "¿Quitar esta foto?"
+    assert "ya no se usará" in state.remove_media_text
+    assert "principal" not in state.remove_media_text  # m2 is not the main one
+    state.set_remove_media_open(False)  # «Volver» / Esc
+    assert not state.remove_media_open and state.remove_media_id == ""
+
+
+def test_quitar_the_main_photo_says_who_takes_its_place_and_a_video_is_a_video() -> None:
+    state = _with_media()
+    state.ask_remove_media("m1")
+    assert "pasa a ser la principal" in state.remove_media_text
+    state.ask_remove_media("v1")
+    assert state.remove_media_title_text == "¿Quitar este video?"
+    assert state.remove_media_text.startswith("Este video")
+
+
+def test_si_quitar_closes_the_dialog_and_runs_the_removal() -> None:
+    state = _with_media()
+    state.ask_remove_media("m2")
+    spec = state.confirm_remove_media()
+    assert spec is not None and state.remove_media_id == ""
+    assert not state.remove_media_open
+    assert state.confirm_remove_media() is None  # a second tap removes nothing more
+
+
+def test_quitar_waits_while_another_media_change_runs() -> None:
+    state = _with_media()
+    state.media_busy = True
+    state.ask_remove_media("m2")
+    assert not state.remove_media_open
+
+
+def test_the_header_counts_the_products_without_a_photo_and_filters_them() -> None:
+    state = CatalogState()
+    state.products = [
+        _product("p1", photo_count=1, counts_label="1 foto"),
+        _product("p2", photo_count=0),
+        _product("p3", photo_count=3, counts_label="3 fotos"),
+    ]
+    assert state.product_count_label == "3 productos · 1 sin foto"
+    assert state.show_missing_filter
+    assert state.missing_filter_label == "Ver el que no tiene foto"
+    assert [p.product_id for p in state.visible_products] == ["p1", "p2", "p3"]
+    state.toggle_missing_photo()
+    assert [p.product_id for p in state.visible_products] == ["p2"]
+    assert state.missing_filter_label == "Ver todos los productos"
+    # the last one gets its photo: the whole list comes back on its own
+    state.products = [_product("p1", photo_count=1), _product("p2", photo_count=1)]
+    assert state.product_count_label == "2 productos"
+    assert not state.missing_filter_on and not state.show_missing_filter
+    assert len(state.visible_products) == 2
+
+
+def test_the_tile_actions_are_words_at_44_px_and_quitar_opens_the_dialog() -> None:
+    from . import catalog_page
+
+    source = Path(catalog_page.__file__).read_text(encoding="utf-8")
+    tile = source[source.index("def _media_tile") : source.index("def _upload_zone")]
+    assert "MAKE_PRIMARY" in tile and "REMOVE_MEDIA" in tile
+    assert "icon_button" not in tile and "tooltip" not in tile
+    assert tile.count("min_height=_TOUCH_MIN") >= 2
+    assert "CatalogState.ask_remove_media(item.media_id)" in tile
+    assert "CatalogState.delete_media(" not in tile  # never a removal on the first tap
+    rendered = str(catalog_page.catalog_index())
+    for words in ("Principal", "Quitar", "Volver", "Sí, quitar"):
+        assert json.dumps(words)[1:-1] in rendered
+    assert "×" not in tile and "px" not in "".join(_visible_strings(tile))

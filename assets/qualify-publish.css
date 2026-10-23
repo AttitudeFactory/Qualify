@@ -201,7 +201,7 @@
   cursor: grab;
 }
 .q-catalog-tile-foot {
-  padding: 0.3rem 0.35rem 0.3rem 0.55rem;
+  padding: 0.5rem; /* m-24842977: room for two 44 px buttons */
   border-top: 1px solid var(--q-card-edge);
 }
 .q-catalog-video {
