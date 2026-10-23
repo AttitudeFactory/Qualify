@@ -242,6 +242,10 @@ CREATE_PRODUCT_PARAM = "producto"
 NEEDS_PHOTO_REASON = "Primero súbele una foto"
 #: What the button says while the photos dropped in the form are still being saved.
 SAVING_PHOTOS_REASON = "Guardando sus fotos…"
+#: «Listo» notice, product with photo: the next step is a publication with it.
+CREATED_NEXT_STEP = "¿Hacemos una publicación con él?"
+#: «Listo» notice, product with no photo (and none saving): the photo comes first.
+CREATED_NEEDS_PHOTO = "Súbele una foto y hacemos una publicación con él."
 
 
 def create_with_product_href(product_id: str) -> str:

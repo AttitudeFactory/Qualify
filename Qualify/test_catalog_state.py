@@ -586,5 +586,17 @@ def test_the_create_with_product_button_says_why_it_is_off() -> None:
     source = Path(catalog_page.__file__).read_text(encoding="utf-8")
     assert "Crear publicación con este producto" in source
     assert "NEEDS_PHOTO_REASON" in source and "disabled=True" in source
-    assert "Listo, tu producto ya está guardado." in source
-    assert "¿Hacemos una publicación con él?" in source
+    assert 'f"Listo, {product.name} ya está guardado."' in source
+    assert "CREATED_NEXT_STEP" in source and "CREATED_NEEDS_PHOTO" in source
+    # no dead end: with no photo (and none saving) the solid button opens the editor
+    assert '"Subirle una foto"' in source
+    assert "select_product(CatalogState.created_id)" in source
+
+
+def test_the_created_notice_copy() -> None:
+    """The «Listo» copy: the next step, or the photo first when there is none (N3, N8)."""
+    from .catalog_vm import CREATED_NEEDS_PHOTO, CREATED_NEXT_STEP, SAVING_PHOTOS_REASON
+
+    assert CREATED_NEXT_STEP == "¿Hacemos una publicación con él?"
+    assert CREATED_NEEDS_PHOTO == "Súbele una foto y hacemos una publicación con él."
+    assert SAVING_PHOTOS_REASON == "Guardando sus fotos…"

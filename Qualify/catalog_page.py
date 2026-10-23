@@ -22,6 +22,8 @@ import reflex as rx
 
 from .catalog_state import CatalogState
 from .catalog_vm import (
+    CREATED_NEEDS_PHOTO,
+    CREATED_NEXT_STEP,
     CURRENCY_OPTIONS,
     MEDIA_ACCEPT,
     NEEDS_PHOTO_REASON,
@@ -560,17 +562,24 @@ def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
 def _created_notice() -> rx.Component:
     """«Listo» after «Crear producto» (N3, m-24842972): what happened in the owner's
     words, ONE solid button to the next job — a publication with this product — and a
-    soft one to stay on the list. While the product has no photo the button is off and
-    says why: still saving the photos dropped in the form, or none yet."""
+    soft one to stay on the list. The heading names the product. With no photo and
+    none saving, the solid button becomes «Subirle una foto» (opens the editor, where
+    the photos and «Crear publicación con este producto» live) so the owner is never
+    told what to do without a way to do it; while photos are saving it stays off and
+    says «Guardando sus fotos…»."""
     product = CatalogState.created
     return card(
         rx.vstack(
             rx.hstack(
                 rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
                 rx.vstack(
-                    rx.heading("Listo, tu producto ya está guardado.", size="4", as_="h2"),
+                    rx.heading(f"Listo, {product.name} ya está guardado.", size="4", as_="h2"),
                     rx.text(
-                        "¿Hacemos una publicación con él?",
+                        rx.cond(
+                            (product.photo_count == 0) & ~CatalogState.uploading,
+                            CREATED_NEEDS_PHOTO,
+                            CREATED_NEXT_STEP,
+                        ),
                         size="2",
                         color=T.TEXT_MUTED,
                     ),
@@ -600,11 +609,20 @@ def _created_notice() -> rx.Component:
                         ),
                         href=CatalogState.created_href,
                     ),
-                    rx.button(
-                        rx.icon("sparkles", size=T.ICON_SM),
-                        "Crear publicación",
-                        size="3",
-                        disabled=True,
+                    rx.cond(
+                        CatalogState.uploading,
+                        rx.button(
+                            rx.icon("sparkles", size=T.ICON_SM),
+                            "Crear publicación",
+                            size="3",
+                            disabled=True,
+                        ),
+                        rx.button(
+                            rx.icon("camera", size=T.ICON_SM),
+                            "Subirle una foto",
+                            size="3",
+                            on_click=CatalogState.select_product(CatalogState.created_id),
+                        ),
                     ),
                 ),
                 spacing="2",
@@ -614,9 +632,9 @@ def _created_notice() -> rx.Component:
                 class_name="q-catalog-actions",
             ),
             rx.cond(
-                product.photo_count == 0,
+                (product.photo_count == 0) & CatalogState.uploading,
                 rx.text(
-                    rx.cond(CatalogState.uploading, SAVING_PHOTOS_REASON, NEEDS_PHOTO_REASON),
+                    SAVING_PHOTOS_REASON,
                     size="1",
                     color=T.TEXT_MUTED,
                     width="100%",
@@ -729,7 +747,9 @@ def _editor() -> rx.Component:
                     rx.cond(
                         product.photo_count == 0,
                         rx.text(
-                            NEEDS_PHOTO_REASON,
+                            rx.cond(
+                                CatalogState.uploading, SAVING_PHOTOS_REASON, NEEDS_PHOTO_REASON
+                            ),
                             size="1",
                             color=T.TEXT_MUTED,
                             width="100%",
