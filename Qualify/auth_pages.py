@@ -46,7 +46,7 @@ def _error_banner() -> rx.Component:
     return rx.cond(AuthState.auth_error != "", callout(AuthState.auth_error, "error"))
 
 
-def email_field(placeholder: str = "Email", **props) -> rx.Component:
+def email_field(placeholder: str = "Correo", **props) -> rx.Component:
     return rx.input(
         placeholder=placeholder,
         name="email",
@@ -107,7 +107,7 @@ def login_index() -> rx.Component:
         # § 2026-10-02: an email typed on /brand/start that already has an account
         rx.cond(
             AuthState.login_email_hint != "",
-            callout("Ese correo ya tiene una cuenta: inicia sesión para ver tu Brand Kit.", "info"),
+            callout("Ese correo ya tiene una cuenta: inicia sesión para ver tu marca.", "info"),
         ),
         _error_banner(),
         rx.form(
@@ -137,7 +137,7 @@ def login_index() -> rx.Component:
         rx.link(
             rx.button(
                 rx.icon("palette", size=T.ICON_SM),
-                "Crear mi Brand Kit",
+                "Preparar mi marca",
                 variant="soft",
                 width="100%",
             ),
@@ -289,7 +289,7 @@ def brand_start_index() -> rx.Component:
     """The Brand Kit's first view, before any login (§ request 2026-10-02): the email the
     kit is saved to. The signup with the same email later opens with the kit in it."""
     return _auth_card(
-        rx.heading("Crea tu marca", size="4"),
+        rx.heading("Prepara tu marca", size="4"),
         rx.text(
             "Sin crear cuenta. Lo guardamos con tu correo y, cuando te registres con ese "
             "mismo correo, tu cuenta ya lo tendrá.",
@@ -315,7 +315,7 @@ def brand_start_index() -> rx.Component:
                     width="100%",
                 ),
                 rx.button(
-                    "Empezar mi Brand Kit",
+                    "Empezar",
                     type="submit",
                     width="100%",
                     loading=AuthState.is_authenticating,
@@ -388,7 +388,7 @@ def _signup_form() -> rx.Component:
             (AuthState.guest_email != "") & ~invited,
             callout(
                 rx.fragment(
-                    "Tu Brand Kit ya está guardado con ",
+                    "Tu marca ya está guardada con ",
                     rx.text.strong(AuthState.guest_email),
                     ". Regístrate con ese mismo correo y lo tendrás en tu cuenta.",
                 ),
@@ -408,7 +408,7 @@ def _signup_form() -> rx.Component:
                     key=AuthState.invite_business,
                 ),
                 email_field(
-                    "Email del negocio (uno por negocio)",
+                    "Correo del negocio (uno por negocio)",
                     default_value=rx.cond(
                         invited,
                         AuthState.invite_email,

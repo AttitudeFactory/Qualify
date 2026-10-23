@@ -292,18 +292,18 @@ def test_the_sort_step_waits_while_the_search_runs() -> None:
 def test_the_loading_screen_lists_each_category_as_it_lands() -> None:
     state = BrandConnectState()
     state.discovering = True
-    state.discovery_running = "Referentes del sector"
+    state.discovery_running = "En tu sector"
     assert [(r["title"], r["status"]) for r in state.discovery_progress] == [
-        ("Referentes del sector", "running"),
-        ("Referentes nacionales", "pending"),
-        ("Referentes locales", "pending"),
+        ("En tu sector", "running"),
+        ("En tu país", "pending"),
+        ("En tu ciudad", "pending"),
     ]
     state.sector_title = "Referentes del sector"
     state.discovery_running = "Referentes en Venezuela"
     assert [(r["title"], r["status"]) for r in state.discovery_progress] == [
         ("Referentes del sector", "done"),
         ("Referentes en Venezuela", "running"),
-        ("Referentes locales", "pending"),
+        ("En tu ciudad", "pending"),
     ]
     # a category that failed or found nothing still counts as done
     state.national_note = "No pudimos completar esta búsqueda ahora. Inténtalo más tarde."

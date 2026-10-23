@@ -457,7 +457,7 @@ def test_the_manual_outcome_warns_when_the_ai_thinks_it_does_not_fit() -> None:
         {"handle": "@a", "kind_label": "Creador", "review": "Chef de autor."}, "referente", fits
     )
     assert tone == "ok"
-    assert message == "Agregamos @a a Referentes. Creador: Chef de autor."
+    assert message == "Agregamos @a a «Te inspira». Creador: Chef de autor."
 
     doubtful = rr.ManualResult(
         card={}, candidate=_candidate("tiktok", "a", 1), missing=True, warning="Otro rubro."

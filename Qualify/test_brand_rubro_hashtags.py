@@ -86,7 +86,7 @@ def test_new_suggestions_replace_old_ones_but_keep_what_the_operator_typed() -> 
 
 def test_an_empty_suggestion_says_so_and_a_rule_suggestion_is_marked() -> None:
     _, note = merge_suggestions([], hashtag_catalog.HashtagChoice((), "ai"))
-    assert "Agrega los tuyos" in note
+    assert "Agrega las tuyas" in note
     pills, _ = merge_suggestions([], hashtag_catalog.HashtagChoice(("foodie",), "rule"))
     assert pills[0]["origin"] == "catalog"
 

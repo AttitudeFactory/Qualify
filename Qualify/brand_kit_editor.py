@@ -54,13 +54,18 @@ from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
 #: The editor's sections, in page order — (key, title, icon, what it holds).
 SECTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("marca", "Marca", "compass", "Posicionamiento, audiencia y tu brief."),
-    ("brandboard", "Brandboard", "image", "Las versiones de tu logo y los otros elementos."),
+    ("marca", "Marca", "compass", "Qué te hace distinto, quién te compra y tu documento de marca."),
+    ("brandboard", "Logo", "image", "Las versiones de tu logo y los otros elementos."),
     ("tipografia", "Tipografía", "type", "La letra con la que se te reconoce."),
     ("paleta", "Paleta", "palette", "Los colores con los que se te reconoce."),
     ("voz", "Voz y tono", "mic", "Tu voz, su clon y cómo suena tu marca."),
-    ("habla", "Cómo habla", "message-circle", "Ejemplos que sí, que no y tus llamados."),
-    ("nunca", "Lo que nunca dice", "shield-alert", "Palabras vetadas y claims prohibidos."),
+    ("habla", "Cómo habla", "message-circle", "Ejemplos que sí, que no y cómo invitas a comprar."),
+    (
+        "nunca",
+        "Lo que nunca dice",
+        "shield-alert",
+        "Palabras vetadas y promesas que no puedes hacer.",
+    ),
 )
 SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
 VOICE_SECTION = "voz"
@@ -420,8 +425,8 @@ def _voice_first_view() -> rx.Component:
     """What is still to configure, before anything else (§ request 2026-10-05)."""
     return rx.vstack(
         callout(
-            "Te falta configurar tu voz y cómo suena tu marca. Lo usamos al generar vídeos "
-            "y textos con tu marca.",
+            "Te falta preparar tu voz y cómo suena tu marca. La usamos en tus vídeos y en "
+            "tus textos.",
             "warn",
             icon="mic",
         ),
@@ -488,15 +493,15 @@ def _results_view() -> rx.Component:
     )
     return rx.cond(
         BrandConnectState.referentes_loading,
-        _loading_view("Cargando tus referentes"),
+        _loading_view("Cargando los negocios parecidos al tuyo"),
         rx.vstack(
             rx.cond(BrandConnectState.profile_username != "", _insights_header()),
             rx.cond(
                 has_referentes,
                 rx.cond(BrandConnectState.has_ranking, _ranking_panel(), _discovery_list()),
                 callout(
-                    "Todavía no hay referentes guardados para esta marca: se buscan al "
-                    "conectar tus redes al crear el Brand Kit, o agrégalos a mano.",
+                    "Todavía no hay negocios parecidos guardados. Los buscamos cuando conectas "
+                    "tu Instagram al preparar tu marca, o puedes agregarlos a mano.",
                     "info",
                 ),
             ),
@@ -525,7 +530,7 @@ def _header_action() -> rx.Component:
         ),
         rx.button(
             rx.icon("pencil", size=T.ICON_SM),
-            "Editar Brand Kit",
+            "Editar mi marca",
             # P3, one solid per screen: while Tu voz y tono is what the page shows, its
             # "Guardar voz" is the primary action and this one steps back to soft
             variant=rx.cond(needs_voice(), "soft", "solid"),
@@ -541,8 +546,9 @@ def _subtitle() -> rx.Var[str]:
         "Edita cada sección y guárdala por separado.",
         rx.cond(
             needs_voice(),
-            "Antes de nada, termina de configurar tu marca.",
-            "Tus referentes y tu competencia, en orden de influencia.",
+            "Antes de nada, termina de preparar tu marca.",
+            "Los negocios que te inspiran y los que compiten contigo, del que más pesa "
+            "al que menos.",
         ),
     )
 

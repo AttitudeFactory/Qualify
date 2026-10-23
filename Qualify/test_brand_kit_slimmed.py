@@ -48,7 +48,9 @@ def test_the_brief_fills_the_fields_without_a_review_panel() -> None:
 def test_identity_carries_the_brief_and_no_panel() -> None:
     rendered = str(wiz._step_identity())
     assert "brand_brief" in rendered  # the brief's upload id
-    assert "Posicionamiento" in rendered and "Audiencia" in rendered
+    # the render escapes non-ASCII (¿, é), so ASCII stretches of the two labels
+    assert "Qu\\u00e9 te hace distinto?" in rendered
+    assert "Qui\\u00e9n te compra?" in rendered
     assert "Aplicar" not in rendered  # no proposals panel
 
 
@@ -75,8 +77,8 @@ def test_the_manual_flow_is_seven_screens_and_resumes_on_the_review(
 ) -> None:
     assert [t for t, _ in wiz.STEPS] == [
         "¿Quién es la marca?",
-        "¿Tienes brandboard?",
-        "Tu brandboard",
+        "¿Ya tienes logo?",
+        "Tu logo",
         "Tipografía",
         "Paleta de colores",
         "¿Todo correcto?",
@@ -192,7 +194,7 @@ def test_the_results_are_one_list_without_country_or_city_tabs() -> None:
 def test_an_empty_finished_search_says_why() -> None:
     state = wiz.BrandConnectState()
     state.discovery_ran = True
-    assert state.results_note == "No encontramos referentes para tu rubro todavía."
+    assert state.results_note == "Todavía no encontramos negocios parecidos al tuyo."
     state.sector_note = "No pudimos buscar en el sector: inténtalo de nuevo."
     assert state.results_note.startswith("No pudimos")
     state.discovering = True
@@ -270,7 +272,7 @@ def test_the_login_has_a_way_to_the_brand_kit() -> None:
     from .auth_pages import login_index
 
     rendered = str(login_index())
-    assert "/brand/start" in rendered and "Crear mi Brand Kit" in rendered
+    assert "/brand/start" in rendered and "Preparar mi marca" in rendered
 
 
 def test_answering_the_account_kind_fires_the_hashtag_creation() -> None:
@@ -327,8 +329,8 @@ def test_the_identity_fields_hide_while_the_brief_is_read() -> None:
     carga": the fields sit behind `brief_busy`, and the card has no status line under it."""
     rendered = str(wiz._step_identity())
     assert "brief_busy" in rendered
-    busy_at = rendered.index("brief_busy", rendered.index("Leyendo tu brief"))
-    assert busy_at < rendered.index("Posicionamiento")
+    busy_at = rendered.index("brief_busy", rendered.index("Leyendo tu documento"))
+    assert busy_at < rendered.index("te hace distinto?")
     assert "brief_message" not in str(docs.brief_upload_card())
 
 
