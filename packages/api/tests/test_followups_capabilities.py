@@ -124,3 +124,17 @@ def test_from_env_reads_the_process_environment(monkeypatch: pytest.MonkeyPatch)
     assert Capabilities.from_env().switched_on == frozenset()
     monkeypatch.setenv(STORY_COMMENTS_ENV, "on")
     assert Capabilities.from_env().switched_on == frozenset({Capability.STORY_COMMENTS})
+
+
+@pytest.mark.parametrize("capability", list(Capability))
+def test_the_owner_reads_a_plain_reason_never_the_evidence(capability: Capability) -> None:
+    """NAV-11 (m-24849129): `reason` keeps the team's evidence (switch, dates, Meta's
+    error text); the owner reads `owner_reason` — no switch names, dates or English."""
+    off = Capabilities().availability(capability)
+    assert off.enabled is False and off.owner_reason
+    assert off.owner_reason != off.reason
+    for leak in ("QUALIFY_", "2026", "(R", "Comments cannot", "despliegue", "Meta"):
+        assert leak not in off.owner_reason
+    on = Capabilities(frozenset(Capability)).availability(capability)
+    if on.enabled:
+        assert on.owner_reason == ""

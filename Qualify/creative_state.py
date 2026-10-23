@@ -151,8 +151,12 @@ _STALE_PROPOSAL = "Esa propuesta ya no está vigente. Recargamos el estado real.
 _BRIEF_NOT_READY = (
     "Completa tu marca (colores, logo y forma de hablar) para que todo salga con tu estilo."
 )
-_ROUTE_BLOCKED = "Esa ruta de imagen está bloqueada para esta marca: "
-_BRIEF_INVALID = "El encargo no se puede ejecutar: "
+_ROUTE_BLOCKED = "Tu marca no permite crear la imagen de esa forma: "
+#: NAV-11 (m-24849129): the brief's own refusal is an English invariant ("a template needs
+#: at least one product photo"), so the owner reads this and the log keeps the detail.
+_BRIEF_INVALID = (
+    "Falta algo para crear esta publicación. Revisa lo que elegiste y vuelve a intentarlo."
+)
 #: «Potenciar con IA» (§ request 2026-10-20): what the operator reads around it.
 _ENHANCE_MIN_CHARS = 8
 #: The animated avatar with nothing in the Brand Kit to make its character from.
@@ -4940,9 +4944,16 @@ class CreativeState(rx.State):
                 self.create_error = _ROUTE_BLOCKED + exc.detail
             return None
         except (ValidationError, ValueError) as exc:
+            # the validators' messages only — never `input_value`, which holds the form
+            why = (
+                "; ".join(str(e.get("msg", "")) for e in exc.errors())
+                if isinstance(exc, ValidationError)
+                else str(exc)
+            )
+            logger.warning("brief refused: %s", why[:300])
             async with self:
                 self.is_submitting = False
-                self.create_error = _BRIEF_INVALID + str(exc).splitlines()[0]
+                self.create_error = _BRIEF_INVALID
             return None
         except SQLAlchemyError as exc:
             logger.error("submit brief failed: %s", type(exc).__name__)

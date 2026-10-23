@@ -377,7 +377,7 @@ class FollowupsState(rx.State):
         except (InvalidFollowupTransition, UnknownFollowup):
             yield rx.toast.warning(_GONE, duration=_TOAST_MS)
         except CapabilityUnavailable as exc:
-            yield rx.toast.warning(exc.availability.reason, duration=_TOAST_MS)
+            yield rx.toast.warning(exc.availability.owner_reason, duration=_TOAST_MS)
         except ValueError as exc:
             reason = str(exc)
             if "notice" in reason:
