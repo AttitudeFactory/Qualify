@@ -28,6 +28,9 @@ from .catalog_vm import (
     MEDIA_ACCEPT,
     NEEDS_PHOTO_REASON,
     NO_CURRENCY,
+    RETURN_HINT,
+    RETURN_LABEL,
+    RETURN_WITHOUT_LABEL,
     SAVING_PHOTOS_REASON,
     ProductMediaVM,
     ProductVM,
@@ -162,6 +165,32 @@ def _product_fields(
 
 
 # -- Agregar producto --------------------------------------------------------------------
+
+
+def _return_hint() -> rx.Component:
+    """The owner came from a publication to add a product (m-24842973, N4): say that
+    saving takes them back with it chosen, and give a way back without adding one."""
+    return rx.vstack(
+        callout(RETURN_HINT, "info", icon="arrow-left"),
+        rx.hstack(
+            rx.link(
+                rx.button(
+                    rx.icon("arrow-left", size=T.ICON_SM),
+                    RETURN_WITHOUT_LABEL,
+                    variant="soft",
+                    color_scheme=T.tone_scale("neutral"),
+                    size="3",
+                ),
+                href=CatalogState.return_to,
+            ),
+            wrap="wrap",
+            width="100%",
+            class_name="q-catalog-actions",
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
 
 
 def _new_product_form() -> rx.Component:
@@ -541,8 +570,10 @@ def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
     """The editor's «Crear publicación con este producto» (m-24842972): soft, beside
     «Guardar cambios», a real link to `/create?producto=<id>` so the generator opens
     with this product chosen. Off with its reason said under the row («Primero súbele
-    una foto», never hover-only, N12) while the product has no photo."""
-    label = "Crear publicación con este producto"
+    una foto», never hover-only, N12) while the product has no photo. When the owner came
+    from a publication (`?volver=`, m-24842973) it says «Volver a tu publicación» and
+    goes back there with this product chosen (N4)."""
+    label = rx.cond(CatalogState.returning, RETURN_LABEL, "Crear publicación con este producto")
     return rx.cond(
         product.photo_count > 0,
         rx.link(
@@ -603,8 +634,13 @@ def _created_notice() -> rx.Component:
                     product.photo_count > 0,
                     rx.link(
                         rx.button(
-                            rx.icon("sparkles", size=T.ICON_SM),
-                            "Crear publicación",
+                            rx.icon(
+                                rx.cond(CatalogState.returning, "arrow-left", "sparkles"),
+                                size=T.ICON_SM,
+                            ),
+                            # m-24842973 (N4): back to the publication the owner left,
+                            # with this product chosen and their step as they left it
+                            rx.cond(CatalogState.returning, RETURN_LABEL, "Crear publicación"),
                             size="3",
                         ),
                         href=CatalogState.created_href,
@@ -979,6 +1015,7 @@ def catalog_index() -> rx.Component:
                 (CatalogState.upload_error != "") & (CatalogState.selected_id == ""),
                 callout(CatalogState.upload_error, "error"),
             ),
+            rx.cond(CatalogState.returning & (CatalogState.created_id == ""), _return_hint()),
             rx.cond(CatalogState.form_open, _new_product_form()),
             rx.cond(CatalogState.created, _created_notice()),
             rx.cond(CatalogState.selected, _editor()),

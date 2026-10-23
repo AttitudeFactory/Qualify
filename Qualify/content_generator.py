@@ -21,6 +21,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
+from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
@@ -1587,19 +1588,23 @@ def _product_screen() -> rx.Component:
                     align_items="start",
                 ),
                 rx.spacer(),
+                # m-24842973 (N4): the product that is missing is added in Tus
+                # productos, and saving it comes back here with it chosen.
                 rx.link(
-                    rx.hstack(
-                        rx.icon("package", size=14),
-                        rx.text("Ir al catálogo", size="2"),
-                        spacing="1",
-                        align="center",
+                    rx.button(
+                        rx.icon("plus", size=T.ICON_SM),
+                        ADD_PRODUCT_LABEL,
+                        variant="soft",
+                        size="3",
                     ),
-                    href="/catalog",
+                    href=new_product_href(CREATE_RETURN_PATH),
                     flex_shrink="0",
                 ),
                 width="100%",
                 align="start",
                 spacing="3",
+                # 360 px (N12): the button drops under the heading instead of squeezing it
+                wrap="wrap",
             ),
             rx.cond(
                 inspiration,
@@ -1646,6 +1651,10 @@ def _catalog_product_grid() -> rx.Component:
                         "Aún no hay productos en tu catálogo",
                         "Crea el producto en Tus productos con sus fotos, o usa una inspiración: "
                         "imágenes y videos que ilustran lo que vendes.",
+                        rx.link(
+                            rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
+                            href=new_product_href(CREATE_RETURN_PATH),
+                        ),
                     ),
                 ),
             ),

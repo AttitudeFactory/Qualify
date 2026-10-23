@@ -43,7 +43,10 @@ from .catalog_vm import (
     ProductVM,
     create_with_product_href,
     currency_from_choice,
+    opens_new_product_form,
     parse_price_input,
+    return_path_from_query,
+    return_with_product_href,
 )
 from .creative_provider import acting_user_id, default_brand_id
 from .tenant import tenant_uuid
@@ -134,6 +137,11 @@ class CatalogState(rx.State):
     #: publication with it) until the owner moves on. "" when there is nothing to say.
     created_id: str = ""
 
+    # -- «Volver a tu publicación» (m-24842973, N4) -------------------------------------
+    #: The app route the owner came from to add a product (`?volver=`, made safe by
+    #: `catalog_vm.safe_return_path`); "" when they came from the menu.
+    return_to: str = ""
+
     # -- derived ------------------------------------------------------------------------
 
     @rx.var
@@ -150,13 +158,29 @@ class CatalogState(rx.State):
 
     @rx.var
     def created_href(self) -> str:
-        """«Crear publicación» after creating: `/create?producto=<id>`."""
-        return create_with_product_href(self.created_id) if self.created_id else ""
+        """«Crear publicación» after creating: `/create?producto=<id>` — or, when the
+        owner came from a publication, back there with the product (N4)."""
+        return self._with_product_href(self.created_id)
 
     @rx.var
     def selected_create_href(self) -> str:
-        """The editor's «Crear publicación con este producto»: `/create?producto=<id>`."""
-        return create_with_product_href(self.selected_id) if self.selected_id else ""
+        """The editor's «Crear publicación con este producto»: `/create?producto=<id>` —
+        or back to the publication the owner came from, with this product (N4)."""
+        return self._with_product_href(self.selected_id)
+
+    @rx.var
+    def returning(self) -> bool:
+        """The owner came here from a publication to add a product (`?volver=`)."""
+        return self.return_to != ""
+
+    def _with_product_href(self, product_id: str) -> str:
+        if not product_id:
+            return ""
+        if self.return_to:
+            back = return_with_product_href(self.return_to, product_id)
+            if back:
+                return back
+        return create_with_product_href(product_id)
 
     @rx.var
     def has_products(self) -> bool:
@@ -220,6 +244,7 @@ class CatalogState(rx.State):
         async with self:
             self.loading = True
             self.error = ""
+            self._read_return_query()
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -241,6 +266,21 @@ class CatalogState(rx.State):
             self.created_id = ""
             if self.selected_id and self.selected is None:
                 self.selected_id = ""
+
+    def _read_return_query(self) -> None:
+        """«Agregar producto» from Crear or Variaciones (m-24842973, N4) lands here as
+        `/catalog?nuevo=1&volver=<ruta>`: the form opens and «Listo» offers «Volver a
+        tu publicación». Only one of the app's own routes is kept as the way back
+        (`safe_return_path`); a visit from the menu (no `?volver=`) forgets it."""
+        try:
+            params = self.router.url.query_parameters
+        except AttributeError:  # no router outside a request (tests, background start)
+            params = {}
+        self.return_to = return_path_from_query(params)
+        if opens_new_product_form(params) and not self.form_open:
+            self.form_open = True
+            self.form_error = ""
+            self.selected_id = ""
 
     async def _refresh(self, tenant_id: UUID, brand_id: UUID) -> None:
         """Re-read the list after a write (the service is the source of truth for

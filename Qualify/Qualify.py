@@ -60,6 +60,7 @@ from .signals_page import signals_index
 from .state import DashboardState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
+from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
 from .whatsapp_state import WhatsAppState
@@ -404,6 +405,8 @@ app.add_page(
         AuthState.require_login,
         CreativeState.load_create,
         CreativeState.load_catalog_products,
+        # m-24842973 (N4): back from «Agregar producto» in Variaciones with the product
+        VariationsState.load_from_query,
     ],
     title="Qualify · Crear publicación",
 )

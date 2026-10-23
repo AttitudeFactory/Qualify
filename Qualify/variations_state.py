@@ -34,6 +34,7 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
+from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from_query
 from .creative_provider import acting_user_id, catalog_products, default_brand_id
 from .tenant import tenant_uuid
 from .variations_provider import (
@@ -340,16 +341,44 @@ class VariationsState(rx.State):
     async def load(self) -> None:
         """The catalog products of the picker. Idempotent: re-entering the view does not
         lose the product already chosen."""
+        await self._load_products()
+
+    @rx.event(background=True)
+    async def load_from_query(self) -> None:
+        """`/create`'s on_load. Back from «Agregar producto» (m-24842973, N4) the URL is
+        `/create?modo=variaciones&producto=<id>`: the picker is re-read — so the new
+        product is in it — and, when this business's catalog lists it, that product is
+        chosen. An id it does not list (another tenant's, a deleted one) or a malformed
+        one is ignored without an error; the one already chosen is not chosen again. Any
+        other `/create` visit does nothing here."""
+        async with self:
+            try:
+                params = self.router.url.query_parameters
+            except AttributeError:  # no router outside a request
+                params = {}
+        if create_mode_from_query(params) != VARIATIONS_MODE:
+            return
+        product_id = product_id_from_query(params)
+        if not await self._load_products() or not product_id:
+            return
+        async with self:
+            known = any(row.get("id") == product_id for row in self.products)
+            already = self.product_id == product_id
+        if known and not already:
+            await self._choose(product_id)
+
+    async def _load_products(self) -> bool:
+        """Read the picker's products and the sets; False when nothing was read."""
         async with self:
             if self.products_loading:
-                return
+                return False
             self.products_loading = True
             self.error = ""
         ids = await self._session_ids()
         if ids is None:
             async with self:
                 self.products_loading = False
-            return
+            return False
         tenant_id, brand_id, _ = ids
         try:
             rows = await asyncio.to_thread(catalog_products, tenant_id, brand_id)
@@ -358,7 +387,7 @@ class VariationsState(rx.State):
             async with self:
                 self.products_loading = False
                 self.error = _LOAD_FAILED
-            return
+            return False
         try:
             sets = await asyncio.to_thread(list_variation_sets, tenant_id, brand_id)
         except Exception as exc:  # noqa: BLE001 — the list is not worth failing the view
@@ -370,6 +399,7 @@ class VariationsState(rx.State):
             self.products_loading = False
             if not self.products:
                 self.error = _NO_PRODUCTS
+        return True
 
     @rx.event
     def start_over(self) -> None:
@@ -434,6 +464,9 @@ class VariationsState(rx.State):
     async def choose_product(self, product_id: str) -> None:
         """The product's facts and every preset's availability — read before anything is
         paid. Choosing another product drops the set under review."""
+        await self._choose(product_id)
+
+    async def _choose(self, product_id: str) -> None:
         async with self:
             if self.checking:
                 return
