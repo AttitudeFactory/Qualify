@@ -21,10 +21,16 @@ comment already got its private reply, someone else decided the query first — 
 500.
 
 **The public notice** (PR 4): when a card offers it (`public_notice` on, a comment), the
-person sees its text — «Te enviamos la información por DM 💬» unless edited — with a box
+person sees its text — «Te escribimos al privado 💬» unless edited — with a box
 to include it, and approves it in the same click as the message. Unticking the box sends
 the message alone. It is posted later, by the worker, only once the message is confirmed
 sent.
+
+**Three steps** (m-24842991, ATENDER-6): each card walks ① «Qué preguntó» ② «Qué le
+respondes» ③ «Revisa y aprueba» (`steps`, by followup id). «Atrás» only changes the step:
+the text in the box and the notice stay as the person left them (N6). Approving ends in
+a confirmation that stays on screen — «Listo. Le escribiste a @ana. ¿Seguimos con la
+siguiente?» with «Siguiente» and «Volver a comentarios» (N3) — never a toast alone.
 """
 
 from __future__ import annotations
@@ -44,7 +50,17 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .followups_provider import gateway
-from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, VIEWS, FollowupCardVM
+from .followups_vm import (
+    STEP_ASKED,
+    STEP_REPLY,
+    STEP_REVIEW,
+    STEP_TITLES,
+    VIEW_MESSAGES,
+    VIEW_QUERIES,
+    VIEWS,
+    FollowupCardVM,
+    done_title,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -110,6 +126,11 @@ class FollowupsState(rx.State):
     busy_id: str = ""
     busy_action: str = ""
     highlight_id: str = ""
+    # m-24842991: the step each card is on (1 «Qué preguntó» … 3 «Revisa y aprueba»).
+    steps: dict[str, int] = {}
+    # The confirmation after approving: who got the message, and what was queued.
+    done_author: str = ""
+    done_note: str = ""
     _zone_name: str = ""
     _user_id: str = ""
 
@@ -125,6 +146,16 @@ class FollowupsState(rx.State):
     @rx.var
     def showing_queries(self) -> bool:
         return self.view == VIEW_QUERIES
+
+    @rx.var
+    def showing_done(self) -> bool:
+        return self.done_author != ""
+
+    @rx.var
+    def done_text(self) -> str:
+        if not self.done_author:
+            return ""
+        return done_title(self.done_author, more_left=bool(self.cards))
 
     # -- plumbing -------------------------------------------------------------------------
 
@@ -164,6 +195,7 @@ class FollowupsState(rx.State):
         if _uuid(wanted) is not None:
             self.view = VIEW_QUERIES
             self.highlight_id = wanted
+        self.done_author, self.done_note = "", ""
         return FollowupsState.load
 
     @rx.event
@@ -177,6 +209,31 @@ class FollowupsState(rx.State):
     def set_edit(self, followup_id: str, text: str) -> None:
         if self._known(followup_id) is not None and isinstance(text, str):
             self.edits = {**self.edits, followup_id: text}
+
+    @rx.event
+    def go_step(self, followup_id: str, step: int) -> rx.event.EventSpec | None:
+        """«Siguiente» / «Atrás» inside a card. Only the step changes — what the person
+        wrote stays (N6). Reaching the review needs a message to review."""
+        if self._known(followup_id) is None or not isinstance(step, int):
+            return None
+        if step not in STEP_TITLES:
+            return None
+        if step == STEP_REVIEW and not self.edits.get(followup_id, "").strip():
+            self.steps = {**self.steps, followup_id: STEP_REPLY}
+            return rx.toast.warning(_EMPTY, duration=_TOAST_MS)
+        self.steps = {**self.steps, followup_id: step}
+        return None
+
+    @rx.event
+    def next_query(self) -> rx.event.EventSpec | None:
+        """«Siguiente» on the confirmation: the next card, on its first step, in view."""
+        self.done_author, self.done_note = "", ""
+        if not self.cards:
+            return None
+        first = self.cards[0].followup_id
+        self.highlight_id = first
+        self.steps = {**self.steps, first: STEP_ASKED}
+        return rx.scroll_to("consulta-" + first)
 
     @rx.event
     def set_notice_on(self, followup_id: str, on: bool) -> None:
@@ -217,6 +274,7 @@ class FollowupsState(rx.State):
             self.cards = self._order(cards)
             # Keep what the person is typing; seed new cards with their draft.
             self.edits = {c.followup_id: self.edits.get(c.followup_id, c.draft_text) for c in cards}
+            self.steps = {c.followup_id: self.steps.get(c.followup_id, STEP_ASKED) for c in cards}
             offered = [c for c in cards if c.notice_available]
             self.notice_on = {
                 c.followup_id: self.notice_on.get(c.followup_id, True) for c in offered
@@ -363,10 +421,13 @@ class FollowupsState(rx.State):
                 )
             )
             queued = True
+            # N3: the confirmation stays on screen with the next step — not a toast.
             message = queued_message(card.author if card else "") + (
                 _NOTICE_QUEUED if notice_text else ""
             )
-            yield rx.toast.info(message, duration=_TOAST_MS)
+            async with self:
+                self.done_author = card.author if card else ""
+                self.done_note = message
         except RouteUnavailable as exc:
             reasons = " ".join(
                 f"{o.reason}" for o in (exc.options.dm, exc.options.private_reply) if o.reason
@@ -393,6 +454,9 @@ class FollowupsState(rx.State):
                 edits = dict(self.edits)
                 edits.pop(followup_id, None)
                 self.edits = edits
+                steps = dict(self.steps)
+                steps.pop(followup_id, None)
+                self.steps = steps
                 if self.highlight_id == followup_id:
                     self.highlight_id = ""
         await self._end()

@@ -40,7 +40,20 @@ from qualify_api.followups.workspace import FollowupCard, IntentChip
 
 from . import inbox_provider, inbox_state
 from .followups_state import FollowupsState
-from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, FollowupCardVM, build_card_vm, time_left
+from .followups_vm import (
+    STEP_ASKED,
+    STEP_REPLY,
+    STEP_REVIEW,
+    VIEW_MESSAGES,
+    VIEW_QUERIES,
+    FollowupCardVM,
+    build_card_vm,
+    done_title,
+    notice_line,
+    recipient_line,
+    step_label,
+    time_left,
+)
 from .inbox_vm import IntentAnalysisSummaryVM
 
 NOW = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
@@ -239,8 +252,10 @@ def test_the_card_renders_the_notice_block_behind_its_capability() -> None:
 
     rendered = str(_notice(FollowupsState.cards[0]).render())
     # The compiled JSX escapes non-ASCII («también» → `tambi\u00e9n`), escaped again by str().
-    assert "Publicar tambi\\\\u00e9n un aviso en el comentario" in rendered
-    assert "Texto del aviso p\\\\u00fablico" in rendered
+    # m-24842991: the label says what is left on the comment, with its text.
+    assert "Tambi\\\\u00e9n dejamos" in rendered and "en su comentario." in rendered
+    assert "Texto del aviso en su comentario" in rendered
+    assert "solo cuando el mensaje privado salga" in rendered
     # The whole block hangs from the card's `notice_available` (no capability, no box).
     assert "notice_available" in rendered
 
@@ -306,3 +321,93 @@ def test_a_story_reply_card_says_it_answered_a_story() -> None:
     assert (vm.permalink, vm.caption) == ("https://cdn/story", "")
     comment = build_card_vm(card, now=NOW, zone=ZONE)
     assert comment.origin_label == "Comentó en tu Reel"
+
+
+# --- three steps and the confirmation (m-24842991, ATENDER-6) -----------------------------
+
+
+def test_the_notice_proposes_the_owners_words_by_default() -> None:
+    assert DEFAULT_NOTICE_TEXT == "Te escribimos al privado 💬"
+    assert notice_line(DEFAULT_NOTICE_TEXT) == (
+        "También dejamos “Te escribimos al privado 💬” en su comentario."
+    )
+
+
+def test_each_step_has_its_number_and_name() -> None:
+    assert step_label(STEP_ASKED) == "Paso 1 de 3 · Qué preguntó"
+    assert step_label(STEP_REPLY) == "Paso 2 de 3 · Qué le respondes"
+    assert step_label(STEP_REVIEW) == "Paso 3 de 3 · Revisa y aprueba"
+    assert step_label(9) == "Paso 1 de 3 · Qué preguntó"
+
+
+def test_the_review_says_who_gets_it_in_words() -> None:
+    vm = build_card_vm(_card(), now=NOW, zone=ZONE)
+    assert vm.recipient_line == "Le llega a @ana por mensaje privado."
+    assert recipient_line("Cliente") == "Le llega por mensaje privado."
+
+
+def test_the_confirmation_names_the_person_and_the_next_step() -> None:
+    assert done_title("@ana", more_left=True) == (
+        "Listo. Le escribiste a @ana. ¿Seguimos con la siguiente?"
+    )
+    assert done_title("Cliente", more_left=False) == (
+        "Listo. Le escribiste a tu cliente. No queda nadie más esperando."
+    )
+
+
+def test_back_and_forth_keeps_what_was_written() -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    fid = first.followup_id
+    state.edits = {fid: first.draft_text}
+    state.steps = {fid: STEP_ASKED}
+    FollowupsState.go_step.fn(state, fid, STEP_REPLY)  # type: ignore[attr-defined]
+    FollowupsState.set_edit.fn(state, fid, "Hola Ana, lo tenemos en rojo")  # type: ignore[attr-defined]
+    FollowupsState.go_step.fn(state, fid, STEP_REVIEW)  # type: ignore[attr-defined]
+    assert state.steps[fid] == STEP_REVIEW
+    FollowupsState.go_step.fn(state, fid, STEP_REPLY)  # type: ignore[attr-defined]
+    FollowupsState.go_step.fn(state, fid, STEP_ASKED)  # type: ignore[attr-defined]
+    assert state.steps[fid] == STEP_ASKED
+    assert state.edits[fid] == "Hola Ana, lo tenemos en rojo"  # «Atrás» erased nothing
+
+
+def test_the_review_needs_a_message_and_only_known_steps_and_cards() -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    fid = first.followup_id
+    state.edits = {fid: "   "}
+    state.steps = {fid: STEP_REPLY}
+    assert FollowupsState.go_step.fn(state, fid, STEP_REVIEW) is not None  # type: ignore[attr-defined]
+    assert state.steps[fid] == STEP_REPLY
+    assert FollowupsState.go_step.fn(state, fid, 7) is None  # type: ignore[attr-defined]
+    assert FollowupsState.go_step.fn(state, str(uuid4()), STEP_REPLY) is None  # type: ignore[attr-defined]
+    assert state.steps == {fid: STEP_REPLY}
+
+
+def test_after_approving_the_confirmation_leads_to_the_next_one() -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    state.done_author = "@bea"
+    state.done_note = "Tu mensaje privado a @bea sale en unos segundos."
+    assert state.showing_done is True
+    assert state.done_text == "Listo. Le escribiste a @bea. ¿Seguimos con la siguiente?"
+    FollowupsState.next_query.fn(state)  # type: ignore[attr-defined]
+    assert (state.showing_done, state.done_author) == (False, "")
+    assert state.highlight_id == first.followup_id
+    assert state.steps[first.followup_id] == STEP_ASKED
+    nobody = _state_with()
+    nobody.done_author = "@bea"
+    assert nobody.done_text.endswith("No queda nadie más esperando.")
+
+
+def test_the_panel_has_the_steps_the_confirmation_and_no_tooltip() -> None:
+    import inspect
+
+    from . import followups_page
+
+    assert "rx.tooltip" not in inspect.getsource(followups_page)  # nothing hover-only
+    rendered = str(followups_page.followups_panel().render())
+    for text in ("Siguiente", "Atr\\\\u00e1s", "Volver a comentarios", "Aprobar y enviar"):
+        assert text in rendered, text
+    assert "Otra idea" in rendered and "/responder?tab=comentarios" in rendered
+    assert "44px" in rendered

@@ -1,4 +1,4 @@
-"""The public notice «Te enviamos la información por DM 💬» (m-24789646, PR 4, B4), offline.
+"""The public notice «Te escribimos al privado 💬» (m-24789646, PR 4, B4), offline.
 
 Pins:
 1. It is posted only after the private message is CONFIRMED sent (`sent` with Meta's id);
