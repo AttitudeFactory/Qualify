@@ -54,6 +54,7 @@ from .followups_vm import (
     view_url,
 )
 from .nav_url import push_url_script
+from .pending_state import PendingState
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,7 @@ class FollowupsState(rx.State):
             yield rx.toast.error(_DISCARD_FAILED, duration=_TOAST_MS)
         await self._end()
         yield FollowupsState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     @rx.event(background=True)
     async def approve(self, followup_id: str) -> AsyncIterator[rx.event.EventSpec]:
@@ -414,3 +416,4 @@ class FollowupsState(rx.State):
                     self.highlight_id = ""
         await self._end()
         yield FollowupsState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now

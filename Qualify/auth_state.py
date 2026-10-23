@@ -814,6 +814,7 @@ class AuthState(rx.State):
             from .gallery_state import GalleryState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
+            from .pending_state import PendingState
             from .planner_state import PlannerState
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
@@ -890,6 +891,8 @@ class AuthState(rx.State):
                 WhatsAppContactsState,
                 WhatsAppCampaignsState,
                 WhatsAppMetricsState,
+                # m-24842963: the menu's pending counts of this tenant
+                PendingState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

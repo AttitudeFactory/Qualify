@@ -20,6 +20,7 @@ from qualify_api.creative.service import ApprovalBlocked
 
 from .auth_state import AuthState
 from .creative_provider import acting_user_id, approve_draft, draft_detail, reject_draft
+from .pending_state import PendingState
 from .planner_provider import load_gallery
 from .planner_vm import (
     GALLERY_FILTER_ALL,
@@ -225,6 +226,7 @@ class GalleryState(rx.State):
             yield rx.toast.success(APPROVED_NOT_READY_TOAST)
         if data is None:
             yield GalleryState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     @rx.event
     def ask_reject_post(self, post_id: str, title: str) -> None:
@@ -271,3 +273,4 @@ class GalleryState(rx.State):
             self.busy_post_id = ""
         yield rx.toast.success("Publicación descartada.")
         yield GalleryState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now

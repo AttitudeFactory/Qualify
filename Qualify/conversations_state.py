@@ -144,6 +144,7 @@ from .conversations_vm import (
     validate_reply,
     voice_note_name,
 )
+from .pending_state import PendingState
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -1343,6 +1344,7 @@ class ConversationsState(rx.State):
             row = self.open_thread if self.open_thread_id == thread_id else EMPTY_THREAD
             who = row.handle or row.title
         yield rx.toast.info(reply_sent_message(who), duration=_TOAST_MS)
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         yield ConversationsState.refresh
         await gw.signal(tenant_id, connection, thread, ACTION_TYPING_OFF)
 

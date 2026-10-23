@@ -32,6 +32,7 @@ from .campaign_provider import (
     error_message as campaign_error_message,
 )
 from .creative_provider import acting_user_id
+from .pending_state import PendingState
 from .planner_provider import (
     ALL_CONNECTIONS,
     cancel_event,
@@ -1431,6 +1432,7 @@ class PlannerState(rx.State):
             message += " · Objetivo: " + ", ".join(goals)
         yield rx.toast.success(message)
         yield PlannerState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     # -- detail (a side panel, never a modal) -------------------------------------
 
@@ -1569,3 +1571,4 @@ class PlannerState(rx.State):
             self.detail_open = False
         yield rx.toast.success("Publicación cancelada: salió del calendario")
         yield PlannerState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now

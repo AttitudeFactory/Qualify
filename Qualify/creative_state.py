@@ -118,6 +118,7 @@ from .creative_vm import (
     seen_label,
 )
 from .gallery_state import APPROVED_NOT_READY_TOAST, APPROVED_TOAST, schedule_readiness
+from .pending_state import PendingState
 from .planner_provider import load_gallery
 from .stock_provider import (
     PROVIDER_CREDITS,
@@ -5270,6 +5271,7 @@ class CreativeState(rx.State):
             self.approved_note = note
         # The toast goes with the card, never instead of it — and it never says or
         # suggests the publication is already out.
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         yield rx.toast.success(APPROVED_TOAST if ready else APPROVED_NOT_READY_TOAST)
 
     @rx.var
