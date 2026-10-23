@@ -140,25 +140,28 @@ _Events = list[rx.event.EventHandler] | rx.event.EventSpec | None
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
 _NO_USER = "Este negocio no tiene ningún usuario al que atribuir la acción."
-_DB_ERROR = "No se pudo hablar con la base de datos. Inténtalo de nuevo en un momento."
-_KIT_SAVED = "Brand kit guardado."
+_DB_ERROR = "Algo falló de nuestro lado. Inténtalo de nuevo en un momento."
+_KIT_SAVED = "Tu marca quedó guardada."
 _KIT_INVALID = "Revisa los campos del kit: "
 _NO_KIT_TO_PROPOSE = (
-    "Aún no hay un brand kit del que destilar la voz. Complétalo primero en /brand."
+    "Todavía no sabemos lo suficiente de tu marca para proponer cómo habla. "
+    "Complétala primero en Tu marca."
 )
 _STALE_PROPOSAL = "Esa propuesta ya no está vigente. Recargamos el estado real."
-_BRIEF_NOT_READY = "La marca aún no está lista para generar. Completa lo que falta en /brand."
+_BRIEF_NOT_READY = (
+    "Completa tu marca (colores, logo y forma de hablar) para que todo salga con tu estilo."
+)
 _ROUTE_BLOCKED = "Esa ruta de imagen está bloqueada para esta marca: "
 _BRIEF_INVALID = "El encargo no se puede ejecutar: "
 #: «Potenciar con IA» (§ request 2026-10-20): what the operator reads around it.
 _ENHANCE_MIN_CHARS = 8
 #: The animated avatar with nothing in the Brand Kit to make its character from.
 _NO_BRAND_CHARACTER = (
-    "Tu Brand Kit todavía no tiene con qué crear el personaje animado. Complétalo y vuelve."
+    "Tu marca todavía no tiene con qué crear el personaje animado. Complétala y vuelve."
 )
 _ENHANCE_TOO_SHORT = "Escribe primero unas palabras sobre lo que quieres: la IA parte de ellas."
-_ENHANCE_FAILED = "No pudimos potenciar el texto ahora mismo. Inténtalo de nuevo en un momento."
-_ENHANCE_STALE = "Cambiaste el texto mientras tanto. Vuelve a pulsar «Potenciar con IA»."
+_ENHANCE_FAILED = "No pudimos mejorar tu texto ahora mismo. Inténtalo de nuevo en un momento."
+_ENHANCE_STALE = "Cambiaste el texto mientras tanto. Vuelve a pulsar «Mejorar mi texto»."
 _ENHANCE_ADDED = "Revisa estos datos, que la IA añadió y no venían de ti: "
 #: The flyer's scene field takes this much (its text area's `max_length`).
 _SCENE_MAX_CHARS = 600
@@ -174,7 +177,7 @@ _SLIDE_MEDIA_EXTRA = (
     "Una diapositiva animada usa una foto y un video: subimos el primero de cada uno."
 )
 _UPLOAD_REQUIRED = "Esta ruta trabaja sobre tu foto: súbela antes de enviar el encargo."
-_TOPIC_REQUIRED = "Cuéntanos qué quieres en la pieza: es lo único obligatorio."
+_TOPIC_REQUIRED = "Cuéntanos qué quieres en la publicación: es lo único obligatorio."
 _SCENE_REQUIRED = "Describe la escena de la imagen: es lo único obligatorio."
 _VOICES_DOWN = "No pudimos cargar las voces. Inténtalo de nuevo."
 
@@ -324,10 +327,10 @@ _OBJECTIVES = frozenset(o.value for o in BriefObjective)
 _INTENTS = frozenset(i.value for i in BriefIntent)
 #: When a piece lands (§ request 2026-10-09): what the toast says, and what the
 #: browser's own notification says when the tab is in the background.
-_GEN_READY_TOAST = "Tu pieza está lista. Revísala en Crear publicación o en Por aprobar."
-_GEN_FAILED_TOAST = "No se pudo generar la pieza. El detalle está en Crear publicación."
-_DRAFT_READY_TOAST = "Tu pieza ya está regenerada. Revísala en Por aprobar."
-_DRAFT_FAILED_TOAST = "No se pudo regenerar la pieza. El detalle está en Por aprobar."
+_GEN_READY_TOAST = "Tu publicación está lista. Revísala en Crear publicación o en Por aprobar."
+_GEN_FAILED_TOAST = "No se pudo crear la publicación. El detalle está en Crear publicación."
+_DRAFT_READY_TOAST = "Tu nueva versión está lista. Revísala en Por aprobar."
+_DRAFT_FAILED_TOAST = "No se pudo crear la nueva versión. El detalle está en Por aprobar."
 _ASK_NOTIFICATIONS_JS = (
     "if (window.Notification && Notification.permission === 'default') "
     "{ Notification.requestPermission(); }"
@@ -507,6 +510,13 @@ _KIT_PILL_FIELDS = {
 }
 
 
+def _is_caption_rule(message: str) -> bool:
+    """A brand rule about the publication's text: the raw fidelity message names the
+    caption, the Spanish one («El texto de la publicación tiene…») names the text."""
+    low = message.lower()
+    return "caption" in low or "texto de la publicación" in low
+
+
 def _pill_items(text: str) -> list[str]:
     """A newline-joined kit list as its non-empty, trimmed values."""
     return [line.strip() for line in text.splitlines() if line.strip()]
@@ -514,10 +524,10 @@ def _pill_items(text: str) -> list[str]:
 
 _DURATIONS = ("15", "30", "45", "60")
 _FORMAT_LABELS = {
-    "feed_4_5": "Post 4:5",
-    "feed_1_1": "Post cuadrado 1:1",
-    "reels_9_16": "Reel 9:16",
-    "story_9_16": "Story 9:16",
+    "feed_4_5": "Publicación 4:5",
+    "feed_1_1": "Publicación cuadrada 1:1",
+    "reels_9_16": "Reel (video corto) 9:16",
+    "story_9_16": "Historia 9:16",
 }
 #: What the result view says while the piece is being made, per kind — generic, with
 #: no vendor or model (§ request 2026-10-08).
@@ -526,7 +536,7 @@ _GEN_WAITING = {
     "avatar_video": "Generando tu video. Puede tardar unos minutos…",
     "animated_avatar_video": "Generando tu video. Puede tardar unos minutos…",
     "static_flyer": "Generando tu imagen, ya casi está…",
-    "template": "Generando tu pieza, ya casi está…",
+    "template": "Generando tu publicación, ya casi está…",
     "carousel": "Armando tu galería. Si lleva un video, puede tardar unos minutos…",
 }
 _TEMPLATE_PHOTO_REQUIRED = (
@@ -541,32 +551,29 @@ _STOCK_OFF = "La inspiración no está disponible ahora mismo."
 #: slide; the script only needs the product's name.
 _VIDEO_PRODUCT_OFF: dict[str, tuple[str, str]] = {
     "video": ("un video con avatar", "el presentador se compone con fotos"),
-    "image": ("un flyer", "el flyer se arma con imágenes"),
+    "image": ("una imagen", "la imagen se arma con fotos"),
     "template": ("una plantilla", "la plantilla se arma con fotos de tu producto"),
-    "ad": ("un Ad", "el Ad se arma con fotos de tu producto"),
+    "ad": ("un anuncio", "el anuncio se arma con fotos de tu producto"),
 }
 _VIDEO_PRODUCT_FITS = "Úsalo en un Clip o en una Galería, o cambia el producto por una imagen."
-_STOCK_NO_KIT = (
-    "Tu Brand Kit aún no dice qué vendes. Escribe qué buscas, por ejemplo «hamburguesa»."
-)
-_TEMPLATE_BLOCKED = "No podemos hacer esta pieza con plantilla: "
+_STOCK_NO_KIT = "Tu marca aún no dice qué vendes. Escribe qué buscas, por ejemplo «hamburguesa»."
+_TEMPLATE_BLOCKED = "No podemos hacer esta publicación con plantilla: "
 _GEN_POLL_SECONDS = 3.0
 #: An AI avatar plus its render can take many minutes; the draft's reaper is 20.
 _GEN_POLL_BUDGET_SECONDS = 20 * 60
 _MAX_PRODUCTS = 10
 _NOT_REJECTABLE = (
-    "Este borrador ya no se puede rechazar: ya fue rechazado o aprobado. "
+    "Esta publicación ya no se puede rechazar: ya fue rechazada o aprobada. "
     "Actualiza la página para ver su estado."
 )
-_DRAFT_GONE = "Ese borrador no existe o ya no es visible para este negocio."
+_DRAFT_GONE = "Esa publicación no existe o ya no es visible para este negocio."
 _NOT_EDITABLE = (
-    "Este borrador ya no se puede editar: está en preparación, publicado o falló. "
+    "Esta publicación ya no se puede editar: se está preparando, ya salió o falló. "
     "No se guardó ningún cambio."
 )
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
 _POLL_TIMEOUT = (
-    "La generación lleva más de 5 minutos sin terminar. La bandeja mostrará el "
-    "estado real cuando el sistema la marque como fallida."
+    "Lleva más de 5 minutos sin terminar. Vuelve en un rato: en Por aprobar verás cómo quedó."
 )
 
 #: §6.6 polling schedule: backoff 1s → 2s → 4s, cap 5s, give up at 5 minutes.
@@ -576,7 +583,7 @@ _POLL_BUDGET_SECONDS = 300.0
 
 #: The generation stages the progress indicator names (§6.4: a real per-stage
 #: indicator, not a blind spinner). The MVP pipeline generates copy, then verifies.
-GENERATION_STAGES = ("Copy", "Imagen", "Verificación")
+GENERATION_STAGES = ("Texto", "Imagen", "Revisión")
 
 
 #: Where each of ¿Cómo suena?'s four axes starts — the middle.
@@ -963,11 +970,11 @@ class CreativeState(rx.State):
     @rx.var
     def caption_blocking(self) -> list[str]:
         """The brand rules the caption breaks — shown under the caption itself."""
-        return [m for m in self.edit_blocking if "caption" in m.lower()]
+        return [m for m in self.edit_blocking if _is_caption_rule(m)]
 
     @rx.var
     def other_blocking(self) -> list[str]:
-        return [m for m in self.edit_blocking if "caption" not in m.lower()]
+        return [m for m in self.edit_blocking if not _is_caption_rule(m)]
 
     @rx.var
     def edit_hashtag_chips(self) -> list[str]:
@@ -2841,7 +2848,7 @@ class CreativeState(rx.State):
         if source == "pieces":
             item = next((i for i in self.piece_items if i.get("key") == key), None)
             if item is not None and item.get("media_type") == media_type:
-                return item.get("label") or "Pieza"
+                return item.get("label") or "Publicación"
         return None
 
     @rx.event
@@ -3204,7 +3211,7 @@ class CreativeState(rx.State):
             name = " ".join(self.gen_campaign_new_name.split())
             return f"Nueva: {name}" if name else "Nueva (falta el nombre)"
         chosen = next((c for c in self.gen_campaigns if c.id == self.gen_campaign), None)
-        return chosen.name if chosen is not None else "Sin campaña (pieza independiente)"
+        return chosen.name if chosen is not None else "Sin campaña (publicación independiente)"
 
     def _reset_gen_campaign(self) -> None:
         self.gen_campaign = NO_CAMPAIGN
@@ -3223,7 +3230,9 @@ class CreativeState(rx.State):
             return None
         ids = await self._session_ids()
         if ids is None:
-            return rx.toast.error("Tu pieza se está creando, pero no se pudo guardar su campaña.")
+            return rx.toast.error(
+                "Tu publicación se está creando, pero no se pudo guardar su campaña."
+            )
         tenant_id, brand_id, user_id = ids
         try:
             await asyncio.to_thread(
@@ -3239,7 +3248,7 @@ class CreativeState(rx.State):
         except Exception as exc:  # noqa: BLE001 — the piece exists; only its campaign failed
             logger.warning("generated piece campaign failed: %s", type(exc).__name__)
             return rx.toast.error(
-                "Tu pieza se está creando, pero no se pudo guardar su campaña: "
+                "Tu publicación se está creando, pero no se pudo guardar su campaña: "
                 + campaign_error_message(exc)
             )
         if value != NEW_CAMPAIGN:
@@ -4315,7 +4324,7 @@ class CreativeState(rx.State):
         if self.brief_kind == "animated_avatar_video":
             # § 2026-10-20: the character is the Brand Kit's, nothing to fill in here
             if self.brand_character_loading:
-                return "Estamos cargando el personaje de tu Brand Kit."
+                return "Estamos cargando el personaje de tu marca."
             if self.brand_character_error:
                 return self.brand_character_error
             if self.avatar_source == "ai" and not self.avatar_prompt.strip():
@@ -4516,7 +4525,7 @@ class CreativeState(rx.State):
             row("Presentador", presenter, "presenter")
         if kind == "animated_avatar_video":
             character = (
-                "Cargando tu Brand Kit…"
+                "Cargando tu marca…"
                 if self.brand_character_loading
                 else self.brand_character_label or self.brand_character_error
             )
@@ -4543,7 +4552,7 @@ class CreativeState(rx.State):
         if kind == "carousel":
             names = {"generated": "Imagen", "animated": "Video", "stock": "Video de inspiración"}
             slides = " · ".join(
-                f"{n}. {names.get(slide.get('source', ''), 'De una pieza')}"
+                f"{n}. {names.get(slide.get('source', ''), 'De una publicación')}"
                 for n, slide in enumerate(self.carousel_slides, 1)
             )
             row("Diapositivas", slides or "Sin diapositivas", "details")

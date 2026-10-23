@@ -27,7 +27,7 @@ def test_short_date_is_day_month_year() -> None:
 )
 def test_the_warning_names_the_date_and_counts_down(days: int, countdown: str) -> None:
     assert retention_notice("warning", DEADLINE, days) == (
-        f"Descarga esta pieza: se elimina el 10/01/2027 ({countdown})."
+        f"Descarga esta publicación: se elimina el 10/01/2027 ({countdown})."
     )
 
 

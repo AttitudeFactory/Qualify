@@ -883,12 +883,12 @@ def _gallery_card(post) -> rx.Component:
     view = rx.link(
         rx.button(
             rx.icon("eye", size=15),
-            "Ver POST",
+            "Ver publicación",
             variant="soft",
             color_scheme="gray",
             size="2",
             width="100%",
-            white_space="nowrap",  # never «Ver / POST» on two lines in a narrow card
+            white_space="nowrap",  # never «Ver / publicación» on two lines in a narrow card
         ),
         href=post.detail_href,
         width="100%",
@@ -966,9 +966,19 @@ def _gallery_card(post) -> rx.Component:
                         rx.icon("snowflake", size=15),
                         rx.icon("flame", size=15),
                     ),
-                    rx.text(post.temperature_label, as_="span"),
+                    rx.text(rx.cond(post.temperature == "cold", "Ya probada", "Nueva"), as_="span"),
                     class_name="q-temp q-temp--big q-temp--" + post.temperature,
-                    title=post.temperature_hint,
+                    title=rx.cond(
+                        post.temperature == "cold",
+                        "Ya salió "
+                        + post.used_count.to_string()
+                        + " veces en tus redes: se puede repetir sin problema.",
+                        rx.cond(
+                            post.used_count > 0,
+                            "Salió 1 vez en tus redes.",
+                            "Todavía no ha salido en tus redes.",
+                        ),
+                    ),
                 ),
             ),
             rx.box(kind_chip(post.kind, post.kind_label, glass=True), class_name="q-gcard-bl"),
@@ -1029,7 +1039,7 @@ def _gallery_card(post) -> rx.Component:
 def _gallery_reject_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
-            rx.alert_dialog.title("¿Rechazar este POST?"),
+            rx.alert_dialog.title("¿Descartar esta publicación?"),
             rx.alert_dialog.description(
                 "«" + GalleryState.reject_post_title + "» se descarta y no se genera nada "
                 "nuevo. No se podrá aprobar ni publicar.",
@@ -1048,7 +1058,7 @@ def _gallery_reject_dialog() -> rx.Component:
                 rx.alert_dialog.action(
                     rx.button(
                         rx.icon("circle-x", size=15),
-                        "Sí, rechazar",
+                        "Sí, descartar",
                         size="2",
                         on_click=GalleryState.confirm_reject_post,
                         **T.tone_scheme("error"),
@@ -1117,7 +1127,7 @@ def _gallery_toolbar() -> rx.Component:
         ),
         rx.spacer(),
         rx.link(
-            rx.button(rx.icon("sparkles", size=15), "Crear POST", size="2"),
+            rx.button(rx.icon("sparkles", size=15), "Crear publicación", size="2"),
             href="/create",
         ),
         wrap="wrap",
@@ -1140,10 +1150,11 @@ def _gallery_empty() -> rx.Component:
         ),
         empty_state(
             "inbox",
-            "Todavía no hay POSTs",
-            "Cada pieza que encargues aparece aquí con su estado, lista para revisar y programar.",
+            "Todavía no tienes publicaciones",
+            "Cada publicación que crees aparece aquí con su estado, lista para revisar "
+            "y programar.",
             action=rx.link(
-                rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
+                rx.button(rx.icon("plus", size=16), "Crear la primera", size="3"),
                 href="/create",
             ),
         ),
@@ -1156,7 +1167,7 @@ def drafts_index() -> rx.Component:
     Planificador's drawer (QUA-118 AC 1 / AC 3)."""
     return _screen(
         "Por aprobar",
-        "Tus POSTs y en qué punto está cada uno: nada sale sin aprobación humana.",
+        "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
         _padded(
             rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
             _gallery_toolbar(),
@@ -1175,8 +1186,8 @@ def drafts_index() -> rx.Component:
                                 GalleryState.visible_count.to_string()
                                 + " de "
                                 + GalleryState.total_count.to_string()
-                                + " POSTs",
-                                GalleryState.total_count.to_string() + " POSTs",
+                                + " publicaciones",
+                                GalleryState.total_count.to_string() + " publicaciones",
                             ),
                             size="1",
                             color=T.TEXT_MUTED,
@@ -1230,7 +1241,7 @@ def _drafting_panel() -> rx.Component:
     return _card(
         rx.hstack(
             loading_spinner("md"),
-            rx.heading("Generando tu pieza…", size="4", as_="h2"),
+            rx.heading("Creando tu publicación…", size="4", as_="h2"),
             rx.spacer(),
             rx.text(CreativeState.poll_elapsed_label, size="1", color=T.TEXT_MUTED),
             width="100%",
@@ -1241,7 +1252,7 @@ def _drafting_panel() -> rx.Component:
             spacing="2",
         ),
         rx.text(
-            "Copy → imagen → verificación. La pantalla se actualiza sola.",
+            "Texto → imagen → revisión. La pantalla se actualiza sola.",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -1430,7 +1441,7 @@ def _media_column_files() -> rx.Component:
                     rx.cond(
                         draft.kind == "creator_script",
                         "Guion para grabar: el video lo hace tu creador.",
-                        "Pieza solo de copy: adjunta tu foto al publicar.",
+                        "Publicación solo de texto: adjunta tu foto al publicar.",
                     ),
                     size="1",
                     color=T.TEXT_MUTED,
@@ -1461,8 +1472,8 @@ def _edit_actions() -> rx.Component:
                 rx.text(
                     rx.cond(
                         draft.status == "approved",
-                        "Al guardar, el POST vuelve a revisión: apruébalo de nuevo para que "
-                        "se pueda publicar.",
+                        "Al guardar, la publicación vuelve a revisión: apruébala de nuevo "
+                        "para que se pueda publicar.",
                         "Al guardar se revisan las reglas de tu marca.",
                     ),
                     size="1",
@@ -1651,7 +1662,7 @@ def _ai_hashtags() -> rx.Component:
                 rx.vstack(
                     rx.text("Sugeridos para tu texto", size="2", weight="bold"),
                     rx.text(
-                        "La IA lee todo el caption y propone populares, de nicho y locales, "
+                        "La IA lee todo tu texto y propone populares, de nicho y locales, "
                         "priorizando los que vemos en publicaciones reales.",
                         size="1",
                         color=T.TEXT_MUTED,
@@ -1770,7 +1781,7 @@ def _cta_field() -> rx.Component:
     return _rv_section(
         _field_head(
             "megaphone",
-            "Llamado a la acción (CTA)",
+            "Invitación a comprar o escribir",
             "Lo que le pides a tu público que haga después de verlo. Puedes poner varios.",
         ),
         rx.cond(
@@ -1876,7 +1887,7 @@ def _variant_editor() -> rx.Component:
                     _field_head(
                         "align-left",
                         "Texto de la publicación",
-                        "El caption que acompaña al post en Instagram.",
+                        "El texto que acompaña la publicación en Instagram.",
                         CreativeState.caption_count_label,
                     ),
                     rx.cond(
@@ -1898,9 +1909,11 @@ def _variant_editor() -> rx.Component:
                             _blocking_list(CreativeState.caption_blocking),
                             rx.hstack(
                                 rx.text(
-                                    "Es una regla de tu Brand Kit.", size="1", color=T.TEXT_MUTED
+                                    "Esta palabra no va con tu marca.",
+                                    size="1",
+                                    color=T.TEXT_MUTED,
                                 ),
-                                rx.link("Cambiarla", href="/brand", size="1"),
+                                rx.link("Cambiar esta regla", href="/brand/kit", size="1"),
                                 spacing="1",
                             ),
                             spacing="1",
@@ -2073,14 +2086,14 @@ def _reject_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
             rx.alert_dialog.title(
-                rx.cond(regenerate, "¿Pedir otra versión?", "¿Rechazar este borrador?")
+                rx.cond(regenerate, "¿Pedir otra versión?", "¿Descartar esta publicación?")
             ),
             rx.alert_dialog.description(
                 rx.cond(
                     regenerate,
-                    "Este borrador se descarta y se generan variantes nuevas del mismo "
+                    "Esta versión se descarta y se generan versiones nuevas del mismo "
                     "encargo. Consume créditos.",
-                    "El borrador se descarta y no se genera nada nuevo. No se podrá "
+                    "La publicación se descarta y no se genera nada nuevo. No se podrá "
                     "aprobar ni publicar.",
                 ),
                 size="2",
@@ -2205,7 +2218,7 @@ def _decision_bar_or_nothing() -> rx.Component:
             rx.hstack(
                 rx.center(rx.icon("gavel", size=16), class_name="q-rv-glyph"),
                 rx.vstack(
-                    rx.text("¿Qué hacemos con este borrador?", class_name="q-rv-title"),
+                    rx.text("¿Qué hacemos con esta publicación?", class_name="q-rv-title"),
                     rx.text(
                         "Tú decides qué sale con el nombre de tu marca.",
                         class_name="q-rv-hint",
@@ -2220,7 +2233,7 @@ def _decision_bar_or_nothing() -> rx.Component:
                     tone="red",
                     icon="circle-x",
                     title="Rechazar",
-                    text="Descarta este borrador. No se genera nada nuevo y no se publica.",
+                    text="Descarta esta publicación. No se genera nada nuevo y no se publica.",
                     button=rx.button(
                         rx.icon("circle-x", size=15),
                         "Rechazar",
@@ -2310,7 +2323,7 @@ def _campaign_recolor() -> rx.Component:
                     s.current_color, s.recolor, COLOR_LABELS, label="Color de la campaña"
                 ),
                 rx.text(
-                    "Cambia el color en todos los posts y publicaciones de esta campaña.",
+                    "Cambia el color en todas las publicaciones de esta campaña.",
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
@@ -2330,9 +2343,9 @@ def _campaign_field() -> rx.Component:
     available in every state, an approved and scheduled POST included."""
     s = CampaignState
     picker = rx.select.root(
-        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña del POST"),
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña de la publicación"),
         rx.select.content(
-            rx.select.item("Sin campaña (post independiente)", value=NO_CAMPAIGN),
+            rx.select.item("Sin campaña (publicación independiente)", value=NO_CAMPAIGN),
             rx.cond(
                 s.options.length() > 0,
                 rx.select.separator(),
@@ -2381,7 +2394,7 @@ def _campaign_field() -> rx.Component:
                         spacing="2",
                     ),
                     rx.text(
-                        "Post independiente: no pertenece a ninguna campaña.",
+                        "Publicación independiente: no pertenece a ninguna campaña.",
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
@@ -2420,7 +2433,7 @@ def _campaign_field() -> rx.Component:
 def draft_detail_index() -> rx.Component:
     return _screen(
         "Revisar publicación",
-        "HITL #2: tú decides qué sale con el nombre de tu marca",
+        "Tú decides qué sale con el nombre de tu marca.",
         _padded(
             rx.cond(CreativeState.detail_error != "", _error_callout(CreativeState.detail_error)),
             rx.cond(CreativeState.action_error != "", _error_callout(CreativeState.action_error)),

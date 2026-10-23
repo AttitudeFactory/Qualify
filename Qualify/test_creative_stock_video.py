@@ -219,7 +219,7 @@ def test_the_clip_takes_the_product_video() -> None:
 
 @pytest.mark.parametrize(
     ("category", "words"),
-    [("image", "un flyer"), ("video", "un video con avatar"), ("template", "una plantilla")],
+    [("image", "una imagen"), ("video", "un video con avatar"), ("template", "una plantilla")],
 )
 def test_an_option_that_cannot_take_the_video_opens_the_popup(category: str, words: str) -> None:
     state = CreativeState()
@@ -255,8 +255,8 @@ def test_a_video_chosen_after_a_flyer_says_so_and_blocks_generating() -> None:
     state = CreativeState()
     state.choose_category("image")
     _video_product(state)
-    assert "un flyer" in state.kind_conflict
-    assert "un flyer" in state._kind_problem()
+    assert "una imagen" in state.kind_conflict
+    assert "una imagen" in state._kind_problem()
 
 
 def test_a_video_plays_in_its_own_tile_only_when_listed() -> None:

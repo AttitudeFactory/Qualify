@@ -71,7 +71,9 @@ def test_the_script_result_shows_the_description_and_the_hashtags() -> None:
     from .content_generator import _script_result
 
     rendered = str(_script_result())
-    assert r"Descripci\u00f3n del post" in rendered and "description" in rendered  # JS-escaped
+    assert (
+        r"Descripci\u00f3n de la publicaci\u00f3n" in rendered and "description" in rendered
+    )  # JS-escaped
     assert "Hashtags" in rendered and "hashtags_text" in rendered
 
 
@@ -223,7 +225,7 @@ def test_review_waits_until_the_piece_is_done() -> None:
     state.gen_draft = DraftVM(draft_id="d", status="generated", status_label="", status_tone="")
     assert state.gen_is_done is True
     rendered = str(_result_view())
-    assert "gen_is_done" in rendered and "Disponible cuando termine de generarse" in rendered
+    assert "gen_is_done" in rendered and "Disponible cuando termine de crearse" in rendered
 
 
 def test_the_picker_offers_its_categories_with_the_ad_image_back() -> None:
@@ -235,11 +237,11 @@ def test_the_picker_offers_its_categories_with_the_ad_image_back() -> None:
     from .creative_vm import CATEGORY_OPTIONS, KIND_LABELS, VIDEO_TYPE_OPTIONS
 
     assert [(key, title) for key, title, *_ in CATEGORY_OPTIONS] == [
-        ("script", "Generar guion"),
+        ("script", "Guion para grabar"),
         ("video", "Avatar"),
         ("clip", "Clip"),
         ("carousel", "Galería"),
-        ("image", "Flyer"),
+        ("image", "Imagen"),
         ("template", "Plantilla"),
     ]  # «Ad» left the panel on 2026-10-14
     assert [(key, title) for key, title, *_ in VIDEO_TYPE_OPTIONS] == [
@@ -247,7 +249,7 @@ def test_the_picker_offers_its_categories_with_the_ad_image_back() -> None:
         ("animated_avatar_video", "Avatar animado"),
     ]
     rendered = str(_kind_picker())
-    assert "Descubrir reels" in rendered and "Flyer" in rendered and '"Ad"' not in rendered
+    assert "Descubrir reels" in rendered and "Imagen" in rendered and '"Ad"' not in rendered
     assert KIND_LABELS["static_flyer"] == "Imagen publicitaria"
     state = CreativeState()
     assert (state.gen_category, state.brief_kind) == ("script", "creator_script")
@@ -924,8 +926,9 @@ def test_generar_guion_explains_that_a_ugc_creator_records_it() -> None:
     from .content_generator import _kind_picker
 
     picker = str(_kind_picker())
-    assert "Generar guion" in picker
-    assert "creador UGC" in picker and "contenido generado por usuarios" in picker
+    assert "Guion para grabar" in picker
+    assert "lo graba una persona real" in picker
+    assert "UGC" not in picker  # m-24842979: no anglicisms facing the owner
 
 
 def test_every_kind_takes_the_catalog_product_chosen_first() -> None:
@@ -1105,7 +1108,7 @@ def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
         rendered = str(slot)
         assert "pick_media" in rendered and "set_picker_tab" in rendered, target
         assert target in rendered, target
-        for tab in ("Catálogo", "Subir", "Piezas"):
+        for tab in ("Catálogo", "Subir", "Publicaciones"):
             assert tab in rendered or json.dumps(tab)[1:-1] in rendered, (target, tab)
     # § 2026-10-19: the background has «Inspiración», «Subir» and «Piezas» — no catalog
     background = str(_background_upload("Fondo", "Arrastra"))
@@ -1327,7 +1330,7 @@ async def test_the_brand_kits_drawn_avatar_is_the_character(
     # no kit at all: Generar says so
     monkeypatch.setattr(module, "brand_character", lambda *a: {})
     await CreativeState.load_brand_character.fn(_Proxy(state))
-    assert "Brand Kit" in state._form_problem()
+    assert "Tu marca" in state._form_problem()
 
 
 def test_the_flyer_asks_its_scene_in_the_context_view() -> None:

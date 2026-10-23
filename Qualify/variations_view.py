@@ -40,15 +40,15 @@ from .ui import tokens as T
 from .variations_state import VariationsState
 
 _INTRO = (
-    "Diez ángulos visuales distintos del mismo producto: cada uno con su escenario, "
-    "su composición y su enfoque. Claude los propone; tú decides cuáles siguen."
+    "Cada idea pone el mismo producto en otro escenario, con otra composición y otro "
+    "enfoque. Te proponemos diez ideas; tú decides cuáles siguen."
 )
 _NEXT_STEP = (
     "Revisa las propuestas y descarta las que no te convenzan. Después genera las "
     "imágenes de los ángulos que queden: cada una se paga al generarla."
 )
 _POLL_TIMEOUT = (
-    "Algunas piezas llevan demasiado tiempo. Vuelve a abrir este grupo más tarde o "
+    "Algunas publicaciones llevan demasiado tiempo. Vuelve a abrir este grupo más tarde o "
     "reinténtalas una a una."
 )
 
@@ -248,7 +248,9 @@ def _preset_card(preset: rx.Var) -> rx.Component:
 
 def _preset_step() -> rx.Component:
     return rx.vstack(
-        _step_heading("2", "Elige el estilo", "Define el formato y la composición de las piezas."),
+        _step_heading(
+            "2", "Elige el estilo", "Define el formato y la composición de las publicaciones."
+        ),
         rx.grid(
             rx.foreach(VariationsState.presets, _preset_card),
             columns=rx.breakpoints(initial="1", sm="2", lg="3"),
@@ -445,7 +447,7 @@ def _angle_actions(angle: rx.Var) -> rx.Component:
             rx.menu.content(
                 rx.cond(
                     angle.draft_id != "",
-                    _menu_item("eye", "Ver pieza", rx.redirect("/drafts/" + angle.draft_id)),
+                    _menu_item("eye", "Ver publicación", rx.redirect("/drafts/" + angle.draft_id)),
                 ),
                 rx.cond(
                     angle.can_edit,
@@ -574,7 +576,7 @@ def _scene_editor() -> rx.Component:
         rx.dialog.content(
             rx.dialog.title(VariationsState.editor_title),
             rx.dialog.description(
-                "Edita lo que Claude propuso. El producto siempre es el real: cambia lo "
+                "Edita lo que te propusimos. El producto siempre es el real: cambia lo "
                 "que lo rodea y lo que dice, no el producto.",
                 size="2",
                 color=T.TEXT_MUTED,
@@ -815,7 +817,7 @@ def _angles_review() -> rx.Component:
                     rx.hstack(
                         loading_spinner("sm"),
                         rx.text(
-                            "Generando las piezas. Esta pantalla se actualiza sola.",
+                            "Creando las publicaciones. Esta pantalla se actualiza sola.",
                             size="2",
                             color=T.TEXT_MUTED,
                         ),
@@ -900,7 +902,7 @@ def _archive_dialog() -> rx.Component:
             rx.alert_dialog.title("¿Eliminar este grupo?"),
             rx.alert_dialog.description(
                 "El grupo «" + VariationsState.archive_set_name + "» desaparece de la "
-                "lista. Sus propuestas pendientes se eliminan; las piezas ya aprobadas "
+                "lista. Sus propuestas pendientes se eliminan; las publicaciones ya aprobadas "
                 "se conservan en Por aprobar.",
                 size="2",
             ),
