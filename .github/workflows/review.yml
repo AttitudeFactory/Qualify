@@ -6,9 +6,6 @@
 #                   each, ~380 in the first half of October 2026.
 #   claude-mention  on-demand `@claude ...` in issue / PR comments.
 #
-# The UX review of client-facing changes lives in ux-review.yml (its own workflow so a
-# `paths:` filter keeps it at 0 minutes on PRs that touch no client-facing file).
-#
 # ruff findings are annotated on the diff by ci.yml's `ruff check --output-format=github`
 # (the reviewdog job that used to live here was a second runner for the same check).
 #

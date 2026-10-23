@@ -27,7 +27,7 @@ Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 | `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history |
 | `market-analyst` | sonnet | Oferta: `docs/*research*`, `*alternativas*`, `ingenieria-inversa-*`, `dolores-*`, `apis-*`, `costos-*`, `comparativa-*` · Vector: `docs/oportunidades-mercado-*.md` · Demanda: `docs/demanda-ventas-*.md` | context |
 | `product-owner` | opus | `docs/backlog-*.md`, `docs/epica-*.md`, tickets de Meegle (Features, Issues, Altas) | context, backlog, copy-es, meegle-ticket, meegle, meegle-altas, lark-admin |
-| `ux-designer` | opus | `docs/perfil-cliente-pyme.md`, `docs/ux-*.md`, skill `qualify-ux`; revisión de experiencia en `.github/workflows/ux-review.yml` (solo sugiere, no escribe código de la app) | context, ux, copy-es, design:user-research, design:design-critique, design:ux-copy, design:accessibility-review |
+| `ux-designer` | opus | `docs/perfil-cliente-pyme.md`, `docs/ux-*.md`, skill `qualify-ux`; revisión de experiencia local antes de abrir cada PR que toca lo que ve el cliente; sus sugerencias van a la sección «Sugerencias de UX» del PR (solo sugiere, no escribe código de la app) | context, ux, copy-es, design:user-research, design:design-critique, design:ux-copy, design:accessibility-review |
 
 Todos precargan además `durable-findings`. `product-owner` es dueño de los tickets de Meegle y de `docs/backlog-*.md` / `docs/epica-*.md` (vía `qualify-backlog`); el hilo principal le delega y corre el desafío del arquitecto y datasci.
 

@@ -19,7 +19,7 @@ the task. The main thread keeps only conclusions.
 | Backend code: `packages/api` (not creative), `shared`, `scraper`, migrations, workers | `backend-engineer` | opus |
 | Generator, Brand Kit, catalog, stock, Canva, `packages/render` | `creative-engineer` | opus |
 | Screens under `Qualify/`, design system, E2E | `reflex-ui-engineer` | opus |
-| UX only: client profile, user research, flow mockups, critique of a screen or a PR's client-facing changes | `ux-designer` | opus |
+| UX only: client profile, user research, flow mockups, critique of a screen; the mandatory local review before opening any PR that touches client-facing paths (`qualify-pr` step 5) | `ux-designer` | opus |
 | `deploy/`, `.github/`, `infra/`, compose, `justfile`, production questions | `platform-engineer` | opus |
 | Evals, golden sets, model/vendor tests, `packages/models` | `data-scientist-fde` | opus |
 | Architecture, schema design, ADRs, Meta constraints, docs↔code audit | `principal-architect` | opus |

@@ -5,8 +5,8 @@ description: Rules for any text a Qualify client will read — screen labels, bu
 
 # Qualify — writing for clients
 
-Clients are owners of small businesses (a bubble-tea shop, a realtor, a travel agency, a fashion
-brand). They read on their phones, between other tasks.
+Clients are owners of small businesses (a shawarma shop, a frozen-yogurt shop, a realtor, a
+travel agency). They read on their phones, between other tasks.
 
 ## Rules
 

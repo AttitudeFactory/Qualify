@@ -1,6 +1,6 @@
 ---
 name: qualify-ux
-description: The UX checklist for anything a Qualify client sees — who the user is (small-business owner in CO/VE/UY, on the phone, short on time), benefit language instead of feature language, the banned-words list, splitting multi-input screens into guided atomic steps by domain, accessibility and mobile basics, and how to report UX suggestions on a PR. Use when reviewing or designing a screen, flow, empty state, email or message template, and on every PR that touches client-facing paths.
+description: The UX checklist for anything a Qualify client sees — who the user is (small-business owner in CO/VE/UY, on the phone, short on time), benefit language instead of feature language, the banned-words list, splitting multi-input screens into guided atomic steps by domain, accessibility and mobile basics, and how to report UX suggestions for a PR's «Sugerencias de UX» section. Use when reviewing or designing a screen, flow, empty state, email or message template, and before opening every PR that touches client-facing paths.
 ---
 
 # Qualify — UX checklist
@@ -11,8 +11,10 @@ the source of truth for wording; this one adds the product lenses on top of it.
 
 ## 1. Lenses, in priority order
 
-1. **Who is this for?** An owner of a small business who is not a marketer, on the phone, between
-   customers. Ask of every screen: could a bubble-tea shop owner finish this in two minutes with
+1. **Who is this for?** An owner of a small business with a tight or no marketing budget, who
+   does not want to deal with marketers and designers but wants a presence on social media; not a
+   marketer, on the phone, between customers. Every screen should save them an agency, money or
+   time. Ask of every screen: could a shawarma shop owner finish this in two minutes with
    one hand, without asking anyone?
 2. **Benefit, not feature.** Titles, buttons, empty states and onboarding say what the owner
    *gets*, not what the tool *has*.
@@ -112,10 +114,13 @@ which inputs go in each, which defaults pre-fill them.
 
 ## 6. Reporting on a PR
 
+The UX review runs **locally, before the PR is opened** (never in GitHub Actions — founder,
+2026-10-23); `qualify-pr` step 5 makes it mandatory for every PR that touches client-facing paths.
+
 - **Suggest, never block.** No approve/request-changes; the founder decides.
-- **One summary comment** starting with the marker `<!-- qualify-ux-review -->`; on a re-run,
-  **edit** that comment instead of adding a new one. Inline comments only for a concrete string
-  or line.
+- **Return the suggestions to the caller**, who shows them to the founder in the same turn and
+  pastes them into the PR description under a **«Sugerencias de UX»** section, each marked
+  **aplicada** or **pendiente** (with the reason). You do not post PR comments.
 - **Ranked findings, at most 8**, highest first: (1) the owner cannot finish the task, (2) feature
   language or banned words, (3) too many inputs in one step, (4) accessibility/mobile, (5) polish.
 - Each finding: **file:line**, **what the owner would feel or say** («¿Qué es un prompt?»),
