@@ -67,8 +67,8 @@ _REVIEW_REASON_LABELS: Final[Mapping[str, str]] = {
         "«Editar» o toca «Regenerar»."
     ),
     "empty_catalog": (
-        "Tu catálogo está vacío, así que la respuesta no habla de ningún producto. Agrega "
-        "tus productos en Catálogo para que las próximas respuestas sean más completas."
+        "Tu catálogo está vacío, así que la respuesta no habla de ningún producto. "
+        "Agrégalos en «Tus productos» para que las próximas respuestas sean más completas."
     ),
     "price_unknown": (
         "Preguntan el precio y tu catálogo no lo tiene; revisa que el borrador no prometa uno."

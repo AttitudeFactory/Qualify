@@ -19,6 +19,11 @@ from uuid import UUID
 import pytest
 from qualify_api.connections import ConnectionNotFound
 from qualify_api.connections.models import ConnectionEvent, PlatformApp, SocialConnection
+from qualify_api.connections.page_subscription import (
+    EVENT_PAGE_UNSUBSCRIBED,
+    GraphPageSubscriptionClient,
+    SubscriptionResult,
+)
 from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
@@ -140,6 +145,21 @@ def _event_types_by_id(tenant_id: UUID, connection_id: UUID) -> dict[UUID, str]:
     return {row.id: row.event_type for row in rows}
 
 
+@pytest.fixture(autouse=True)
+def graph_unsubscribe(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Tests stay offline: since m-24789549 a revoke also asks Graph to unsubscribe the
+    Page from the app's webhooks. Stubbed on the class, so the cached production service
+    picks it up too. Returns the page ids it was asked to unsubscribe."""
+    calls: list[str] = []
+
+    def unsubscribe(self: GraphPageSubscriptionClient, *, page_id: str) -> SubscriptionResult:
+        calls.append(page_id)
+        return SubscriptionResult(ok=True)
+
+    monkeypatch.setattr(GraphPageSubscriptionClient, "unsubscribe", unsubscribe)
+    return calls
+
+
 @pytest.fixture
 def two_connected_tenants() -> tuple[UUID, UUID]:
     """Two tenants, one Instagram connection each, with disjoint grants."""
@@ -204,6 +224,7 @@ def test_disconnect_revokes_in_tenant_and_is_idempotent(
 
 def test_disconnect_writes_the_audit_row_the_ui_workaround_never_announced(
     two_connected_tenants: tuple[UUID, UUID],
+    graph_unsubscribe: list[str],
 ) -> None:
     """Proof the screen now goes through the real service.
 
@@ -221,11 +242,14 @@ def test_disconnect_writes_the_audit_row_the_ui_workaround_never_announced(
     disconnect(tenant_a, CONNECTION_A)
     after = _event_types_by_id(tenant_a, CONNECTION_A)
 
-    written = [event_type for event_id, event_type in after.items() if event_id not in before]
-    assert written == ["revoked"], (
-        "the revoke must land exactly one audit row, in the repository's short "
-        f"vocabulary — got {written}"
+    written = sorted(event_type for event_id, event_type in after.items() if event_id not in before)
+    # The revoke in the repository's short vocabulary, plus the Page's webhook
+    # unsubscription (m-24789549) — best effort, recorded as its own row.
+    assert written == sorted(["revoked", EVENT_PAGE_UNSUBSCRIBED]), (
+        "the revoke must land exactly one `revoked` row and one Page-unsubscription row, "
+        f"in the repository's short vocabulary — got {written}"
     )
+    assert graph_unsubscribe == [f"page-{CONNECTION_A}"]
 
 
 def test_disconnecting_another_tenants_connection_raises_not_found(
