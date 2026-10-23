@@ -86,15 +86,9 @@ _DECIDE_FAILED = "No se pudo guardar la decisión. Actualiza la lista e intenta 
 # send_ambiguous), and nothing regenerates a comment that already has a draft — so a
 # failed reply does NOT stay on screen to retry. The copy says what is true: it may or
 # may not be out, and the owner checks (or answers) on Instagram itself.
-_SEND_FAILED = (
-    "No pudimos confirmar que tu respuesta salió en Instagram. Mira el comentario en "
-    "Instagram antes de responder otra vez."
-)
+_SEND_FAILED = "No sabemos si salió. Revísalo en Instagram."
 # The platform refused it (`send_failed`): it did not go out, and left the list.
-_SEND_REFUSED = (
-    "Instagram no aceptó tu respuesta, así que no salió. Puedes contestar ese comentario "
-    "directamente en Instagram."
-)
+_SEND_REFUSED = "Tu respuesta no salió. Respóndela en Instagram."
 _RESULT_TOAST_DURATION_MS = 6000
 
 
