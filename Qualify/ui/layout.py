@@ -12,8 +12,9 @@ gap, not by a rule.
 
 Four guarantees a screen gets for free, so no page re-implements them:
 
-* the sidebar — business on top, zones in the middle, sales metrics and Salir at the
-  bottom — with the active item derived from the route;
+* the sidebar — business on top, then the owner's jobs (Inicio · Atiende · Publica ·
+  Resultados) and «Tu negocio» with Salir at the bottom — with the active item derived
+  from the route;
 * zen mode: one class on the nav root collapses every island to a 72 px rail, with the
   labels revealed by mask and the width springing (``assets/qualify.css``);
 * the page panel, its gutter (``tokens.PAGE_X``) and its entrance;
@@ -29,50 +30,58 @@ from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
 from . import tokens as T
+from .primitives import tone_badge
 from .state import NavState
 
 LANDING_URL = "https://qualify.la"
 
-# An item is (label, lucide icon, route, enabled). Enabled items navigate; disabled ones
-# show a "pronto" badge. The active item is derived from the current route, never
-# hardcoded.
+# An item is (label, lucide icon, route, enabled). Enabled items navigate to a working
+# screen. A disabled item is a «Pronto» entry (N10, founder decision 4, 2026-10-23): it
+# still navigates, to a screen that says what is coming and links to something that
+# works today, and its row shows the word «Pronto» — never a dead row, never an empty
+# screen. The active item is derived from the current route, never hardcoded.
 Item = tuple[str, str, str, bool]
 
 # Not a Lucide name: the app's own composed icon (`mention_icon`), resolved by `nav_icon`.
 MENTION_ICON = "qualify-mention"
 
-# Order follows the operator's flow, and the two tinted zones are the product's own two
-# axes (docs/index.md): what the market says, and what the business says. Connections is
-# the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
-# measurement — deliberately outside the colour zones.
-NAV_BASE: list[Item] = [
-    ("Tus redes", "link", "/connections", True),
-    # WA-12: the WhatsApp module (own number: connection, profile, QR, chats, menu).
-    ("WhatsApp", "message-circle", "/whatsapp", True),
-]
+# m-24842957 (NAV-1): the menu map of docs/ux-guia-navegacion.md §3, ordered by the
+# owner's four jobs — what is there for me today, answer people, publish, how am I doing
+# — with the rarely touched business setup at the foot.
+#
+# Three hubs of that map are built by other stories of the epic. Until they land, their
+# entries point at today's closest screen (the story's own scope rule), and a test
+# (`test_nav_one_name.py`) fails the moment the real screen exists, so the route below
+# gets switched instead of forgotten:
+#   TODO(m-24842962, NAV-4): «Inicio» — `/` becomes the Inicio hub (today Menciones).
+#   TODO(m-24842990, ATENDER-1): «Por responder» → "/responder" (today Conversaciones).
+#   TODO(m-24843003, RESULTADOS-5): «Resultados» → "/resultados" (today Tu página web).
+HOME_ROUTE = "/"
+RESPOND_ROUTE = "/conversations"
+RESULTS_ROUTE = "/clarity"
 
+NAV_HOME: list[Item] = [("Inicio", "house", HOME_ROUTE, True)]
+
+# The two tinted zones keep the same two tints as before (no new colour): «Escuchas»
+# became «Atiende» and «Publicas» became «Publica» (guide §3).
 NAV_ZONES: list[tuple[str, str, list[Item]]] = [
     (
         "listen",
-        "Escuchas",
+        "Atiende",
         [
-            ("Menciones", MENTION_ICON, "/", True),
-            # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
-            ("Comentarios", "film", "/inbox", True),
-            # QUA-226: the private inbox of the connected accounts. Founder's placement
-            # (2026-10-16): inside Escuchas, after Interacciones, before Creadores.
-            ("Conversaciones", "messages-square", "/conversations", True),
-            ("Creadores", "users", "#", False),
-            ("Señales", "bell", "#", False),
+            # One place to answer (founder decision 3): messages, buyers, comments,
+            # WhatsApp chats and interested people are tabs of «Por responder».
+            ("Por responder", "messages-square", RESPOND_ROUTE, True),
+            # WA-12: the WhatsApp module keeps the auto-reply menu and promotions.
+            ("WhatsApp", "message-circle", "/whatsapp", True),
         ],
     ),
     (
         "publish",
-        "Publicas",
+        "Publica",
         [
             # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
-            # before the login and edited from Negocio → Brand Kit. The guest rail
-            # keeps "Marca" as the entry to make it.
+            # before the login and edited from Tu negocio → Tu marca.
             ("Crear publicación", "wand-sparkles", "/create", True),
             ("Por aprobar", "layout-list", "/drafts", True),
             ("Tu semana", "calendar-days", "/planner", True),
@@ -82,24 +91,34 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
     ),
 ]
 
-NAV_LOOSE: list[Item] = [("Interesados", "user-plus", "/leads", True)]
+# «Resultados», then what is coming, marked «Pronto» (decision 4; «Señales» is
+# «Oportunidades» since the second round of decisions, §2b-6).
+NAV_RESULTS: list[Item] = [
+    ("Resultados", "trending-up", RESULTS_ROUTE, True),
+    ("Creadores", "users", "/creadores", False),
+    ("Oportunidades", "bell", "/signals", False),
+]
 
 NAV_BUSINESS: list[Item] = [
-    ("Tu página web", "activity", "/clarity", True),
     ("Tu marca", "swatch-book", "/brand/kit", True),
     # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
     # the templates compose. Next to the Brand Kit — both are what the brand IS.
     ("Tus productos", "package", "/catalog", True),
+    # Connections enable everything above, so they belong to the business setup.
+    ("Tus redes", "link", "/connections", True),
     # The account itself (2026-10-06): who is in, and changing the password.
     ("Configuración", "settings", "/settings", True),
 ]
 
+# The foot block's head (guide §3): the business setup, touched rarely.
+BUSINESS_ZONE_LABEL = "Tu negocio"
+
 # Flat view of the whole menu, in visual order. Kept because it is the cheapest thing to
 # assert against in a test and the shape older code imported.
 NAV_ITEMS: list[Item] = [
-    *NAV_BASE,
+    *NAV_HOME,
     *[item for _zone, _label, items in NAV_ZONES for item in items],
-    *NAV_LOOSE,
+    *NAV_RESULTS,
     *NAV_BUSINESS,
 ]
 
@@ -222,7 +241,6 @@ def _nav_row(
     label: str,
     *,
     active: rx.Var | bool = False,
-    disabled: bool = False,
     trailing: rx.Component | None = None,
     tooltip: str | None = None,
 ) -> rx.Component:
@@ -254,35 +272,29 @@ def _nav_row(
         # wrapper's `aria-current="page"`.
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
-        opacity="0.55" if disabled else "1",
         class_name="q-nav-item",
         custom_attrs={"data-label": tooltip or label},
-        **({"aria_disabled": "true"} if disabled else {}),
     )
 
 
 def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
-    """One menu entry. Disabled entries render the row without a link, so they cannot be
-    tabbed to or followed."""
-    if not enabled:
-        return _nav_row(
+    """One menu entry, always a link. A «Pronto» entry (``enabled=False``) carries the
+    word «Pronto» as text next to its label (N10: never only by colour or by looking
+    off) and opens its own screen, which says what is coming and where to go today."""
+    active = NavState.router.page.path == route
+    soon = (
+        None
+        if enabled
+        else rx.box(tone_badge("Pronto", "neutral"), class_name="q-soon", margin_left="auto")
+    )
+    return rx.link(
+        _nav_row(
             icon,
             label,
-            disabled=True,
-            tooltip=f"{label} · pronto",
-            trailing=rx.badge(
-                "pronto",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                class_name="q-soon",
-                margin_left="auto",
-            ),
-        )
-
-    active = NavState.router.page.path == route
-    return rx.link(
-        _nav_row(icon, label, active=active),
+            active=active,
+            trailing=soon,
+            tooltip=None if enabled else f"{label} · Pronto",
+        ),
         href=route,
         width="100%",
         underline="none",
@@ -410,7 +422,7 @@ def _guest_islands() -> rx.Component:
     """The rail of a pre-login Brand Kit (§ request 2026-10-02): no sections — every
     other page needs a login — only where the kit is being saved and the way into an
     account (the signup with that email adopts it)."""
-    # "Tu marca" under "Negocio" is the same label and route as the logged-in rail's
+    # "Tu marca" under "Tu negocio" is the same label and route as the logged-in rail's
     # entry (m-24842958, N1: one name per place), so a pointer to it holds for a guest
     # too. "Crea tu marca" is the creation entry (/brand), same words as its header.
     return rx.fragment(
@@ -428,7 +440,7 @@ def _guest_islands() -> rx.Component:
         ),
         rx.spacer(),
         _island(
-            _zone_head("Negocio", "business"),
+            _zone_head(BUSINESS_ZONE_LABEL, "business"),
             _nav_item("Tu marca", "swatch-book", "/brand/kit", True),
             rx.divider(margin="0.15rem 0"),
             _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True),
@@ -465,15 +477,15 @@ def sidebar() -> rx.Component:
             AuthState.is_guest,
             _guest_islands(),
             rx.fragment(
-                _island(*[_nav_item(*item) for item in NAV_BASE]),
+                _island(*[_nav_item(*item) for item in NAV_HOME]),
                 *[
                     _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
                     for zone, label, items in NAV_ZONES
                 ],
-                _island(*[_nav_item(*item) for item in NAV_LOOSE]),
+                _island(*[_nav_item(*item) for item in NAV_RESULTS]),
                 rx.spacer(),
                 _island(
-                    _zone_head("Negocio", "business"),
+                    _zone_head(BUSINESS_ZONE_LABEL, "business"),
                     *[_nav_item(*item) for item in NAV_BUSINESS],
                     rx.divider(margin="0.15rem 0"),
                     logout_action(),

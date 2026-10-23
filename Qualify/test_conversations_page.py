@@ -13,13 +13,13 @@ from .ui.layout import NAV_ITEMS, NAV_ZONES
 _HERE = Path(__file__).parent
 
 
-def test_nav_item_sits_in_escuchas_after_comentarios_before_creadores() -> None:
-    assert ("Conversaciones", "messages-square", "/conversations", True) in NAV_ITEMS
+def test_por_responder_heads_atiende_and_reaches_the_private_inbox_today() -> None:
+    """NAV-1 (m-24842957): the private inbox is reached through «Por responder», the
+    first entry of «Atiende», until its hub (ATENDER-1, m-24842990) has its own route."""
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
-    listen = zones["listen"]
-    assert listen.index("Conversaciones") == listen.index("Comentarios") + 1
-    assert listen.index("Creadores") == listen.index("Conversaciones") + 1
-    assert "Conversaciones" not in zones["publish"]
+    assert zones["listen"][0] == "Por responder"
+    assert ("Por responder", "messages-square", "/conversations", True) in NAV_ITEMS
+    assert "Conversaciones" not in [label for label, *_ in NAV_ITEMS]
 
 
 def test_route_is_registered_behind_login() -> None:

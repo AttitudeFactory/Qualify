@@ -219,7 +219,7 @@ body {
    island (rows included) or under it — never between its fill and its rows. Crossing
    from one island to another therefore hands over: the old capsule fades, the new one
    slides in from the edge it is entering through.
-   Colour: every tint is a Radix variable (accent = teal, iris = Publicas), so the
+   Colour: every tint is a Radix variable (accent = teal, iris = Publica), so the
    palette stays ours; light and dark differ only in the material values below. */
 
 .radix-themes {
@@ -609,8 +609,9 @@ body {
     position: fixed;
     top: 14px;
     left: 14px;
-    width: 40px;
-    height: 40px;
+    /* N12 (ux-guia-navegacion §4): every target on a phone is at least 44 px. */
+    width: 44px;
+    height: 44px;
     border: none;
     border-radius: var(--q-radius-control);
     background: var(--color-panel-solid);
@@ -619,6 +620,9 @@ body {
     z-index: 70;
     cursor: pointer;
   }
+
+  /* N12: menu rows are thumb targets on a phone — at least 44 px tall. */
+  .q-sidebar .q-nav-item { min-height: 44px; }
 
   .q-nav-backdrop {
     display: block;
@@ -1518,7 +1522,7 @@ body {
   backdrop-filter: blur(18px) saturate(140%);
 }
 
-/* On a phone the fixed hamburger (`.q-mobile-nav-toggle`, 40px at 14px/14px) sits over
+/* On a phone the fixed hamburger (`.q-mobile-nav-toggle`, 44px at 14px/14px) sits over
    the header's top-left corner: give the title room so the sticky sheet never hides
    its first letters under the button. */
 @media (max-width: 640px) {
