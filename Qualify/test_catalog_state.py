@@ -6,7 +6,7 @@ docstring for why it has to be the class). Background handlers are driven throug
 `.fn(state)`, the same way `test_creative_state.py` drives `load_brand`.
 
 Pins:
-1. "Catálogo" sits in the Negocio block, next to "Brand Kit", before "Configuración".
+1. "Tus productos" sits in the Negocio block, next to "Tu marca", before "Configuración".
 2. Selecting a product fills the editor; selecting it again closes the editor.
 3. The new-product form refuses an empty name BEFORE any provider call, never sends a
    price (the screen dropped it, founder 2026-10-19 — stored prices stay untouched), and
@@ -77,9 +77,9 @@ def _state(monkeypatch) -> CatalogState:
 
 def test_catalogo_is_in_the_business_block_next_to_the_brand_kit() -> None:
     labels = [label for label, _icon, _route, _enabled in NAV_BUSINESS]
-    assert ("Catálogo", "package", "/catalog", True) in NAV_BUSINESS
-    assert labels.index("Catálogo") == labels.index("Brand Kit") + 1
-    assert labels.index("Catálogo") < labels.index("Configuración")
+    assert ("Tus productos", "package", "/catalog", True) in NAV_BUSINESS
+    assert labels.index("Tus productos") == labels.index("Tu marca") + 1
+    assert labels.index("Tus productos") < labels.index("Configuración")
     assert "/catalog" in {route for _label, _icon, route, _enabled in NAV_ITEMS}
 
 

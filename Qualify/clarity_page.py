@@ -38,7 +38,7 @@ from .ui import tokens as T
 
 def _topbar() -> rx.Component:
     return page_header(
-        "Clarity",
+        "Tu página web",
         "Comportamiento web del sitio de este negocio, vía Microsoft Clarity",
     )
 

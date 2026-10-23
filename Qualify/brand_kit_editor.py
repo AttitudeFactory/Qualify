@@ -550,7 +550,7 @@ def _subtitle() -> rx.Var[str]:
 def brand_edit_index() -> rx.Component:
     loading = CreativeState.kit_loading | ~BrandConnectState.details_loaded
     return app_shell(
-        page_header("Tu Brand Kit", _subtitle(), _header_action(), title_size="7"),
+        page_header("Tu marca", _subtitle(), _header_action(), title_size="7"),
         page_body(
             rx.vstack(
                 rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),

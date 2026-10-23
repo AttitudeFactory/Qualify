@@ -4536,7 +4536,7 @@ def generator_page() -> rx.Component:
     readiness = CreativeState.readiness
     return app_shell(
         page_header(
-            "Crear pieza",
+            "Crear publicación",
             "Elige el producto, luego qué quieres crear, y avanza paso a paso.",
             title_size="8",
         ),

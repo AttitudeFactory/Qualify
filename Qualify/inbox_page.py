@@ -1213,7 +1213,7 @@ def _replies_section() -> rx.Component:
 
 def inbox_topbar() -> rx.Component:
     return page_header(
-        "Interacciones",
+        "Comentarios",
         "Comentarios de tus Reels y publicaciones de las últimas 2 semanas — elige cuáles "
         "monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),

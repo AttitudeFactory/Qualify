@@ -29,17 +29,19 @@ _NOW = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
 # --- B1: the name ------------------------------------------------------------------
 
 
-def test_the_sidebar_names_the_module_interacciones_on_the_same_route() -> None:
-    assert ("Interacciones", "film", "/inbox", True) in NAV_ITEMS
-    assert not any(label == "Contenido" for label, *_ in NAV_ITEMS)
+def test_the_sidebar_names_the_module_comentarios_on_the_same_route() -> None:
+    """m-24842958 (N1): «Interacciones» is «Comentarios», in the owner's words."""
+    assert ("Comentarios", "film", "/inbox", True) in NAV_ITEMS
+    assert not any(label in ("Contenido", "Interacciones") for label, *_ in NAV_ITEMS)
 
 
-def test_the_tab_title_and_the_header_say_interacciones() -> None:
+def test_the_tab_title_and_the_header_say_comentarios() -> None:
     app_source = (_HERE / "Qualify.py").read_text(encoding="utf-8")
-    assert 'title="Qualify · Interacciones"' in app_source
+    assert 'title="Qualify · Comentarios"' in app_source
+    assert 'title="Qualify · Interacciones"' not in app_source
     assert 'title="Qualify · Contenido"' not in app_source
     header = inspect.getsource(inbox_page.inbox_topbar)
-    assert '"Interacciones"' in header and '"Contenido"' not in header
+    assert '"Comentarios"' in header and '"Interacciones"' not in header
 
 
 # --- B2: the type of each commented media -------------------------------------------

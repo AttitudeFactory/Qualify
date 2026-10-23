@@ -17,7 +17,7 @@ from .ui import tokens as T
 
 def _topbar() -> rx.Component:
     return page_header(
-        "Leads",
+        "Clientes interesados",
         "Personas captadas por tu funnel, con su consentimiento registrado",
         # The count badge of docs/design-system.md §5.3: soft, neutral — a figure
         # about the page, never a state.

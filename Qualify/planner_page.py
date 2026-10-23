@@ -1124,7 +1124,7 @@ def _loading() -> rx.Component:
 def planner_index() -> rx.Component:
     return app_shell(
         page_header(
-            "Planificador",
+            "Tu semana",
             "Qué se publica, cuándo y en qué cuenta.",
             _view_toggle(),
             _assign_button(),

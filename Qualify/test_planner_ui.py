@@ -345,12 +345,13 @@ def test_provider_error_messages_are_specific_spanish() -> None:
 # --- navigation ----------------------------------------------------------------------
 
 
-def test_planificador_sits_between_piezas_and_publicar() -> None:
-    """«Borradores» is «Piezas» since 2026-10-14."""
+def test_tu_semana_sits_between_por_aprobar_and_publicar_ahora() -> None:
+    """«Borradores» was «Piezas» since 2026-10-14 and is «Por aprobar» since m-24842958;
+    «Planificador» is «Tu semana» and «Publicar» is «Publicar ahora» (N1)."""
     labels = [label for label, _icon, _route, _enabled in NAV_ITEMS]
-    i = labels.index("Planificador")
-    assert labels[i - 1] == "Piezas" and labels[i + 1] == "Publicar"
-    assert ("Planificador", "calendar-days", "/planner", True) in NAV_ITEMS
+    i = labels.index("Tu semana")
+    assert labels[i - 1] == "Por aprobar" and labels[i + 1] == "Publicar ahora"
+    assert ("Tu semana", "calendar-days", "/planner", True) in NAV_ITEMS
     assert "Calendar" not in labels
 
 

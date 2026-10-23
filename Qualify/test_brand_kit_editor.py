@@ -21,8 +21,8 @@ from .voice_lab import VoiceLabState
 
 def test_the_editor_is_in_the_business_block_before_settings() -> None:
     labels = [label for label, _icon, _route, _enabled in NAV_BUSINESS]
-    assert ("Brand Kit", "swatch-book", "/brand/kit", True) in NAV_BUSINESS
-    assert labels.index("Brand Kit") < labels.index("Configuración")
+    assert ("Tu marca", "swatch-book", "/brand/kit", True) in NAV_BUSINESS
+    assert labels.index("Tu marca") < labels.index("Configuración")
 
 
 def test_marca_is_not_in_the_session_rail() -> None:

@@ -806,7 +806,7 @@ def _loading() -> rx.Component:
 def catalog_index() -> rx.Component:
     return app_shell(
         page_header(
-            "Catálogo",
+            "Tus productos",
             "Tus productos con sus fotos reales: lo que las plantillas componen.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),

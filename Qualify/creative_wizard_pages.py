@@ -2920,7 +2920,7 @@ def brand_choice_index() -> rx.Component:
     vstack so there is room to grow into) instead of stopping short and leaving bare
     panel background below it."""
     return _wizard_shell(
-        page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
+        page_header("Crea tu marca", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
                 card(

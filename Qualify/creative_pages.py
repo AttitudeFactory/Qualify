@@ -334,7 +334,7 @@ def _kit_accordion() -> rx.Component:
 
 def brand_index() -> rx.Component:
     return _screen(
-        "Brand Kit",
+        "Tu marca",
         "El sustrato de marca del que sale cada pieza",
         _padded(
             rx.cond(CreativeState.kit_error != "", _error_callout(CreativeState.kit_error)),
@@ -1148,7 +1148,7 @@ def drafts_index() -> rx.Component:
     completar · Listo · Usado · Desechado), filters, and «Asignar» into the
     Planificador's drawer (QUA-118 AC 1 / AC 3)."""
     return _screen(
-        "Piezas",
+        "Por aprobar",
         "Tus POSTs y en qué punto está cada uno: nada sale sin aprobación humana.",
         _padded(
             rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
@@ -2341,7 +2341,7 @@ def _campaign_field() -> rx.Component:
 
 def draft_detail_index() -> rx.Component:
     return _screen(
-        "Revisión del borrador",
+        "Revisar publicación",
         "HITL #2: tú decides qué sale con el nombre de tu marca",
         _padded(
             rx.cond(CreativeState.detail_error != "", _error_callout(CreativeState.detail_error)),
@@ -2356,7 +2356,7 @@ def draft_detail_index() -> rx.Component:
                             rx.link(
                                 rx.button(
                                     rx.icon("arrow-left", size=14),
-                                    "Bandeja",
+                                    "Por aprobar",
                                     variant="ghost",
                                     size="1",
                                 ),
