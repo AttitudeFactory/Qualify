@@ -1,0 +1,204 @@
+"""Inicio's view models (m-24842962, NAV-4) — pure, tested in `test_home_vm.py`.
+
+`build_home_vm` turns the backend's `HomeCounts` into what the screen prints, in the
+owner's words, and decides which blocks show:
+
+- «Hoy tienes»: up to three tappable cards, only the ones with something pending, each
+  linking to the list already filtered (N11).
+- «Para tu primera publicación»: the steps still missing; each row disappears once done
+  (N2). The whole block goes away when nothing is missing.
+- «Todo al día»: nothing pending and nothing missing — never an empty screen (N8).
+- «Así te fue esta semana»: three figures of the last 7 days, each linking to its
+  detail; without Instagram connected and with nothing to count, it says what to connect.
+
+Which figures matter to the owner is a *hypothesis* (perfil-cliente-pyme §5, pregunta 7).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from qualify_api.home import HomeCounts
+
+# Destinations. A query names the filter the list opens with (N11); the receiving
+# screens read it (`conversations_vm.filter_from_param`, `planner_vm.gallery_filter_from_param`).
+CONVERSATIONS_PENDING_URL = "/conversations?filtro=pendientes"
+DRAFTS_TO_APPROVE_URL = "/drafts?estado=por-completar"
+COMMENTS_URL = "/inbox"
+CONVERSATIONS_URL = "/conversations"
+WHATSAPP_CHATS_URL = "/whatsapp?tab=chats"
+MENTIONS_URL = "/menciones"
+CONNECTIONS_URL = "/connections"
+CREATE_URL = "/create"
+
+
+@dataclass(frozen=True)
+class TodayCardVM:
+    key: str
+    count: int
+    label: str
+    href: str
+    icon: str
+
+
+@dataclass(frozen=True)
+class FirstStepVM:
+    key: str
+    label: str
+    href: str
+    icon: str
+
+
+@dataclass(frozen=True)
+class WeekStatVM:
+    key: str
+    label: str
+    value: int
+    hint: str
+    href: str
+
+
+@dataclass(frozen=True)
+class HomeVM:
+    today: list[TodayCardVM] = field(default_factory=list)
+    first_steps: list[FirstStepVM] = field(default_factory=list)
+    week: list[WeekStatVM] = field(default_factory=list)
+    #: «Así te fue» has nothing to count yet and Instagram is not connected.
+    week_needs_connection: bool = True
+
+    @property
+    def all_clear(self) -> bool:
+        return not self.today and not self.first_steps
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return (one if n == 1 else many).format(n=n)
+
+
+def people_waiting_label(n: int) -> str:
+    return _plural(n, "{n} persona espera tu respuesta", "{n} personas esperan tu respuesta")
+
+
+def drafts_to_approve_label(n: int) -> str:
+    return _plural(
+        n,
+        "{n} publicación lista para que la apruebes",
+        "{n} publicaciones listas para que las apruebes",
+    )
+
+
+def comments_unanswered_label(n: int) -> str:
+    return _plural(n, "{n} comentario sin responder", "{n} comentarios sin responder")
+
+
+def _today(counts: HomeCounts) -> list[TodayCardVM]:
+    cards = [
+        TodayCardVM(
+            "people",
+            counts.people_waiting,
+            people_waiting_label(counts.people_waiting),
+            CONVERSATIONS_PENDING_URL,
+            "messages-square",
+        ),
+        TodayCardVM(
+            "drafts",
+            counts.drafts_to_approve,
+            drafts_to_approve_label(counts.drafts_to_approve),
+            DRAFTS_TO_APPROVE_URL,
+            "layout-list",
+        ),
+        TodayCardVM(
+            "comments",
+            counts.comments_unanswered,
+            comments_unanswered_label(counts.comments_unanswered),
+            COMMENTS_URL,
+            "message-circle",
+        ),
+    ]
+    return [card for card in cards if card.count > 0]
+
+
+def _first_steps(counts: HomeCounts) -> list[FirstStepVM]:
+    steps: list[FirstStepVM] = []
+    if not counts.instagram_connected:
+        steps.append(
+            FirstStepVM(
+                "connect",
+                "Conecta tu Instagram para publicar desde aquí",
+                CONNECTIONS_URL,
+                "link",
+            )
+        )
+    if not counts.has_publication:
+        steps.append(
+            FirstStepVM(
+                "create",
+                "Crea tu primera publicación con la foto de un producto",
+                CREATE_URL,
+                "wand-sparkles",
+            )
+        )
+    return steps
+
+
+def _messages_hint(counts: HomeCounts) -> str:
+    return f"{counts.messages_week_dm} por Instagram · {counts.messages_week_whatsapp} por WhatsApp"
+
+
+def _messages_href(counts: HomeCounts) -> str:
+    """Where «Te escribieron» opens: the channel that carried most of the week."""
+    if counts.messages_week_whatsapp > counts.messages_week_dm:
+        return WHATSAPP_CHATS_URL
+    return CONVERSATIONS_URL
+
+
+def _week(counts: HomeCounts) -> list[WeekStatVM]:
+    return [
+        WeekStatVM(
+            "messages",
+            "Te escribieron",
+            counts.messages_week,
+            _messages_hint(counts),
+            _messages_href(counts),
+        ),
+        WeekStatVM(
+            "comments", "Comentaron", counts.comments_week, "En tus publicaciones", COMMENTS_URL
+        ),
+        WeekStatVM(
+            "mentions", "Hablaron de ti", counts.mentions_week, "Te etiquetaron", MENTIONS_URL
+        ),
+    ]
+
+
+def build_home_vm(counts: HomeCounts) -> HomeVM:
+    week = _week(counts)
+    nothing_counted = all(stat.value == 0 for stat in week)
+    return HomeVM(
+        today=_today(counts),
+        first_steps=_first_steps(counts),
+        week=week,
+        week_needs_connection=nothing_counted and not counts.instagram_connected,
+    )
+
+
+EMPTY_HOME = build_home_vm(HomeCounts())
+
+__all__ = [
+    "COMMENTS_URL",
+    "CONNECTIONS_URL",
+    "CONVERSATIONS_PENDING_URL",
+    "CONVERSATIONS_URL",
+    "CREATE_URL",
+    "DRAFTS_TO_APPROVE_URL",
+    "EMPTY_HOME",
+    "MENTIONS_URL",
+    "WHATSAPP_CHATS_URL",
+    "FirstStepVM",
+    "HomeVM",
+    "TodayCardVM",
+    "WeekStatVM",
+    "build_home_vm",
+    "comments_unanswered_label",
+    "drafts_to_approve_label",
+    "people_waiting_label",
+]

@@ -812,6 +812,7 @@ class AuthState(rx.State):
             from .discover_reels import DiscoverReelsState
             from .followups_state import FollowupsState
             from .gallery_state import GalleryState
+            from .home_state import HomeState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .planner_state import PlannerState
@@ -861,6 +862,8 @@ class AuthState(rx.State):
                 PlannerState,
                 # the POST gallery (QUA-118): the tenant's POSTs and the filters
                 GalleryState,
+                # Inicio (m-24842962): the tenant's pending counts and week figures
+                HomeState,
                 # the POST's «Campaña» field (QUA-143): the brand's campaigns
                 CampaignState,
                 # the Canva card: links of a draft and the pending OAuth verifier
