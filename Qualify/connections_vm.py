@@ -266,8 +266,7 @@ CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
             "mensajes directos, aunque la cuenta esté conectada."
         ),
         steps=[
-            "En la app de Instagram, abre tu perfil y toca el menú ☰ → Configuración y "
-            "actividad.",
+            "En Instagram, abre tu perfil y toca el menú ☰ → Configuración y actividad.",
             "Entra en «Mensajes y respuestas a historias» → «Controles de mensajes».",
             "En «Herramientas conectadas», activa «Permitir acceso a los mensajes».",
         ],
@@ -281,8 +280,7 @@ CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
         ),
         steps=[
             "Pulsa «Conectar cuenta» en esta pantalla.",
-            "Cuando Meta te pregunte qué compartir, marca la Página y el Instagram de tu "
-            "negocio.",
+            "Cuando Meta te pregunte qué compartir, marca la Página y el Instagram de tu negocio.",
             "Deja todos los permisos marcados y continúa hasta el final.",
         ],
     ),

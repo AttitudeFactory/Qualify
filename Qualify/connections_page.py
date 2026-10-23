@@ -556,19 +556,22 @@ def _requirement_row(requirement: ConnectRequirementVM, number: int) -> rx.Compo
             rx.vstack(
                 rx.text(requirement.title, size="3", weight="medium", color=T.TEXT_STRONG),
                 rx.text(requirement.summary, size="2", color=T.TEXT_MUTED),
+                # Under the text, not beside it (m-24840590): on a phone a side button
+                # squeezed the title into a one-word column.
+                rx.button(
+                    rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
+                    rx.cond(is_open, "Ocultar", "¿Cómo lo hago?"),
+                    on_click=ConnectionsState.toggle_requirement(requirement.key),
+                    variant="ghost",
+                    size="1",
+                    color_scheme="gray",
+                    aria_expanded=is_open,
+                    margin_top="0.375rem",
+                ),
                 spacing="0",
                 align_items="start",
                 flex="1",
-            ),
-            rx.button(
-                rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
-                rx.cond(is_open, "Ocultar", "¿Cómo lo hago?"),
-                on_click=ConnectionsState.toggle_requirement(requirement.key),
-                variant="ghost",
-                size="1",
-                color_scheme="gray",
-                aria_expanded=is_open,
-                flex_shrink="0",
+                min_width="0",
             ),
             spacing="3",
             align="start",

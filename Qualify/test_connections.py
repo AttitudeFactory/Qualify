@@ -57,14 +57,14 @@ from .connections_provider import NoActingUser, _data_access_warning, _scope_lab
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
     CONNECT_RESULT_NOTICES,
-    WHATSAPP_RECONNECT_HINT,
     REQUIREMENT_NUMBERS,
+    WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
     ConnectionHintVM,
     ConnectionVM,
     connect_result_guidance,
-    connection_hints,
     connect_result_notice,
+    connection_hints,
     whatsapp_label,
 )
 from .ui import tokens as T
@@ -662,7 +662,12 @@ def test_guide_has_the_four_client_steps_in_order() -> None:
     and the Instagram menu paths spelled the way the app shows them."""
     keys = [requirement.key for requirement in CONNECT_REQUIREMENTS]
     assert keys == ["professional", "messages", "permissions", "reconnect"]
-    assert REQUIREMENT_NUMBERS == {"professional": 1, "messages": 2, "permissions": 3, "reconnect": 4}
+    assert REQUIREMENT_NUMBERS == {
+        "professional": 1,
+        "messages": 2,
+        "permissions": 3,
+        "reconnect": 4,
+    }
     professional, messages, permissions, reconnect = CONNECT_REQUIREMENTS
     path = "Editar perfil → Información pública de la empresa → Página"
     assert any(path in step for step in professional.steps)
@@ -685,7 +690,7 @@ def test_guide_copy_avoids_anglicisms() -> None:
     texts += [step for r in CONNECT_REQUIREMENTS for step in r.steps]
     for text in texts:
         lowered = f" {text.lower()} "
-        for word in (" post ", " posts ", "brand kit", "inbox", " dm ", " app review", "login"):
+        for word in (" post ", " posts ", "brand kit", "inbox", " dm ", " app ", "login"):
             assert word not in lowered, f"{word!r} in {text!r}"
 
 
