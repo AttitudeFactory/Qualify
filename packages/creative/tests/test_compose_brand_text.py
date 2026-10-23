@@ -35,6 +35,28 @@ def _colors(png: bytes) -> set[tuple[int, int, int]]:
     return {pixel for _, pixel in image.getcolors(maxcolors=1 << 24) or []}
 
 
+def test_the_fallback_text_keeps_its_accents_without_any_system_font(monkeypatch) -> None:
+    """Production 2026-10-22: «Tu caf▯ ya tiene compa▯ero de ma▯ana» — PIL's own default
+    font has no ñ or accents, and the server had no system font. The package ships one."""
+    from PIL import ImageDraw, ImageFont
+
+    from qualify_creative import compose
+
+    monkeypatch.setattr(compose, "_BOLD_FONTS", ())
+    monkeypatch.setattr(compose, "_REGULAR_FONTS", ())
+    font = compose._font(40, bold=True)
+    assert isinstance(font, ImageFont.FreeTypeFont)
+    assert font.path == str(compose._VENDORED_FONT)
+
+    def glyph(ch: str) -> bytes:
+        image = Image.new("L", (80, 80), 0)
+        ImageDraw.Draw(image).text((5, 5), ch, font=font, fill=255)
+        return image.tobytes()
+
+    box = glyph("\U0001f600")  # an emoji: no glyph, so the font's empty box
+    assert all(glyph(ch) != box for ch in "ñáéíóúÑ¿¡")
+
+
 def test_a_font_file_is_usable_only_when_freetype_can_draw_it() -> None:
     assert font_usable(FONT)
     assert not font_usable(b"wOF2" + b"\x00" * 60)
