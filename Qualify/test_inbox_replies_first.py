@@ -102,3 +102,18 @@ def test_phone_targets_reach_44px() -> None:
     assert ".q-inbox-main :is(.rt-Button, .rt-IconButton)" in block
     assert ".q-inbox-tap" in block and "min-height: 44px" in block
     assert 'class_name="q-inbox-main"' in _src(inbox_page._connected_body)
+
+
+def test_a_reply_card_shows_who_commented_and_the_publication() -> None:
+    """Criterion 2 (m-24842989): the author line sits above the comment, next to a small
+    thumbnail of the publication whose alt names it."""
+    card = _src(inbox_page._draft_card)
+    assert "_draft_publication_thumb(draft)" in card
+    assert card.index('"@" + draft.author_username') < card.index("draft.comment_text")
+    thumb = _src(inbox_page._draft_publication_thumb)
+    assert "media_thumb(draft.media_thumbnail_url" in thumb
+    assert "alt=draft.media_alt" in thumb
+
+
+def test_the_replies_list_still_compiles_with_the_new_fields() -> None:
+    assert inbox_page._replies_list() is not None

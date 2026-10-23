@@ -16,6 +16,7 @@ only) — there is no code path here that could show a DM draft even by accident
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -29,6 +30,10 @@ from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
+from .inbox_vm import CandidateMediaVM
+
+# m-24842989: the thumbnail's alt text when the publication has no caption we know of.
+PUBLICATION_ALT_FALLBACK = "Publicación"
 
 __all__ = [
     "DraftVM",
@@ -58,6 +63,12 @@ class DraftVM:
     final_text: str
     status: str
     created_at: str
+    # m-24842989: who wrote the comment (`""` when the channel did not say) and the
+    # publication it was left on — its picture (`""` shows the generic frame) and the
+    # picture's alt text (the caption, else «Publicación»; never empty).
+    author_username: str = ""
+    media_thumbnail_url: str = ""
+    media_alt: str = PUBLICATION_ALT_FALLBACK
 
 
 @dataclass(frozen=True)
@@ -67,7 +78,16 @@ class GenerationSummaryVM:
     gate_rejected: int
 
 
-def _to_vm(record: DraftRecord) -> DraftVM:
+def _to_vm(
+    record: DraftRecord, candidates_by_media_id: dict[str, CandidateMediaVM] | None = None
+) -> DraftVM:
+    """`candidates_by_media_id` is the inbox's ALREADY-loaded candidate list keyed by
+    media id — the only source of a picture, since the inbox stores none (Meta's URLs
+    expire). Same cross-reference `inbox_provider._to_reel_summary_vm` does for the Reel
+    cards: zero new queries, zero new Meta calls. Without it (or for a publication
+    outside the 2-week list) the thumbnail is `""`."""
+    media = (candidates_by_media_id or {}).get(record.external_media_id)
+    caption = (record.media_caption or (media.caption if media else "")).strip()
     return DraftVM(
         id=str(record.id),
         source_id=record.source_id,
@@ -77,15 +97,26 @@ def _to_vm(record: DraftRecord) -> DraftVM:
         final_text=record.final_text or "",
         status=record.status,
         created_at=record.created_at.strftime("%d %b %Y, %H:%M"),
+        author_username=record.author_username,
+        media_thumbnail_url=media.thumbnail_url if media else "",
+        media_alt=caption or PUBLICATION_ALT_FALLBACK,
     )
 
 
-def pending_drafts(*, tenant_id: UUID, connection_id: UUID) -> list[DraftVM]:
+def pending_drafts(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    candidates: Iterable[CandidateMediaVM] = (),
+) -> list[DraftVM]:
     """The review queue: `status == 'proposed'` only. Blocking DB call — callers on
     the event loop must run it off-thread, same convention `inbox_provider`'s
-    synchronous read seams already establish."""
+    synchronous read seams already establish. `candidates` is `InboxState.candidates`
+    (already loaded) — the drafts' thumbnails come from there, see `_to_vm`."""
+    by_media_id = {c.external_media_id: c for c in candidates}
     return [
-        _to_vm(d) for d in _list_pending_drafts(tenant_id=tenant_id, connection_id=connection_id)
+        _to_vm(d, by_media_id)
+        for d in _list_pending_drafts(tenant_id=tenant_id, connection_id=connection_id)
     ]
 
 

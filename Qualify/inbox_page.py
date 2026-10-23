@@ -1224,6 +1224,14 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
     )
 
 
+def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
+    """The publication the comment was left on (m-24842989) — small, next to who wrote
+    it. Its picture comes from the candidates the screen already loaded; without one the
+    frame shows the generic icon. Not decorative here: it is the only thing on the card
+    that names the publication, so its alt is the caption (else «Publicación»)."""
+    return media_thumb(draft.media_thumbnail_url, size="48px", icon="image", alt=draft.media_alt)
+
+
 def _draft_card(draft: DraftVM) -> rx.Component:
     """One reply waiting for approval: the comment it answers, then the prepared reply.
     No internal id on screen (m5 hallazgo 5) — `source_id` used to be shown here."""
@@ -1238,10 +1246,30 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                 spacing="2",
                 width="100%",
             ),
-            rx.text(
-                rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
-                size="2",
-                color=T.TEXT_MUTED,
+            rx.hstack(
+                _draft_publication_thumb(draft),
+                rx.vstack(
+                    rx.cond(
+                        draft.author_username != "",
+                        rx.text(
+                            "@" + draft.author_username,
+                            size="2",
+                            weight="medium",
+                            word_break="break-word",
+                        ),
+                    ),
+                    rx.text(
+                        rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    min_width="0",
+                ),
+                spacing="3",
+                align="start",
+                width="100%",
             ),
             rx.box(
                 rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),

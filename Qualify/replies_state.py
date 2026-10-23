@@ -170,9 +170,17 @@ class RepliesState(rx.State):
                 self.load_error = _NO_TENANT if tenant_id is None else _UNKNOWN_CONNECTION
                 self.drafts = []
             return
+        # m-24842989: the publication thumbnails come from the inbox's already-loaded
+        # candidates (`load_screen`/`select_connection` load them before chaining here).
+        async with self:
+            inbox = await self.get_state(InboxState)
+            candidates = list(inbox.candidates)
         try:
             drafts = await asyncio.to_thread(
-                pending_drafts, tenant_id=tenant_id, connection_id=connection_id
+                pending_drafts,
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                candidates=candidates,
             )
         except Exception as exc:
             logger.error("pending_drafts failed: %s", type(exc).__name__)
