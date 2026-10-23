@@ -72,7 +72,7 @@ from .whatsapp_templates_vm import (
     validate_step,
     validate_template_form,
 )
-from .whatsapp_vm import TAB_CONTACTS, graph_error_notice
+from .whatsapp_vm import TAB_CHATS, TAB_CONTACTS, graph_error_notice
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,7 @@ class WhatsAppTemplatesState(rx.State):
     form_url: str = ""
     form_error: str = ""
     form_error_tone: str = "warn"
+    form_resumed: bool = False  # reopened with a saved draft: «Seguimos donde lo dejaste.»
     submitting: bool = False
 
     # ==================================================================================
@@ -259,7 +260,7 @@ class WhatsAppTemplatesState(rx.State):
                 self.templates = []
                 self.loaded_for = ""
                 self.banner = ""
-                self._close_form()
+                self._reset_form()  # a draft belongs to the number it was written for
             self.loading_for = connection_id
         if tenant_id is None:
             async with self:
@@ -361,8 +362,11 @@ class WhatsAppTemplatesState(rx.State):
     # The form
     # ==================================================================================
 
-    def _close_form(self) -> None:
+    def _reset_form(self) -> None:
+        """Forget every answer. Only after «Enviar a aprobación», «Empezar de nuevo» or a
+        number switch — closing the drawer keeps the draft (N6)."""
         self.form_open = False
+        self.form_resumed = False
         self.step = STEP_KIND
         self.form_done = False
         self.form_category = CATEGORY_MARKETING
@@ -377,16 +381,58 @@ class WhatsAppTemplatesState(rx.State):
         self.form_url = ""
         self.form_error = ""
 
+    def _has_draft(self) -> bool:
+        """Whether the owner already answered something worth resuming."""
+        texts = (
+            self.form_label,
+            self.form_header,
+            self.form_body,
+            self.form_footer,
+            self.form_quick_1,
+            self.form_quick_2,
+            self.form_quick_3,
+            self.form_url_text,
+            self.form_url,
+        )
+        return (
+            self.step != STEP_KIND
+            or self.form_category != CATEGORY_MARKETING
+            or self.form_language != DEFAULT_LANGUAGE
+            or self.form_button_kind != BUTTONS_NONE
+            or any(value.strip() for value in texts)
+        )
+
     @rx.event
     def open_form(self) -> None:
-        self._close_form()
+        """«Crear un mensaje»: resumes a saved draft on the step it was left, else a
+        blank form."""
+        if self.form_done or not self._has_draft():
+            self._reset_form()
+            self.form_open = True
+            return
+        self.form_resumed = True
+        self.form_error = ""
+        self.form_open = True
+
+    @rx.event
+    def restart_form(self) -> None:
+        """«Empezar de nuevo»: the only way, besides sending, to drop the draft."""
+        if self.submitting:
+            return
+        self._reset_form()
         self.form_open = True
 
     @rx.event
     def set_form_open(self, is_open: bool) -> None:
-        """The drawer's `on_open_change` (Esc, backdrop, ✕). Closing discards the draft."""
-        if not is_open and not self.submitting:
-            self._close_form()
+        """The drawer's `on_open_change` (Esc, backdrop, ✕). Closing keeps the draft
+        (N6: a stray tap outside on a phone must not erase it); once sent, it is done."""
+        if is_open or self.submitting:
+            return
+        if self.form_done:
+            self._reset_form()
+            return
+        self.form_open = False
+        self.form_resumed = False
 
     @rx.event
     def set_category(self, category: str | list[str]) -> None:
@@ -408,6 +454,7 @@ class WhatsAppTemplatesState(rx.State):
             self.form_error, self.form_error_tone = problem, "warn"
             return
         self.form_error = ""
+        self.form_resumed = False
         self.step += 1
 
     @rx.event
@@ -431,10 +478,16 @@ class WhatsAppTemplatesState(rx.State):
 
     @rx.event
     def see_contacts(self) -> rx.event.EventSpec:
-        """N3 after «Enviar a aprobación»: close the drawer, open «Contactos» (the
-        clients who accepted your promotions)."""
-        self._close_form()
+        """N3 after a promotion: close the drawer, open «Contactos» (the clients who
+        accepted your promotions)."""
+        self._reset_form()
         return WhatsAppState.select_tab(TAB_CONTACTS)
+
+    @rx.event
+    def see_chats(self) -> rx.event.EventSpec:
+        """N3 after «Un aviso de pedido»: it is sent from that client's chat."""
+        self._reset_form()
+        return WhatsAppState.select_tab(TAB_CHATS)
 
     @rx.event
     def set_language(self, language: str) -> None:

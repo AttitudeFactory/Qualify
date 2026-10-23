@@ -40,10 +40,18 @@ from .whatsapp_templates_vm import (
     BUTTONS_QUICK,
     BUTTONS_URL,
     CATEGORY_AUTHENTICATION,
+    DONE_HINT_PROMO,
+    DONE_HINT_UTILITY,
     EMPTY_FORM,
+    FORM_REVIEW_NOTICE,
     GUIDED_CATEGORIES,
     NAME_EXAMPLE,
+    NAME_HINT_PROMO,
+    NAME_HINT_UTILITY,
+    NEXT_STEP_CHATS,
     NEXT_STEP_CONTACTS,
+    RESTART_LABEL,
+    RESUME_NOTICE,
     STEP_BUTTONS,
     STEP_KIND,
     STEP_MESSAGE,
@@ -347,6 +355,55 @@ def test_state_never_reuses_a_name_of_this_number() -> None:
     state.open_form()
     state.set_field("label", "Pedido listo")
     assert state._form().name == "pedido_listo_2"
+
+
+def test_closing_the_drawer_keeps_the_draft() -> None:
+    """N6 (UX review): a stray tap outside must not erase the message; only
+    «Empezar de nuevo» or sending drops it."""
+    state = WhatsAppTemplatesState()
+    state.open_form()
+    assert not state.form_resumed
+    state.set_category("utility")
+    state.next_step()
+    state.set_field("body", "Hola, tu pedido ya salió.")
+    state.set_form_open(False)
+    assert not state.form_open
+    assert state.form_body == "Hola, tu pedido ya salió." and state.step == STEP_MESSAGE
+    state.open_form()
+    assert state.form_open and state.form_resumed
+    assert state.step == STEP_MESSAGE and state.form_category == "utility"
+    state.next_step()
+    assert not state.form_resumed
+    state.restart_form()
+    assert state.form_open and not state.form_resumed
+    assert state.form_body == "" and state.step == STEP_KIND
+    assert state.form_category == "marketing"
+
+
+def test_a_sent_message_starts_fresh_next_time() -> None:
+    state = WhatsAppTemplatesState()
+    state.open_form()
+    state.set_field("body", "Hola")
+    state.form_done = True
+    state.set_form_open(False)
+    assert state.form_body == "" and not state.form_done
+    state.open_form()
+    assert not state.form_resumed
+
+
+def test_the_hints_and_next_step_follow_the_type() -> None:
+    """UX review: a promotion sends one text to everyone; an order notice goes from a chat."""
+    assert "todos reciben el mismo texto" in NAME_HINT_PROMO
+    assert NAME_EXAMPLE in NAME_HINT_UTILITY
+    assert NEXT_STEP_CHATS == "Ir a los chats"
+    assert "chat" in DONE_HINT_UTILITY and "promociones" in DONE_HINT_PROMO
+    assert "plantilla" not in FORM_REVIEW_NOTICE.lower()
+    assert RESUME_NOTICE == "Seguimos donde lo dejaste."
+    assert RESTART_LABEL == "Empezar de nuevo"
+    source = open(whatsapp_tab_templates.__file__).read()
+    assert "BAJA" not in source  # no example that promises an unsubscribe we do not do
+    assert "30 días" not in source
+    assert "t.name" not in source  # the delete prompt shows the owner's name for it
 
 
 # --- 4. reading components for a send -------------------------------------------------

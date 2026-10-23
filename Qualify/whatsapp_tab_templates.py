@@ -40,6 +40,10 @@ from .whatsapp_templates_vm import (
     BUTTON_KINDS,
     BUTTONS_QUICK,
     BUTTONS_URL,
+    CATEGORY_UTILITY,
+    DONE_HINT_PROMO,
+    DONE_HINT_UTILITY,
+    FORM_REVIEW_NOTICE,
     FORM_TITLE,
     GUIDED_CATEGORIES,
     LANGUAGES,
@@ -48,11 +52,16 @@ from .whatsapp_templates_vm import (
     MAX_HEADER_CHARS,
     MAX_LABEL_CHARS,
     MAX_URL_CHARS,
-    NAME_EXAMPLE,
+    NAME_HINT_PROMO,
+    NAME_HINT_UTILITY,
+    NEXT_STEP_CHATS,
     NEXT_STEP_CONTACTS,
+    RESTART_LABEL,
+    RESUME_NOTICE,
     REVIEW_NOTICE,
     STEP_BUTTONS,
     STEP_KIND,
+    STEP_KIND_HINT,
     STEP_MESSAGE,
     STEP_REVIEW,
     STEP_TITLES,
@@ -78,14 +87,14 @@ def _delete_action(t: TemplateVM) -> rx.Component:
             loading=S.deleting_id == t.template_id,
             variant="soft",
             size="1",
+            **_TAP,
             **T.tone_scheme("neutral"),
         ),
-        title="Eliminar plantilla",
+        title="¿Eliminar este mensaje?",
         description=rx.text(
-            "Meta elimina ",
-            rx.text.strong(t.name),
-            " en todos sus idiomas. Las campañas que la usan dejan de poder enviarse y el "
-            "nombre no se puede reutilizar durante 30 días.",
+            "Se borra ",
+            rx.text.strong(t.display_name),
+            " en todos sus idiomas. Las promociones que lo usan ya no se podrán enviar.",
         ),
         verb="Eliminar",
         on_confirm=S.delete(t.template_id),
@@ -230,7 +239,7 @@ def _category_card(key: str, label: str, hint: str) -> rx.Component:
 def _step_kind() -> rx.Component:
     """① ¿Qué quieres avisar?"""
     return rx.vstack(
-        _step_heading(STEP_KIND, "Así Meta lo revisa en el tipo correcto y no lo rechaza."),
+        _step_heading(STEP_KIND, STEP_KIND_HINT),
         rx.vstack(
             *[_category_card(k, label, hint) for k, label, hint in GUIDED_CATEGORIES],
             spacing="2",
@@ -289,7 +298,7 @@ def _more_options() -> rx.Component:
                 value=S.form_footer,
                 on_change=lambda v: S.set_field("footer", v),
                 max_length=MAX_FOOTER_CHARS,
-                placeholder="Ej.: Responde BAJA para no recibir más mensajes",
+                placeholder="Ej.: Válido hasta el domingo",
                 width="100%",
                 size="3",
             ),
@@ -336,8 +345,7 @@ def _step_message() -> rx.Component:
             spacing="2",
         ),
         rx.text(
-            "En la revisión de Meta, [nombre] se muestra como «" + NAME_EXAMPLE + "». "
-            "Al enviarlo desde un chat, ponemos el nombre de esa persona.",
+            rx.cond(S.form_category == CATEGORY_UTILITY, NAME_HINT_UTILITY, NAME_HINT_PROMO),
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -395,6 +403,9 @@ def _step_buttons() -> rx.Component:
                                 max_length=MAX_BUTTON_CHARS,
                                 placeholder=(
                                     "Ej.: Lo quiero" if i == 1 else f"Respuesta {i} (opcional)"
+                                ),
+                                aria_label=(
+                                    "Respuesta 1" if i == 1 else f"Respuesta {i} (opcional)"
                                 ),
                                 width="100%",
                                 size="3",
@@ -497,7 +508,7 @@ def _step_review() -> rx.Component:
             width="100%",
             align_items="start",
         ),
-        rx.text(REVIEW_NOTICE, size="1", color=T.TEXT_MUTED),
+        rx.text(FORM_REVIEW_NOTICE, size="1", color=T.TEXT_MUTED),
         spacing="4",
         width="100%",
         align_items="start",
@@ -508,19 +519,36 @@ def _done() -> rx.Component:
     """N3: the exact notice once Meta has the message, and the next step under it."""
     return rx.vstack(
         callout(SUBMITTED_MESSAGE, "ok", icon="circle-check"),
-        rx.text(
-            "Mientras tanto, revisa quiénes aceptaron recibir tus promociones: a ellos les "
-            "podrás enviar este mensaje.",
-            size="2",
-            color=T.TEXT_MUTED,
-        ),
-        rx.button(
-            rx.icon("users", size=16),
-            NEXT_STEP_CONTACTS,
-            on_click=S.see_contacts,
-            size="3",
-            width=rx.breakpoints(initial="100%", sm="auto"),
-            **_TAP,
+        rx.cond(
+            S.form_category == CATEGORY_UTILITY,
+            rx.vstack(
+                rx.text(DONE_HINT_UTILITY, size="2", color=T.TEXT_MUTED),
+                rx.button(
+                    rx.icon("message-circle", size=16),
+                    NEXT_STEP_CHATS,
+                    on_click=S.see_chats,
+                    size="3",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                    **_TAP,
+                ),
+                spacing="4",
+                width="100%",
+                align_items="start",
+            ),
+            rx.vstack(
+                rx.text(DONE_HINT_PROMO, size="2", color=T.TEXT_MUTED),
+                rx.button(
+                    rx.icon("users", size=16),
+                    NEXT_STEP_CONTACTS,
+                    on_click=S.see_contacts,
+                    size="3",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                    **_TAP,
+                ),
+                spacing="4",
+                width="100%",
+                align_items="start",
+            ),
         ),
         spacing="4",
         width="100%",
@@ -599,12 +627,34 @@ def _form_footer() -> rx.Component:
     )
 
 
+def _resume_notice() -> rx.Component:
+    """N6: the drawer was closed with answers in it; they are all still here."""
+    return rx.hstack(
+        callout(RESUME_NOTICE, "info", icon="history", flex="1", min_width="12rem"),
+        rx.button(
+            rx.icon("rotate-ccw", size=16),
+            RESTART_LABEL,
+            on_click=S.restart_form,
+            variant="soft",
+            size="3",
+            disabled=S.submitting,
+            **_TAP,
+            **T.tone_scheme("neutral"),
+        ),
+        align="center",
+        spacing="2",
+        width="100%",
+        wrap="wrap",
+    )
+
+
 def template_form() -> rx.Component:
     return drawer(
         rx.cond(
             S.form_done,
             _done(),
             rx.vstack(
+                rx.cond(S.form_resumed, _resume_notice(), rx.fragment()),
                 rx.text(
                     "Paso ",
                     S.step + 1,

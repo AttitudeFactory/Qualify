@@ -458,6 +458,31 @@ MAX_LABEL_CHARS = 60
 #: N3 — the exact notice once the message reached Meta, and the next step under it.
 SUBMITTED_MESSAGE = "Te avisamos cuando esté aprobado (puede tardar hasta 24 h)."
 NEXT_STEP_CONTACTS = "Ver clientes que aceptaron"
+#: N3 for «Un aviso de pedido»: the real next job is to use it from that client's chat.
+NEXT_STEP_CHATS = "Ir a los chats"
+DONE_HINT_PROMO = (
+    "Mientras tanto, revisa quiénes aceptaron recibir tus promociones: a ellos les "
+    "podrás enviar este mensaje."
+)
+DONE_HINT_UTILITY = "Cuando esté aprobado, lo podrás enviar desde el chat de ese cliente."
+
+STEP_KIND_HINT = "Elige uno. Así te lo aprueban a la primera."
+#: The drawer's own review line (one name for the thing: «mensaje», N1). `REVIEW_NOTICE`
+#: stays for the tab until WHATSAPP-7 renames it.
+FORM_REVIEW_NOTICE = "Meta revisa el mensaje antes de que puedas enviarlo. Puede tardar hasta 24 h."
+#: Under «Agregar el nombre del cliente», by type: a promotion sends one text to all.
+NAME_HINT_PROMO = (
+    "Ojo: en una promoción todos reciben el mismo texto. Si pones [nombre], escribes tú "
+    "una sola palabra al enviarla (por ejemplo, vecino)."
+)
+NAME_HINT_UTILITY = (
+    "Al enviarlo desde un chat, ponemos el nombre de esa persona. En la revisión de Meta "
+    "se muestra como " + NAME_EXAMPLE + "."
+)
+
+#: N6: closing the drawer keeps the answers; reopening resumes where the owner left.
+RESUME_NOTICE = "Seguimos donde lo dejaste."
+RESTART_LABEL = "Empezar de nuevo"
 
 _MAX_AUTO_NAME_CHARS = 40
 _NAME_CHARS = re.compile(r"[a-z0-9_]+")
