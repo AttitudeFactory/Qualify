@@ -24,12 +24,37 @@ Fase C (followups) are unchanged.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
+
+#: A price-looking token: a currency sign or code next to a digit. The local check every
+#: assisted reply runs on the model's text (moved from `conversations.suggest`, unchanged).
+PRICE_TOKEN: Final = re.compile(
+    r"(\$|€|Bs\.?|USD|COP|VES|EUR)\s?\d|\d+\s?(\$|€|USD|COP|VES|EUR|Bs)"
+)
+
+_CURRENCY_BEFORE = r"(?:U\$S|US\$|\$|€|Bs\.?|USD|COP|VES|EUR|UYU)"
+_CURRENCY_AFTER = r"(?:\$|€|USD|COP|VES|EUR|UYU|Bs\.?|pesos?|bol[ií]vares|d[oó]lares?|euros?)"
+#: The whole amount with its currency, wider than `PRICE_TOKEN` (Uruguay's `U$S`/`UYU`,
+#: currency words). Used to scrub prices out of free text and by the public-reply check.
+PRICE_SPAN: Final = re.compile(
+    rf"{_CURRENCY_BEFORE}\s?\d[\d.,]*|\d[\d.,]*\s?{_CURRENCY_AFTER}(?![a-záéíóúñ])",
+    re.IGNORECASE,
+)
+
+
+def has_price_token(text: str) -> bool:
+    """Whether `text` states something that looks like a price (either pattern)."""
+    return bool(PRICE_TOKEN.search(text) or PRICE_SPAN.search(text))
+
+
+def _scrub_prices(text: str) -> str:
+    return " ".join(PRICE_SPAN.sub("", text).split()) if text else text
 
 
 @dataclass(frozen=True)
@@ -81,16 +106,43 @@ class Grounding:
 
     business_name: str | None = None
     products: tuple[GroundedProduct, ...] = ()
+    # True on the view `without_prices()` returns: the products' prices were removed on
+    # purpose (a PUBLIC reply never states a price, founder decision D1), not missing.
+    prices_withheld: bool = False
 
     @property
     def has_prices(self) -> bool:
         return any(p.price_label for p in self.products)
 
+    def without_prices(self) -> Grounding:
+        """The same facts minus every price (label, amount, currency, and any amount a
+        description or category mentions) — what a public comment reply may be given
+        (D1). Product ids and `updated_at` stay: they are the reviewer's provenance,
+        never shown to the model."""
+        return Grounding(
+            business_name=self.business_name,
+            products=tuple(
+                replace(
+                    p,
+                    price_label="",
+                    price_amount=None,
+                    currency="",
+                    category=_scrub_prices(p.category),
+                    description=_scrub_prices(p.description),
+                )
+                for p in self.products
+            ),
+            prices_withheld=True,
+        )
+
     def as_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "business_name": self.business_name,
             "products": [p.as_record() for p in self.products],
         }
+        if self.prices_withheld:
+            record["prices_withheld"] = True
+        return record
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any] | None) -> Grounding:
@@ -105,11 +157,21 @@ class Grounding:
             if isinstance(p, Mapping) and str(p.get("name") or "").strip()
         )
         name = record.get("business_name")
-        return cls(business_name=str(name) if name else None, products=products)
+        return cls(
+            business_name=str(name) if name else None,
+            products=products,
+            prices_withheld=record.get("prices_withheld") is True,
+        )
 
     def as_prompt(self) -> str:
         lines = [f"Nombre del negocio: {self.business_name or '(no indicado)'}"]
-        if self.products:
+        if self.products and self.prices_withheld:
+            # No price column at all: «precio no indicado» would read as "we have none".
+            lines.append("Productos (nombre — categoría — descripción):")
+            for p in self.products:
+                desc = p.description.strip()[:160] if p.description else ""
+                lines.append(f"- {p.name} — {p.category or '-'} — {desc or '-'}")
+        elif self.products:
             lines.append("Productos (nombre — precio — categoría — descripción):")
             for p in self.products:
                 price = p.price_label or "precio no indicado"
@@ -229,9 +291,12 @@ def _datetime_or_none(value: object) -> datetime | None:
 
 
 __all__ = [
+    "PRICE_SPAN",
+    "PRICE_TOKEN",
     "GroundedProduct",
     "Grounding",
     "GroundingProvider",
     "catalog_grounding_for",
     "grounding_from_products",
+    "has_price_token",
 ]

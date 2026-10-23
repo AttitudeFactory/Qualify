@@ -79,7 +79,8 @@ def test_counts_label_reads_naturally() -> None:
 
 
 def test_media_meta_label() -> None:
-    assert media_meta_label("image", 1080, 1350, None) == "1080×1350"
+    # A photo shows only «Foto»: pixel sizes are jargon to the owner (m-24842971).
+    assert media_meta_label("image", 1080, 1350, None) == ""
     assert media_meta_label("video", 1080, 1920, 7.4) == "7 s"
     assert media_meta_label("image", None, None, None) == ""
 

@@ -33,7 +33,7 @@ def _fresh_email() -> str:
 def _register(provider: FakeAuthProvider, email: str, password: str = "correct-horse-9"):
     return register_business(
         provider,
-        business_name="Polet Bubble Tea",
+        business_name="Polette",
         email=email,
         password=password,
         country="VE",
@@ -50,7 +50,7 @@ def test_signup_assigns_tenant_and_builds_the_full_local_half() -> None:
     with admin_session() as session:
         tenant = session.get(Tenant, result.tenant_id)
         assert tenant is not None
-        assert (tenant.name, tenant.country, tenant.currency) == ("Polet Bubble Tea", "VE", "USD")
+        assert (tenant.name, tenant.country, tenant.currency) == ("Polette", "VE", "USD")
         user = session.scalar(select(User).where(User.auth_user_id == result.auth_user_id))
         assert user is not None and user.tenant_id == result.tenant_id and user.email == email
         member = session.scalar(
@@ -61,9 +61,7 @@ def test_signup_assigns_tenant_and_builds_the_full_local_half() -> None:
         assert member is not None and member.role == "owner"
         assert (
             session.scalar(
-                select(Brand).where(
-                    Brand.tenant_id == result.tenant_id, Brand.name == "Polet Bubble Tea"
-                )
+                select(Brand).where(Brand.tenant_id == result.tenant_id, Brand.name == "Polette")
             )
             is not None
         )
@@ -88,7 +86,7 @@ def test_login_resolves_to_the_registered_tenant() -> None:
     login = resolve_login(provider, email, "correct-horse-9")
     assert login.tenant_id == registered.tenant_id
     assert login.auth_user_id == registered.auth_user_id
-    assert login.display_name == "Polet Bubble Tea"
+    assert login.display_name == "Polette"
 
 
 def test_identity_without_local_half_is_incomplete() -> None:

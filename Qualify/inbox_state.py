@@ -120,7 +120,7 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay ningún tenant activo. Entra a Tus redes y elige uno primero."
+_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _LOAD_FAILED = "No se pudo cargar el contenido reciente. Revisa la conexión con Instagram."
 _TOGGLE_FAILED = "No se pudo actualizar el monitoreo. Intenta de nuevo."

@@ -34,7 +34,6 @@ forced_or_auto`).
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -42,6 +41,7 @@ from typing import Any, Final, Protocol
 from uuid import UUID
 
 from qualify_api.assisted.grounding import (
+    PRICE_TOKEN,
     GroundedProduct,
     Grounding,
     GroundingProvider,
@@ -110,7 +110,7 @@ SYSTEM_PROMPT: Final = (
     "Responde ÚNICAMENTE llamando a la herramienta propose_reply."
 )
 
-_PRICE_TOKEN = re.compile(r"(\$|€|Bs\.?|USD|COP|VES|EUR)\s?\d|\d+\s?(\$|€|USD|COP|VES|EUR|Bs)")
+_PRICE_TOKEN = PRICE_TOKEN  # moved to `assisted.grounding` (shared with public replies)
 
 
 @dataclass(frozen=True)
@@ -188,10 +188,19 @@ def needs_review(proposal: Proposal, grounding: Grounding) -> bool:
     return False
 
 
+#: The prefix of `GENERATOR_VERSION`; another prompt over the same tool contract (the
+#: public comment reply, `replies.public_drafts`) passes its own.
+GENERATOR_VERSION_PREFIX: Final = "qua226.1"
+
+
 class ClaudeDraftGenerator:
     """`DraftGenerator` over the Messages API (`claude_tools`). The client is built on
     the first proposal, not at construction, so the service can be composed without the
-    key and fail only when a draft is actually asked for."""
+    key and fail only when a draft is actually asked for.
+
+    `system_prompt` / `version_prefix` let another surface reuse the same strict tool
+    contract with its own instructions and its own version (m-24789645: public comment
+    replies); the defaults are the private-conversation generator, unchanged."""
 
     def __init__(
         self,
@@ -199,15 +208,19 @@ class ClaudeDraftGenerator:
         config: ModelConfig = DRAFT_MODEL,
         client_factory: ClientFactory = default_client,
         api_key: str | None = None,
+        system_prompt: str = SYSTEM_PROMPT,
+        version_prefix: str = GENERATOR_VERSION_PREFIX,
     ) -> None:
         self._config = config
         self._client_factory = client_factory
         self._api_key = api_key
+        self._system_prompt = system_prompt
+        self._version_prefix = version_prefix
         self._client: Any = None
 
     @property
     def version(self) -> str:
-        return f"qua226.1:{self._config.model_id}"
+        return f"{self._version_prefix}:{self._config.model_id}"
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -260,7 +273,7 @@ class ClaudeDraftGenerator:
             self._get_client(),
             self._config,
             meter,
-            system=SYSTEM_PROMPT,
+            system=self._system_prompt,
             messages=[{"role": "user", "content": user_content}],
             tools=[tool],
             tool_choice=forced_or_auto(self._config, TOOL_NAME),
@@ -403,6 +416,7 @@ __all__ = [
     "GATE_PENDING",
     "GATE_WINDOW_CLOSED",
     "GENERATOR_VERSION",
+    "GENERATOR_VERSION_PREFIX",
     "MAX_DRAFT_CHARS",
     "SYSTEM_PROMPT",
     "TOOL_NAME",

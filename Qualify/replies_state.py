@@ -15,6 +15,13 @@ and the `HumanApproval` the send demands (`replies_provider.approval_for`). It u
 be the tenant's `owner` row (`connections_provider.acting_user_id`), which attributed
 every approval to the owner whoever clicked.
 
+**Fase B (m-24789645, PR 3).** `regenerate` asks the `replies.regenerate_draft` seam
+for another proposal as the logged-in person (never sends), and a draft that needs
+review is sent only after «Ya revisé estos puntos» (`reviewed_draft_ids`, checked inside
+`_decide_and_send` through `replies_vm.send_block_reason` — the disabled button is only
+a hint). The gate only adds a condition in front of the existing decide → approval →
+send path; there is still exactly one way to send.
+
 **Two Reflex background-task constraints, both hit and fixed during manual testing
 (2026-09-04) — neither is optional, both are enforced at runtime, not just style:**
 
@@ -56,7 +63,7 @@ from uuid import UUID
 
 import reflex as rx
 from qualify_api.claude_tools import ClaudeToolError
-from qualify_api.replies.service import UnknownDraft
+from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
 from .auth_state import AuthState
 from .inbox_state import InboxState
@@ -67,13 +74,15 @@ from .replies_provider import (
     decide_draft,
     generate_drafts,
     pending_drafts,
+    regenerate_draft,
     send_draft,
 )
+from .replies_vm import generation_message, regenerate_error_message, send_block_reason
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay ningún tenant activo. Entra a Tus redes y elige uno primero."
+_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la página e intenta de nuevo."
 _NO_ACTING_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
@@ -105,6 +114,9 @@ def _safe_error_detail(exc: Exception) -> str:
     detail = type(exc).__name__
     if isinstance(exc, ClaudeToolError):
         detail += f": {exc}"
+    if isinstance(exc, RegenerationRefused):
+        # The gate's reason: versions and conditions, never comment text or a person.
+        detail += f": {exc.reason}"
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
         detail += f" (HTTP {status})"
@@ -127,6 +139,14 @@ class RepliesState(rx.State):
     # Which draft's textarea is open for editing, and its current (uncommitted) text.
     editing_draft_id: str = ""
     edit_text: str = ""
+
+    # m-24789645: the draft «Regenerar» is working on (it also holds `busy_draft_id`,
+    # so the card's other buttons wait), and the drafts the person ticked «Ya revisé
+    # estos puntos» for — a draft that needs review is not sent without it
+    # (`replies_vm.send_block_reason`). A regenerated draft has a new id, so its tick
+    # never carries over to text nobody has read yet.
+    regenerating_draft_id: str = ""
+    reviewed_draft_ids: list[str] = []
 
     @rx.var
     def has_pending_drafts(self) -> bool:
@@ -221,15 +241,16 @@ class RepliesState(rx.State):
 
         yield RepliesState.load_pending_drafts
 
-        if summary.drafts_created == 0:
-            message = "No hay comentarios positivos nuevos para redactar una respuesta."
-        else:
-            message = (
-                f"Borradores nuevos: {summary.drafts_created} · "
-                f"Comentarios revisados: {summary.candidates_seen} · "
-                f"Descartados por la puerta: {summary.gate_rejected}"
-            )
-        yield rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+        # The counts stay in the log; the owner only needs what is waiting for them.
+        logger.info(
+            "generate_drafts: created=%d seen=%d gate_rejected=%d",
+            summary.drafts_created,
+            summary.candidates_seen,
+            summary.gate_rejected,
+        )
+        yield rx.toast.success(
+            generation_message(summary.drafts_created), duration=_RESULT_TOAST_DURATION_MS
+        )
 
     def start_edit(self, draft_id: str, current_text: str) -> None:
         self.editing_draft_id = draft_id
@@ -241,6 +262,14 @@ class RepliesState(rx.State):
 
     def set_edit_text(self, value: str) -> None:
         self.edit_text = value
+
+    def set_reviewed(self, draft_id: str, checked: bool) -> None:
+        """The «Ya revisé estos puntos» box of one draft. Ticking it only allows the send;
+        the send itself still goes through the decision + `HumanApproval` path."""
+        others = [i for i in self.reviewed_draft_ids if i != draft_id]
+        self.reviewed_draft_ids = [*others, draft_id] if checked else others
+        if checked and self.action_error:
+            self.action_error = ""
 
     @rx.event(background=True)
     async def accept_and_send(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
@@ -269,9 +298,19 @@ class RepliesState(rx.State):
         async with self:
             if self.busy_draft_id:
                 return  # another action on some draft is already in flight
-            self.busy_draft_id = draft_id
-            self.action_error = ""
-            self.editing_draft_id = ""
+            # m-24789645: a draft that needs review waits for «Ya revisé estos puntos».
+            # Checked here, server side — the disabled button is only a hint.
+            blocked = send_block_reason(self.drafts, draft_id, self.reviewed_draft_ids)
+            if blocked:
+                self.action_error = blocked
+            else:
+                self.busy_draft_id = draft_id
+                self.action_error = ""
+                self.editing_draft_id = ""
+        if blocked:
+            # Also a toast: the callout sits above the list, maybe far from this card.
+            yield rx.toast.error(blocked, duration=_RESULT_TOAST_DURATION_MS)
+            return
 
         resolved_draft_id = _try_uuid(draft_id)
         tenant_id, _connection_id = await self._resolve_ids()
@@ -327,6 +366,7 @@ class RepliesState(rx.State):
             async with self:
                 self.busy_draft_id = ""
                 self.edit_text = ""
+                self.reviewed_draft_ids = [i for i in self.reviewed_draft_ids if i != draft_id]
 
         yield RepliesState.load_pending_drafts
         yield rx.toast.success("Respuesta enviada.", duration=_RESULT_TOAST_DURATION_MS)
@@ -375,3 +415,63 @@ class RepliesState(rx.State):
 
         yield RepliesState.load_pending_drafts
         yield rx.toast.success("Borrador descartado.", duration=_RESULT_TOAST_DURATION_MS)
+
+    @rx.event(background=True)
+    async def regenerate(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
+        """«Regenerar» (m-24789645): ask for another proposal for a `proposed` draft, as
+        the logged-in person. Never sends — the new draft lands in the queue like any
+        other and still needs «Aceptar y enviar». Same busy guard as the other actions,
+        and the list is re-read whatever happened (a refusal usually means the draft or
+        the comment changed meanwhile)."""
+        async with self:
+            if self.busy_draft_id:
+                return
+            self.busy_draft_id = draft_id
+            self.regenerating_draft_id = draft_id
+            self.action_error = ""
+            self.editing_draft_id = ""
+
+        resolved_draft_id = _try_uuid(draft_id)
+        tenant_id, _connection_id = await self._resolve_ids()
+        if tenant_id is None or resolved_draft_id is None:
+            async with self:
+                self.busy_draft_id = ""
+                self.regenerating_draft_id = ""
+                self.action_error = _NO_TENANT if tenant_id is None else _DECIDE_FAILED
+            return
+
+        user_id = await self._acting_user(tenant_id)
+        if user_id is None:
+            async with self:
+                self.busy_draft_id = ""
+                self.regenerating_draft_id = ""
+                self.action_error = _NO_ACTING_USER
+            return
+
+        error = ""
+        try:
+            await asyncio.to_thread(
+                regenerate_draft,
+                tenant_id=tenant_id,
+                draft_id=resolved_draft_id,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            logger.error("regenerate_draft failed: %s", _safe_error_detail(exc))
+            error = regenerate_error_message(exc)
+            async with self:
+                self.action_error = error
+        finally:
+            async with self:
+                self.busy_draft_id = ""
+                self.regenerating_draft_id = ""
+                self.reviewed_draft_ids = [i for i in self.reviewed_draft_ids if i != draft_id]
+
+        yield RepliesState.load_pending_drafts
+        if error:
+            # Also a toast: the callout sits above the list, maybe far from this card.
+            yield rx.toast.error(error, duration=_RESULT_TOAST_DURATION_MS)
+        else:
+            yield rx.toast.success(
+                "Listo: te propusimos otra respuesta.", duration=_RESULT_TOAST_DURATION_MS
+            )

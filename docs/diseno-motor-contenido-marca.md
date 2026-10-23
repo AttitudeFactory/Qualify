@@ -45,7 +45,7 @@ Lo mismo aplica a la imagen: Ads pide otras relaciones de aspecto. El MVP genera
 | D11 | **Las rutas son submódulos en un acordeón, en orden fijo**, y `GENERATE` va la última con aviso **«NO RECOMENDADA»**. | El orden de la UI *es* la recomendación. Un desplegable neutro las presentaría como equivalentes, que es justo lo que la evidencia dice que no son. §6.4 |
 | D12 | **`brand_kit.image_policy` + `ContentDraft.requires_ai_disclosure`.** | La política deja de depender de la memoria de quien redacta el brief, y la obligación de etiquetar viaja con el artefacto hasta el módulo de Ads. |
 | D13 | **Vídeo: efectos deterministas sobre metraje propio (ffmpeg), declarados en el brief.** Vídeo generado queda como última opción, igual que `GENERATE`. | §1.7. Retroceso y cámara lenta sobre tu propio vídeo son gratis, instantáneos y no requieren etiqueta. |
-| D14 | **`1 tenant = 1 brand`.** *(Fundador, 2026-08-18 — «multibrand es complicado ahora».)* Bianki y Polet son **dos tenants**, con login propio cada uno. | Coherente con el ruling firmado `1 login = 1 tenant = 1 negocio`, sin switch. **Simplifica el módulo:** no hay selector de marca en ninguna pantalla, `brand_kit` es único por tenant y `readiness` deja de necesitar un `brand_id` de entrada. Contrapartida en §7.7. |
+| D14 | **`1 tenant = 1 brand`.** *(Fundador, 2026-08-18 — «multibrand es complicado ahora».)* Bianki y Polet(te) son **dos tenants**, con login propio cada uno. **Actualizado por el fundador, 2026-10-23:** Bianki y Polette son de **un mismo dueño, que las maneja por separado, como dos marcas, con un solo inicio de sesión** — ver la nota de §7.7. | Coherente con el ruling firmado `1 login = 1 tenant = 1 negocio`, sin switch. **Simplifica el módulo:** no hay selector de marca en ninguna pantalla, `brand_kit` es único por tenant y `readiness` deja de necesitar un `brand_id` de entrada. Contrapartida en §7.7. |
 | D15 | **Bucle LLM→render→visión para autoría de plantillas** (N1 en MVP; N2+N3 después). El LLM diseña *dentro* del kit; lo aprobado se congela. | §1.9. El render gratis es lo que hace viable el bucle: iterar cuesta solo los tokens del LLM. |
 | D16 | **`template_id`+`template_version` en la provenance de cada pieza** → rendimiento por plantilla medible con insights de owned media. | §1.9. «La v2 rinde 40% más que la v1» se vuelve una frase calculable. Loop de ADR 32 D16 sobre datos que ya existen. |
 | D17 | **`brand_kit.photo_recipe`**: parámetros de tratamiento de foto descubiertos una vez (con LLM + visión), aplicados gratis para siempre. | §1.9. «Se paga por descubrir, no por repetir» — fundador, 2026-08-18. |
@@ -1096,11 +1096,21 @@ class CeleryDispatcher:
 
 ### 7.7 La contrapartida de `1 tenant = 1 brand`
 
+> **Actualización del fundador, 2026-10-23.** Bianki (shawarma y ensaladas) y Polette (helados de
+> yogur) son de **un mismo dueño, que las maneja por separado, como dos marcas, con un solo inicio
+> de sesión**. «Por separado» confirma lo de esta sección: cada marca con su Brand Kit, su catálogo,
+> sus cuentas y sus sellos. «Un solo inicio de sesión» **no cabe hoy** en el modelo firmado
+> `1 login = 1 tenant = 1 negocio` sin selector (el código toma la primera marca del tenant:
+> [`qua-116-preguntas-equipo-brandkit-generador.md`](qua-116-preguntas-equipo-brandkit-generador.md) H2).
+> Mientras no se decida cómo (selector de marca dentro de un tenant, o una identidad que entre a dos
+> tenants), el dueño entra con un login por marca. Es una decisión de arquitectura pendiente
+> (`principal-architect`), no un cambio de este documento.
+
 La decisión simplifica este módulo y cierra una puerta fuera de él. Conviene que esté escrito para que nadie la redescubra por sorpresa:
 
-**El programa de fidelidad conjunto entre Bianki y Polet queda descartado.** El [backlog de Loyalty](backlog-loyalty-sellos-cupones.md) bloquea el cupón cross-negocio **por diseño**, no por olvido: cruzar tenants exigiría la identidad de operador que el ruling del 2026-08-16 descartó a sabiendas. Con dos tenants, «compra pizza en Bianki, suma sello para un bubble tea en Polet» no es implementable sin reabrir esa puerta.
+**El programa de fidelidad conjunto entre Bianki y Polette queda descartado.** El [backlog de Loyalty](backlog-loyalty-sellos-cupones.md) bloquea el cupón cross-negocio **por diseño**, no por olvido: cruzar tenants exigiría la identidad de operador que el ruling del 2026-08-16 descartó a sabiendas. Con dos tenants, «compra un shawarma en Bianki, suma sello para un helado en Polette» no es implementable sin reabrir esa puerta.
 
-**Lo que sí sobrevive:** el **Combo Vecino** ($6, bebida + pizza) sigue funcionando como promoción y como pieza de contenido cruzada — se publica en las dos cuentas, cada una desde su tenant. Lo que se pierde es la acumulación automática de sellos entre los dos, no la venta cruzada.
+**Lo que sí sobrevive:** un **combo cruzado** entre los dos locales (en agosto, el «Combo Vecino» de $6) sigue funcionando como promoción y como pieza de contenido cruzada — se publica en las dos cuentas, cada una desde su tenant. Lo que se pierde es la acumulación automática de sellos entre los dos, no la venta cruzada.
 
 **Esto cierra `LOY-00.1`** con la respuesta contraria a la que ese backlog asumía: **dos programas de sellos separados**, uno por negocio. Conviene anotarlo allí antes de que arranque.
 

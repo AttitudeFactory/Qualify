@@ -28,7 +28,7 @@ def _no_brand_kit_drafts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _register_kwargs(**overrides) -> dict:
     base = dict(
-        business_name="Polet Bubble Tea",
+        business_name="Polette",
         email="hlrd1993+polet@gmail.com",
         password="correct-horse-9",
         country="VE",

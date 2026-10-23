@@ -2689,7 +2689,7 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.text(
-            "Toca un valor para cambiarlo. Tu voz la ajustas después en «Tu marca».",
+            "Toca un valor para cambiarlo. Tu forma de hablar la eliges después, en «Tu marca».",
             size="1",
             color=T.TEXT_FAINT,
         ),

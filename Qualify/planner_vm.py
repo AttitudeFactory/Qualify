@@ -328,6 +328,40 @@ def day_title(day: date, today: date) -> str:
 
 
 # ---------------------------------------------------------------------------
+# An empty week (m-24842982, audit m4 H2): on a phone the «Por programar» panel is not
+# on screen, so the empty week itself says how many approved publications are waiting
+# and offers the one button that plans them all.
+
+EMPTY_WEEK_TITLE = "Tu semana está libre"
+NO_APPROVED_BODY = "Todavía no tienes publicaciones aprobadas."
+CREATE_ACTION = "Crear una publicación"
+
+
+@dataclass(frozen=True)
+class WaitingCopy:
+    """What the empty week says for `count` approved publications without a date."""
+
+    body: str
+    action: str
+
+
+def waiting_copy(count: int) -> WaitingCopy:
+    """«Tienes 3 publicaciones aprobadas esperando día y hora.» + «Programar mis 3
+    publicaciones»; one reads in the singular; none sends to «Crear una publicación»."""
+    if count <= 0:
+        return WaitingCopy(body=NO_APPROVED_BODY, action=CREATE_ACTION)
+    if count == 1:
+        return WaitingCopy(
+            body="Tienes 1 publicación aprobada esperando día y hora.",
+            action="Programar mi publicación",
+        )
+    return WaitingCopy(
+        body=f"Tienes {count} publicaciones aprobadas esperando día y hora.",
+        action=f"Programar mis {count} publicaciones",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Timezones — the Planificador's view zone picker
 
 
@@ -806,6 +840,12 @@ class EventDetailVM:
     # QUA-143: the POST's campaign ("" when independent), read through the POST.
     campaign_name: str = ""
     campaign_color: str = ""
+    # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
+    # — derived from local_date/local_time, so every builder gets it without passing it.
+    approved_line: str = field(init=False, default="")
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "approved_line", approved_line(self.local_date, self.local_time))
 
 
 # ---------------------------------------------------------------------------
@@ -1716,3 +1756,19 @@ def build_plan_row(
         repeat_days=list(item.repeat_days),
         **campaign_fields,
     )
+
+
+def approved_line(day_iso: str, at: str) -> str:
+    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
+    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
+    "" without a valid date; no final period, «p. m.» already ends the sentence. The
+    owner approved it; Qualify never publishes on its own."""
+    try:
+        day = date.fromisoformat(day_iso)
+    except ValueError:
+        return ""
+    hour, _minute = split_time(at)
+    article = "a la" if hour % 12 == 1 else "a las"
+    weekday = _WEEKDAYS_LONG[day.weekday()].lower()
+    month = _MONTHS_LONG[day.month - 1]
+    return f"Aprobada por ti: sale el {weekday} {day.day} de {month} {article} {time_label(at)}"

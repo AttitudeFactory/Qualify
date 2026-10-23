@@ -15,10 +15,16 @@ copy.
 `uq_reply_draft_live_message`; `models.LIVE_STATUSES`) — `create_draft` returns `None`
 (not an exception) when one already exists, same "no raw IntegrityError leaks upstream"
 discipline `record_sentiment_result` already follows for its own unique index. A
-discarded or refused (`send_failed`) draft leaves room for a new one; generation itself
-still skips any comment with ANY draft (`list_positive_comments_without_draft`,
-`has_draft`), so nothing is regenerated automatically — a new draft after a discard is a
-deliberate act (m-24789645 PR 3, «Regenerar»).
+discarded or refused (`send_failed`) draft leaves room for a new one; the automatic batch
+still skips any comment with ANY draft (`list_reply_candidates`), so nothing is
+regenerated automatically — a new draft after a discard is a deliberate act
+(`supersede_draft`, behind `ReplyService.regenerate`, m-24789645 «Regenerar»).
+
+**Candidates (m-24789645 PR 2).** A comment is a candidate when it has a current-version
+POS sentiment row OR a current-version commercial-intent row (Fase A). Sentiment and
+intent are independent analyses, so either may be missing; the candidate carries both
+(ids, label, intent classes) plus the comment's Fase C followup status, and the gate
+decides.
 
 **Provenance (0080).** `create_draft` takes an optional `DraftProvenance` — grounding,
 review verdict, unsupported claims, model/cost, the Fase A intent result — and every
@@ -36,10 +42,12 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
+from sqlalchemy import Text, and_, column, false, func, or_, select, table, update
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.inbox.models import Message, Thread
+from qualify_api.intent.models import CommentIntentResult
 from qualify_api.replies.models import DEAD_STATUSES, CommentReplyDraft
 from qualify_api.sentiment.models import CommentSentimentResult
 from qualify_api.sentiment.repository import AnalysisVersion
@@ -48,17 +56,38 @@ _COMMENT_CHANNEL = "comment"
 _INBOUND = "inbound"
 _LIVE_INDEX = "uq_reply_draft_live_message"
 
+# Fase C's `interaction_followups` (0071), read as a bare table: the gate needs only the
+# status of a comment's followup, and importing the `followups` package here would tie
+# the two modules together for one column. RLS scopes it like every other read here.
+_FOLLOWUPS = table(
+    "interaction_followups",
+    column("origin_message_id", PGUUID(as_uuid=True)),
+    column("status", Text),
+)
+
 
 @dataclass(frozen=True)
 class CandidateComment:
-    """One POS-sentiment comment, current `AnalysisVersion`, with no draft yet — what
-    `ReplyService.generate_drafts` iterates over."""
+    """One inbound comment and the signals that may earn it a public reply — what
+    `ReplyService.generate_drafts` / `regenerate` hand to the gate.
+
+    Every signal is the CURRENT-version one or absent: `sentiment_*` from
+    `comment_sentiment_results`, `intent_*` from `comment_intent_results` (Fase A).
+    `sentiment_label` is `""` when the comment has no current sentiment row."""
 
     message_id: UUID
     source_id: str
     text: str
-    sentiment_result_id: UUID
-    sentiment_label: str
+    sentiment_result_id: UUID | None = None
+    sentiment_label: str = ""
+    intent_result_id: UUID | None = None
+    # Assigned intent classes (`IntentClass` values), most confident first.
+    intent_classes: tuple[str, ...] = ()
+    commercial_intent: bool = False
+    # The version the intent row was recorded under (None without an intent row).
+    intent_version: AnalysisVersion | None = None
+    # `interaction_followups.status` of the comment's Fase C followup, None if none.
+    followup_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,7 +117,8 @@ class DraftRecord:
     connection_id: UUID
     message_id: UUID
     source_id: str
-    sentiment_result_id: UUID
+    # None / `""` when the draft stands on a commercial-intent signal alone (0081).
+    sentiment_result_id: UUID | None
     sentiment_label: str
     gate_reason: str
     generator_version: str
@@ -133,14 +163,33 @@ class DraftRecord:
 
 
 class ReplyRepository(Protocol):
-    def list_positive_comments_without_draft(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+    def list_reply_candidates(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        sentiment_version: AnalysisVersion,
+        intent_version: AnalysisVersion | None,
     ) -> tuple[CandidateComment, ...]:
-        """Every inbound, comment-channel message with a CURRENT-version `POS`
-        `comment_sentiment_results` row and no `comment_reply_drafts` row yet — and not
-        soft-deleted (QUA-101, `messages.deleted_at`): a comment Meta no longer returns
-        must never become a NEW draft candidate. Does not retroactively affect a draft
-        already `proposed` before its comment was deleted — see `list_pending_drafts`."""
+        """Every inbound, comment-channel message of the connection, not soft-deleted
+        (QUA-101: a comment Meta no longer returns never becomes a NEW draft candidate),
+        with no `comment_reply_drafts` row at all (a discarded draft is NOT regenerated
+        by the batch — that is `supersede_draft`'s explicit act), and with a
+        `sentiment_version` POS row OR an `intent_version` commercial row. With
+        `intent_version=None` only the POS half applies (the QUA-22 behaviour)."""
+        ...
+
+    def get_reply_candidate(
+        self,
+        *,
+        tenant_id: UUID,
+        message_id: UUID,
+        sentiment_version: AnalysisVersion,
+        intent_version: AnalysisVersion | None,
+    ) -> CandidateComment | None:
+        """One comment with its current signals, whatever they are and whatever drafts
+        it has (for `regenerate`, which lets the gate judge). None if it is not an
+        inbound, non-deleted comment visible to this tenant."""
         ...
 
     def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool:
@@ -166,6 +215,25 @@ class ReplyRepository(Protocol):
         (`uq_reply_draft_live_message`) — same never-raises-on-duplicate discipline
         `record_sentiment_result` follows. Any other integrity error (a foreign key, a
         CHECK) propagates: it is a bug, not a race."""
+        ...
+
+    def supersede_draft(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        decided_by_user_id: UUID,
+        candidate: CandidateComment,
+        gate_reason: str,
+        generator_version: str,
+        generated_text: str,
+        provenance: DraftProvenance | None = None,
+    ) -> DraftRecord | None:
+        """In ONE transaction: discard `draft_id` (only while it is still `'proposed'`,
+        recording who) and create the comment's new `'proposed'` draft. Returns the new
+        row, or None when it lost a race — the old draft was no longer `'proposed'` (a
+        double click: the other request already replaced it) or another live draft holds
+        the comment. Nothing is written in that case, so the live index never trips."""
         ...
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None: ...
@@ -219,7 +287,7 @@ def _row_to_record(row: CommentReplyDraft, *, comment_text: str = "") -> DraftRe
         message_id=row.message_id,
         source_id=row.source_id,
         sentiment_result_id=row.sentiment_result_id,
-        sentiment_label=row.sentiment_label,
+        sentiment_label=row.sentiment_label or "",
         gate_reason=row.gate_reason,
         generator_version=row.generator_version,
         generated_text=row.generated_text,
@@ -260,52 +328,180 @@ def _provenance_columns(provenance: DraftProvenance) -> dict[str, Any]:
     }
 
 
+def _with_candidate_signal(
+    provenance: DraftProvenance | None, candidate: CandidateComment
+) -> DraftProvenance:
+    """The draft names the intent result it was judged on, like it names the sentiment
+    result: from the provenance when the generator set it, else from the candidate."""
+    p = provenance or _NO_PROVENANCE
+    if p.intent_result_id is None and candidate.intent_result_id is not None:
+        return replace(p, intent_result_id=candidate.intent_result_id)
+    return p
+
+
 def _is_live_duplicate(exc: IntegrityError) -> bool:
     constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
     return constraint == _LIVE_INDEX
 
 
-class PostgresReplyRepository:
-    def list_positive_comments_without_draft(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
-    ) -> tuple[CandidateComment, ...]:
-        with tenant_session(tenant_id) as session:
-            stmt = (
-                select(Message, CommentSentimentResult)
-                .join(Thread, Thread.id == Message.thread_id)
-                .join(CommentSentimentResult, CommentSentimentResult.message_id == Message.id)
-                .outerjoin(CommentReplyDraft, CommentReplyDraft.message_id == Message.id)
-                .where(
-                    Thread.channel == _COMMENT_CHANNEL,
-                    Message.direction == _INBOUND,
-                    Message.connection_id == connection_id,
-                    # QUA-101: a comment Meta no longer returns (`InboxRepository.
-                    # reconcile_media_comments`) is not a candidate for a NEW reply
-                    # draft — same exclusion `sentiment/repository.py`'s four read
-                    # methods already apply. Deliberately does NOT touch a draft that
-                    # already exists for a comment deleted AFTER drafting
-                    # (`list_pending_drafts` is unchanged) — hiding/flagging an
-                    # already-proposed draft is a separate product decision, not this
-                    # fix's job.
-                    Message.deleted_at.is_(None),
-                    CommentSentimentResult.label == "POS",
-                    CommentSentimentResult.detector_version == version.detector_version,
-                    CommentSentimentResult.pipeline_version == version.pipeline_version,
-                    CommentSentimentResult.model_id == version.model_id,
-                    CommentReplyDraft.id.is_(None),
-                )
-            )
-            rows = session.execute(stmt).all()
-        return tuple(
-            CandidateComment(
-                message_id=message.id,
-                source_id=message.external_message_id,
-                text=message.text or "",
-                sentiment_result_id=result.id,
-                sentiment_label=result.label,
-            )
-            for message, result in rows
+def _version_match(model: Any, version: AnalysisVersion) -> Any:
+    """Same COALESCE as the results' unique indexes: a NULL revision equals NULL."""
+    return and_(
+        model.detector_version == version.detector_version,
+        model.pipeline_version == version.pipeline_version,
+        model.model_id == version.model_id,
+        func.coalesce(model.model_revision, "") == (version.model_revision or ""),
+    )
+
+
+def _candidate_select(
+    *, sentiment_version: AnalysisVersion, intent_version: AnalysisVersion | None
+) -> Any:
+    """Inbound, non-deleted comments with their CURRENT sentiment row, CURRENT intent row
+    and Fase C followup status, all LEFT-joined (each is unique per comment and
+    version, and `interaction_followups.origin_message_id` is UNIQUE)."""
+    intent_on = (
+        _version_match(CommentIntentResult, intent_version)
+        if intent_version is not None
+        else false()
+    )
+    return (
+        select(
+            Message.id,
+            Message.external_message_id,
+            Message.text,
+            CommentSentimentResult.id.label("sentiment_result_id"),
+            CommentSentimentResult.label.label("sentiment_label"),
+            CommentIntentResult.id.label("intent_result_id"),
+            CommentIntentResult.confidences,
+            CommentIntentResult.commercial_intent,
+            CommentIntentResult.detector_version,
+            CommentIntentResult.pipeline_version,
+            CommentIntentResult.model_id,
+            CommentIntentResult.model_revision,
+            _FOLLOWUPS.c.status.label("followup_status"),
         )
+        .join(Thread, Thread.id == Message.thread_id)
+        .outerjoin(
+            CommentSentimentResult,
+            and_(
+                CommentSentimentResult.message_id == Message.id,
+                _version_match(CommentSentimentResult, sentiment_version),
+            ),
+        )
+        .outerjoin(
+            CommentIntentResult,
+            and_(CommentIntentResult.message_id == Message.id, intent_on),
+        )
+        .outerjoin(_FOLLOWUPS, _FOLLOWUPS.c.origin_message_id == Message.id)
+        .where(
+            Thread.channel == _COMMENT_CHANNEL,
+            Message.direction == _INBOUND,
+            # QUA-101: a comment Meta no longer returns (`InboxRepository.
+            # reconcile_media_comments`) is not a candidate for a NEW reply draft. A
+            # draft proposed before the deletion is untouched (`list_pending_drafts`).
+            Message.deleted_at.is_(None),
+        )
+    )
+
+
+def _candidate_from_row(row: Any) -> CandidateComment:
+    confidences = row.confidences if isinstance(row.confidences, dict) else {}
+    ranked = sorted(confidences.items(), key=lambda item: (-float(item[1]), str(item[0])))
+    intent_version = (
+        AnalysisVersion(
+            detector_version=row.detector_version,
+            pipeline_version=row.pipeline_version,
+            model_id=row.model_id,
+            model_revision=row.model_revision,
+        )
+        if row.intent_result_id is not None
+        else None
+    )
+    return CandidateComment(
+        message_id=row.id,
+        source_id=row.external_message_id,
+        text=row.text or "",
+        sentiment_result_id=row.sentiment_result_id,
+        sentiment_label=row.sentiment_label or "",
+        intent_result_id=row.intent_result_id,
+        intent_classes=tuple(str(name) for name, _ in ranked),
+        commercial_intent=bool(row.commercial_intent),
+        intent_version=intent_version,
+        followup_status=row.followup_status,
+    )
+
+
+def _new_row(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    candidate: CandidateComment,
+    gate_reason: str,
+    generator_version: str,
+    generated_text: str,
+    provenance: DraftProvenance | None,
+) -> CommentReplyDraft:
+    return CommentReplyDraft(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        message_id=candidate.message_id,
+        source_id=candidate.source_id,
+        sentiment_result_id=candidate.sentiment_result_id,
+        # `""` (no sentiment row) is stored as NULL — 0081's sentiment-pair CHECK.
+        sentiment_label=candidate.sentiment_label or None,
+        gate_reason=gate_reason,
+        generator_version=generator_version,
+        generated_text=generated_text,
+        status="proposed",
+        **_provenance_columns(_with_candidate_signal(provenance, candidate)),
+    )
+
+
+class PostgresReplyRepository:
+    def list_reply_candidates(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        sentiment_version: AnalysisVersion,
+        intent_version: AnalysisVersion | None,
+    ) -> tuple[CandidateComment, ...]:
+        has_any_draft = (
+            select(CommentReplyDraft.id).where(CommentReplyDraft.message_id == Message.id).exists()
+        )
+        commercial = (
+            CommentIntentResult.commercial_intent.is_(True)
+            if intent_version is not None
+            else false()
+        )
+        stmt = (
+            _candidate_select(sentiment_version=sentiment_version, intent_version=intent_version)
+            .where(
+                Message.connection_id == connection_id,
+                ~has_any_draft,
+                or_(CommentSentimentResult.label == "POS", commercial),
+            )
+            .order_by(Message.posted_at.asc().nulls_last(), Message.id)
+        )
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(stmt).all()
+        return tuple(_candidate_from_row(row) for row in rows)
+
+    def get_reply_candidate(
+        self,
+        *,
+        tenant_id: UUID,
+        message_id: UUID,
+        sentiment_version: AnalysisVersion,
+        intent_version: AnalysisVersion | None,
+    ) -> CandidateComment | None:
+        stmt = _candidate_select(
+            sentiment_version=sentiment_version, intent_version=intent_version
+        ).where(Message.id == message_id)
+        with tenant_session(tenant_id) as session:
+            row = session.execute(stmt).first()
+        return _candidate_from_row(row) if row is not None else None
 
     def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool:
         with tenant_session(tenant_id) as session:
@@ -335,18 +531,14 @@ class PostgresReplyRepository:
         generated_text: str,
         provenance: DraftProvenance | None = None,
     ) -> DraftRecord | None:
-        row = CommentReplyDraft(
+        row = _new_row(
             tenant_id=tenant_id,
             connection_id=connection_id,
-            message_id=candidate.message_id,
-            source_id=candidate.source_id,
-            sentiment_result_id=candidate.sentiment_result_id,
-            sentiment_label=candidate.sentiment_label,
+            candidate=candidate,
             gate_reason=gate_reason,
             generator_version=generator_version,
             generated_text=generated_text,
-            status="proposed",
-            **_provenance_columns(provenance or _NO_PROVENANCE),
+            provenance=provenance,
         )
         with tenant_session(tenant_id) as session:
             session.add(row)
@@ -361,6 +553,65 @@ class PostgresReplyRepository:
             session.refresh(row)
             # The candidate already carries the comment's text — no extra query needed
             # to populate `DraftRecord.comment_text` here.
+            return _row_to_record(row, comment_text=candidate.text)
+
+    def supersede_draft(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        decided_by_user_id: UUID,
+        candidate: CandidateComment,
+        gate_reason: str,
+        generator_version: str,
+        generated_text: str,
+        provenance: DraftProvenance | None = None,
+    ) -> DraftRecord | None:
+        now = datetime.now(UTC)
+        with tenant_session(tenant_id) as session:
+            # The guarded UPDATE is the race arbiter: under READ COMMITTED a concurrent
+            # second request blocks on the row lock, then re-checks `status = 'proposed'`
+            # against the committed discard and matches nothing — so only one request
+            # ever reaches the INSERT below.
+            discarded = session.execute(
+                update(CommentReplyDraft)
+                .where(
+                    CommentReplyDraft.id == draft_id,
+                    CommentReplyDraft.message_id == candidate.message_id,
+                    CommentReplyDraft.status == "proposed",
+                )
+                .values(
+                    status="discarded",
+                    final_text=None,
+                    decided_at=now,
+                    decided_by_user_id=decided_by_user_id,
+                    settled_at=now,
+                )
+                .returning(CommentReplyDraft.connection_id)
+                .execution_options(synchronize_session=False)
+            ).first()
+            if discarded is None:
+                session.rollback()
+                return None
+            row = _new_row(
+                tenant_id=tenant_id,
+                connection_id=discarded.connection_id,
+                candidate=candidate,
+                gate_reason=gate_reason,
+                generator_version=generator_version,
+                generated_text=generated_text,
+                provenance=provenance,
+            )
+            session.add(row)
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                session.rollback()  # the discard goes with it: nothing changed
+                if _is_live_duplicate(exc):
+                    return None
+                raise
+            session.commit()
+            session.refresh(row)
             return _row_to_record(row, comment_text=candidate.text)
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
@@ -488,18 +739,76 @@ class MemoryReplyRepository:
         QUA-101: unlike `MemorySentimentRepository` (which mirrors `messages` row-by-row,
         `deleted_at` included, because it independently re-derives what a real query
         would compute), this repo works one level of abstraction higher — a caller
-        already hands it the exact `CandidateComment` tuple `list_positive_comments_
-        without_draft` should return. Excluding a soft-deleted comment is therefore the
-        SEEDING caller's job (simply don't include it), not something this method needs
-        to filter — there is no separate "deleted" concept to consult here."""
+        already hands it the exact `CandidateComment` tuple `list_reply_candidates`
+        should return, signals included (the gate judges them). Excluding a soft-deleted
+        comment is therefore the SEEDING caller's job (simply don't include it), not
+        something this method needs to filter — there is no separate "deleted" concept to
+        consult here."""
         self._candidates[connection_id] = candidates
 
-    def list_positive_comments_without_draft(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+    def list_reply_candidates(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        sentiment_version: AnalysisVersion,
+        intent_version: AnalysisVersion | None,
     ) -> tuple[CandidateComment, ...]:
-        del tenant_id, version  # unused in-memory: seeded candidates are already POS/current
+        del tenant_id, sentiment_version, intent_version  # seeded candidates are current
         candidates = self._candidates.get(connection_id, ())
         return tuple(c for c in candidates if c.message_id not in self._by_message)
+
+    def get_reply_candidate(
+        self,
+        *,
+        tenant_id: UUID,
+        message_id: UUID,
+        sentiment_version: AnalysisVersion,
+        intent_version: AnalysisVersion | None,
+    ) -> CandidateComment | None:
+        del tenant_id, sentiment_version, intent_version
+        for candidates in self._candidates.values():
+            for candidate in candidates:
+                if candidate.message_id == message_id:
+                    return candidate
+        return None
+
+    def supersede_draft(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        decided_by_user_id: UUID,
+        candidate: CandidateComment,
+        gate_reason: str,
+        generator_version: str,
+        generated_text: str,
+        provenance: DraftProvenance | None = None,
+    ) -> DraftRecord | None:
+        old = self._drafts.get(draft_id)
+        if old is None or old.status != "proposed" or old.message_id != candidate.message_id:
+            return None
+        now = datetime.now(UTC)
+        self._drafts[draft_id] = replace(
+            old,
+            status="discarded",
+            final_text=None,
+            decided_at=now,
+            decided_by_user_id=decided_by_user_id,
+            settled_at=now,
+        )
+        created = self.create_draft(
+            tenant_id=tenant_id,
+            connection_id=old.connection_id,
+            candidate=candidate,
+            gate_reason=gate_reason,
+            generator_version=generator_version,
+            generated_text=generated_text,
+            provenance=provenance,
+        )
+        if created is None:  # another live draft holds the comment: undo, change nothing
+            self._drafts[draft_id] = old
+        return created
 
     def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool:
         del tenant_id
@@ -526,7 +835,7 @@ class MemoryReplyRepository:
     ) -> DraftRecord | None:
         if self.get_live_draft(tenant_id=tenant_id, message_id=candidate.message_id):
             return None
-        p = provenance or _NO_PROVENANCE
+        p = _with_candidate_signal(provenance, candidate)
         record = DraftRecord(
             id=uuid4(),
             tenant_id=tenant_id,

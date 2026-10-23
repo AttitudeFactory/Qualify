@@ -151,7 +151,8 @@ class ProductMediaVM:
     filename: str
     is_primary: bool
     position: int
-    #: "1080×1350" for a photo, "7 s" for a clip — "" when unknown.
+    #: "7 s" for a clip; "" for a photo (pixel sizes mean nothing to the owner,
+    #: m-24842971) or when unknown.
     meta_label: str
 
 
@@ -192,10 +193,11 @@ def counts_label(photo_count: int, video_count: int) -> str:
 def media_meta_label(
     media_type: str, width: int | None, height: int | None, duration_sec: float | None
 ) -> str:
+    """The note after «Video ·»: its length. Photos carry none — «Foto · 1080×1350» read
+    as jargon (m-24842971); `width`/`height` stay in the signature for a future «se verá
+    borrosa» warning."""
     if media_type == "video" and duration_sec is not None:
         return f"{round(duration_sec)} s"
-    if width and height:
-        return f"{width}×{height}"
     return ""
 
 

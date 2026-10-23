@@ -901,7 +901,7 @@ def _archive_dialog() -> rx.Component:
             rx.alert_dialog.description(
                 "El grupo «" + VariationsState.archive_set_name + "» desaparece de la "
                 "lista. Sus propuestas pendientes se eliminan; las piezas ya aprobadas "
-                "se conservan en Por aprobar.",
+                "no se pierden.",
                 size="2",
             ),
             rx.flex(

@@ -131,9 +131,9 @@ temperatura +200–300K → CLAHE(L, clip=2.0) → `ImageEnhance.Color(1.08)` (e
 saturación) → `ImageEnhance.Contrast(1.05)` → resize 1080 → `UnsharpMask(radius=1, percent=60)`.
 Todo con Pillow + OpenCV, $0, ~30 líneas. `[H]`
 
-**Dos presets, no uno:** la pizza/chivito (tonos ámbar, quiere calidez) y el bubble tea (pasteles,
-lila/rosa/verde matcha, la calidez lo ensucia) necesitan curvas distintas. Un solo preset "comida"
-va a arruinar el bubble tea. `[H]`
+**Dos presets, no uno:** el shawarma (tonos ámbar, quiere calidez) y el helado de yogur (blanco con
+toppings de color, la calidez lo pone amarillo) necesitan curvas distintas. Un solo preset "comida"
+va a arruinar el helado. `[H]`
 
 ---
 
@@ -169,7 +169,7 @@ El problema real: 10 fotos del mismo día, luz cambiante, se ven como 10 posts d
 **Veredicto:** una **foto de referencia por marca** (la "look plate", elegida una vez) + Reinhard
 como default y `match_histograms` como opción agresiva. Coste $0. Esto es lo que convierte "fotos de
 teléfono" en "feed con identidad" y es, después de §0, el feature de mayor retorno por línea. `[H]`
-Riesgo: aplicado sobre platos de colores muy distintos (pizza vs. té matcha) la transferencia puede
+Riesgo: aplicado sobre platos de colores muy distintos (shawarma vs. helado de yogur) la transferencia puede
 falsear el color del producto; limitarla al 50–70% de intensidad. `[H]`
 
 ---
