@@ -223,6 +223,7 @@ class NodeForm:
     has_issue: bool = False
     kind_label: str = ""
     label: str = ""  # what the editor shows for the step (`node_label`), never the id
+    unused: bool = False  # nothing leads here: not the entry, a button nor another step
 
 
 @dataclass(frozen=True)
@@ -504,6 +505,7 @@ class _LocMap:
     node_index: dict[str, int]
     list_rows: dict[str, dict[tuple[int, int], int]]
     section_first_row: dict[str, dict[int, int]]
+    node_titles: dict[str, str] = field(default_factory=dict)  # id → the owner's name
 
 
 def _sections(options: Sequence[OptionForm]) -> tuple[list[dict[str, Any]], dict, dict]:
@@ -611,6 +613,7 @@ def _build_payload(form: MenuForm) -> tuple[dict[str, Any], _LocMap]:
     node_index: dict[str, int] = {}
     list_rows: dict[str, dict[tuple[int, int], int]] = {}
     section_first_row: dict[str, dict[int, int]] = {}
+    node_titles: dict[str, str] = {}
     for index, node in enumerate(form.nodes):
         node_id = node.node_id.strip()
         if not node_id or node_id in nodes:
@@ -620,6 +623,7 @@ def _build_payload(form: MenuForm) -> tuple[dict[str, Any], _LocMap]:
         node_index[node_id] = index
         list_rows[node_id] = rows_at
         section_first_row[node_id] = first_row
+        node_titles[node_id] = node.title.strip()
     payload = {
         "version": 1,
         "start_node": form.start_node,
@@ -633,7 +637,7 @@ def _build_payload(form: MenuForm) -> tuple[dict[str, Any], _LocMap]:
         },
         "nodes": nodes,
     }
-    return payload, _LocMap(node_index, list_rows, section_first_row)
+    return payload, _LocMap(node_index, list_rows, section_first_row, node_titles)
 
 
 # --------------------------------------------------------------------------------------
@@ -882,14 +886,26 @@ def _place_node_error(
     errors.row(errors.nodes, index, _NODE_FIELD_ALIASES.get(head, str(head)), message)
 
 
+DANGLING_STEP: Final = (
+    "Un botón lleva a un paso que ya no existe. Elige a dónde lleva en «Más opciones (avanzado)»."
+)
+
+
 def _place_structural(errors: _Errors, locmap: _LocMap, message: str) -> None:
     """The model validator's whole-menu errors (loc `()`), parsed back to a field."""
     if "start_node" in message and "is not a node" in message:
         errors.entry_field("start_node", PICK_A_STEP)
         return
     if message.startswith("dangling node references"):
-        for source, target in re.findall(r"(\S+) -> '([^']*)'", message):
-            text = f"Lleva a «{target}», un paso que no existe."
+        for source, _target in re.findall(r"(\S+) -> '([^']*)'", message):
+            # Never the missing step's id: the owner only knows steps by their name.
+            name = locmap.node_titles.get(source, "")
+            text = (
+                f"El paso «{name}» lleva a un paso que ya no existe. Elige otro en "
+                "«Más opciones (avanzado)»."
+                if name
+                else DANGLING_STEP
+            )
             if source == "entry":
                 errors.entry_field("_entry", text)
             elif source in locmap.node_index:
@@ -979,9 +995,33 @@ def validate_form(form: MenuForm) -> FormResult:
     return FormResult(_annotate(form, errors), definition, errors.count)
 
 
+def referenced_node_ids(form: MenuForm) -> set[str]:
+    """Every step id something leads to: the entry (start, fallback, keywords, ice
+    breakers, commands), a button/row, or another step's «siguiente»."""
+    refs = {form.start_node, form.fallback_node}
+    refs.update(kw.node for kw in form.keywords)
+    refs.update(ib.node for ib in form.ice_breakers)
+    refs.update(c.node for c in form.commands)
+    for node in form.nodes:
+        refs.update(
+            (
+                node.next,
+                node.next_after_pick,
+                node.confirm_next,
+                node.add_more_next,
+                node.cancel_next,
+            )
+        )
+        refs.update(o.next for o in node.options)
+    refs.discard("")
+    refs.discard(NONE_VALUE)
+    return refs
+
+
 def _annotate(form: MenuForm, errors: _Errors) -> MenuForm:
     nodes: list[NodeForm] = []
     labels = node_labels(form.nodes)
+    referenced = referenced_node_ids(form)
     for i, node in enumerate(form.nodes):
         options = [
             replace(option, errors=dict(errors.options.get((i, j), {})))
@@ -996,6 +1036,7 @@ def _annotate(form: MenuForm, errors: _Errors) -> MenuForm:
                 has_issue=bool(node_errors) or any(o.errors for o in options),
                 kind_label=KIND_LABELS.get(node.kind, node.kind),
                 label=labels[i],
+                unused=node.node_id.strip() not in referenced,
             )
         )
     return replace(
@@ -1148,6 +1189,15 @@ ADDRESS_ASK: Final = "ask"
 ADDRESS_SKIP: Final = "skip"
 
 _ADDRESS_FIELD = "direccion"
+
+# Step 3 → Catálogo saves first (guide N6); «Guardar y seguir después» says why it is off.
+CATALOG_SAVED_HINT: Final = "Guardamos tu menú. Cuando termines, vuelve a WhatsApp → Menú."
+CATALOG_FIX_FIRST: Final = (
+    "Corrige lo marcado en rojo antes de salir, o se pierde lo que escribiste."
+)
+SAVE_NEEDS_FIX: Final = "Para guardar, completa lo marcado en rojo."
+SAVE_NOTHING_NEW: Final = "Ya está guardado. Puedes salir y seguir después."
+BUTTON_LABEL_MAX: Final = 20  # WhatsApp cuts a reply button's text at 20 characters
 _ADDRESS_PROMPT = "¿A qué dirección te lo llevamos? Escríbela completa, con barrio."
 _ADDRESS_ERROR = "Necesito la dirección escrita para poder tomar el pedido."
 _PERSON_TITLE = "Hablar con una persona"
@@ -1195,6 +1245,10 @@ class GuidedVM:
     address_prompt: str
     address_error: str
     hidden_issues: int  # problems only «Más opciones (avanzado)» shows
+    # Something to fix in step 1 / 2 / 3 — step 4 links back to each one.
+    greeting_issue: bool = False
+    buttons_issue: bool = False
+    products_issue: bool = False
 
 
 EMPTY_GUIDED = GuidedVM(
@@ -1344,6 +1398,9 @@ def guided_view(form: MenuForm, error_count: int = 0) -> GuidedVM:
         address_prompt=address_prompt,
         address_error=address_error,
         hidden_issues=max(0, error_count - shown),
+        greeting_issue=bool(greeting_error),
+        buttons_issue=bool(question_error) or any(b.label_error or b.text_error for b in buttons),
+        products_issue=bool(products_intro_error or address_error),
     )
 
 
@@ -1444,8 +1501,24 @@ def guided_set_button_action(form: MenuForm, button: int, action: str) -> MenuFo
         if _button_action(form, option) == ACTION_TEXT:
             return form
         title = option.label.strip() or "Respuesta"
-        node = new_node(KIND_TEXT, fresh_node_id(form, title), title)
-        form, target = replace(form, nodes=[*form.nodes, node]), node.node_id
+        # Back to «Responder con un mensaje»: reuse the message this button had before
+        # (same name, nothing leads to it any more) instead of piling up copies.
+        referenced = referenced_node_ids(form)
+        previous = next(
+            (
+                n.node_id
+                for n in form.nodes
+                if n.kind == KIND_TEXT
+                and n.title.strip() == title
+                and n.node_id.strip() not in referenced
+            ),
+            None,
+        )
+        if previous is not None:
+            target = previous
+        else:
+            node = new_node(KIND_TEXT, fresh_node_id(form, title), title)
+            form, target = replace(form, nodes=[*form.nodes, node]), node.node_id
     else:
         return form
     index, options = _start_options(form)  # type: ignore[misc]

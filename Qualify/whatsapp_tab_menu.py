@@ -53,6 +53,9 @@ from .whatsapp_menu_vm import (
     ACTION_TEXT,
     ADDRESS_ASK,
     ADDRESS_SKIP,
+    BUTTON_LABEL_MAX,
+    CATALOG_FIX_FIRST,
+    CATALOG_SAVED_HINT,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
     GUIDED_ACTIONS,
@@ -72,6 +75,8 @@ from .whatsapp_menu_vm import (
     PUBLISH_CONFIRM_BUTTON,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
+    SAVE_NEEDS_FIX,
+    SAVE_NOTHING_NEW,
     SAVE_ONLY_BUTTON,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
@@ -526,31 +531,8 @@ def _toolbar() -> rx.Component:
                 align_items="start",
             ),
             rx.cond(S.advanced_open, _publish_area(), rx.fragment()),
-            rx.hstack(
-                rx.switch(
-                    checked=S.menu.is_paused,
-                    on_change=S.toggle_pause,
-                    disabled=S.pausing | ~S.menu.is_published,
-                    size="2",
-                ),
-                rx.vstack(
-                    rx.text("Pausar el menú en tu WhatsApp", size="2", weight="medium"),
-                    rx.text(
-                        rx.cond(
-                            S.menu.is_published,
-                            "En pausa, tu WhatsApp no responde con el menú; los mensajes "
-                            "llegan a Chats como siempre.",
-                            "Se puede pausar una vez publicado.",
-                        ),
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="0",
-                    align_items="start",
-                ),
-                spacing="3",
-                align="center",
-            ),
+            # One decision per step: pausing only matters once the menu is live.
+            rx.cond(S.menu.is_published | S.advanced_open, _pause_row(), rx.fragment()),
             rx.cond(
                 S.error_count > 0,
                 callout(S.issues_text, "warn"),
@@ -564,6 +546,34 @@ def _toolbar() -> rx.Component:
         padding="1rem 1.25rem",
         id=TOOLBAR_ELEMENT_ID,
         scroll_margin_top="1rem",
+    )
+
+
+def _pause_row() -> rx.Component:
+    return rx.hstack(
+        rx.switch(
+            checked=S.menu.is_paused,
+            on_change=S.toggle_pause,
+            disabled=S.pausing | ~S.menu.is_published,
+            size="2",
+        ),
+        rx.vstack(
+            rx.text("Pausar el menú en tu WhatsApp", size="2", weight="medium"),
+            rx.text(
+                rx.cond(
+                    S.menu.is_published,
+                    "En pausa, tu WhatsApp no responde con el menú; los mensajes "
+                    "llegan a Chats como siempre.",
+                    "Se puede pausar una vez publicado.",
+                ),
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="0",
+            align_items="start",
+        ),
+        spacing="3",
+        align="center",
     )
 
 
@@ -773,7 +783,7 @@ def _entry_card() -> rx.Component:
 
 def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
     selected = index == S.selected_node
-    return rx.hstack(
+    row = rx.hstack(
         choice_card(
             rx.vstack(
                 rx.hstack(
@@ -790,8 +800,10 @@ def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
                 rx.hstack(
                     rx.text(node.kind_label, size="1", color=T.TEXT_MUTED),
                     rx.cond(node.has_issue, signal_pill("Revisar", "warn"), rx.fragment()),
+                    rx.cond(node.unused, tag("Sin usar"), rx.fragment()),
                     spacing="2",
                     align="center",
+                    wrap="wrap",
                 ),
                 spacing="1",
                 align_items="start",
@@ -806,6 +818,34 @@ def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
         _icon_button("trash-2", "Quitar paso", S.remove_node(index)),
         spacing="1",
         align="center",
+        width="100%",
+    )
+    return rx.vstack(
+        row,
+        rx.cond(
+            node.unused,
+            rx.hstack(
+                rx.text(
+                    "Nadie llega a este paso. Puedes quitarlo.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.button(
+                    "Quitar",
+                    on_click=S.remove_node(index),
+                    variant="ghost",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+                padding_left="0.75rem",
+            ),
+            rx.fragment(),
+        ),
+        spacing="0",
         width="100%",
     )
 
@@ -1626,6 +1666,13 @@ def _guided_button(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
                     width="100%",
                     size="3",
                 ),
+                rx.text(
+                    button.label.length(),
+                    f" de {BUTTON_LABEL_MAX}",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-nums",
+                ),
                 _guided_err(button.label_error),
             ),
             _field("Al tocarlo", _guided_action_select(button, index)),
@@ -1690,7 +1737,9 @@ def _guided_buttons() -> rx.Component:
                 size="3",
                 min_height=TARGET_MIN,
             ),
-            _hint("Hasta 3 botones, de máximo 20 letras cada uno."),
+            _hint(
+                "Hasta 3 botones. Cada uno, máximo 20 letras y espacios (ej.: Ver menú y pedir)."
+            ),
             spacing="3",
             width="100%",
             align_items="start",
@@ -1752,6 +1801,16 @@ def _address_choice(value: str, title: str, description: str) -> rx.Component:
 
 def _guided_products() -> rx.Component:
     g = S.guided
+    # Going to Catálogo saves first (N6); with something to fix it cannot, and says so.
+    leave_blocked = S.dirty & (S.error_count > 0)
+
+    def leave_hint() -> rx.Component:
+        return rx.cond(
+            leave_blocked,
+            rx.text(CATALOG_FIX_FIRST, size="1", color=T.tone_color("warn", 11)),
+            _hint(CATALOG_SAVED_HINT),
+        )
+
     catalog = rx.cond(
         S.catalog_count > 0,
         rx.vstack(
@@ -1763,14 +1822,16 @@ def _guided_products() -> rx.Component:
                 max_height="16rem",
                 overflow_y="auto",
             ),
-            rx.link(
-                "Cambiar mis productos o sus precios",
-                href="/catalog",
-                size="2",
+            rx.button(
+                "Guardar y cambiar mis productos",
+                on_click=S.save_and_open_catalog,
+                disabled=leave_blocked | S.saving | S.publishing,
+                loading=S.saving & ~S.publishing,
+                variant="ghost",
+                size="3",
                 min_height=TARGET_MIN,
-                display="inline-flex",
-                align_items="center",
             ),
+            leave_hint(),
             spacing="2",
             width="100%",
             align_items="start",
@@ -1780,12 +1841,19 @@ def _guided_products() -> rx.Component:
             "Aún no tienes productos",
             "Agrega tus productos con su precio y vuelve aquí: tu cliente podrá elegirlos "
             "desde WhatsApp.",
-            rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agrega tus productos",
-                on_click=rx.redirect("/catalog"),
-                size="3",
-                min_height=TARGET_MIN,
+            rx.vstack(
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Guardar y agregar mis productos",
+                    on_click=S.save_and_open_catalog,
+                    disabled=leave_blocked | S.saving | S.publishing,
+                    loading=S.saving & ~S.publishing,
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                leave_hint(),
+                spacing="2",
+                align_items="center",
             ),
         ),
     )
@@ -1868,6 +1936,26 @@ def _guided_products() -> rx.Component:
     )
 
 
+def _step_issue(show: rx.Var[bool], text: str, step: int) -> rx.Component:
+    return rx.cond(
+        show,
+        rx.vstack(
+            callout(text, "warn"),
+            rx.button(
+                f"Corregir en el paso {step}",
+                on_click=S.guided_go(step),
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
+
+
 def _guided_publish() -> rx.Component:
     g = S.guided
     return rx.vstack(
@@ -1885,6 +1973,14 @@ def _guided_publish() -> rx.Component:
             spacing="2",
             width="100%",
             align_items="start",
+        ),
+        # Each step with something to fix, and the way back to it (N6/N10).
+        _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
+        _step_issue(g.buttons_issue, "Un botón no tiene texto o no hace nada.", 2),
+        _step_issue(
+            g.products_issue,
+            "Falta lo que dices antes de tus productos o cómo pides la dirección.",
+            3,
         ),
         rx.cond(
             g.hidden_issues > 0,
@@ -1915,7 +2011,7 @@ def _guided_publish() -> rx.Component:
 
 
 def _guided_nav() -> rx.Component:
-    return rx.flex(
+    nav = rx.flex(
         rx.cond(
             S.guided_step > 1,
             rx.button(
@@ -1961,6 +2057,17 @@ def _guided_nav() -> rx.Component:
         align="center",
         width="100%",
     )
+    # Why «Guardar y seguir después» is off, so the owner between customers knows.
+    why_no_save = rx.cond(
+        S.guided_step < 4,
+        rx.cond(
+            S.error_count > 0,
+            _hint(SAVE_NEEDS_FIX),
+            rx.cond(S.has_menu & ~S.dirty, _hint(SAVE_NOTHING_NEW), rx.fragment()),
+        ),
+        rx.fragment(),
+    )
+    return rx.vstack(nav, why_no_save, spacing="2", width="100%", align_items="end")
 
 
 def _guided_card() -> rx.Component:
@@ -2039,6 +2146,12 @@ def _editor() -> rx.Component:
         rx.box(
             _preview_card(),
             id=PREVIEW_ELEMENT_ID,
+            # On the phone the preview waits for step 4 «Pruébalo y publícalo» (or the
+            # advanced editor), so steps 1-3 are one decision with nothing below.
+            display=rx.breakpoints(
+                initial=rx.cond(S.advanced_open | (S.guided_step == 4), "block", "none"),
+                lg="block",
+            ),
             position=rx.breakpoints(initial="static", lg="sticky"),
             top="1rem",
             scroll_margin_top="1rem",

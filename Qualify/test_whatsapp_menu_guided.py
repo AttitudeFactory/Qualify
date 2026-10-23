@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -18,6 +19,7 @@ from qualify_api.whatsapp.menus.engine import CatalogItem
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 
 from . import whatsapp_menu_state as module
+from . import whatsapp_menu_vm as vm
 from .whatsapp_menu_provider import MenuDetail, PublishOutcome
 from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_menu_vm import (
@@ -233,7 +235,76 @@ def test_the_screen_shows_no_identifier_fields() -> None:
             or present in (Path(__file__).parent / "whatsapp_menu_vm.py").read_text()
         ), present
     assert "Más opciones (avanzado)" in source
-    assert "Agrega tus productos" in source and 'href="/catalog"' in source
+    # step 3 → Catálogo saves first (N6): no bare link that drops what was typed
+    assert "Guardar y agregar mis productos" in source
+    assert "Guardar y cambiar mis productos" in source
+    assert 'href="/catalog"' not in source and 'redirect("/catalog")' not in source
+
+
+# --- UX review (m-24848536): no id in errors, unused steps, the way back from step 4 ------
+
+
+def test_a_dangling_button_never_shows_the_missing_steps_id() -> None:
+    form = _demo()
+    start = next(i for i, n in enumerate(form.nodes) if n.node_id == form.start_node)
+    options = list(form.nodes[start].options)
+    options[1] = replace(options[1], next="info_7a3f")
+    nodes = list(form.nodes)
+    nodes[start] = replace(nodes[start], options=options)
+    result = validate_form(replace(form, nodes=nodes))
+    messages = [
+        *result.form.menu_errors,
+        *result.form.entry_errors.values(),
+        *(m for n in result.form.nodes for m in n.errors.values()),
+        *(m for n in result.form.nodes for o in n.options for m in o.errors.values()),
+    ]
+    assert result.error_count > 0 and messages
+    for message in messages:
+        assert "info_7a3f" not in message, message
+
+
+def test_dangling_message_names_the_source_step_or_says_a_button() -> None:
+    errors = vm._Errors()
+    locmap = vm._LocMap({"inicio": 0}, {}, {}, {"inicio": "Bienvenida"})
+    vm._place_structural(errors, locmap, "dangling node references: inicio -> 'x_1a2b'")
+    assert errors.nodes[0]["_node"] == (
+        "El paso «Bienvenida» lleva a un paso que ya no existe. Elige otro en "
+        "«Más opciones (avanzado)»."
+    )
+    errors = vm._Errors()
+    vm._place_structural(errors, locmap, "dangling node references: entry -> 'x_1a2b'")
+    assert errors.entry["_entry"] == vm.DANGLING_STEP
+
+
+def test_steps_nothing_leads_to_are_marked_unused() -> None:
+    result = validate_form(_demo())
+    assert not any(n.unused for n in result.form.nodes)  # the template uses every step
+    message = guided_set_button_action(_demo(), 1, ACTION_TEXT)  # a new message step
+    added = message.nodes[-1].node_id
+    form = guided_set_button_action(message, 1, ACTION_PERSON)  # and away from it
+    result = validate_form(form)
+    unused = {n.node_id for n in result.form.nodes if n.unused}
+    assert added in unused and form.start_node not in unused
+
+
+def test_back_to_message_reuses_the_buttons_previous_step() -> None:
+    once = guided_set_button_action(_demo(), 1, ACTION_TEXT)
+    once = guided_set_button_text(once, 1, "Abrimos a las 12.")
+    away = guided_set_button_action(once, 1, ACTION_PERSON)
+    back = guided_set_button_action(away, 1, ACTION_TEXT)
+    assert len(back.nodes) == len(once.nodes)
+    view, _ = _view(back)
+    assert view.buttons[1].text == "Abrimos a las 12."
+
+
+def test_step_four_knows_which_step_has_something_to_fix() -> None:
+    view, _ = _view(_demo())
+    assert not (view.greeting_issue or view.buttons_issue or view.products_issue)
+    form = guided_set_button_label(guided_set_greeting(_demo(), ""), 0, "")
+    form = guided_set_address_prompt(form, "")
+    view, _ = _view(form)
+    assert view.greeting_issue == bool(view.greeting_error)
+    assert view.buttons_issue and view.products_issue
 
 
 # --- the state: navigation keeps everything; publishing is measured ------------------------
@@ -377,3 +448,26 @@ async def test_publishing_from_the_steps_logs_how_long_it_took(
         and "advanced=False" in r.getMessage()
         for r in caplog.records
     )
+
+
+async def test_going_to_the_catalog_saves_first_or_says_what_to_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    saved: list[object] = []
+
+    def save(*a: object) -> MenuDetail:
+        saved.append(a)
+        return _detail([_version(V2, 2), _version(V1, 1)])
+
+    monkeypatch.setattr(module, "save_version", save)
+    run = WhatsAppMenuState.save_and_open_catalog.fn  # type: ignore[attr-defined]
+    state.set_guided_button_label(0, "")  # something to fix: nothing saved, owner stays
+    assert state.error_count > 0
+    events = [e async for e in run(_Proxy(state))]
+    assert not events and not saved
+    assert state.banner == vm.CATALOG_FIX_FIRST
+    state.set_guided_button_label(0, "Ver helados")
+    events = [e async for e in run(_Proxy(state))]
+    assert len(saved) == 1 and not state.dirty  # saved, then off to Catálogo
+    assert len(events) == 1 and "/catalog" in str(events[0])

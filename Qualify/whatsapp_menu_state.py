@@ -68,6 +68,7 @@ from .whatsapp_menu_provider import (
     user_id_for,
 )
 from .whatsapp_menu_vm import (
+    CATALOG_FIX_FIRST,
     EMPTY_GUIDED,
     EMPTY_MENU,
     GUIDED_HELP,
@@ -997,12 +998,29 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def save_current_version(self) -> None:
         """«Guardar sin publicar» — the secondary action."""
+        await self._save_now()
+
+    @rx.event(background=True)
+    async def save_and_open_catalog(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Step 3's way to Catálogo: save what was typed first (guide N6), then go. With
+        something to fix nothing is saved and the owner stays — the screen says why."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect("/catalog")
+
+    async def _save_now(self) -> bool:
+        """Save the editor as the menu's next version; True when it is on disk."""
         async with self:
             if not self.can_save or self.publishing:
-                return
+                return False
             scope = self._scope_value()
             if scope is None:
-                return
+                return False
             self.saving = True
             self.banner = ""
             self.just_published = False
@@ -1013,14 +1031,15 @@ class WhatsAppMenuState(rx.State):
             async with self:
                 self.saving = False
                 self.banner, self.banner_tone = _NO_SESSION, "error"
-            return
+            return False
         detail = await self._save_outside_lock(tenant_id, scope, menu_id, payload)
         if detail is None:
-            return
+            return False
         async with self:
             label = detail.versions[0].label.lower() if detail.versions else ""
             number = label.removeprefix("versión ").strip()
             self.banner, self.banner_tone = _SAVED.format(n=number), "ok"
+        return True
 
     @rx.event(background=True)
     async def publish_current(self) -> AsyncIterator[rx.event.EventSpec]:
