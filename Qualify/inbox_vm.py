@@ -38,6 +38,20 @@ _MONTHS: Final = (
 UNSURE_INTENT_NOTE: Final = "No estamos seguros: lee el comentario antes de responder."
 
 
+# m-24849132: «Ordenar por prioridad» runs two passes (sentiment and intent); either one
+# failing, or both, shows this ONE notice instead of two near-identical boxes.
+PRIORITIZE_FAILED: Final = "No pudimos ordenar tus comentarios. Vuelve a intentarlo en un momento."
+
+
+def prioritize_error_message(sentiment_error: str, intent_error: str) -> str:
+    """The single notice for «Ordenar por prioridad» (m-24849132): empty when neither
+    pass failed, `PRIORITIZE_FAILED` when one or both did. The per-pass reasons stay in
+    the state for logs and tests; the owner reads one sentence."""
+    if sentiment_error or intent_error:
+        return PRIORITIZE_FAILED
+    return ""
+
+
 def short_day_label(moment: datetime) -> str:
     """«23 oct» — day and Spanish short month, in whatever zone `moment` carries."""
     return f"{moment.day} {_MONTHS[moment.month - 1]}"

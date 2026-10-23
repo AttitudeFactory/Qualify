@@ -942,22 +942,14 @@ def _prioritize_button() -> rx.Component:
     )
 
 
-def _analyze_intent_error_block() -> rx.Component:
+def _prioritize_error_block() -> rx.Component:
+    # m-24849132: ONE persistent `callout` for «Ordenar por prioridad», whether the
+    # sentiment pass, the intent pass or both failed — never two near-identical boxes.
+    # The success side is a transient `rx.toast.success` dispatched by
+    # `InboxState.analyze_intent` (docs/design-system.md §5.4); only errors persist.
     return rx.cond(
-        InboxState.analyze_intent_error != "",
-        callout(InboxState.analyze_intent_error, "error"),
-        rx.fragment(),
-    )
-
-
-def _analyze_error_block() -> rx.Component:
-    # The success side (`analyze_result`) has no render block here on purpose — it is a
-    # transient `rx.toast.success`, dispatched by `InboxState.analyze_sentiment` itself
-    # (see that handler's docstring), not a persistent callout. Only the error stays a
-    # persistent `callout`, per docs/design-system.md §5.4.
-    return rx.cond(
-        InboxState.analyze_error != "",
-        callout(InboxState.analyze_error, "error"),
+        InboxState.prioritize_error != "",
+        callout(InboxState.prioritize_error, "error"),
         rx.fragment(),
     )
 
@@ -973,8 +965,7 @@ def _comments_section() -> rx.Component:
             spacing="2",
             wrap="wrap",
         ),
-        _analyze_error_block(),
-        _analyze_intent_error_block(),
+        _prioritize_error_block(),
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
@@ -1002,7 +993,7 @@ def _sync_now_button() -> rx.Component:
 
 def _sync_error_block() -> rx.Component:
     # Same "success is a toast, error is a persistent callout" split as
-    # `_analyze_error_block` above — see that function's comment.
+    # `_prioritize_error_block` above — see that function's comment.
     return rx.cond(
         InboxState.sync_error != "",
         callout(InboxState.sync_error, "error"),

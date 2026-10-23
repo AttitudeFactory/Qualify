@@ -114,6 +114,7 @@ from .inbox_vm import (
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
+    prioritize_error_message,
 )
 from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
@@ -336,6 +337,11 @@ class InboxState(rx.State):
     @rx.var
     def can_prioritize(self) -> bool:
         return bool(self.selected_connection_id) and not self.is_prioritizing
+
+    @rx.var
+    def prioritize_error(self) -> str:
+        """m-24849132: one notice for «Ordenar por prioridad», whichever pass failed."""
+        return prioritize_error_message(self.analyze_error, self.analyze_intent_error)
 
     @rx.var
     def show_empty_state(self) -> bool:
