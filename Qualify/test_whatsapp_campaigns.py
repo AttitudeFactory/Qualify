@@ -103,6 +103,31 @@ def test_row_counts_are_cumulative() -> None:
     )
     assert (row.sent, row.delivered, row.read, row.queued) == ("12", "9", "5", "3")
     assert row.cost_label == "USD 1,50" and row.status_label == "En curso"
+    # m-24842998: the phone card's line.
+    assert row.reach_label == "5 la leyeron de 12"
+
+
+def test_reach_label_waits_for_the_first_send() -> None:
+    row = build_campaign_row(
+        campaign_id="c",
+        name="Promo",
+        template_label="promo · es",
+        status="draft",
+        counts={"pending": 4},
+        costs=[],
+        created_at=NOW,
+    )
+    assert row.reach_label == ""
+    big = build_campaign_row(
+        campaign_id="c",
+        name="Promo de octubre",
+        template_label="promo · es",
+        status="done",
+        counts={"read": 1200, "delivered": 80},
+        costs=[],
+        created_at=NOW,
+    )
+    assert big.reach_label == "1.200 la leyeron de 1.280"
 
 
 def test_meta_codes_are_explained_without_the_code() -> None:

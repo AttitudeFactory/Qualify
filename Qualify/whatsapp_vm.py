@@ -22,45 +22,132 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 
 from .connections_vm import WHATSAPP_RECONNECT_HINT, whatsapp_label
+from .nav_url import with_query
 
 # --------------------------------------------------------------------------------------
-# Tabs. The order is the strip's order. Chats (WA-11) and Menú (WA-16) are their own
-# files (`whatsapp_tab_chats.py`, `whatsapp_tab_menu.py`); this list only names them.
+# Tabs (m-24842998 WHATSAPP-7). Four tasks on top, two of them with sub-tabs:
+#
+#   Chats · Respuesta automática · Promociones · Tu número
+#                                  │              └─ Estado · Perfil · Códigos QR · Actividad
+#                                  └─ Enviadas · Mensajes aprobados · Clientes que aceptaron
+#
+# A PANEL is what the body renders (its own `whatsapp_tab_*.py` file, or a function in
+# `whatsapp_page.py`). Its key is the old flat tab key, kept so every in-app jump
+# (`WhatsAppState.select_tab(TAB_QR)`) and every address already shared or bookmarked
+# (`/whatsapp?tab=plantillas`) keeps landing on the same content. A SECTION is a top
+# tab; a SUB is the slug of a panel inside its section. The address carries both
+# (`?tab=promociones&sub=aprobados`, N5) and `resolve_panel` reads it back.
 # --------------------------------------------------------------------------------------
 
 TAB_CHATS = "chats"
 TAB_CONNECTION = "conexion"
 TAB_PROFILE = "perfil"
 TAB_QR = "qr"
+TAB_ACTIVITY = "actividad"
 TAB_MENU = "menu"
 # WA-18 (QUA-217/218/219): own files `whatsapp_tab_templates.py`, `_contacts.py`, `_campaigns.py`.
 TAB_TEMPLATES = "plantillas"
 TAB_CONTACTS = "contactos"
 TAB_CAMPAIGNS = "campanas"
 
-TABS: tuple[tuple[str, str], ...] = (
-    (TAB_CHATS, "Chats"),
-    (TAB_CONNECTION, "Conexión"),
-    (TAB_PROFILE, "Perfil"),
-    (TAB_QR, "QR"),
-    (TAB_MENU, "Menú"),
-    (TAB_TEMPLATES, "Plantillas"),
-    (TAB_CONTACTS, "Contactos"),
-    (TAB_CAMPAIGNS, "Campañas"),
-)
-TAB_KEYS: frozenset[str] = frozenset(key for key, _label in TABS)
+SECTION_CHATS = "chats"
+SECTION_AUTO_REPLY = "respuesta"
+SECTION_PROMOTIONS = "promociones"
+SECTION_NUMBER = "numero"
 
-# The tab a visit lands on when `?tab=` is absent or junk: the conversations (WA-11) —
-# attending chats is what a person opens this screen for.
+# (section key, label): the order is the strip's order.
+SECTIONS: tuple[tuple[str, str], ...] = (
+    (SECTION_CHATS, "Chats"),
+    (SECTION_AUTO_REPLY, "Respuesta automática"),
+    (SECTION_PROMOTIONS, "Promociones"),
+    (SECTION_NUMBER, "Tu número"),
+)
+SECTION_KEYS: frozenset[str] = frozenset(key for key, _label in SECTIONS)
+
+# section → ((panel, sub slug, label), …); the first one is the section's default. A
+# section with a single panel has no sub-tab strip and no `?sub=`.
+SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    SECTION_CHATS: ((TAB_CHATS, "", "Chats"),),
+    SECTION_AUTO_REPLY: ((TAB_MENU, "", "Respuesta automática"),),
+    SECTION_PROMOTIONS: (
+        (TAB_CAMPAIGNS, "enviadas", "Enviadas"),
+        (TAB_TEMPLATES, "aprobados", "Mensajes aprobados"),
+        (TAB_CONTACTS, "clientes", "Clientes que aceptaron"),
+    ),
+    SECTION_NUMBER: (
+        (TAB_CONNECTION, "estado", "Estado"),
+        (TAB_PROFILE, "perfil", "Perfil"),
+        (TAB_QR, "qr", "Códigos QR"),
+        (TAB_ACTIVITY, "actividad", "Actividad"),
+    ),
+}
+
+# The two sub-tab strips, as (sub slug, label): what the page builds its controls from.
+PROMOTION_SUBS: tuple[tuple[str, str], ...] = tuple(
+    (slug, label) for _panel, slug, label in SUBTABS[SECTION_PROMOTIONS]
+)
+NUMBER_SUBS: tuple[tuple[str, str], ...] = tuple(
+    (slug, label) for _panel, slug, label in SUBTABS[SECTION_NUMBER]
+)
+
+_PANEL_PLACE: dict[str, tuple[str, str]] = {
+    panel: (section, slug) for section, subs in SUBTABS.items() for panel, slug, _ in subs
+}
+TAB_KEYS: frozenset[str] = frozenset(_PANEL_PLACE)
+
+# The panel a visit lands on when the address names nothing known: the conversations
+# (WA-11). Attending chats is what a person opens this screen for.
 DEFAULT_TAB = TAB_CHATS
+
+WHATSAPP_ROUTE: Final = "/whatsapp"
+TAB_PARAM: Final = "tab"
+SUB_PARAM: Final = "sub"
 
 
 def resolve_tab(requested: str) -> str:
-    """`?tab=<key>` → a known tab key; anything else → `DEFAULT_TAB`. The value arrives in
-    the URL, so junk is ignored rather than echoed."""
+    """A panel key → itself; anything else → `DEFAULT_TAB`. For in-app jumps; the
+    address goes through `resolve_panel`."""
     return requested if requested in TAB_KEYS else DEFAULT_TAB
+
+
+def resolve_panel(tab: str, sub: str = "") -> str:
+    """`?tab=…&sub=…` → the panel to show. A section picks its sub (its first one when
+    `sub` is missing or junk); an old flat key (`?tab=plantillas`, `?tab=qr`) is still
+    honoured; anything else is `DEFAULT_TAB`. Junk is ignored, never echoed."""
+    if tab in SECTION_KEYS:
+        found = sub_panel(tab, sub)
+        return found or SUBTABS[tab][0][0]
+    return resolve_tab(tab)
+
+
+def panel_section(panel: str) -> str:
+    """The top tab a panel belongs to (the default panel's for an unknown key)."""
+    return _PANEL_PLACE.get(panel, _PANEL_PLACE[DEFAULT_TAB])[0]
+
+
+def panel_sub(panel: str) -> str:
+    """The sub slug of a panel ("" for a section without sub-tabs)."""
+    return _PANEL_PLACE.get(panel, _PANEL_PLACE[DEFAULT_TAB])[1]
+
+
+def sub_panel(section: str, sub: str) -> str:
+    """The panel behind `sub` inside `section`, or "" when it is not one of its subs."""
+    for panel, slug, _label in SUBTABS.get(section, ()):
+        if slug and slug == sub:
+            return panel
+    return ""
+
+
+def tab_url(panel: str) -> str:
+    """The address of a panel (N5): `/whatsapp?tab=promociones&sub=aprobados`. An
+    unknown key is the default panel, the same rule `resolve_tab` applies."""
+    known = resolve_tab(panel)
+    return with_query(
+        WHATSAPP_ROUTE, **{TAB_PARAM: panel_section(known), SUB_PARAM: panel_sub(known)}
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -169,7 +256,75 @@ def platform_status_display(status: str | None) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------------------
-# The number (Conexión tab)
+# «Tu número» in one line (m-24842998). The ten Meta facts stay behind «Ver detalles»;
+# the owner first reads whether the number works and, if not, what to do.
+# --------------------------------------------------------------------------------------
+
+HEALTH_OK = "Tu WhatsApp funciona bien ✓"
+HEALTH_PENDING = "Tu WhatsApp todavía se está conectando. Vuelve a mirar en un rato."
+HEALTH_BLOCKED = (
+    "Meta pausó tu número y por ahora no puede enviar mensajes. Pide ayuda al equipo de "
+    "Qualify para revisarlo."
+)
+HEALTH_LOW_QUALITY = (
+    "Varios clientes marcaron tus mensajes como no deseados. Envía menos promociones "
+    "por unos días y escribe solo a quien aceptó recibirlas."
+)
+DETAILS_TOGGLE = "Ver detalles"
+
+
+def health_display(
+    *, status: str, quality_rating: str | None, platform_status: str | None
+) -> tuple[str, str]:
+    """(line, tone) for the number: the worst problem first, else «funciona bien»."""
+    if status == "revoked":
+        return WHATSAPP_RECONNECT_HINT, "error"
+    if status == "degraded":
+        return WHATSAPP_RECONNECT_HINT, "warn"
+    if status == "pending":
+        return HEALTH_PENDING, "info"
+    if platform_status_display(platform_status)[1] == "error":
+        return HEALTH_BLOCKED, "error"
+    if (quality_rating or "").upper() == "RED":
+        return HEALTH_LOW_QUALITY, "warn"
+    return HEALTH_OK, "ok"
+
+
+# Without a connected number (N8): what the owner gains, and the next step, a request
+# to the Qualify team (numbers are connected by an administrator, WA-05).
+NO_NUMBER_TITLE = "Conecta tu WhatsApp para atender y vender desde aquí"
+NO_NUMBER_GAINS: tuple[str, ...] = (
+    "Responde los chats de tus clientes desde Qualify, en el celular o en el computador.",
+    "Deja un menú de respuesta automática para las preguntas de siempre: horario, "
+    "precios, domicilios.",
+    "Envía promociones a los clientes que aceptaron recibirlas y mira cuántos las leyeron.",
+)
+NO_NUMBER_NEXT = (
+    "El equipo de Qualify conecta el número de tu negocio. Pídelo aquí y te escribimos "
+    "para hacerlo juntos."
+)
+NO_NUMBER_ACTION = "Pedir que conecten mi WhatsApp"
+CONNECT_REQUEST_MESSAGE = "Quiero conectar el WhatsApp de mi negocio en Qualify."
+CONNECT_REQUEST_SENT = (
+    "Recibimos tu pedido #{reference}. Una persona del equipo te escribirá a {email} "
+    "en menos de un día hábil."
+)
+CONNECT_REQUEST_SAVED = (
+    "Tu pedido #{reference} quedó registrado. Te escribiremos a {email} en cuanto una "
+    "persona del equipo lo tome."
+)
+CONNECT_REQUEST_NO_EMAIL = (
+    "No encontramos un correo en tu cuenta para responderte. Escríbenos a "
+    "contacto@attitudefactory.co y conectamos tu número."
+)
+CONNECT_REQUEST_FAILED = (
+    "No pudimos registrar tu pedido. Vuelve a intentarlo en un momento o escríbenos a "
+    "contacto@attitudefactory.co."
+)
+
+
+# --------------------------------------------------------------------------------------
+# The number (Tu número › Estado)
 # --------------------------------------------------------------------------------------
 
 
@@ -196,6 +351,9 @@ class WhatsAppNumberVM:
     last_health_checked_at: str  # PRE-FORMATTED
     last_synced_at: str  # PRE-FORMATTED
     last_inbound_at: str  # PRE-FORMATTED — latest inbound `messages.ingested_at`
+    # m-24842998: the one line «Tu número › Estado» opens with, and its tone.
+    health_label: str
+    health_tone: str
 
 
 EMPTY_NUMBER = WhatsAppNumberVM(
@@ -217,6 +375,8 @@ EMPTY_NUMBER = WhatsAppNumberVM(
     last_health_checked_at="",
     last_synced_at="",
     last_inbound_at="",
+    health_label="",
+    health_tone="neutral",
 )
 
 
@@ -240,6 +400,9 @@ def build_number_vm(
     quality_label, quality_tone = quality_display(quality_rating)
     name_label, name_tone = name_status_display(name_status)
     platform_label, platform_tone = platform_status_display(platform_status)
+    health_label, health_tone = health_display(
+        status=status, quality_rating=quality_rating, platform_status=platform_status
+    )
     return WhatsAppNumberVM(
         connection_id=connection_id,
         label=whatsapp_label(display_phone_number, verified_name),
@@ -259,6 +422,8 @@ def build_number_vm(
         last_health_checked_at=format_timestamp(last_health_checked_at, NEVER_CHECKED),
         last_synced_at=format_timestamp(last_synced_at, NEVER_SYNCED),
         last_inbound_at=format_timestamp(last_inbound_at, NO_INBOUND),
+        health_label=health_label,
+        health_tone=health_tone,
     )
 
 

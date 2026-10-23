@@ -10,29 +10,33 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .ui import callout, drawer, empty_state, mono, skeleton_rows, tag
+from .ui import callout, card, drawer, empty_state, mono, skeleton_rows, tag
 from .ui import tokens as T
 from .whatsapp_contacts_state import WhatsAppContactsState as S
 from .whatsapp_contacts_vm import FILTERS, IMPORT_CONDITION, OptInVM
 from .whatsapp_marketing_ui import (
+    card_line,
     confirm_action,
     field,
     ghost_refresh,
     retry_button,
     section_head,
+    table_or_cards,
     tone_banner,
     tone_pill,
 )
 
 
-def _revoke_action(o: OptInVM) -> rx.Component:
+def _revoke_action(o: OptInVM, *, tap: bool = False) -> rx.Component:
+    """`tap=True` on a phone card: a full-width, 44 px target (N12)."""
+    sizing = {"size": "2", "width": "100%", "min_height": "44px"} if tap else {"size": "1"}
     return confirm_action(
         rx.button(
             rx.icon("user-x", size=T.ICON_SM),
             "Quitar de la lista",
             loading=S.revoking_phone == o.phone,
             variant="soft",
-            size="1",
+            **sizing,
             **T.tone_scheme("neutral"),
         ),
         title="Quitar de la lista",
@@ -90,6 +94,43 @@ def _row(o: OptInVM) -> rx.Component:
     )
 
 
+def _contact_card(o: OptInVM) -> rx.Component:
+    """Phone (m-24842998): the number, where it came from, its state and the text the
+    person accepted, in full (no tooltip: nothing only on hover, N12)."""
+    return card(
+        rx.vstack(
+            card_line(mono(o.phone, weight="medium"), tone_pill(o.status_label, o.status_tone)),
+            rx.cond(o.brand != "", rx.text(o.brand, size="1", color=T.TEXT_MUTED), rx.fragment()),
+            card_line(
+                tag(o.source_label),
+                rx.text(o.captured_at, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            ),
+            rx.cond(
+                o.revoked_detail != "",
+                rx.text(o.revoked_detail, size="1", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            rx.cond(
+                o.consent_text != "",
+                rx.text("Aceptó: «" + o.consent_text + "»", size="1", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            rx.cond(o.is_active, _revoke_action(o, tap=True), rx.fragment()),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1rem",
+    )
+
+
+def _contacts_list() -> rx.Component:
+    return table_or_cards(
+        _table(),
+        rx.vstack(rx.foreach(S.opt_ins, _contact_card), spacing="3", width="100%"),
+    )
+
+
 def _table() -> rx.Component:
     return rx.box(
         rx.table.root(
@@ -117,7 +158,7 @@ def _list() -> rx.Component:
         S.ready,
         rx.cond(
             S.has_opt_ins,
-            _table(),
+            _contacts_list(),
             empty_state(
                 "users",
                 "Aún no hay contactos con consentimiento",

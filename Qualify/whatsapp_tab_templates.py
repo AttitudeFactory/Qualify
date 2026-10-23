@@ -26,11 +26,13 @@ from .ui import (
 )
 from .ui import tokens as T
 from .whatsapp_marketing_ui import (
+    card_line,
     confirm_action,
     field,
     ghost_refresh,
     retry_button,
     section_head,
+    table_or_cards,
     tone_banner,
     tone_pill,
 )
@@ -134,6 +136,40 @@ def _template_row(t: TemplateVM) -> rx.Component:
     )
 
 
+def _template_card(t: TemplateVM) -> rx.Component:
+    """Phone (m-24842998): one approved message per card, its text wrapped, never cut."""
+    return card(
+        rx.vstack(
+            rx.text(t.display_name, size="3", weight="medium"),
+            card_line(tone_pill(t.status_label, t.status_tone), tag(t.category_label)),
+            rx.text(t.body_preview, size="2", color=T.TEXT_MUTED),
+            rx.cond(
+                t.rejected_reason != "",
+                rx.text(t.rejected_reason, size="2", color=T.tone_color("error", 11)),
+                rx.fragment(),
+            ),
+            rx.text(
+                t.language_label + " · " + t.updated_at,
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+            ),
+            rx.cond(t.can_delete, _delete_action(t), rx.fragment()),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1rem",
+    )
+
+
+def _templates_list() -> rx.Component:
+    return table_or_cards(
+        _templates_table(),
+        rx.vstack(rx.foreach(S.templates, _template_card), spacing="3", width="100%"),
+    )
+
+
 def _templates_table() -> rx.Component:
     return rx.box(
         rx.table.root(
@@ -162,7 +198,7 @@ def _list() -> rx.Component:
         S.ready,
         rx.cond(
             S.has_templates,
-            _templates_table(),
+            _templates_list(),
             empty_state(
                 "file-text",
                 "Aún no hay plantillas en este número",

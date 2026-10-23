@@ -29,6 +29,7 @@ import httpx
 import reflex as rx
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
+from qualify_api.support import InvalidSupportRequest
 from qualify_api.whatsapp.client import (
     PROFILE_PICTURE_TYPES,
     ProfilePictureUploadNotConfigured,
@@ -37,6 +38,8 @@ from qualify_api.whatsapp.client import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .connections_provider import request_support
+from .nav_url import push_url_script
 from .tenant import tenant_uuid
 from .whatsapp_provider import (
     UnknownWhatsAppNumber,
@@ -50,19 +53,32 @@ from .whatsapp_provider import (
     verify_number,
 )
 from .whatsapp_vm import (
+    CONNECT_REQUEST_FAILED,
+    CONNECT_REQUEST_MESSAGE,
+    CONNECT_REQUEST_NO_EMAIL,
+    CONNECT_REQUEST_SAVED,
+    CONNECT_REQUEST_SENT,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
     GRAPH_UNAVAILABLE,
     MAX_QR_MESSAGE_CHARS,
     QR_DEFAULT_CHANNEL,
+    SECTION_KEYS,
+    SUB_PARAM,
     TAB_KEYS,
+    TAB_PARAM,
     BusinessProfileVM,
     ProfileForm,
     QrCodeVM,
     WhatsAppNumberVM,
     compose_qr_message,
     graph_error_notice,
+    panel_section,
+    panel_sub,
+    resolve_panel,
     resolve_tab,
+    sub_panel,
+    tab_url,
     validate_profile_form,
 )
 
@@ -128,6 +144,10 @@ class WhatsAppState(rx.State):
     active_tab: str = resolve_tab("")
     is_loading: bool = False
     load_error: str = ""
+    # m-24842998: «Pedir que conecten mi WhatsApp» from the no-number state (N8).
+    connect_request_sending: bool = False
+    connect_request_notice: str = ""
+    connect_request_error: str = ""
 
     # -- Conexión ------------------------------------------------------------------------
     verifying: bool = False
@@ -182,6 +202,16 @@ class WhatsAppState(rx.State):
     def show_empty_state(self) -> bool:
         return not self.is_loading and not self.load_error and len(self.numbers) == 0
 
+    # m-24842998: the strips show the SECTION (top tab) and the SUB of the panel on
+    # screen; `active_tab` stays the panel, so in-app jumps keep using panel keys.
+    @rx.var
+    def active_section(self) -> str:
+        return panel_section(self.active_tab)
+
+    @rx.var
+    def active_sub(self) -> str:
+        return panel_sub(self.active_tab)
+
     @rx.var
     def selected_number(self) -> WhatsAppNumberVM:
         for number in self.numbers:
@@ -235,16 +265,87 @@ class WhatsAppState(rx.State):
 
     @rx.event
     def enter_page(self) -> rx.event.EventSpec:
-        """`/whatsapp` on_load: pick the tab from `?tab=` and load the numbers."""
-        requested = str(self.router.url.query_parameters.get("tab", "") or "")
-        self.active_tab = resolve_tab(requested)
+        """`/whatsapp` on_load: pick the panel from `?tab=`/`?sub=` and load the numbers.
+        Also runs on «atrás» (a real navigation), so the previous tab comes back."""
+        params = self.router.url.query_parameters
+        self.active_tab = resolve_panel(
+            str(params.get(TAB_PARAM, "") or ""), str(params.get(SUB_PARAM, "") or "")
+        )
         return WhatsAppState.load_numbers
 
+    def _show_panel(self, panel: str) -> rx.event.EventSpec | None:
+        if panel == self.active_tab:
+            return None
+        self.active_tab = panel
+        # N5: a new history step, so «atrás» returns to the previous tab and reloading
+        # keeps this one; `enter_page` reads it back on either.
+        return rx.call_script(push_url_script(tab_url(panel)))
+
     @rx.event
-    def select_tab(self, tab: str | list[str]) -> None:
-        """`on_change` of the tab strip (a segmented control: `str | list[str]`)."""
-        if isinstance(tab, str) and tab in TAB_KEYS:
-            self.active_tab = tab
+    def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:
+        """Open a panel by its key: the in-app jumps (`select_tab(TAB_QR)`)."""
+        if not isinstance(tab, str) or tab not in TAB_KEYS:
+            return None
+        return self._show_panel(resolve_tab(tab))
+
+    @rx.event
+    def select_section(self, section: str | list[str]) -> rx.event.EventSpec | None:
+        """A top tab: its first sub-tab (`on_change` of a segmented control, or a tap)."""
+        if not isinstance(section, str) or section not in SECTION_KEYS:
+            return None
+        if section == panel_section(self.active_tab):
+            return None
+        return self._show_panel(resolve_panel(section))
+
+    @rx.event
+    def select_sub(self, sub: str | list[str]) -> rx.event.EventSpec | None:
+        """A sub-tab of the section on screen."""
+        if not isinstance(sub, str):
+            return None
+        panel = sub_panel(panel_section(self.active_tab), sub)
+        return self._show_panel(panel) if panel else None
+
+    @rx.event(background=True)
+    async def request_connection(self) -> None:
+        """«Pedir que conecten mi WhatsApp» (N8): one tap files a support request
+        (QUA-202, topic `connect_accounts`) with the session's email; the team answers
+        there. Nothing is connected or sent to the customer's phone from here."""
+        async with self:
+            if self.connect_request_sending:
+                return  # a double tap must not file two requests
+            auth = await self.get_state(AuthState)
+            email = (auth.user_email or "").strip()
+            session_tenant_id = auth.session_tenant_id
+            self.connect_request_error = ""
+            if "@" not in email:
+                self.connect_request_error = CONNECT_REQUEST_NO_EMAIL
+                return
+            self.connect_request_sending = True
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if tenant_id is None:
+            async with self:
+                self.connect_request_sending = False
+                self.connect_request_error = _NO_SESSION
+            return
+        try:
+            ticket = await asyncio.to_thread(
+                request_support,
+                tenant_id,
+                contact_email=email,
+                contact_whatsapp="",
+                message=CONNECT_REQUEST_MESSAGE,
+                context={"screen": "whatsapp"},
+            )
+        except (InvalidSupportRequest, SQLAlchemyError) as exc:
+            logger.error("whatsapp connect request failed: %s", type(exc).__name__)
+            async with self:
+                self.connect_request_sending = False
+                self.connect_request_error = CONNECT_REQUEST_FAILED
+            return
+        template = CONNECT_REQUEST_SENT if ticket.notified else CONNECT_REQUEST_SAVED
+        async with self:
+            self.connect_request_sending = False
+            self.connect_request_notice = template.format(reference=ticket.reference, email=email)
 
     @rx.event
     def select_connection(self, connection_id: str) -> None:

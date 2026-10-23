@@ -31,10 +31,23 @@ from .whatsapp_vm import (
     EMPTY_PROFILE,
     NEVER_CHECKED,
     NO_INBOUND,
+    NO_NUMBER_ACTION,
+    NO_NUMBER_GAINS,
+    NO_NUMBER_TITLE,
+    NUMBER_SUBS,
+    PROMOTION_SUBS,
     QR_CHANNELS,
+    SECTIONS,
+    TAB_ACTIVITY,
+    TAB_CAMPAIGNS,
     TAB_CHATS,
+    TAB_CONNECTION,
+    TAB_CONTACTS,
+    TAB_KEYS,
+    TAB_MENU,
+    TAB_PROFILE,
     TAB_QR,
-    TABS,
+    TAB_TEMPLATES,
     VERTICAL_KEYS,
     BusinessProfileVM,
     ProfileForm,
@@ -45,11 +58,17 @@ from .whatsapp_vm import (
     build_qr_vm,
     compose_qr_message,
     graph_error_notice,
+    health_display,
     name_status_display,
+    panel_section,
+    panel_sub,
     platform_status_display,
     qr_channel_label,
     quality_display,
+    resolve_panel,
     resolve_tab,
+    sub_panel,
+    tab_url,
     tier_display,
     validate_profile_form,
 )
@@ -281,22 +300,171 @@ def test_graph_error_shows_the_meta_code_only() -> None:
 # --- 5. shell, placeholders, route, nav ------------------------------------------------
 
 
-def test_tabs_and_default() -> None:
-    assert [key for key, _ in TABS] == [
-        "chats",
-        "conexion",
-        "perfil",
-        "qr",
-        "menu",
-        "plantillas",
-        "contactos",
-        "campanas",
+def test_four_tabs_named_as_tasks() -> None:
+    """m-24842998: four top tabs (guide §3), the secondary ones grouped inside."""
+    assert [label for _, label in SECTIONS] == [
+        "Chats",
+        "Respuesta automática",
+        "Promociones",
+        "Tu número",
     ]
-    assert [label for _, label in TABS][5:] == ["Plantillas", "Contactos", "Campañas"]
+    assert [label for _, label in PROMOTION_SUBS] == [
+        "Enviadas",
+        "Mensajes aprobados",
+        "Clientes que aceptaron",
+    ]
+    assert [label for _, label in NUMBER_SUBS] == ["Estado", "Perfil", "Códigos QR", "Actividad"]
+    # Every panel the body renders sits under exactly one top tab.
+    assert TAB_KEYS == {
+        TAB_CHATS,
+        TAB_MENU,
+        TAB_CAMPAIGNS,
+        TAB_TEMPLATES,
+        TAB_CONTACTS,
+        TAB_CONNECTION,
+        TAB_PROFILE,
+        TAB_QR,
+        TAB_ACTIVITY,
+    }
+
+
+def test_tabs_and_default() -> None:
     assert DEFAULT_TAB == TAB_CHATS
     assert resolve_tab("qr") == TAB_QR
     assert resolve_tab("<script>") == DEFAULT_TAB
     assert resolve_tab("") == DEFAULT_TAB
+
+
+@pytest.mark.parametrize(
+    ("tab", "sub", "panel"),
+    [
+        ("chats", "", TAB_CHATS),
+        ("respuesta", "", TAB_MENU),
+        ("promociones", "", TAB_CAMPAIGNS),
+        ("promociones", "enviadas", TAB_CAMPAIGNS),
+        ("promociones", "aprobados", TAB_TEMPLATES),
+        ("promociones", "clientes", TAB_CONTACTS),
+        ("promociones", "<script>", TAB_CAMPAIGNS),
+        ("numero", "", TAB_CONNECTION),
+        ("numero", "perfil", TAB_PROFILE),
+        ("numero", "qr", TAB_QR),
+        ("numero", "actividad", TAB_ACTIVITY),
+        ("numero", "aprobados", TAB_CONNECTION),  # a sub of another tab is junk here
+        # Addresses already shared or bookmarked keep landing on the same content.
+        ("plantillas", "", TAB_TEMPLATES),
+        ("campanas", "", TAB_CAMPAIGNS),
+        ("contactos", "", TAB_CONTACTS),
+        ("conexion", "", TAB_CONNECTION),
+        ("menu", "", TAB_MENU),
+        ("qr", "", TAB_QR),
+        ("", "", DEFAULT_TAB),
+        ("<script>", "x", DEFAULT_TAB),
+    ],
+)
+def test_the_address_names_the_panel(tab: str, sub: str, panel: str) -> None:
+    assert resolve_panel(tab, sub) == panel
+
+
+@pytest.mark.parametrize("panel", sorted(TAB_KEYS))
+def test_every_panel_has_an_address_that_reads_back(panel: str) -> None:
+    """N5: what `select_*` writes is what `enter_page` reads on reload or «atrás»."""
+    url = tab_url(panel)
+    assert url.startswith("/whatsapp?tab=")
+    query = dict(part.split("=") for part in url.split("?", 1)[1].split("&"))
+    assert resolve_panel(query["tab"], query.get("sub", "")) == panel
+
+
+def test_addresses_are_the_owner_words() -> None:
+    assert tab_url(TAB_TEMPLATES) == "/whatsapp?tab=promociones&sub=aprobados"
+    assert tab_url(TAB_QR) == "/whatsapp?tab=numero&sub=qr"
+    assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"  # no sub without sub-tabs
+    assert tab_url(TAB_MENU) == "/whatsapp?tab=respuesta"
+    assert tab_url("<script>") == "/whatsapp?tab=chats"
+
+
+def test_sections_and_subs_of_a_panel() -> None:
+    assert panel_section(TAB_CONTACTS) == "promociones" and panel_sub(TAB_CONTACTS) == "clientes"
+    assert panel_section(TAB_ACTIVITY) == "numero" and panel_sub(TAB_ACTIVITY) == "actividad"
+    assert panel_section(TAB_CHATS) == "chats" and panel_sub(TAB_CHATS) == ""
+    assert sub_panel("promociones", "aprobados") == TAB_TEMPLATES
+    assert sub_panel("chats", "") == ""  # a section without sub-tabs has none to pick
+
+
+@pytest.mark.parametrize(
+    ("status", "quality", "platform", "tone"),
+    [
+        ("active", "GREEN", "CONNECTED", "ok"),
+        ("active", "UNKNOWN", None, "ok"),
+        ("active", "RED", "CONNECTED", "warn"),
+        ("active", "GREEN", "BANNED", "error"),
+        ("pending", None, None, "info"),
+        ("degraded", "GREEN", "CONNECTED", "warn"),
+        ("revoked", "GREEN", "CONNECTED", "error"),
+    ],
+)
+def test_the_number_in_one_line(
+    status: str, quality: str | None, platform: str | None, tone: str
+) -> None:
+    label, got = health_display(status=status, quality_rating=quality, platform_status=platform)
+    assert got == tone
+    assert label
+    if tone == "ok":
+        assert label == "Tu WhatsApp funciona bien ✓"
+    if status in {"degraded", "revoked"}:
+        assert label == WHATSAPP_RECONNECT_HINT  # the administrative hint, never «Reconectar»
+
+
+def test_number_vm_carries_its_line() -> None:
+    vm = _number()
+    assert (vm.health_label, vm.health_tone) == ("Tu WhatsApp funciona bien ✓", "ok")
+    assert _number(status="revoked").health_tone == "error"
+
+
+def test_no_number_state_has_a_next_step() -> None:
+    """N8: without a connected number there is a button, not a dead end."""
+    assert NO_NUMBER_TITLE == "Conecta tu WhatsApp para atender y vender desde aquí"
+    assert len(NO_NUMBER_GAINS) == 3
+    source = (_HERE / "whatsapp_page.py").read_text()
+    start = source.index("def _no_numbers_state(")
+    block = source[start : source.index("\n\n\n", start)]
+    assert "action=" in block and "WhatsAppState.request_connection" in block
+    assert "NO_NUMBER_ACTION" in block
+    assert NO_NUMBER_ACTION == "Pedir que conecten mi WhatsApp"
+
+
+def test_the_strips_fit_a_phone() -> None:
+    """N12: at 360 px the tabs are a grid of 44 px buttons, never a sliding strip."""
+    source = (_HERE / "whatsapp_page.py").read_text()
+    start = source.index("def _choice_strip(")
+    block = source[start : source.index("\n\n\n", start)]
+    assert "_PHONE_ONLY" in block and "_DESKTOP_ONLY" in block
+    assert 'overflow_x="auto"' not in source[source.index("def tab_strip(") :][:400]
+    assert '_TAP = {"min_height": "44px"}' in source
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "whatsapp_tab_campaigns.py",
+        "whatsapp_tab_templates.py",
+        "whatsapp_tab_contacts.py",
+        "whatsapp_metrics_block.py",
+    ],
+)
+def test_every_table_has_phone_cards(module: str) -> None:
+    """m-24842998: no table slides sideways on a phone — each one has its cards."""
+    source = (_HERE / module).read_text()
+    assert source.count("rx.table.root(") == source.count("table_or_cards(")
+
+
+def test_selecting_a_tab_writes_the_address() -> None:
+    source = (_HERE / "whatsapp_state.py").read_text()
+    start = source.index("def _show_panel(")
+    block = source[start : source.index("@rx.event", start)]
+    assert "push_url_script(tab_url(panel))" in block
+    start = source.index("def enter_page(")
+    block = source[start : source.index("def _show_panel(", start)]
+    assert "resolve_panel(" in block and "SUB_PARAM" in block
 
 
 def test_tabs_exist_behind_the_agreed_hooks() -> None:
@@ -317,9 +485,17 @@ def test_the_page_renders_every_tab() -> None:
         escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
         return text in rendered or escaped in rendered
 
-    for _key, label in TABS:
+    for _key, label in (*SECTIONS, *PROMOTION_SUBS, *NUMBER_SUBS):
         assert present(label), label
-    for text in ("Verificar ahora", "Guardar", "Crear código", "Copiar enlace", "Descargar PNG"):
+    for text in (
+        "Verificar ahora",
+        "Ver detalles",
+        "Guardar",
+        "Crear código",
+        "Copiar enlace",
+        "Descargar PNG",
+        NO_NUMBER_ACTION,
+    ):
         assert present(text), text
 
 
@@ -391,3 +567,25 @@ def test_an_auth_error_in_any_tab_refreshes_the_numbers() -> None:
         start = source.index(f"async def {handler}(")
         end = source.find("\n    @rx.event", start)
         assert "WhatsAppState.load_numbers" in source[start:end], handler
+
+
+def test_the_connect_request_is_a_ticket_the_support_service_accepts() -> None:
+    """«Pedir que conecten mi WhatsApp» files a QUA-202 support request; the service
+    refuses unknown context keys, so pin that what the state sends is accepted."""
+    from qualify_api.support import service
+
+    from .whatsapp_vm import CONNECT_REQUEST_MESSAGE
+
+    source = (_HERE / "whatsapp_state.py").read_text()
+    start = source.index("async def request_connection(")
+    block = source[start : source.index("\n    @rx.", start)]
+    assert "request_support," in block and 'context={"screen": "whatsapp"}' in block
+    assert "if self.connect_request_sending:" in block  # a double tap files one ticket
+    topic, *_rest, context = service._clean(
+        topic="connect_accounts",
+        contact_email="dueno@negocio.co",
+        contact_whatsapp="",
+        message=CONNECT_REQUEST_MESSAGE,
+        context={"screen": "whatsapp"},
+    )
+    assert topic == "connect_accounts" and context == {"screen": "whatsapp"}

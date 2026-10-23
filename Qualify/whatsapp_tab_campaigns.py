@@ -49,11 +49,13 @@ from .whatsapp_campaigns_vm import (
 )
 from .whatsapp_contacts_vm import SOURCES
 from .whatsapp_marketing_ui import (
+    card_line,
     confirm_action,
     field,
     ghost_refresh,
     retry_button,
     section_head,
+    table_or_cards,
     tone_banner,
     tone_pill,
 )
@@ -106,6 +108,50 @@ def _num_header(label: str) -> rx.Component:
     return rx.table.column_header_cell(label, text_align="right")
 
 
+def _campaign_card(c: CampaignRowVM) -> rx.Component:
+    """Phone (m-24842998): «Promo de octubre · Enviada · 120 la leyeron de 128 · ≈ USD
+    3,00» and «Ver» — the table's essentials, nothing sliding sideways."""
+    return card(
+        rx.vstack(
+            rx.text(c.name, size="3", weight="medium"),
+            card_line(
+                tone_pill(c.status_label, c.status_tone),
+                rx.cond(
+                    c.reach_label != "",
+                    rx.text(c.reach_label, size="2", class_name="q-nums"),
+                    rx.fragment(),
+                ),
+                rx.cond(
+                    c.cost_label != "—",
+                    rx.text("≈ " + c.cost_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                    rx.fragment(),
+                ),
+            ),
+            rx.button(
+                "Ver",
+                rx.icon("chevron-right", size=T.ICON_SM),
+                on_click=S.open_detail(c.campaign_id),
+                variant="soft",
+                size="2",
+                width="100%",
+                **_TAP,
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1rem",
+    )
+
+
+def _campaigns_list() -> rx.Component:
+    return table_or_cards(
+        _campaigns_table(),
+        rx.vstack(rx.foreach(S.campaigns, _campaign_card), spacing="3", width="100%"),
+    )
+
+
 def _campaigns_table() -> rx.Component:
     return rx.box(
         rx.table.root(
@@ -137,7 +183,7 @@ def _list() -> rx.Component:
         S.ready,
         rx.cond(
             S.has_campaigns,
-            _campaigns_table(),
+            _campaigns_list(),
             empty_state(
                 "megaphone",
                 "Aún no enviaste promociones desde este número",
@@ -753,28 +799,55 @@ def _detail_body() -> rx.Component:
         ),
         rx.cond(
             S.detail_sends.length() > 0,
-            rx.box(
-                rx.table.root(
-                    rx.table.header(
-                        rx.table.row(
-                            rx.table.column_header_cell("Número"),
-                            rx.table.column_header_cell("Estado"),
-                            rx.table.column_header_cell("Nota"),
-                            rx.table.column_header_cell("Costo", text_align="right"),
-                        )
-                    ),
-                    rx.table.body(rx.foreach(S.detail_sends, _send_row)),
-                    variant="surface",
-                    width="100%",
-                ),
-                overflow_x="auto",
-                width="100%",
+            table_or_cards(
+                _sends_table(),
+                rx.vstack(rx.foreach(S.detail_sends, _send_card), spacing="2", width="100%"),
             ),
             rx.fragment(),
         ),
         spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+def _send_card(s: SendVM) -> rx.Component:
+    """Phone: one send per card — number, state, the note and the cost."""
+    return card(
+        rx.vstack(
+            card_line(mono(s.phone, size="2"), tone_pill(s.status_label, s.status_tone)),
+            rx.cond(s.note != "", rx.text(s.note, size="1"), rx.fragment()),
+            rx.cond(
+                s.retry_after != "",
+                rx.text(s.retry_after, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.fragment(),
+            ),
+            rx.text(s.cost_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+        padding="0.75rem 1rem",
+    )
+
+
+def _sends_table() -> rx.Component:
+    return rx.box(
+        rx.table.root(
+            rx.table.header(
+                rx.table.row(
+                    rx.table.column_header_cell("Número"),
+                    rx.table.column_header_cell("Estado"),
+                    rx.table.column_header_cell("Nota"),
+                    rx.table.column_header_cell("Costo", text_align="right"),
+                )
+            ),
+            rx.table.body(rx.foreach(S.detail_sends, _send_row)),
+            variant="surface",
+            width="100%",
+        ),
+        overflow_x="auto",
+        width="100%",
     )
 
 
