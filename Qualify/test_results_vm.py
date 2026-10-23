@@ -186,6 +186,18 @@ def test_figures_show_even_without_the_connection_when_there_is_something() -> N
     assert not vm.social_needs_connection and not vm.whatsapp_needs_connection
 
 
+def test_mentions_empty_state_knows_whether_instagram_is_connected() -> None:
+    """«Aún no hay menciones» offers «Crear publicación» once Instagram is connected."""
+    assert V.build_results_vm(_counts()).instagram_connected
+    assert not V.build_results_vm(_counts(instagram_connected=False)).instagram_connected
+    assert not V.EMPTY_RESULTS.instagram_connected
+
+
+def test_published_hint_names_both_networks() -> None:
+    published = next(s for s in V.build_results_vm(_counts()).social if s.key == "published")
+    assert published.hint == "En Instagram y Facebook"
+
+
 # --- the page -------------------------------------------------------------------------
 
 

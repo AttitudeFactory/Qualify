@@ -26,6 +26,7 @@ from .mentions_paging import (
     SENTIMENT_OPTIONS,
 )
 from .mentions_provider import NO_LINK
+from .results_state import ResultsState
 from .state import DashboardState, MentionRow
 from .ui import (
     callout,
@@ -813,15 +814,28 @@ def _mentions_empty_state() -> rx.Component:
             "comentario, aparecerá aquí. Para ver menciones anteriores, elige un periodo "
             "más amplio.",
         ),
-        # N8 (m-24843003): the way out is the connection the mentions come through.
-        empty_state(
-            "at-sign",
-            "Aún no hay menciones",
-            "Cuando alguien mencione tu cuenta en una publicación o un comentario, aparecerá "
-            "aquí. Llegan por tu Instagram conectado.",
-            action=rx.link(
-                rx.button("Ver tus redes", size="3", min_height=_TARGET),
-                href="/connections",
+        # N8 (m-24843003): without Instagram the way out is connecting it; with it, a new
+        # publication is what invites people to tag the business.
+        rx.cond(
+            ResultsState.instagram_connected,
+            empty_state(
+                "at-sign",
+                "Aún no hay menciones",
+                "Cuando alguien te etiquete en una publicación o un comentario, aparecerá "
+                "aquí. Una publicación nueva invita a que te etiqueten.",
+                action=rx.link(
+                    rx.button("Crear publicación", size="3", min_height=_TARGET),
+                    href="/create",
+                ),
+            ),
+            empty_state(
+                "at-sign",
+                "Aún no hay menciones",
+                "Conecta tu Instagram para ver quién te menciona.",
+                action=rx.link(
+                    rx.button("Conectar mi Instagram", size="3", min_height=_TARGET),
+                    href="/connections",
+                ),
             ),
         ),
     )

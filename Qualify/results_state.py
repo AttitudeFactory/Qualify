@@ -66,6 +66,7 @@ class ResultsState(rx.State):
     social_quiet: bool = EMPTY_RESULTS.social_quiet
     whatsapp_needs_connection: bool = EMPTY_RESULTS.whatsapp_needs_connection
     whatsapp_quiet: bool = EMPTY_RESULTS.whatsapp_quiet
+    instagram_connected: bool = EMPTY_RESULTS.instagram_connected
 
     @rx.event
     def enter_page(self) -> list[rx.event.EventSpec]:
@@ -126,6 +127,7 @@ class ResultsState(rx.State):
             self.social_quiet = vm.social_quiet
             self.whatsapp_needs_connection = vm.whatsapp_needs_connection
             self.whatsapp_quiet = vm.whatsapp_quiet
+            self.instagram_connected = vm.instagram_connected
             self.loading = False
 
 

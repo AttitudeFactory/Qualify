@@ -78,16 +78,14 @@ def _tab_strip() -> rx.Component:
                 value=R.active_tab,
                 on_change=R.select_tab,
                 size="3",
-                aria_label="Qué resultados ver",
+                aria_label="Resultados que estás viendo",
             ),
             display=["none", "none", "block"],
         ),
         rx.vstack(
             rx.text(TAB_SELECT_LABEL, size="2", weight="medium", color=T.TEXT_MUTED),
             rx.select.root(
-                rx.select.trigger(
-                    width="100%", min_height=_TARGET, aria_label="Qué resultados ver"
-                ),
+                rx.select.trigger(width="100%", min_height=_TARGET, aria_label=TAB_SELECT_LABEL),
                 rx.select.content(*[_option(tab) for tab in TAB_VMS]),
                 value=R.active_tab,
                 on_change=R.select_tab,
@@ -229,7 +227,7 @@ def _social_tab() -> rx.Component:
                 ),
             ),
         ),
-        description="Los últimos 7 días en Instagram",
+        description="Los últimos 7 días en tus redes",
     )
 
 
@@ -265,7 +263,7 @@ def _whatsapp_tab() -> rx.Component:
                     rx.vstack(
                         _stats_grid(R.whatsapp, "2"),
                         rx.link(
-                            "Ver más detalles en WhatsApp",
+                            "Ver tu número de WhatsApp",
                             href=WHATSAPP_NUMBERS_URL,
                             size="2",
                             min_height=_TARGET,

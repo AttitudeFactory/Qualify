@@ -42,7 +42,7 @@ TAB_KEYS: frozenset[str] = frozenset(key for key, _label in TABS)
 DEFAULT_TAB = TAB_SOCIAL
 
 TITLE = "Resultados"
-SUBTITLE = "Cómo te fue en los últimos 7 días"
+SUBTITLE = "Cómo te va en tus redes, tu WhatsApp y tu página web"
 TAB_SELECT_LABEL = "Estás viendo"
 
 #: The browser tab's title per tab (N1): the hub's name on its first tab, the place's own
@@ -153,6 +153,8 @@ class ResultsVM:
     social_quiet: bool = False
     whatsapp_needs_connection: bool = True
     whatsapp_quiet: bool = False
+    #: Picks the way out of «Aún no hay menciones»: connect Instagram, or invite tags.
+    instagram_connected: bool = False
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -183,7 +185,7 @@ def _social(counts: ResultsCounts) -> list[ResultStatVM]:
             "published",
             "Publicaste",
             counts.published_week,
-            "Publicaciones e historias",
+            "En Instagram y Facebook",
             PLANNER_URL,
         ),
         ResultStatVM(
@@ -227,6 +229,7 @@ def build_results_vm(counts: ResultsCounts) -> ResultsVM:
         social_quiet=social_empty and counts.instagram_connected,
         whatsapp_needs_connection=whatsapp_empty and not counts.whatsapp_connected,
         whatsapp_quiet=whatsapp_empty and counts.whatsapp_connected,
+        instagram_connected=counts.instagram_connected,
     )
 
 
