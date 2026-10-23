@@ -562,6 +562,8 @@ _NOT_EDITABLE = (
     "No se guardó ningún cambio."
 )
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
+#: m-24842978: what accompanies the «Aprobada. Todavía no se publica.» card.
+APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
 _POLL_TIMEOUT = (
     "La generación lleva más de 5 minutos sin terminar. La bandeja mostrará el "
     "estado real cuando el sistema la marque como fallida."
@@ -928,6 +930,10 @@ class CreativeState(rx.State):
     # The review decision asks before discarding: "reject" / "regenerate" while the
     # confirmation is open, "" otherwise — a mis-click must not throw a draft away.
     reject_confirm: str = ""
+    # m-24842978: the owner just approved this draft on this screen — the decision bar
+    # gives way to «Aprobada. Todavía no se publica.» and its way to Tu semana. Cleared
+    # whenever a draft (re)loads, so it never claims a decision taken somewhere else.
+    just_approved: bool = False
     action_error: str = ""
     poll_timed_out: bool = False
     poll_elapsed_label: str = ""
@@ -5006,6 +5012,7 @@ class CreativeState(rx.State):
             self.action_error = ""
             self.poll_timed_out = False
             self.edit_mode = False
+            self.just_approved = False
             draft_id = self._route_draft_id()
         if draft_id is None:
             async with self:
@@ -5236,7 +5243,31 @@ class CreativeState(rx.State):
             return
         async with self:
             self._apply_detail(vm)
-        yield rx.toast.success("POST aprobado: ya puedes programarlo en Tu semana.")
+            self.just_approved = True
+        # m-24842978: the toast goes with the card, never instead of it — and it never
+        # says or suggests the piece is already out.
+        yield rx.toast.success(APPROVED_TOAST)
+
+    @rx.var
+    def show_approved_next(self) -> bool:
+        """m-24842978: the «Aprobada. Todavía no se publica.» card — right after this
+        screen approved the draft, and only while it is still approved (saving an edit
+        sends it back to review)."""
+        return self.just_approved and self.draft is not None and self.draft.status == "approved"
+
+    @rx.event
+    def go_schedule(self):
+        """«Elegir día y hora»: Tu semana opens its assign drawer on this publication
+        (`/planner?post=<id>`, the same door as the gallery's «Asignar»)."""
+        if self.draft is None:
+            return None
+        return rx.redirect(f"/planner?post={self.draft.draft_id}")
+
+    @rx.event
+    def go_create_another(self):
+        """«Crear otra publicación»: back to the start of the generator."""
+        self.just_approved = False
+        return rx.redirect("/create")
 
     @rx.event
     def ask_reject(self, regenerate: bool) -> None:

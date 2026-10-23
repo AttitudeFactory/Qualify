@@ -306,3 +306,113 @@ def test_rejecting_asks_first_and_only_the_confirmation_discards(monkeypatch) ->
     assert state.reject_confirm == ""
     assert event.handler.fn.__name__ == "reject_current"
     assert "true" in str(event.args).lower()
+
+
+# --- after approving: «Aprobada. Todavía no se publica.» (m-24842978) ------------------
+
+_DRAFT_UUID = UUID("d0000000-0000-4000-8000-000000000001")
+
+
+def _approved_vm(draft: DraftVM) -> DraftVM:
+    return DraftVM(
+        draft_id=str(_DRAFT_UUID),
+        status="approved",
+        status_label="Aprobado",
+        status_tone="grass",
+        variants=draft.variants,
+    )
+
+
+_VARIANT_UUID = "e0000000-0000-4000-8000-000000000001"
+
+
+def _approvable_state(monkeypatch) -> CreativeState:
+    """`_review_state`, with a real variant id: `approve_selected` parses it as a UUID."""
+    from dataclasses import replace
+
+    state = _review_state(monkeypatch)
+    variant = replace(state.draft.variants[0], variant_id=_VARIANT_UUID)
+    state.draft = replace(state.draft, variants=(variant,))
+    state.select_variant(_VARIANT_UUID)
+    return state
+
+
+async def _approve(monkeypatch, state: CreativeState) -> list:
+    monkeypatch.setattr(CreativeState, "_route_draft_id", lambda self: _DRAFT_UUID)
+    monkeypatch.setattr(
+        creative_state_module,
+        "approve_draft",
+        lambda tenant_id, draft_id, variant_id, user_id: _approved_vm(state.draft),
+    )
+    return [event async for event in CreativeState.approve_selected.fn(state)]
+
+
+async def test_approving_shows_the_next_step_and_a_toast_that_says_it_is_not_out(
+    monkeypatch,
+) -> None:
+    state = _approvable_state(monkeypatch)
+    assert state.show_approved_next is False
+
+    events = await _approve(monkeypatch, state)
+
+    assert state.just_approved is True
+    assert state.show_approved_next is True
+    toast = str(events[-1])
+    assert "Publicación aprobada. Ahora elige cuándo sale." in toast
+    assert "POST aprobado" not in toast
+
+
+async def test_elegir_dia_y_hora_opens_tu_semana_on_this_publication(monkeypatch) -> None:
+    state = _approvable_state(monkeypatch)
+    await _approve(monkeypatch, state)
+
+    event = state.go_schedule()
+
+    assert f"/planner?post={_DRAFT_UUID}" in str(event)
+
+
+async def test_the_card_goes_away_once_the_draft_is_back_in_review(monkeypatch) -> None:
+    state = _approvable_state(monkeypatch)
+    await _approve(monkeypatch, state)
+    # saving an edit sends an approved draft back to review
+    state.draft = DraftVM(
+        draft_id=str(_DRAFT_UUID),
+        status="generated",
+        status_label="Por revisar",
+        status_tone="warn",
+        can_approve=True,
+    )
+    assert state.show_approved_next is False
+
+
+def test_crear_otra_publicacion_goes_to_create_and_clears_the_card(monkeypatch) -> None:
+    state = _review_state(monkeypatch)
+    state.just_approved = True
+    event = state.go_create_another()
+    assert state.just_approved is False
+    assert "/create" in str(event)
+
+
+def test_the_old_approved_toast_is_gone_from_the_review_screen() -> None:
+    from pathlib import Path
+
+    source = Path(creative_state_module.__file__).read_text(encoding="utf-8")
+    assert "POST aprobado" not in source
+
+
+def test_the_review_screen_swaps_the_decision_for_the_approved_card() -> None:
+    import json
+
+    from . import creative_pages
+
+    rendered = str(creative_pages._decision_bar())
+    for text in (
+        "Aprobada. Todavía no se publica.",
+        "Elige el día y la hora en que sale.",
+        "Elegir día y hora",
+        "Crear otra publicación",
+        "show_approved_next",
+        "2.75rem",  # N12: ≥ 44 px tap targets on a phone
+    ):
+        # the compiled JSX escapes non-ASCII («í» → «í»)
+        assert json.dumps(text)[1:-1] in rendered, text

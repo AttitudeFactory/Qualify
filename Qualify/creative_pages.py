@@ -2118,10 +2118,67 @@ def _reject_dialog() -> rx.Component:
     )
 
 
+#: m-24842978: the card that replaces the decision bar right after approving. Nothing
+#: here says or suggests the publication is already out.
+APPROVED_TITLE = "Aprobada. Todavía no se publica."
+APPROVED_BODY = "Elige el día y la hora en que sale."
+APPROVED_SCHEDULE = "Elegir día y hora"
+APPROVED_CREATE_ANOTHER = "Crear otra publicación"
+
+# N12: every tap target at least 44 px tall on a phone.
+_TAP_MIN_HEIGHT = "2.75rem"
+
+
+def _approved_next() -> rx.Component:
+    """After approving (m-24842978, N3): say plainly that it is not out yet and take the
+    owner straight to choosing when it goes out — Tu semana opens on this publication."""
+    return _card(
+        rx.hstack(
+            rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
+            rx.vstack(
+                rx.text(APPROVED_TITLE, class_name="q-rv-title"),
+                rx.text(APPROVED_BODY, class_name="q-rv-hint"),
+                spacing="0",
+            ),
+            align="center",
+            spacing="2",
+        ),
+        rx.flex(
+            rx.button(
+                rx.icon("calendar-clock", size=16),
+                APPROVED_SCHEDULE,
+                size="3",
+                min_height=_TAP_MIN_HEIGHT,
+                on_click=CreativeState.go_schedule,
+            ),
+            rx.button(
+                rx.icon("sparkles", size=16),
+                APPROVED_CREATE_ANOTHER,
+                variant="soft",
+                size="3",
+                min_height=_TAP_MIN_HEIGHT,
+                on_click=CreativeState.go_create_another,
+            ),
+            gap="0.75rem",
+            wrap="wrap",
+            width="100%",
+        ),
+        id="approved-next",
+    )
+
+
 def _decision_bar() -> rx.Component:
     """The review decision (HITL #2), as three cards — each one says what it does right
     above its own button. Discarding asks first. It only exists while the draft waits
-    for a decision; once approved there is nothing to decide here."""
+    for a decision; right after approving it gives way to `_approved_next`."""
+    return rx.cond(
+        CreativeState.show_approved_next,
+        _approved_next(),
+        _decision_bar_or_nothing(),
+    )
+
+
+def _decision_bar_or_nothing() -> rx.Component:
     draft = CreativeState.draft
     return rx.cond(
         draft.can_reject | draft.can_regenerate | draft.can_approve,
