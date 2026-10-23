@@ -132,6 +132,10 @@ async def _fake_session_ids(self: VariationsState) -> tuple[UUID, UUID, UUID]:
     return (_TENANT_ID, _BRAND_ID, _USER_ID)
 
 
+async def _drain(events):
+    return [event async for event in events]
+
+
 def _state(monkeypatch: pytest.MonkeyPatch) -> VariationsState:
     monkeypatch.setattr(VariationsState, "_session_ids", _fake_session_ids)
     return VariationsState()
@@ -304,7 +308,7 @@ async def test_discarding_an_angle_re_reads_the_set(monkeypatch: pytest.MonkeyPa
         "variation_set_detail",
         lambda *_: _set_vm(_angle(status="discarded", can_discard=False, can_restore=True)),
     )
-    await VariationsState.discard_angle.fn(state, _ANGLE_ID)
+    await _drain(VariationsState.discard_angle.fn(state, _ANGLE_ID))
     assert discarded == [_ANGLE_ID]
     assert state.angles[0].can_restore and not state.angles[0].can_discard
     assert state.busy_angle_id == ""
@@ -316,8 +320,8 @@ async def test_an_action_while_one_is_in_flight_is_ignored(
     state = _state(monkeypatch)
     state.set_id, state.busy_angle_id = _SET_ID, _ANGLE_ID
     calls: list[str] = []
-    monkeypatch.setattr(module, "restore_variation_angle", lambda _t, a: calls.append(a))
-    await VariationsState.restore_angle.fn(state, _ANGLE_ID)
+    monkeypatch.setattr(module, "discard_variation_angle", lambda _t, a, _u: calls.append(a))
+    await _drain(VariationsState.discard_angle.fn(state, _ANGLE_ID))
     assert calls == []
 
 

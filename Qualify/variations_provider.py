@@ -15,18 +15,21 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import cache
+from typing import Any
 from uuid import UUID
 
 from qualify_api.catalog.service import UnknownProduct
-from qualify_api.creative.angle_sets import AngleSetService
+from qualify_api.creative.angle_sets import SET_DRAFTING, AngleSetRecord, AngleSetService
 from qualify_api.creative.composition import (
     DEFAULT_RENDER_URL,
     RENDER_URL_ENV,
     production_angle_set_service,
 )
-from qualify_creative.angles import DEFAULT_ANGLE_COUNT
+from qualify_creative.angles import DEFAULT_ANGLE_COUNT, AnglePreset
 from qualify_creative.render.client import RemotionRenderClient
+from qualify_creative.render.registry import TemplateRegistry
 
 from .r2_media import is_r2_key, issue_view_path
 from .variations_vm import (
@@ -51,7 +54,8 @@ logger = logging.getLogger(__name__)
 RENDER_HEALTH_TTL_SECONDS = 60.0
 RENDER_HEALTH_TIMEOUT_SECONDS = 2.0
 
-_render_health: tuple[float, bool] | None = None
+#: (measured at, the `/health` payload or None when unreachable) — one quick call a minute.
+_render_health: tuple[float, Mapping[str, Any] | None] | None = None
 
 
 def _service() -> AngleSetService:
@@ -77,6 +81,17 @@ def render_ready(
     """Whether the render service answers its health check — cached for
     `RENDER_HEALTH_TTL_SECONDS`, with a short timeout, so a missing service (production
     does not publish it) costs one quick failed call a minute, never a hung screen."""
+    payload = render_health(clock=clock, client_factory=client_factory)
+    return bool(payload and payload.get("ok"))
+
+
+def render_health(
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    client_factory: Callable[[], RemotionRenderClient] | None = None,
+) -> Mapping[str, Any] | None:
+    """The render service's `/health` payload (it lists the templates and versions it
+    holds), or None when it does not answer — cached like `render_ready`."""
     global _render_health
     now = clock()
     if _render_health is not None and now - _render_health[0] < RENDER_HEALTH_TTL_SECONDS:
@@ -87,13 +102,56 @@ def render_ready(
             timeout_seconds=RENDER_HEALTH_TIMEOUT_SECONDS,
         )
     )
+    payload: Mapping[str, Any] | None
     try:
-        ready = bool(factory().health().get("ok"))
+        payload = dict(factory().health())
     except Exception as exc:  # noqa: BLE001 — unreachable is an answer: not available
         logger.info("render service not available: %s", type(exc).__name__)
-        ready = False
-    _render_health = (now, ready)
-    return ready
+        payload = None
+    _render_health = (now, payload)
+    return payload
+
+
+@cache
+def _template_registry() -> TemplateRegistry:
+    """The app's template manifests, read from disk once per process (they are static
+    files shipped with the code)."""
+    return TemplateRegistry.from_dir()
+
+
+def template_problem(
+    preset: AnglePreset,
+    health: Mapping[str, Any] | None,
+    registry: TemplateRegistry | None = None,
+) -> str | None:
+    """Why this template preset cannot be used NOW, checked before anything is paid
+    (2026-10-22: a render image with only promo_producto v1 let three pieces pay Claude
+    and Seedream, then fail): the service must hold the exact version the app asks for."""
+    if not preset.needs_render_service or not preset.template_id:
+        return None
+    if not health or not health.get("ok"):
+        return (
+            f"«{preset.name}» necesita el servicio de plantillas, que no está disponible "
+            "en este entorno."
+        )
+    try:
+        wanted = (registry or _template_registry()).get(preset.template_id).version
+    except Exception as exc:  # noqa: BLE001 — a manifest the app cannot read is a problem
+        logger.warning("template manifest unavailable: %s", type(exc).__name__)
+        return f"La app no encuentra la plantilla «{preset.template_id}» en este entorno."
+    held = {
+        (str(t.get("id")), int(t.get("version", 0)))
+        for t in health.get("templates", [])
+        if isinstance(t, Mapping)
+    }
+    if (preset.template_id, wanted) in held:
+        return None
+    have = sorted(v for tid, v in held if tid == preset.template_id)
+    have_text = f"la v{have[-1]}" if have else "ninguna versión"
+    return (
+        f"El servicio de plantillas de este entorno tiene {have_text} de "
+        f"«{preset.template_id}» y la app necesita la v{wanted}: hay que reconstruir su imagen."
+    )
 
 
 def _preview_url(tenant_id: UUID) -> Callable[[str], str]:
@@ -124,8 +182,10 @@ def variation_presets(
         tenant_id=tenant_id, brand_id=brand_id, product_id=catalog_product_id(product_id)
     )
     needs_render = any(preset.needs_render_service for preset, _ in choices)
+    health = render_health() if needs_render else None
+    checked = [(preset, problem or template_problem(preset, health)) for preset, problem in choices]
     return build_product_check_vm(facts), build_preset_vms(
-        choices, render_ready=render_ready() if needs_render else True
+        checked, render_ready=bool(health and health.get("ok")) if needs_render else True
     )
 
 
@@ -157,10 +217,18 @@ def create_variation_set(
     return str(set_id)
 
 
+def worth_listing(record: AngleSetRecord) -> bool:
+    """A group with nothing standing — every angle deleted, or none ever proposed — is
+    not kept on the list (request 2026-10-22: «si fallaron no guardes nada»). One still
+    proposing (no rows yet) is."""
+    return record.open_count != 0 or record.status == SET_DRAFTING
+
+
 def list_variation_sets(tenant_id: UUID, brand_id: UUID) -> tuple[SetSummaryVM, ...]:
     return tuple(
         build_set_summary_vm(record)
         for record in _service().list_sets(tenant_id=tenant_id, brand_id=brand_id)
+        if worth_listing(record)
     )
 
 
@@ -179,13 +247,68 @@ def discard_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> No
     _service().discard_angle(tenant_id=tenant_id, angle_id=UUID(angle_id), user_id=user_id)
 
 
+def discard_variation_angles(tenant_id: UUID, angle_ids: Sequence[str], user_id: UUID) -> int:
+    """Discard several angles in one gesture (request 2026-10-22: «elijo 2 o 3 y las demás
+    no las quiero»): one service call per angle, so a refusal on one never undoes the
+    others. Returns how many went through."""
+    done = 0
+    for angle_id in angle_ids:
+        try:
+            discard_variation_angle(tenant_id, angle_id, user_id)
+        except Exception as exc:  # noqa: BLE001 — the rest still go; the count says it
+            logger.warning("variations: discard skipped one angle: %s", type(exc).__name__)
+            continue
+        done += 1
+    return done
+
+
+def archive_variation_set(tenant_id: UUID, set_id: str, user_id: UUID) -> int:
+    """«Eliminar grupo»: off the list for good; its open angles discarded."""
+    return _service().archive_set(tenant_id=tenant_id, set_id=UUID(set_id), user_id=user_id)
+
+
+def save_variation_angle(tenant_id: UUID, angle_id: str, saved: bool) -> None:
+    """«Guardar para después» (True) or take the angle up again (False)."""
+    _service().save_angle(tenant_id=tenant_id, angle_id=UUID(angle_id), saved=saved)
+
+
+def save_variation_angles(tenant_id: UUID, angle_ids: Sequence[str]) -> int:
+    """Put several aside in one gesture; a refusal on one never undoes the others."""
+    done = 0
+    for angle_id in angle_ids:
+        try:
+            save_variation_angle(tenant_id, angle_id, True)
+        except Exception as exc:  # noqa: BLE001 — the rest still go; the count says it
+            logger.warning("variations: save skipped one angle: %s", type(exc).__name__)
+            continue
+        done += 1
+    return done
+
+
 def restore_variation_angle(tenant_id: UUID, angle_id: str) -> None:
     _service().restore_angle(tenant_id=tenant_id, angle_id=UUID(angle_id))
 
 
-def edit_variation_angle(tenant_id: UUID, angle_id: str, scene: str, composition: str) -> None:
+def edit_variation_angle(
+    tenant_id: UUID,
+    angle_id: str,
+    scene: str,
+    composition: str,
+    *,
+    title: str | None = None,
+    hook: str | None = None,
+    cta: str | None = None,
+    rationale: str | None = None,
+) -> None:
     _service().edit_angle(
-        tenant_id=tenant_id, angle_id=UUID(angle_id), scene=scene, composition=composition
+        tenant_id=tenant_id,
+        angle_id=UUID(angle_id),
+        scene=scene,
+        composition=composition,
+        title=title,
+        hook=hook,
+        cta=cta,
+        rationale=rationale,
     )
 
 
@@ -226,6 +349,7 @@ def approve_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> No
 
 __all__ = [
     "approve_variation_angle",
+    "archive_variation_set",
     "catalog_product_id",
     "create_variation_set",
     "discard_variation_angle",
@@ -235,6 +359,8 @@ __all__ = [
     "regenerate_variation_angle",
     "render_ready",
     "restore_variation_angle",
+    "save_variation_angle",
+    "save_variation_angles",
     "retry_variation_angle",
     "variation_plan",
     "variation_presets",

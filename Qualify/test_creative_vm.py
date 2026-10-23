@@ -310,8 +310,9 @@ def test_draft_vm_generated_is_approvable_with_fidelity_summary() -> None:
     )
     assert vm.can_approve
     assert vm.blocking_reason is None
-    assert vm.fidelity_summary == "1 de 2 variantes pasan las reglas duras"
+    assert vm.fidelity_summary == "1 de 2 textos cumplen las reglas de tu marca"
     assert vm.cost_label == "$0.04 · Perfil v1 · claude-opus-5"
+    assert vm.cost_short == "$0.04"  # the pill; the provenance is its hover
     assert not vm.is_drafting and not vm.is_failed
 
 
@@ -416,7 +417,7 @@ def test_review_buttons_follow_the_fsm() -> None:
     generated, rejected, approved = _vm_for("generated"), _vm_for("rejected"), _vm_for("approved")
     assert generated.can_reject and generated.can_regenerate
     assert not rejected.can_reject and rejected.can_regenerate  # regenerate is still legal
-    assert not approved.can_reject and not approved.can_regenerate
+    assert not approved.can_reject and not approved.can_regenerate  # Piezas, not here
 
 
 # --- brand-rule failures in the operator's words (request 2026-09-30) -------------------

@@ -38,14 +38,17 @@ from .creative_provider import acting_user_id, catalog_products, default_brand_i
 from .tenant import tenant_uuid
 from .variations_provider import (
     approve_variation_angle,
+    archive_variation_set,
     create_variation_set,
     discard_variation_angle,
+    discard_variation_angles,
     edit_variation_angle,
     generate_variation_pieces,
     list_variation_sets,
     regenerate_variation_angle,
-    restore_variation_angle,
     retry_variation_angle,
+    save_variation_angle,
+    save_variation_angles,
     variation_plan,
     variation_presets,
     variation_set_detail,
@@ -55,6 +58,7 @@ from .variations_vm import (
     PresetVM,
     SetSummaryVM,
     any_in_flight,
+    summarize_warnings,
     variation_error_message,
 )
 
@@ -72,14 +76,41 @@ _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."
 _APPROVED = "Pieza aprobada."
 _RETRYING = "Reintentando esa pieza."
 _REGENERATING = "Generando otra toma de ese escenario."
-_EDITED = "Escenario guardado. La próxima pieza de ese ángulo saldrá del nuevo texto."
+_EDITED = "Propuesta guardada. La próxima pieza de ese ángulo saldrá del nuevo texto."
 _EMPTY_SCENE = "Escribe la escena antes de guardar."
+_EMPTY_TITLE = "La propuesta necesita un título."
+_NOTHING_TO_DISCARD = "No queda ninguna propuesta por eliminar."
+_NOTHING_TO_SAVE = "No queda ninguna propuesta por guardar."
+_SAVED_ONE = "Guardada para después."
+_GROUP_EMPTY = "No queda ninguna propuesta en este grupo: ya no aparece en la lista."
+_GROUP_DELETED = "Grupo eliminado."
+_RESUMED_ONE = "De vuelta en la revisión."
 
 #: Polling of the gallery while pieces are being made: every 3 s, giving up after 20
 #: minutes — the generator's own schedule (`creative_state._GEN_POLL_*`), for the same
 #: reason: an image lands in seconds, but a busy provider can take much longer.
 _POLL_SECONDS = 3.0
 _POLL_BUDGET_SECONDS = 20 * 60
+#: How long a confirmation stays in the corner — long enough to read a count.
+_TOAST_MS = 6000
+
+
+def _toast(message: str, tone: str) -> rx.event.EventSpec:
+    """A transient confirmation, bottom right, in the tone of what happened
+    (docs/design-system.md §5.4: «confirmaciones transitorias → rx.toast»). What went
+    wrong, with its details, stays on the page as a callout instead."""
+    show = {"ok": rx.toast.success, "error": rx.toast.error, "warn": rx.toast.warning}.get(
+        tone, rx.toast.info
+    )
+    return show(message, duration=_TOAST_MS)
+
+
+def _save_true(tenant_id: UUID, angle_id: str) -> None:
+    save_variation_angle(tenant_id, angle_id, True)
+
+
+def _save_false(tenant_id: UUID, angle_id: str) -> None:
+    save_variation_angle(tenant_id, angle_id, False)
 
 
 class VariationsState(rx.State):
@@ -117,6 +148,9 @@ class VariationsState(rx.State):
     angles: list[AngleVM] = []
     creating: bool = False
     busy_angle_id: str = ""
+    #: The angles put aside with «Guardar para después» leave the grid; this shows them
+    #: again so one can be taken up.
+    show_saved: bool = False
 
     # -- generating the pieces --------------------------------------------------------------
     generating: bool = False
@@ -126,6 +160,9 @@ class VariationsState(rx.State):
     poll_timed_out: bool = False
     #: The brand's sets, newest first — so a set left open yesterday can be reopened.
     sets: list[SetSummaryVM] = []
+    #: «Eliminar grupo» (request 2026-10-22): the dialog is open while these name it.
+    archive_set_id: str = ""
+    archive_set_name: str = ""
 
     # -- the lightbox: one piece at full size (both empty = closed) ----------------------
     lightbox_title: str = ""
@@ -137,6 +174,11 @@ class VariationsState(rx.State):
     editor_title: str = ""
     editor_scene: str = ""
     editor_composition: str = ""
+    #: The rest of what Claude proposed (request 2026-10-22: everything is editable).
+    editor_name: str = ""
+    editor_hook: str = ""
+    editor_cta: str = ""
+    editor_rationale: str = ""
     editor_can_regenerate: bool = False
     saving: bool = False
 
@@ -175,6 +217,60 @@ class VariationsState(rx.State):
     def in_flight(self) -> bool:
         """Whether a piece of this set is being made right now."""
         return any_in_flight(self.angles)
+
+    @rx.var
+    def visible_angles(self) -> list[AngleVM]:
+        """The tiles on the grid: never a deleted one (request 2026-10-22: «eliminar es
+        eliminar»), and the ones put aside only while `show_saved`."""
+        return [
+            a for a in self.angles if a.status != "discarded" and (self.show_saved or not a.saved)
+        ]
+
+    @rx.var
+    def saved_count(self) -> int:
+        return sum(1 for a in self.angles if a.saved and a.status != "discarded")
+
+    @rx.var
+    def savable_count(self) -> int:
+        return sum(1 for a in self.angles if a.can_save)
+
+    @rx.var
+    def saved_toggle_label(self) -> str:
+        n = self.saved_count
+        if self.show_saved:
+            return "Ocultar guardadas"
+        return f"Ver guardadas ({n})" if n else "Ver guardadas"
+
+    @rx.var
+    def save_rest_label(self) -> str:
+        n = self.savable_count
+        return f"Guardar las demás ({n})" if n else "Guardar las demás"
+
+    @rx.event
+    def toggle_saved(self) -> None:
+        self.show_saved = not self.show_saved
+
+    @rx.var
+    def discardable_count(self) -> int:
+        """How many angles «Descartar las demás» would discard: the ones still open
+        (never an approved one, never one already discarded)."""
+        return sum(1 for a in self.angles if self._bulk_discardable(a))
+
+    @staticmethod
+    def _bulk_discardable(angle: AngleVM) -> bool:
+        """What «Eliminar las demás» sweeps: open, not approved — and never one put aside
+        with «Guardar para después» (review 2026-10-22: deleting is final here)."""
+        return angle.can_discard and angle.status != "approved" and not angle.saved
+
+    @rx.var
+    def discard_rest_label(self) -> str:
+        n = self.discardable_count
+        return f"Eliminar las demás ({n})" if n else "Eliminar las demás"
+
+    @rx.var
+    def composition_notes(self) -> list[str]:
+        """What the composition left out, once per distinct warning across the set."""
+        return list(summarize_warnings(self.angles))
 
     @rx.var
     def can_generate(self) -> bool:
@@ -293,6 +389,8 @@ class VariationsState(rx.State):
         self.error = ""
 
     def _clear_set(self) -> None:
+        self._close_lightbox()
+        self.show_saved = False
         self.set_id = ""
         self.set_status_label = ""
         self.set_status_tone = ""
@@ -320,6 +418,10 @@ class VariationsState(rx.State):
         self.editor_title = ""
         self.editor_scene = ""
         self.editor_composition = ""
+        self.editor_name = ""
+        self.editor_hook = ""
+        self.editor_cta = ""
+        self.editor_rationale = ""
         self.editor_can_regenerate = False
         self.saving = False
 
@@ -511,9 +613,13 @@ class VariationsState(rx.State):
                 self.error = variation_error_message(exc)
             return
         async with self:
-            self.outcome_message = outcome.message
-            self.outcome_tone = outcome.tone
-            self.outcome_details = list(outcome.details)
+            # what went wrong stays on the page with its details; what went right is a
+            # toast (request 2026-10-22: «10 en generación» used to sit there for good)
+            keep = bool(outcome.failed or outcome.unresolved)
+            self.outcome_message = outcome.message if keep else ""
+            self.outcome_tone = outcome.tone if keep else ""
+            self.outcome_details = list(outcome.details) if keep else []
+        yield _toast(outcome.message, outcome.tone)
         await self._read_set(tenant_id, set_id)
         async with self:
             self.generating = False
@@ -583,14 +689,13 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
-            self.outcome_message = _RETRYING
-            self.outcome_tone = "info"
             running = self.in_flight
+        yield _toast(_RETRYING, "info")
         if running:
             yield VariationsState.poll_set
 
     @rx.event(background=True)
-    async def approve_angle(self, angle_id: str) -> None:
+    async def approve_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
         """Approve this angle's piece. The service refuses when the copy quotes a price
         that is not the catalog's — that refusal is what the card then shows."""
         async with self:
@@ -623,8 +728,7 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
-            self.outcome_message = _APPROVED
-            self.outcome_tone = "ok"
+        yield _toast(_APPROVED, "ok")
 
     @rx.event(background=True)
     async def regenerate_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
@@ -660,19 +764,164 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
-            self.outcome_message = _REGENERATING
-            self.outcome_tone = "info"
             running = self.in_flight
+        yield _toast(_REGENERATING, "info")
         if running:
             yield VariationsState.poll_set
 
     @rx.event(background=True)
-    async def discard_angle(self, angle_id: str) -> None:
-        await self._angle_action(angle_id, discard_variation_angle, with_user=True)
+    async def discard_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        if await self._angle_action(angle_id, discard_variation_angle, with_user=True):
+            async for event in self._leave_if_empty():
+                yield event
+
+    async def _leave_if_empty(self) -> AsyncIterator[rx.event.EventSpec]:
+        """A group with nothing standing is nothing to look at (request 2026-10-22: «si
+        fallaron no guardes nada»): back to the start, the list re-read without it."""
+        async with self:
+            empty = bool(self.set_id) and self.kept_count == 0
+            if empty:
+                self._clear_set()
+        if not empty:
+            return
+        ids = await self._session_ids()
+        if ids is not None:
+            sets = await asyncio.to_thread(list_variation_sets, ids[0], ids[1])
+            async with self:
+                self.sets = list(sets)
+        yield _toast(_GROUP_EMPTY, "info")
 
     @rx.event(background=True)
-    async def restore_angle(self, angle_id: str) -> None:
-        await self._angle_action(angle_id, restore_variation_angle)
+    async def discard_rest(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Discard every angle still open in one gesture (request 2026-10-22), leaving
+        the approved ones; each can still be recovered one by one. Reversible, so no
+        confirmation — the toast says how many went."""
+        async with self:
+            if self.busy_angle_id or not self.set_id:
+                return
+            ids = [a.id for a in self.angles if self._bulk_discardable(a)]
+            if not ids:
+                yield _toast(_NOTHING_TO_DISCARD, "info")
+                return
+            self.busy_angle_id = ids[0]
+            self.error = ""
+            set_id = self.set_id
+        ids_tuple = tuple(ids)
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.busy_angle_id = ""
+            return
+        tenant_id, _, user_id = ids
+        if user_id is None:
+            async with self:
+                self.busy_angle_id = ""
+                self.error = _NO_SESSION
+            return
+        done = await asyncio.to_thread(discard_variation_angles, tenant_id, ids_tuple, user_id)
+        await self._read_set(tenant_id, set_id)
+        async with self:
+            self.busy_angle_id = ""
+        word = "propuesta eliminada" if done == 1 else "propuestas eliminadas"
+        yield _toast(f"{done} {word}.", "ok")
+        async for event in self._leave_if_empty():
+            yield event
+
+    # -- the list of groups ------------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def close_set(self) -> None:
+        """Back to the list of groups, the product still chosen (request 2026-10-22)."""
+        async with self:
+            self._clear_set()
+        ids = await self._session_ids()
+        if ids is None:
+            return
+        sets = await asyncio.to_thread(list_variation_sets, ids[0], ids[1])
+        async with self:
+            self.sets = list(sets)
+
+    @rx.event
+    def ask_archive_set(self, set_id: str, name: str) -> None:
+        self.archive_set_id = set_id
+        self.archive_set_name = name
+
+    @rx.event
+    def set_archive_open(self, value: bool) -> None:
+        if not value:
+            self.archive_set_id = ""
+            self.archive_set_name = ""
+
+    @rx.event(background=True)
+    async def confirm_archive_set(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The group leaves the list for good; its open proposals are deleted with it."""
+        async with self:
+            set_id, self.archive_set_id, self.archive_set_name = self.archive_set_id, "", ""
+            if not set_id or self.busy_angle_id:
+                return
+            self.error = ""
+        ids = await self._session_ids()
+        if ids is None:
+            return
+        tenant_id, brand_id, user_id = ids
+        if user_id is None:
+            async with self:
+                self.error = _NO_SESSION
+            return
+        try:
+            await asyncio.to_thread(archive_variation_set, tenant_id, set_id, user_id)
+        except Exception as exc:  # noqa: BLE001 — turned into words for the operator
+            logger.warning("variations: archive failed: %s", type(exc).__name__)
+            async with self:
+                self.error = variation_error_message(exc)
+            return
+        sets = await asyncio.to_thread(list_variation_sets, tenant_id, brand_id)
+        async with self:
+            if self.set_id == set_id:
+                self._clear_set()
+            self.sets = list(sets)
+        yield _toast(_GROUP_DELETED, "ok")
+
+    # -- «guardar para después» ------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def save_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """Put this one aside: out of the review, untouched, to take up later."""
+        if await self._angle_action(angle_id, _save_true):
+            yield _toast(_SAVED_ONE, "ok")
+
+    @rx.event(background=True)
+    async def unsave_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        if await self._angle_action(angle_id, _save_false):
+            yield _toast(_RESUMED_ONE, "ok")
+
+    @rx.event(background=True)
+    async def save_rest(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Every angle still open goes aside in one gesture (request 2026-10-22: «una en
+        específico o todas las demás»); the approved ones stay."""
+        async with self:
+            if self.busy_angle_id or not self.set_id:
+                return
+            ids = [a.id for a in self.angles if a.can_save]
+            if not ids:
+                yield _toast(_NOTHING_TO_SAVE, "info")
+                return
+            self.busy_angle_id = ids[0]
+            self.error = ""
+            set_id = self.set_id
+        ids_tuple = tuple(ids)
+        session = await self._session_ids()
+        if session is None:
+            async with self:
+                self.busy_angle_id = ""
+            return
+        tenant_id = session[0]
+        done = await asyncio.to_thread(save_variation_angles, tenant_id, ids_tuple)
+        await self._read_set(tenant_id, set_id)
+        async with self:
+            self.busy_angle_id = ""
+        word = "propuesta guardada" if done == 1 else "propuestas guardadas"
+        yield _toast(f"{done} {word} para después.", "ok")
 
     async def _angle_action(  # noqa: ANN001 — provider fn
         self, angle_id: str, action, *, with_user: bool = False
@@ -741,6 +990,10 @@ class VariationsState(rx.State):
         self.editor_title = f"{angle.position}. {angle.title}"
         self.editor_scene = angle.scene
         self.editor_composition = angle.composition
+        self.editor_name = angle.title
+        self.editor_hook = angle.hook
+        self.editor_cta = angle.cta
+        self.editor_rationale = angle.rationale
         self.editor_can_regenerate = angle.can_regenerate
 
     @rx.event
@@ -756,10 +1009,27 @@ class VariationsState(rx.State):
     def set_editor_composition(self, value: str) -> None:
         self.editor_composition = value
 
+    @rx.event
+    def set_editor_name(self, value: str) -> None:
+        self.editor_name = value
+
+    @rx.event
+    def set_editor_hook(self, value: str) -> None:
+        self.editor_hook = value
+
+    @rx.event
+    def set_editor_cta(self, value: str) -> None:
+        self.editor_cta = value
+
+    @rx.event
+    def set_editor_rationale(self, value: str) -> None:
+        self.editor_rationale = value
+
     @rx.event(background=True)
-    async def save_edit(self) -> None:
+    async def save_edit(self) -> AsyncIterator[rx.event.EventSpec]:
         """Store the new scene; the next piece of that angle is briefed from it."""
-        await self._save_edit()
+        if await self._save_edit():
+            yield _toast(_EDITED, "ok")
 
     @rx.event(background=True)
     async def save_edit_and_regenerate(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -777,21 +1047,34 @@ class VariationsState(rx.State):
             angle_id = self.editor_angle_id
             scene = " ".join(self.editor_scene.split())
             composition = " ".join(self.editor_composition.split())
+            name = " ".join(self.editor_name.split())
+            hook = " ".join(self.editor_hook.split())
+            cta = " ".join(self.editor_cta.split())
+            rationale = " ".join(self.editor_rationale.split())
             if not scene:
                 self.error = _EMPTY_SCENE
                 return ""
+            if not name:
+                self.error = _EMPTY_TITLE
+                return ""
             self.saving = True
             self.error = ""
-            self.outcome_message = ""
 
         def _edit(tenant_id: UUID, angle_id: str) -> None:
-            edit_variation_angle(tenant_id, angle_id, scene, composition)
+            edit_variation_angle(
+                tenant_id,
+                angle_id,
+                scene,
+                composition,
+                title=name,
+                hook=hook,
+                cta=cta,
+                rationale=rationale,
+            )
 
         saved = await self._angle_action(angle_id, _edit)
         async with self:
             self.saving = False
             if saved:
                 self._close_editor()
-                self.outcome_message = _EDITED
-                self.outcome_tone = "ok"
         return angle_id if saved else ""

@@ -253,3 +253,35 @@ def test_render_health_is_cached_and_an_unreachable_service_is_just_unavailable(
     down = _Health(ConnectionError("refused"))
     assert not provider.render_ready(clock=lambda: now[0], client_factory=down)
     assert down.calls == 1
+
+
+def test_discarding_several_angles_skips_a_refusal_and_counts_the_rest(monkeypatch) -> None:
+    """One refusal never undoes the others; the count says what went through."""
+    seen: list[str] = []
+
+    def _discard(tenant_id, angle_id, user_id):  # noqa: ANN001
+        seen.append(angle_id)
+        if angle_id == "bad":
+            raise RuntimeError("refused")
+
+    monkeypatch.setattr(provider, "discard_variation_angle", _discard)
+    done = provider.discard_variation_angles(uuid4(), ("a", "bad", "c"), uuid4())
+    assert seen == ["a", "bad", "c"] and done == 2
+
+
+def test_a_template_preset_is_refused_before_paying_when_the_service_lacks_its_version() -> None:
+    """2026-10-22: a render image holding only promo_producto v1 let three pieces pay
+    Claude and Seedream and then fail. The preset now says so before anything is paid."""
+    from qualify_creative.render.manifest import TemplateManifest
+    from qualify_creative.render.registry import TemplateRegistry
+
+    preset = next(p for p in PRESETS if p.needs_render_service)
+    manifests = TemplateRegistry.from_dir()
+    wanted = manifests.get(preset.template_id).version
+    held_old = {"ok": True, "templates": [{"id": preset.template_id, "version": wanted - 1}]}
+    reason = provider.template_problem(preset, held_old, manifests)
+    assert reason is not None and f"v{wanted}" in reason and f"v{wanted - 1}" in reason
+    held_now = {"ok": True, "templates": [{"id": preset.template_id, "version": wanted}]}
+    assert provider.template_problem(preset, held_now, manifests) is None
+    assert "no está disponible" in (provider.template_problem(preset, None, manifests) or "")
+    assert isinstance(TemplateManifest, type)  # the registry's rows are real manifests

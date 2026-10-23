@@ -72,6 +72,10 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     (DRAFTING, DraftTrigger.REAP): FAILED,
     (GENERATED, DraftTrigger.APPROVE): APPROVED,
     (GENERATED, DraftTrigger.REJECT): REJECTED,
+    # Request 2026-10-22: an approved piece that was never scheduled or published can
+    # still be thrown out from Piezas (the gallery hides the gesture once it is on the
+    # calendar; `staged`/`published` have no REJECT edge).
+    (APPROVED, DraftTrigger.REJECT): REJECTED,
     (REJECTED, DraftTrigger.REGENERATE): DRAFTING,
     (APPROVED, DraftTrigger.STAGE): STAGED,
     # Publish is legal from both sides of staging: a direct publish never staged, and a

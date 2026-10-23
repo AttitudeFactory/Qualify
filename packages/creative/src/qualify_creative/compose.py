@@ -56,6 +56,11 @@ _BOLD_FONTS = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 )
 _REGULAR_FONTS = ("arial.ttf", "DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+#: The font shipped with the package, tried after the system ones and before PIL's own
+#: default: that default (Aileron) has no glyph for ñ, á, é, í, ó, ú, ¿ or ¡, so on a
+#: server with no system font every accented word printed as empty boxes (production,
+#: 2026-10-22: «Tu caf▯ ya tiene compa▯ero de ma▯ana»). DejaVu Sans covers Latin whole.
+_VENDORED_FONT = Path(__file__).with_name("fonts") / "DejaVuSans.ttf"
 
 
 #: Emoji and their joiners/variation selectors: the printing fonts have no glyph for
@@ -154,6 +159,8 @@ def _font(
             return ImageFont.truetype(name, px)
         except OSError:
             continue
+    with contextlib.suppress(OSError):
+        return ImageFont.truetype(str(_VENDORED_FONT), px)
     return ImageFont.load_default(size=px)
 
 

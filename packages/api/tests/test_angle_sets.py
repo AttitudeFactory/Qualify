@@ -555,6 +555,72 @@ def test_an_unknown_preset_is_refused() -> None:
 # -- generating the pieces -------------------------------------------------------------------
 
 
+def test_generate_pieces_skips_the_angles_put_aside() -> None:
+    """Review 2026-10-22: «Generar» never pays for a proposal saved for later."""
+    service, repo, *_ = _service()
+    set_id = _create(service)
+    angles = repo.list_angles(tenant_id=TENANT, set_id=set_id)
+    for angle in angles[:7]:
+        service.save_angle(tenant_id=TENANT, angle_id=angle.id, saved=True)
+    detail = service.detail(tenant_id=TENANT, set_id=set_id)
+    assert detail.pending_images == 3
+    outcome = service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    assert len(outcome.queued) == 3
+    assert all(
+        a.status == ANGLE_PROPOSED for a in repo.list_angles(tenant_id=TENANT, set_id=set_id)[:7]
+    )
+
+
+def test_an_approved_angle_whose_piece_was_rejected_is_open_again() -> None:
+    """Review 2026-10-22: with APPROVED → REJECTED on the draft, the angle must not be
+    stranded — it can be discarded again and no longer counts as done."""
+    service, repo, _, drafts, _ = _service()
+    set_id = _create(service)
+    service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    _land(drafts, angle, hook=f"Hoy a {repo.sets[set_id].price_label}")
+    service.approve_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    draft_id = repo.angles[angle.id].draft_id
+    assert draft_id is not None
+    drafts.details[draft_id] = replace(drafts.details[draft_id], status=DraftStatus.REJECTED.value)
+    _, view = service._angle_view(TENANT, angle.id)
+    assert view.undone and view.can_discard and not view.is_done and view.can_save
+    service.discard_angle(tenant_id=TENANT, angle_id=angle.id, user_id=USER)
+    stored = repo.get_angle(tenant_id=TENANT, angle_id=angle.id)
+    assert stored is not None and stored.status == ANGLE_DISCARDED
+
+
+def test_an_open_angle_can_be_put_aside_and_taken_up_but_a_decided_one_cannot() -> None:
+    """Request 2026-10-22: «guardar para después» — aside from the review, status untouched."""
+    service, repo, *_ = _service()
+    set_id = _create(service)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    service.save_angle(tenant_id=TENANT, angle_id=angle.id, saved=True)
+    stored = repo.get_angle(tenant_id=TENANT, angle_id=angle.id)
+    assert stored is not None and stored.saved_at is not None and stored.status == angle.status
+    service.save_angle(tenant_id=TENANT, angle_id=angle.id, saved=False)
+    stored = repo.get_angle(tenant_id=TENANT, angle_id=angle.id)
+    assert stored is not None and stored.saved_at is None
+    other = repo.list_angles(tenant_id=TENANT, set_id=set_id)[1]
+    service.discard_angle(tenant_id=TENANT, angle_id=other.id, user_id=USER)
+    with pytest.raises(AngleNotActionable):
+        service.save_angle(tenant_id=TENANT, angle_id=other.id, saved=True)
+
+
+def test_archiving_a_set_discards_its_open_angles_and_keeps_the_approved() -> None:
+    """Request 2026-10-22: «eliminar grupo» — off the list for good; approved pieces stay."""
+    service, repo, *_ = _service()
+    set_id = _create(service)
+    angles = repo.list_angles(tenant_id=TENANT, set_id=set_id)
+    repo.update_angle(tenant_id=TENANT, angle_id=angles[0].id, status=ANGLE_APPROVED)
+    discarded = service.archive_set(tenant_id=TENANT, set_id=set_id, user_id=USER)
+    assert discarded == len(angles) - 1
+    after = repo.list_angles(tenant_id=TENANT, set_id=set_id)
+    assert after[0].status == ANGLE_APPROVED
+    assert all(a.status == ANGLE_DISCARDED for a in after[1:])
+    assert repo.sets[set_id].archived_at is not None
+
+
 def test_generate_pieces_makes_one_draft_per_kept_angle_in_one_campaign() -> None:
     service, repo, _, drafts, campaigns = _service()
     set_id = _create(service)
@@ -711,6 +777,31 @@ def test_edit_angle_rewrites_the_scene_and_the_next_piece_is_briefed_from_it() -
     assert edited.composition == "plano cenital" and edited.title == angle.title
     service.generate_pieces(tenant_id=TENANT, set_id=set_id, user_id=USER, angle_ids=[angle.id])
     assert drafts.briefs[-1].media.scene_prompt.startswith("sobre una bandeja de hojalata")
+
+
+def test_edit_angle_rewrites_every_field_claude_proposed() -> None:
+    """Request 2026-10-22: the title, hook, CTA and why are editable too; a field not
+    sent stays as it was."""
+    service, repo, *_ = _service()
+    set_id = _create(service)
+    angle = repo.list_angles(tenant_id=TENANT, set_id=set_id)[0]
+    service.edit_angle(
+        tenant_id=TENANT,
+        angle_id=angle.id,
+        scene="Barra del local",
+        composition="Plano frontal",
+        title="Barra",
+        hook="Sabor de barrio",
+        cta="Pide hoy",
+    )
+    stored = repo.get_angle(tenant_id=TENANT, angle_id=angle.id)
+    assert stored is not None
+    assert (stored.title, stored.hook, stored.cta) == ("Barra", "Sabor de barrio", "Pide hoy")
+    assert stored.rationale == angle.rationale  # not sent: untouched
+    with pytest.raises(AngleNotActionable):  # the same bounds as Claude's proposal
+        service.edit_angle(
+            tenant_id=TENANT, angle_id=angle.id, scene="x", composition="", title="t" * 61
+        )
 
 
 def test_edit_angle_refuses_an_empty_or_oversized_scene() -> None:

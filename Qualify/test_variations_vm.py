@@ -17,6 +17,8 @@ from qualify_api.creative.angle_sets import (
     ANGLE_QUEUED,
     INTERRUPTED,
     SET_ANGLES_READY,
+    SET_COMPLETED,
+    SET_GENERATING,
     AngleGenerationFailed,
     AngleNotActionable,
     AngleRecord,
@@ -48,6 +50,7 @@ from .variations_vm import (
     build_set_summary_vm,
     build_set_vm,
     money,
+    summarize_warnings,
     variation_error_message,
 )
 
@@ -190,6 +193,67 @@ def test_a_tile_tells_an_invented_price_and_what_the_composition_left_out() -> N
     )
     assert not vm.can_approve and "no tiene precio en el catálogo" in vm.failure_text
     assert vm.warnings == ("El precio del catálogo no cabe completo en esta pieza.",)
+
+
+def _tile(**fields: object) -> object:
+    base: dict[str, object] = {
+        "angle": _angle(ANGLE_QUEUED, draft_id=uuid4()),
+        "draft_status": DraftStatus.GENERATED.value,
+        "variant_id": uuid4(),
+        "price_conflicts": (),
+        "price_problem": "",
+        "warnings": (),
+    }
+    base.update(fields)
+    return build_angle_vm(AngleView(**base), _no_url)  # type: ignore[arg-type]
+
+
+def test_the_set_says_each_composition_warning_once() -> None:
+    """Request 2026-10-22: the same font warning under ten tiles is noise."""
+    font = "No pudimos usar la tipografía «Arial» de tu Brand Kit."
+    price = "El precio del catálogo no cabe completo en esta pieza."
+    tiles = [_tile(warnings=(font, price)), _tile(warnings=(font,)), _tile()]
+    assert summarize_warnings(tiles) == (f"{font} (2 piezas)", price)  # type: ignore[arg-type]
+    assert summarize_warnings([]) == ()
+
+
+def test_a_tile_knows_when_its_piece_is_being_made() -> None:
+    assert _tile(draft_status=DraftStatus.DRAFTING.value).in_flight  # type: ignore[attr-defined]
+    assert not _tile().in_flight  # type: ignore[attr-defined]
+    assert not _tile(angle=_angle(ANGLE_PROPOSED)).in_flight  # type: ignore[attr-defined]
+
+
+def test_the_open_groups_header_counts_its_own_angles() -> None:
+    """The record alone has no counts (they come with `list_sets`): the header counts the
+    angles it shows, so an all-failed group never reads «Piezas listas»."""
+    failed = AngleView(angle=_angle(ANGLE_FAILED), draft_status=None)
+    detail = AngleSetDetail(set=_set(status=SET_COMPLETED), angles=(failed, failed))
+    vm = build_set_vm(detail, _no_url)
+    assert (vm.status_label, vm.status_tone) == ("Todas las piezas fallaron", "error")
+
+
+def test_a_group_with_nothing_standing_is_not_listed() -> None:
+    from qualify_api.creative.angle_sets import SET_DRAFTING
+
+    from .variations_provider import worth_listing
+
+    assert not worth_listing(_set(status=SET_COMPLETED, open_count=0))
+    assert worth_listing(_set(status=SET_COMPLETED, open_count=3))
+    assert worth_listing(_set(status=SET_COMPLETED))  # no counts known: shown
+    assert worth_listing(_set(status=SET_DRAFTING, open_count=0))  # still proposing
+
+
+def test_a_completed_set_row_says_what_failed() -> None:
+    """Request 2026-10-22: a group whose pieces failed must not read «Piezas listas»."""
+    ok = build_set_summary_vm(_set(status=SET_COMPLETED, ready_count=10, failed_count=0))
+    assert (ok.status_label, ok.status_tone) == ("Piezas listas", "ok")
+    mixed = build_set_summary_vm(_set(status=SET_COMPLETED, ready_count=7, failed_count=3))
+    assert (mixed.status_label, mixed.status_tone) == ("7 piezas listas · 3 fallidas", "warn")
+    none = build_set_summary_vm(_set(status=SET_COMPLETED, ready_count=0, failed_count=3))
+    assert (none.status_label, none.status_tone) == ("Todas las piezas fallaron", "error")
+    # while it is still generating, the status speaks, not the partial counts
+    running = build_set_summary_vm(_set(status=SET_GENERATING, ready_count=2, failed_count=1))
+    assert running.status_label == "Generando piezas"
 
 
 def test_failures_read_in_spanish() -> None:

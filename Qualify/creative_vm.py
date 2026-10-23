@@ -96,8 +96,10 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "/create",
     ),
     "fidelity_rejected": (
-        "Ninguna variante pasó las reglas duras de la marca.",
-        "Ajusta el kit o el encargo y reintenta",
+        "Ningún texto generado cumplió las reglas de tu marca (palabras prohibidas, "
+        "promesas que no se pueden hacer, largo, emojis o hashtags), así que la pieza "
+        "no se guardó. Reintenta: cada intento escribe textos nuevos.",
+        "Reintenta, o revisa las reglas en el Brand Kit",
         "/brand",
     ),
     "route_blocked_by_policy": (
@@ -471,6 +473,19 @@ def build_route_options(
 # ---------------------------------------------------------------------------
 # Cost line (design §6.5: the cost is shown ALWAYS — hiding it produces the
 # regeneration loop)
+
+
+#: What «las reglas de tu marca» are, on the pill's hover: the layer-1 checks of
+#: `qualify_creative.brand.fidelity` in the operator's words.
+HARD_RULES_HINT = (
+    "Lo que tu Brand Kit no permite: palabras prohibidas, promesas que no se pueden "
+    "hacer, largo del texto, emojis y hashtags fuera de tu política."
+)
+#: Why a piece carries the AI mark, on its pill's hover.
+AI_LABEL_HINT = (
+    "La imagen se generó con IA. Instagram y TikTok piden avisarlo al publicar; el "
+    "aviso va con la publicación, no hay que colocarlo a mano."
+)
 
 
 def format_cost_label(
@@ -892,6 +907,10 @@ class DraftVM:
     image_url: str | None = None
     fidelity_summary: str = ""
     cost_label: str = ""
+    #: The spend alone («$0.06», «Gratis»): what the pill shows. `cost_label` keeps the
+    #: profile and models for its hover (request 2026-10-22: an operator does not read
+    #: «Perfil v1 · claude-opus-5-5 + seedream-5-0-lite-260128»).
+    cost_short: str = ""
     can_approve: bool = False
     # FSM facts for the review buttons: only a GENERATED draft can be rejected; a
     # GENERATED or already-REJECTED one can go back to generation.
@@ -1005,17 +1024,19 @@ def build_draft_vm(
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
     the state combines both with the operator's selection."""
     passing = sum(1 for v in variants if v.passed)
+    # said as an operator reads it (request 2026-10-22: «reglas duras» meant nothing);
+    # what the rules are is the pill's hover (`HARD_RULES_HINT`)
     if not variants:
         fidelity_summary = ""
     elif passing == len(variants):
-        fidelity_summary = "✅ Todas las variantes pasan las reglas duras"
+        fidelity_summary = "Cumple las reglas de tu marca"
     else:
-        fidelity_summary = f"{passing} de {len(variants)} variantes pasan las reglas duras"
+        fidelity_summary = f"{passing} de {len(variants)} textos cumplen las reglas de tu marca"
     can_approve = status == DraftStatus.GENERATED.value
     blocking_reason: str | None = None
     if can_approve and variants and passing == 0:
         can_approve = False
-        blocking_reason = "Ninguna variante pasa las reglas duras de la marca."
+        blocking_reason = "Ningún texto cumple las reglas de tu marca; no se puede aprobar."
     return DraftVM(
         draft_id=draft_id,
         status=status,
@@ -1025,7 +1046,9 @@ def build_draft_vm(
         image_url=image_url,
         fidelity_summary=fidelity_summary,
         cost_label=format_cost_label(total_cost_usd, voice_profile_version, model_ids),
+        cost_short=format_cost_label(total_cost_usd, None, ()),
         can_approve=can_approve,
+        # an approved piece is rejected from Piezas, where the calendar is known
         can_reject=status == DraftStatus.GENERATED.value,
         can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
         blocking_reason=blocking_reason,

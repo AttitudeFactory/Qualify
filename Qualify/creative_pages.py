@@ -19,6 +19,8 @@ from .campaign_state import CampaignState
 from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
+    AI_LABEL_HINT,
+    HARD_RULES_HINT,
     PURGED_TEXT,
     CopyVariantVM,
     GapVM,
@@ -879,6 +881,7 @@ def _gallery_card(post) -> rx.Component:
             color_scheme="gray",
             size="2",
             width="100%",
+            white_space="nowrap",  # never «Ver / POST» on two lines in a narrow card
         ),
         href=post.detail_href,
         width="100%",
@@ -908,6 +911,23 @@ def _gallery_card(post) -> rx.Component:
             class_name="q-gcard-actions q-gcard-actions--review",
         ),
         rx.box(
+            # request 2026-10-22: an approved piece can be thrown out too — unless it is
+            # already on the calendar; its own narrow column, so «Programar» keeps its width
+            rx.cond(
+                (post.gallery_state == "schedulable") & ~post.in_calendar,
+                rx.tooltip(
+                    rx.icon_button(
+                        rx.icon("circle-x", size=15),
+                        variant="soft",
+                        size="2",
+                        disabled=busy,
+                        on_click=GalleryState.ask_reject_post(post.post_id, post.title),
+                        aria_label="Rechazar",
+                        **T.tone_scheme("error"),
+                    ),
+                    content="Rechazar",
+                ),
+            ),
             view,
             rx.cond(
                 post.gallery_state == "schedulable",
@@ -919,7 +939,11 @@ def _gallery_card(post) -> rx.Component:
                     on_click=GalleryState.assign(post.post_id),
                 ),
             ),
-            class_name="q-gcard-actions",
+            class_name=rx.cond(
+                (post.gallery_state == "schedulable") & ~post.in_calendar,
+                "q-gcard-actions q-gcard-actions--ready",
+                "q-gcard-actions",
+            ),
         ),
     )
     return rx.box(
@@ -1954,25 +1978,36 @@ def _review_panel() -> rx.Component:
                 ),
             ),
             rx.spacer(),
-            rx.box(
-                rx.icon("shield-check", size=14),
-                rx.text(draft.fidelity_summary, as_="span"),
-                class_name="q-rv-pill q-rv-pill--ok",
-                title="Fidelidad de marca: las reglas de tu brand kit",
+            # Three facts in the operator's words; what each means is its hover
+            # (request 2026-10-22: «reglas duras», «Perfil v1 · claude-…» read as noise).
+            rx.cond(
+                draft.fidelity_summary != "",
+                rx.box(
+                    rx.icon("shield-check", size=14),
+                    rx.text(draft.fidelity_summary, as_="span"),
+                    class_name="q-rv-pill q-rv-pill--ok",
+                    title=HARD_RULES_HINT,
+                    cursor="help",
+                ),
             ),
             rx.cond(
                 draft.requires_ai_disclosure,
                 rx.box(
-                    rx.icon("bot", size=14),
-                    rx.text("Requiere etiqueta de IA", as_="span"),
-                    class_name="q-rv-pill q-rv-pill--warn",
+                    rx.icon("sparkles", size=14),
+                    rx.text("Imagen hecha con IA", as_="span"),
+                    class_name="q-rv-pill",
+                    title=AI_LABEL_HINT,
+                    cursor="help",
                 ),
             ),
-            # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop.
+            # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop. The
+            # amount alone; the profile and the models on hover.
             rx.box(
                 rx.icon("coins", size=14),
-                rx.text("Coste: ", draft.cost_label, as_="span"),
+                rx.text("Coste: ", draft.cost_short, as_="span"),
                 class_name="q-rv-pill",
+                title=draft.cost_label,
+                cursor="help",
             ),
             align="center",
             width="100%",

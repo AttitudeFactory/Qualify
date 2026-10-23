@@ -134,6 +134,12 @@ RUN groupadd --system --gid 10001 qualify \
  && useradd --system --uid 10001 --gid qualify --home-dir /app --shell /usr/sbin/nologin qualify \
  && mkdir -p /data/uploaded_files /data/avatars \
  && chown -R qualify:qualify /data
+# DejaVu for the compositor's fallback text: `python:slim` ships no font and PIL's own
+# default has no glyph for ñ or accents (the package also vendors the regular face;
+# the system package adds the bold one the hooks are drawn in).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=deps --chown=qualify:qualify /app /app
 # Writable by the runtime user: /app itself, `.web` (even a skip-compile prod backend writes
