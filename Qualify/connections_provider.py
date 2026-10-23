@@ -45,7 +45,12 @@ from .capabilities import (
     assess_capabilities,
     resolve_scope_keys,
 )
-from .connections_vm import ConnectionVM, build_connection_vm, whatsapp_label
+from .connections_vm import (
+    ConnectionVM,
+    build_connection_vm,
+    connection_hints,
+    whatsapp_label,
+)
 
 _NO_BRAND_LABEL = "Sin marca"
 
@@ -144,6 +149,13 @@ def _to_vm(
         last_health_checked_at=_format_health_checked_at(row.last_health_checked_at),
         data_access_state=data_access_state,
         data_access_message=data_access_message,
+        hints=connection_hints(
+            platform=row.platform,
+            status=row.status,
+            granted_literals=frozenset(row.granted_scopes),
+            resolved_keys=frozenset(str(key) for key in resolved),
+            has_linked_page=bool(row.linked_page_id),
+        ),
     )
 
 

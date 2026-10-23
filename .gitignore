@@ -41,3 +41,6 @@ coverage.xml
 coverage.json
 coverage-summary.md
 requirements.txt
+
+# Playwright suite (tests/e2e): the harness server log
+.e2e-reflex.log

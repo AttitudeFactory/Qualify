@@ -405,3 +405,9 @@ merge pr *flags:
 # Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
 protect-main:
     gh api -X POST repos/AttitudeFactory/Qualify/rulesets --input infra/github/ruleset-main.json
+
+# Playwright browser tests (tests/e2e) — never part of CI. Boots the app on 3390/8390 with
+# fake auth and open signup, or uses QUALIFY_E2E_BASE_URL. Needs the compose Postgres
+# (`just up`) and a Chromium (`uv run --with playwright playwright install chromium`).
+e2e *ARGS:
+    uv run --no-sync --with pytest-playwright pytest tests/e2e -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}

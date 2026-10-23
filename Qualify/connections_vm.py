@@ -38,6 +38,20 @@ class CapabilityVM:
     provisional: bool  # C-05.4: capability rests on an unverified Meta doc row
 
 
+@dataclass(frozen=True)
+class ConnectionHintVM:
+    """One thing a connected account is missing, and the guide step that fixes it.
+
+    `step_key` is a `CONNECT_REQUIREMENTS` key; `step_number` is its position, shown as
+    «Paso N» so the card and the guide speak the same numbers."""
+
+    key: str
+    title: str
+    detail: str
+    step_key: str
+    step_number: int
+
+
 @dataclass
 class ConnectionVM:
     """Display-ready projection of one `social_connections` row.
@@ -79,6 +93,9 @@ class ConnectionVM:
     # True when any shown capability is provisional (C-05.4) — drives an honest
     # "por verificar" marker in the UI rather than asserting an unverified row.
     has_provisional_capabilities: bool = False
+    # m-24840590: what this account is missing and which guide step fixes it.
+    # Derived from the stored scope NAMES (never the token) — see `connection_hints`.
+    hints: list[ConnectionHintVM] = field(default_factory=list)
 
 
 # WA-05: a WhatsApp number is connected by an administrator with a system-user token
@@ -128,6 +145,7 @@ def build_connection_vm(
     last_health_checked_at: str = "Sin verificar",
     data_access_state: str = "",
     data_access_message: str = "",
+    hints: list[ConnectionHintVM] | None = None,
 ) -> ConnectionVM:
     """Assemble a whitelisted VM, partitioning capabilities enabled/disabled here.
 
@@ -157,6 +175,7 @@ def build_connection_vm(
         last_health_checked_at=last_health_checked_at,
         data_access_state=data_access_state,
         data_access_message=data_access_message,
+        hints=list(hints or []),
     )
 
 
@@ -208,8 +227,10 @@ _IG_PAGE_PATH = "Instagram → Editar perfil → Información pública de la emp
 
 @dataclass(frozen=True)
 class ConnectRequirementVM:
-    """One of the three things the operator needs BEFORE pressing «Conectar cuenta».
-    A pre-flight hint (R4a), never a verification: the screen cannot check any of it."""
+    """One step of the connection guide (QUA-202, rewritten for m-24840590): what the
+    operator does in Instagram or in Meta's window, BEFORE or WHILE pressing «Conectar
+    cuenta». A pre-flight hint (R4a), never a verification: the screen cannot check
+    the Instagram side of any of it — the card hints below cover what it can detect."""
 
     key: str
     title: str
@@ -217,42 +238,168 @@ class ConnectRequirementVM:
     steps: list[str]
 
 
+# m-24840590: the four things only the client can do. Fase C (private reply, public
+# notice, story replies, Instagram Direct) needs the messages permission AND the
+# Instagram «Permitir acceso a los mensajes» switch; neither existed in the old
+# three-item checklist, which stopped at "Instagram linked to a Page".
 CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
     ConnectRequirementVM(
         key="professional",
-        title="Tu Instagram es una cuenta profesional",
-        summary="Tipo Empresa o Creador. Una cuenta personal no se puede conectar.",
-        steps=[
-            "En Instagram, abre tu perfil y toca el menú ☰ → Configuración y actividad.",
-            "Entra en «Tipo de cuenta y herramientas» → «Cambiar a cuenta profesional».",
-            "Elige «Empresa» y termina el asistente (puedes omitir lo que no apliques).",
-        ],
-    ),
-    ConnectRequirementVM(
-        key="page",
-        title="Tienes una Página de Facebook de tu negocio",
+        title="Tu Instagram es profesional y está vinculado a tu Página de Facebook",
         summary=(
-            "Qualify habla con Meta a través de esa Página. Si no tienes, "
-            "se crea en dos minutos desde la app de Instagram."
+            "Tipo Empresa o Creador, unido a la Página de Facebook de tu negocio. "
+            "Una cuenta personal no se puede conectar."
         ),
         steps=[
-            f"{_IG_PAGE_PATH}.",
-            "Toca «Conectar o crear» → «Crear una nueva Página de Facebook».",
-            "Ponle el nombre de tu negocio y guarda. Ya está vinculada a tu Instagram.",
+            "En Instagram, abre tu perfil y toca el menú ☰ → Configuración y actividad → "
+            "«Tipo de cuenta y herramientas» → «Cambiar a cuenta profesional».",
+            "Elige «Empresa» o «Creador» y termina el asistente.",
+            f"Luego ve a {_IG_PAGE_PATH}, toca «Conectar o crear» y elige la Página de tu "
+            "negocio. Si no tienes, ahí mismo puedes crearla.",
         ],
     ),
     ConnectRequirementVM(
-        key="linked",
-        title="Tu Instagram está vinculado a esa Página",
-        summary="Es lo que más se olvida: tener la Página no basta, hay que unirlas.",
+        key="messages",
+        title="Permite el acceso a tus mensajes",
+        summary=(
+            "Sin este permiso de Instagram, Qualify no puede leer ni responder tus "
+            "mensajes directos, aunque la cuenta esté conectada."
+        ),
         steps=[
-            f"{_IG_PAGE_PATH}.",
-            "Toca «Conectar o crear» y elige la Página de tu negocio.",
-            "Al conectar con Qualify, Meta te preguntará qué Páginas compartir: "
-            "marca la de tu negocio.",
+            "En Instagram, abre tu perfil y toca el menú ☰ → Configuración y actividad.",
+            "Entra en «Mensajes y respuestas a historias» → «Controles de mensajes».",
+            "En «Herramientas conectadas», activa «Permitir acceso a los mensajes».",
+        ],
+    ),
+    ConnectRequirementVM(
+        key="permissions",
+        title="Conecta y acepta todos los permisos",
+        summary=(
+            "Meta te muestra una lista de permisos. Si desmarcas alguno, la función que "
+            "depende de él no estará disponible."
+        ),
+        steps=[
+            "Pulsa «Conectar cuenta» en esta pantalla.",
+            "Cuando Meta te pregunte qué compartir, marca la Página y el Instagram de tu negocio.",
+            "Deja todos los permisos marcados y continúa hasta el final.",
+        ],
+    ),
+    ConnectRequirementVM(
+        key="reconnect",
+        title="¿Ya estaba conectada? Vuelve a conectarla",
+        summary=(
+            "Cuando Qualify suma una función nueva, Meta pide un permiso nuevo. Volver a "
+            "conectar lo agrega sin borrar nada."
+        ),
+        steps=[
+            "En la tarjeta de tu cuenta, pulsa «Volver a conectar».",
+            "Acepta los permisos nuevos que te pida Meta.",
+            "Revisa que la función aparezca en «Disponible» en la tarjeta.",
         ],
     ),
 ]
+
+# The step number shown next to each key — the card hints say «Paso 3», so the number
+# is derived from the list order, never typed twice.
+REQUIREMENT_NUMBERS: dict[str, int] = {
+    requirement.key: number for number, requirement in enumerate(CONNECT_REQUIREMENTS, start=1)
+}
+
+
+# --------------------------------------------------------------------------------------
+# m-24840590: per-card «qué falta» hints, from the scopes stored on the connection.
+# --------------------------------------------------------------------------------------
+
+# The Facebook-Login scopes production asks for (`QUALIFY_META_SCOPES`, docs/
+# conversaciones-limitaciones-meta.md §7) that a card can check. The capability matrix
+# covers the Instagram ones by family (any spelling); the two Page scopes below are
+# not capability gates there, so they are checked as literals — and ONLY on a
+# connection that came through a Facebook Page (`linked_page_id`), the only path on
+# which Meta can grant them.
+PAGE_MESSAGING_SCOPE = "pages_messaging"
+PAGE_METADATA_SCOPE = "pages_manage_metadata"
+
+
+def _hint(key: str, title: str, detail: str, step_key: str) -> ConnectionHintVM:
+    return ConnectionHintVM(
+        key=key,
+        title=title,
+        detail=detail,
+        step_key=step_key,
+        step_number=REQUIREMENT_NUMBERS[step_key],
+    )
+
+
+def connection_hints(
+    *,
+    platform: str,
+    status: ConnectionStatus,
+    granted_literals: frozenset[str],
+    resolved_keys: frozenset[str],
+    has_linked_page: bool,
+) -> list[ConnectionHintVM]:
+    """What this Instagram account is missing, in the client's words.
+
+    Detected from data the connection already stores — nothing here calls Meta:
+    - `resolved_keys`: the capability-matrix scope families granted (any spelling);
+    - `granted_literals`: the raw Meta permission names, for the two Page scopes;
+    - `has_linked_page`: whether the account came through a Facebook Page.
+
+    Only an `active` Instagram card gets hints: a degraded or revoked one already
+    shows its own reconnect banner, and WhatsApp is connected by an administrator.
+    The Instagram «Permitir acceso a los mensajes» switch cannot be read from here —
+    the guide's step 2 covers it, and the messages hint points there too.
+    """
+    if platform != "instagram" or status != "active":
+        return []
+    hints: list[ConnectionHintVM] = []
+
+    missing_features = [
+        phrase
+        for family, phrase in (
+            ("content_publish", "publicar"),
+            ("manage_comments", "leer y responder comentarios"),
+        )
+        if family not in resolved_keys
+    ]
+    if missing_features:
+        features = " ni ".join(missing_features)
+        hints.append(
+            _hint(
+                "permissions",
+                "Faltan permisos de Instagram",
+                f"Sin ellos, Qualify no puede {features}. Vuelve a conectar la cuenta y "
+                "deja todos los permisos marcados.",
+                "permissions",
+            )
+        )
+
+    messages_missing = "manage_messages" not in resolved_keys or (
+        has_linked_page and PAGE_MESSAGING_SCOPE not in granted_literals
+    )
+    if messages_missing:
+        hints.append(
+            _hint(
+                "messages",
+                "Los mensajes directos no están activos",
+                "Falta el permiso de mensajes. Antes de volver a conectar, revisa que "
+                "Instagram permita el acceso a los mensajes (paso 2) y luego acepta todos "
+                "los permisos.",
+                "messages",
+            )
+        )
+
+    if has_linked_page and PAGE_METADATA_SCOPE not in granted_literals:
+        hints.append(
+            _hint(
+                "page",
+                "Falta un permiso nuevo de tu Página",
+                "Qualify lo necesita para recibir tus mensajes al momento. Vuelve a "
+                "conectar la cuenta para agregarlo.",
+                "reconnect",
+            )
+        )
+    return hints
 
 
 @dataclass(frozen=True)

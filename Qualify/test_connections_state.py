@@ -21,7 +21,7 @@ import inspect
 
 import pytest
 
-from .connections_state import ConnectionsState
+from .connections_state import GUIDE_ELEMENT_ID, ConnectionsState
 
 # --------------------------------------------------------------------------------------
 # Double-click guard — the only part of `check_health_now` reachable without a live
@@ -171,3 +171,35 @@ def test_submit_support_attaches_only_the_outcome_and_counts() -> None:
     assert 'context["pages"] = self.guidance_pages' in source
     assert 'context["linked"] = self.guidance_linked' in source
     assert "external_username" not in source and "connection_id" not in source
+
+
+# --------------------------------------------------------------------------------------
+# m-24840590: the connection guide, reachable from a card hint
+# --------------------------------------------------------------------------------------
+
+
+def test_show_guide_step_unfolds_the_guide_on_that_step_and_scrolls_to_it() -> None:
+    state = ConnectionsState()
+    state.connections = []
+    state.checklist_open = False
+    state.expanded_requirement = "professional"
+
+    spec = ConnectionsState.show_guide_step.fn(state, "messages")
+
+    assert state.checklist_open is True
+    assert state.expanded_requirement == "messages"
+    assert GUIDE_ELEMENT_ID in str(spec)
+
+
+def test_show_guide_step_keeps_the_guide_open_when_called_twice() -> None:
+    """Unlike `toggle_checklist`, a second «Ver el paso» never folds the guide away."""
+    state = ConnectionsState()
+    ConnectionsState.show_guide_step.fn(state, "reconnect")
+    ConnectionsState.show_guide_step.fn(state, "reconnect")
+    assert state.checklist_open is True
+    assert state.expanded_requirement == "reconnect"
+
+
+def test_hint_reconnect_asks_meta_again_for_unticked_permissions() -> None:
+    source = inspect.getsource(ConnectionsState.reconnect_for_permissions.fn)
+    assert "self._launch_connect(rerequest=True)" in source
