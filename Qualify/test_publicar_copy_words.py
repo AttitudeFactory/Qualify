@@ -151,3 +151,42 @@ def test_publishing_errors_say_what_to_do_next() -> None:
             "Esta foto no se puede usar tal cual. Desde tu celular, compártela como “JPG” o "
             "haz una captura de pantalla y súbela."
         )
+
+
+def test_unsupported_files_and_waits_speak_of_instagram_not_meta() -> None:
+    from . import publishing_state, stories_state
+
+    assert publishing_state._UNSUPPORTED_FORMAT == (
+        "Ese archivo no se puede publicar en Instagram. Sube una foto o un video tal como salen "
+        "de la cámara de tu celular."
+    )
+    assert stories_state._UNSUPPORTED_FORMAT == (
+        "Ese archivo no se puede publicar como historia. Sube una foto o un video tal como salen "
+        "de la cámara de tu celular."
+    )
+    assert stories_state._WAIT_EXPLANATION == (
+        "Instagram está preparando tu historia. Puede tardar unos minutos."
+    )
+    for name in (
+        "publishing_page.py",
+        "publishing_state.py",
+        "stories_page.py",
+        "stories_state.py",
+    ):
+        for _, text in _client_strings(name):
+            assert "Meta" not in text, f"{name}: {text!r}"
+
+
+def test_planner_says_publicacion_not_pieza_or_salida() -> None:
+    for name in ("planner_drawer.py", "planner_state.py"):
+        for _, text in _client_strings(name):
+            assert not re.search(r"\bpiezas?\b|\bSalidas?\b|\bsalidas\b", text), f"{name}: {text!r}"
+
+
+def test_join_es_reads_as_a_sentence() -> None:
+    from .planner_vm import join_es
+
+    assert join_es([]) == ""
+    assert join_es(["me gusta"]) == "me gusta"
+    assert join_es(["me gusta", "vistas"]) == "me gusta y vistas"
+    assert join_es(["a", "b", "c"]) == "a, b y c"

@@ -1288,7 +1288,7 @@ def test_the_drawer_opens_on_the_content_step_and_a_chosen_post_skips_ahead() ->
     assert state.form_step_error == "Elige al menos una publicación lista para salir."
     assert not state.form_can_advance
     state.toggle_plan_post("p1")
-    assert state.form_can_advance and state.form_selection_label == "1 pieza seleccionada"
+    assert state.form_can_advance and state.form_selection_label == "1 publicación seleccionada"
     state.next_step()
     assert state.form_step == 1
     state.open_assign_for_post("p1")
@@ -1383,7 +1383,7 @@ def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> Non
     state.open_assign_for_day("2026-10-12")
     for post_id in ("p1", "p2", "p3"):
         state.toggle_plan_post(post_id)
-    assert state.form_selection_label == "3 piezas seleccionadas"
+    assert state.form_selection_label == "3 publicaciones seleccionadas"
     state.next_step()
     state.set_item_time("p1", "14:00")
     state.set_item_time("p2", "10:00")
@@ -1402,7 +1402,7 @@ def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> Non
     assert [r.post_id for r in state.plan_rows_by_time] == ["p2", "p3", "p1"]
     assert state.form_event_count == 6  # 3 weekly + 2 accounts + 1
     assert state.form_submit_label == "Programar 6 publicaciones"
-    assert state.form_plan_summary == "3 piezas · 6 publicaciones · lun 12 oct"
+    assert state.form_plan_summary == "3 publicaciones · 6 fechas · lun 12 oct"
     assert state.plan_rows[1].when_label == "lun 12 oct · 10:00 a. m."
     # ✎ goes back to «Programación»; 🗑 drops the piece; an empty plan goes back to pick.
     state.edit_plan_item("p2")

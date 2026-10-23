@@ -84,7 +84,10 @@ _IMAGE_TOO_LARGE = "La imagen supera el tamaño máximo permitido (8 MB)."
 _BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro archivo."
 # QUA-103 — `add_files` never guesses a type for a file it cannot resolve (no fallback to
 # VIDEO/REELS); this is what a rejection reads as instead.
-_UNSUPPORTED_FORMAT = "Formato no soportado. Usa JPG/JPEG para imagen, o MP4/MOV para video."
+_UNSUPPORTED_FORMAT = (
+    "Ese archivo no se puede publicar en Instagram. Sube una foto o un video tal como salen "
+    "de la cámara de tu celular."
+)
 # QUA-103 — the ONE real content check (magic bytes), server-side, for the case a file
 # passed the extension/content_type check above but its actual bytes are not a JPEG.
 _UNSUPPORTED_IMAGE_FORMAT = (
@@ -110,7 +113,7 @@ _TOO_MANY = f"Puedes publicar hasta {_MAX_ITEMS} archivos a la vez."
 # explained by Meta's own per-container async processing plus this pipeline's 60 s poll
 # cadence (client.py's CONTAINER_POLL_INTERVAL_SECONDS) — nothing to fix in the backend,
 # only to say out loud in the UI.
-_WAIT_EXPLANATION = "Meta está procesando tu contenido. Esto puede tardar varios minutos."
+_WAIT_EXPLANATION = "Instagram está preparando tu publicación. Puede tardar unos minutos."
 # Client-side safety net only — the SERVER already settles an attempt as 'failed' once
 # CONTAINER_POLL_CEILING_SECONDS (300 s) elapses, at roughly one poll per
 # CONTAINER_POLL_INTERVAL_SECONDS (60 s). This is just the belt on top of that suspenders,
@@ -344,7 +347,7 @@ class PublishState(rx.State):
             if child.status in ("pending", "uploading"):
                 return f"Subiendo video {child.position + 1} de {total}"
             if child.status == "processing":
-                return f"Procesando video {child.position + 1} de {total} en Meta"
+                return f"Preparando video {child.position + 1} de {total} en Instagram"
         if self.attempt is not None and self.attempt.awaiting_confirmation:
             return "Confirmando publicación"
         return "Creando carrusel"

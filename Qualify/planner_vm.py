@@ -1436,6 +1436,15 @@ def goal_labels(keys) -> list[str]:
     return [g.label for g in PLAN_GOALS if g.key in chosen]
 
 
+def join_es(items: list[str]) -> str:
+    """Spanish list join: ['a'] → 'a', ['a', 'b'] → 'a y b', ['a', 'b', 'c'] → 'a, b y c'."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " y " + items[-1]
+
+
 PLAN_OUTPUT_REQUIRED = "Elige qué formato programar (reel, publicación o historia)."
 PLAN_ACCOUNT_REQUIRED = "Elige al menos una cuenta compatible."
 PLAN_DATE_REQUIRED = "Elige la fecha y la hora."

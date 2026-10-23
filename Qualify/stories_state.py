@@ -66,7 +66,8 @@ _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
 _NO_FILE = "Sube el video o la imagen de la historia antes de publicar."
 _UNSUPPORTED_FORMAT = (
-    "Formato no soportado. Usa MP4 o MOV para video, o JPG/JPEG para la imagen de la historia."
+    "Ese archivo no se puede publicar como historia. Sube una foto o un video tal como salen "
+    "de la cámara de tu celular."
 )
 # Same wording `publishing_state.py` uses for its own magic-byte rejection.
 _UNSUPPORTED_IMAGE_FORMAT = (
@@ -85,7 +86,7 @@ _POLL_FAILED = (
     "No sabemos todavía si se publicó. Revisa tu Instagram en unos minutos antes de "
     "volver a intentarlo, para no publicarlo dos veces."
 )
-_WAIT_EXPLANATION = "Meta está procesando la historia. Esto puede tardar varios minutos."
+_WAIT_EXPLANATION = "Instagram está preparando tu historia. Puede tardar unos minutos."
 
 _MP4_CONTENT_TYPE = "video/mp4"
 _MOV_CONTENT_TYPE = "video/quicktime"

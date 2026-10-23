@@ -268,7 +268,7 @@ def _status_block() -> rx.Component:
                     rx.hstack(
                         loading_spinner("sm"),
                         rx.text(
-                            "Publicando, esperando confirmación de Meta...",
+                            "Publicando, esperando que Instagram lo confirme...",
                             size="2",
                             weight="medium",
                         ),
@@ -287,7 +287,7 @@ def _status_block() -> rx.Component:
                         width="100%",
                     ),
                     rx.text(
-                        "Meta está procesando la historia. Esto puede tardar varios minutos.",
+                        "Instagram está preparando tu historia. Puede tardar unos minutos.",
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
@@ -391,7 +391,7 @@ def stories_tips_card() -> rx.Component:
         ),
         tip_row("type", "Sin texto: Instagram no muestra texto en una historia publicada así."),
         tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
-        tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
+        tip_row("clock", "Instagram puede tardar unos minutos en confirmarlo."),
         tip_row(
             "music",
             "¿Música oficial? Usa «Abrir en Instagram» desde tu celular y termina la "

@@ -398,7 +398,7 @@ def _status_block() -> rx.Component:
                             PublishState.carousel_stage_label != "",
                             rx.text(PublishState.carousel_stage_label, size="2", weight="medium"),
                             rx.text(
-                                "Publicando, esperando confirmación de Meta...",
+                                "Publicando, esperando que Instagram lo confirme...",
                                 size="2",
                                 weight="medium",
                             ),
@@ -489,7 +489,7 @@ def _tips_card() -> rx.Component:
             "publican juntos, como un carrusel.",
         ),
         tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
-        tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
+        tip_row("clock", "Instagram puede tardar unos minutos en confirmarlo."),
     )
 
 

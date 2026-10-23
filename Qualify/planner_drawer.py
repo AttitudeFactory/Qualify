@@ -332,7 +332,7 @@ def _step_content() -> rx.Component:
         rx.center(rx.icon("layout-grid", size=22), class_name="q-section-glyph q-glyph-lg"),
         rx.text("No hay publicaciones para programar", size="3", weight="bold"),
         rx.text(
-            "Crea una pieza y apruébala: aparecerá aquí lista para programar.",
+            "Crea una publicación y apruébala: aparecerá aquí lista para programar.",
             size="2",
             color=T.TEXT_MUTED,
             text_align="center",
@@ -357,7 +357,7 @@ def _step_content() -> rx.Component:
             _section_title(
                 "layout-grid",
                 "¿Qué vas a publicar?",
-                "Elige una o varias piezas listas. Cada una tendrá su propio horario.",
+                "Elige una o varias publicaciones listas. Cada una tendrá su propio horario.",
             ),
             rx.cond(
                 PlannerState.schedulable.length() > 0,
@@ -807,7 +807,7 @@ def _plan_card(row) -> rx.Component:
         rx.cond(
             row.has_outputs,
             rx.box(
-                _label("Salida"),
+                _label("Formato"),
                 rx.segmented_control.root(
                     rx.foreach(
                         row.outputs,
@@ -925,7 +925,7 @@ def _step_schedule() -> rx.Component:
                 rx.cond(
                     PlannerState.form_is_reschedule,
                     "Mueve la publicación a otra fecha, hora o cuenta.",
-                    "Cuándo y dónde sale cada pieza.",
+                    "Cuándo y dónde sale cada publicación.",
                 ),
             ),
             rx.box(
@@ -1369,8 +1369,8 @@ def assign_drawer() -> rx.Component:
         description=rx.cond(
             PlannerState.form_is_reschedule,
             "Mueve la publicación a otra fecha, hora o cuenta.",
-            "Arma tu día: elige las piezas, dales hora y canal, y confirma. Nada se publica "
-            "hasta su hora.",
+            "Arma tu día: elige las publicaciones, dales hora y cuenta, y confirma. "
+            "Nada se publica hasta su hora.",
         ),
         footer=_assign_footer(),
         width="46rem",
@@ -1548,7 +1548,7 @@ def _detail_body() -> rx.Component:
         ),
         rx.cond(
             d.output_label != "",
-            _fact_tile("layers", "Salida", rx.text(d.output_label, size="2", weight="bold")),
+            _fact_tile("layers", "Formato", rx.text(d.output_label, size="2", weight="bold")),
         ),
         # QUA-143: the POST's campaign — shown only when the POST belongs to one.
         rx.cond(
@@ -1806,8 +1806,8 @@ def _detail_footer() -> rx.Component:
         (
             CONFIRM_REMOVE,
             _confirm_bar(
-                "¿Quitar la publicación rechazada del calendario? Se cancelan sus salidas "
-                "pendientes; lo ya publicado se conserva.",
+                "¿Quitar la publicación rechazada del calendario? Se cancelan sus fechas "
+                "programadas pendientes; lo ya publicado se conserva.",
                 "Sí, quitar",
                 PlannerState.confirm_remove_rejected,
             ),
