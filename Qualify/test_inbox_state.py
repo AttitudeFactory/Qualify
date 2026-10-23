@@ -688,10 +688,18 @@ def test_polling_timer_only_mounts_inside_the_gated_inbox_tree() -> None:
     from . import inbox_page
 
     section_source = inspect.getsource(inbox_page._sync_section)
+    connected_source = inspect.getsource(inbox_page._connected_body)
+    more_source = inspect.getsource(inbox_page._more_options)
     body_source = inspect.getsource(inbox_page._body)
     index_source = inspect.getsource(inbox_page.inbox_index)
     assert "_polling_timer()" in section_source
-    assert "rx.cond(InboxState.has_connections, _sync_section(), rx.fragment())" in body_source
+    # m-24842989: the strip sits in the connected body, OUTSIDE the «Más opciones»
+    # accordion (a closed accordion unmounts its content, which would stop the timer).
+    assert "_sync_section()" in connected_source
+    assert "_sync_section()" not in more_source
+    # `_connected_body()` is the else-branch of the `~InboxState.has_connections` gate.
+    gate = body_source.index("~InboxState.has_connections")
+    assert gate < body_source.index("_connected_body()")
     assert "_body()" in index_source
 
 

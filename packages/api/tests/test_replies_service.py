@@ -7,6 +7,7 @@ generator, so a rejected candidate never reaches the (fake) provider."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -107,6 +108,33 @@ def test_generate_drafts_only_creates_for_gate_passing_candidates() -> None:
     assert pending[0].generator_version == GENERATOR_VERSION
 
 
+def test_pending_draft_carries_the_comment_author_and_publication() -> None:
+    """m-24842989: the review card shows who commented and on which publication — the
+    candidate's author and media id reach the pending draft; a candidate without them
+    (older seeding) yields `""`, never `None`."""
+    repo = MemoryReplyRepository()
+    with_context = replace(
+        _candidate(text="me encanta!"),
+        author_username="cliente.feliz",
+        external_media_id="media-123",
+    )
+    bare = _candidate(text="qué rico todo")
+    repo.seed_candidates(connection_id=CONNECTION, candidates=(with_context, bare))
+    service = _service(repo=repo, provider=FakeProvider(), client=FakeReplyClient())
+
+    service.generate_drafts(tenant_id=TENANT, connection_id=CONNECTION)
+
+    by_message = {
+        d.message_id: d
+        for d in repo.list_pending_drafts(tenant_id=TENANT, connection_id=CONNECTION)
+    }
+    assert by_message[with_context.message_id].author_username == "cliente.feliz"
+    assert by_message[with_context.message_id].external_media_id == "media-123"
+    assert by_message[bare.message_id].author_username == ""
+    assert by_message[bare.message_id].external_media_id == ""
+    assert by_message[bare.message_id].media_caption == ""
+
+
 def test_generate_drafts_is_idempotent_on_rerun() -> None:
     repo = MemoryReplyRepository()
     candidate = _candidate()
@@ -118,7 +146,7 @@ def test_generate_drafts_is_idempotent_on_rerun() -> None:
 
     assert first.drafts_created == 1
     # Second pass sees no candidates at all: MemoryReplyRepository's
-    # list_positive_comments_without_draft already excludes messages with a draft.
+    # list_reply_candidates already excludes messages with a draft.
     assert second.candidates_seen == 0
     assert second.drafts_created == 0
 

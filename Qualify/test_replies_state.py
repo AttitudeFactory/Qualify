@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -372,8 +373,9 @@ async def test_once_ticked_the_send_goes_through_the_existing_approval_path(
     def fake_decide(**kwargs: Any) -> None:
         decided.append(kwargs)
 
-    async def fake_send(**kwargs: Any) -> None:
+    async def fake_send(**kwargs: Any) -> SimpleNamespace:
         sent.append(kwargs)
+        return SimpleNamespace(status="sent")  # m-24842989: the state reads the outcome
 
     monkeypatch.setattr(replies_state_module, "decide_draft", fake_decide)
     monkeypatch.setattr(replies_state_module, "send_draft", fake_send)
@@ -395,8 +397,9 @@ async def test_once_ticked_the_send_goes_through_the_existing_approval_path(
 async def test_a_clean_draft_sends_without_any_tick(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[dict[str, Any]] = []
 
-    async def fake_send(**kwargs: Any) -> None:
+    async def fake_send(**kwargs: Any) -> SimpleNamespace:
         sent.append(kwargs)
+        return SimpleNamespace(status="sent")  # m-24842989: the state reads the outcome
 
     monkeypatch.setattr(replies_state_module, "decide_draft", lambda **_: None)
     monkeypatch.setattr(replies_state_module, "send_draft", fake_send)

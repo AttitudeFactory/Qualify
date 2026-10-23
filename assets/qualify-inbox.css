@@ -24,6 +24,17 @@
 
 /* The drafted reply's bubble is `ui.chat_bubble` now. */
 
+/* m-24842989 (N12, m5 hallazgo 10): on a phone every control on /inbox is a ≥ 44 px
+   target — buttons, icon buttons, selects, the search field and the «Más opciones»
+   header. Radix size 3 is 40px and size 2 is 32px; this only raises the floor. */
+@media (max-width: 640px) {
+  .q-inbox-main :is(.rt-Button, .rt-IconButton),
+  .q-inbox-tap,
+  .q-inbox-more .rt-AccordionTrigger {
+    min-height: 44px;
+  }
+}
+
 /* ── WhatsApp → Chats (WA-11, `Qualify/whatsapp_tab_chats.py`) ─────────────────────
    Two panes on desktop (list | conversation); under 768 px ONE pane at a time: the list
    until a conversation is open (`.q-wa-chats--open`), then the conversation with its

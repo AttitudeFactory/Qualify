@@ -38,29 +38,33 @@ from qualify_api.intent import COMMERCIAL_CLASSES, INTENT_CLASS_LABELS, IntentCl
 from qualify_api.replies.public_drafts import is_blocking_reason
 from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
-from .inbox_vm import IntentChipVM
+from .inbox_vm import CandidateMediaVM, IntentChipVM
 
 # -- copy ---------------------------------------------------------------------------------
 
 REVIEW_BADGE: Final = "Requiere revisión"
 REVIEW_CONFIRM_LABEL: Final = "Ya revisé estos puntos"
 REVIEW_CONFIRM_REQUIRED: Final = "Antes de enviar, marca «Ya revisé estos puntos»."
-_REFRESH_HINT: Final = "Toca «Actualizar borradores» (↻) y vuelve a intentarlo."
+_REFRESH_HINT: Final = "Toca «Actualizar respuestas» (↻) y vuelve a intentarlo."
 STALE_DRAFT: Final = "Esta respuesta cambió mientras la mirabas. " + _REFRESH_HINT
 SOURCES_TITLE: Final = "Productos de tu catálogo que usamos"
 SOURCES_EMPTY: Final = "Ningún producto."
 SOURCES_PRICE_NOTE: Final = (
-    "En público no se dan precios: si preguntan, el borrador invita a escribir por mensaje privado."
+    "En público no se dan precios: si preguntan, la respuesta invita a escribir por "
+    "mensaje privado."
 )
 COMMERCIAL_BADGE: Final = "Quiere comprar"
 UNSUPPORTED_PREFIX: Final = "Lo que no encontramos en tu catálogo: "
+
+# m-24842989: the thumbnail's alt text when the publication has no caption we know of.
+PUBLICATION_ALT_FALLBACK: Final = "Publicación"
 
 #: How many sources the card shows before folding the rest under «Ver … más».
 SOURCES_VISIBLE: Final = 3
 
 _REVIEW_REASON_LABELS: Final[Mapping[str, str]] = {
     "model_unsupported": (
-        "El borrador dice algo que no está en tu catálogo; revisa que sea cierto."
+        "La respuesta dice algo que no está en tu catálogo; revisa que sea cierto."
     ),
     "price_token": (
         "La respuesta menciona un precio y en público no damos precios: quítalo con "
@@ -68,10 +72,10 @@ _REVIEW_REASON_LABELS: Final[Mapping[str, str]] = {
     ),
     "empty_catalog": (
         "Tu catálogo está vacío, así que la respuesta no habla de ningún producto. Agrega "
-        "tus productos en Catálogo para que las próximas respuestas sean más completas."
+        "tus productos en «Tus productos» para que las próximas respuestas sean más completas."
     ),
     "price_unknown": (
-        "Preguntan el precio y tu catálogo no lo tiene; revisa que el borrador no prometa uno."
+        "Preguntan el precio y tu catálogo no lo tiene; revisa que la respuesta no prometa uno."
     ),
 }
 
@@ -87,15 +91,15 @@ _UNVALIDATED_TAIL: Final = (
     "la persona a escribirte por privado."
 )
 
-REVIEW_REASON_FALLBACK: Final = "Hay algo en este borrador que conviene revisar antes de enviarlo."
+REVIEW_REASON_FALLBACK: Final = "Hay algo en esta respuesta que conviene revisar antes de enviarla."
 REVIEW_NOTE_FALLBACK: Final = (
     "Puede que no hayamos entendido bien qué preguntan: mira que la respuesta conteste lo "
     "que pidieron."
 )
 
 _REGENERATE_FAILED: Final = "No pudimos proponer otra respuesta. Intenta de nuevo en unos minutos."
-_REGENERATE_DECIDED: Final = "Este borrador ya se envió o se descartó. " + _REFRESH_HINT
-_REGENERATE_UNKNOWN: Final = "Ya no encontramos este borrador. " + _REFRESH_HINT
+_REGENERATE_DECIDED: Final = "Esta respuesta ya se envió o se descartó. " + _REFRESH_HINT
+_REGENERATE_UNKNOWN: Final = "Ya no encontramos esta respuesta. " + _REFRESH_HINT
 _REGENERATE_REFUSED: Final = (
     "Este comentario ya no necesita una respuesta pública sugerida. " + _REFRESH_HINT
 )
@@ -163,6 +167,12 @@ class DraftVM:
     sources_rest: list[SourceProductVM] = field(default_factory=list)
     sources_more_label: str = ""
     intent_chips: list[IntentChipVM] = field(default_factory=list)
+    # m-24842989: who wrote the comment (`""` when the channel did not say) and the
+    # publication it was left on — its picture (`""` shows the generic frame) and the
+    # picture's alt text (the caption, else «Publicación»; never empty).
+    author_username: str = ""
+    media_thumbnail_url: str = ""
+    media_alt: str = PUBLICATION_ALT_FALLBACK
 
 
 class DraftLike(Protocol):
@@ -180,6 +190,9 @@ class DraftLike(Protocol):
     grounding: Mapping[str, Any] | None
     needs_review: bool
     unsupported_claims: tuple[str, ...]
+    author_username: str
+    external_media_id: str
+    media_caption: str
 
 
 # -- rules --------------------------------------------------------------------------------
@@ -303,7 +316,11 @@ def build_draft_vm(
     zone: ZoneInfo,
     signal: IntentSignal | None = None,
     reliable: Mapping[IntentClass, bool] | None = None,
+    media: CandidateMediaVM | None = None,
 ) -> DraftVM:
+    """`media` is the publication the comment was left on, from the inbox's ALREADY
+    loaded candidates (m-24842989) — the only source of a picture, since the inbox
+    stores none (Meta's URLs expire). Without it the thumbnail is `""`."""
     grounding = record.grounding
     is_commercial = grounding is not None
     raw = grounding.get("review_reasons") if isinstance(grounding, Mapping) else None
@@ -320,6 +337,7 @@ def build_draft_vm(
         reasons = [REVIEW_REASON_FALLBACK]
     sources = source_products(grounding, zone) if is_commercial else []
     claims = [c.strip() for c in (record.unsupported_claims or ()) if c and c.strip()]
+    caption = (record.media_caption or (media.caption if media else "")).strip()
     return DraftVM(
         id=str(record.id),
         source_id=record.source_id,
@@ -339,13 +357,16 @@ def build_draft_vm(
         sources_rest=sources[SOURCES_VISIBLE:],
         sources_more_label=_more_label(len(sources) - SOURCES_VISIBLE),
         intent_chips=intent_chips(signal, reliable or {}) if is_commercial else [],
+        author_username=record.author_username or "",
+        media_thumbnail_url=media.thumbnail_url if media else "",
+        media_alt=caption or PUBLICATION_ALT_FALLBACK,
     )
 
 
 def send_block_reason(
     drafts: Sequence[DraftVM], draft_id: str, reviewed_ids: Collection[str]
 ) -> str:
-    """Why «Aceptar y enviar» / «Guardar y enviar» must not go ahead yet, or `""`.
+    """Why «Aprobar y responder» (view or edit mode) must not go ahead yet, or `""`.
 
     A draft that needs review goes only after the person ticked «Ya revisé estos puntos»
     for THAT draft. A draft the list no longer holds is refused too (fail closed: the
@@ -359,7 +380,7 @@ def send_block_reason(
 
 
 def generation_message(drafts_created: int) -> str:
-    """The toast after «Generar borradores»: what is waiting for the owner, no counts of
+    """The toast after «Preparar respuestas»: what is waiting for the owner, no counts of
     what was skipped (those go to the log)."""
     if drafts_created <= 0:
         return "Revisamos tus comentarios: no hay ninguno nuevo que responder."

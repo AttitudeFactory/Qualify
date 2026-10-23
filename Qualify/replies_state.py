@@ -88,10 +88,24 @@ _NO_ACTING_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
     "Pide al equipo de Qualify que lo revise."
 )
-_GENERATE_FAILED = "No se pudieron generar los borradores. Intenta de nuevo en unos minutos."
+_GENERATE_FAILED = "No pudimos preparar las respuestas. Intenta de nuevo en unos minutos."
 _DECIDE_FAILED = "No se pudo guardar la decisión. Actualiza la lista e intenta de nuevo."
-_SEND_FAILED = "No se pudo enviar la respuesta a Meta. El borrador quedó marcado para revisión."
+# m-24842989: a decided draft leaves the «proposed» queue BEFORE the Meta call
+# (`decide_draft` moves it to accepted/edited, the send to sending/sent/send_failed/
+# send_ambiguous), and nothing regenerates a comment that already has a draft — so a
+# failed reply does NOT stay on screen to retry. The copy says what is true: it may or
+# may not be out, and the owner checks (or answers) on Instagram itself.
+_SEND_FAILED = "No sabemos si salió. Revísalo en Instagram."
+# The platform refused it (`send_failed`): it did not go out, and left the list.
+_SEND_REFUSED = "Tu respuesta no salió. Respóndela en Instagram."
 _RESULT_TOAST_DURATION_MS = 6000
+
+
+def sent_message(author_username: str) -> str:
+    """The confirmation once a reply is out (m-24842989): names who got it when known."""
+    if author_username:
+        return f"Listo, le respondiste a @{author_username} en Instagram."
+    return "Listo, tu respuesta ya está en Instagram."
 
 
 def _try_uuid(value: str) -> UUID | None:
@@ -190,9 +204,17 @@ class RepliesState(rx.State):
                 self.load_error = _NO_TENANT if tenant_id is None else _UNKNOWN_CONNECTION
                 self.drafts = []
             return
+        # m-24842989: the publication thumbnails come from the inbox's already-loaded
+        # candidates (`load_screen`/`select_connection` load them before chaining here).
+        async with self:
+            inbox = await self.get_state(InboxState)
+            candidates = list(inbox.candidates)
         try:
             drafts = await asyncio.to_thread(
-                pending_drafts, tenant_id=tenant_id, connection_id=connection_id
+                pending_drafts,
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                candidates=candidates,
             )
         except Exception as exc:
             logger.error("pending_drafts failed: %s", type(exc).__name__)
@@ -208,7 +230,7 @@ class RepliesState(rx.State):
 
     @rx.event(background=True)
     async def generate_drafts(self) -> AsyncGenerator[rx.event.EventSpec, None]:
-        """The "Generar borradores" button — runs the gate + generator over every
+        """The «Preparar respuestas» button — runs the gate + generator over every
         pending POS comment for the selected connection. Same double-click guard /
         try-except-else-finally shape `InboxState.analyze_sentiment` establishes.
 
@@ -307,6 +329,9 @@ class RepliesState(rx.State):
                 self.busy_draft_id = draft_id
                 self.action_error = ""
                 self.editing_draft_id = ""
+            # m-24842989: for the confirmation, who the answer goes to — read before the
+            # list reloads.
+            author = next((d.author_username for d in self.drafts if d.id == draft_id), "")
         if blocked:
             # Also a toast: the callout sits above the list, maybe far from this card.
             yield rx.toast.error(blocked, duration=_RESULT_TOAST_DURATION_MS)
@@ -344,7 +369,7 @@ class RepliesState(rx.State):
             return
 
         try:
-            await send_draft(
+            sent = await send_draft(
                 tenant_id=tenant_id,
                 draft_id=resolved_draft_id,
                 approval=approval_for(user_id=user_id, draft_id=resolved_draft_id),
@@ -369,7 +394,13 @@ class RepliesState(rx.State):
                 self.reviewed_draft_ids = [i for i in self.reviewed_draft_ids if i != draft_id]
 
         yield RepliesState.load_pending_drafts
-        yield rx.toast.success("Respuesta enviada.", duration=_RESULT_TOAST_DURATION_MS)
+        # A refusal or a transport failure at Meta does not raise: the service settles the
+        # draft as `send_failed` / `send_ambiguous` and returns it. Only `sent` is «Listo».
+        if sent.status != "sent":
+            async with self:
+                self.action_error = _SEND_REFUSED if sent.status == "send_failed" else _SEND_FAILED
+            return
+        yield rx.toast.success(sent_message(author), duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
     async def discard_draft(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
@@ -414,13 +445,13 @@ class RepliesState(rx.State):
                 self.busy_draft_id = ""
 
         yield RepliesState.load_pending_drafts
-        yield rx.toast.success("Borrador descartado.", duration=_RESULT_TOAST_DURATION_MS)
+        yield rx.toast.success("Respuesta descartada.", duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
     async def regenerate(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
         """«Regenerar» (m-24789645): ask for another proposal for a `proposed` draft, as
         the logged-in person. Never sends — the new draft lands in the queue like any
-        other and still needs «Aceptar y enviar». Same busy guard as the other actions,
+        other and still needs «Aprobar y responder». Same busy guard as the other actions,
         and the list is re-read whatever happened (a refusal usually means the draft or
         the comment changed meanwhile)."""
         async with self:
