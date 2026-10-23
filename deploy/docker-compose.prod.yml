@@ -22,7 +22,10 @@
 # in the Planificador). `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
-#   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load).
+#   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load;
+#                    capped by mem_limit). CI publishes its image for every sha and
+#                    server-deploy.sh waits for it to be healthy; enabling it needs the bigger
+#                    server first (docs/despliegue-hetzner.md).
 
 name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
 
@@ -374,9 +377,15 @@ services:
   # --- optional -------------------------------------------------------------------------
 
   # Remotion render service (packages/render). Needed only by the template generator.
+  # `build:` serves `just deploy` (builds on the server); a CI release passes --no-build and
+  # runs ghcr.io/attitudefactory/qualify-render:<sha> through deploy/release.env, like app/web.
+  # mem_limit: Chromium takes ~1 GB per render (RENDER_CONCURRENCY 1) plus Node; the cap makes
+  # a runaway render get OOM-killed inside this container (restart: unless-stopped brings it
+  # back) instead of pushing the kernel to kill Postgres or the app.
   render:
     profiles: ["render"]
     build: ../packages/render
+    mem_limit: 1536m
     image: ${QUALIFY_IMAGE_PREFIX:-}qualify-render:${QUALIFY_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:

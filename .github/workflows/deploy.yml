@@ -1,13 +1,15 @@
 # Production deploy (CD) — docs/plan-sre-devops-produccion.md §5, punto 4.
 #
 #   images:  build deploy/Dockerfile `app`, `web` and `deploy-bundle` (the commit's deploy/
-#            dir) for ONE commit of main and push them to GHCR as
-#            ghcr.io/attitudefactory/qualify-{app,web,deploy}:<full sha> (GITHUB_TOKEN; GHCR
-#            storage is free today, GitHub promises a month's notice before billing it).
+#            dir), plus packages/render (the Remotion render service), for ONE commit of main
+#            and push them to GHCR as
+#            ghcr.io/attitudefactory/qualify-{app,web,deploy,render}:<full sha> (GITHUB_TOKEN;
+#            GHCR storage is free today, GitHub promises a month's notice before billing it).
 #   deploy:  ssh to the server with a key that can ONLY run deploy/server-deploy.sh (forced
-#            command) and only send `deploy <sha>`. The server pulls the three images, takes
-#            the release's compose file and scripts from qualify-deploy, runs `migrate`, then
-#            `up`. It never compiles. Then an external smoke test.
+#            command) and only send `deploy <sha>`. The server pulls the images (render only
+#            when its profile is on), takes the release's compose file and scripts from
+#            qualify-deploy, runs `migrate`, then `up`. It never compiles. Then an external
+#            smoke test.
 #
 # Inert until the founder sets it up (nothing here is invented):
 #   secrets   QUALIFY_DEPLOY_SSH_KEY          private half of the restricted deploy key
@@ -32,8 +34,10 @@
 # Rollback: run this workflow by hand with an older sha of main (its images are still in
 # GHCR). Across a migration, tick `skip_migrate`: the older image cannot run `alembic upgrade`
 # on a newer database.
-# Profiles (today only `render`) come from the server's .env.prod only. calendar-worker is
-# no longer a profile (m-24828928): every deploy recreates it like the other workers.
+# Profiles (today only `render`) come from the server's .env.prod only (COMPOSE_PROFILES);
+# qualify-render is built for every sha so turning the profile on needs no other change, and
+# server-deploy.sh then pulls it and waits for it to be healthy. calendar-worker is no
+# longer a profile (m-24828928): every deploy recreates it like the other workers.
 name: deploy
 
 on:
@@ -172,6 +176,20 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: ghcr.io/attitudefactory/qualify-deploy:${{ steps.sha.outputs.sha }}
+      # Every sha gets its render image, whether or not the server runs the `render`
+      # profile: a release must be able to start it the day COMPOSE_PROFILES enables it,
+      # and a rollback must find it. Its own cache scope (render-arm64): ci/render fills
+      # `render` with amd64 layers. Cached, it only re-tags (packages/render rarely changes);
+      # cold — a Remotion bump — it reinstalls npm, Chrome Headless Shell and the bundle.
+      - name: Build and push qualify-render (packages/render)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: packages/render
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/attitudefactory/qualify-render:${{ steps.sha.outputs.sha }}
+          cache-from: type=gha,scope=render-arm64
+          cache-to: type=gha,scope=render-arm64,mode=max
 
   deploy:
     needs: images

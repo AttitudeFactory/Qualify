@@ -64,7 +64,7 @@ of a bare `docker compose` (without `release.env`, Compose would look for `:late
 About deploys:
 
 - `server-deploy.sh` only deploys a sha whose images **already exist in GHCR**
-  (`ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>`), i.e. commits the `deploy`
+  (`ghcr.io/attitudefactory/qualify-{app,web,deploy,render}:<sha>`), i.e. commits the `deploy`
   workflow built. A brand-new commit of `main` is deployed by that workflow, not from here;
   this session is for status, diagnosis, restarts, rollbacks and backups.
 - One deploy at a time: the script takes a lock and refuses a second run.
@@ -73,5 +73,9 @@ About deploys:
   expand → contract. If in doubt, stop and ask.
 - If health checks fail after `up`, the new release is already live and `current` points at it.
   Recover by rolling back to the previous sha (the previous `releases/` entry).
-- The script refuses when `COMPOSE_PROFILES` includes `render` (its image is not published
-  yet); that case is deployed from the founder's Mac with `just deploy`.
+- With `render` in `COMPOSE_PROFILES`, the script also pulls `qualify-render:<sha>` and, after
+  `up`, waits up to ~2.5 min for the render container to be `healthy` (its Remotion bundle is
+  ready); otherwise the deploy fails with the release already live, as with any health check.
+  `qdc ps` shows render's health. A sha built before CI published the render image
+  (m-24803289) cannot be deployed with the profile on: the script says so before touching
+  anything. Render has a 1.5 GB `mem_limit`: an OOM kill there restarts render only.
