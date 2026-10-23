@@ -51,7 +51,7 @@ business's Brand Kit and catalog into publishable pieces, with a human approving
   `docs/modelos-generativos/` the same turn.
 - `just render-build` / `just render-smoke` when you change `packages/render`; `npm run typecheck`
   must pass (CI runs `node-render` and `docker-render`).
-- Deliver through a PR per `qualify-pr`. Never merge.
+- Deliver through a PR per `qualify-pr`. Merge per `qualify-pr` (only `just merge`, CI green).
 
 ## Skills
 

@@ -86,8 +86,10 @@ module by module, the signed decisions and the house rules.
   touches client-facing paths). Ownership map: `docs/equipo-agentes.md`.
 - **Squads** are skills the founder triggers: `/qualify-team-dev`, `/qualify-team-po`,
   `/qualify-team-research`. Agent teams (experimental) are off.
-- **Every change ships as a PR with its Meegle ticket; nobody but the founder merges**
-  (`just merge <pr>`, CI green) — full procedure, CI table and Actions budget: **`qualify-pr`**.
+- **Every change ships as a PR with its Meegle ticket; agents may merge it with `just merge <pr>`
+  once CI is green** (`--admin` only as a production contingency) and deploy through the
+  documented paths (founder, 2026-10-23) — full procedure, CI table and Actions budget:
+  **`qualify-pr`**; what still needs the founder: **`qualify-prod-ops`**.
   Tickets: `meegle-ticket`. Client onboarding: `meegle-altas`.
 
 ## Skills index (Qualify's own)
@@ -128,7 +130,7 @@ just dev        # up + migrate + seed — the local stack from cold
 just ci-lint    # ruff check + format --check, as CI
 just ci-test    # offline tests + coverage, as CI
 just test-db    # tests that need the compose Postgres/Redis
-just merge <pr> # the merge gate — founder only
+just merge <pr> # the merge gate — refuses unless CI is green
 ```
 
 Workers (`*-tick`, `*-worker`) **publish or send for real**: locally always `--tenant <uuid>`.

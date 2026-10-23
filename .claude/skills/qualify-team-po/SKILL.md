@@ -25,6 +25,6 @@ scope (e.g. "docs/epica-anuncios-meta.md — entrega 1"). If empty, list the rec
 3. **Resolve:** apply the changes; where the two disagree, give each the other's verdict once and
    decide, or mark "needs the founder".
 4. **File** the surviving items in Meegle (`meegle-ticket`; epic = Feature, stories = Issues).
-5. **Deliver:** one PR with the doc changes (`qualify-pr`); never merge. Synthesis: ticket ids
+5. **Deliver:** one PR with the doc changes (`qualify-pr`), merged per `qualify-pr`. Synthesis: ticket ids
    and doc, top 3 items with rationale, conflicts needing the founder, and the paste-ready
    `/qualify-team-dev` prompt quoted verbatim.

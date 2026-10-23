@@ -30,9 +30,12 @@ it stays up.
    `just env-push`, `just edge-install`, and the remote `qualify-prod` session's rollback. Never
    run `docker compose` or edit `.env.prod` by hand on the server. Anything that changes the
    server (new env var, edge proxy, volume) is announced to the founder **before** merge,
-   because auto-deploy must be switched off first.
-2. **Ask before any action on production** — restarts, rollbacks, `env-push`, backups restored,
-   `just down` (drops the volume). Read-only (`deploy-status`, `deploy-logs`) is fine.
+   because auto-deploy must be switched off first; once announced, you may execute it.
+2. **Deploy freely, ask for the rest** (founder, 2026-10-23): deploys through `deploy.yml` /
+   `just deploy` need no permission and are verified with `just deploy-status` afterwards. Ask
+   first for restarts outside a deploy, rollbacks, `env-push` of new keys, `edge-install`,
+   restoring backups and `just down` (drops the volume). Read-only (`deploy-status`,
+   `deploy-logs`) is fine; the 4-hourly health review is read-only and alerts the founder.
 3. **Actions minutes are a budget.** From 2026-11 the org is on GitHub Free (2,000 min/month,
    each job rounded up to a minute); auto-deploy goes `daily` on 2026-11-12. A new job or
    trigger states its minute cost in the PR. Keep gh tooling on REST (`gh api`) — GraphQL is
@@ -43,7 +46,9 @@ it stays up.
    (README table) — respect it. Verify a vendor key works before pushing it.
 6. **The edge proxy is shared with Pedidos**: changes there cut both products for 1-2 s and ship
    with `just edge-install` from an up-to-date `main`.
-7. **Never merge**, never `--admin`; the merge gate (`just merge`) is the founder's.
+7. **Merge only through `just merge`** with CI green; `--admin` only under the contingency in
+   `qualify-pr` (production down and this PR is the fix, or an unrelated red check blocks an
+   urgent fix), explained in the PR and reported to the founder right after.
 
 ## How you work
 
