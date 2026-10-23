@@ -58,7 +58,7 @@ SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("brandboard", "Logo", "image", "Las versiones de tu logo y los otros elementos."),
     ("tipografia", "Tipografía", "type", "La letra con la que se te reconoce."),
     ("paleta", "Paleta", "palette", "Los colores con los que se te reconoce."),
-    ("voz", "Voz y tono", "mic", "Tu voz, su clon y cómo suena tu marca."),
+    ("voz", "Voz y tono", "mic", "Tu voz grabada y cómo suena tu marca."),
     ("habla", "Cómo habla", "message-circle", "Ejemplos que sí, que no y cómo invitas a comprar."),
     (
         "nunca",

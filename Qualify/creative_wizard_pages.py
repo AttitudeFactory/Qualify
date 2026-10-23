@@ -151,7 +151,7 @@ _TYPOGRAPHY_HEADING = ("Tipografía", "La letra con la que se te reconoce, antes
 STEPS: tuple[tuple[str, str], ...] = (
     _IDENTITY_HEADING,
     ("¿Ya tienes logo?", "De tu respuesta depende el siguiente paso."),
-    ("Tu logo", "Lo usaremos en cada publicación que hagamos."),
+    ("Tu logo", "Lo usaremos en cada publicación que crees."),
     # Tipografía — its own view right before Paleta de colores (§ request 2026-10-05):
     # the family names (and, optionally, the files) of the brand's type faces, editable
     # whether or not a brandboard was uploaded. Optional: nothing blocks Continuar.
@@ -3366,14 +3366,17 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # the manual flow uses (`_step_has_logo`/`_step_logo`) via `_connect_step_has_logo`,
     # so the two flows cannot drift.
     ("¿Ya tienes logo?", "De tu respuesta depende el siguiente paso."),
-    ("Tu logo", "Lo usaremos en cada publicación que hagamos."),
+    ("Tu logo", "Lo usaremos en cada publicación que crees."),
     _TYPOGRAPHY_HEADING,  # § request 2026-10-05, see the manual flow's STEPS
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
     # Referente, competencia o detractor (§ request 2026-09-11, "algo divertido antes
     # del resultado"): the accounts the discovery found, sorted by the operator into
     # three buckets by drag and drop or a tap. Optional — nothing blocks Continuar.
-    ("¿Qué negocios se parecen al tuyo?", "Arrastra cada cuenta a su flecha, o toca la flecha."),
+    (
+        "¿Cómo ves estas cuentas?",
+        "Toca la flecha de cada cuenta, o arrástrala: te inspira, compite contigo o no va contigo.",
+    ),
     ("Así se ve tu cuenta hoy", "Revisa y termina."),
 )
 CONNECT_LAST = len(CONNECT_STEPS) - 1
@@ -3403,7 +3406,7 @@ assert CONNECT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
 assert _LOGO_UPLOAD_STEP + 1 == _TYPOGRAPHY_STEP and _TYPOGRAPHY_STEP + 1 == _PALETTE_STEP
 assert _PALETTE_STEP + 1 == _CONNECT_CONFIRM_STEP
 assert CONNECT_STEPS[_CONNECT_CONFIRM_STEP][0] == "¿Todo correcto?"
-assert CONNECT_STEPS[_SORT_STEP][0] == "¿Qué negocios se parecen al tuyo?"
+assert CONNECT_STEPS[_SORT_STEP][0] == "¿Cómo ves estas cuentas?"
 
 #: The three buckets of the sort step — (key, title, blurb, icon).
 BUCKETS: tuple[tuple[str, str, str, str], ...] = (
@@ -6998,7 +7001,7 @@ def _deck_ghost() -> rx.Component:
 _DECK_ZONES: tuple[tuple[str, str, str, str, str], ...] = (
     ("referente", "Te inspira", "Te gustaría parecerte", "arrow-left", "left"),
     ("competencia", "Compite contigo", "Le vende a tu público", "arrow-right", "right"),
-    ("detractor", "No va contigo", "No se parece a ti", "arrow-down", "down"),
+    ("detractor", "No va contigo", "No se parece a tu marca", "arrow-down", "down"),
 )
 #: The sort step is not a field list: its three panels reach the card's own edges
 #: (§ request 2026-09-14, "que ocupen hasta los bordes"), so `brand_connect_index`

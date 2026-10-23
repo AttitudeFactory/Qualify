@@ -97,7 +97,7 @@ def test_the_slimmed_connect_flow() -> None:
         "Tipografía",
         "Paleta de colores",
         "¿Todo correcto?",
-        "¿Qué negocios se parecen al tuyo?",
+        "¿Cómo ves estas cuentas?",
         "Así se ve tu cuenta hoy",
     ]
     for gone in (
@@ -306,7 +306,7 @@ def test_a_creator_does_not_need_a_location() -> None:
 def test_the_sort_step_sits_between_confirm_and_insights() -> None:
     titles = _titles(wiz.CONNECT_STEPS)
     assert titles[wiz._CONNECT_CONFIRM_STEP] == "¿Todo correcto?"
-    assert titles[wiz._SORT_STEP] == "¿Qué negocios se parecen al tuyo?"
+    assert titles[wiz._SORT_STEP] == "¿Cómo ves estas cuentas?"
     assert wiz._SORT_STEP == wiz.CONNECT_LAST - 1
     state = _existing_account(step=wiz._CONNECT_CONFIRM_STEP, account_kind="influencer")
     assert _next(state) == wiz._SORT_STEP

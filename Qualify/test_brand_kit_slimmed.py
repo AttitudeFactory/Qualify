@@ -272,7 +272,7 @@ def test_the_login_has_a_way_to_the_brand_kit() -> None:
     from .auth_pages import login_index
 
     rendered = str(login_index())
-    assert "/brand/start" in rendered and "Preparar mi marca" in rendered
+    assert "/brand/start" in rendered and "Crear mi marca" in rendered
 
 
 def test_answering_the_account_kind_fires_the_hashtag_creation() -> None:
