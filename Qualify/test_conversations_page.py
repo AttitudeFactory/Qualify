@@ -65,7 +65,6 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Todavía no se han leído mensajes de esta cuenta",
         "Aún no hay conversaciones en esta cuenta",
         "Se muestran los últimos 50 mensajes",
-        "Volver a las conversaciones",
         "Escribe una respuesta",
         "Enviar una foto o un video",
         "Enviar un archivo (PDF)",

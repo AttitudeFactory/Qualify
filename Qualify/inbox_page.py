@@ -720,8 +720,8 @@ def _reel_detail_header() -> rx.Component:
     reel = InboxState.selected_reel_summary
     return rx.vstack(
         rx.button(
-            rx.icon("arrow-left", size=16),
-            "Volver",
+            rx.icon("chevron-left", size=16),
+            "Comentarios",
             on_click=InboxState.back_to_reel_list,
             variant="ghost",
             size="2",
