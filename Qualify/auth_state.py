@@ -196,8 +196,15 @@ def _draft_destination_blocking(tenant_id) -> str:
 #: The Brand Kit's first view, before any login: asks for the email (§ 2026-10-02).
 BRAND_START_ROUTE = "/brand/start"
 
-#: Where a login may land: the app, or the Brand Kit a signup just adopted.
-_POST_LOGIN_ROUTES = frozenset({"/", "/brand/kit"})
+#: m-24842965: a signup that adopted the pre-login Brand Kit ends on the same «Tu marca
+#: está lista» card a logged-in finish shows — the manual wizard's page raises it when the
+#: URL carries this query (`creative_wizard_pages._asks_for_ready_card`).
+BRAND_READY_QUERY = "lista=1"
+BRAND_READY_ROUTE = f"/brand/manual?{BRAND_READY_QUERY}"
+
+#: Where a login may land: the app, the Brand Kit, or the card of a Brand Kit a signup
+#: just adopted.
+_POST_LOGIN_ROUTES = frozenset({"/", "/brand/kit", BRAND_READY_ROUTE})
 
 
 def brand_tenant_id(auth: AuthState) -> str:
@@ -559,7 +566,8 @@ class AuthState(rx.State):
             return
 
         # Auto sign-in with the same credentials the operator just chose. A signup that
-        # adopted the pre-login Brand Kit (same email, § 2026-10-02) opens on it.
+        # adopted the pre-login Brand Kit (same email, § 2026-10-02) opens on «Tu marca
+        # está lista» (m-24842965), the same end a logged-in finish has.
         async with self:
             self._invite_token = ""
             self.invite_state = ""
@@ -570,7 +578,7 @@ class AuthState(rx.State):
         credentials = {
             "email": email,
             "password": password,
-            "next": "/brand/kit" if adopted else "/",
+            "next": BRAND_READY_ROUTE if adopted else "/",
         }
         async for event in AuthState.handle_login.fn(self, credentials):
             yield event
