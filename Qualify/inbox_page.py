@@ -74,7 +74,7 @@ from .inbox_vm import (
     ReelSummaryVM,
 )
 from .publishing_vm import ConnectionOptionVM
-from .replies_provider import DraftVM
+from .replies_provider import PUBLICATION_ALT_FALLBACK, DraftVM
 from .replies_state import RepliesState
 from .ui import (
     app_shell,
@@ -660,9 +660,9 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
 def _reel_summaries_empty_state() -> rx.Component:
     return empty_state(
         "message-circle",
-        "Aún no hay comentarios sincronizados",
-        "Sincroniza comentarios arriba para ver aquí qué publicaciones tienen comentarios, con "
-        "su sentimiento cuando esté analizado.",
+        "Todavía no tienes comentarios",
+        "Cuando te comenten, aparecerán aquí agrupados por publicación.",
+        action=_sync_now_button(),
     )
 
 
@@ -1144,6 +1144,16 @@ def _replies_empty_state() -> rx.Component:
     )
 
 
+def _approve_label(draft: DraftVM) -> rx.Var:
+    """N13: the button says who gets the answer — «Aprobar y responder a @ana» — and
+    falls back to «Aprobar y responder» when the channel did not give the author."""
+    return rx.cond(
+        draft.author_username != "",
+        "Aprobar y responder a @" + draft.author_username,
+        "Aprobar y responder",
+    )
+
+
 def _draft_view_mode(draft: DraftVM) -> rx.Component:
     """Read-only: the prepared text plus the actions that decide it in one tap — see
     `replies_state.py`'s module docstring for why approve and send are folded together
@@ -1156,7 +1166,7 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
         rx.hstack(
             rx.button(
                 rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
-                "Aprobar y responder",
+                _approve_label(draft),
                 on_click=RepliesState.accept_and_send(draft.id),
                 disabled=is_busy,
                 size="3",
@@ -1197,11 +1207,12 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
             on_change=RepliesState.set_edit_text,
             width="100%",
             rows="3",
+            aria_label="Tu respuesta",
         ),
         rx.hstack(
             rx.button(
                 rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
-                "Aprobar y responder",
+                _approve_label(draft),
                 on_click=RepliesState.save_and_send(draft.id),
                 disabled=is_busy,
                 size="3",
@@ -1258,6 +1269,20 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                             word_break="break-word",
                         ),
                     ),
+                    # Which publication, in words — only when there is a real caption
+                    # (the fallback alt «Publicación» says nothing).
+                    rx.cond(
+                        draft.media_alt != PUBLICATION_ALT_FALLBACK,
+                        rx.text(
+                            "En: " + draft.media_alt,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                            max_width="100%",
+                            overflow="hidden",
+                            text_overflow="ellipsis",
+                            white_space="nowrap",
+                        ),
+                    ),
                     rx.text(
                         rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
                         size="2",
@@ -1297,9 +1322,14 @@ def _replies_list() -> rx.Component:
     )
 
 
-def _replies_title() -> str:
-    """«Respuestas listas para aprobar ({n})» — n is the queue on screen (m-24842989)."""
-    return f"Respuestas listas para aprobar ({RepliesState.drafts.length()})"
+def _replies_title() -> rx.Var:
+    """«Respuestas listas para aprobar ({n})» — n is the queue on screen (m-24842989),
+    shown only when there is something to approve."""
+    return rx.cond(
+        RepliesState.has_pending_drafts,
+        f"Respuestas listas para aprobar ({RepliesState.drafts.length()})",
+        "Respuestas listas para aprobar",
+    )
 
 
 def _replies_section() -> rx.Component:
@@ -1307,19 +1337,23 @@ def _replies_section() -> rx.Component:
     configuration. Its actions sit in a wrapping row under the title (N12)."""
     return section(
         _replies_title(),
-        rx.hstack(
-            _refresh_drafts_button(),
-            _generate_drafts_button(),
-            spacing="2",
-            wrap="wrap",
+        # With no drafts the empty state carries the one button (no duplicate row).
+        rx.cond(
+            RepliesState.has_pending_drafts,
+            rx.hstack(
+                _refresh_drafts_button(),
+                _generate_drafts_button(),
+                spacing="2",
+                wrap="wrap",
+            ),
         ),
         _replies_load_error_block(),
         _replies_generate_error_block(),
         _replies_action_error_block(),
         _replies_list(),
         description=(
-            "Revisa cada respuesta. Solo se publica en Instagram cuando pulsas "
-            "«Aprobar y responder»."
+            "Revisa cada respuesta. Sale en Instagram, debajo del comentario y a la vista "
+            "de todos, solo cuando pulsas «Aprobar y responder»."
         ),
     )
 

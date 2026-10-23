@@ -79,10 +79,30 @@ _NO_ACTING_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar la respuesta. "
     "Pide al equipo de Qualify que lo revise."
 )
-_GENERATE_FAILED = "No se pudieron generar los borradores. Intenta de nuevo en unos minutos."
+_GENERATE_FAILED = "No pudimos preparar las respuestas. Intenta de nuevo en unos minutos."
 _DECIDE_FAILED = "No se pudo guardar la decisión. Actualiza la lista e intenta de nuevo."
-_SEND_FAILED = "No se pudo enviar la respuesta a Meta. El borrador quedó marcado para revisión."
+# m-24842989: a decided draft leaves the «proposed» queue BEFORE the Meta call
+# (`decide_draft` moves it to accepted/edited, the send to sending/sent/send_failed/
+# send_ambiguous), and nothing regenerates a comment that already has a draft — so a
+# failed reply does NOT stay on screen to retry. The copy says what is true: it may or
+# may not be out, and the owner checks (or answers) on Instagram itself.
+_SEND_FAILED = (
+    "No pudimos confirmar que tu respuesta salió en Instagram. Mira el comentario en "
+    "Instagram antes de responder otra vez."
+)
+# The platform refused it (`send_failed`): it did not go out, and left the list.
+_SEND_REFUSED = (
+    "Instagram no aceptó tu respuesta, así que no salió. Puedes contestar ese comentario "
+    "directamente en Instagram."
+)
 _RESULT_TOAST_DURATION_MS = 6000
+
+
+def sent_message(author_username: str) -> str:
+    """The confirmation once a reply is out (m-24842989): names who got it when known."""
+    if author_username:
+        return f"Listo, le respondiste a @{author_username} en Instagram."
+    return "Listo, tu respuesta ya está en Instagram."
 
 
 def _try_uuid(value: str) -> UUID | None:
@@ -196,7 +216,7 @@ class RepliesState(rx.State):
 
     @rx.event(background=True)
     async def generate_drafts(self) -> AsyncGenerator[rx.event.EventSpec, None]:
-        """The "Generar borradores" button — runs the gate + generator over every
+        """The «Preparar respuestas» button — runs the gate + generator over every
         pending POS comment for the selected connection. Same double-click guard /
         try-except-else-finally shape `InboxState.analyze_sentiment` establishes.
 
@@ -230,12 +250,11 @@ class RepliesState(rx.State):
         yield RepliesState.load_pending_drafts
 
         if summary.drafts_created == 0:
-            message = "No hay comentarios positivos nuevos para redactar una respuesta."
+            message = "No hay comentarios nuevos para responder por ahora."
         else:
             message = (
-                f"Borradores nuevos: {summary.drafts_created} · "
-                f"Comentarios revisados: {summary.candidates_seen} · "
-                f"Descartados por la puerta: {summary.gate_rejected}"
+                f"Listo: {summary.drafts_created} respuestas para aprobar. "
+                f"Revisamos {summary.candidates_seen} comentarios."
             )
         yield rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
 
@@ -280,6 +299,8 @@ class RepliesState(rx.State):
             self.busy_draft_id = draft_id
             self.action_error = ""
             self.editing_draft_id = ""
+            # For the confirmation: who the answer goes to, read before the list reloads.
+            author = next((d.author_username for d in self.drafts if d.id == draft_id), "")
 
         resolved_draft_id = _try_uuid(draft_id)
         tenant_id, _connection_id = await self._resolve_ids()
@@ -313,7 +334,7 @@ class RepliesState(rx.State):
             return
 
         try:
-            await send_draft(
+            sent = await send_draft(
                 tenant_id=tenant_id,
                 draft_id=resolved_draft_id,
                 approval=approval_for(user_id=user_id, draft_id=resolved_draft_id),
@@ -337,7 +358,13 @@ class RepliesState(rx.State):
                 self.edit_text = ""
 
         yield RepliesState.load_pending_drafts
-        yield rx.toast.success("Respuesta enviada.", duration=_RESULT_TOAST_DURATION_MS)
+        # A refusal or a transport failure at Meta does not raise: the service settles the
+        # draft as `send_failed` / `send_ambiguous` and returns it. Only `sent` is «Listo».
+        if sent.status != "sent":
+            async with self:
+                self.action_error = _SEND_REFUSED if sent.status == "send_failed" else _SEND_FAILED
+            return
+        yield rx.toast.success(sent_message(author), duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
     async def discard_draft(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
@@ -382,4 +409,4 @@ class RepliesState(rx.State):
                 self.busy_draft_id = ""
 
         yield RepliesState.load_pending_drafts
-        yield rx.toast.success("Borrador descartado.", duration=_RESULT_TOAST_DURATION_MS)
+        yield rx.toast.success("Respuesta descartada.", duration=_RESULT_TOAST_DURATION_MS)

@@ -11,7 +11,8 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from . import inbox_page
+from . import inbox_page, replies_state
+from .replies_state import RepliesState
 
 _CSS = Path(__file__).resolve().parent.parent / "assets" / "qualify-inbox.css"
 
@@ -53,16 +54,17 @@ def test_the_header_and_section_strings_are_the_tickets() -> None:
     flat = header.replace('"\n        "', "")
     assert subtitle in flat
     assert "monitorear" not in header
-    assert "Respuestas listas para aprobar ({RepliesState.drafts.length()})" in _src(
-        inbox_page._replies_title
-    )
+    title = _src(inbox_page._replies_title)
+    assert "Respuestas listas para aprobar ({RepliesState.drafts.length()})" in title
+    # «(n)» only when there is something to approve.
+    assert "RepliesState.has_pending_drafts" in title
     assert '"Comentarios por publicación"' in _src(inbox_page._comments_section)
 
 
 def test_the_approve_button_says_what_happens_and_is_a_phone_target() -> None:
     for fn in (inbox_page._draft_view_mode, inbox_page._draft_edit_mode):
         source = _src(fn)
-        assert '"Aprobar y responder"' in source
+        assert "_approve_label(draft)" in source
         assert '"Aceptar y enviar"' not in source and '"Guardar y enviar"' not in source
         assert 'size="1"' not in source
         assert 'size="3"' in source
@@ -117,3 +119,70 @@ def test_a_reply_card_shows_who_commented_and_the_publication() -> None:
 
 def test_the_replies_list_still_compiles_with_the_new_fields() -> None:
     assert inbox_page._replies_list() is not None
+
+
+def test_the_approve_button_names_who_gets_the_answer() -> None:
+    source = _src(inbox_page._approve_label)
+    assert '"Aprobar y responder a @" + draft.author_username' in source
+    assert '"Aprobar y responder",' in source
+
+
+def test_the_replies_description_says_the_answer_is_public() -> None:
+    flat = _src(inbox_page._replies_section).replace('"\n            "', "")
+    assert (
+        "Revisa cada respuesta. Sale en Instagram, debajo del comentario y a la vista de "
+        "todos, solo cuando pulsas «Aprobar y responder»."
+    ) in flat
+
+
+def test_without_drafts_only_the_empty_state_button_shows() -> None:
+    source = _src(inbox_page._replies_section)
+    gate = source.index("RepliesState.has_pending_drafts")
+    assert gate < source.index("_refresh_drafts_button()")
+    assert gate < source.index("_generate_drafts_button()")
+
+
+def test_the_empty_comments_state_offers_the_search() -> None:
+    source = _src(inbox_page._reel_summaries_empty_state)
+    assert '"Todavía no tienes comentarios"' in source
+    assert '"Cuando te comenten, aparecerán aquí agrupados por publicación."' in source
+    assert "action=_sync_now_button()" in source
+
+
+def test_a_reply_card_names_the_publication_only_with_a_real_caption() -> None:
+    source = _src(inbox_page._draft_card)
+    assert '"En: " + draft.media_alt' in source
+    assert "draft.media_alt != PUBLICATION_ALT_FALLBACK" in source
+    assert 'text_overflow="ellipsis"' in source
+
+
+def test_the_reply_editor_is_labelled() -> None:
+    assert 'aria_label="Tu respuesta"' in _src(inbox_page._draft_edit_mode)
+
+
+def test_the_sent_message_names_the_person_when_known() -> None:
+    assert replies_state.sent_message("ana") == "Listo, le respondiste a @ana en Instagram."
+    assert replies_state.sent_message("") == "Listo, tu respuesta ya está en Instagram."
+
+
+def test_only_a_sent_reply_gets_the_success_toast() -> None:
+    """A refusal or transport failure at Meta does not raise — the service returns the
+    draft as `send_failed`/`send_ambiguous`. The «Listo» toast must sit behind
+    `status == "sent"`, never after the bare `await send_draft(...)`."""
+    source = _src(RepliesState._decide_and_send)
+    after = source[source.index("await send_draft(") :]
+    assert after.index('if sent.status != "sent":') < after.index("sent_message(author)")
+    assert "_SEND_REFUSED" in after and "_SEND_FAILED" in after
+
+
+def test_the_reply_messages_are_plain_and_truthful() -> None:
+    assert replies_state._GENERATE_FAILED == (
+        "No pudimos preparar las respuestas. Intenta de nuevo en unos minutos."
+    )
+    # A decided draft leaves the queue before the Meta call: never promise it «sigue aquí».
+    for message in (replies_state._SEND_FAILED, replies_state._SEND_REFUSED):
+        assert "Sigue aquí" not in message and "Meta" not in message and "borrador" not in message
+    source = _src(RepliesState.generate_drafts.fn)
+    assert '"No hay comentarios nuevos para responder por ahora."' in source
+    assert "respuestas para aprobar. " in source and "la puerta" not in source
+    assert '"Respuesta descartada."' in _src(RepliesState.discard_draft.fn)
