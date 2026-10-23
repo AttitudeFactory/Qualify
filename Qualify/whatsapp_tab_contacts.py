@@ -123,6 +123,14 @@ def _list() -> rx.Component:
                 "Aún no hay contactos con consentimiento",
                 "Solo puedes enviar campañas a quien aceptó recibir mensajes de WhatsApp de "
                 "tu negocio. Impórtalos del formulario de leads o agrégalos a mano.",
+                # N8 (m-24842961).
+                action=rx.button(
+                    rx.icon("user-plus", size=16),
+                    "Agregar contacto",
+                    on_click=S.open_add,
+                    variant="soft",
+                    size="3",
+                ),
             ),
         ),
         rx.cond(

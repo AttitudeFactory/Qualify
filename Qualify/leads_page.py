@@ -14,6 +14,7 @@ from .leads_provider import LeadVM
 from .leads_state import LeadsState
 from .ui import app_shell, callout, empty_state, page_body, page_header, skeleton_rows, tag
 from .ui import tokens as T
+from .ui.layout import RESPOND_ROUTE
 
 
 def _topbar() -> rx.Component:
@@ -82,6 +83,10 @@ def _empty_state() -> rx.Component:
         "Todavía no tienes clientes interesados",
         "Comparte tu formulario: cada persona que deje sus datos y acepte que la "
         "contactes aparecerá aquí.",
+        # N8 (m-24842961): meanwhile, the people already writing to the business.
+        action=rx.link(
+            rx.button("Ir a Por responder", variant="soft", size="3"), href=RESPOND_ROUTE
+        ),
     )
 
 

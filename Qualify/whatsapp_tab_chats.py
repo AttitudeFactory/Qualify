@@ -54,6 +54,8 @@ from .whatsapp_chats_vm import (
     OrderLineVM,
     ThreadRowVM,
 )
+from .whatsapp_state import WhatsAppState
+from .whatsapp_vm import TAB_QR
 
 S = WhatsAppChatsState
 _TONES = ("ok", "warn", "error", "info", "neutral")
@@ -208,6 +210,14 @@ def _list_body() -> rx.Component:
                     "Aún no hay conversaciones en este número",
                     "Cuando un cliente escriba a este número de WhatsApp, su conversación "
                     "aparece aquí y puedes responderla desde esta pantalla.",
+                    # N8 (m-24842961): a QR code is how customers start writing.
+                    action=rx.button(
+                        rx.icon("qr-code", size=16),
+                        "Crear un código QR",
+                        on_click=WhatsAppState.select_tab(TAB_QR),
+                        variant="soft",
+                        size="3",
+                    ),
                 ),
                 rx.cond(
                     S.visible_rows.length() > 0,

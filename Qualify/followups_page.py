@@ -291,6 +291,10 @@ def followups_panel() -> rx.Component:
                     "Cuando alguien pregunte por precios o pedidos en tus comentarios, o "
                     "cuando elijas Escribirle en privado en «Comentarios», aparecerá aquí "
                     "con un mensaje listo para revisar.",
+                    # N8 (m-24842961): where those questions are read.
+                    action=rx.link(
+                        rx.button("Ver comentarios", variant="soft", size="3"), href="/inbox"
+                    ),
                 ),
             ),
         ),

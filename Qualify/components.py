@@ -13,7 +13,8 @@ summary cards describe the scope (account + period) and do not move with a searc
 
 import reflex as rx
 
-from .mentions_paging import ORIGIN_OPTIONS, PERIOD_OPTIONS, SENTIMENT_OPTIONS
+from .mentions_paging import ALL_HISTORY, ORIGIN_OPTIONS, PERIOD_OPTIONS, SENTIMENT_OPTIONS
+from .next_steps_vm import CREATE_LABEL, CREATE_ROUTE
 from .state import DashboardState, MentionRow
 from .ui import (
     callout,
@@ -559,11 +560,23 @@ def _mentions_empty_state() -> rx.Component:
             "Cuando alguien mencione tu cuenta en una publicación o un "
             "comentario, aparecerá aquí. Para ver menciones anteriores, elige un periodo "
             "más amplio.",
+            # N8 (m-24842961): the wider period, one tap away.
+            action=rx.button(
+                "Ver todo el historial",
+                on_click=DashboardState.set_period_filter(ALL_HISTORY),
+                variant="soft",
+                size="3",
+            ),
         ),
         empty_state(
             "at-sign",
             "Aún no hay menciones",
             "Cuando alguien mencione tu cuenta en una publicación o un comentario, aparecerá aquí.",
+            # N8: publishing is what gets the account mentioned.
+            action=rx.link(
+                rx.button(rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3"),
+                href=CREATE_ROUTE,
+            ),
         ),
     )
 
@@ -573,6 +586,9 @@ def _no_results_state() -> rx.Component:
         "search-x",
         "Ninguna mención coincide con estos filtros",
         "Cambia o quita algún filtro para ver más menciones.",
+        action=rx.button(
+            "Quitar filtros", on_click=DashboardState.clear_filters, variant="soft", size="3"
+        ),
     )
 
 

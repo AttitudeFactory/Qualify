@@ -881,6 +881,16 @@ def _body() -> rx.Component:
             ("week", "Mira los del mes, o vuelve en unos días."),
             "Agrega más referentes en Tu marca para ver más reels.",
         ),
+        # N8 (m-24842961): the button does what the sentence says.
+        rx.cond(
+            window == "week",
+            rx.button(
+                "Ver los del mes",
+                on_click=DiscoverReelsState.set_window("month"),
+                variant="soft",
+            ),
+            rx.link(rx.button("Ir a Tu marca", variant="soft"), href="/brand/kit"),
+        ),
     )
     filtered_out = empty_state(
         "filter",

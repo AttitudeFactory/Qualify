@@ -326,6 +326,22 @@ def _empty_state() -> rx.Component:
         "Conecta Clarity arriba y pulsa «Actualizar desde Clarity». "
         "Puedes actualizar hasta 10 veces al día; entre una y otra verás "
         "los últimos datos guardados.",
+        # N8 (m-24842961): the step before the data — connect first, then bring it.
+        action=rx.cond(
+            ClarityState.config.configured,
+            rx.button(
+                rx.icon("refresh-cw", size=16),
+                "Actualizar desde Clarity",
+                on_click=ClarityState.refresh_from_clarity,
+                loading=ClarityState.is_refreshing,
+                variant="soft",
+                size="3",
+            ),
+            rx.link(
+                rx.button("Conectar Clarity", variant="soft", size="3"),
+                href="#" + _CONFIG_ANCHOR,
+            ),
+        ),
     )
 
 
@@ -371,8 +387,16 @@ def _snapshot_view() -> rx.Component:
     )
 
 
+_CONFIG_ANCHOR = "clarity-config"
+
+
 def _config_section() -> rx.Component:
-    """Prominent while unconfigured; folded away once a project is connected."""
+    """Prominent while unconfigured; folded away once a project is connected. Its id is
+    where the empty state's «Conectar Clarity» lands (N8)."""
+    return rx.box(_config_section_body(), id=_CONFIG_ANCHOR, width="100%")
+
+
+def _config_section_body() -> rx.Component:
     return rx.cond(
         ClarityState.config.configured,
         rx.accordion.root(

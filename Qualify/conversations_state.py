@@ -144,6 +144,7 @@ from .conversations_vm import (
     validate_reply,
     voice_note_name,
 )
+from .next_steps_vm import all_clear as is_all_clear
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 
@@ -369,6 +370,11 @@ class ConversationsState(rx.State):
     @rx.var
     def pending_count(self) -> int:
         return filter_counts(self.rows)[FILTER_PENDING]
+
+    @rx.var
+    def all_clear(self) -> bool:
+        """m-24842961 (N3/N8): conversations exist and nobody waits for an answer."""
+        return self.list_loaded_for != "" and is_all_clear(len(self.rows), self.pending_count)
 
     @rx.var
     def list_ready(self) -> bool:

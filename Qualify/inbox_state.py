@@ -1220,6 +1220,18 @@ class InboxState(rx.State):
         await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
 
     @rx.event(background=True)
+    async def clear_thread_filters(self) -> None:
+        """m-24842961 (N8): «Quitar filtros» on «Sin comentarios para este filtro» — the
+        sentiment, intent and search back to everything, then a fresh first page."""
+        async with self:
+            self.sentiment_filter = FILTER_ALL
+            self.intent_filter = FILTER_ALL
+            self.search_query = ""
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event(background=True)
     async def load_more_reels(self) -> None:
         """QUA-93: "Cargar más Reels" — appends the next page, never re-fetches what is
         already shown. `is_loading_more_reels` is separate from `is_loading_reel_
