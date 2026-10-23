@@ -98,7 +98,7 @@ def test_the_slimmed_connect_flow() -> None:
         "Paleta de colores",
         "¿Todo correcto?",
         "Referente, competencia o detractor",
-        "Resultados e insights",
+        "Así se ve tu cuenta hoy",
     ]
     for gone in (
         "Lo que te proponemos",

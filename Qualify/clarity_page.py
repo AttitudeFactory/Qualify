@@ -39,7 +39,7 @@ from .ui import tokens as T
 def _topbar() -> rx.Component:
     return page_header(
         "Tu página web",
-        "Comportamiento web del sitio de este negocio, vía Microsoft Clarity",
+        "Cuántas personas visitan tu página web y qué miran.",
     )
 
 
@@ -48,31 +48,31 @@ def _config_card() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.icon("settings-2", size=16),
-                rx.heading("Proyecto de Clarity", size="3", as_="h2"),
+                rx.heading("Conexión con Clarity", size="3", as_="h2"),
                 rx.cond(
                     ClarityState.config.configured,
-                    signal_pill("conectado", "ok"),
-                    signal_pill("sin configurar", "warn"),
+                    signal_pill("Conectada", "ok"),
+                    signal_pill("Falta conectar", "warn"),
                 ),
                 spacing="2",
                 align="center",
             ),
             rx.text(
-                "Pega el ID del proyecto y un token de la API Data Export "
-                "(Clarity → Settings → Data Export → Generate new API token). "
-                "El token se guarda cifrado y no vuelve a mostrarse.",
+                "Pega el código del proyecto y una clave de acceso de Clarity "
+                "(en Clarity: «Settings» → «Data Export»). "
+                "Guardamos la clave protegida y no la volvemos a mostrar.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
             rx.hstack(
                 rx.input(
-                    placeholder="ID de proyecto (p. ej. abc123xyz)",
+                    placeholder="Código del proyecto (p. ej. abc123xyz)",
                     value=ClarityState.form_project_id,
                     on_change=ClarityState.set_form_project_id,
                     width="14rem",
                 ),
                 rx.input(
-                    placeholder="Token de la Data Export API",
+                    placeholder="Clave de acceso",
                     value=ClarityState.form_api_token,
                     on_change=ClarityState.set_form_api_token,
                     type="password",
@@ -100,7 +100,7 @@ def _config_card() -> rx.Component:
 
 def _refresh_controls() -> rx.Component:
     return rx.hstack(
-        rx.text("Ventana:", size="2", color=T.TEXT_MUTED),
+        rx.text("Últimos", size="2", color=T.TEXT_MUTED),
         rx.select(
             DAYS_CHOICES,
             value=ClarityState.refresh_days,
@@ -108,13 +108,13 @@ def _refresh_controls() -> rx.Component:
             size="2",
             width="4.5rem",
         ),
-        rx.text("días · Dimensión:", size="2", color=T.TEXT_MUTED),
+        rx.text("días · Ver por:", size="2", color=T.TEXT_MUTED),
         rx.select(
             DIMENSION_CHOICES,
             value=ClarityState.refresh_dimension,
             on_change=ClarityState.set_refresh_dimension,
             size="2",
-            width="9rem",
+            width="11rem",
         ),
         # The page's one solid action (P3): spend a live request.
         rx.button(
@@ -126,7 +126,7 @@ def _refresh_controls() -> rx.Component:
             size="2",
         ),
         tone_badge(
-            ClarityState.config.remaining_budget.to_string() + " actualizaciones restantes hoy",
+            ClarityState.config.remaining_budget.to_string() + " actualizaciones disponibles hoy",
             "info",
             icon="gauge",
         ),
@@ -147,11 +147,11 @@ def _friction_badge(card_vm: FrictionCardVM) -> rx.Component:
     """The verdict of one friction signal: a state, so colour + icon + word."""
     return rx.cond(
         card_vm.status == "ok",
-        tone_badge("sin señales", "ok", icon="check"),
+        tone_badge("Todo bien", "ok", icon="check"),
         rx.cond(
             card_vm.status == "warn",
-            tone_badge("a vigilar", "warn", icon="eye"),
-            tone_badge("atender", "error", icon="triangle-alert"),
+            tone_badge("Para vigilar", "warn", icon="eye"),
+            tone_badge("Para arreglar", "error", icon="triangle-alert"),
         ),
     )
 
@@ -193,8 +193,8 @@ def _action_item(item: ActionItemVM) -> rx.Component:
         rx.hstack(
             rx.cond(
                 item.severity == "alta",
-                tone_badge("alta", "error", icon="triangle-alert"),
-                tone_badge("media", "warn"),
+                tone_badge("Urgente", "error", icon="triangle-alert"),
+                tone_badge("Puede esperar", "warn"),
             ),
             rx.vstack(
                 rx.text(item.title, size="2", weight="medium"),
@@ -211,7 +211,7 @@ def _action_item(item: ActionItemVM) -> rx.Component:
 
 def _actions_section() -> rx.Component:
     return section(
-        "Qué atender ahora",
+        "Qué arreglar primero",
         rx.cond(
             ClarityState.has_actions,
             rx.vstack(
@@ -220,8 +220,8 @@ def _actions_section() -> rx.Component:
                 width="100%",
             ),
             callout(
-                "Sin fricción detectada en esta ventana: nadie sufrió clics rotos, "
-                "errores ni rebotes. Nada urgente que atender.",
+                "En estos días nadie tuvo problemas con tu página: "
+                "no hay nada urgente que arreglar.",
                 "ok",
             ),
         ),
@@ -246,7 +246,7 @@ def _actions_section() -> rx.Component:
 
 def _health_section() -> rx.Component:
     return section(
-        "Salud del sitio",
+        "Cómo está tu página",
         rx.hstack(
             rx.foreach(ClarityState.snapshot.stats, _stat_card),
             spacing="3",
@@ -271,10 +271,7 @@ def _snapshot_caption() -> rx.Component:
     return rx.hstack(
         rx.icon("clock", size=14, color=T.TEXT_FAINT),
         rx.text(
-            "Snapshot del "
-            + ClarityState.snapshot.fetched_at
-            + " · "
-            + ClarityState.snapshot.window,
+            "Datos del " + ClarityState.snapshot.fetched_at + " · " + ClarityState.snapshot.window,
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -325,10 +322,10 @@ def _metric_table(table: MetricTableVM) -> rx.Component:
 def _empty_state() -> rx.Component:
     return empty_state(
         "bar-chart-3",
-        "Todavía no hay datos de Clarity",
-        "Configura el proyecto y pulsa «Actualizar desde Clarity». "
-        "Cada actualización gasta 1 de las 10 llamadas diarias que permite "
-        "Microsoft, así que el panel siempre muestra el último snapshot guardado.",
+        "Todavía no hay datos de tu página web",
+        "Conecta Clarity arriba y pulsa «Actualizar desde Clarity». "
+        "Puedes actualizar hasta 10 veces al día; entre una y otra verás "
+        "los últimos datos guardados.",
     )
 
 
@@ -356,7 +353,7 @@ def _snapshot_view() -> rx.Component:
         _actions_section(),
         rx.accordion.root(
             rx.accordion.item(
-                header="Datos crudos por métrica",
+                header="Ver todos los números",
                 content=rx.vstack(
                     rx.foreach(ClarityState.snapshot.tables, _metric_table),
                     spacing="3",
@@ -380,7 +377,7 @@ def _config_section() -> rx.Component:
         ClarityState.config.configured,
         rx.accordion.root(
             rx.accordion.item(
-                header="Configuración del proyecto de Clarity",
+                header="Conexión con Clarity",
                 content=_config_card(),
                 value="config",
             ),

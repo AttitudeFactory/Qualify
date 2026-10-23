@@ -36,7 +36,7 @@ def _fresh_email() -> str:
 def _register(provider: FakeAuthProvider, email: str):
     return register_business(
         provider,
-        business_name="Polet Bubble Tea",
+        business_name="Polette",
         email=email,
         password="correct-horse-9",
         country="CO",
@@ -80,11 +80,11 @@ def test_signup_adopts_the_draft_tenant() -> None:
     with admin_session() as session:
         tenant = session.get(Tenant, draft.tenant_id)
         assert tenant is not None
-        assert (tenant.name, tenant.country, tenant.currency) == ("Polet Bubble Tea", "CO", "COP")
+        assert (tenant.name, tenant.country, tenant.currency) == ("Polette", "CO", "COP")
         users = session.scalars(select(User).where(User.tenant_id == draft.tenant_id)).all()
         assert len(users) == 1 and users[0].auth_user_id == registered.auth_user_id
         brands = session.scalars(select(Brand).where(Brand.tenant_id == draft.tenant_id)).all()
-        assert [b.name for b in brands] == ["Polet Bubble Tea"]
+        assert [b.name for b in brands] == ["Polette"]
         row = session.scalar(
             select(BrandKitDraft).where(BrandKitDraft.tenant_id == draft.tenant_id)
         )

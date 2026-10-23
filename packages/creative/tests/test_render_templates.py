@@ -140,7 +140,7 @@ def _brief(**media: object) -> ContentBrief:
 
 
 def _copy(hook: str = "El shawarma que se come con las dos manos") -> CopyPayload:
-    return CopyPayload(hook=hook, caption="Hoy en la esquina gaucha.", cta="Pide el tuyo")
+    return CopyPayload(hook=hook, caption="Hoy en el Korner.", cta="Pide el tuyo")
 
 
 # --------------------------------------------------------------------------------------

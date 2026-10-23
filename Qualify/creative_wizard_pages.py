@@ -76,7 +76,7 @@ from . import (
     referentes_review,
     scrapecreators_client,
 )
-from .auth_state import AuthState, brand_tenant_id
+from .auth_state import BRAND_READY_QUERY, AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
@@ -157,7 +157,7 @@ STEPS: tuple[tuple[str, str], ...] = (
     _TYPOGRAPHY_HEADING,
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
-    ("Resultados e insights", "Tu marca, lista."),
+    ("Así quedó tu marca", "Revisa y termina."),
 )
 LAST_STEP = len(STEPS) - 1
 #: The manual flow's steps a rule names (the rest are read off `_window`).
@@ -351,6 +351,27 @@ class BrandWizardState(rx.State):
     # is shared with editing an existing one (see `set_swatch_color`), so there is no
     # hidden mode to get wrong: the wheel always appends, a swatch always edits itself.
     picker_color: str = "#0A3D2E"
+    # m-24842965 (N3, docs/ux-guia-navegacion.md): the achievement card «Tu marca está
+    # lista», shared by BOTH flows' pages. Raised by `_finish_navigation` when a session
+    # WITH an account finishes either flow; while it is up, `brand_manual_index`/
+    # `brand_connect_index` show the card instead of the steps (`_or_ready`). Cleared
+    # when the owner leaves through it and on every entry to a wizard page (`resume`,
+    # `BrandConnectState.load_saved_details`), so coming back later opens the steps,
+    # not a stale card. Not touched by `_reset_fields`: `finish` resets, THEN raises it.
+    brand_ready: bool = False
+
+    @rx.event
+    def leave_brand_ready(self, route: str) -> rx.event.EventSpec:
+        """Close the card and go — only to one of the card's own routes (the route
+        arrives from the client)."""
+        self.brand_ready = False
+        return rx.redirect(route if route in _READY_ROUTES else _READY_BRAND_ROUTE)
+
+    @rx.event
+    def hide_brand_ready(self) -> None:
+        """The «Ver mi marca» link navigates on its own (a real anchor); this only
+        closes the card behind it."""
+        self.brand_ready = False
 
     @rx.event
     async def resume(self) -> None:
@@ -363,6 +384,9 @@ class BrandWizardState(rx.State):
         since 2026-10-05 that is where they are filled. Not on `LAST_STEP` — Resultados
         e insights is a destination, not something to resume into.
         """
+        # m-24842965: entering the wizard opens the steps, never a card left from before
+        # — unless the signup that adopted this draft sent the owner here for the card
+        self.brand_ready = _asks_for_ready_card(self)
         creative = await self.get_state(CreativeState)
         # ¿Quién es la marca? carries the brief (§ request 2026-10-05): an empty or
         # half-filled identity opens there, where a brief can fill most of what follows.
@@ -490,16 +514,18 @@ class BrandWizardState(rx.State):
         from .brand_finish import MANUAL_FLOW, save_brand_kit
 
         if not await save_brand_kit(self, MANUAL_FLOW):
+            await _explain_finish_failure(self)
             return
         async with self:
             self._reset_fields()
-            route = await _finish_route(self)
+            navigation = await _finish_navigation(self)
         yield brand_documents.BrandDocumentState.reset_documents
-        yield rx.redirect(route)
+        if navigation is not None:
+            yield navigation
 
     @rx.event
-    async def finish_to_signals(self) -> rx.event.EventSpec:
-        """Mejorar tu perfil y posicionamiento, on this flow's own Resultados e
+    async def finish_to_signals(self) -> rx.event.EventSpec | None:
+        """The final button («Terminar mi marca»), on this flow's own Resultados e
         insights — the TRUE final screen. Replaces Finalizar entirely (§ request
         2026-09-05): fired REGARDLESS of what `save_kit_form` does — for now this is
         the whole "save", simulated (there is no success/failure branch to key off
@@ -507,7 +533,7 @@ class BrandWizardState(rx.State):
         this screen's own navigation/staging state resets, same shape
         `BrandConnectState.finish_to_signals` uses for the connect flow."""
         self._reset_fields()
-        return rx.redirect(await _finish_route(self))
+        return await _finish_navigation(self)
 
     @rx.event
     def answer_has_logo(self, value: str) -> None:
@@ -1103,22 +1129,158 @@ def _choice_card(
 # (`_step_insights` in the manual flow, `_connect_step_insights` in the connect one):
 # same "cuentas parecidas" section either way, so the two paths cannot drift on it.
 
-#: Where "Mejorar tu perfil" — the final button of BOTH flows — goes (§ request
-#: 2026-10-05: "que el botón de mejorar tu perfil vaya al registro directamente"): the
-#: signup, prefilled with the draft's email — creating the account with it adopts the kit
-#: just saved. It used to go to Señales (a placeholder page) for a logged-in session.
+#: Where the final button of BOTH flows («Terminar mi marca») sends a pre-login draft
+#: (§ request 2026-10-05: "que el botón de mejorar tu perfil vaya al registro
+#: directamente"): the signup, prefilled with the draft's email — creating the account
+#: with it adopts the kit just saved.
 _SIGNUP_ROUTE = SIGNUP_ROUTE
-#: A session that already has an account has nothing to sign up for: it goes into the
-#: app (the signup page would send it there anyway, `redirect_if_authenticated`).
-_APP_HOME_ROUTE = "/"
 
 
-async def _finish_route(state: rx.State) -> str:
-    """The signup for a pre-login draft — every Brand Kit starts as one since 2026-10-02 —
-    and the app's home for a session that already has an account. Call it holding the
-    state lock in a background handler."""
+async def _finish_route(state: rx.State) -> str | None:
+    """The signup for a pre-login draft — every Brand Kit starts as one since 2026-10-02.
+    `None` for a session that already has an account: it has nothing to sign up for, and
+    since m-24842965 it no longer lands on `/` (Menciones, an empty screen of another
+    domain) either — the wizard shows «Tu marca está lista» instead
+    (`BrandWizardState.brand_ready`). Call it holding the state lock in a background handler."""
     auth = await state.get_state(AuthState)
-    return _APP_HOME_ROUTE if auth.session_tenant_id else _SIGNUP_ROUTE
+    return None if auth.session_tenant_id else _SIGNUP_ROUTE
+
+
+async def _finish_navigation(state: rx.State) -> rx.event.EventSpec | None:
+    """What the end of either flow does, decided under the state lock: the redirect to
+    the signup for a draft, or — for an account — raise the «Tu marca está lista» card
+    (no navigation). Both flows' `finish`/`finish_to_signals` go through here so the
+    two cannot drift."""
+    route = await _finish_route(state)
+    if route is not None:
+        return rx.redirect(route)
+    wizard = state if isinstance(state, BrandWizardState) else None
+    if wizard is None:
+        wizard = await state.get_state(BrandWizardState)
+    wizard.brand_ready = True
+    return None
+
+
+#: The final button of both flows (m-24842965): an account finishes its brand; a
+#: pre-login draft finishes it AND goes on to create the account that adopts it.
+_FINISH_LABEL = "Terminar mi marca"
+_FINISH_DRAFT_LABEL = "Terminar y crear mi cuenta"
+
+
+def _asks_for_ready_card(state: rx.State) -> bool:
+    """Whether this page load came with `?lista=1` — the signup that adopted a draft
+    sends the owner to `AuthState`'s `BRAND_READY_ROUTE`, so that path ends on the same
+    «Tu marca está lista» card a logged-in finish shows."""
+    key, _, value = BRAND_READY_QUERY.partition("=")
+    return state.router.url.query_parameters.get(key, "") == value
+
+
+async def _explain_finish_failure(state: rx.State) -> None:
+    """A failed finish keeps the steps on screen (no card, no redirect) with an error
+    that names the button to press again. Only the kit failure is reworded: «archivos
+    no guardados» and «sin sesión» already say what to do."""
+    from .brand_finish import _KIT_FAILED
+
+    async with state:
+        creative = await state.get_state(CreativeState)
+        if creative.kit_error != _KIT_FAILED:
+            return
+        auth = await state.get_state(AuthState)
+        label = _FINISH_LABEL if auth.session_tenant_id else _FINISH_DRAFT_LABEL
+        creative.kit_error = f"No pudimos guardar tu marca. Toca «{label}» otra vez."
+
+
+#: The three ways out of «Tu marca está lista» (m-24842965, N3): one solid button to the
+#: next job, one soft one, and a link back. The handler only follows these routes — the
+#: route arrives from the client, so anything else falls back to the brand itself.
+_READY_CREATE_ROUTE = "/create"
+_READY_CONNECT_ROUTE = "/connections"
+_READY_BRAND_ROUTE = "/brand/kit"
+_READY_ROUTES = frozenset({_READY_CREATE_ROUTE, _READY_CONNECT_ROUTE, _READY_BRAND_ROUTE})
+
+
+def _ready_button(label: str, icon: str, route: str, *, variant: str) -> rx.Component:
+    """One of the card's buttons: full width of the card's column (one column on a
+    phone, N12) and at least 44 px tall — a Radix size-3 button is 40 px."""
+    return rx.button(
+        label,
+        rx.icon(icon, size=T.ICON_MD),
+        size="3",
+        variant=variant,
+        radius=_CONTROL_RADIUS,
+        width="100%",
+        min_height="44px",
+        on_click=BrandWizardState.leave_brand_ready(route),
+    )
+
+
+def _brand_ready_card() -> rx.Component:
+    """«Tu marca está lista»: the fact, what it means for the owner, and the next job
+    (m-24842965 — exact copy from the ticket)."""
+    return card(
+        rx.vstack(
+            _step_icon("circle-check"),
+            # §8: the page's h1 is `page_header`'s; the card's title is an h2
+            rx.heading("Tu marca está lista", size="6", as_="h2", text_align="center"),
+            rx.text(
+                "Tus publicaciones saldrán con tu logo, tus colores y tu forma de hablar.",
+                size="3",
+                color=T.TEXT_MUTED,
+                text_align="center",
+            ),
+            rx.vstack(
+                _ready_button(
+                    "Crear mi primera publicación",
+                    "wand-sparkles",
+                    _READY_CREATE_ROUTE,
+                    variant="solid",
+                ),
+                _ready_button(
+                    "Conectar mi Instagram",
+                    "link",
+                    _READY_CONNECT_ROUTE,
+                    variant="soft",
+                ),
+                rx.link(
+                    "Ver mi marca",
+                    href=_READY_BRAND_ROUTE,
+                    on_click=BrandWizardState.hide_brand_ready,
+                    size="2",
+                    min_height="44px",
+                    display="inline-flex",
+                    align_items="center",
+                    justify_content="center",
+                ),
+                spacing="3",
+                width="100%",
+                align="center",
+                padding_top="0.5rem",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+            max_width="26rem",
+        ),
+        padding="1.75rem",
+        width="100%",
+        max_width="34rem",
+        align_self="center",
+        display="flex",
+        justify_content="center",
+    )
+
+
+def _or_ready(header: rx.Component, body: rx.Component) -> tuple[rx.Component, rx.Component]:
+    """A wizard page's header and body, swapped for the «Tu marca está lista» ones while
+    `BrandWizardState.brand_ready` — `rx.cond` adds no wrapper element, so `app_shell` still gets
+    a `page_header` and a `page_body` either way."""
+    # never over a failed save: `finish` only raises the card after `save_brand_kit`
+    # succeeded (which clears `kit_error` first); the error check is the second lock
+    shown = BrandWizardState.brand_ready & (CreativeState.kit_error == "")
+    return (
+        rx.cond(shown, page_header("Tu marca", title_size="8"), header),
+        rx.cond(shown, page_body(_brand_ready_card()), body),
+    )
 
 
 #: Placeholder competitor/influencer suggestions (handle, role label, blurb).
@@ -1182,10 +1344,13 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
     Finalizar entirely (§ request 2026-09-05), it does not sit next to it. `on_click`
     is each flow's own chain (`[CreativeState.save_kit_form, <flow>.finish_to_signals]`
     — the reset differs per flow, the button never should), so the two flows share the
-    label/icon while keeping their own state."""
+    label/icon while keeping their own state. «Terminar mi marca» since m-24842965: it
+    used to invite the owner to improve the profile and land on Menciones; now an
+    account gets «Tu marca está lista» (`_finish_navigation`), a draft still goes on to
+    the signup."""
     return rx.button(
-        "Mejorar tu perfil",
-        rx.icon("arrow-right", size=T.ICON_SM),
+        rx.cond(AuthState.session_tenant_id != "", _FINISH_LABEL, _FINISH_DRAFT_LABEL),
+        rx.icon("check", size=T.ICON_SM),
         size="2",
         radius=_CONTROL_RADIUS,
         on_click=on_click,
@@ -2521,8 +2686,8 @@ def _step_confirm() -> rx.Component:
             ),
         ),
         rx.text(
-            "Haz clic en un valor para editarlo; la ✕ lo quita. Tu voz y el tono los "
-            "configuras después, desde Tu negocio → Tu marca.",
+            "Haz clic en un valor para editarlo; la ✕ lo quita. Tu forma de hablar la "
+            "eliges después, en Tu marca.",
             size="1",
             color=T.TEXT_FAINT,
         ),
@@ -2741,95 +2906,97 @@ def brand_manual_index() -> rx.Component:
     bottom-left corner, Continuar/Finalizar at the bottom-right, not floating just
     under the fields."""
     return _wizard_shell(
-        page_header(
-            _heading_for(0),
-            _heading_for(1),
-            kicker=_step_counter(BrandWizardState.step, len(STEPS)),
-            title_size="8",
-        ),
-        page_body(
-            rx.vstack(
+        *_or_ready(
+            page_header(
+                _heading_for(0),
+                _heading_for(1),
+                kicker=_step_counter(BrandWizardState.step, len(STEPS)),
+                title_size="8",
+            ),
+            page_body(
                 rx.vstack(
-                    rx.cond(
-                        CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
-                    ),
-                    rx.cond(
-                        CreativeState.kit_notice != "",
-                        callout(CreativeState.kit_notice, "ok", icon="circle-check"),
-                    ),
-                    spacing="3",
-                    width="100%",
-                    max_width="34rem",
-                    align_self="center",
-                    align_items="center",
-                ),
-                rx.cond(
-                    CreativeState.kit_loading,
-                    # No controls while loading — same shape `brand_connect_index` uses
-                    # for `BrandConnectState.analyzing`: a spinner, centred in the same
-                    # frame the real step would occupy, nothing to click yet.
-                    card(
-                        _loading_view("Cargando tu marca"),
-                        padding="1.75rem",
+                    rx.vstack(
+                        rx.cond(
+                            CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
+                        ),
+                        rx.cond(
+                            CreativeState.kit_notice != "",
+                            callout(CreativeState.kit_notice, "ok", icon="circle-check"),
+                        ),
+                        spacing="3",
                         width="100%",
-                        flex="1",
-                        display="flex",
+                        max_width="34rem",
+                        align_self="center",
                         align_items="center",
-                        justify_content="center",
                     ),
-                    card(
-                        rx.vstack(
-                            _window(),
+                    rx.cond(
+                        CreativeState.kit_loading,
+                        # No controls while loading — same shape `brand_connect_index` uses
+                        # for `BrandConnectState.analyzing`: a spinner, centred in the same
+                        # frame the real step would occupy, nothing to click yet.
+                        card(
+                            _loading_view("Cargando tu marca"),
+                            padding="1.75rem",
                             width="100%",
-                            max_width=_manual_column_width(),
-                            align_self="center",
-                            align_items="center",
-                            # Takes the card's free height and centres its content in it,
-                            # so a two-field step sits in the middle of its frame instead
-                            # of clinging to the top with a void above the controls.
                             flex="1",
+                            display="flex",
+                            align_items="center",
                             justify_content="center",
                         ),
-                        _controls(),
-                        padding="1.75rem",
-                        width="100%",
-                        flex="1",
-                        display="flex",
-                        flex_direction="column",
-                        justify_content="space-between",
-                        # `key` on the CARD itself, not just its content — request
-                        # 2026-09-05: the border/frame is part of what should settle in,
-                        # not just what's inside it. Keying only the inner vstack (the
-                        # first cut of this fix) left the card's own DOM node reused
-                        # across steps, so the border/shadow never moved — only the text
-                        # inside it did. Keying the whole `card()` forces IT to remount
-                        # too, which is what makes `page_body`'s own "q-settle" (the
-                        # card is one of ITS direct children) replay on every step
-                        # change, animating the frame and its content as one unit.
-                        key=BrandWizardState.step.to_string(),
-                        # `justify_content="space-between"` alone collapses to ~0 the
-                        # moment the fields fill the card's free height — true on a short
-                        # mobile viewport for most steps (Plan, Paleta, Enséñale a
-                        # hablar, Lo que nunca debe decir, Todo correcto...), pinning
-                        # Atrás/Continuar right under the content. `gap` sets a MINIMUM
-                        # the two flex items are never closer than, regardless of how
-                        # much free space is left — space-between still spreads any
-                        # space beyond it, so a short step still looks exactly as it did
-                        # before.
-                        gap="1.5rem",
+                        card(
+                            rx.vstack(
+                                _window(),
+                                width="100%",
+                                max_width=_manual_column_width(),
+                                align_self="center",
+                                align_items="center",
+                                # Takes the card's free height and centres its content in it,
+                                # so a two-field step sits in the middle of its frame instead
+                                # of clinging to the top with a void above the controls.
+                                flex="1",
+                                justify_content="center",
+                            ),
+                            _controls(),
+                            padding="1.75rem",
+                            width="100%",
+                            flex="1",
+                            display="flex",
+                            flex_direction="column",
+                            justify_content="space-between",
+                            # `key` on the CARD itself, not just its content — request
+                            # 2026-09-05: the border/frame is part of what should settle in,
+                            # not just what's inside it. Keying only the inner vstack (the
+                            # first cut of this fix) left the card's own DOM node reused
+                            # across steps, so the border/shadow never moved — only the text
+                            # inside it did. Keying the whole `card()` forces IT to remount
+                            # too, which is what makes `page_body`'s own "q-settle" (the
+                            # card is one of ITS direct children) replay on every step
+                            # change, animating the frame and its content as one unit.
+                            key=BrandWizardState.step.to_string(),
+                            # `justify_content="space-between"` alone collapses to ~0 the
+                            # moment the fields fill the card's free height — true on a short
+                            # mobile viewport for most steps (Plan, Paleta, Enséñale a
+                            # hablar, Lo que nunca debe decir, Todo correcto...), pinning
+                            # Atrás/Continuar right under the content. `gap` sets a MINIMUM
+                            # the two flex items are never closer than, regardless of how
+                            # much free space is left — space-between still spreads any
+                            # space beyond it, so a short step still looks exactly as it did
+                            # before.
+                            gap="1.5rem",
+                        ),
                     ),
+                    spacing="4",
+                    width="100%",
+                    # Fills the panel through `page_body` (`flex: 1 0 auto`) instead of
+                    # computing a height. No top/bottom padding of its own: `page_header`
+                    # (now a sibling, not a sibling-turned-first-child) already gives the
+                    # standard `PAD_HEADER` gap above, and `PAD_BODY` already leaves the
+                    # page's bottom gutter — stacking a manual 3rem on top of that was
+                    # only ever compensating for not using `page_header` in the first
+                    # place.
+                    flex="1",
+                    min_height="0",
                 ),
-                spacing="4",
-                width="100%",
-                # Fills the panel through `page_body` (`flex: 1 0 auto`) instead of
-                # computing a height. No top/bottom padding of its own: `page_header`
-                # (now a sibling, not a sibling-turned-first-child) already gives the
-                # standard `PAD_HEADER` gap above, and `PAD_BODY` already leaves the
-                # page's bottom gutter — stacking a manual 3rem on top of that was
-                # only ever compensating for not using `page_header` in the first
-                # place.
-                flex="1",
-                min_height="0",
             ),
         ),
     )
@@ -3202,7 +3369,7 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # del resultado"): the accounts the discovery found, sorted by the operator into
     # three buckets by drag and drop or a tap. Optional — nothing blocks Continuar.
     ("Referente, competencia o detractor", "Arrastra cada cuenta a su flecha, o toca la flecha."),
-    ("Resultados e insights", "Cómo se ve tu cuenta hoy."),
+    ("Así se ve tu cuenta hoy", "Revisa y termina."),
 )
 CONNECT_LAST = len(CONNECT_STEPS) - 1
 _SORT_STEP = CONNECT_LAST - 1
@@ -4871,12 +5038,14 @@ class BrandConnectState(rx.State):
         from .brand_finish import CONNECT_FLOW, save_brand_kit
 
         if not await save_brand_kit(self, CONNECT_FLOW):
+            await _explain_finish_failure(self)
             return
         async with self:
             self._reset_fields()
-            route = await _finish_route(self)
+            navigation = await _finish_navigation(self)
         yield brand_documents.BrandDocumentState.reset_documents
-        yield rx.redirect(route)
+        if navigation is not None:
+            yield navigation
 
     @rx.event(background=True)
     async def load_saved_details(self) -> None:
@@ -4887,6 +5056,9 @@ class BrandConnectState(rx.State):
         where it was."""
         from .brand_finish import CONNECT_FLOW, PROGRESS_KEY, load_saved, session_ids
 
+        # m-24842965: entering the wizard opens the steps, never a card left from before
+        async with self:
+            (await self.get_state(BrandWizardState)).brand_ready = _asks_for_ready_card(self)
         ids = await session_ids(self)
         saved = None
         if ids is not None:
@@ -4959,14 +5131,14 @@ class BrandConnectState(rx.State):
                     self._set_metrics([])
 
     @rx.event
-    async def finish_to_signals(self) -> rx.event.EventSpec:
-        """Mejorar tu perfil y posicionamiento, on Resultados e insights — the TRUE
+    async def finish_to_signals(self) -> rx.event.EventSpec | None:
+        """The final button («Terminar mi marca»), on Resultados e insights — the TRUE
         final screen. Replaces Finalizar entirely (§ request 2026-09-05): same reset
-        `restart` does, but the destination is Señales, not the fork — the same
+        `restart` does, but the destination is `_finish_navigation`'s, not the fork — the same
         "regardless of the process" way `BrandWizardState.finish_to_signals` fires for
         the manual flow's own final screen."""
         self._reset_fields()
-        return rx.redirect(await _finish_route(self))
+        return await _finish_navigation(self)
 
     @rx.event(background=True)
     async def advance_stage_if_exhausted(self) -> AsyncIterator[None]:
@@ -7509,43 +7681,33 @@ def brand_connect_index() -> rx.Component:
     corners. Two loading states, both a centred spinner with no footer row:
     `CreativeState.kit_loading` on page load, `BrandConnectState.analyzing` mid-scrape."""
     return _wizard_shell(
-        page_header(
-            _connect_heading_for(0),
-            _connect_heading_for(1),
-            kicker=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
-            title_size="8",
-        ),
-        page_body(
-            rx.vstack(
+        *_or_ready(
+            page_header(
+                _connect_heading_for(0),
+                _connect_heading_for(1),
+                kicker=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
+                title_size="8",
+            ),
+            page_body(
                 rx.vstack(
-                    rx.cond(
-                        CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
-                    ),
-                    rx.cond(
-                        CreativeState.kit_notice != "",
-                        callout(CreativeState.kit_notice, "ok", icon="circle-check"),
-                    ),
-                    spacing="3",
-                    width="100%",
-                    max_width="34rem",
-                    align_self="center",
-                    align_items="center",
-                ),
-                rx.cond(
-                    CreativeState.kit_loading,
-                    card(
-                        _loading_view("Cargando tu marca"),
-                        padding="1.75rem",
+                    rx.vstack(
+                        rx.cond(
+                            CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
+                        ),
+                        rx.cond(
+                            CreativeState.kit_notice != "",
+                            callout(CreativeState.kit_notice, "ok", icon="circle-check"),
+                        ),
+                        spacing="3",
                         width="100%",
-                        flex="1",
-                        display="flex",
+                        max_width="34rem",
+                        align_self="center",
                         align_items="center",
-                        justify_content="center",
                     ),
                     rx.cond(
-                        BrandConnectState.analyzing,
+                        CreativeState.kit_loading,
                         card(
-                            _connect_loading(),
+                            _loading_view("Cargando tu marca"),
                             padding="1.75rem",
                             width="100%",
                             flex="1",
@@ -7554,11 +7716,9 @@ def brand_connect_index() -> rx.Component:
                             justify_content="center",
                         ),
                         rx.cond(
-                            # The sort step waits for the whole search behind its own
-                            # loading screen — no controls, so it cannot be skipped.
-                            BrandConnectState.waiting_for_referentes,
+                            BrandConnectState.analyzing,
                             card(
-                                _referentes_loading(),
+                                _connect_loading(),
                                 padding="1.75rem",
                                 width="100%",
                                 flex="1",
@@ -7566,65 +7726,79 @@ def brand_connect_index() -> rx.Component:
                                 align_items="center",
                                 justify_content="center",
                             ),
-                            card(
-                                rx.vstack(
-                                    _connect_window(),
+                            rx.cond(
+                                # The sort step waits for the whole search behind its own
+                                # loading screen — no controls, so it cannot be skipped.
+                                BrandConnectState.waiting_for_referentes,
+                                card(
+                                    _referentes_loading(),
+                                    padding="1.75rem",
                                     width="100%",
-                                    # The deck (three panels around a card) needs more room
-                                    # than a field list, and so does Resultados with its
-                                    # lateral ranking; every other step keeps the 34rem.
-                                    max_width=rx.cond(
-                                        BrandConnectState.step == _SORT_STEP,
-                                        _SORT_COLUMN_MAX,
-                                        rx.cond(
-                                            BrandConnectState.step == CONNECT_LAST,
-                                            _RESULTS_COLUMN_MAX,
-                                            _step_column_width(
-                                                BrandConnectState.step == _LOGO_UPLOAD_STEP,
-                                                BrandConnectState.step == _CONNECT_CONFIRM_STEP,
-                                                on_typography=BrandConnectState.step
-                                                == _TYPOGRAPHY_STEP,
-                                            ),
-                                        ),
-                                    ),
-                                    align_self="center",
-                                    align_items="center",
                                     flex="1",
+                                    display="flex",
+                                    align_items="center",
                                     justify_content="center",
                                 ),
-                                _connect_controls(),
-                                padding=rx.cond(
-                                    BrandConnectState.step == _SORT_STEP,
-                                    _SORT_CARD_PADDING,
-                                    "1.75rem",
+                                card(
+                                    rx.vstack(
+                                        _connect_window(),
+                                        width="100%",
+                                        # The deck (three panels around a card) needs more room
+                                        # than a field list, and so does Resultados with its
+                                        # lateral ranking; every other step keeps the 34rem.
+                                        max_width=rx.cond(
+                                            BrandConnectState.step == _SORT_STEP,
+                                            _SORT_COLUMN_MAX,
+                                            rx.cond(
+                                                BrandConnectState.step == CONNECT_LAST,
+                                                _RESULTS_COLUMN_MAX,
+                                                _step_column_width(
+                                                    BrandConnectState.step == _LOGO_UPLOAD_STEP,
+                                                    BrandConnectState.step == _CONNECT_CONFIRM_STEP,
+                                                    on_typography=BrandConnectState.step
+                                                    == _TYPOGRAPHY_STEP,
+                                                ),
+                                            ),
+                                        ),
+                                        align_self="center",
+                                        align_items="center",
+                                        flex="1",
+                                        justify_content="center",
+                                    ),
+                                    _connect_controls(),
+                                    padding=rx.cond(
+                                        BrandConnectState.step == _SORT_STEP,
+                                        _SORT_CARD_PADDING,
+                                        "1.75rem",
+                                    ),
+                                    width="100%",
+                                    flex="1",
+                                    display="flex",
+                                    flex_direction="column",
+                                    justify_content="space-between",
+                                    # Same mobile fix as `brand_manual_index`'s card — `gap`
+                                    # floors the distance to Atrás/Continuar so it cannot
+                                    # collapse to ~0 on a short viewport once the step's content
+                                    # fills the free height (Perfil, Lo que te proponemos,
+                                    # Resultados e insights, and the shared steps 5-11).
+                                    gap="1.5rem",
+                                    # `key` on the CARD itself, not just its content — same fix
+                                    # `brand_manual_index` gets: keying only the inner vstack
+                                    # left the card's own border/shadow node reused across
+                                    # steps, so the frame never moved, only the text inside it
+                                    # did. Keying the whole `card()` remounts it too, which is
+                                    # what makes `page_body`'s own "q-settle" (the card is one
+                                    # of its direct children) replay on every step change.
+                                    key=BrandConnectState.step.to_string(),
                                 ),
-                                width="100%",
-                                flex="1",
-                                display="flex",
-                                flex_direction="column",
-                                justify_content="space-between",
-                                # Same mobile fix as `brand_manual_index`'s card — `gap`
-                                # floors the distance to Atrás/Continuar so it cannot
-                                # collapse to ~0 on a short viewport once the step's content
-                                # fills the free height (Perfil, Lo que te proponemos,
-                                # Resultados e insights, and the shared steps 5-11).
-                                gap="1.5rem",
-                                # `key` on the CARD itself, not just its content — same fix
-                                # `brand_manual_index` gets: keying only the inner vstack
-                                # left the card's own border/shadow node reused across
-                                # steps, so the frame never moved, only the text inside it
-                                # did. Keying the whole `card()` remounts it too, which is
-                                # what makes `page_body`'s own "q-settle" (the card is one
-                                # of its direct children) replay on every step change.
-                                key=BrandConnectState.step.to_string(),
                             ),
                         ),
                     ),
+                    spacing="4",
+                    width="100%",
+                    flex="1",
+                    min_height="0",
                 ),
-                spacing="4",
-                width="100%",
-                flex="1",
-                min_height="0",
             ),
         ),
     )

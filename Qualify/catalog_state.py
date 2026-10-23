@@ -46,11 +46,11 @@ from .tenant import tenant_uuid
 logger = logging.getLogger(__name__)
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-_NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
-_DB_ERROR = "No se pudo hablar con la base de datos. Inténtalo de nuevo en un momento."
+_NO_BRAND = "Primero completa tu marca (logo y colores) y vuelve a subir tus productos."
+_DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
-_PRODUCT_GONE = "Ese producto ya no existe o no es visible para este negocio."
+_PRODUCT_GONE = "Ese producto ya no está en tu catálogo. Actualiza la página."
 _CREATED = "Producto creado. Tócalo para editarlo o subirle fotos."
 _CREATED_WITH_FILES = "Producto creado. Guardando sus fotos…"
 _SAVED = "Cambios guardados."
@@ -68,7 +68,7 @@ _STAGING_TTL_S = 6 * 60 * 60
 
 
 class CatalogState(rx.State):
-    """State for /catalog: the list, the "Nuevo producto" form, and one product's
+    """State for /catalog: the list, the "Agregar producto" form, and one product's
     editor (fields + media) at a time."""
 
     products: list[ProductVM] = []
@@ -76,7 +76,7 @@ class CatalogState(rx.State):
     error: str = ""
     _brand_id: str = ""
 
-    # -- the "Nuevo producto" form ------------------------------------------------------
+    # -- the "Agregar producto" form ------------------------------------------------------
     form_open: bool = False
     new_name: str = ""
     new_description: str = ""
@@ -135,6 +135,12 @@ class CatalogState(rx.State):
     @rx.var
     def has_products(self) -> bool:
         return len(self.products) > 0
+
+    @rx.var
+    def needs_brand(self) -> bool:
+        """The load stopped because the business has no brand yet: the page shows the way
+        to it («Completar mi marca») under the error."""
+        return self.error == _NO_BRAND
 
     @rx.var
     def product_count_label(self) -> str:

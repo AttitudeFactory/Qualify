@@ -69,9 +69,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DashboardState", "MentionRow"]
 
-_NO_TENANT = "No hay una sesión activa."
-_LOAD_ERROR = "No se pudieron cargar las menciones."
-_REFRESH_ERROR = "No se pudo actualizar la lista. Se muestran los últimos datos cargados."
+_NO_TENANT = "Tu sesión se cerró. Vuelve a entrar para ver tus menciones."
+_LOAD_ERROR = "No pudimos traer tus menciones. Recarga la página en unos minutos."
+_REFRESH_ERROR = (
+    "No pudimos actualizar la lista. Te mostramos lo último que cargamos; "
+    "vuelve a intentarlo en unos minutos."
+)
 
 
 def _utc_stamp() -> str:

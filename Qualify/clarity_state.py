@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .clarity_provider import (
+    DIMENSION_LABELS,
     ClarityConfigVM,
     SnapshotVM,
     config_for,
@@ -35,18 +36,28 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_LOAD_FAILED = "No se pudo cargar Clarity. Revisa la conexión con la base de datos."
-_NO_TENANTS = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-_SAVE_FAILED = "No se pudo guardar la configuración."
-_SAVE_BLANK = "El ID de proyecto y el token son obligatorios."
-_TOKEN_REJECTED = "Clarity rechazó el token. Genera uno nuevo en Settings → Data Export."
-_QUOTA_MS = "Microsoft agotó la cuota diaria de este proyecto (10/día). Vuelve mañana."
-_BUDGET_SPENT = "Presupuesto diario de actualizaciones agotado; se muestra el último snapshot."
-_NOT_CONFIGURED = "Configura el proyecto de Clarity antes de actualizar."
+_LOAD_FAILED = "No pudimos cargar los datos de tu página web. Recarga la página en unos minutos."
+_NO_TENANTS = "Tu sesión se cerró. Vuelve a entrar para ver tu página web."
+_SAVE_FAILED = "No pudimos guardar la conexión. Inténtalo de nuevo en unos minutos."
+_SAVE_BLANK = "Escribe el código del proyecto y la clave de acceso para poder guardar."
+_TOKEN_REJECTED = (
+    "Clarity no aceptó la clave de acceso. Crea una nueva en Clarity "
+    "(«Settings» → «Data Export») y pégala aquí."
+)
+_QUOTA_MS = "Clarity no permite más consultas por hoy. Vuelve a intentarlo mañana."
+_BUDGET_SPENT = (
+    "Ya usaste las actualizaciones de hoy. Te mostramos los últimos datos guardados; "
+    "mañana puedes actualizar otra vez."
+)
+_NOT_CONFIGURED = "Primero conecta tu página web con Clarity (arriba) y luego actualiza."
 _REFRESH_FAILED = "Clarity no respondió. Inténtalo de nuevo en unos minutos."
+_SAVED = "Conexión guardada. Ahora pulsa «Actualizar desde Clarity»."
+_REFRESHED = "Listo: estos son los datos más recientes de tu página web."
 
-_DIMENSION_NONE = "Sin dimensión"
-DIMENSION_CHOICES = [_DIMENSION_NONE, "URL", "Device", "OS", "Browser", "Source", "Channel"]
+# The select shows the owner's words; the Data Export API wants its own names.
+_DIMENSION_NONE = "Todo junto"
+_DIMENSION_API = {label: api for api, label in DIMENSION_LABELS.items()}
+DIMENSION_CHOICES = [_DIMENSION_NONE, *DIMENSION_LABELS.values()]
 DAYS_CHOICES = ["1", "2", "3"]
 
 
@@ -62,7 +73,7 @@ class ClarityState(rx.State):
     form_api_token: str = ""
 
     refresh_days: str = "3"
-    refresh_dimension: str = "URL"
+    refresh_dimension: str = DIMENSION_LABELS["URL"]
 
     is_loading: bool = False
     is_refreshing: bool = False
@@ -165,7 +176,7 @@ class ClarityState(rx.State):
             auth = await self.get_state(AuthState)
             if session_tenant_id == auth.session_tenant_id:
                 self.config = config
-                self.action_notice = "Configuración guardada."
+                self.action_notice = _SAVED
             # Write-only: the token never lingers in state after the save.
             self.form_api_token = ""
             self.is_saving = False
@@ -177,7 +188,7 @@ class ClarityState(rx.State):
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
             days = int(self.refresh_days)
-            dimension = "" if self.refresh_dimension == _DIMENSION_NONE else self.refresh_dimension
+            dimension = _DIMENSION_API.get(self.refresh_dimension, "")
             self.action_error = ""
             self.action_notice = ""
             self.is_refreshing = True
@@ -216,7 +227,7 @@ class ClarityState(rx.State):
                 if snapshot is not None:
                     self.snapshot = snapshot
                     self.has_snapshot = True
-                    self.action_notice = "Datos actualizados desde Clarity."
+                    self.action_notice = _REFRESHED
                 self.action_error = error
             self.is_refreshing = False
 

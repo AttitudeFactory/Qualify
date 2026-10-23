@@ -77,7 +77,7 @@ def page_items(current: int, total_pages: int, *, window: int = PAGE_WINDOW) -> 
 
 
 def pages_label(total_pages: int) -> str:
-    return "Total de 1 página" if total_pages <= 1 else f"Total de {total_pages} páginas"
+    return "1 página" if total_pages <= 1 else f"{total_pages} páginas"
 
 
 LIVE_PAGE: Final = 1

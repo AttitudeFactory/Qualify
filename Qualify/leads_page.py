@@ -22,7 +22,7 @@ def _topbar() -> rx.Component:
         # The count badge of docs/design-system.md §5.3: soft, neutral — a figure
         # about the page, never a state.
         badge=rx.badge(
-            LeadsState.lead_count.to_string() + " leads",
+            LeadsState.lead_count.to_string(),
             variant="soft",
             size="2",
             **T.tone_scheme("neutral"),
@@ -78,7 +78,7 @@ def _leads_table() -> rx.Component:
 def _empty_state() -> rx.Component:
     return empty_state(
         "user-plus",
-        "Todavía no hay leads",
+        "Todavía no tienes clientes interesados",
         "Comparte el formulario de captura de este negocio: cada registro "
         "con consentimiento aparecerá aquí.",
     )

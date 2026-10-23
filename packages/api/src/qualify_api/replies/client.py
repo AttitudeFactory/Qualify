@@ -4,11 +4,9 @@ real HTTP implementation, and one `_parse_*` function marked with its evidence s
 
     POST /{ig-comment-id}/replies?message={message}
 
-## Evidence status — corpus-sourced, NOT YET observed live
+## Evidence status — [VERIFIED] live (2026-10-22 and 2026-10-23)
 
-Unlike `inbox/client.py`'s `HttpCommentsClient` (whose GET shape was confirmed against
-a real Meta response on 2026-08-14), this POST shape is sourced from the harvested
-corpus only:
+The POST shape was first sourced from the harvested corpus:
 `reference/meta-instagram-platform/.../ig-comment/replies.md` (`#replying`, worked
 request/response example) and `comment-moderation.md` ("Reply to a comment"), both
 under the Facebook Login fork (ADR 25) — never mixed with the Instagram Login column.
@@ -16,10 +14,14 @@ Both agree: `POST /<IG_COMMENT_ID>/replies` with `message` as a required paramet
 success response `{"id": "<new_comment_id>"}`. Permissions listed by both:
 `instagram_basic`, `instagram_manage_comments`, `pages_show_list`/
 `pages_read_engagement` — the same `manage_comments` gate `permission_capability.py`
-already encodes for `REPLY_COMMENTS`, confirmed non-provisional (QUA-95). A live smoke
-call against the founder's own connected account is the remaining step before this
-client can carry the same `[VERIFIED]` marker `HttpCommentsClient` does — tracked as
-an explicit follow-up, not silently assumed done.
+already encodes for `REPLY_COMMENTS`, confirmed non-provisional (QUA-95).
+
+Observed live against `@rauldevgames` (Facebook Login for Business, Standard Access):
+the Fase C public notice (m-24789646 R4, 2026-10-22) and a Fase B commercial reply
+(m-24789645, 2026-10-23: `sent`, Meta answered in about 6 s) both came back as
+`{"id": ...}`, parsed by `_parse_reply_response`. Evidence:
+`docs/conversaciones-limitaciones-meta.md` §7 and
+`docs/interacciones-fase-b-respuestas-comerciales.md` §10.
 
 ## What this module deliberately does NOT do
 
@@ -100,9 +102,9 @@ def _error_codes(response: httpx.Response) -> tuple[int | None, int | None]:
 
 
 def _parse_reply_response(payload: dict[str, Any]) -> str:
-    """[CORPUS] `{"id": "<new_comment_id>"}` — see module docstring for the citation.
-    Not yet exercised against a real Meta response; the failure mode of an unexpected
-    shape is a clear `CommentReplyError`, never a silent `None`/`KeyError` upstream."""
+    """[VERIFIED] `{"id": "<new_comment_id>"}` — corpus citation and the live
+    observations in the module docstring. The failure mode of an unexpected shape is a
+    clear `CommentReplyError`, never a silent `None`/`KeyError` upstream."""
     reply_id = payload.get("id")
     if not isinstance(reply_id, str) or not reply_id:
         raise CommentReplyError(
