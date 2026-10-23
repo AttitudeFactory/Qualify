@@ -6,19 +6,29 @@ from __future__ import annotations
 import pytest
 
 from .mentions_paging import (
+    ALL_ACCOUNTS,
+    ALL_ORIGINS,
+    ALL_SENTIMENTS,
     CREDENTIAL_NOTICE,
+    NEW_MENTIONS_BUTTON,
+    NEW_MENTIONS_NOTICE,
     REFRESH_FAILED_NOTICE,
     SENTIMENT_OPTIONS,
+    SENTIMENT_SLUGS,
     STOPPED_TOAST,
     THROTTLED_NOTICE,
     USAGE_PAUSED_NOTICE,
     RefreshOutcome,
     decide_tick,
+    more_filters_count,
+    new_mentions_arrived,
     page_items,
     pages_label,
     refresh_outcome,
     refresh_still_running,
+    sentiment_from_param,
     tick_takes_new_snapshot,
+    toggle_sentiment,
 )
 
 
@@ -202,3 +212,51 @@ def test_restored_mentions_are_announced() -> None:
     outcome = _outcome(restored=1)
 
     assert outcome == RefreshOutcome("Menciones actualizadas. 1 volvió a mostrarse.", "ok", "")
+
+
+# --- RESULTADOS-1 (m-24843000) ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("param", "expected"),
+    [
+        ("negativas", "Negativa"),
+        ("Negativas ", "Negativa"),
+        ("positivas", "Positiva"),
+        ("neutras", "Neutra"),
+        ("pendientes", "Pendiente"),
+        ("malas", ALL_SENTIMENTS),
+        ("", ALL_SENTIMENTS),
+        (None, ALL_SENTIMENTS),
+    ],
+)
+def test_the_sentiment_link_opens_the_list_it_counts(param: str | None, expected: str) -> None:
+    assert sentiment_from_param(param) == expected
+
+
+def test_every_link_slug_names_a_real_filter() -> None:
+    assert set(SENTIMENT_SLUGS.values()) <= set(SENTIMENT_OPTIONS)
+
+
+def test_a_card_is_an_on_off_switch() -> None:
+    assert toggle_sentiment(ALL_SENTIMENTS, "Negativa") == "Negativa"
+    assert toggle_sentiment("Negativa", "Negativa") == ALL_SENTIMENTS
+    assert toggle_sentiment("Positiva", "Negativa") == "Negativa"
+    assert toggle_sentiment("Negativa", ALL_SENTIMENTS) == ALL_SENTIMENTS
+
+
+def test_more_filters_counts_only_what_is_hidden_behind_it() -> None:
+    none = more_filters_count(account=ALL_ACCOUNTS, origin=ALL_ORIGINS, sentiment=ALL_SENTIMENTS)
+    assert none == 0
+    assert more_filters_count(account="@a", origin="Comentario", sentiment="Negativa") == 3
+
+
+def test_new_mentions_arrived_only_when_the_scope_grew() -> None:
+    assert new_mentions_arrived(snapshot_scope_total=5, current_scope_total=6) is True
+    assert new_mentions_arrived(snapshot_scope_total=5, current_scope_total=5) is False
+    # One deleted: not an arrival.
+    assert new_mentions_arrived(snapshot_scope_total=5, current_scope_total=4) is False
+
+
+def test_the_new_mentions_notice_is_the_founders_text() -> None:
+    assert (NEW_MENTIONS_NOTICE, NEW_MENTIONS_BUTTON) == ("Llegaron menciones nuevas.", "Verlas")

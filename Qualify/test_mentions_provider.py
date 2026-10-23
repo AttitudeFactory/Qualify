@@ -317,3 +317,78 @@ async def test_refresh_scope_hands_the_scope_query_through(
 
     assert await mentions_provider.refresh_scope(tenant, scope=scope) is report
     assert seen == {"tenant_id": tenant, "scope": scope}
+
+
+# --- RESULTADOS-1 (m-24843000): what to do, and every reason on screen -----------------
+
+
+def test_a_negative_mention_says_what_to_do_and_names_the_network() -> None:
+    vm = _vm(_record(state="NEG", permalink="https://www.instagram.com/p/abc/"))
+
+    assert vm.reply_hint == "Esta persona no quedó contenta. Respóndele desde Instagram."
+    assert vm.link_label == "Ver y responder en Instagram"
+
+
+def test_a_facebook_negative_mention_points_to_facebook() -> None:
+    vm = _vm(replace(_record(state="NEG"), platform="facebook"))
+
+    assert vm.reply_hint == "Esta persona no quedó contenta. Respóndele desde Facebook."
+    assert vm.link_label == "Ver y responder en Facebook"
+
+
+@pytest.mark.parametrize("state", ["POS", "NEU", "PENDING", "NO_TEXT", "ERROR"])
+def test_only_negative_mentions_carry_the_reply_advice(state: str) -> None:
+    vm = _vm(_record(state=state))
+
+    assert vm.reply_hint == ""
+    assert vm.link_label == "Ver en Instagram"
+
+
+def test_no_text_suggests_qualify_answers_by_itself() -> None:
+    """N13: the owner answers; nothing says Qualify will."""
+    vm = _vm(_record(state="NEG"))
+    for phrase in ("Qualify responde", "responderemos", "automátic"):
+        assert phrase not in vm.reply_hint + vm.link_label
+
+
+def test_why_a_mention_has_no_sentiment_is_a_visible_word() -> None:
+    assert _vm(_record(state="NO_TEXT")).sentiment_note == "Sin texto para leer"
+    assert _vm(_record(state="ERROR")).sentiment_note == "No pudimos leerla"
+    assert _vm(_record(state="POS")).sentiment_note == ""
+
+
+def test_missing_likes_have_a_short_visible_reason() -> None:
+    assert _vm(_record()).likes_short == ""
+    assert _vm(_record(like_count=None)).likes_short == "Ocultos"
+    assert _vm(_record(comment=True, like_count=None)).likes_short == "Sin dato"
+
+
+def test_long_texts_are_marked_for_ver_mas() -> None:
+    assert _vm(_record(caption="corto")).text_is_long is False
+    assert _vm(_record(caption="a" * 141)).text_is_long is True
+    assert _vm(_record(caption="uno\ndos\ntres\ncuatro")).text_is_long is True
+    # A placeholder ("Sin texto") is never "long".
+    assert _vm(_record(caption=None)).text_is_long is False
+
+
+def test_scope_total_now_counts_the_scope_without_a_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict = {}
+
+    def fake_summarize(*, tenant_id: UUID, query: MentionQuery, as_of: datetime) -> MentionCounts:
+        seen.update(query=query, as_of=as_of)
+        return MentionCounts(total=7)
+
+    monkeypatch.setattr(mentions_provider, "summarize_mentions_for_tenant", fake_summarize)
+    since = datetime(2026, 10, 1, tzinfo=UTC)
+
+    total = mentions_provider.scope_total_now(
+        TENANT, query=MentionQuery(connection_id=CONNECTION, sentiment_state="NEG", since=since)
+    )
+
+    assert total == 7
+    # The scope only (account + period): a sentiment filter never narrows the count.
+    assert (seen["query"].connection_id, seen["query"].since) == (CONNECTION, since)
+    assert seen["query"].sentiment_state is None
+    assert (datetime.now(UTC) - seen["as_of"]).total_seconds() < 5

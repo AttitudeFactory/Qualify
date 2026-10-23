@@ -134,10 +134,12 @@ def test_pager_vars() -> None:
     assert (state.has_prev, state.has_next) == (True, False)
 
 
-def test_the_dashboard_has_no_new_mention_notice() -> None:
-    """A mention is not a message (QUA-152): no counter or notice of new arrivals exists."""
+def test_the_dashboard_has_no_new_mention_counter() -> None:
+    """A mention is not a message (QUA-152): no counter of new arrivals and no "Nueva"
+    mark exist. The only arrival notice is the later page's «Llegaron menciones nuevas.»
+    (founder's text 2026-10-23, RESULTADOS-1), tested with the tick below."""
     names = set(DashboardState.get_fields()) | set(DashboardState.computed_vars)
-    assert not {"new_count", "new_mentions_notice", "new_since"} & names
+    assert not {"new_count", "new_since"} & names
 
 
 def test_the_screen_opens_on_the_last_14_days() -> None:
@@ -603,8 +605,16 @@ def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, broken: bool = False) -> dict
             as_of=as_of or NEW_SNAPSHOT,
         )
 
+    def fake_scope_total_now(tenant_id: UUID, *, query: MentionQuery) -> int:
+        seen["counts"].append(query.since)
+        if seen.get("count_broken"):
+            raise RuntimeError("db blip")
+        return seen["now_total"]
+
+    seen.update(counts=[], now_total=2)
     monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
     monkeypatch.setattr(state_module, "load_page", fake_load_page)
+    monkeypatch.setattr(state_module, "scope_total_now", fake_scope_total_now)
     return seen
 
 
@@ -762,12 +772,156 @@ def test_the_list_changed_button_goes_to_page_one_through_the_one_handler() -> N
     assert "go_to_page" in str(notices())
 
 
-def test_the_notices_never_announce_a_new_mention() -> None:
+def test_the_notices_announce_new_mentions_only_through_the_founders_text() -> None:
+    """RESULTADOS-1 (QUA-152, founder 2026-10-23): «Llegaron menciones nuevas.» with
+    «Verlas» to page 1 — never a counter, a bell or «Ver nuevas»."""
     from .components import notices
 
     rendered = str(notices())
 
-    for announcement in ("menciones nuevas", "Ver nuevas", "bell", "new_mentions"):
+    for announcement in ("Ver nuevas", "bell", "new_count"):
         assert announcement not in rendered
+    assert "new_mentions_notice" in rendered and "Verlas" in rendered
     # The legitimate refresh outcomes are still there.
     assert "list_changed" in rendered and "refresh_notice" in rendered
+
+
+# --- «Llegaron menciones nuevas.» on a later page (RESULTADOS-1, QUA-152) ----------------
+
+
+async def test_a_later_page_says_new_mentions_arrived(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _wire_tick(monkeypatch)
+    seen["now_total"] = 3  # the webhook stored m3 after the snapshot
+    state = _listing_state(page=2)
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert state.new_mentions_notice == "Llegaron menciones nuevas."
+    assert [row.id for row in state.mentions] == ["m1", "m2"]  # the page never shifts
+    assert seen["counts"] == [datetime.fromisoformat(STALE_WINDOW)]  # same window
+
+
+async def test_verlas_goes_to_page_one_and_clears_the_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch)
+    seen["now_total"] = 3
+    state = _listing_state(page=2)
+    await DashboardState.refresh_tick.fn(state)
+
+    await DashboardState.go_to_page.fn(state, "1")
+
+    assert state.new_mentions_notice == ""
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+
+
+async def test_page_one_never_counts_nor_announces_arrivals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch)
+    seen["now_total"] = 9
+    state = _listing_state()
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert seen["counts"] == []  # ONE read on page 1, as before
+    assert state.new_mentions_notice == ""
+
+
+async def test_a_failed_arrivals_count_only_skips_the_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch)
+    seen["count_broken"] = True
+    state = _listing_state(page=2)
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert (state.new_mentions_notice, state.refresh_error, state.mentions_error) == ("", "", "")
+
+
+# --- one tap to the bad ones, «Más filtros» (RESULTADOS-1) --------------------------------
+
+
+def _wire_restart(monkeypatch: pytest.MonkeyPatch) -> list[MentionQuery]:
+    queries: list[MentionQuery] = []
+
+    async def fake_read(self: DashboardState, *, page: int, new_snapshot: bool) -> None:
+        queries.append(self._query())
+
+    monkeypatch.setattr(DashboardState, "_read", fake_read)
+    return queries
+
+
+async def test_tapping_negativas_filters_the_list_and_a_second_tap_shows_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries = _wire_restart(monkeypatch)
+    state = DashboardState()
+
+    await DashboardState.pick_sentiment.fn(state, "Negativa")
+    assert state.sentiment_filter == "Negativa"
+    assert queries[-1].sentiment_state == "NEG"
+
+    await DashboardState.pick_sentiment.fn(state, "Negativa")
+    assert state.sentiment_filter == ALL_SENTIMENTS
+    assert queries[-1].sentiment_state is None
+
+
+async def test_the_total_card_shows_every_sentiment(monkeypatch: pytest.MonkeyPatch) -> None:
+    _wire_restart(monkeypatch)
+    state = DashboardState()
+    state.sentiment_filter = "Positiva"
+
+    await DashboardState.pick_sentiment.fn(state, ALL_SENTIMENTS)
+
+    assert state.sentiment_filter == ALL_SENTIMENTS
+
+
+def test_each_summary_card_is_a_real_button() -> None:
+    """Enter/Space and `aria-pressed` for free: the cards sit in native buttons."""
+    from .components import stats_row
+
+    rendered = str(stats_row())
+
+    assert rendered.count('type:"button"') == 4 and "aria-pressed" in rendered
+
+
+def test_more_filters_counts_what_it_hides() -> None:
+    state = DashboardState()
+    assert state.more_filters_label == "Más filtros"
+
+    state.origin_filter, state.sentiment_filter = "Comentario", "Negativa"
+    assert state.more_filters_label == "Más filtros (2)"
+
+
+async def test_quitar_filtros_keeps_the_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    _wire_restart(monkeypatch)
+    state = DashboardState()
+    state.period_filter = "Últimos 30 días"
+    state.origin_filter, state.sentiment_filter = "Comentario", "Negativa"
+
+    await DashboardState.clear_more_filters.fn(state)
+
+    assert (state.origin_filter, state.sentiment_filter) == (ALL_ORIGINS, ALL_SENTIMENTS)
+    assert state.period_filter == "Últimos 30 días"
+
+
+def test_ver_mas_opens_and_closes_one_mention() -> None:
+    state = DashboardState()
+
+    DashboardState.toggle_expanded.fn(state, "m1")
+    DashboardState.toggle_expanded.fn(state, "m2")
+    DashboardState.toggle_expanded.fn(state, "m1")
+
+    assert state.expanded_ids == ["m2"]
+
+
+def test_the_screen_has_no_hover_only_information() -> None:
+    """N12: no tooltip and no hover card anywhere on the mentions screen."""
+    from .components import filter_bar, mentions_body, stats_row
+
+    rendered = str(stats_row()) + str(filter_bar()) + str(mentions_body())
+
+    assert "Tooltip" not in rendered
+    assert "HoverCard" not in rendered

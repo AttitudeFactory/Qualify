@@ -235,3 +235,49 @@ def changes_note(*, removed: int = 0, restored: int = 0) -> str:
     elif restored > 1:
         parts.append(f"{restored} volvieron a mostrarse.")
     return " ".join(parts)
+
+
+# --- RESULTADOS-1 (m-24843000): one tap to the bad ones, a notice for new arrivals -------
+
+# `/menciones?sentimiento=negativas` opens the list already filtered (N11), so Inicio and
+# Resultados can link a figure straight to the list it counts. Plural slugs, as the owner
+# reads them on the cards.
+SENTIMENT_PARAM: Final = "sentimiento"
+SENTIMENT_SLUGS: Final[dict[str, str]] = {
+    "positivas": "Positiva",
+    "neutras": "Neutra",
+    "negativas": "Negativa",
+    "pendientes": "Pendiente",
+}
+
+
+def sentiment_from_param(value: str | None) -> str:
+    """The sentiment filter a `?sentimiento=` value asks for; "no filter" for anything
+    unknown (a stale or hand-typed link never breaks the screen)."""
+    return SENTIMENT_SLUGS.get((value or "").strip().lower(), ALL_SENTIMENTS)
+
+
+def toggle_sentiment(current: str, picked: str) -> str:
+    """Tapping a summary card: its sentiment, or back to all when it was already the one
+    shown — the card works as an on/off switch. An unknown label (the total) means all."""
+    if picked not in SENTIMENT_OPTIONS or picked == current:
+        return ALL_SENTIMENTS
+    return picked
+
+
+def more_filters_count(*, account: str, origin: str, sentiment: str) -> int:
+    """How many of the filters kept behind «Más filtros» on the phone narrow the list —
+    shown on the button, so a filter in use is never hidden."""
+    return sum((account != ALL_ACCOUNTS, origin != ALL_ORIGINS, sentiment != ALL_SENTIMENTS))
+
+
+# The notice for mentions that arrived while the person reads a LATER page (QUA-152,
+# founder's text 2026-10-23, epic §2b-7b). On page 1 they simply show, with no notice.
+NEW_MENTIONS_NOTICE: Final = "Llegaron menciones nuevas."
+NEW_MENTIONS_BUTTON: Final = "Verlas"
+
+
+def new_mentions_arrived(*, snapshot_scope_total: int, current_scope_total: int) -> bool:
+    """Whether the scope (account + period) holds more mentions now than under the
+    snapshot being paged — something arrived after that snapshot was taken."""
+    return current_scope_total > snapshot_scope_total

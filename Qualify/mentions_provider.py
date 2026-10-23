@@ -29,7 +29,7 @@ almost always, and it is offered as a filter when there are several.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -63,6 +63,24 @@ AUTHOR_NOTE_COMMENT = "La red social no comparte quién escribe un comentario qu
 AUTHOR_NOTE_POST = "La red social no devolvió el autor de esta publicación."
 AUTHOR_NOTE_UNREAD = "No se pudo leer esta mención en la red social."
 
+# RESULTADOS-1 (m-24843000): every reason is on screen, never only in a tooltip (N12), and
+# a bad mention says what to do — answering is the owner's, on the network (N13); leaving
+# Qualify is announced by the destination plus the ↗ icon (N9).
+LIKES_SHORT_HIDDEN = "Ocultos"
+LIKES_SHORT_MISSING = "Sin dato"
+SENTIMENT_NOTE_NO_TEXT = "Sin texto para leer"
+SENTIMENT_NOTE_ERROR = "No pudimos leerla"
+NO_LINK = "Sin enlace"
+_NETWORK_NAMES = {"instagram": "Instagram", "facebook": "Facebook"}
+_SOME_NETWORK = "la red social"
+NEGATIVE_HINT = "Esta persona no quedó contenta. Respóndele desde {network}."
+LINK_LABEL = "Ver en {network}"
+REPLY_LINK_LABEL = "Ver y responder en {network}"
+# Past this, the text is cut (three lines on a card, one in the table) and «Ver más» opens
+# it in place. Roughly three phone lines at 360 px.
+LONG_TEXT_CHARS = 140
+LONG_TEXT_LINES = 3
+
 _MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 # The product's display zone — the same one the Planificador shows times in.
 DISPLAY_ZONE = ZoneInfo(CALENDAR_DEFAULT_TZ)
@@ -88,6 +106,22 @@ class MentionVM:
     likes: str  # a number, or "—" — never a made-up 0
     likes_note: str  # why the likes are "—"; "" when they are a number
     permalink: str  # "" when Instagram gave no link
+    # RESULTADOS-1 (m-24843000) — defaults keep older call sites (tests) valid.
+    likes_short: str = ""  # "Ocultos" / "Sin dato" in place of "—"; "" for a number
+    sentiment_note: str = ""  # why there is no sentiment, on screen; "" otherwise
+    text_is_long: bool = False  # the text is cut and «Ver más» opens it
+    reply_hint: str = ""  # what to do about a negative mention; "" for the rest
+    link_label: str = ""  # «Ver en Instagram» / «Ver y responder en Instagram»
+
+
+def network_name(platform: str) -> str:
+    """'Instagram' / 'Facebook', or 'la red social' for anything else."""
+    return _NETWORK_NAMES.get(platform, _SOME_NETWORK)
+
+
+def is_long_text(text: str) -> bool:
+    """Whether a mention's text is cut on screen and needs «Ver más»."""
+    return len(text) > LONG_TEXT_CHARS or text.count("\n") >= LONG_TEXT_LINES
 
 
 @dataclass(frozen=True)
@@ -175,6 +209,18 @@ def to_vm(record: MentionRecord) -> MentionVM:
         # Meta omits a media's like_count when its owner hid the count on Instagram.
         likes, likes_note = NO_VALUE, LIKES_NOTE_HIDDEN
 
+    likes_short = (
+        ""
+        if not likes_note
+        else (LIKES_SHORT_HIDDEN if likes_note == LIKES_NOTE_HIDDEN else LIKES_SHORT_MISSING)
+    )
+    sentiment_note = {
+        "NO_TEXT": SENTIMENT_NOTE_NO_TEXT,
+        "ERROR": SENTIMENT_NOTE_ERROR,
+    }.get(record.sentiment_state, "")
+    network = network_name(record.platform)
+    negative = record.sentiment_state == "NEG"
+
     author, author_note = _author(record, is_comment=is_comment, unread=unread)
     moment = record.content_posted_at or record.received_at
     day, time = _day_and_time(moment)
@@ -194,6 +240,11 @@ def to_vm(record: MentionRecord) -> MentionVM:
         likes=likes,
         likes_note=likes_note,
         permalink=record.permalink or "",
+        likes_short=likes_short,
+        sentiment_note=sentiment_note,
+        text_is_long=not text_unavailable and is_long_text(text),
+        reply_hint=NEGATIVE_HINT.format(network=network) if negative else "",
+        link_label=(REPLY_LINK_LABEL if negative else LINK_LABEL).format(network=network),
     )
 
 
@@ -242,6 +293,18 @@ def load_page(
     )
 
 
+def scope_total_now(tenant_id: UUID, *, query: MentionQuery) -> int:
+    """How many mentions the scope (account + period of `query`) holds right now — no
+    snapshot. Compared with the snapshot's total, it tells a later page that new mentions
+    arrived (RESULTADOS-1, QUA-152). One count; blocking DB call — run it off-thread."""
+    counts = summarize_mentions_for_tenant(
+        tenant_id=tenant_id,
+        query=MentionQuery(connection_id=query.connection_id, since=query.since),
+        as_of=datetime.now(UTC),
+    )
+    return counts.total
+
+
 async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
     """Re-read these (visible) mentions from their network right away and store what
     changed (QUA-152). A failed read keeps the stored data."""
@@ -276,6 +339,9 @@ __all__ = [
     "account_labels",
     "account_options",
     "format_moment",
+    "is_long_text",
     "load_page",
+    "network_name",
+    "scope_total_now",
     "to_vm",
 ]
