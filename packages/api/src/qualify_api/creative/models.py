@@ -727,6 +727,8 @@ class CreativeAngleSet(Base):
     the angles call. The pieces themselves are `content_drafts`, one per angle."""
 
     __tablename__ = "creative_angle_sets"
+    #: «Eliminar grupo» (0078): off the list for good; the row and its pieces stay.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     __table_args__ = (
         CheckConstraint(
             "status IN ('drafting','angles_ready','generating','completed','failed')",
@@ -826,6 +828,8 @@ class CreativeAngle(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     request_key: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: «Guardar para después» (0077): put aside from the review, not a status.
+    saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     brief: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

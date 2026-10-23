@@ -41,7 +41,7 @@ import hashlib
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -67,7 +67,7 @@ from qualify_creative.angles import (
 from qualify_creative.enums import DraftStatus, FailureReason
 from qualify_creative.providers import PricingTable
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, update
+from sqlalchemy import case, func, select, update
 
 from ..catalog.models import MEDIA_TYPE_IMAGE
 from ..catalog.service import ProductRecord, UnknownProduct
@@ -119,6 +119,7 @@ DISCARD_REASON = "Descartada en Variaciones."
 REGENERATE_REASON = "Regenerada en Variaciones: otra toma del mismo escenario."
 
 _IN_PROGRESS = "Esa propuesta se está generando: espera a que termine."
+_NOT_SAVABLE = "Esa propuesta ya está decidida: no se puede guardar para después."
 _NOT_DISCARDABLE: Mapping[str, str] = {
     ANGLE_DISCARDED: "Ese ángulo ya está descartado.",
     ANGLE_APPROVED: "Una pieza aprobada no se descarta desde aquí.",
@@ -194,6 +195,15 @@ class AngleSetRecord:
     failure_detail: str | None = None
     created_by: UUID | None = None
     created_at: datetime | None = None
+    #: «Eliminar grupo» (0078): when it left the list; None = listed.
+    archived_at: datetime | None = None
+    #: What the set's angles came to (filled by `list_sets`, one grouped query for the
+    #: whole list): pieces an operator can review or already did, and pieces that failed.
+    ready_count: int = 0
+    failed_count: int = 0
+    #: Angles not deleted (None when the record did not come from `list_sets`). A group
+    #: with none standing is nothing to show (request 2026-10-22).
+    open_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +225,8 @@ class AngleRecord:
     brief: Mapping[str, Any] | None = None
     request_key: UUID | None = None
     reserved_at: datetime | None = None
+    #: «Guardar para después»: put aside from the review (0077); None = on the review.
+    saved_at: datetime | None = None
 
     @property
     def angle(self) -> CreativeAngle:
@@ -304,8 +316,19 @@ class AngleView:
         was rejected or whose draft is gone — never a reserved or drafting one."""
         if self.angle.status in (ANGLE_PROPOSED, ANGLE_FAILED):
             return True
+        if self.undone:
+            return True
         return self.angle.status == ANGLE_QUEUED and (
             self.angle.draft_id is None or self.draft_status in _SETTLED_DRAFT_STATUSES
+        )
+
+    @property
+    def undone(self) -> bool:
+        """Approved here, then its piece rejected from Piezas (review 2026-10-22, with the
+        APPROVED → REJECTED edge): the angle is open again — it can be discarded, edited
+        or regenerated, and it is neither done nor ready."""
+        return (
+            self.angle.status == ANGLE_APPROVED and self.draft_status == DraftStatus.REJECTED.value
         )
 
     @property
@@ -317,7 +340,22 @@ class AngleView:
         return self.settled
 
     @property
+    def saved(self) -> bool:
+        """Put aside with «Guardar para después»."""
+        return self.angle.saved_at is not None
+
+    @property
+    def can_save(self) -> bool:
+        """Anything still open can be put aside: not a discarded one, not an approved
+        one, and not one already aside."""
+        if self.saved or self.angle.status == ANGLE_DISCARDED:
+            return False
+        return self.angle.status != ANGLE_APPROVED or self.undone
+
+    @property
     def is_done(self) -> bool:
+        if self.undone:
+            return False
         return self.angle.status == ANGLE_APPROVED or (
             self.draft_status is not None
             and self.draft_status
@@ -341,8 +379,10 @@ class AngleSetDetail:
 
     @property
     def pending_images(self) -> int:
-        """Angles that can still be sent to generation."""
-        return sum(1 for v in self.angles if v.angle.status == ANGLE_PROPOSED)
+        """Angles «Generar» would send: proposed, and not put aside for later."""
+        return sum(
+            1 for v in self.angles if v.angle.status == ANGLE_PROPOSED and v.angle.saved_at is None
+        )
 
 
 @dataclass(frozen=True)
@@ -483,6 +523,54 @@ class CampaignOps(Protocol):
 # Postgres repository
 
 
+#: A draft an operator can review, or already did: the piece is there.
+_READY_DRAFT_STATUSES = (
+    DraftStatus.GENERATED.value,
+    DraftStatus.APPROVED.value,
+    DraftStatus.STAGED.value,
+    DraftStatus.PUBLISHED.value,
+)
+
+
+def _outcome_counts(session: Any, set_ids: Sequence[UUID]) -> dict[UUID, dict[str, int]]:
+    """`{set_id: {"ready_count", "failed_count"}}` for the sets listed, in ONE query:
+    an angle is ready when its draft is, failed when it or its draft failed."""
+    if not set_ids:
+        return {}
+    ready = case((orm.ContentDraft.status.in_(_READY_DRAFT_STATUSES), 1), else_=0)
+    failed = case(
+        (
+            (orm.CreativeAngle.status != ANGLE_DISCARDED)
+            & (
+                (orm.CreativeAngle.status == ANGLE_FAILED)
+                | (orm.ContentDraft.status == DraftStatus.FAILED.value)
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    open_ = case((orm.CreativeAngle.status != ANGLE_DISCARDED, 1), else_=0)
+    rows = session.execute(
+        select(orm.CreativeAngle.set_id, func.sum(ready), func.sum(failed), func.sum(open_))
+        .select_from(orm.CreativeAngle)
+        .outerjoin(orm.ContentDraft, orm.ContentDraft.id == orm.CreativeAngle.draft_id)
+        .where(orm.CreativeAngle.set_id.in_(list(set_ids)))
+        .group_by(orm.CreativeAngle.set_id)
+    ).all()
+    counts = {
+        set_id: {
+            "ready_count": int(n_ready or 0),
+            "failed_count": int(n_failed or 0),
+            "open_count": int(n_open or 0),
+        }
+        for set_id, n_ready, n_failed, n_open in rows
+    }
+    # a set with no angle row at all (Claude never answered) has nothing standing either
+    for set_id in set_ids:
+        counts.setdefault(set_id, {"ready_count": 0, "failed_count": 0, "open_count": 0})
+    return counts
+
+
 def _set_record(row: orm.CreativeAngleSet) -> AngleSetRecord:
     return AngleSetRecord(
         id=row.id,
@@ -507,6 +595,7 @@ def _set_record(row: orm.CreativeAngleSet) -> AngleSetRecord:
         failure_detail=row.failure_detail,
         created_by=row.created_by,
         created_at=row.created_at,
+        archived_at=row.archived_at,
     )
 
 
@@ -529,6 +618,7 @@ def _angle_record(row: orm.CreativeAngle) -> AngleRecord:
         brief=dict(row.brief) if row.brief else None,
         request_key=row.request_key,
         reserved_at=row.reserved_at,
+        saved_at=row.saved_at,
     )
 
 
@@ -593,10 +683,12 @@ class PostgresAngleSetRepository:
             rows = session.scalars(
                 select(orm.CreativeAngleSet)
                 .where(orm.CreativeAngleSet.brand_id == brand_id)
+                .where(orm.CreativeAngleSet.archived_at.is_(None))
                 .order_by(orm.CreativeAngleSet.created_at.desc())
                 .limit(limit)
             ).all()
-            return tuple(_set_record(row) for row in rows)
+            counts = _outcome_counts(session, [row.id for row in rows])
+            return tuple(replace(_set_record(row), **counts.get(row.id, {})) for row in rows)
 
     def insert_angles(
         self, *, tenant_id: UUID, set_id: UUID, angles: Sequence[CreativeAngle]
@@ -1039,6 +1131,33 @@ class AngleSetService:
             )
         self._repo.update_angle(tenant_id=tenant_id, angle_id=angle_id, status=ANGLE_DISCARDED)
 
+    def archive_set(self, *, tenant_id: UUID, set_id: UUID, user_id: UUID) -> int:
+        """«Eliminar grupo» (request 2026-10-22): every open angle is discarded (a piece
+        waiting for review rejected with it), the approved pieces stay where they are,
+        and the group leaves the list for good. Returns how many angles were discarded."""
+        self._require_set(tenant_id, set_id)
+        discarded = 0
+        for angle in self._repo.list_angles(tenant_id=tenant_id, set_id=set_id):
+            if angle.status == ANGLE_DISCARDED:
+                continue
+            try:  # an approved one (still approved) refuses; one undone from Piezas goes
+                self.discard_angle(tenant_id=tenant_id, angle_id=angle.id, user_id=user_id)
+            except AngleNotActionable:  # approved, or being made right now
+                continue
+            discarded += 1
+        self._repo.update_set(tenant_id=tenant_id, set_id=set_id, archived_at=datetime.now(UTC))
+        return discarded
+
+    def save_angle(self, *, tenant_id: UUID, angle_id: UUID, saved: bool) -> None:
+        """«Guardar para después» (saved=True) or take it up again (False): the angle
+        leaves / rejoins the review with its status untouched."""
+        _, view = self._angle_view(tenant_id, angle_id)
+        if saved and not view.can_save:
+            raise AngleNotActionable(_NOT_SAVABLE)
+        self._repo.update_angle(
+            tenant_id=tenant_id, angle_id=angle_id, saved_at=datetime.now(UTC) if saved else None
+        )
+
     def restore_angle(self, *, tenant_id: UUID, angle_id: UUID) -> None:
         """Back into the set. One that never had a piece is proposed again; one whose
         piece was rejected on discard is queued again, so what it can do next is
@@ -1049,25 +1168,49 @@ class AngleSetService:
         status = ANGLE_QUEUED if angle.draft_id is not None else ANGLE_PROPOSED
         self._repo.update_angle(tenant_id=tenant_id, angle_id=angle_id, status=status)
 
-    def edit_angle(self, *, tenant_id: UUID, angle_id: UUID, scene: str, composition: str) -> None:
-        """Rewrite what the picture shows. Bounded like Claude's own proposal
-        (`CreativeAngle`), and only while nothing is being made of it: the next take —
-        «Generar», «Reintentar» or «Regenerar» — is briefed from the new words."""
+    def edit_angle(
+        self,
+        *,
+        tenant_id: UUID,
+        angle_id: UUID,
+        scene: str,
+        composition: str,
+        title: str | None = None,
+        hook: str | None = None,
+        cta: str | None = None,
+        rationale: str | None = None,
+    ) -> None:
+        """Rewrite the proposal — the scene and framing, and (request 2026-10-22) any of
+        the title, hook, CTA and why; None leaves a field as it was. Bounded like
+        Claude's own proposal (`CreativeAngle`), and only while nothing is being made of
+        it: the next take — «Generar», «Reintentar» or «Regenerar» — is briefed from the
+        new words."""
         _, view = self._angle_view(tenant_id, angle_id)
         if not view.can_edit:
             raise AngleNotActionable(_NOT_EDITABLE.get(view.angle.status, _IN_PROGRESS))
+        update: dict[str, str] = {"scene": scene, "composition": composition}
+        for field_name, value in (
+            ("title", title),
+            ("hook", hook),
+            ("cta", cta),
+            ("rationale", rationale),
+        ):
+            if value is not None:
+                update[field_name] = value
         try:
-            edited = view.angle.angle.model_copy(
-                update={"scene": scene, "composition": composition}
-            )
+            edited = view.angle.angle.model_copy(update=update)
             edited = CreativeAngle.model_validate(edited.model_dump())
         except ValidationError as exc:
             raise AngleNotActionable(_BAD_SCENE) from exc
         self._repo.update_angle(
             tenant_id=tenant_id,
             angle_id=angle_id,
+            title=edited.title,
             scene=edited.scene,
             composition=edited.composition,
+            hook=edited.hook,
+            cta=edited.cta,
+            rationale=edited.rationale,
         )
 
     def regenerate_angle(self, *, tenant_id: UUID, angle_id: UUID, user_id: UUID) -> UUID:
@@ -1132,10 +1275,14 @@ class AngleSetService:
         record = self._require_set(tenant_id, set_id)
         self._recover(tenant_id, record)
         wanted = set(angle_ids) if angle_ids is not None else None
+        # never one put aside with «Guardar para después» (review 2026-10-22): it left
+        # the review, so «Generar» must not pay for it
         targets = [
             a
             for a in self._repo.list_angles(tenant_id=tenant_id, set_id=set_id)
-            if a.status == ANGLE_PROPOSED and (wanted is None or a.id in wanted)
+            if a.status == ANGLE_PROPOSED
+            and a.saved_at is None
+            and (wanted is None or a.id in wanted)
         ]
         if not targets:
             return GenerationOutcome(campaign_id=record.campaign_id)

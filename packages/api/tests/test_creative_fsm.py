@@ -34,6 +34,8 @@ DECLARED_EDGES: list[tuple[str, DraftTrigger, str, dict]] = [
     (DRAFTING, DraftTrigger.REAP, FAILED, {}),
     (GENERATED, DraftTrigger.APPROVE, APPROVED, {"selected_variant_id": VARIANT}),
     (GENERATED, DraftTrigger.REJECT, REJECTED, {}),
+    # 2026-10-22: an approval never scheduled nor published can be undone from Piezas
+    (APPROVED, DraftTrigger.REJECT, REJECTED, {}),
     (REJECTED, DraftTrigger.REGENERATE, DRAFTING, {}),
     (APPROVED, DraftTrigger.STAGE, STAGED, {}),
     (APPROVED, DraftTrigger.PUBLISH_OK, PUBLISHED, {}),
@@ -76,7 +78,6 @@ UNDECLARED_EDGES: list[tuple[str, DraftTrigger]] = [
     (GENERATED, DraftTrigger.STAGE),  # stage without approval
     (GENERATED, DraftTrigger.REGENERATE),  # regenerate is only legal from rejected
     (APPROVED, DraftTrigger.APPROVE),  # double-approve
-    (APPROVED, DraftTrigger.REJECT),  # approval is not reversible via the FSM
     (REJECTED, DraftTrigger.APPROVE),  # rejected must regenerate, not flip to approved
     (STAGED, DraftTrigger.STAGE),  # double-stage
     (PUBLISHED, DraftTrigger.PUBLISH_OK),  # published is terminal

@@ -296,6 +296,32 @@ def test_two_sessions_racing_for_one_angle_reserve_it_once(seeded: tuple[UUID, U
     assert stored.request_key is not None and stored.reserved_at is not None
 
 
+def test_an_archived_set_is_not_listed(seeded: tuple[UUID, UUID]) -> None:
+    """0078: «eliminar grupo» is a filter on the list, never a DELETE."""
+    brand_id, user_id = seeded
+    repo = PostgresAngleSetRepository()
+    set_id = _new_set(repo, brand_id, user_id)
+    assert set_id in {s.id for s in repo.list_sets(tenant_id=TENANT_A, brand_id=brand_id)}
+    repo.update_set(tenant_id=TENANT_A, set_id=set_id, archived_at=datetime.now(UTC))
+    assert set_id not in {s.id for s in repo.list_sets(tenant_id=TENANT_A, brand_id=brand_id)}
+    stored = repo.get_set(tenant_id=TENANT_A, set_id=set_id)
+    assert stored is not None and stored.archived_at is not None  # the row stays
+
+
+def test_saved_at_round_trips_through_the_repository(seeded: tuple[UUID, UUID]) -> None:
+    """0077: «guardar para después» is a timestamp beside the status, not a status."""
+    brand_id, user_id = seeded
+    repo = PostgresAngleSetRepository()
+    set_id = _new_set(repo, brand_id, user_id)
+    (angle_id,) = repo.insert_angles(tenant_id=TENANT_A, set_id=set_id, angles=_angles(1))
+    repo.update_angle(tenant_id=TENANT_A, angle_id=angle_id, saved_at=datetime.now(UTC))
+    stored = repo.get_angle(tenant_id=TENANT_A, angle_id=angle_id)
+    assert stored is not None and stored.saved_at is not None and stored.status == ANGLE_PROPOSED
+    repo.update_angle(tenant_id=TENANT_A, angle_id=angle_id, saved_at=None)
+    stored = repo.get_angle(tenant_id=TENANT_A, angle_id=angle_id)
+    assert stored is not None and stored.saved_at is None
+
+
 def test_only_the_holder_of_the_key_settles_a_reservation(seeded: tuple[UUID, UUID]) -> None:
     brand_id, user_id = seeded
     repo = PostgresAngleSetRepository()
