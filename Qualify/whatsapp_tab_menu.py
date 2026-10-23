@@ -8,9 +8,16 @@ number switch.
 
 Layout (docs/design-system.md §9.1 — tones only, the system's primitives, one solid
 action): the number's menus; then, for the open menu, a structured editor (Entrada →
-Pasos → Versiones — a form, not a graph canvas, plan §5.3) next to a phone-style preview
-that runs the real engine over the brand's real catalog. Every field shows its Spanish
-validation message under it; «Guardar versión» stays disabled while anything is wrong.
+Pasos — a form, not a graph canvas, plan §5.3) next to a phone-style preview that runs
+the real engine over the brand's real catalog. Every field shows its Spanish validation
+message under it.
+
+Publishing (m-24842995): the menu's bar carries the one solid action, «Publicar en mi
+WhatsApp» (saves the changes and publishes, behind a confirmation), «Guardar sin
+publicar» as the secondary, «Probar el menú» on the phone (jumps to the preview, which
+sits under the long editor there), and, after publishing, «listo» plus the next step —
+the QR for the counter (guide N3). Older versions live behind «Ver versiones
+anteriores»; opening one puts it in the editor, and the same main button publishes it.
 
 Talks to `WhatsAppMenuState` only — never to the provider, Graph or Postgres.
 """
@@ -43,8 +50,14 @@ from .whatsapp_menu_vm import (
     KIND_ORDER_SUMMARY,
     KIND_PRODUCTS,
     KIND_TEXT,
+    NEXT_STEP_QR,
     NODE_KINDS,
     NONE_VALUE,
+    PUBLISH_BUTTON,
+    PUBLISH_CONFIRM,
+    PUBLISH_CONFIRM_REPLACES,
+    PUBLISH_CONFIRM_SAVES,
+    SAVE_ONLY_BUTTON,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
     CommandForm,
@@ -58,8 +71,10 @@ from .whatsapp_menu_vm import (
     PreviewMessageVM,
 )
 from .whatsapp_state import WhatsAppState
+from .whatsapp_vm import TAB_QR
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
+PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
 
 
 # ======================================================================================
@@ -279,8 +294,8 @@ def _menus_card() -> rx.Component:
         rx.vstack(
             _section_title("Menús de este número", _new_menu_dialog()),
             rx.text(
-                "El menú responde solo en WhatsApp: saluda, muestra atajos, toma el pedido "
-                "desde tu catálogo y lo pasa a una persona para cerrarlo.",
+                "Tu WhatsApp responde con el menú que tú escribiste: saluda, muestra "
+                "atajos, toma el pedido desde tu catálogo y te pasa el chat para cerrarlo.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -312,37 +327,133 @@ def _menus_card() -> rx.Component:
 # ======================================================================================
 
 
+def _publish_dialog() -> rx.Component:
+    """The one solid action of the tab: saves the changes (if any) and publishes."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(
+            rx.button(
+                rx.icon("send", size=T.ICON_SM),
+                PUBLISH_BUTTON,
+                disabled=~S.can_publish,
+                loading=S.publishing,
+                size="3",
+            ),
+        ),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(PUBLISH_BUTTON),
+            rx.alert_dialog.description(PUBLISH_CONFIRM, size="2"),
+            rx.vstack(
+                rx.cond(S.dirty, _hint(PUBLISH_CONFIRM_SAVES), rx.fragment()),
+                _hint(PUBLISH_CONFIRM_REPLACES),
+                spacing="1",
+                align_items="start",
+                margin_top="0.5rem",
+            ),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button("Cancelar", variant="soft", size="3", **T.tone_scheme("neutral")),
+                ),
+                rx.alert_dialog.action(
+                    rx.button("Publicar", on_click=S.publish_current, size="3"),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+    )
+
+
+def _actions() -> rx.Component:
+    return rx.flex(
+        _publish_dialog(),
+        rx.button(
+            rx.icon("play", size=T.ICON_SM),
+            "Probar el menú",
+            on_click=rx.scroll_to(PREVIEW_ELEMENT_ID),
+            variant="soft",
+            size="3",
+            display=rx.breakpoints(initial="inline-flex", lg="none"),
+        ),
+        rx.button(
+            rx.icon("save", size=T.ICON_SM),
+            SAVE_ONLY_BUTTON,
+            on_click=S.save_current_version,
+            disabled=~S.can_save | S.publishing,
+            loading=S.saving & ~S.publishing,
+            variant="soft",
+            size="3",
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="2",
+        wrap="wrap",
+        align="center",
+        width="100%",
+    )
+
+
+def _next_step() -> rx.Component:
+    """Guide N3: after publishing, «listo» and the next job — the QR for the counter —
+    with one solid button to it and a soft one to go back to the editor."""
+    return rx.vstack(
+        rx.hstack(
+            rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+            rx.text("Listo: tu WhatsApp ya responde con este menú.", size="2", weight="medium"),
+            spacing="2",
+            align="center",
+        ),
+        rx.text(NEXT_STEP_QR, size="2"),
+        rx.text(
+            "Tus clientes lo escanean, te escriben y les responde este menú.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        rx.flex(
+            rx.button(
+                rx.icon("qr-code", size=T.ICON_SM),
+                "Crear mi código QR",
+                on_click=WhatsAppState.select_tab(TAB_QR),
+                size="3",
+            ),
+            rx.button(
+                "Seguir editando",
+                on_click=S.dismiss_next_step,
+                variant="soft",
+                size="3",
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="2",
+            wrap="wrap",
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+        padding="0.75rem 1rem",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CONTROL,
+        background=T.tone_color("ok", 2),
+    )
+
+
 def _toolbar() -> rx.Component:
     return card(
         rx.vstack(
-            rx.hstack(
-                rx.vstack(
-                    rx.hstack(
-                        rx.heading(S.menu.name, size="4", as_="h2"),
-                        _tone_pill(S.menu.status_label, S.menu.status_tone),
-                        rx.cond(S.dirty, tag("Cambios sin guardar"), rx.fragment()),
-                        spacing="2",
-                        align="center",
-                        wrap="wrap",
-                    ),
-                    rx.text(S.editing_from, size="1", color=T.TEXT_MUTED),
-                    spacing="1",
-                    align_items="start",
+            rx.vstack(
+                rx.hstack(
+                    rx.heading(S.menu.name, size="4", as_="h2"),
+                    _tone_pill(S.menu.status_label, S.menu.status_tone),
+                    rx.cond(S.dirty, tag("Cambios sin publicar"), rx.fragment()),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
                 ),
-                rx.spacer(),
-                rx.button(
-                    rx.icon("save", size=T.ICON_SM),
-                    "Guardar versión",
-                    on_click=S.save_current_version,
-                    disabled=~S.can_save,
-                    loading=S.saving,
-                    size="2",
-                ),
-                width="100%",
-                align="start",
-                wrap="wrap",
-                spacing="3",
+                rx.text(S.editing_from, size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
             ),
+            rx.cond(S.just_published, _next_step(), _actions()),
             rx.hstack(
                 rx.switch(
                     checked=S.menu.is_paused,
@@ -355,8 +466,8 @@ def _toolbar() -> rx.Component:
                     rx.text(
                         rx.cond(
                             S.menu.is_published,
-                            "En pausa, el número no responde solo; los chats llegan a la "
-                            "bandeja como siempre.",
+                            "En pausa, tu WhatsApp no responde con el menú; los mensajes "
+                            "llegan a Chats como siempre.",
                             "Se puede pausar una vez publicado.",
                         ),
                         size="1",
@@ -997,39 +1108,6 @@ def _steps_card() -> rx.Component:
 # ======================================================================================
 
 
-def _publish_action(version: MenuVersionVM) -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.trigger(
-            rx.button(
-                rx.icon("send", size=T.ICON_SM),
-                "Publicar esta versión",
-                loading=S.publishing_version == version.version_id,
-                variant="soft",
-                size="1",
-            ),
-        ),
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Publicar en el número"),
-            rx.alert_dialog.description(
-                "El número empieza a responder con esta versión y WhatsApp muestra su "
-                "bienvenida, atajos y comandos. Si otro menú estaba publicado, deja de "
-                "responder."
-            ),
-            rx.flex(
-                rx.alert_dialog.cancel(
-                    rx.button("Cancelar", variant="soft", **T.tone_scheme("neutral")),
-                ),
-                rx.alert_dialog.action(
-                    rx.button("Publicar", on_click=S.publish(version.version_id)),
-                ),
-                spacing="3",
-                margin_top="1rem",
-                justify="end",
-            ),
-        ),
-    )
-
-
 def _version_row(version: MenuVersionVM) -> rx.Component:
     return rx.hstack(
         rx.vstack(
@@ -1062,7 +1140,6 @@ def _version_row(version: MenuVersionVM) -> rx.Component:
             size="1",
             **T.tone_scheme("neutral"),
         ),
-        _publish_action(version),
         spacing="2",
         align="center",
         width="100%",
@@ -1072,39 +1149,60 @@ def _version_row(version: MenuVersionVM) -> rx.Component:
     )
 
 
-def _versions_card() -> rx.Component:
-    return card(
-        rx.vstack(
-            _section_title("Versiones"),
-            rx.text(
-                "Una versión guardada no cambia nunca. Publicar una la pone a responder en "
-                "el número; puedes volver a una anterior cuando quieras.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
+def _versions_section() -> rx.Component:
+    """«Ver versiones anteriores»: folded by default — the main button is the way to
+    publish; this is only for going back to an older version."""
+    return rx.vstack(
+        rx.button(
             rx.cond(
-                S.dirty & (S.versions.length() > 0),
-                callout(
-                    "Tienes cambios sin guardar. «Publicar» usa la versión guardada, no lo "
-                    "que ves en el editor; «Abrir en el editor» descarta esos cambios.",
-                    "info",
-                ),
-                rx.fragment(),
+                S.versions_open,
+                rx.icon("chevron-up", size=T.ICON_SM),
+                rx.icon("chevron-down", size=T.ICON_SM),
             ),
-            rx.cond(
-                S.versions.length() > 0,
-                rx.vstack(rx.foreach(S.versions, _version_row), spacing="0", width="100%"),
-                rx.text(
-                    "Aún no guardaste ninguna versión de este menú.",
-                    size="2",
-                    color=T.TEXT_FAINT,
-                ),
-            ),
-            spacing="3",
-            width="100%",
-            align_items="start",
+            rx.cond(S.versions_open, "Ocultar versiones anteriores", "Ver versiones anteriores"),
+            on_click=S.toggle_versions,
+            variant="ghost",
+            size="3",
+            **T.tone_scheme("neutral"),
         ),
-        padding="1.25rem 1.5rem",
+        rx.cond(
+            S.versions_open,
+            card(
+                rx.vstack(
+                    rx.text(
+                        "Cada vez que guardas queda una versión. Abre una en el editor y "
+                        "toca «Publicar en mi WhatsApp» para volver a ella.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.cond(
+                        S.dirty & (S.versions.length() > 0),
+                        callout(
+                            "Tienes cambios sin publicar: «Abrir en el editor» los descarta.",
+                            "info",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        S.versions.length() > 0,
+                        rx.vstack(rx.foreach(S.versions, _version_row), spacing="0", width="100%"),
+                        rx.text(
+                            "Aún no guardaste ninguna versión de este menú.",
+                            size="2",
+                            color=T.TEXT_FAINT,
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
+                    align_items="start",
+                ),
+                padding="1rem 1.25rem",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -1364,12 +1462,18 @@ def _editor() -> rx.Component:
             _toolbar(),
             _entry_card(),
             _steps_card(),
-            _versions_card(),
+            _versions_section(),
             spacing="4",
             width="100%",
             min_width="0",
         ),
-        rx.box(_preview_card(), position=rx.breakpoints(initial="static", lg="sticky"), top="1rem"),
+        rx.box(
+            _preview_card(),
+            id=PREVIEW_ELEMENT_ID,
+            position=rx.breakpoints(initial="static", lg="sticky"),
+            top="1rem",
+            scroll_margin_top="1rem",
+        ),
         grid_template_columns=rx.breakpoints(
             initial="minmax(0, 1fr)", lg="minmax(0, 1fr) minmax(0, 22rem)"
         ),

@@ -1000,8 +1000,8 @@ def issues_summary(count: int) -> str:
     if count == 0:
         return ""
     if count == 1:
-        return "Hay 1 cosa por corregir antes de guardar."
-    return f"Hay {count} cosas por corregir antes de guardar."
+        return "Hay 1 cosa por corregir antes de publicar."
+    return f"Hay {count} cosas por corregir antes de publicar."
 
 
 # --------------------------------------------------------------------------------------
@@ -1164,8 +1164,33 @@ def validate_menu_name(name: str, existing: Sequence[str]) -> str:
 # --------------------------------------------------------------------------------------
 
 PUBLISH_OK = (
-    "Publicado. WhatsApp ya muestra la bienvenida, los atajos y los comandos de esta versión."
+    "Listo: tu WhatsApp ya responde con este menú y muestra su bienvenida, atajos y comandos."
 )
+
+# m-24842995: one main action. «Publicar en mi WhatsApp» saves the editor (when it has
+# changes) and publishes that version after this confirmation; «Guardar sin publicar» is
+# the secondary path. The copy says whose words go out (the owner's) and who takes the
+# chat (the owner) — never that Qualify answers on its own (guide N13).
+PUBLISH_BUTTON = "Publicar en mi WhatsApp"
+SAVE_ONLY_BUTTON = "Guardar sin publicar"
+PUBLISH_CONFIRM = (
+    "Desde que publiques, tu WhatsApp responde con este menú. Tú tomas el chat cuando quieras."
+)
+PUBLISH_CONFIRM_SAVES = "Primero guardamos tus cambios como una versión nueva."
+PUBLISH_CONFIRM_REPLACES = "Si tenías otro menú publicado en este número, ese deja de responder."
+NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para el mostrador"
+
+
+def can_publish(
+    *, has_menu: bool, error_count: int, dirty: bool, editing_version_id: str, busy: bool
+) -> bool:
+    """Whether «Publicar en mi WhatsApp» can run: an open menu with nothing to fix, and
+    something to publish — the editor's changes (saved first) or the saved version the
+    editor shows. Re-publishing the live version is allowed: it re-sends the shortcuts
+    to WhatsApp, which is what the partial-failure banner asks for."""
+    if not has_menu or busy or error_count > 0:
+        return False
+    return dirty or bool(editing_version_id)
 
 
 def publish_notice(
@@ -1176,7 +1201,7 @@ def publish_notice(
     is_transport: bool = False,
     rejected_locally: bool = False,
 ) -> tuple[str, str]:
-    """(message, tone) after «Publicar esta versión». The version is live in Qualify in
+    """(message, tone) after «Publicar en mi WhatsApp». The version is live in Qualify in
     every case — the database publish happens first and is kept; only WhatsApp's copy of
     the shortcuts can lag, and the banner says so with Meta's code, never Meta's text."""
     if graph_ok:
@@ -1358,9 +1383,15 @@ __all__ = [
     "KIND_TEXT",
     "MAX_LIST_SECTIONS",
     "NODE_KINDS",
+    "NEXT_STEP_QR",
     "NONE_VALUE",
+    "PUBLISH_BUTTON",
+    "PUBLISH_CONFIRM",
+    "PUBLISH_CONFIRM_REPLACES",
+    "PUBLISH_CONFIRM_SAVES",
     "REPLY_BUTTON",
     "REPLY_LIST",
+    "SAVE_ONLY_BUTTON",
     "TEMPLATE_EMPTY",
     "TEMPLATE_FAST_FOOD",
     "CommandForm",
@@ -1379,6 +1410,7 @@ __all__ = [
     "apply_kind_defaults",
     "build_menu_summary",
     "build_version_vm",
+    "can_publish",
     "catalog_note",
     "change_kind",
     "definition_to_form",

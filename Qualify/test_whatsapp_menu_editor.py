@@ -400,8 +400,8 @@ def test_two_order_summaries_is_a_menu_level_error() -> None:
 
 def test_issue_summary_copy() -> None:
     assert issues_summary(0) == ""
-    assert issues_summary(1) == "Hay 1 cosa por corregir antes de guardar."
-    assert issues_summary(3) == "Hay 3 cosas por corregir antes de guardar."
+    assert issues_summary(1) == "Hay 1 cosa por corregir antes de publicar."
+    assert issues_summary(3) == "Hay 3 cosas por corregir antes de publicar."
 
 
 def test_menu_name_rules() -> None:
@@ -534,7 +534,7 @@ def test_the_publish_notice_survives_the_refresh_after_publishing() -> None:
 
     from .whatsapp_menu_state import WhatsAppMenuState
 
-    publish = inspect.getsource(WhatsAppMenuState.publish.fn)
+    publish = inspect.getsource(WhatsAppMenuState.publish_current.fn)
     assert "WhatsAppMenuState.reload" not in publish
     load = inspect.getsource(WhatsAppMenuState._load)
     assert 'self.banner = ""' not in load
@@ -556,15 +556,16 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Menús de este número",
         "Nuevo menú",
         "Empezar desde el ejemplo de comida rápida",
-        "Guardar versión",
+        "Publicar en mi WhatsApp",
+        "Guardar sin publicar",
+        "Probar el menú",
         "Pausar menú en este número",
         "Responder al primer mensaje",
         "Palabras clave",
         "Atajos",
         "Comandos",
         "Pasos",
-        "Versiones",
-        "Publicar esta versión",
+        "Ver versiones anteriores",
         "Vista previa",
         "Reiniciar",
     ):
