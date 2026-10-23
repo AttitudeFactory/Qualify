@@ -115,6 +115,8 @@ def _texture_flat_cases(tmp_path: Path) -> tt.CaseSet:
         {"id": "logo-roto", "path": "roto.png", "expected_text": "ROTO"},
         {"id": "logo-sano", "path": "sano.png", "expected_text": "SANO"},
     ]
+    raw["blocks"]["texture"]["references"] = [{"id": "tex", "path": "tex.png"}]
+    (tmp_path / "tex.png").write_bytes(_bytes(Image.new("RGB", (8, 8), (200, 120, 40)), "PNG"))
     logo = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
     logo.paste((9, 9, 9, 255), (10, 10, 30, 30))
     good = _bytes(logo, "PNG")
@@ -130,7 +132,8 @@ def test_matrix_shape(cases: tt.CaseSet) -> None:
     assert len(by_block["color"]) == 10 * 3 + 2
     # 10 logos x 5 textures + 2 fixtures
     assert len(by_block["texture"]) == 10 * 5 + 2
-    assert len(by_block["flat"]) == 12
+    # the same logo x texture pairs as flat finishes
+    assert len(by_block["flat"]) == 10 * 5 + 2
     assert len({i.id for i in items}) == len(items)
     assert all(i.expected_text for i in by_block["texture"] + by_block["flat"])
     assert sum(1 for c in cases.color if c.fixture) == 2
@@ -146,12 +149,12 @@ def test_plan_totals_per_block_and_size(cases: tt.CaseSet) -> None:
     assert all(p.cost_usd == 0 for p in one_k if p.item.block == "flat")
     assert tt.total_usd(two_k) <= sc.MAX_USD_CEILING
     two_models = tt.plan_calls(items, V6, model_ids=[PRO, LITE], size="2K")
-    assert len(two_models) == 84 * 2 + 12  # flat runs once, not per model
+    assert len(two_models) == 84 * 2 + 52  # flat runs once, not per model
 
 
 def test_limit_and_block_selection(cases: tt.CaseSet) -> None:
     items = tt.build_matrix(cases, blocks=["texture"], limit=2)
-    assert [i.case_id for i in items] == ["fix-qualify-icono", "fix-qualify-marca"]
+    assert [i.case_id for i in items] == ["fix-luma", "fix-qualify-icono"]
     assert tt.missing_files(items, EVAL_DIR / "imagenes", REPO_ROOT) == []
     with pytest.raises(ValueError):
         tt.build_matrix(cases, blocks=["sepia"])
@@ -196,18 +199,6 @@ def test_invalid_cases_are_rejected(breaker: Any) -> None:
     breaker(raw)
     with pytest.raises(tt.CasesError):
         tt.parse_cases(raw)
-
-
-def test_flat_fill_keeps_the_logo_alpha() -> None:
-    logo = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
-    logo.paste((9, 9, 9, 255), (10, 10, 30, 30))
-    out = Image.open(io.BytesIO(tt.flat_fill(_bytes(logo, "PNG"), (192, 57, 43))))
-    assert out.getpixel((20, 20)) == (192, 57, 43, 255)
-    assert out.getpixel((0, 0))[3] == 0
-    opaque = Image.new("RGB", (40, 40), (255, 255, 255))
-    opaque.paste((0, 0, 0), (10, 10, 30, 30))
-    out2 = Image.open(io.BytesIO(tt.flat_fill(_bytes(opaque, "PNG"), (1, 2, 3))))
-    assert out2.getpixel((20, 20)) == (1, 2, 3, 255) and out2.getpixel((0, 0))[3] == 0
 
 
 def test_dry_run_end_to_end_sends_nothing(
@@ -283,24 +274,15 @@ def test_paid_path_with_a_test_double(tmp_path: Path, monkeypatch: pytest.Monkey
     assert body["model"] == PRO
     assert body["image"][0].startswith("data:image/png;base64,")  # the logo keeps its alpha
     assert body["image"][1].startswith("data:image/jpeg;base64,")
-    assert '"Q"' in body["prompt"]
-    record = report["items"][f"texture:fix-qualify-icono+fix-muestra-1-tex@{PRO}"]
+    assert '"LUMA"' in body["prompt"]
+    record = report["items"][f"texture:fix-luma+fix-textura-rayas-cobre@{PRO}"]
     assert record["prompt_version"] == tt.PROMPT_VERSION and record["pricing_version"] == "v6"
+    assert record["legibilidad"]["estado"] == "pendiente"  # no reader configured
+    assert record["legibilidad"]["metricas_version"] == "metricas-v1"
+    flat = report["items"][f"flat:fix-luma+fix-textura-rayas-cobre@{tt.FLAT_PROVIDER}"]
+    assert flat["prompt_version"] == tt.FLAT_VERSION
+    assert flat["metricas"]["aprobado"] is True and flat["metricas"]["tamano"][0] == 1080
     assert len(list(tmp_path.rglob("*.png"))) == 1 and len(list(tmp_path.rglob("*.jpg"))) == 1
-
-
-@pytest.mark.parametrize(
-    ("background", "mark"),
-    [((255, 255, 255), (255, 230, 0)), ((0, 0, 0), (0, 0, 200))],  # yellow/white, blue/black
-)
-def test_flat_fill_masks_marks_by_the_largest_channel(
-    background: tuple[int, int, int], mark: tuple[int, int, int]
-) -> None:
-    logo = Image.new("RGB", (40, 40), background)
-    logo.paste(mark, (10, 10, 30, 30))
-    out = Image.open(io.BytesIO(tt.flat_fill(_bytes(logo, "PNG"), (1, 2, 3))))
-    assert out.getpixel((20, 20)) == (1, 2, 3, 255)
-    assert out.getpixel((0, 0))[3] == 0
 
 
 def test_ceiling_stop_records_the_whole_matrix(
@@ -324,7 +306,6 @@ def test_ceiling_stop_records_the_whole_matrix(
         api_key="dummy",
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path)]),
         inner_transport=httpx.MockTransport(handler),
-        cases=cases,
     )
     assert len(seen) == 1 and report["stopped"]
     states = [r["estado"] for r in report["items"].values()]
@@ -369,7 +350,6 @@ def test_vendor_spend_above_the_reservation_is_reported(
         api_key="dummy",
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path)]),
         inner_transport=httpx.MockTransport(handler),
-        cases=cases,
     )
     assert len(seen) == 1  # the second item is refused: the run is already over its ceiling
     first, second = report["items"].values()
@@ -406,7 +386,7 @@ def test_skip_fixtures_removes_exactly_the_fixture_items(cases: tt.CaseSet) -> N
     assert len(by_block["color"]) == 30 and tt.total_usd(by_block["color"]) == Decimal("1.44")
     assert len(by_block["texture"]) == 50
     assert tt.total_usd(by_block["texture"]) == Decimal("2.40")
-    assert len(by_block["flat"]) == 10 and tt.total_usd(by_block["flat"]) == 0
+    assert len(by_block["flat"]) == 50 and tt.total_usd(by_block["flat"]) == 0
     assert tt.total_usd(planned) == Decimal("3.84")
     limited = tt.build_matrix(cases, blocks=["texture"], limit=1, skip_fixtures=True)
     assert {i.case_id for i in limited} == {"logo-brasa-norte"}
@@ -417,7 +397,7 @@ def test_dry_run_shows_included_and_excluded(
 ) -> None:
     assert _runner().main(["--dry-run", "--skip-fixtures"]) == 0
     out = capsys.readouterr().out
-    assert "Incluidos 90 ítems, excluidos 6 (6 fixture, 0 reales)" in out
+    assert "Incluidos 130 ítems, excluidos 6 (6 fixture, 0 reales)" in out
     assert "estimado USD 3.8400" in out and "(80 pagadas)" in out
     rows = [line for line in out.splitlines() if line.startswith(("color ", "texture ", "flat "))]
     fixture_rows = [r for r in rows if " fixture " in r]
@@ -448,14 +428,12 @@ def test_a_broken_flat_logo_is_an_item_error_and_the_json_is_written(
         api_key="dummy",
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
         inner_transport=inner,
-        cases=cases,
     )
     states = {k.split("@")[0]: v["estado"] for k, v in report["items"].items()}
-    assert states["flat:logo-roto"] == "error"
-    assert states["flat:logo-sano"] == "hecho"
-    assert (
-        "UnidentifiedImageError" in report["items"][f"flat:logo-roto@{tt.FLAT_PROVIDER}"]["error"]
-    )
+    assert states["flat:logo-roto+tex"] == "error"
+    assert states["flat:logo-sano+tex"] == "hecho"
+    broken = report["items"][f"flat:logo-roto+tex@{tt.FLAT_PROVIDER}"]
+    assert "UnidentifiedImageError" in broken["error"]
     (saved_path,) = (tmp_path / "res").glob("*.json")
     saved = json.loads(saved_path.read_text(encoding="utf-8"))
     assert len(saved["items"]) == len(planned)
@@ -485,7 +463,6 @@ def test_the_json_is_written_even_when_the_run_blows_up(
             api_key="dummy",
             args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
             inner_transport=_CountingInner(lambda _r: _ok()),
-            cases=cases,
         )
     (saved_path,) = (tmp_path / "res").glob("*.json")
     saved = json.loads(saved_path.read_text(encoding="utf-8"))
@@ -552,7 +529,6 @@ def test_one_shared_inner_transport_is_closed_once_after_all_items(
         ledger=sc.SpendLedger(Decimal("1")),
         api_key="dummy",
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
-        cases=cases,
     )
     assert {v["estado"] for v in report["items"].values()} == {"hecho"}
     assert len(created) == 1 and inner.requests == 4 and inner.closes == 1
@@ -578,7 +554,6 @@ def test_two_runs_in_the_same_instant_get_distinct_stamps(
             api_key="dummy",
             args=args,
             inner_transport=_CountingInner(lambda _r: _ok()),
-            cases=cases,
         )
         for _ in range(2)
     )
@@ -652,7 +627,6 @@ def test_report_has_no_absolute_machine_paths(
         api_key="dummy",
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
         inner_transport=_CountingInner(lambda _r: _ok()),
-        cases=cases,
     )
     assert all(r["estado"] == "error" for r in report["items"].values())  # file missing
     (saved_path,) = (tmp_path / "res").glob("*.json")
@@ -690,7 +664,6 @@ def test_ceiling_stop_skips_later_paid_items_but_runs_the_free_ones(
         api_key="dummy",
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path)]),
         inner_transport=httpx.MockTransport(handler),
-        cases=cases,
     )
     assert len(seen) == 1 and report["stopped"]
     by_key = {f"{c.item.id}@{c.model_id}": c for c in planned}
@@ -777,3 +750,176 @@ def test_duplicate_configs_exit_2_before_planning(
     assert code == 2
     assert f"--configs repite el modelo {PRO}" in out and "Solicitudes de red: 0" in out
     assert no_http == []
+
+
+# --- PR 2: masks, the flat finish in the run, metrics only after generation ---------
+
+
+def _color_case(raw: dict[str, Any], index: int = 0) -> dict[str, Any]:
+    return raw["blocks"]["color"]["cases"][index]
+
+
+def test_color_cases_take_an_optional_mask(cases: tt.CaseSet) -> None:
+    disc = next(c for c in cases.color if c.id == "fix-objeto-disco")
+    assert disc.mask == tt.ImageRef(
+        "fix-objeto-disco.mask",
+        "packages/api/evals/plantillas_ai/fixtures/objeto-disco-mascara.png",
+        fixture=True,
+    )
+    assert all(c.mask is None for c in cases.color if c.id != "fix-objeto-disco")
+    items = tt.build_matrix(cases, blocks=["color"], limit=1)
+    assert items[0].mask == disc.mask
+    assert tt.missing_files(items, EVAL_DIR / "imagenes", REPO_ROOT) == []
+    raw = _raw()
+    _color_case(raw, 2)["mask"] = "color/mascaras/taza.png"
+    with_mask = tt.parse_cases(raw)
+    assert with_mask.color[2].mask == tt.ImageRef(
+        "taza-ceramica-blanca.mask", "color/mascaras/taza.png"
+    )
+    missing = tt.missing_files(
+        tt.build_matrix(with_mask, blocks=["color"]), EVAL_DIR / "x", REPO_ROOT
+    )
+    assert (EVAL_DIR / "x" / "color" / "mascaras" / "taza.png").resolve() in missing
+
+
+@pytest.mark.parametrize(
+    "breaker",
+    [
+        lambda r: _color_case(r).update(mask="uploaded_files/uploads/x/mascara.png"),
+        lambda r: _color_case(r).update(mask="Qualify/mascara.png"),
+        lambda r: _color_case(r).update(mask="../fuera.png"),
+        lambda r: _color_case(r).update(mask=7),
+        lambda r: _color_case(r, 2).update(mask="/abs/m.png"),
+        lambda r: r["blocks"]["texture"]["cases"][2].update(mask="m.png"),  # color only
+        lambda r: r["blocks"]["flat"].update(fill="#C0392B"),  # the flat color is gone
+    ],
+)
+def test_invalid_masks_are_rejected(breaker: Any) -> None:
+    raw = _raw()
+    breaker(raw)
+    with pytest.raises(tt.CasesError):
+        tt.parse_cases(raw)
+
+
+def test_the_eval_fixtures_root_is_allowlisted() -> None:
+    assert tt.FIXTURE_ROOTS[:2] == ("assets", "packages/render/public/sample")
+    assert "packages/api/evals/plantillas_ai/fixtures" in tt.FIXTURE_ROOTS
+    for name in ("make_fixtures.py", "luma-wordmark.png", "objeto-disco-mascara.png"):
+        assert (EVAL_DIR / "fixtures" / name).is_file()
+    for png in (EVAL_DIR / "fixtures").glob("*.png"):
+        assert png.stat().st_size < 300_000
+    with pytest.raises(tt.CasesError):
+        tt.ImageRef("x", "packages/api/evals/plantillas_ai/cases.json.png", fixture=True).resolve(
+            EVAL_DIR / "imagenes", REPO_ROOT
+        )
+
+
+def test_full_dry_run_counts_the_flat_finishes(
+    no_http: list[httpx.Request],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.evals import image_metrics as im
+
+    def never(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a dry run computes no image")
+
+    monkeypatch.setattr(im, "flat_texture_fill", never)
+    monkeypatch.setattr(im, "color_transfer_metrics", never)
+    runner = _runner()
+    monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)
+    assert runner.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "Incluidos 136 ítems, excluidos 0" in out
+    assert "flat      52 llamadas   estimado USD 0.0000" in out
+    assert "(84 pagadas)   estimado USD 4.0320" in out
+    assert "objeto-disco-mascara.png" in out  # the fixture row shows its mask path
+    assert "Solicitudes de red: 0" in out and no_http == []
+
+
+def test_paid_color_items_get_metrics_and_a_recomposed_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)
+    cases = tt.load_cases(EVAL_DIR / "cases.json")
+    planned = tt.plan_calls(
+        tt.build_matrix(cases, blocks=["color"], limit=2), V6, model_ids=[PRO], size="1K"
+    )
+    report = runner.run_paid(
+        planned,
+        tt,
+        ledger=sc.SpendLedger(Decimal("1")),
+        api_key="dummy",
+        args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
+        inner_transport=httpx.MockTransport(lambda _r: _ok()),
+    )
+    disc = report["items"][f"color:fix-objeto-disco+fix-paleta-menta-coral-cobre@{PRO}"]
+    photo = report["items"][f"color:fix-muestra-1+fix-paleta-menta-coral-cobre@{PRO}"]
+    assert disc["estado"] == photo["estado"] == "hecho"
+    assert disc["metricas"]["origen_mascara"] == "mask"
+    assert disc["metricas"]["metricas_version"] == "metricas-v1"
+    assert disc["metricas"]["borde_recompuesto_psnr_db"] is None  # the fixture mask is hard
+    assert disc["metricas"]["resultado_redimensionado"] is True  # the 8x8 double
+    assert photo["metricas"]["origen_mascara"] == "none"  # PR 3 flags it
+    assert len(list(tmp_path.rglob("*~recompuesto.png"))) == 1
+
+
+def test_a_failed_metric_keeps_the_generated_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.evals import image_metrics as im
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("no pixels to compare")
+
+    monkeypatch.setattr(im, "color_transfer_metrics", broken)
+    runner = _runner()
+    monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)
+    cases = tt.load_cases(EVAL_DIR / "cases.json")
+    planned = tt.plan_calls(
+        tt.build_matrix(cases, blocks=["color"], limit=1), V6, model_ids=[PRO], size="1K"
+    )
+    report = runner.run_paid(
+        planned,
+        tt,
+        ledger=sc.SpendLedger(Decimal("1")),
+        api_key="dummy",
+        args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
+        inner_transport=httpx.MockTransport(lambda _r: _ok()),
+    )
+    (record,) = report["items"].values()
+    assert record["estado"] == "hecho" and record["metricas_error"].startswith("ValueError")
+    assert len(list(tmp_path.rglob("*.jpg"))) == 1
+
+
+def test_a_configured_reader_checks_the_texture_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.evals.image_metrics import FakeReader
+
+    runner = _runner()
+    monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)
+    cases = tt.load_cases(EVAL_DIR / "cases.json")
+    planned = tt.plan_calls(
+        tt.build_matrix(cases, blocks=["texture"], limit=1), V6, model_ids=[PRO], size="1K"
+    )
+    reader = FakeReader(default="luma")
+    report = runner.run_paid(
+        planned,
+        tt,
+        ledger=sc.SpendLedger(Decimal("1")),
+        api_key="dummy",
+        args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
+        inner_transport=httpx.MockTransport(lambda _r: _ok()),
+        reader=reader,
+    )
+    (record,) = report["items"].values()
+    assert record["legibilidad"] == {
+        "metricas_version": "metricas-v1",
+        "estado": "leido",
+        "leido": "luma",
+        "coincide": True,
+    }
+    assert len(reader.calls) == 1

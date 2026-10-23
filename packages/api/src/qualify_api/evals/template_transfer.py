@@ -10,8 +10,9 @@ Three blocks:
   reference's palette, keep everything else.
 - ``texture`` — a logo or a word plus a texture image: give the letters that material,
   keep the letters (``expected_text`` is what a later legibility check reads back).
-- ``flat`` — the same logos filled with one flat color by Pillow: deterministic, free,
-  the baseline the generated textures have to beat.
+- ``flat`` — the same logos with the same textures, as a flat finish made by Pillow
+  (`image_metrics.flat_texture_fill`: the silhouette at 1080 px filled with the
+  texture): deterministic, free, the baseline the generated textures have to beat.
 
 Money rules (enforced by `spend_control`):
 
@@ -26,7 +27,6 @@ Money rules (enforced by `spend_control`):
 
 from __future__ import annotations
 
-import io
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -35,7 +35,6 @@ from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from PIL import Image, ImageChops, ImageOps
 from qualify_creative.enums import GenerationTask
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import GenerationRequest, RenderedPrompt
@@ -43,8 +42,6 @@ from qualify_creative.providers import GenerationRequest, RenderedPrompt
 from qualify_api.evals.spend_control import (
     DEFAULT_EXPECTED_LAYERS,
     PriceQuote,
-    has_transparency,
-    png_bytes,
     quote,
     resolve_within,
     unsafe_relative_path,
@@ -57,11 +54,17 @@ PROMPT_VERSION = "plantillas-ai-v1"
 BLOCKS: tuple[str, ...] = ("color", "texture", "flat")
 PAID_BLOCKS = frozenset({"color", "texture"})
 #: The deterministic block: no vendor, no price lookup, cost 0 by construction.
-FLAT_PROVIDER = "pillow-flat-fill"
+FLAT_PROVIDER = "pillow-flat-texture"
+#: Bumped whenever the flat finish or its checks change (provenance of the flat block).
+FLAT_VERSION = "flat-texture-v1"
 #: The only repository folders a `fixture: true` case may read (relative to the repo
 #: root): Qualify's own email assets and the render samples. Never uploads, the Reflex
 #: app or its build output.
-FIXTURE_ROOTS: tuple[str, ...] = ("assets", "packages/render/public/sample")
+FIXTURE_ROOTS: tuple[str, ...] = (
+    "assets",
+    "packages/render/public/sample",
+    "packages/api/evals/plantillas_ai/fixtures",
+)
 
 PROMPTS: Mapping[str, str] = {
     "color": (
@@ -129,6 +132,8 @@ class Case:
     #: Fixture cases carry their own references; the rest use the block's.
     references: tuple[ImageRef, ...] = ()
     fixture: bool = False
+    #: Color cases only: the object's mask (white = object), same path rules as `image`.
+    mask: ImageRef | None = None
 
 
 @dataclass(frozen=True)
@@ -137,7 +142,6 @@ class CaseSet:
     color_references: tuple[ImageRef, ...]
     texture: tuple[Case, ...]
     texture_references: tuple[ImageRef, ...]
-    flat_fill: tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,8 @@ class MatrixItem:
     images: tuple[ImageRef, ...]
     expected_text: str | None
     fixture: bool
+    #: The object's mask of a color item (None: the metrics fall back, see image_metrics).
+    mask: ImageRef | None = None
 
     @property
     def id(self) -> str:
@@ -196,7 +202,19 @@ def _unique(items: Sequence[Any], where: str) -> None:
         seen.add(item.id)
 
 
-def _cases(block: Mapping[str, Any], name: str, *, needs_text: bool) -> tuple[Case, ...]:
+def _mask(raw: Mapping[str, Any], where: str, case_id: str, *, fixture: bool) -> ImageRef | None:
+    """A color case's optional `mask`: a path string under the same rules as the image."""
+    path = raw.get("mask")
+    if path is None:
+        return None
+    if not isinstance(path, str):
+        raise CasesError(f"{where} ({case_id}): 'mask' must be a path")
+    return _image_ref({"id": f"{case_id}.mask", "path": path}, f"{where} mask", fixture=fixture)
+
+
+def _cases(
+    block: Mapping[str, Any], name: str, *, needs_text: bool, takes_mask: bool = False
+) -> tuple[Case, ...]:
     raw_cases = block.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases:
         raise CasesError(f"block {name!r}: 'cases' must be a non-empty list")
@@ -218,6 +236,8 @@ def _cases(block: Mapping[str, Any], name: str, *, needs_text: bool) -> tuple[Ca
         )
         if fixture and not refs:
             raise CasesError(f"{where} ({image.id}): a fixture case needs its own references")
+        if "mask" in raw and not takes_mask:
+            raise CasesError(f"{where} ({image.id}): only a color case takes a 'mask'")
         cases.append(
             Case(
                 id=image.id,
@@ -225,6 +245,7 @@ def _cases(block: Mapping[str, Any], name: str, *, needs_text: bool) -> tuple[Ca
                 expected_text=text if isinstance(text, str) else None,
                 references=refs,
                 fixture=fixture,
+                mask=_mask(raw, where, image.id, fixture=fixture),
             )
         )
     _unique(cases, f"block {name!r}")
@@ -240,15 +261,6 @@ def _references(block: Mapping[str, Any], name: str) -> tuple[ImageRef, ...]:
     return refs
 
 
-def _hex(value: object) -> tuple[int, int, int]:
-    if not isinstance(value, str) or len(value) != 7 or not value.startswith("#"):
-        raise CasesError(f"flat: 'fill' must be a #RRGGBB color, got {value!r}")
-    try:
-        return (int(value[1:3], 16), int(value[3:5], 16), int(value[5:7], 16))
-    except ValueError:
-        raise CasesError(f"flat: 'fill' must be a #RRGGBB color, got {value!r}") from None
-
-
 def parse_cases(raw: Mapping[str, Any]) -> CaseSet:
     """Validate the parsed `cases.json`. Raises `CasesError` naming the first problem."""
     blocks = raw.get("blocks")
@@ -259,13 +271,14 @@ def parse_cases(raw: Mapping[str, Any]) -> CaseSet:
             raise CasesError(f"block {name!r} must be an object")
     color, texture, flat = blocks["color"], blocks["texture"], blocks["flat"]
     if flat.get("source_block") != "texture":
-        raise CasesError("flat: 'source_block' must be 'texture' (the same logos)")
+        raise CasesError("flat: 'source_block' must be 'texture' (the same logos and textures)")
+    if "fill" in flat:
+        raise CasesError("flat: 'fill' is gone — the flat finish uses the texture references")
     return CaseSet(
-        color=_cases(color, "color", needs_text=False),
+        color=_cases(color, "color", needs_text=False, takes_mask=True),
         color_references=_references(color, "color"),
         texture=_cases(texture, "texture", needs_text=True),
         texture_references=_references(texture, "texture"),
-        flat_fill=_hex(flat.get("fill")),
     )
 
 
@@ -280,10 +293,10 @@ def build_matrix(
     limit: int | None = None,
     skip_fixtures: bool = False,
 ) -> list[MatrixItem]:
-    """Every item of the chosen blocks: object × color reference, logo × texture, and one
-    flat fill per logo. `skip_fixtures` drops the `fixture: true` cases and references
-    first; `limit` then keeps the first N remaining cases of each block (fixtures come
-    first in `cases.json`)."""
+    """Every item of the chosen blocks: object × color reference, logo × texture, and the
+    same logo × texture pairs as flat finishes. `skip_fixtures` drops the `fixture: true`
+    cases and references first; `limit` then keeps the first N remaining cases of each
+    block (fixtures come first in `cases.json`)."""
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1")
     chosen = list(dict.fromkeys(blocks))
@@ -298,13 +311,6 @@ def build_matrix(
         if skip_fixtures:
             source = tuple(c for c in source if not c.fixture)
         for case in source[:limit]:
-            if block == "flat":
-                items.append(
-                    MatrixItem(
-                        block, case.id, None, (case.image,), case.expected_text, case.fixture
-                    )
-                )
-                continue
             shared = cases.color_references if block == "color" else cases.texture_references
             refs = case.references or shared
             if skip_fixtures:
@@ -312,7 +318,13 @@ def build_matrix(
             for ref in refs:
                 items.append(
                     MatrixItem(
-                        block, case.id, ref.id, (case.image, ref), case.expected_text, case.fixture
+                        block,
+                        case.id,
+                        ref.id,
+                        (case.image, ref),
+                        case.expected_text,
+                        case.fixture,
+                        case.mask if block == "color" else None,
                     )
                 )
     return items
@@ -322,7 +334,7 @@ def missing_files(items: Iterable[MatrixItem], images_dir: Path, repo_root: Path
     """The input files that are not on disk, each once, in matrix order."""
     missing: dict[Path, None] = {}
     for item in items:
-        for image in item.images:
+        for image in (*item.images, *((item.mask,) if item.mask else ())):
             path = image.resolve(images_dir, repo_root)
             if not path.is_file():
                 missing[path] = None
@@ -380,32 +392,6 @@ def total_usd(planned: Iterable[PlannedCall]) -> Decimal:
 
 
 # ---------------------------------------------------------------------------
-# Flat fill (the free block)
-
-
-def flat_fill(data: bytes, fill: tuple[int, int, int], *, threshold: int = 48) -> bytes:
-    """The logo with every mark pixel painted `fill`, as a PNG with alpha.
-
-    A transparent logo keeps its own alpha as the mask. An opaque one is masked by its
-    largest per-channel distance from the top-left corner color (the background),
-    above `threshold`.
-    """
-    image = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
-    if has_transparency(image):
-        mask = image.convert("RGBA").getchannel("A")
-    else:
-        rgb = image.convert("RGB")
-        bg = Image.new("RGB", rgb.size, rgb.getpixel((0, 0)))
-        r, g, b = ImageChops.difference(rgb, bg).split()
-        # the largest channel difference: a luminance mix would lose yellow on white
-        diff = ImageChops.lighter(ImageChops.lighter(r, g), b)
-        mask = diff.point(lambda v: 255 if v > threshold else 0)
-    out = Image.new("RGBA", image.size, (*fill, 0))
-    out.putalpha(mask)
-    return png_bytes(out)
-
-
-# ---------------------------------------------------------------------------
 # Paid request
 
 
@@ -435,7 +421,7 @@ def provenance(call: PlannedCall) -> dict[str, object]:
     return {
         "provider": "seedream" if call.quote else FLAT_PROVIDER,
         "model_id": call.model_id,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": PROMPT_VERSION if call.quote else FLAT_VERSION,
         "pricing_version": call.quote.pricing_version if call.quote else None,
         "estimated_usd": str(call.cost_usd),
     }
