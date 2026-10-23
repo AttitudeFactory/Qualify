@@ -337,6 +337,17 @@ def _options_panel() -> rx.Component:
                 rx.vstack(
                     rx.heading("¿Qué creamos?", size="4", as_="h2"),
                     rx.text("Elige qué hacer.", size="1", color=T.TEXT_MUTED),
+                    # CREAR-5: the month's creations, never money («Te quedan 18 de 30»)
+                    rx.cond(
+                        CreativeState.creations_left_text != "",
+                        rx.hstack(
+                            rx.icon("sparkles", size=T.ICON_SM, color=T.TEXT_MUTED),
+                            rx.text(CreativeState.creations_left_text, size="1", weight="medium"),
+                            spacing="1",
+                            align="center",
+                            margin_top="0.35rem",
+                        ),
+                    ),
                     spacing="0",
                     align_items="start",
                 ),
@@ -3352,8 +3363,12 @@ def _script_source() -> rx.Component:
 def _duration_select() -> rx.Component:
     return rx.hstack(
         rx.text("Duración", size="2", weight="medium"),
+        # CREAR-5: a presenter offers only the lengths the month still pays for
         rx.segmented_control.root(
-            *(rx.segmented_control.item(f"{s} s", value=s) for s in ("15", "30", "45", "60")),
+            rx.foreach(
+                CreativeState.duration_choices,
+                lambda s: rx.segmented_control.item(s + " s", value=s),
+            ),
             value=CreativeState.media_duration,
             on_change=CreativeState.set_media_duration,
         ),
@@ -4314,9 +4329,40 @@ def _summary_view() -> rx.Component:
             spacing="0",
             width="100%",
         ),
+        _creations_notice(),
         spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+def _creations_notice() -> rx.Component:
+    """CREAR-5 (m-24848531): before Crear, what the piece uses of the month's creations
+    and what would be left — never money. A presenter the month cannot pay offers the
+    shorter one instead, when that one fits."""
+    return rx.fragment(
+        rx.cond(
+            CreativeState.gen_creations_notice != "",
+            callout(CreativeState.gen_creations_notice, "info", icon="sparkles"),
+        ),
+        rx.cond(
+            CreativeState.gen_presenter_fallback != "",
+            rx.vstack(
+                callout(CreativeState.gen_presenter_fallback, "info"),
+                rx.button(
+                    rx.icon("timer", size=T.ICON_SM),
+                    "Usar el video de 15 segundos",
+                    variant="soft",
+                    size="3",
+                    radius=_CONTROL_RADIUS,
+                    min_height="44px",
+                    on_click=CreativeState.use_short_presenter,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
     )
 
 

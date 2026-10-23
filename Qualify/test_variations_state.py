@@ -173,11 +173,12 @@ async def test_choosing_a_product_shows_what_the_engine_sees(
     state = _state(monkeypatch)
     blocked = _preset("template", available=False, reason="Sin fotos")
     monkeypatch.setattr(module, "variation_presets", lambda *_: (_check(), (blocked, _preset())))
-    monkeypatch.setattr(module, "variation_plan", lambda: PlanVM(10, "10 imágenes · $0.35", "nota"))
+    images = "10 imágenes · hasta 10 de tus creaciones"
+    monkeypatch.setattr(module, "variation_plan", lambda: PlanVM(10, images, "nota"))
     await VariationsState.choose_product.fn(state, _PRODUCT_ID)
     assert state.product_name == "Shawarma mixto" and state.product_photo_count == 2
     assert state.price_label == "$18.000" and not state.price_missing
-    assert state.plan_count == 10 and state.plan_images_label == "10 imágenes · $0.35"
+    assert state.plan_count == 10 and state.plan_images_label == images
     # the unavailable preset is never the preselected one
     assert state.preset_key == "scene_feed"
     assert state.photo_count_label == "2 fotos" and state.plan_count_label == "10 ángulos"

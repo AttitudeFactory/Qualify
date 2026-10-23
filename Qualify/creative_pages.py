@@ -2055,15 +2055,9 @@ def _review_panel() -> rx.Component:
                     cursor="help",
                 ),
             ),
-            # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop. The
-            # amount alone; the profile and the models on hover.
-            rx.box(
-                rx.icon("coins", size=14),
-                rx.text("Coste: ", draft.cost_short, as_="span"),
-                class_name="q-rv-pill",
-                title=draft.cost_label,
-                cursor="help",
-            ),
+            # CREAR-5 (decision 8): the owner never reads money here — what a new version
+            # uses is said in creations where it is asked for; the team reads the dollars
+            # in `qualify_api.creative.creations_report`.
             align="center",
             width="100%",
             wrap="wrap",
@@ -2126,12 +2120,20 @@ def _reject_dialog() -> rx.Component:
             rx.alert_dialog.description(
                 rx.cond(
                     regenerate,
-                    "Esta versión se descarta y se generan versiones nuevas del mismo "
-                    "encargo. Consume créditos.",
+                    "Esta versión se descarta y se generan versiones nuevas del mismo encargo.",
                     "La publicación se descarta y no se genera nada nuevo. No se podrá "
                     "aprobar ni publicar.",
                 ),
                 size="2",
+            ),
+            # CREAR-5: what the new version uses and what would be left, before it is asked
+            rx.cond(
+                regenerate & (CreativeState.regen_creations_text != ""),
+                rx.cond(
+                    CreativeState.regen_creations_short,
+                    callout(CreativeState.regen_creations_text, "warn", margin_top="0.75rem"),
+                    callout(CreativeState.regen_creations_text, "info", margin_top="0.75rem"),
+                ),
             ),
             rx.flex(
                 rx.alert_dialog.cancel(
@@ -2150,7 +2152,10 @@ def _reject_dialog() -> rx.Component:
                             rx.icon("refresh-cw", size=15),
                             "Sí, pedir otra versión",
                             size="2",
+                            min_height="44px",
                             on_click=CreativeState.confirm_reject,
+                            # without enough creations nothing is asked (CREAR-5)
+                            disabled=CreativeState.regen_creations_short,
                             **T.tone_scheme("warn"),
                         ),
                         rx.button(
@@ -2286,7 +2291,7 @@ def _decision_bar_or_nothing() -> rx.Component:
                     icon="refresh-cw",
                     title="Pedir otra versión",
                     text="Si la idea sirve pero el resultado no: descarta este y crea "
-                    "variantes nuevas del mismo encargo. Consume créditos.",
+                    "variantes nuevas del mismo encargo.",
                     button=rx.button(
                         rx.icon("refresh-cw", size=15),
                         "Regenerar",

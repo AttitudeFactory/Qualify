@@ -102,6 +102,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "acting_user_id",
+    "creations_balance",
+    "regeneration_creations",
     "approve_draft",
     "approve_voice",
     "brand_clone_voice",
@@ -959,6 +961,25 @@ def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UU
         tenant_id=tenant_id, draft_id=draft_id, variant_id=variant_id, user_id=user_id
     )
     return _detail_to_vm(tenant_id, detail)
+
+
+def creations_balance(tenant_id: UUID, brand_id: UUID) -> tuple[int, int] | None:
+    """«Creaciones del mes» (CREAR-5): (left, quota), or None when no quota is wired —
+    the screens then say nothing about creations."""
+    balance = production_content_service().creations_balance(tenant_id=tenant_id, brand_id=brand_id)
+    return None if balance is None else (balance.left, balance.quota)
+
+
+def regeneration_creations(
+    tenant_id: UUID, brand_id: UUID, draft_id: UUID
+) -> tuple[int, int, int] | None:
+    """What «Pedir otra versión» of a draft uses: (weight, left, quota), or None."""
+    service = production_content_service()
+    price = service.regeneration_price(tenant_id=tenant_id, draft_id=draft_id)
+    balance = service.creations_balance(tenant_id=tenant_id, brand_id=brand_id)
+    if price is None or balance is None:
+        return None
+    return price.weight, balance.left, balance.quota
 
 
 def reject_draft(

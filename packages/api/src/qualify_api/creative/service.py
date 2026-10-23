@@ -38,7 +38,7 @@ from qualify_creative.brand import (
 )
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.brand.render import VARIANT_ANGLES
-from qualify_creative.creations import weight_for
+from qualify_creative.creations import CreationNotOffered, CreationPrice, weight_for
 from qualify_creative.enums import (
     ContentKind,
     FailureReason,
@@ -1242,6 +1242,23 @@ class ContentService:
         if self._creations is None:
             return None
         return self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+
+    def regeneration_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
+        """What «Pedir otra versión» of this draft would use (CREAR-5) — the same rule
+        `reject(regenerate=True)` charges with. None without a quota or a brief, or when
+        the table does not price it."""
+        if self._creations is None:
+            return None
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record is None:
+            return None
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None:
+            return None
+        try:
+            return weight_for(brief, redo=True)
+        except CreationNotOffered:
+            return None
 
     def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
         """The draft created with `request_key`, if any — how a caller whose create was

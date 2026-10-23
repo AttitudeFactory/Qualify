@@ -40,6 +40,7 @@ from qualify_api.creative.angle_sets import (
 )
 from qualify_api.creative.service import BrandNotReady
 from qualify_creative.angles import AnglePreset, AngleProduct, AngleSetPlan, UnknownPreset
+from qualify_creative.creations import weight_for_request
 from qualify_creative.enums import DraftStatus
 
 from .creative_vm import failure_vm, status_label
@@ -73,8 +74,9 @@ DRAFT_TONES: dict[str, str] = {
 }
 #: Shown on a set whose product has no catalog price (requirement 8).
 NO_PRICE_TEXT = "Este producto no tiene precio en el catálogo: las piezas no mostrarán ninguno."
-PLAN_NOTE = "Claude propone los ángulos en una sola llamada; cada imagen se paga al generarla."
-INTERRUPTED_TEXT = "La generación se interrumpió. Puedes reintentarla sin pagar dos veces."
+#: CREAR-5 (decision 8): creations of the month, never money.
+PLAN_NOTE = "Proponer las ideas no usa tus creaciones del mes; cada imagen que generes usa 1."
+INTERRUPTED_TEXT = "La generación se interrumpió. Puedes reintentarla: no se cuenta dos veces."
 
 
 def _label(table: Mapping[str, tuple[str, str]], status: str) -> tuple[str, str]:
@@ -154,14 +156,15 @@ def build_product_check_vm(product: AngleProduct) -> ProductCheckVM:
 @dataclass(frozen=True)
 class PlanVM:
     count: int
-    images_label: str  # "10 imágenes · $0.35" or "10 imágenes" with no rate
+    images_label: str  # "10 imágenes · hasta 10 de tus creaciones" — never money (CREAR-5)
     note: str
 
 
 def build_plan_vm(plan: AngleSetPlan) -> PlanVM:
-    images = f"{plan.count} imágenes"
-    if plan.image_unit_usd > 0:
-        images = f"{images} · {money(plan.images_usd)}"
+    """What the ideas will make, in creations: each image is one (`pesos-creaciones-v1`);
+    the dollars are the team's (decision 8)."""
+    weight = weight_for_request("static_flyer").weight
+    images = f"{plan.count} imágenes · hasta {plan.count * weight} de tus creaciones"
     return PlanVM(
         count=plan.count,
         images_label=images,

@@ -29,6 +29,7 @@ from uuid import UUID, uuid4
 import reflex as rx
 from pydantic import ValidationError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
+from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.service import (
     ApprovalBlocked,
@@ -39,6 +40,13 @@ from qualify_api.creative.service import (
 )
 from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, UnknownVersion
 from qualify_api.stock.keys import is_stock_key
+from qualify_creative.creations import (
+    CreationNotOffered,
+    CreationPrice,
+    is_presenter_request,
+    load_weights,
+    weight_for_request,
+)
 from qualify_creative.enums import (
     BriefIntent,
     BriefObjective,
@@ -78,6 +86,7 @@ from .creative_provider import (
     brand_readiness,
     catalog_products,
     configured_video_engine,
+    creations_balance,
     default_brand_id,
     draft_detail,
     edit_variant,
@@ -87,6 +96,7 @@ from .creative_provider import (
     load_voice_screen,
     preview_brief_prompt,
     propose_voice,
+    regeneration_creations,
     reject_draft,
     route_options_for,
     save_kit,
@@ -101,6 +111,7 @@ from .creative_vm import (
     HASHTAG_LIMIT,
     HOOK_LIMIT,
     KIND_LABELS,
+    PRESENTER_TOO_LONG,
     VIDEO_TYPE_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
@@ -114,11 +125,15 @@ from .creative_vm import (
     caption_hashtag_suggestions,
     caption_keywords,
     content_type_options,
+    creations_left_label,
+    creations_use_notice,
     cta_list,
     format_ctas,
     format_hashtags,
     hashtag_list,
+    not_enough_creations_text,
     phrase_list,
+    presenter_fallback_text,
     remove_phrase,
     seen_label,
 )
@@ -615,6 +630,8 @@ def _pill_items(text: str) -> list[str]:
 
 
 _DURATIONS = ("15", "30", "45", "60")
+#: CREAR-5: a presenter is priced up to 30 s (`pesos-creaciones-v1`).
+_PRESENTER_LENGTHS = "Un video con presentador dura 15 o 30 segundos: elige uno de los dos."
 _FORMAT_LABELS = {
     "feed_4_5": "Publicación 4:5",
     "feed_1_1": "Publicación cuadrada 1:1",
@@ -2590,6 +2607,7 @@ class CreativeState(rx.State):
             if campaigns is not None:
                 self._set_gen_campaigns(campaigns)
             self.create_loading = False
+        await self._refresh_creations(tenant_id, brand_id)
 
     @staticmethod
     async def _kit_voice_missing(tenant_id: UUID, brand_id: UUID) -> bool:
@@ -4725,6 +4743,123 @@ class CreativeState(rx.State):
         self.context_enhance_note = ""
         self.context_enhance_error = ""
 
+    # -- «Creaciones del mes» (CREAR-5, m-24848531): never money ------------------------
+
+    #: The month's balance; -1 = no quota wired (the screens say nothing about it).
+    creations_left: int = -1
+    creations_quota: int = 0
+
+    def _is_presenter(self) -> bool:
+        return is_presenter_request(self.brief_kind, self.video_engine)
+
+    def _creations_price(self) -> CreationPrice | None:
+        """What the piece in the form would use — the same rule the service charges
+        with (`qualify_creative.creations`). None when the table does not price it."""
+        kind = self.brief_kind
+        slides = self.carousel_slides if kind == "carousel" else []
+        own = self.own_script.strip() if self.own_script_on and self._is_presenter() else ""
+        try:
+            return weight_for_request(
+                kind,
+                duration_seconds=int(self.media_duration or 30),
+                video_engine=self.video_engine,
+                own_script_chars=len(own),
+                generated_slides=sum(1 for s in slides if s.get("source") == "generated"),
+                animated_slide_seconds=tuple(
+                    int(s.get("seconds") or 5) for s in slides if s.get("source") == "animated"
+                ),
+            )
+        except (CreationNotOffered, ValueError):
+            return None
+
+    def _creations_problem(self) -> str:
+        """Without enough creations nothing is created (\"\" = it can be paid)."""
+        if self.creations_left < 0:
+            return ""
+        price = self._creations_price()
+        if price is None:
+            if self._is_presenter() and not (self.own_script_on and self.own_script.strip()):
+                return _PRESENTER_LENGTHS
+            return PRESENTER_TOO_LONG
+        if price.weight > self.creations_left:
+            return not_enough_creations_text(price.weight - self.creations_left)
+        return ""
+
+    @rx.var
+    def creations_left_text(self) -> str:
+        """«Te quedan 18 de 30 este mes» ("" with no quota)."""
+        if self.creations_left < 0:
+            return ""
+        return creations_left_label(self.creations_left, self.creations_quota)
+
+    @rx.var(cache=False)
+    def gen_creations_notice(self) -> str:
+        """On the summary, before Crear: what this piece uses and what would be left —
+        the presenter's in the founder's words. "" when it cannot be paid (the problem
+        above Crear says so) or with no quota."""
+        if self.creations_left < 0 or not self._on_summary():
+            return ""
+        price = self._creations_price()
+        if price is None or price.weight > self.creations_left:
+            return ""
+        video = self.brief_kind in ("clip", "avatar_video", "animated_avatar_video") or (
+            self.gen_category == "ad"
+        )
+        return creations_use_notice(
+            price.weight,
+            self.creations_left,
+            self.creations_quota,
+            presenter=price.is_presenter,
+            video=video,
+        )
+
+    @rx.var(cache=False)
+    def gen_presenter_fallback(self) -> str:
+        """A presenter the month cannot pay, when the shorter one fits: the screen
+        offers it instead (CREAR-5: under 25 left, the 15 s at 13)."""
+        if self.creations_left < 0 or not self._on_summary() or not self._is_presenter():
+            return ""
+        if self.own_script_on and self.own_script.strip():
+            return ""  # its length is the script's: nothing to switch
+        seconds, weight = load_weights().shortest_presenter
+        price = self._creations_price()
+        if price is not None and price.weight <= self.creations_left:
+            return ""
+        if weight > self.creations_left or self.media_duration == str(seconds):
+            return ""
+        return presenter_fallback_text(seconds, weight)
+
+    @rx.var
+    def duration_choices(self) -> list[str]:
+        """The lengths offered: a presenter is priced up to 30 s, and under a short
+        month only the lengths it still pays for (CREAR-5) — at least the shortest."""
+        if not is_presenter_request(self.brief_kind, self.video_engine):
+            return list(_DURATIONS)
+        table = load_weights()
+        lengths = [step.up_to for step in table.presenter_by_seconds]
+        if self.creations_left >= 0:
+            fits = [s for s in lengths if table.presenter(s) <= self.creations_left]
+            lengths = fits or lengths[:1]
+        return [str(s) for s in lengths]
+
+    @rx.event
+    def use_short_presenter(self) -> None:
+        self.media_duration = str(load_weights().shortest_presenter[0])
+        self.create_error = ""
+
+    async def _refresh_creations(self, tenant_id: UUID, brand_id: UUID) -> None:
+        """Re-read the month's balance; never a reason to break the screen."""
+        try:
+            balance = await asyncio.to_thread(creations_balance, tenant_id, brand_id)
+        except Exception as exc:  # noqa: BLE001 — the service still refuses what it cannot pay
+            logger.warning("creations balance unreadable: %s", type(exc).__name__)
+            return
+        async with self:
+            if balance is None:
+                self.creations_left, self.creations_quota = -1, 0
+            else:
+                self.creations_left, self.creations_quota = balance
+
     # -- «Resumen» (§ request 2026-10-20): every option's last view, where Generar is ------
 
     def _on_summary(self) -> bool:
@@ -4876,7 +5011,7 @@ class CreativeState(rx.State):
         Generar says above its button ("" when it may generate)."""
         if not self._effective_topic():
             return _SCENE_REQUIRED if self.brief_kind == "static_flyer" else _TOPIC_REQUIRED
-        return self._kind_problem() or self._campaign_problem()
+        return self._kind_problem() or self._campaign_problem() or self._creations_problem()
 
     @rx.event
     def toggle_rules(self) -> None:
@@ -5205,6 +5340,18 @@ class CreativeState(rx.State):
                 self.is_submitting = False
                 self.create_error = _ROUTE_BLOCKED + exc.detail
             return None
+        except NotEnoughCreations as exc:
+            # CREAR-5: the month cannot pay — nothing was created
+            await self._refresh_creations(tenant_id, brand_id)
+            async with self:
+                self.is_submitting = False
+                self.create_error = not_enough_creations_text(exc.missing)
+            return None
+        except CreationNotOffered:
+            async with self:
+                self.is_submitting = False
+                self.create_error = PRESENTER_TOO_LONG
+            return None
         except (ValidationError, ValueError) as exc:
             async with self:
                 self.is_submitting = False
@@ -5218,6 +5365,7 @@ class CreativeState(rx.State):
             return None
         async with self:
             self.is_submitting = False
+        await self._refresh_creations(tenant_id, brand_id)
         return draft_id
 
     # -- /drafts ------------------------------------------------------------
@@ -5304,7 +5452,7 @@ class CreativeState(rx.State):
                 self.detail_loading = False
                 self.detail_error = _NO_SESSION
             return
-        tenant_id, _, _ = ids
+        tenant_id, brand_id, _ = ids
         try:
             vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
         except SQLAlchemyError as exc:
@@ -5324,6 +5472,7 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != str(draft_id)
             if should_poll:
                 self._polling_draft_id = str(draft_id)
+        await self._load_regen_creations(tenant_id, brand_id, draft_id)
         if should_poll:
             yield CreativeState.poll_draft
         if vm.status not in _HISTORY_STATUSES:  # before approval it helps no decision
@@ -5568,6 +5717,29 @@ class CreativeState(rx.State):
         self.just_approved = False
         return rx.redirect("/create")
 
+    #: CREAR-5: what «Pedir otra versión» uses and what would be left ("" = no quota).
+    regen_creations_text: str = ""
+    #: …and whether the month still pays for it.
+    regen_creations_short: bool = False
+
+    async def _load_regen_creations(self, tenant_id: UUID, brand_id: UUID, draft_id: UUID) -> None:
+        try:
+            quote = await asyncio.to_thread(regeneration_creations, tenant_id, brand_id, draft_id)
+        except Exception as exc:  # noqa: BLE001 — the service still refuses what it cannot pay
+            logger.warning("regeneration creations unreadable: %s", type(exc).__name__)
+            quote = None
+        async with self:
+            if quote is None:
+                self.regen_creations_text, self.regen_creations_short = "", False
+                return
+            weight, left, quota = quote
+            self.regen_creations_short = weight > left
+            self.regen_creations_text = (
+                not_enough_creations_text(weight - left)
+                if weight > left
+                else creations_use_notice(weight, left, quota, subject="La nueva versión")
+            )
+
     @rx.event
     def ask_reject(self, regenerate: bool) -> None:
         self.reject_confirm = "regenerate" if regenerate else "reject"
@@ -5595,7 +5767,7 @@ class CreativeState(rx.State):
             async with self:
                 self.action_error = _NO_SESSION
             return
-        tenant_id, _, user_id = ids
+        tenant_id, brand_id, user_id = ids
         try:
             vm = await asyncio.to_thread(
                 lambda: reject_draft(
@@ -5616,6 +5788,12 @@ class CreativeState(rx.State):
             async with self:
                 self.action_error = _NOT_REJECTABLE
             return
+        except NotEnoughCreations as exc:
+            # CREAR-5: the month cannot pay another version — the piece stays as it was
+            async with self:
+                self.action_error = not_enough_creations_text(exc.missing)
+            await self._load_regen_creations(tenant_id, brand_id, draft_uuid)
+            return
         except SQLAlchemyError as exc:
             logger.error("reject failed: %s", type(exc).__name__)
             async with self:
@@ -5626,6 +5804,8 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != vm.draft_id
             if should_poll:
                 self._polling_draft_id = vm.draft_id
+        if regenerate:
+            await self._load_regen_creations(tenant_id, brand_id, draft_uuid)
         if should_poll:
             # the regeneration says "listo" even from another tab (pendientes §5)
             yield rx.call_script(_ASK_NOTIFICATIONS_JS)

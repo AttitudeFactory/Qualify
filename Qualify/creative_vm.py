@@ -80,9 +80,12 @@ class FailureVM:
 #: FailureReason value -> (label, action, route). A FAILED draft is terminal in the FSM,
 #: so "retry" always means a new brief — hence /create, not a regenerate edge.
 FAILURE_INFO: dict[str, tuple[str, str, str]] = {
+    # CREAR-5 (decision 8): the owner never reads money — the team's dollar cap is a
+    # safety net, and a generation it stops gives its creations back
     "budget_exceeded": (
-        "Se alcanzó el tope de gasto mensual de la marca.",
-        "Sube el tope mensual y vuelve a intentarlo",
+        "No pudimos crear esta publicación: tu marca llegó a su límite de este mes. "
+        "Te devolvimos tus creaciones.",
+        "Escríbenos y lo revisamos contigo",
         "",
     ),
     "credential_invalid": (
@@ -1275,7 +1278,11 @@ __all__ = [
     "build_voice_proposal_vm",
     "content_type_options",
     "failure_vm",
+    "creations_left_label",
+    "creations_use_notice",
     "format_cost_label",
+    "not_enough_creations_text",
+    "presenter_fallback_text",
     "gap_vm",
     "status_label",
     "status_tone",
@@ -1456,3 +1463,53 @@ def seen_label(count: int) -> str:
         return ""
     shown = f"{count / 1000:.1f}k".replace(".0k", "k") if count >= 1000 else str(count)
     return f"visto {shown} {'vez' if count == 1 else 'veces'} en publicaciones reales"
+
+
+# ---------------------------------------------------------------------------------------
+# «Creaciones del mes» (CREAR-5, m-24848531): what the owner reads instead of money.
+
+#: What a presenter the weights table does not price says (an own script too long).
+PRESENTER_TOO_LONG = (
+    "Tu guion es muy largo para un video con presentador: acórtalo a unos 30 segundos."
+)
+
+
+def creations_left_label(left: int, quota: int) -> str:
+    """«Te quedan 18 de 30 este mes» — the month's balance, never money."""
+    if left == 1:
+        return f"Te queda 1 de {quota} este mes"
+    return f"Te quedan {left} de {quota} este mes"
+
+
+def not_enough_creations_text(missing: int) -> str:
+    """«Te faltan 2 creaciones este mes.» — nothing is created, never half of it."""
+    if missing == 1:
+        return "Te falta 1 creación este mes."
+    return f"Te faltan {missing} creaciones este mes."
+
+
+def creations_use_notice(
+    weight: int,
+    left: int,
+    quota: int,
+    *,
+    presenter: bool = False,
+    video: bool = False,
+    subject: str = "",
+) -> str:
+    """What one request uses, said before it is created. The presenter's sentence is the
+    founder's (2026-10-23): «Este video con presentador usa 25 de tus creaciones. Te
+    quedarían {n} este mes.»"""
+    after = max(left - weight, 0)
+    if presenter:
+        return (
+            f"Este video con presentador usa {weight} de tus creaciones. "
+            f"Te quedarían {after} este mes."
+        )
+    what = subject or ("Este video" if video else "Esta publicación")
+    return f"{what} usa {weight} de tus creaciones. Te quedarían {after} de {quota}."
+
+
+def presenter_fallback_text(seconds: int, weight: int) -> str:
+    """The shorter presenter a short month still pays for (CREAR-5: 15 s, 13)."""
+    return f"Te alcanza para el video de {seconds} segundos, que usa {weight} de tus creaciones."

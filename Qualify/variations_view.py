@@ -46,7 +46,7 @@ _INTRO = (
 )
 _NEXT_STEP = (
     "Revisa las propuestas y descarta las que no te convenzan. Después genera las "
-    "imágenes de los ángulos que queden: cada una se paga al generarla."
+    "imágenes de los ángulos que queden: cada una usa 1 de tus creaciones del mes."
 )
 _POLL_TIMEOUT = (
     "Algunas publicaciones llevan demasiado tiempo. Vuelve a abrir este grupo más tarde o "

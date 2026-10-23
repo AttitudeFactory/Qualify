@@ -211,7 +211,8 @@ def test_failure_vm_none_and_unknown() -> None:
 
 
 def test_specific_failure_actions() -> None:
-    assert "tope" in failure_vm("budget_exceeded").label
+    assert "límite" in failure_vm("budget_exceeded").label
+    assert "$" not in failure_vm("budget_exceeded").label
     assert failure_vm("credential_invalid").action_label.startswith("Renueva")
     assert failure_vm("timeout").action_route == "/create"
 
