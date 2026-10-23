@@ -507,14 +507,17 @@ def test_preview_handoff_from_a_keyword() -> None:
 
 def test_publish_notice_copy() -> None:
     assert publish_notice(graph_ok=True)[1] == "ok"
-    message, tone = publish_notice(graph_ok=False, code=100)
-    assert message == "Publicado en Qualify; WhatsApp no aceptó los atajos (código 100)."
+    prefix = "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+    message, tone = publish_notice(graph_ok=False)
+    assert message == f"{prefix} Vuelve a tocar «Publicar en mi WhatsApp» en un momento."
     assert tone == "warn"
-    message, tone = publish_notice(graph_ok=False, code=190, is_auth_error=True)
-    assert message.startswith("Publicado en Qualify; WhatsApp no aceptó los atajos (código 190).")
+    message, tone = publish_notice(graph_ok=False, is_auth_error=True)
+    assert message.startswith(prefix) and "Qualify" in message  # the reconnect instruction
     assert tone == "error"
-    assert "emojis" in publish_notice(graph_ok=False, rejected_locally=True)[0]
-    assert "no hubo respuesta" in publish_notice(graph_ok=False, is_transport=True)[0]
+    message, tone = publish_notice(graph_ok=False, rejected_locally=True)
+    assert message == (f"{prefix} Quita los emojis o símbolos de los atajos y vuelve a publicar.")
+    for text in (message, publish_notice(graph_ok=False)[0]):
+        assert "en Qualify" not in text and "código" not in text
 
 
 @pytest.mark.parametrize("kind", [KIND_TEXT, KIND_BUTTONS, KIND_LIST, KIND_HANDOFF])
@@ -559,7 +562,9 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Publicar en mi WhatsApp",
         "Guardar sin publicar",
         "Probar el menú",
-        "Pausar menú en este número",
+        "Pausar el menú en tu WhatsApp",
+        "Listo, ir a publicar",
+        "Sí, publicar",
         "Responder al primer mensaje",
         "Palabras clave",
         "Atajos",

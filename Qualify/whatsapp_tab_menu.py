@@ -55,8 +55,7 @@ from .whatsapp_menu_vm import (
     NONE_VALUE,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
-    PUBLISH_CONFIRM_REPLACES,
-    PUBLISH_CONFIRM_SAVES,
+    PUBLISH_CONFIRM_BUTTON,
     SAVE_ONLY_BUTTON,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
@@ -75,6 +74,7 @@ from .whatsapp_vm import TAB_QR
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
 PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
+TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
 
 
 # ======================================================================================
@@ -343,8 +343,10 @@ def _publish_dialog() -> rx.Component:
             rx.alert_dialog.title(PUBLISH_BUTTON),
             rx.alert_dialog.description(PUBLISH_CONFIRM, size="2"),
             rx.vstack(
-                rx.cond(S.dirty, _hint(PUBLISH_CONFIRM_SAVES), rx.fragment()),
-                _hint(PUBLISH_CONFIRM_REPLACES),
+                rx.foreach(
+                    S.publish_confirm_lines,
+                    lambda line: rx.text(line, size="2", color=T.TEXT_MUTED),
+                ),
                 spacing="1",
                 align_items="start",
                 margin_top="0.5rem",
@@ -354,7 +356,7 @@ def _publish_dialog() -> rx.Component:
                     rx.button("Cancelar", variant="soft", size="3", **T.tone_scheme("neutral")),
                 ),
                 rx.alert_dialog.action(
-                    rx.button("Publicar", on_click=S.publish_current, size="3"),
+                    rx.button(PUBLISH_CONFIRM_BUTTON, on_click=S.publish_current, size="3"),
                 ),
                 spacing="3",
                 margin_top="1rem",
@@ -462,7 +464,7 @@ def _toolbar() -> rx.Component:
                     size="2",
                 ),
                 rx.vstack(
-                    rx.text("Pausar menú en este número", size="2", weight="medium"),
+                    rx.text("Pausar el menú en tu WhatsApp", size="2", weight="medium"),
                     rx.text(
                         rx.cond(
                             S.menu.is_published,
@@ -490,6 +492,8 @@ def _toolbar() -> rx.Component:
             align_items="start",
         ),
         padding="1rem 1.25rem",
+        id=TOOLBAR_ELEMENT_ID,
+        scroll_margin_top="1rem",
     )
 
 
@@ -1115,7 +1119,7 @@ def _version_row(version: MenuVersionVM) -> rx.Component:
                 rx.text(version.label, size="2", weight="medium"),
                 rx.cond(
                     version.is_live,
-                    signal_pill("Publicada en el número", "ok"),
+                    signal_pill("La que responde ahora", "ok"),
                     rx.cond(version.published_at != "", tag("Publicada antes"), rx.fragment()),
                 ),
                 spacing="2",
@@ -1442,6 +1446,15 @@ def _preview_card() -> rx.Component:
                     align_items="start",
                 ),
                 rx.fragment(),
+            ),
+            rx.button(
+                rx.icon("arrow-up", size=T.ICON_SM),
+                "Listo, ir a publicar",
+                on_click=rx.scroll_to(TOOLBAR_ELEMENT_ID),
+                variant="soft",
+                size="3",
+                width="100%",
+                display=rx.breakpoints(initial="flex", lg="none"),
             ),
             spacing="3",
             width="100%",

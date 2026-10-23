@@ -1087,10 +1087,10 @@ class MenuVersionVM:
 def menu_status(*, published: bool, paused: bool) -> tuple[str, str]:
     """(label, tone) of a menu on its number."""
     if not published:
-        return "Borrador", "neutral"
+        return "Sin publicar", "neutral"
     if paused:
         return "En pausa", "warn"
-    return "Activo en el número", "ok"
+    return "Respondiendo en tu WhatsApp", "ok"
 
 
 def build_menu_summary(
@@ -1173,12 +1173,43 @@ PUBLISH_OK = (
 # chat (the owner) — never that Qualify answers on its own (guide N13).
 PUBLISH_BUTTON = "Publicar en mi WhatsApp"
 SAVE_ONLY_BUTTON = "Guardar sin publicar"
+PUBLISH_CONFIRM_BUTTON = "Sí, publicar"
 PUBLISH_CONFIRM = (
-    "Desde que publiques, tu WhatsApp responde con este menú. Tú tomas el chat cuando quieras."
+    "Al publicar, tu WhatsApp responde con los mensajes que tú escribiste en este menú, "
+    "nada más. Puedes tomar el control de cualquier chat desde Chats."
 )
 PUBLISH_CONFIRM_SAVES = "Primero guardamos tus cambios como una versión nueva."
-PUBLISH_CONFIRM_REPLACES = "Si tenías otro menú publicado en este número, ese deja de responder."
+PUBLISH_CONFIRM_BACK_TO = "Tu WhatsApp vuelve a responder con la versión {n}."
+PUBLISH_CONFIRM_STARTS_WITH = "Tu WhatsApp empieza a responder con la versión {n}."
+PUBLISH_CONFIRM_RESEND = (
+    "Este menú ya está respondiendo. Volvemos a enviar a WhatsApp la bienvenida, los "
+    "atajos y los comandos."
+)
+PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de responder y este toma su lugar."
 NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para el mostrador"
+
+
+def publish_confirm_lines(
+    *, dirty: bool, version: MenuVersionVM | None, other_published_menu: str
+) -> list[str]:
+    """The case-specific lines under `PUBLISH_CONFIRM`: what happens to the version on
+    screen (`version` is the saved one the editor shows; ignored while `dirty`, since a
+    new one is saved first), then — only when another menu of the number is the one
+    answering — that it gets replaced."""
+    lines: list[str] = []
+    if dirty:
+        lines.append(PUBLISH_CONFIRM_SAVES)
+    elif version is not None:
+        number = version.label.removeprefix("Versión ").strip()
+        if version.is_live:
+            lines.append(PUBLISH_CONFIRM_RESEND)
+        elif version.published_at:
+            lines.append(PUBLISH_CONFIRM_BACK_TO.format(n=number))
+        else:
+            lines.append(PUBLISH_CONFIRM_STARTS_WITH.format(n=number))
+    if other_published_menu.strip():
+        lines.append(PUBLISH_CONFIRM_REPLACES.format(name=other_published_menu.strip()))
+    return lines
 
 
 def can_publish(
@@ -1193,34 +1224,29 @@ def can_publish(
     return dirty or bool(editing_version_id)
 
 
+PUBLISH_PARTIAL = "Tu WhatsApp ya responde con este menú, pero no tomó los atajos de inicio."
+
+
 def publish_notice(
     *,
     graph_ok: bool,
-    code: int | None = None,
     is_auth_error: bool = False,
-    is_transport: bool = False,
     rejected_locally: bool = False,
 ) -> tuple[str, str]:
-    """(message, tone) after «Publicar en mi WhatsApp». The version is live in Qualify in
-    every case — the database publish happens first and is kept; only WhatsApp's copy of
-    the shortcuts can lag, and the banner says so with Meta's code, never Meta's text."""
+    """(message, tone) after «Publicar en mi WhatsApp». The menu answers in every case —
+    the database publish happens first and is kept; only WhatsApp's copy of the shortcuts
+    can lag. The banner says what to do next in the owner's words: never Meta's text and
+    never Meta's code (the provider logs the code)."""
     if graph_ok:
         return PUBLISH_OK, "ok"
-    prefix = "Publicado en Qualify; WhatsApp no aceptó los atajos"
     if rejected_locally:
-        return f"{prefix} (revisa que no tengan emojis ni símbolos).", "warn"
+        return (
+            f"{PUBLISH_PARTIAL} Quita los emojis o símbolos de los atajos y vuelve a publicar.",
+            "warn",
+        )
     if is_auth_error:
-        code_part = f" (código {code})" if code is not None else ""
-        return f"{prefix}{code_part}. {WHATSAPP_RECONNECT_HINT}", "error"
-    if code is not None:
-        return f"{prefix} (código {code}).", "warn"
-    if is_transport:
-        return f"{prefix}: no hubo respuesta de Meta. Vuelve a publicar en un momento.", "warn"
-    return (
-        "Publicado en Qualify; no pudimos enviar los atajos a WhatsApp. Vuelve a publicar "
-        "en un momento.",
-        "warn",
-    )
+        return f"{PUBLISH_PARTIAL} {WHATSAPP_RECONNECT_HINT}", "error"
+    return f"{PUBLISH_PARTIAL} Vuelve a tocar «{PUBLISH_BUTTON}» en un momento.", "warn"
 
 
 # --------------------------------------------------------------------------------------
@@ -1387,6 +1413,11 @@ __all__ = [
     "NONE_VALUE",
     "PUBLISH_BUTTON",
     "PUBLISH_CONFIRM",
+    "PUBLISH_CONFIRM_BACK_TO",
+    "PUBLISH_CONFIRM_BUTTON",
+    "PUBLISH_CONFIRM_RESEND",
+    "PUBLISH_CONFIRM_STARTS_WITH",
+    "PUBLISH_PARTIAL",
     "PUBLISH_CONFIRM_REPLACES",
     "PUBLISH_CONFIRM_SAVES",
     "REPLY_BUTTON",
@@ -1424,6 +1455,7 @@ __all__ = [
     "new_option",
     "order_lines",
     "preview_turn",
+    "publish_confirm_lines",
     "publish_notice",
     "rename_node",
     "template_definition",

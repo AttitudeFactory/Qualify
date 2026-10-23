@@ -85,6 +85,7 @@ from .whatsapp_menu_vm import (
     new_option,
     order_lines,
     preview_turn,
+    publish_confirm_lines,
     rename_node,
     unique_node_id,
     validate_form,
@@ -287,6 +288,17 @@ class WhatsAppMenuState(rx.State):
             editing_version_id=self.editing_version_id,
             busy=self.saving or self.publishing,
         )
+
+    @rx.var
+    def publish_confirm_lines(self) -> list[str]:
+        """The confirmation's case lines: save first / back to version n / re-send the
+        live one, and the other menu it replaces (only when one is answering)."""
+        version = next((v for v in self.versions if v.version_id == self.editing_version_id), None)
+        other = next(
+            (m.name for m in self.menus if m.is_published and m.menu_id != self.menu.menu_id),
+            "",
+        )
+        return publish_confirm_lines(dirty=self.dirty, version=version, other_published_menu=other)
 
     @rx.var
     def ice_breakers_full(self) -> bool:
@@ -900,12 +912,11 @@ class WhatsAppMenuState(rx.State):
                 for m in self.menus
             ]
             self._show_detail(outcome.detail, load_form=False)
-            # The menu is live in Qualify in every non-raising case; the next step (the
-            # QR) only makes sense when the number is not asking to be reconnected. A
-            # clean publish says «listo» right where the owner tapped (the toolbar), so
-            # the banner up top only carries the partial failures.
-            self.just_published = not outcome.auth_error
-            if outcome.tone != "ok" or not self.just_published:
+            # A clean publish says «listo» right where the owner tapped (the toolbar)
+            # with the next step (the QR); a partial failure shows only its banner — what
+            # to fix comes before what to do next.
+            self.just_published = outcome.graph_ok
+            if not outcome.graph_ok:
                 self.banner, self.banner_tone = outcome.notice, outcome.tone
         if outcome.auth_error:
             yield WhatsAppState.load_numbers
