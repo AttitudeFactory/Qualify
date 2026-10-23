@@ -53,10 +53,15 @@ def _summary_rows(state: CreativeState) -> dict[str, dict[str, str]]:
     return {row["label"]: row for row in state.gen_summary}
 
 
-def test_the_campaign_view_comes_right_before_the_summary() -> None:
+def test_the_campaign_view_is_behind_mas_opciones_right_before_the_summary() -> None:
+    """CREAR-2 (m-24848530): «Campaña» is optional, folded in step 3 under «Más
+    opciones», the step right before «Revisa y crea»."""
     state = _state()
     assert state.gen_views[-2:] == ["campaign", "summary"]
-    assert [step["label"] for step in state.gen_view_steps][-2:] == ["Campaña", "Resumen"]
+    assert [step["label"] for step in state.gen_view_steps][-2:] == [
+        "Cómo la quieres",
+        "Revisa y crea",
+    ]
 
 
 def test_an_independent_piece_is_the_default_and_generates_as_before() -> None:
@@ -64,7 +69,12 @@ def test_an_independent_piece_is_the_default_and_generates_as_before() -> None:
     assert state.gen_campaign == cp.NO_CAMPAIGN
     rows = _summary_rows(state)
     assert rows["Campaña"]["value"] == "Sin campaña (publicación independiente)"
-    assert state.gen_views[int(rows["Campaña"]["index"])] == "campaign"
+    assert rows["Campaña"]["view"] == "campaign"
+    # «Editar» opens step 3 with «Más opciones» unfolded
+    state.edit_view(rows["Campaña"]["view"])
+    assert state.gen_step_key == "how" and state.rules_open
+    state.go_to_view(rows["Campaña"]["index"])
+    state.go_to_view("99")
     assert state.gen_problem == ""
 
 

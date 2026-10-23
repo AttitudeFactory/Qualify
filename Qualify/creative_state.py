@@ -433,20 +433,60 @@ _CATEGORY_TITLES = {key: title for key, title, _, _ in CATEGORY_OPTIONS}
 
 
 def generator_views(category: str, kind: str) -> list[str]:
-    """The views the generator steps through for `category`/`kind` (§ request
-    2026-10-14: "estilo view", one screen at a time instead of one long scroll): Avatar
-    opens on its types; Avatar and Clip then take their references, then the kind's own
-    sections. Every option ends the same way (§ request 2026-10-20): «Datos clave», then
-    the context — where «Potenciar con IA» works on what the rest already says — then a
-    «Resumen» of it all, where Generar is. Right before the summary, the optional
-    «Campaña» the piece joins (m-24820838)."""
+    """The views (sections) of `category`/`kind`, in the order of the four steps
+    (`generator_steps`, CREAR-2 m-24848530): what the piece shows (Avatar's types, the
+    references, the presenter, the kind's own section), then what it says («topic»),
+    then how it is published («channel»), with «Datos clave» and «Campaña» behind «Más
+    opciones», and the «Resumen» where Crear is."""
     head = ["avatar_type"] if category == "video" else []
     # § request 2026-10-20: an avatar's reference video is asked in «Guion y fondo»,
     # not in a view of its own; «Ad» and Clip keep theirs
     if category in REFERENCE_CATEGORIES and category != "video":
         head.append("reference")
-    own = [section for section in generator_sections(kind) if section != "topic"]
-    return [*head, *own, "rules", "topic", "campaign", "summary"]
+    own = [s for s in generator_sections(kind) if s not in ("topic", "channel")]
+    return [*head, *own, "topic", "channel", "rules", "campaign", "summary"]
+
+
+#: CREAR-2 (m-24848530): the wizard is four short steps — ① Qué mostrar ② Qué decir
+#: ③ Cómo la quieres ④ Revisa y crea. Each view (section) belongs to one step; what a
+#: kind cannot do without is always in step 1, never behind «Más opciones».
+GENERATOR_STEPS = ("show", "say", "how", "review")
+GENERATOR_STEP_LABELS = {
+    "show": "Qué mostrar",
+    "say": "Qué decir",
+    "how": "Cómo la quieres",
+    "review": "Revisa y crea",
+}
+_STEP_OF_VIEW = {
+    "avatar_type": "show",
+    "reference": "show",
+    "presenter": "show",
+    "details": "show",
+    "topic": "say",
+    "channel": "how",
+    "rules": "how",
+    "campaign": "how",
+    "summary": "review",
+}
+#: The optional views, folded in step 3 under «Más opciones».
+OPTIONAL_VIEWS = ("rules", "campaign")
+
+
+def generator_steps(category: str, kind: str) -> list[tuple[str, list[str]]]:
+    """The steps of `category`/`kind`: `(step, its views)` in order. A step with no
+    view for this kind (the creator's script shows nothing of its own) is skipped, so
+    «Paso N de M» counts only real steps (N6)."""
+    views = generator_views(category, kind)
+    steps = [(step, [v for v in views if _STEP_OF_VIEW.get(v) == step]) for step in GENERATOR_STEPS]
+    return [(step, step_views) for step, step_views in steps if step_views]
+
+
+def generator_step_of(category: str, kind: str, view: str) -> int:
+    """The index of the step that holds `view` (-1 when this kind has no such view)."""
+    for index, (_step, views) in enumerate(generator_steps(category, kind)):
+        if view in views:
+            return index
+    return -1
 
 
 #: The step bar's label of each view; «details» is named after the kind.
@@ -863,7 +903,7 @@ class CreativeState(rx.State):
     #: "create" = the chosen option's views; "discover" = the reels discovery (§ request
     #: 2026-10-14, QUA-223 §2), the panel's own button.
     gen_mode: str = "create"
-    #: The view in front, an index into `gen_views` (§ request 2026-10-14).
+    #: The step in front, an index into `generator_steps` (CREAR-2 m-24848530).
     gen_step: int = 0
     #: The catalog product screen comes first (§ request 2026-10-14: "antes de aparecer
     #: el lateral bar quiero poder seleccionar un producto del catálogo"): False until
@@ -884,7 +924,8 @@ class CreativeState(rx.State):
     #: "result" once Generar created a piece: it shows below the form, on the same page
     #: (§ request 2026-10-08); "form" = nothing generated yet, or «Crear otro».
     generator_view: str = "form"
-    #: «Reglas (opcional)» is folded until the operator opens it.
+    #: «Más opciones» of step 3 («Datos clave», «Campaña») is folded until the
+    #: operator opens it (CREAR-2).
     rules_open: bool = False
     #: The carousel slide in view (§ request 2026-10-08): the generator's result, and
     #: the draft screen's.
@@ -1613,29 +1654,46 @@ class CreativeState(rx.State):
         """The views of the chosen option, in order (`generator_views`)."""
         return generator_views(self.gen_category, self.brief_kind)
 
+    def _gen_steps(self) -> list[tuple[str, list[str]]]:
+        return generator_steps(self.gen_category, self.brief_kind)
+
     def _view_index(self) -> int:
-        views = generator_views(self.gen_category, self.brief_kind)
-        return min(max(self.gen_step, 0), len(views) - 1)
+        """The step in front (`gen_step` kept within the kind's steps)."""
+        return min(max(self.gen_step, 0), len(self._gen_steps()) - 1)
+
+    @rx.var
+    def gen_step_key(self) -> str:
+        """The step in front: "show", "say", "how" or "review" (`GENERATOR_STEPS`)."""
+        return self._gen_steps()[self._view_index()][0]
+
+    @rx.var
+    def gen_step_views(self) -> list[str]:
+        """The views the step in front stacks, in order."""
+        return self._gen_steps()[self._view_index()][1]
 
     @rx.var
     def gen_view(self) -> str:
-        """The view in front."""
-        return generator_views(self.gen_category, self.brief_kind)[self._view_index()]
+        """The first view of the step in front."""
+        return self._gen_steps()[self._view_index()][1][0]
+
+    @rx.var
+    def gen_step_count(self) -> str:
+        """«Paso N de M» (N6): M counts only this kind's real steps."""
+        return f"Paso {self._view_index() + 1} de {len(self._gen_steps())}"
 
     @rx.var
     def gen_view_steps(self) -> list[dict[str, str]]:
-        """The step bar: each view's index, label and whether it is done or current."""
-        views = generator_views(self.gen_category, self.brief_kind)
+        """The step bar: each step's index, label and whether it is done or current."""
         current = self._view_index()
         return [
             {
                 "index": str(index),
                 "number": str(index + 1),
-                "label": generator_view_label(view, self.brief_kind),
+                "label": GENERATOR_STEP_LABELS[step],
                 "done": "true" if index < current else "",
                 "current": "true" if index == current else "",
             }
-            for index, view in enumerate(views)
+            for index, (step, _views) in enumerate(self._gen_steps())
         ]
 
     @rx.var
@@ -1644,7 +1702,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def gen_is_last_view(self) -> bool:
-        return self._view_index() == len(generator_views(self.gen_category, self.brief_kind)) - 1
+        return self._view_index() == len(self._gen_steps()) - 1
 
     @rx.var
     def gen_sections(self) -> list[str]:
@@ -3145,24 +3203,40 @@ class CreativeState(rx.State):
 
     @rx.event
     def next_view(self) -> None:
+        """«Siguiente»: the next step. Nothing is checked here — only the summary says
+        what is missing — so with the same kind and format as last time, writing the
+        topic and «Siguiente» reach «Crear» (CREAR-2)."""
         self.gen_step = self._view_index() + 1
         self.gen_step = self._view_index()
         self.create_error = ""
 
     @rx.event
     def prev_view(self) -> None:
+        """«Atrás»: the previous step; what was written stays in the state."""
         self.gen_step = max(self._view_index() - 1, 0)
         self.create_error = ""
 
     @rx.event
     def go_to_view(self, index: str) -> None:
-        """A step of the step bar: any view, back or ahead — only the context is
-        required, and Generar says what is missing."""
+        """A step of the step bar: any step, back or ahead — only the context is
+        required, and the summary says what is missing."""
         try:
             self.gen_step = int(index)
         except ValueError:
             return
         self.gen_step = self._view_index()
+        self.create_error = ""
+
+    @rx.event
+    def edit_view(self, view: str) -> None:
+        """A summary row's «Editar»: the step that holds `view`, with «Más opciones»
+        unfolded when the view lives behind it."""
+        index = generator_step_of(self.gen_category, self.brief_kind, view)
+        if index < 0:
+            return
+        self.gen_step = index
+        if view in OPTIONAL_VIEWS:
+            self.rules_open = True
         self.create_error = ""
 
     # -- «Campaña» (m-24820838): the campaign the piece joins, optional ----------------
@@ -4485,8 +4559,7 @@ class CreativeState(rx.State):
     # -- «Resumen» (§ request 2026-10-20): every option's last view, where Generar is ------
 
     def _on_summary(self) -> bool:
-        views = generator_views(self.gen_category, self.brief_kind)
-        return views[self._view_index()] == "summary"
+        return self._gen_steps()[self._view_index()][0] == "review"
 
     @rx.var(cache=False)
     def gen_problem(self) -> str:
@@ -4502,13 +4575,21 @@ class CreativeState(rx.State):
         view, like `gen_problem`."""
         if not self._on_summary():
             return []
-        views = generator_views(self.gen_category, self.brief_kind)
         kind = self.brief_kind
         rows: list[dict[str, str]] = []
 
         def row(label: str, value: str, view: str = "") -> None:
-            index = str(views.index(view)) if view in views else ""
-            rows.append({"label": label, "value": value or "—", "index": index})
+            # CREAR-2: «Editar» goes to the step that holds the view
+            step = generator_step_of(self.gen_category, kind, view) if view else -1
+            index = str(step) if step >= 0 else ""
+            rows.append(
+                {
+                    "label": label,
+                    "value": value or "—",
+                    "index": index,
+                    "view": view if index else "",
+                }
+            )
 
         row("Qué creamos", self._piece_label(), "avatar_type")
         if self.product_source == "stock":

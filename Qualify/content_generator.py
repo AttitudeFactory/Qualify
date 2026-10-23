@@ -3549,8 +3549,8 @@ def _section_channel() -> rx.Component:
     # default.
     return _section(
         "channel",
-        "¿Dónde se publica?",
-        "De qué trata y en qué formato.",
+        "¿Cómo la quieres?",
+        "De qué trata y en qué formato sale.",
         _field(
             "De qué trata",
             rx.select.root(
@@ -3662,7 +3662,7 @@ _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
         "Imágenes generadas, videos animados o publicaciones que ya hiciste, en el orden "
         "en que salen.",
     ),
-    "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
+    "video": ("El fondo", "Qué se ve detrás del avatar y, si quieres, un video de referencia."),
     "clip": (
         "Fotogramas",
         "La imagen con la que empieza el clip y, si quieres, con la que termina.",
@@ -3695,8 +3695,7 @@ def _section_details() -> rx.Component:
             ("template", _template_details()),
             ("carousel", _carousel_section()),
             rx.vstack(
-                _script_source(),
-                rx.divider(),
+                # CREAR-2: the script is asked in step 2, «Qué decir»
                 _field_label(
                     "Fondo y productos",
                     "Se componen en una sola imagen detrás del avatar.",
@@ -3761,6 +3760,13 @@ def _section_rules() -> rx.Component:
                 "Lo que la publicación tiene que destacar tal cual: el precio, un descuento, una "
                 "fecha, un código… La IA los usa exactos, sin cambiarlos ni inventar otros.",
                 size="1",
+                color=T.TEXT_MUTED,
+            ),
+            # CREAR-2: these facts never edit the brand
+            rx.text(
+                "Solo para esta publicación: tu marca no cambia.",
+                size="1",
+                weight="medium",
                 color=T.TEXT_MUTED,
             ),
             spacing="0",
@@ -3932,12 +3938,124 @@ def _view_step(step: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _view_steps() -> rx.Component:
-    return rx.box(
-        rx.foreach(CreativeState.gen_view_steps, _view_step),
-        class_name="q-stepper",
-        role="list",
-        aria_label="Pasos",
+    """The four steps (CREAR-2) and «Paso N de M» (N6)."""
+    return rx.vstack(
+        rx.text(
+            CreativeState.gen_step_count,
+            size="1",
+            weight="medium",
+            color=T.TEXT_MUTED,
+            aria_live="polite",
+        ),
+        rx.box(
+            rx.foreach(CreativeState.gen_view_steps, _view_step),
+            class_name="q-stepper",
+            role="list",
+            aria_label="Pasos",
+            width="100%",
+        ),
+        spacing="2",
         width="100%",
+        align_items="start",
+    )
+
+
+def _has_view(view: str) -> rx.Var[bool]:
+    return CreativeState.gen_step_views.contains(view)
+
+
+def _step_show() -> rx.Component:
+    """① Qué mostrar: Avatar's types, the references, the presenter and the kind's own
+    section — everything a kind cannot do without (CREAR-2)."""
+    return rx.vstack(
+        rx.cond(_has_view("avatar_type"), _avatar_type_view()),
+        rx.cond(
+            _has_view("reference"),
+            rx.cond(
+                CreativeState.gen_category == "clip",
+                _clip_references_view(),
+                _reference_view(),
+            ),
+        ),
+        rx.cond(_has_view("presenter"), _section_presenter()),
+        rx.cond(_has_view("details"), _section_details()),
+        spacing="6",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _step_say() -> rx.Component:
+    """② Qué decir: the context, «Mejorar mi texto» and, for an avatar, its script."""
+    return rx.vstack(
+        _section_topic(),
+        rx.cond(
+            CreativeState.gen_category == "video",
+            rx.vstack(
+                rx.divider(),
+                _field_label("El guion", "Lo escribimos con tu texto, o lo escribes tú."),
+                _script_source(),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        spacing="5",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _more_options() -> rx.Component:
+    """«Más opciones» (N6): the optional «Datos clave» and «Campaña», folded."""
+    return rx.vstack(
+        rx.button(
+            rx.icon(
+                rx.cond(CreativeState.rules_open, "chevron-up", "chevron-down"),
+                size=T.ICON_SM,
+            ),
+            "Más opciones",
+            variant="ghost",
+            color_scheme="gray",
+            size="3",
+            min_height="44px",
+            on_click=CreativeState.toggle_rules,
+            aria_expanded=rx.cond(CreativeState.rules_open, "true", "false"),
+        ),
+        rx.cond(
+            ~CreativeState.rules_open,
+            rx.text(
+                "Datos clave, qué evitar y campaña. Puedes crear sin tocarlos.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        rx.cond(
+            CreativeState.rules_open,
+            rx.vstack(
+                _section_rules(),
+                rx.divider(),
+                _campaign_view(),
+                spacing="5",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _step_how() -> rx.Component:
+    """③ Cómo la quieres: format and length, the rest behind «Más opciones»."""
+    return rx.vstack(
+        _section_channel(),
+        rx.divider(),
+        _more_options(),
+        spacing="5",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -3960,9 +4078,10 @@ def _summary_row(item: rx.Var[dict[str, str]]) -> rx.Component:
                 variant="ghost",
                 color_scheme="gray",
                 size="1",
-                on_click=CreativeState.go_to_view(item["index"]),
+                on_click=CreativeState.edit_view(item["view"]),
                 aria_label="Editar " + item["label"],
                 flex_shrink="0",
+                min_height="44px",
             ),
         ),
         spacing="3",
@@ -3980,9 +4099,9 @@ def _summary_view() -> rx.Component:
     Generar from running. Generar is in its footer."""
     return rx.vstack(
         rx.vstack(
-            rx.heading("Resumen", size="4", as_="h3"),
+            rx.heading("Revisa y crea", size="4", as_="h3"),
             rx.text(
-                "Revisa lo que vamos a crear. Si algo no está bien, edítalo antes de generar.",
+                "Revisa lo que vamos a crear. Si algo no está bien, edítalo antes de crear.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -4022,6 +4141,7 @@ def _view_nav() -> rx.Component:
                     color_scheme="gray",
                     size="3",
                     radius=_CONTROL_RADIUS,
+                    min_height="44px",
                     on_click=CreativeState.prev_view,
                 ),
             ),
@@ -4030,9 +4150,10 @@ def _view_nav() -> rx.Component:
                 CreativeState.gen_is_last_view,
                 rx.button(
                     rx.icon("sparkles", size=T.ICON_SM),
-                    rx.cond(CreativeState.gen_generating, "Generando…", "Generar"),
+                    rx.cond(CreativeState.gen_generating, "Creando…", "Crear"),
                     size="3",
                     radius=_CONTROL_RADIUS,
+                    min_height="44px",
                     on_click=CreativeState.submit_generator_form,
                     loading=CreativeState.is_submitting,
                     disabled=CreativeState.gen_generating,
@@ -4042,6 +4163,7 @@ def _view_nav() -> rx.Component:
                     rx.icon("arrow-right", size=T.ICON_SM),
                     size="3",
                     radius=_CONTROL_RADIUS,
+                    min_height="44px",
                     on_click=CreativeState.next_view,
                 ),
             ),
@@ -4056,37 +4178,25 @@ def _view_nav() -> rx.Component:
 
 
 def _create_view() -> rx.Component:
-    """The chosen option, one view at a time (§ request 2026-10-14: "estilo view" instead
-    of the long scroll): the step bar, the view in front, and its navigation right under
-    it — never sticky (§ 2026-10-14, «siempre debajo del contenido»)."""
+    """The chosen option in four short steps (CREAR-2 m-24848530): the step bar, the
+    step in front, and its navigation right under it — never sticky (§ 2026-10-14,
+    «siempre debajo del contenido»)."""
     return card(
         rx.vstack(
             _view_steps(),
             rx.box(
                 rx.match(
-                    CreativeState.gen_view,
-                    ("avatar_type", _avatar_type_view()),
-                    (
-                        "reference",
-                        rx.cond(
-                            CreativeState.gen_category == "clip",
-                            _clip_references_view(),
-                            _reference_view(),
-                        ),
-                    ),
-                    ("topic", _section_topic()),
-                    ("channel", _section_channel()),
-                    ("presenter", _section_presenter()),
-                    ("details", _section_details()),
-                    ("campaign", _campaign_view()),
-                    ("summary", _summary_view()),
-                    _section_rules(),
+                    CreativeState.gen_step_key,
+                    ("show", _step_show()),
+                    ("say", _step_say()),
+                    ("how", _step_how()),
+                    _summary_view(),
                 ),
                 width="100%",
                 max_width="52rem",
                 margin_x="auto",
                 class_name="q-settle",
-                key=CreativeState.gen_view,
+                key=CreativeState.gen_step_key,
             ),
             _view_nav(),
             spacing="5",
