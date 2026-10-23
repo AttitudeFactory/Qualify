@@ -39,17 +39,45 @@ UNSURE_INTENT_NOTE: Final = "No estamos seguros: lee el comentario antes de resp
 
 
 # m-24849132: «Ordenar por prioridad» runs two passes (sentiment and intent); either one
-# failing, or both, shows this ONE notice instead of two near-identical boxes.
-PRIORITIZE_FAILED: Final = "No pudimos ordenar tus comentarios. Vuelve a intentarlo en un momento."
+# failing, or both, shows ONE notice instead of two near-identical boxes. The text still
+# depends on the cause (UX review): a retry is only suggested when a retry can help.
+# The per-pass reasons below are owned here so `inbox_state` and this mapping share them.
+SESSION_EXPIRED: Final = "Tu sesión expiró. Vuelve a iniciar sesión."
+NO_CONNECTION_SELECTED: Final = "Elige primero una cuenta de Instagram."
+UNKNOWN_CONNECTION: Final = (
+    "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
+)
+# The local model's runtime (`ml` group) is not installed in this deployment — not a
+# transient failure, so "intenta de nuevo" would be a lie.
+ANALYZE_UNAVAILABLE: Final = (
+    "Ahora no podemos ver si tus comentarios son buenos o malos. "
+    "Puedes leerlos y responderlos igual."
+)
+# m-24789644: same case for the intent pass. Unavailable = no Anthropic key here.
+ANALYZE_INTENT_UNAVAILABLE: Final = (
+    "Ahora no podemos ver quién quiere comprar. Lee los comentarios y responde tú."
+)
+PRIORITIZE_UNAVAILABLE: Final = (
+    "Ahora no podemos ordenar tus comentarios. Puedes leerlos y responderlos igual."
+)
+PRIORITIZE_FAILED: Final = "No pudimos ordenar tus comentarios. Intenta de nuevo."
+
+# Causes in priority order: the first one present in EITHER pass wins.
+_PRIORITIZE_CAUSES: Final = (SESSION_EXPIRED, NO_CONNECTION_SELECTED, UNKNOWN_CONNECTION)
 
 
 def prioritize_error_message(sentiment_error: str, intent_error: str) -> str:
     """The single notice for «Ordenar por prioridad» (m-24849132): empty when neither
-    pass failed, `PRIORITIZE_FAILED` when one or both did. The per-pass reasons stay in
-    the state for logs and tests; the owner reads one sentence."""
-    if sentiment_error or intent_error:
-        return PRIORITIZE_FAILED
-    return ""
+    pass failed; otherwise one sentence chosen by cause — session, account choice,
+    account gone, both passes unavailable here, or the generic retry."""
+    if not (sentiment_error or intent_error):
+        return ""
+    for cause in _PRIORITIZE_CAUSES:
+        if cause in (sentiment_error, intent_error):
+            return cause
+    if sentiment_error == ANALYZE_UNAVAILABLE and intent_error == ANALYZE_INTENT_UNAVAILABLE:
+        return PRIORITIZE_UNAVAILABLE
+    return PRIORITIZE_FAILED
 
 
 def short_day_label(moment: datetime) -> str:

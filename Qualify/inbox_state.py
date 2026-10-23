@@ -104,6 +104,11 @@ from .inbox_provider import (
     toggle_monitoring,
 )
 from .inbox_sync_policy import claim_is_stale, normalize_trigger, skip_for_cooldown
+from .inbox_vm import ANALYZE_INTENT_UNAVAILABLE as _ANALYZE_INTENT_UNAVAILABLE
+from .inbox_vm import ANALYZE_UNAVAILABLE as _ANALYZE_UNAVAILABLE
+from .inbox_vm import NO_CONNECTION_SELECTED as _NO_CONNECTION_SELECTED
+from .inbox_vm import SESSION_EXPIRED as _SESSION_EXPIRED
+from .inbox_vm import UNKNOWN_CONNECTION as _UNKNOWN_CONNECTION
 from .inbox_vm import (
     AnalysisSummaryVM,
     CandidateMediaVM,
@@ -154,12 +159,10 @@ _NOT_ELIGIBLE_BY_REASON: Final = {
     "too_old": _TOO_OLD,
     "unsupported_surface": _UNSUPPORTED_SURFACE,
 }
-_UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _SYNC_FAILED = "No pudimos buscar comentarios nuevos. Intenta de nuevo."
-# B8: the two halves `_NO_TENANT` used to cover for sync/analysis. No tenant in the
-# session means there is no login (`AuthState.session_tenant_id` is set only by one).
-_SESSION_EXPIRED = "Tu sesión expiró. Vuelve a iniciar sesión."
-_NO_CONNECTION_SELECTED = "Elige primero una cuenta de Instagram."
+# B8: `_SESSION_EXPIRED`/`_NO_CONNECTION_SELECTED` (now in `inbox_vm`, shared with the
+# Ordenar-por-prioridad notice) are the two halves `_NO_TENANT` used to cover. No tenant
+# in the session means there is no login (`AuthState.session_tenant_id` is set only by one).
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
@@ -185,19 +188,10 @@ _CONNECTION_AUTH_EXPIRED = (
 )
 _SYNC_ALREADY_RUNNING = "Ya estamos buscando comentarios nuevos. Te avisamos al terminar."
 _ANALYZE_FAILED = "No pudimos ver si tus comentarios son buenos o malos. Intenta de nuevo."
-# The local model's runtime (`ml` group) is not installed in this deployment — not a
-# transient failure, so "intenta de nuevo" would be a lie.
-_ANALYZE_UNAVAILABLE = (
-    "Ahora no podemos ver si tus comentarios son buenos o malos. "
-    "Puedes leerlos y responderlos igual."
-)
-# m-24789644: same two cases for the intent pass. Unavailable = no Anthropic key here.
+# m-24789644: same two cases for the intent pass (unavailable lives in `inbox_vm`).
 _REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
 _REPLY_BY_DM_FAILED = "No pudimos preparar el mensaje privado. Vuelve a intentarlo en un momento."
 _ANALYZE_INTENT_FAILED = "No pudimos ver quién quiere comprar. Intenta de nuevo."
-_ANALYZE_INTENT_UNAVAILABLE = (
-    "Ahora no podemos ver quién quiere comprar. Lee los comentarios y responde tú."
-)
 # QUA-93 — each of the three new sections has its own load error, same "independent
 # §6.1 lifecycle per section" posture the design doc documents.
 _REEL_SUMMARIES_LOAD_FAILED = (
