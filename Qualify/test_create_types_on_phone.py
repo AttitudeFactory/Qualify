@@ -82,3 +82,52 @@ def test_the_state_turns_the_draft_into_a_chip() -> None:
     assert state.brief_must_avoid == "barato"
     state.remove_must_avoid("barato")
     assert state.brief_must_avoid == ""
+
+
+# -- the UX review of CREAR-6 ------------------------------------------------------------
+
+
+def test_a_phrase_typed_but_not_added_still_reaches_the_brief() -> None:
+    state = CreativeState()
+    state.brief_topic = "Promo del viernes"
+    state.set_brief_must_mention_draft("envío gratis")
+    state.set_brief_must_avoid_draft("barato")
+    state.next_view()  # leaving the step flushes both drafts
+    assert state.brief_must_mention == "envío gratis"
+    assert state.brief_must_avoid == "barato"
+    assert state.brief_must_mention_draft == state.brief_must_avoid_draft == ""
+    assert state._generator_form()["must_mention"] == "envío gratis"
+
+
+def test_the_keyboard_enter_adds_the_phrase() -> None:
+    state = CreativeState()
+    state.set_brief_must_mention_draft("envío gratis")
+    state.add_must_mention_on_key("a")
+    assert state.brief_must_mention == ""
+    state.add_must_mention_on_key("Enter")
+    assert state.brief_must_mention == "envío gratis"
+    state.set_brief_must_avoid_draft("barato")
+    state.add_must_avoid_on_key("Enter")
+    assert state.brief_must_avoid == "barato"
+
+
+def test_the_phrase_field_says_when_it_is_full_and_the_chip_is_not_the_remove_button() -> None:
+    from .content_generator import _section_rules
+    from .creative_vm import PHRASE_LIMIT_HINT
+
+    rendered = str(_section_rules())
+    assert _has(rendered, PHRASE_LIMIT_HINT)
+    assert _has(rendered, "Para quitarla, toca la ✕.")
+    assert "enterKeyHint" in rendered or "enter_key_hint" in rendered
+    assert "<button" not in rendered.split("q-cr-phrase-chip")[0][-80:]
+
+
+def test_choosing_an_option_brings_the_view_into_sight_on_a_phone() -> None:
+    from .content_generator import _workspace
+    from .creative_state import CreativeState as S
+
+    assert "q-cr-view" in str(_workspace(S.readiness))
+    state = S()
+    for events in (state.open_discover(), state.open_variations()):
+        assert "q-cr-view" in str(events) and "max-width: 899px" in str(events)
+    assert "q-cr-view" in str(state.choose_category("image"))

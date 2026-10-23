@@ -858,8 +858,8 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "clip",
         "Clip",
-        "Un video generado sin presentador: desde un fotograma inicial (y uno final) o "
-        "desde tus referencias de imagen, video y audio.",
+        "Un video corto sin presentador, a partir de una foto (o de una foto de inicio y "
+        "otra de final) o de tus fotos, videos y audios de referencia.",
         "film",
     ),
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
@@ -880,7 +880,8 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "template",
         "Plantilla",
-        "Tus fotos reales en una plantilla de tu nicho: una imagen para publicación o historia.",
+        "Tus fotos reales en un diseño listo para tu rubro: una imagen para publicación o "
+        "historia.",
         "layout-template",
     ),
     # «Ad» (the template's video) left the panel on 2026-10-14
@@ -1394,6 +1395,8 @@ def format_ctas(items: list[str]) -> str:
 # contract `context_ai`/the copy pipeline already read), so the owner never types a comma.
 PHRASE_SEPARATOR = ", "
 PHRASE_LIMIT = 12
+#: What the help says once `PHRASE_LIMIT` is reached (UX review).
+PHRASE_LIMIT_HINT = "Ya tienes 12 frases, el máximo. Quita una para agregar otra."
 
 
 def phrase_list(text: str) -> list[str]:

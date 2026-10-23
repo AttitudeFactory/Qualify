@@ -406,8 +406,9 @@
 .q-cr-highlight-label { font-size: var(--font-size-1); font-weight: 500; color: var(--gray-11); }
 .q-cr-rules .rt-TextFieldRoot, .q-cr-rules .rt-Button { min-height: 44px; }
 .q-cr-rules .rt-IconButton { min-height: 44px; min-width: 44px; }
-.q-cr-phrase-chip { min-height: 44px; cursor: pointer; }
-.q-cr-phrase-chip:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-cr-phrase-chip { overflow-wrap: anywhere; }
+/* UX review: the «?» of an option, a ≥ 44 px target on a wide touch screen. */
+.q-cr-option-help .rt-IconButton { min-width: 44px; min-height: 44px; }
 /* The view's footer sits right under its content, never sticky (§ 2026-10-14). */
 .q-cr-view .q-cr-view-nav {
   padding-top: 0.75rem;

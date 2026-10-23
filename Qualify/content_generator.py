@@ -27,7 +27,7 @@ from .creative_state import (
     STOCK_MAX_PICKS,
     CreativeState,
 )
-from .creative_vm import CATEGORY_OPTIONS, VIDEO_TYPE_OPTIONS
+from .creative_vm import CATEGORY_OPTIONS, PHRASE_LIMIT, PHRASE_LIMIT_HINT, VIDEO_TYPE_OPTIONS
 from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
     _CONTROL_RADIUS,
     _asset_script,
@@ -3845,15 +3845,22 @@ def _highlight_row(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
 
 
 def _phrase_chip(phrase: rx.Var[str], on_remove: rx.event.EventSpec) -> rx.Component:
-    """A phrase of «Debe mencionar» / «Debe evitar» (CREAR-6): the whole chip is the
-    button that removes it, so the target is the chip (≥ 44 px), not a tiny «x»."""
-    return rx.el.button(
-        rx.text(phrase, as_="span"),
-        rx.icon("x", size=14, aria_hidden="true"),
-        type="button",
-        class_name="q-rv-chip q-cr-phrase-chip",
-        aria_label="Quitar «" + phrase + "»",
-        on_click=on_remove,
+    """A phrase of «Debe mencionar» / «Debe evitar» (CREAR-6): the chip itself only
+    shows it — a tap to read it never removes it (UX review) — and the ✕ beside it, a
+    ≥ 44 px target, removes it."""
+    return rx.hstack(
+        rx.el.span(phrase, class_name="q-rv-chip q-cr-phrase-chip"),
+        rx.icon_button(
+            rx.icon("x", size=16),
+            on_click=on_remove,
+            variant="ghost",
+            color_scheme="gray",
+            size="3",
+            aria_label="Quitar «" + phrase + "»",
+            flex_shrink="0",
+        ),
+        spacing="1",
+        align="center",
     )
 
 
@@ -3864,50 +3871,59 @@ def _phrase_field(
     draft: rx.Var[str],
     on_change: rx.event.EventHandler,
     on_add: rx.event.EventHandler,
+    on_key: rx.event.EventHandler,
     on_remove: object,
     placeholder: str,
 ) -> rx.Component:
-    """«Debe mencionar» / «Debe evitar» (CREAR-6): one phrase per «Agregar»,
-    each a chip — never a single field «separado por comas»."""
-    return _field(
-        label,
+    """«Debe mencionar» / «Debe evitar» (CREAR-6): one phrase per «Agregar» (or the
+    keyboard's Intro / «Listo»), each a chip — never a single field «separado por
+    comas». At `PHRASE_LIMIT` phrases the field and «Agregar» are off and the help says
+    why (UX review)."""
+    full = items.length() >= PHRASE_LIMIT
+    return rx.vstack(
         rx.vstack(
-            rx.cond(
-                items.length() > 0,
-                rx.flex(
-                    rx.foreach(items, lambda phrase: _phrase_chip(phrase, on_remove(phrase))),
-                    wrap="wrap",
-                    gap="2",
-                    width="100%",
-                ),
-            ),
-            rx.hstack(
-                rx.input(
-                    value=draft,
-                    on_change=on_change,
-                    placeholder=placeholder,
-                    max_length=80,
-                    size="3",
-                    flex="1",
-                    min_width="0",
-                    aria_label=label,
-                ),
-                rx.button(
-                    rx.icon("plus", size=T.ICON_SM),
-                    "Agregar",
-                    on_click=on_add,
-                    variant="soft",
-                    size="3",
-                    disabled=draft.strip() == "",
-                ),
-                spacing="2",
+            rx.text(label, size="2", weight="medium"),
+            rx.text(rx.cond(full, PHRASE_LIMIT_HINT, hint), size="1", color=T.TEXT_MUTED),
+            spacing="0",
+            align_items="start",
+        ),
+        rx.cond(
+            items.length() > 0,
+            rx.flex(
+                rx.foreach(items, lambda phrase: _phrase_chip(phrase, on_remove(phrase))),
+                wrap="wrap",
+                gap="2",
                 width="100%",
+            ),
+        ),
+        rx.hstack(
+            rx.input(
+                value=draft,
+                on_change=on_change,
+                on_key_down=on_key,
+                enter_key_hint="done",
+                placeholder=placeholder,
+                max_length=80,
+                size="3",
+                flex="1",
+                min_width="0",
+                aria_label=label,
+                disabled=full,
+            ),
+            rx.button(
+                rx.icon("plus", size=T.ICON_SM),
+                "Agregar",
+                on_click=on_add,
+                variant="soft",
+                size="3",
+                disabled=full | (draft.strip() == ""),
             ),
             spacing="2",
             width="100%",
-            align_items="start",
         ),
-        hint,
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -3958,21 +3974,24 @@ def _section_rules() -> rx.Component:
         rx.divider(),
         _phrase_field(
             "Debe mencionar",
-            "Escribe una frase y toca «Agregar». Puedes agregar varias.",
+            "Escribe una frase y toca «Agregar». Para quitarla, toca la ✕.",
             CreativeState.brief_must_mention_items,
             CreativeState.brief_must_mention_draft,
             CreativeState.set_brief_must_mention_draft,
             CreativeState.add_must_mention,
+            CreativeState.add_must_mention_on_key,
             CreativeState.remove_must_mention,
             "Ej.: envío gratis",
         ),
         _phrase_field(
             "Debe evitar",
-            "Palabras o frases que no quieres en la publicación, una por vez.",
+            "Palabras o frases que no quieres en la publicación, una por vez. "
+            "Para quitarla, toca la ✕.",
             CreativeState.brief_must_avoid_items,
             CreativeState.brief_must_avoid_draft,
             CreativeState.set_brief_must_avoid_draft,
             CreativeState.add_must_avoid,
+            CreativeState.add_must_avoid_on_key,
             CreativeState.remove_must_avoid,
             "Ej.: barato",
         ),
@@ -4988,6 +5007,9 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         width="100%",
         min_width="0",
         min_height="100%",
+        # CREAR-6: where choosing an option scrolls to on a phone (`_scroll_to_view`)
+        id="q-cr-view",
+        scroll_margin_top="1rem",
     )
 
 
