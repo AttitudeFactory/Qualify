@@ -27,7 +27,10 @@ dependencies is `docs/conversaciones-limitaciones-meta.md`.
   story reply; a `story.mention` is not a reply and is ignored. Corpus-only until R3.
 - `POST /{page-id}/messages` with `{"recipient": {"id": IGSID}, "message": {"text"}}`
   (`send-message.md`): text ≤ 1000 UTF-8 bytes, inside the 24 h window, and — with
-  Standard Access — only to people with a role on the app.
+  Standard Access — only to people with a role on the app. m-24789472: the same POST
+  carries `message.quick_replies` (`features/quick-replies.md`) or a button template
+  (`message.attachment.type = template`, `button-template.md`); both corpus-only, behind
+  the `quick_replies` / `structured_templates` capabilities until R7 / R8.
 
 ## Access is a verdict (`check_access`)
 
@@ -53,7 +56,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Final
 from uuid import UUID
@@ -76,6 +79,13 @@ from qualify_api.conversations.contracts import (
     SendResult,
     SourceConnection,
     story_reference,
+)
+from qualify_api.conversations.interactive import (
+    QuickReply,
+    TemplateButton,
+    button_template_message,
+    clean_quick_replies,
+    quick_replies_wire,
 )
 
 logger = logging.getLogger("qualify_api.conversations.instagram")
@@ -600,7 +610,17 @@ class InstagramDirectSender:
     def channel(self) -> str:
         return CHANNEL_DM
 
-    def build_payload(self, *, recipient_external_id: str, text: str) -> dict[str, Any]:
+    def build_payload(
+        self,
+        *,
+        recipient_external_id: str,
+        text: str,
+        quick_replies: Sequence[QuickReply] | None = None,
+    ) -> dict[str, Any]:
+        """`send-message.md`: one text message. With `quick_replies`
+        (`features/quick-replies.md`, m-24789472) they ride in `message.quick_replies`,
+        validated by `interactive.clean_quick_replies` (≤ 13, titles 1–20 characters,
+        unique; default payload `QR_<slug>`) — `InteractiveMessageError` otherwise."""
         if not recipient_external_id:
             raise ValueError("a recipient is required")
         body = text.strip()
@@ -608,7 +628,24 @@ class InstagramDirectSender:
             raise ValueError("an empty message cannot be sent")
         if len(body.encode("utf-8")) > 1000:
             raise ValueError("a message is at most 1000 UTF-8 bytes")
-        return {"recipient": {"id": recipient_external_id}, "message": {"text": body}}
+        message: dict[str, Any] = {"text": body}
+        replies = clean_quick_replies(quick_replies or ())
+        if replies:
+            message["quick_replies"] = quick_replies_wire(replies)
+        return {"recipient": {"id": recipient_external_id}, "message": message}
+
+    def build_button_template_payload(
+        self, *, recipient_external_id: str, text: str, buttons: Sequence[TemplateButton]
+    ) -> dict[str, Any]:
+        """`button-template.md` (m-24789472): a text of 1–640 characters with 1–3
+        `postback` (`QFB_…` payload) or `web_url` (https) buttons, as ONE message — never
+        split. `InteractiveMessageError` (Spanish) for anything the channel would refuse."""
+        if not recipient_external_id:
+            raise ValueError("a recipient is required")
+        return {
+            "recipient": {"id": recipient_external_id},
+            "message": button_template_message(text, buttons),
+        }
 
     def build_private_reply_payload(self, *, comment_id: str, text: str) -> dict[str, Any]:
         """`features/private-replies.md`: `POST /{page-id}/messages` with the COMMENT as

@@ -112,6 +112,12 @@ webhook-purge-account account *args:
 webhook-requeue-comments *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --requeue-comments {{args}}
 
+# m-24789472: requeue Instagram postbacks (Ice Breakers, buttons, menu) recorded as
+# `unsupported` before Conversaciones read them. Dry run unless --execute.
+#   just webhook-requeue-postbacks [--account <ig_account_id>] [--execute]
+webhook-requeue-postbacks *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-postbacks {{args}}
+
 # WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
 # reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
 # sends for real, prints only the wamid(s).
