@@ -21,6 +21,7 @@ from .home_vm import (
     build_home_vm,
     comments_unanswered_label,
     drafts_to_approve_label,
+    first_steps_progress_label,
     people_waiting_label,
 )
 from .planner_vm import gallery_filter_from_param
@@ -37,28 +38,44 @@ def test_zero_data_is_never_empty_first_steps_show() -> None:
     assert [s.href for s in vm.first_steps] == [CONNECTIONS_URL, CREATE_URL]
     assert vm.first_steps[0].label == "Conecta tu Instagram para publicar desde aquí"
     assert vm.first_steps[1].label == "Crea tu primera publicación con la foto de un producto"
+    assert not any(s.done for s in vm.first_steps)
+    assert vm.first_steps_pending
+    assert vm.first_steps_progress == "Llevas 0 de 2"
     assert not vm.all_clear
     assert vm.week_needs_connection
+    assert not vm.week_quiet
 
 
-def test_each_first_step_disappears_when_done() -> None:
+def test_a_done_step_stays_with_its_check() -> None:
     connected = build_home_vm(HomeCounts(instagram_connected=True))
-    assert [s.key for s in connected.first_steps] == ["create"]
+    assert [(s.key, s.done) for s in connected.first_steps] == [
+        ("connect", True),
+        ("create", False),
+    ]
+    assert connected.first_steps[0].label == "Conectaste tu Instagram"
+    assert connected.first_steps_progress == "Llevas 1 de 2"
     created = build_home_vm(HomeCounts(has_publication=True))
-    assert [s.key for s in created.first_steps] == ["connect"]
+    assert created.first_steps[1].label == "Creaste tu primera publicación"
+    assert [s.done for s in created.first_steps] == [False, True]
 
 
 def test_nothing_pending_and_set_up_is_all_clear() -> None:
     vm = build_home_vm(HomeCounts(**_SET_UP))
+    assert not vm.first_steps_pending  # the block hides once every step is done
     assert vm.all_clear
-    assert not vm.week_needs_connection  # connected: the zeros are real figures
+    assert not vm.week_needs_connection
+    assert vm.week_quiet  # connected and a quiet week: a way out, not three zeros
+
+
+def test_progress_label() -> None:
+    assert first_steps_progress_label(1, 2) == "Llevas 1 de 2"
 
 
 def test_today_shows_only_what_waits_and_links_filtered() -> None:
     vm = build_home_vm(HomeCounts(people_waiting=2, comments_unanswered=5, **_SET_UP))
     assert [(c.label, c.href) for c in vm.today] == [
         ("2 personas esperan tu respuesta", CONVERSATIONS_PENDING_URL),
-        ("5 comentarios sin responder", COMMENTS_URL),
+        ("5 comentarios de esta semana sin responder", COMMENTS_URL),
     ]
     assert not vm.all_clear
 
@@ -80,10 +97,14 @@ def test_today_has_at_most_three_cards_in_order() -> None:
         (people_waiting_label, "1 persona espera tu respuesta", "3 personas esperan tu respuesta"),
         (
             drafts_to_approve_label,
-            "1 publicación lista para que la apruebes",
-            "3 publicaciones listas para que las apruebes",
+            "1 publicación espera tu revisión",
+            "3 publicaciones esperan tu revisión",
         ),
-        (comments_unanswered_label, "1 comentario sin responder", "3 comentarios sin responder"),
+        (
+            comments_unanswered_label,
+            "1 comentario de esta semana sin responder",
+            "3 comentarios de esta semana sin responder",
+        ),
     ],
 )
 def test_labels_agree_in_number(fn, one: str, many: str) -> None:
@@ -107,13 +128,49 @@ def test_week_figures_link_to_their_detail() -> None:
         ("Hablaron de ti", 2, MENTIONS_URL),
     ]
     assert vm.week[0].hint == "4 por Instagram · 1 por WhatsApp"
+    assert not vm.week_quiet
 
 
-def test_messages_open_whatsapp_when_it_carried_the_week() -> None:
+def test_messages_always_open_conversations() -> None:
     vm = build_home_vm(HomeCounts(messages_week_dm=1, messages_week_whatsapp=6))
-    assert vm.week[0].href == WHATSAPP_CHATS_URL
+    assert vm.week[0].href == CONVERSATIONS_URL != WHATSAPP_CHATS_URL
     # Data from WhatsApp alone is something to show, even without Instagram.
     assert not vm.week_needs_connection
+    assert not vm.week_quiet
+
+
+def test_drafts_to_review_follows_the_gallery_rule() -> None:
+    from uuid import uuid4
+
+    from qualify_api.planner.post_reader import ApprovalStatus, PostSummary
+
+    from .home_provider import count_needs_review
+
+    def post(approval: ApprovalStatus, publishable: bool) -> PostSummary:
+        return PostSummary(
+            post_id=uuid4(),
+            brand_id=uuid4(),
+            title="x",
+            approval=approval,
+            lifecycle_status="generated",
+            is_publishable=publishable,
+        )
+
+    posts = [
+        post(ApprovalStatus.PENDING, False),  # waits for review → Por completar
+        post(ApprovalStatus.APPROVED, False),  # approved but cannot go out → Por completar
+        post(ApprovalStatus.APPROVED, True),  # Listo
+        post(ApprovalStatus.REJECTED, False),  # Desechado
+    ]
+    assert count_needs_review(posts) == 2
+
+
+def test_session_lost_offers_login_not_retry() -> None:
+    page = (_HERE / "home_page.py").read_text(encoding="utf-8")
+    state = (_HERE / "home_state.py").read_text(encoding="utf-8")
+    assert "Tu sesión se cerró. Entra de nuevo para ver tu resumen." in state
+    assert '"Iniciar sesión", "log-in", "/login"' in page
+    assert "aria_label=" not in page  # the visible text, figure included, names each link
 
 
 def test_destination_filters_are_read_by_the_lists() -> None:

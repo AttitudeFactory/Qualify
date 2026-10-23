@@ -5,11 +5,13 @@ owner's words, and decides which blocks show:
 
 - «Hoy tienes»: up to three tappable cards, only the ones with something pending, each
   linking to the list already filtered (N11).
-- «Para tu primera publicación»: the steps still missing; each row disappears once done
-  (N2). The whole block goes away when nothing is missing.
+- «Para tu primera publicación»: the checklist with its progress («Llevas 1 de 2»); a
+  finished step stays visible with ✓ «Listo» and stops being a link (N2). The whole
+  block goes away once every step is done.
 - «Todo al día»: nothing pending and nothing missing — never an empty screen (N8).
 - «Así te fue esta semana»: three figures of the last 7 days, each linking to its
-  detail; without Instagram connected and with nothing to count, it says what to connect.
+  detail; without Instagram connected and with nothing to count, it says what to connect;
+  connected but a quiet week, it suggests a new publication instead of three zeros (N8).
 
 Which figures matter to the owner is a *hypothesis* (perfil-cliente-pyme §5, pregunta 7).
 """
@@ -47,6 +49,8 @@ class FirstStepVM:
     label: str
     href: str
     icon: str
+    #: Done: the row stays, with ✓ «Listo», and is no longer a link.
+    done: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,10 +69,24 @@ class HomeVM:
     week: list[WeekStatVM] = field(default_factory=list)
     #: «Así te fue» has nothing to count yet and Instagram is not connected.
     week_needs_connection: bool = True
+    #: Instagram is connected but the week counted nothing: a way out, not three zeros.
+    week_quiet: bool = False
+
+    @property
+    def steps_done(self) -> int:
+        return sum(1 for step in self.first_steps if step.done)
+
+    @property
+    def first_steps_pending(self) -> bool:
+        return self.steps_done < len(self.first_steps)
+
+    @property
+    def first_steps_progress(self) -> str:
+        return first_steps_progress_label(self.steps_done, len(self.first_steps))
 
     @property
     def all_clear(self) -> bool:
-        return not self.today and not self.first_steps
+        return not self.today and not self.first_steps_pending
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -80,15 +98,25 @@ def people_waiting_label(n: int) -> str:
 
 
 def drafts_to_approve_label(n: int) -> str:
+    # The action the owner takes in that list (review), not a one-tap promise.
     return _plural(
         n,
-        "{n} publicación lista para que la apruebes",
-        "{n} publicaciones listas para que las apruebes",
+        "{n} publicación espera tu revisión",
+        "{n} publicaciones esperan tu revisión",
     )
 
 
 def comments_unanswered_label(n: int) -> str:
-    return _plural(n, "{n} comentario sin responder", "{n} comentarios sin responder")
+    # The count covers the last 7 days only; the label says so.
+    return _plural(
+        n,
+        "{n} comentario de esta semana sin responder",
+        "{n} comentarios de esta semana sin responder",
+    )
+
+
+def first_steps_progress_label(done: int, total: int) -> str:
+    return f"Llevas {done} de {total}"
 
 
 def _today(counts: HomeCounts) -> list[TodayCardVM]:
@@ -119,37 +147,32 @@ def _today(counts: HomeCounts) -> list[TodayCardVM]:
 
 
 def _first_steps(counts: HomeCounts) -> list[FirstStepVM]:
-    steps: list[FirstStepVM] = []
-    if not counts.instagram_connected:
-        steps.append(
-            FirstStepVM(
-                "connect",
-                "Conecta tu Instagram para publicar desde aquí",
-                CONNECTIONS_URL,
-                "link",
-            )
-        )
-    if not counts.has_publication:
-        steps.append(
-            FirstStepVM(
-                "create",
-                "Crea tu primera publicación con la foto de un producto",
-                CREATE_URL,
-                "wand-sparkles",
-            )
-        )
-    return steps
+    connected = counts.instagram_connected
+    created = counts.has_publication
+    return [
+        FirstStepVM(
+            "connect",
+            "Conectaste tu Instagram"
+            if connected
+            else "Conecta tu Instagram para publicar desde aquí",
+            CONNECTIONS_URL,
+            "link",
+            done=connected,
+        ),
+        FirstStepVM(
+            "create",
+            "Creaste tu primera publicación"
+            if created
+            else "Crea tu primera publicación con la foto de un producto",
+            CREATE_URL,
+            "wand-sparkles",
+            done=created,
+        ),
+    ]
 
 
 def _messages_hint(counts: HomeCounts) -> str:
     return f"{counts.messages_week_dm} por Instagram · {counts.messages_week_whatsapp} por WhatsApp"
-
-
-def _messages_href(counts: HomeCounts) -> str:
-    """Where «Te escribieron» opens: the channel that carried most of the week."""
-    if counts.messages_week_whatsapp > counts.messages_week_dm:
-        return WHATSAPP_CHATS_URL
-    return CONVERSATIONS_URL
 
 
 def _week(counts: HomeCounts) -> list[WeekStatVM]:
@@ -159,7 +182,8 @@ def _week(counts: HomeCounts) -> list[WeekStatVM]:
             "Te escribieron",
             counts.messages_week,
             _messages_hint(counts),
-            _messages_href(counts),
+            # Always the same place, whichever channel carried the week.
+            CONVERSATIONS_URL,
         ),
         WeekStatVM(
             "comments", "Comentaron", counts.comments_week, "En tus publicaciones", COMMENTS_URL
@@ -178,6 +202,7 @@ def build_home_vm(counts: HomeCounts) -> HomeVM:
         first_steps=_first_steps(counts),
         week=week,
         week_needs_connection=nothing_counted and not counts.instagram_connected,
+        week_quiet=nothing_counted and counts.instagram_connected,
     )
 
 
@@ -200,5 +225,6 @@ __all__ = [
     "build_home_vm",
     "comments_unanswered_label",
     "drafts_to_approve_label",
+    "first_steps_progress_label",
     "people_waiting_label",
 ]

@@ -4,11 +4,13 @@ The owner opens the app and sees, in this order:
 
 1. «Hoy tienes» — up to three tappable cards with what waits for them, each opening the
    list already filtered (N11).
-2. «Para tu primera publicación» — the steps still missing, while any is (N2).
+2. «Para tu primera publicación» — the checklist with its progress, while a step is
+   missing (N2); a finished step stays with ✓ «Listo» and is not a link.
 3. «Todo al día» — when nothing waits and nothing is missing, with «Crear publicación»
    (N8: Inicio is never empty).
 4. «Así te fue esta semana» — three figures of the last 7 days, each opening its detail;
-   with nothing to count and no Instagram, it says what to connect.
+   with nothing to count and no Instagram, it says what to connect; connected but a
+   quiet week, it suggests a new publication (N8).
 
 Only design-system primitives (`page_header`, `section`, `card(interactive=True)`,
 `empty_state`, `callout`, `skeleton_card`). One column on a phone; every target is a
@@ -30,6 +32,7 @@ from .ui import (
     page_header,
     section,
     skeleton_card,
+    tone_badge,
 )
 from .ui import tokens as T
 
@@ -39,10 +42,10 @@ SUBTITLE = "Lo que te toca hoy y cómo te fue esta semana"
 _MIN_TARGET = "44px"
 
 
-def _card_link(
-    href: rx.Var[str] | str, *children: rx.Component, label: rx.Var | str
-) -> rx.Component:
-    """A whole card that is a real link (keyboard and «atrás» work as with any link)."""
+def _card_link(href: rx.Var[str] | str, *children: rx.Component) -> rx.Component:
+    """A whole card that is a real link (keyboard and «atrás» work as with any link).
+
+    No `aria_label`: the visible text — figure included — already names the link."""
     return rx.link(
         card(*children, interactive=True, min_height=_MIN_TARGET),
         href=href,
@@ -50,7 +53,6 @@ def _card_link(
         width="100%",
         display="block",
         color="inherit",
-        aria_label=label,
     )
 
 
@@ -65,7 +67,6 @@ def _today_card(item: rx.Var[TodayCardVM]) -> rx.Component:
             spacing="3",
             width="100%",
         ),
-        label=item.label,
     )
 
 
@@ -84,11 +85,10 @@ def _today() -> rx.Component:
     )
 
 
-def _first_step(step: rx.Var[FirstStepVM]) -> rx.Component:
+def _pending_step(step: rx.Var[FirstStepVM]) -> rx.Component:
     return _card_link(
         step.href,
         rx.hstack(
-            # A pending step: an empty circle — it disappears once done.
             rx.icon("circle", size=T.ICON_MD, color=T.TEXT_MUTED),
             rx.text(step.label, size="3", flex="1"),
             rx.icon(step.icon, size=T.ICON_MD, color=T.tone_color("accent", 10)),
@@ -96,13 +96,31 @@ def _first_step(step: rx.Var[FirstStepVM]) -> rx.Component:
             spacing="3",
             width="100%",
         ),
-        label=step.label,
     )
+
+
+def _done_step(step: rx.Var[FirstStepVM]) -> rx.Component:
+    # Done: not a link any more; the ✓ and the word «Listo» say it (not the icon alone).
+    return card(
+        rx.hstack(
+            rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 10)),
+            rx.text(step.label, size="3", flex="1", color=T.TEXT_MUTED),
+            tone_badge("Listo", "ok"),
+            align="center",
+            spacing="3",
+            width="100%",
+        ),
+        min_height=_MIN_TARGET,
+    )
+
+
+def _first_step(step: rx.Var[FirstStepVM]) -> rx.Component:
+    return rx.cond(step.done, _done_step(step), _pending_step(step))
 
 
 def _first_steps() -> rx.Component:
     return rx.cond(
-        HomeState.has_first_steps,
+        HomeState.first_steps_pending,
         section(
             "Para tu primera publicación",
             rx.vstack(
@@ -110,7 +128,7 @@ def _first_steps() -> rx.Component:
                 spacing="2",
                 width="100%",
             ),
-            description="Te faltan estos pasos. Tócalos para hacerlos ahora.",
+            description=HomeState.first_steps_progress,
         ),
     )
 
@@ -159,7 +177,6 @@ def _week_stat(stat: rx.Var[WeekStatVM]) -> rx.Component:
             line_height="1.2",
         ),
         rx.text(stat.hint, size="1", color=T.TEXT_MUTED),
-        label=stat.label,
     )
 
 
@@ -176,11 +193,22 @@ def _week() -> rx.Component:
                     action=_full_width_button("Conectar mi Instagram", "link", CONNECTIONS_URL),
                 ),
             ),
-            rx.grid(
-                rx.foreach(HomeState.week, _week_stat),
-                columns=rx.breakpoints(initial="1", sm="3"),
-                spacing="3",
-                width="100%",
+            rx.cond(
+                HomeState.week_quiet,
+                card(
+                    empty_state(
+                        "message-circle",
+                        "Esta semana todavía nadie te escribió",
+                        "Una publicación nueva ayuda a que te escriban.",
+                        action=_full_width_button("Crear publicación", "wand-sparkles", CREATE_URL),
+                    ),
+                ),
+                rx.grid(
+                    rx.foreach(HomeState.week, _week_stat),
+                    columns=rx.breakpoints(initial="1", sm="3"),
+                    spacing="3",
+                    width="100%",
+                ),
             ),
         ),
         description="Los últimos 7 días",
@@ -199,13 +227,17 @@ def _loading() -> rx.Component:
 def _error() -> rx.Component:
     return rx.vstack(
         callout(HomeState.error, "error"),
-        rx.button(
-            rx.icon("refresh-cw", size=T.ICON_MD),
-            "Reintentar",
-            on_click=HomeState.load,
-            variant="soft",
-            size="3",
-            min_height=_MIN_TARGET,
+        rx.cond(
+            HomeState.session_lost,
+            _full_width_button("Iniciar sesión", "log-in", "/login"),
+            rx.button(
+                rx.icon("refresh-cw", size=T.ICON_MD),
+                "Reintentar",
+                on_click=HomeState.load,
+                variant="soft",
+                size="3",
+                min_height=_MIN_TARGET,
+            ),
         ),
         spacing="3",
         align_items="start",

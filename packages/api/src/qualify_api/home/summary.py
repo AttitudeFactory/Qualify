@@ -14,7 +14,10 @@ number the owner finds on arrival:
   Conversaciones › «Pendientes».
 - `drafts_to_approve` — publications generated and waiting for the human gate
   (`content_drafts.status = 'generated'`, the creative FSM's HITL #2; the planner reads
-  it as `ApprovalStatus.PENDING`).
+  it as `ApprovalStatus.PENDING`). This is only the fallback: Inicio's provider
+  (`Qualify/home_provider.py`) replaces it with the gallery's «Por completar» count
+  (`planner.gallery.gallery_state`), which also includes approved publications that
+  cannot go out yet — the list the card opens.
 - `comments_unanswered` — comments on the business's own publications from the last
   7 days that no reply from Qualify has answered (`comment_reply_drafts.status =
   'sent'`) and that were not deleted. The window is the week: older comments are

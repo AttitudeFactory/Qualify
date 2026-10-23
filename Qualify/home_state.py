@@ -20,7 +20,7 @@ from .tenant import tenant_uuid
 logger = logging.getLogger(__name__)
 
 LOAD_FAILED = "No pudimos cargar tu resumen. Revisa tu conexión y toca «Reintentar»."
-_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
+NO_SESSION = "Tu sesión se cerró. Entra de nuevo para ver tu resumen."
 
 
 class HomeState(rx.State):
@@ -30,30 +30,33 @@ class HomeState(rx.State):
     first_steps: list[FirstStepVM] = []
     week: list[WeekStatVM] = list(EMPTY_HOME.week)
     week_needs_connection: bool = False
+    week_quiet: bool = False
+    first_steps_pending: bool = False
+    first_steps_progress: str = ""
+    #: The session is gone: the way out is «Iniciar sesión», not «Reintentar».
+    session_lost: bool = False
 
     @rx.var
     def has_today(self) -> bool:
         return bool(self.today)
 
     @rx.var
-    def has_first_steps(self) -> bool:
-        return bool(self.first_steps)
-
-    @rx.var
     def all_clear(self) -> bool:
-        return not self.today and not self.first_steps
+        return not self.today and not self.first_steps_pending
 
     @rx.event(background=True)
     async def load(self) -> None:
         async with self:
             self.loading = True
             self.error = ""
+            self.session_lost = False
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id)
         if tenant_id is None:
             async with self:
                 self.loading = False
-                self.error = _NO_TENANT
+                self.error = NO_SESSION
+                self.session_lost = True
             return
         try:
             vm = await asyncio.to_thread(load_home, tenant_id)
@@ -68,7 +71,10 @@ class HomeState(rx.State):
             self.first_steps = vm.first_steps
             self.week = vm.week
             self.week_needs_connection = vm.week_needs_connection
+            self.week_quiet = vm.week_quiet
+            self.first_steps_pending = vm.first_steps_pending
+            self.first_steps_progress = vm.first_steps_progress
             self.loading = False
 
 
-__all__ = ["LOAD_FAILED", "HomeState"]
+__all__ = ["LOAD_FAILED", "NO_SESSION", "HomeState"]
