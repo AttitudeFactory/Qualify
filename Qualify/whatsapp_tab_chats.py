@@ -48,6 +48,8 @@ from .whatsapp_chats_vm import (
     MEDIA_AUDIO,
     MEDIA_IMAGE,
     MEDIA_VIDEO,
+    WINDOW_CLOSED_LINK_HREF,
+    WINDOW_CLOSED_LINK_LABEL,
     AgentVM,
     MessageVM,
     OrderFieldVM,
@@ -780,9 +782,28 @@ def _compose_fields() -> rx.Component:
     )
 
 
+def _window_closed_notice() -> rx.Component:
+    """m-24842993: what happened, in plain words, plus the way out (N8) — the approved
+    messages tab, by its own address (N5). Sending one from here is m-24848535."""
+    return rx.vstack(
+        callout(S.window_closed_notice, "warn"),
+        rx.link(
+            rx.hstack(
+                rx.text(WINDOW_CLOSED_LINK_LABEL, size="2", weight="medium"),
+                rx.icon("arrow-right", size=T.ICON_SM),
+                spacing="1",
+                align="center",
+            ),
+            href=WINDOW_CLOSED_LINK_HREF,
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
 def _composer() -> rx.Component:
     return rx.vstack(
-        rx.cond(S.window_closed_notice != "", callout(S.window_closed_notice, "warn")),
+        rx.cond(S.window_closed_notice != "", _window_closed_notice()),
         rx.segmented_control.root(
             *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
             value=S.compose_mode,

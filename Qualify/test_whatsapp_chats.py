@@ -33,6 +33,10 @@ from .whatsapp_chats_vm import (
     MEDIA_URL_TTL,
     MEDIA_VIDEO,
     NO_MESSAGES_YET,
+    WINDOW_CLOSED_LINK_HREF,
+    WINDOW_CLOSED_LINK_LABEL,
+    WINDOW_CLOSED_NOTICE,
+    WINDOW_CLOSED_PILL,
     AgentVM,
     MediaResolution,
     MessageVM,
@@ -47,6 +51,7 @@ from .whatsapp_chats_vm import (
     build_order_card,
     build_thread_row,
     composer_enabled,
+    failure_label,
     filter_counts,
     filter_label,
     filter_threads,
@@ -63,6 +68,7 @@ from .whatsapp_chats_vm import (
     validate_text,
     window_pill,
 )
+from .whatsapp_vm import TAB_TEMPLATES, resolve_tab
 
 ZONE = ZoneInfo("America/Bogota")
 NOW = datetime(2026, 10, 14, 17, 0, tzinfo=UTC)  # 12:00 in Bogotá
@@ -148,9 +154,44 @@ def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
 
 
 def test_window_pill_closed_is_neutral() -> None:
-    assert window_pill(False, None, NOW, ZONE) == ("Ventana cerrada", "neutral")
+    assert window_pill(False, None, NOW, ZONE) == ("Pasaron 24 h", "neutral")
     # A stale "open" whose instant already passed reads closed, not negative minutes.
     assert window_pill(True, NOW - timedelta(minutes=1), NOW, ZONE)[1] == "neutral"
+
+
+def test_window_closed_notice_says_what_happened_and_where_to_go() -> None:
+    """m-24842993: exact copy from the ticket; the way out is the approved messages."""
+    assert WINDOW_CLOSED_NOTICE == (
+        "Pasaron más de 24 horas desde su último mensaje. "
+        "WhatsApp solo deja escribirle con un mensaje aprobado."
+    )
+    assert WINDOW_CLOSED_LINK_LABEL == "Ver tus mensajes aprobados"
+
+
+def test_window_closed_link_opens_the_approved_messages_tab() -> None:
+    path, _, query = WINDOW_CLOSED_LINK_HREF.partition("?")
+    assert path == "/whatsapp"
+    tab = query.removeprefix("tab=")
+    assert query == f"tab={tab}"
+    assert tab == TAB_TEMPLATES
+    assert resolve_tab(tab) == TAB_TEMPLATES
+
+
+def test_closed_chat_copy_never_says_ventana_or_plantillas() -> None:
+    """With the chat expired, nothing the owner reads names the internal concepts."""
+    texts = [
+        WINDOW_CLOSED_NOTICE,
+        WINDOW_CLOSED_LINK_LABEL,
+        WINDOW_CLOSED_PILL,
+        window_pill(False, None, NOW, ZONE)[0],
+        failure_label("window_closed"),
+        failure_label("131047"),
+        build_message_vm(_message(text=None, media_kind="template"), now=NOW, zone=ZONE).text,
+    ]
+    for text in texts:
+        lowered = text.lower()
+        assert "ventana" not in lowered, text
+        assert "plantilla" not in lowered, text
 
 
 # --- thread rows ---------------------------------------------------------------------
@@ -206,7 +247,7 @@ def test_thread_row_closed_window_and_empty_thread() -> None:
         zone=ZONE,
     )
     assert (row.window_label, row.window_tone, row.window_open) == (
-        "Ventana cerrada",
+        WINDOW_CLOSED_PILL,
         "neutral",
         False,
     )
