@@ -684,7 +684,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 6px 2px;
+  padding: 6px 0;
   color: var(--gray-11);
   transition: color var(--q-dur-fast) var(--q-ease);
 }
@@ -710,8 +710,11 @@ body {
   font-weight: 500;
   line-height: 1.1;
   text-align: center;
-  /* «Por / responder», «Tu / semana»: two lines are fine, an ellipsis never is. */
-  overflow-wrap: break-word;
+  /* «Por / responder», «Tu / semana»: two lines are fine, an ellipsis or a word cut
+     in half never is. */
+  overflow-wrap: normal;
+  word-break: keep-all;
+  hyphens: none;
   max-width: 100%;
 }
 /* Active: colour, weight and shape at once — never colour alone (P1). */

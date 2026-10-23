@@ -331,7 +331,7 @@ Tres reglas que sostienen esto:
 | 2 | Por responder | `messages-square` | `RESPOND_ROUTE` | el de «Por responder», tono `warn` |
 | 3 | Crear | `wand-sparkles` | `/create` | — |
 | 4 | Tu semana | `calendar-days` | `/planner` | el de «Tu semana», tono `neutral` |
-| 5 | Más | `menu` | abre el cajón (`NavState.toggle_mobile_nav`) | suma de lo que espera **solo dentro del cajón** (WhatsApp + Por aprobar); `warn` si hay chats de WhatsApp, si no `neutral` |
+| 5 | Más | `menu` | abre el cajón (`NavState.toggle_mobile_nav`) | publicaciones por aprobar (lo único con contador que no está ya en la barra: los chats de WhatsApp van dentro de «Por responder»); tono `neutral` |
 
 - **Mismos nombres, mismos iconos, mismas rutas que el sidebar (N1).** La barra no define rutas propias: lee las constantes de `layout.py` (`HOME_ROUTE`, `RESPOND_ROUTE`, …), así cuando Inicio, «Por responder» o «Resultados» cambien de ruta (NAV-4, ATENDER-1, RESULTADOS-5), la barra los sigue sola. «Crear» es la **forma corta aprobada** de «Crear publicación» (la decisión 5 la nombra así); es la única forma corta de la barra.
 - **Los contadores son los del menú** (`NAV_COUNTERS` y `PendingState`, NAV-6 · m-24842963): mismo `tone_badge`, mismo `badge_text` (nada en 0, «99+» pasado el tope), mismo latido. La barra no consulta nada por su cuenta. «Más» cuenta solo lo que **no** está ya a la vista en la barra, para que ningún pendiente se cuente dos veces.

@@ -59,6 +59,8 @@ def test_counts_come_from_the_menu() -> None:
     # What «Más» counts is never on the bar itself (no pending counted twice).
     on_bar = {source for _l, source, _i, _r in layout.NAV_BOTTOM}
     assert not on_bar & set(layout.MORE_COUNTED)
+    # WhatsApp chats are already inside «Por responder»: «Más» never repeats them.
+    assert layout.MORE_COUNTED == ("Por aprobar",)
     rendered = str(layout._bottom_bar().render())
     assert "respond_badge" in rendered and "schedule_badge" in rendered
     assert "respond_aria" in rendered and "schedule_aria" in rendered
@@ -132,3 +134,17 @@ def test_css_only_on_phones_with_thumb_targets() -> None:
 def test_viewport_declares_the_safe_area() -> None:
     source = (Path(__file__).parent / "Qualify.py").read_text(encoding="utf-8")
     assert "viewport-fit=cover" in source
+
+
+def test_the_short_form_speaks_the_menu_name() -> None:
+    # «Crear» is shown, «Crear publicación» is spoken: one name per place (N1).
+    rendered = str(layout._bottom_bar().render())
+    assert _has(rendered, "Crear publicación")
+    assert "more_urgent" not in rendered
+
+
+def test_labels_never_cut_a_word_in_half() -> None:
+    rule = _CSS[_CSS.index(".q-bottom-label {") :]
+    rule = rule[: rule.index("}")]
+    assert "word-break: keep-all" in rule
+    assert "break-word" not in rule

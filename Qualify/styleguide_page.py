@@ -1090,7 +1090,7 @@ def _bottom_bar_sample() -> rx.Component:
     cells.append(
         bottom_bar_more(
             active=False,
-            badge=rx.box(tone_badge("2", "neutral"), class_name="q-menu-count"),
+            badge=rx.box(tone_badge("1", "neutral"), class_name="q-menu-count"),
             interactive=False,
         )
     )
@@ -1111,7 +1111,10 @@ def _components_section() -> rx.Component:
         ),
         _four(),
         rx.text(
-            "Barra inferior del celular (solo ≤ 640 px — NAV-7, §4.4)", size="2", weight="medium"
+            "Barra inferior del celular (solo ≤ 640 px — NAV-7, §4.4). "
+            "«Más» cuenta solo lo que no está ya en la barra.",
+            size="2",
+            weight="medium",
         ),
         _bottom_bar_sample(),
         rx.text("Flujo por pasos (stepper + drawer — QUA-118)", size="2", weight="medium"),

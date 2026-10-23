@@ -142,8 +142,9 @@ BOTTOM_BAR_SOURCE: tuple[str, ...] = ("Inicio", "Por responder", "Crear publicac
 BOTTOM_BAR_SHORT_FORM: dict[str, str] = {"Crear publicación": "Crear"}
 MORE_LABEL = "Más"
 MORE_ICON = "menu"
-# What «Más» counts: the counted entries that live only behind the drawer.
-MORE_COUNTED: tuple[str, ...] = ("WhatsApp", "Por aprobar")
+# What «Más» counts: the counted entries that live only behind the drawer and are not
+# already on the bar (WhatsApp chats are part of «Por responder»).
+MORE_COUNTED: tuple[str, ...] = ("Por aprobar",)
 SIDEBAR_ID = "q-sidebar"
 
 
@@ -766,17 +767,16 @@ def _bottom_bar() -> rx.Component:
                 route,
                 active=active,
                 badge=_bottom_badge(counter[0], counter[1]) if counter else None,
-                aria_label=counter[2] if counter else None,
+                # A short form speaks the menu's full name («Crear publicación»), which
+                # contains the visible word (N1, WCAG 2.5.3).
+                aria_label=counter[2] if counter else (source if source != label else None),
             )
         )
     on_none = ~actives[0]
     for active in actives[1:]:
         on_none = on_none & ~active
-    more_badge = rx.cond(
-        PendingState.more_urgent,
-        _bottom_badge(PendingState.more_badge, "warn"),
-        _bottom_badge(PendingState.more_badge, "neutral"),
-    )
+    # Neutral always: what «Más» counts (Por aprobar) is not people waiting.
+    more_badge = _bottom_badge(PendingState.more_badge, "neutral")
     cells.append(
         bottom_bar_more(
             # Every page has a cell that says «you are here»: one outside the four

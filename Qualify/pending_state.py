@@ -74,14 +74,10 @@ class PendingState(rx.State):
         return self._counts().total
 
     # m-24842964 (NAV-7): «Más» on the phone's bottom bar counts what waits only
-    # behind the drawer (WhatsApp + Por aprobar).
+    # behind the drawer and is not already on the bar (Por aprobar).
     @rx.var
     def more_badge(self) -> str:
         return badge_text(self._counts().more)
-
-    @rx.var
-    def more_urgent(self) -> bool:
-        return self._counts().more_is_urgent
 
     @rx.var
     def more_aria(self) -> str:

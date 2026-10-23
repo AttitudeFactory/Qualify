@@ -248,13 +248,13 @@ def test_each_count_is_spoken_with_what_it_counts(label: str, count: int, spoken
 
 def test_the_phone_more_button_says_how_much_waits_inside() -> None:
     # m-24842964 (NAV-7): «Más» on the bottom bar replaced the ☰ button; it counts
-    # only what waits behind the drawer (WhatsApp + Por aprobar).
+    # only what waits behind the drawer and is not on the bar (Por aprobar): WhatsApp
+    # chats are already inside «Por responder», so they are never counted twice.
     assert more_button_aria_label(0) == "Más: abrir el menú"
-    assert more_button_aria_label(1) == "Más: abrir el menú. 1 cosa te espera"
-    assert more_button_aria_label(5) == "Más: abrir el menú. 5 cosas te esperan"
-    assert MenuCounts(respond=4, whatsapp=1, approve=2, schedule=3).more == 3
-    assert MenuCounts(whatsapp=1).more_is_urgent
-    assert not MenuCounts(approve=2).more_is_urgent
+    assert more_button_aria_label(1) == "Más: abrir el menú. 1 publicación por aprobar"
+    assert more_button_aria_label(5) == "Más: abrir el menú. 5 publicaciones por aprobar"
+    assert MenuCounts(respond=4, whatsapp=1, approve=2, schedule=3).more == 2
+    assert MenuCounts(whatsapp=3).more == 0
     rendered = str(layout._bottom_bar().render())
     assert "more_badge" in rendered and "more_aria" in rendered
     assert "q-menu-count" in rendered
