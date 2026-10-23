@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from qualify_api.assisted.approval import HumanApproval
 from qualify_api.replies import decide_draft as _decide_draft
@@ -30,7 +31,8 @@ from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
-from .inbox_vm import CandidateMediaVM
+from .inbox_vm import CandidateMediaVM, short_day_label
+from .planner_vm import time_label_12h
 
 # m-24842989: the thumbnail's alt text when the publication has no caption we know of.
 PUBLICATION_ALT_FALLBACK = "Publicación"
@@ -69,6 +71,9 @@ class DraftVM:
     author_username: str = ""
     media_thumbnail_url: str = ""
     media_alt: str = PUBLICATION_ALT_FALLBACK
+    # m-24842988: the day the publication went up («21 oct»), for «En tu publicación
+    # del 21 oct». `""` when the publication is outside the loaded 2-week list.
+    media_day: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,8 +83,27 @@ class GenerationSummaryVM:
     gate_rejected: int
 
 
+def moment_label(moment: datetime, zone: ZoneInfo) -> str:
+    """«23 oct, 2:05 p. m.» — Spanish short month and 12-hour time in the business's
+    zone (m-24842988), the same clock the Planificador shows."""
+    local = moment.astimezone(zone)
+    return f"{short_day_label(local)}, {time_label_12h(local)}"
+
+
+def _tenant_zone(tenant_id: UUID) -> ZoneInfo:
+    """The business's own zone (`tenants.timezone`, read through `tenant_session` by
+    the Conversaciones gateway); UTC if it cannot be read — a date is never worth an
+    error on the reply panel."""
+    try:
+        return ZoneInfo(conversations_gateway().timezone(tenant_id) or "UTC")
+    except Exception:  # noqa: BLE001 - the zone is cosmetic; the queue must still load
+        return ZoneInfo("UTC")
+
+
 def _to_vm(
-    record: DraftRecord, candidates_by_media_id: dict[str, CandidateMediaVM] | None = None
+    record: DraftRecord,
+    candidates_by_media_id: dict[str, CandidateMediaVM] | None = None,
+    zone: ZoneInfo | None = None,
 ) -> DraftVM:
     """`candidates_by_media_id` is the inbox's ALREADY-loaded candidate list keyed by
     media id — the only source of a picture, since the inbox stores none (Meta's URLs
@@ -96,10 +120,11 @@ def _to_vm(
         generated_text=record.generated_text,
         final_text=record.final_text or "",
         status=record.status,
-        created_at=record.created_at.strftime("%d %b %Y, %H:%M"),
+        created_at=moment_label(record.created_at, zone or ZoneInfo("UTC")),
         author_username=record.author_username,
         media_thumbnail_url=media.thumbnail_url if media else "",
         media_alt=caption or PUBLICATION_ALT_FALLBACK,
+        media_day=media.posted_day if media else "",
     )
 
 
@@ -114,10 +139,11 @@ def pending_drafts(
     synchronous read seams already establish. `candidates` is `InboxState.candidates`
     (already loaded) — the drafts' thumbnails come from there, see `_to_vm`."""
     by_media_id = {c.external_media_id: c for c in candidates}
-    return [
-        _to_vm(d, by_media_id)
-        for d in _list_pending_drafts(tenant_id=tenant_id, connection_id=connection_id)
-    ]
+    drafts = _list_pending_drafts(tenant_id=tenant_id, connection_id=connection_id)
+    if not drafts:
+        return []
+    zone = _tenant_zone(tenant_id)
+    return [_to_vm(d, by_media_id, zone) for d in drafts]
 
 
 def generate_drafts(*, tenant_id: UUID, connection_id: UUID) -> GenerationSummaryVM:

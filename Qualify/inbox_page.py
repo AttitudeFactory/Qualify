@@ -68,6 +68,7 @@ from .inbox_vm import (
     MONITORING_ACTIVE,
     MONITORING_EXPIRED,
     MONITORING_PENDING,
+    UNSURE_INTENT_NOTE,
     CandidateMediaVM,
     CommentVM,
     IntentChipVM,
@@ -84,7 +85,6 @@ from .ui import (
     empty_state,
     loading_spinner,
     media_thumb,
-    mono,
     page_body,
     page_header,
     section,
@@ -139,8 +139,8 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
         ),
         rx.cond(
             candidate.is_monitored,
-            tone_badge("Monitoreado", "ok", icon="eye"),
-            tone_badge("No monitoreado", "neutral", icon="eye-off"),
+            tone_badge("Buscando comentarios", "ok", icon="eye"),
+            tone_badge("No buscamos comentarios", "neutral", icon="eye-off"),
         ),
         spacing="1",
         align="center",
@@ -251,9 +251,9 @@ def _card_skeleton() -> rx.Component:
 def _no_connections_state() -> rx.Component:
     return empty_state(
         "link-2-off",
-        "No hay cuentas listas para monitorear",
-        "Conecta una cuenta con el permiso de comentarios en "
-        "Tus redes para elegir qué contenido monitorear.",
+        "Conecta tu Instagram para ver tus comentarios",
+        "Conecta tu cuenta en «Tus redes» y dale permiso para leer comentarios: "
+        "aquí verás lo que te comentan y la respuesta lista para aprobar.",
         action=rx.link(
             rx.button(rx.icon("link", size=16), "Ir a Tus redes", size="3"),
             href="/connections",
@@ -265,7 +265,7 @@ def _empty_candidates_state() -> rx.Component:
     return empty_state(
         "film",
         "Sin Reels ni publicaciones en las últimas 2 semanas",
-        "Esta cuenta no publicó Reels ni publicaciones en el feed en los últimos 14 días.",
+        "Esta cuenta no subió Reels ni publicaciones a tu perfil en los últimos 14 días.",
     )
 
 
@@ -379,38 +379,36 @@ def _body() -> rx.Component:
 def _intent_chip(chip: IntentChipVM) -> rx.Component:
     """One intent class (m-24789644, B3). A class the golden-set measurement does not
     back is still shown — hiding it would hide the comment's best guess — but in the
-    warning tone and suffixed «revísalo», with the reason as visible text below it."""
+    warning tone and suffixed «revísalo»; the card explains it once, under the chips
+    (`_comment_intent`)."""
     return rx.cond(
         chip.reliable,
         rx.cond(chip.commercial, tone_badge(chip.label, "info"), tone_badge(chip.label, "neutral")),
-        # m-24842989 (m5 hallazgo 10, N12): the explanation is visible text under the
-        # badge, never a tooltip — a phone has no hover.
-        rx.vstack(
-            tone_badge(chip.label + " · revísalo", "warn"),
-            rx.text(
-                "Aún no estamos seguros de esta etiqueta. Lee el comentario antes de actuar.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="1",
-            align_items="start",
-        ),
+        tone_badge(chip.label + " · revísalo", "warn"),
     )
 
 
 def _comment_intent(comment: CommentVM) -> rx.Component:
     return rx.cond(
         comment.intent_analyzed,
-        rx.hstack(
-            rx.icon("target", size=13, color=T.TEXT_FAINT),
-            rx.foreach(comment.intent_chips, _intent_chip),
-            spacing="2",
-            align="center",
-            wrap="wrap",
+        rx.vstack(
+            rx.hstack(
+                rx.icon("target", size=13, color=T.TEXT_FAINT),
+                rx.foreach(comment.intent_chips, _intent_chip),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+            rx.cond(
+                comment.intent_unsure,
+                rx.text(UNSURE_INTENT_NOTE, size="1", color=T.TEXT_MUTED),
+            ),
+            spacing="1",
+            align_items="start",
         ),
         rx.hstack(
             rx.icon("target", size=13, color=T.TEXT_FAINT),
-            rx.text("Intención sin analizar", size="1", color=T.TEXT_MUTED),
+            rx.text("Aún no sabemos si quiere comprar", size="1", color=T.TEXT_MUTED),
             spacing="2",
             align="center",
         ),
@@ -422,7 +420,7 @@ def _reply_by_dm_button(comment: CommentVM) -> rx.Component:
     with a draft; nothing is sent from here."""
     return rx.button(
         rx.icon("send", size=T.ICON_SM),
-        "Responder por DM",
+        "Escribirle en privado",
         variant="soft",
         size="2",
         loading=InboxState.replying_dm_id == comment.message_id,
@@ -443,12 +441,8 @@ def _comment_card(comment: CommentVM) -> rx.Component:
                     weight="medium",
                 ),
                 rx.spacer(),
+                # m-24842988: the model's score is an internal number — not shown.
                 sentiment_badge(comment.sentiment_label),
-                rx.cond(
-                    comment.score_display != "",
-                    mono(comment.score_display, size="1"),
-                    rx.fragment(),
-                ),
                 align="center",
                 spacing="2",
                 width="100%",
@@ -461,8 +455,6 @@ def _comment_card(comment: CommentVM) -> rx.Component:
             rx.hstack(
                 rx.icon("clock", size=13, color=T.TEXT_FAINT),
                 rx.text(comment.posted_at, size="1", color=T.TEXT_MUTED),
-                rx.icon("film", size=13, color=T.TEXT_FAINT),
-                mono(comment.external_thread_id, size="1"),
                 rx.spacer(),
                 _reply_by_dm_button(comment),
                 spacing="2",
@@ -492,7 +484,7 @@ def _global_summary_stats() -> rx.Component:
             stat_card("Positivos", InboxState.global_summary.positive, "ok"),
             stat_card("Neutros", InboxState.global_summary.neutral, "neutral"),
             stat_card("Negativos", InboxState.global_summary.negative, "error"),
-            stat_card("Sin analizar", InboxState.global_summary.not_analyzed, "neutral"),
+            stat_card("Sin revisar", InboxState.global_summary.not_analyzed, "neutral"),
             columns=rx.breakpoints(initial="2", md="5"),
             spacing="3",
             width="100%",
@@ -529,7 +521,7 @@ def _global_summary_widget() -> rx.Component:
     # fast-follow, not done here.
     return rx.vstack(
         rx.text(
-            "Resumen general — todos los comentarios sincronizados",
+            "Resumen de tus comentarios",
             size="2",
             weight="medium",
             color=T.TEXT_MUTED,
@@ -562,26 +554,26 @@ def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
     (`ReelSummaryVM.monitoring_state`, computed from the shared 14-day rule — never from
     `is_monitored` alone):
 
-    - "Monitoreado" — synced, inside its 14-day window;
-    - "Monitoreado · fecha por verificar" — synced, but its publication date was not
-      read yet (a Reel monitored before QUA-149), so expiry cannot be judged yet;
-    - "No monitoreado · vencido" — its window ended: no longer synced, history kept;
-    - "No monitoreado" — turned off (by the user, or because it was deleted on Instagram).
+    - «Buscando comentarios» — synced, inside its 14-day window;
+    - «Buscando comentarios · fecha por confirmar» — synced, but its publication date
+      was not read yet (a Reel monitored before QUA-149), so expiry cannot be judged yet;
+    - «Ya no buscamos comentarios» — its window ended: no longer synced, history kept;
+    - «No buscamos comentarios» — turned off (by the user, or deleted on Instagram).
 
     Same `tone_badge` family as `_reel_sentiment_chips`. Decoration only — never hides the
     card or anything inside it."""
     return rx.match(
         reel.monitoring_state,
-        (MONITORING_ACTIVE, tone_badge("Monitoreado", "ok", icon="eye")),
+        (MONITORING_ACTIVE, tone_badge("Buscando comentarios", "ok", icon="eye")),
         (
             MONITORING_PENDING,
-            tone_badge("Monitoreado · fecha por verificar", "info", icon="clock"),
+            tone_badge("Buscando comentarios · fecha por confirmar", "info", icon="clock"),
         ),
         (
             MONITORING_EXPIRED,
-            tone_badge("No monitoreado · vencido", "warn", icon="calendar-x"),
+            tone_badge("Ya no buscamos comentarios", "warn", icon="calendar-x"),
         ),
-        tone_badge("No monitoreado", "neutral", icon="eye-off"),
+        tone_badge("No buscamos comentarios", "neutral", icon="eye-off"),
     )
 
 
@@ -590,7 +582,7 @@ def _reel_sentiment_chips(reel: ReelSummaryVM) -> rx.Component:
         tone_badge("Positivos " + reel.positive.to_string(), "ok"),
         tone_badge("Neutros " + reel.neutral.to_string(), "neutral"),
         tone_badge("Negativos " + reel.negative.to_string(), "error"),
-        tone_badge("Sin analizar " + reel.not_analyzed.to_string(), "neutral"),
+        tone_badge("Sin revisar " + reel.not_analyzed.to_string(), "neutral"),
         spacing="2",
         wrap="wrap",
     )
@@ -621,8 +613,6 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
                     _reel_monitoring_badge(reel),
                     rx.icon("clock", size=13, color=T.TEXT_FAINT),
                     rx.text(reel.last_message_at, size="1", color=T.TEXT_MUTED),
-                    rx.icon("film", size=13, color=T.TEXT_FAINT),
-                    mono(reel.external_thread_id, size="1"),
                     rx.text(reel.total.to_string() + " comentarios", size="1", color=T.TEXT_MUTED),
                     rx.cond(
                         reel.permalink != "",
@@ -739,7 +729,6 @@ def _reel_detail_header() -> rx.Component:
                     rx.hstack(
                         _format_badge(reel),
                         _reel_monitoring_badge(reel),
-                        mono(reel.external_thread_id, size="1"),
                         spacing="2",
                         align="center",
                         wrap="wrap",
@@ -771,7 +760,7 @@ _SENTIMENT_FILTER_OPTIONS = [
     ("POS", "Positivos"),
     ("NEU", "Neutros"),
     ("NEG", "Negativos"),
-    ("PENDING", "Sin analizar"),
+    ("PENDING", "Sin revisar"),
 ]
 
 
@@ -791,11 +780,11 @@ def _sentiment_filter_select() -> rx.Component:
     )
 
 
-# m-24789644: «Requiere atención comercial» = the comments whose intent signal under the
-# current version is commercial. Same "ALL means no filter" convention as above.
+# m-24789644: «Quieren comprar» = the comments whose intent signal under the current
+# version is commercial. Same "ALL means no filter" convention as above.
 _INTENT_FILTER_OPTIONS = [
-    (FILTER_ALL, "Toda intención"),
-    (FILTER_COMMERCIAL, "Requiere atención comercial"),
+    (FILTER_ALL, "Todos"),
+    (FILTER_COMMERCIAL, "Quieren comprar"),
 ]
 
 
@@ -828,7 +817,7 @@ def _thread_comments_empty_state() -> rx.Component:
     return empty_state(
         "message-circle",
         "Sin comentarios para este filtro",
-        "Prueba con otro filtro de sentimiento o de intención, o borra la búsqueda.",
+        "Prueba con otro filtro o borra la búsqueda.",
     )
 
 
@@ -898,36 +887,20 @@ def _reel_detail_view() -> rx.Component:
     )
 
 
-def _analyze_now_button() -> rx.Component:
-    """The visible trigger for QUA-21's existing manual analysis pass — see the module
-    docstring for why this stays a control of its own rather than merging into
-    `_sync_now_button()`."""
+def _prioritize_button() -> rx.Component:
+    """m-24842988: ONE «Ordenar por prioridad» — the sentiment pass (QUA-21) and the
+    commercial-intent pass (m-24789644) chained on one click. Each stays its own
+    background handler with its own guard, error and toast; still separate from
+    `_sync_now_button()` (see the module docstring)."""
     return rx.button(
         rx.cond(
-            InboxState.is_analyzing,
+            InboxState.is_prioritizing,
             loading_spinner("sm"),
-            rx.icon("sparkles", size=16),
+            rx.icon("list-ordered", size=16),
         ),
-        rx.cond(InboxState.is_analyzing, "Analizando...", "Analizar sentimiento"),
-        on_click=InboxState.analyze_sentiment,
-        disabled=~InboxState.can_analyze,
-        size="2",
-        variant="soft",
-    )
-
-
-def _analyze_intent_button() -> rx.Component:
-    """m-24789644: the manual trigger of the commercial-intent pass — its own control
-    for the same reason `_analyze_now_button` is not merged into the sync button."""
-    return rx.button(
-        rx.cond(
-            InboxState.is_analyzing_intent,
-            loading_spinner("sm"),
-            rx.icon("target", size=16),
-        ),
-        rx.cond(InboxState.is_analyzing_intent, "Clasificando...", "Analizar intención"),
-        on_click=InboxState.analyze_intent,
-        disabled=~InboxState.can_analyze_intent,
+        rx.cond(InboxState.is_prioritizing, "Ordenando...", "Ordenar por prioridad"),
+        on_click=[InboxState.analyze_sentiment, InboxState.analyze_intent],
+        disabled=~InboxState.can_prioritize,
         size="2",
         variant="soft",
     )
@@ -960,8 +933,7 @@ def _comments_section() -> rx.Component:
     return section(
         "Comentarios por publicación",
         rx.hstack(
-            _analyze_now_button(),
-            _analyze_intent_button(),
+            _prioritize_button(),
             spacing="2",
             wrap="wrap",
         ),
@@ -1269,12 +1241,20 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                             word_break="break-word",
                         ),
                     ),
-                    # Which publication, in words — only when there is a real caption
-                    # (the fallback alt «Publicación» says nothing).
+                    # Which publication, in words: its day when we know it, else its
+                    # caption (the fallback alt «Publicación» says nothing).
                     rx.cond(
-                        draft.media_alt != PUBLICATION_ALT_FALLBACK,
+                        draft.media_day != "",
                         rx.text(
-                            "En: " + draft.media_alt,
+                            "En tu publicación del " + draft.media_day,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                    rx.cond(
+                        (draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK),
+                        rx.text(
+                            "En tu publicación «" + draft.media_alt + "»",
                             size="1",
                             color=T.TEXT_MUTED,
                             max_width="100%",
@@ -1353,7 +1333,7 @@ def _replies_section() -> rx.Component:
         _replies_list(),
         description=(
             "Revisa cada respuesta. Sale en Instagram, debajo del comentario y a la vista "
-            "de todos, solo cuando pulsas «Aprobar y responder»."
+            "de todos, solo cuando tú la apruebas."
         ),
     )
 

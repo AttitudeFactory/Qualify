@@ -131,7 +131,7 @@ def test_the_replies_description_says_the_answer_is_public() -> None:
     flat = _src(inbox_page._replies_section).replace('"\n            "', "")
     assert (
         "Revisa cada respuesta. Sale en Instagram, debajo del comentario y a la vista de "
-        "todos, solo cuando pulsas «Aprobar y responder»."
+        "todos, solo cuando tú la apruebas."
     ) in flat
 
 
@@ -149,11 +149,15 @@ def test_the_empty_comments_state_offers_the_search() -> None:
     assert "action=_sync_now_button()" in source
 
 
-def test_a_reply_card_names_the_publication_only_with_a_real_caption() -> None:
+def test_a_reply_card_names_the_publication_by_day_else_by_caption() -> None:
+    """m-24842988: «En tu publicación del 21 oct»; without the day, its caption in
+    Latin quotes; with neither, nothing (the fallback alt says nothing)."""
     source = _src(inbox_page._draft_card)
-    assert '"En: " + draft.media_alt' in source
-    assert "draft.media_alt != PUBLICATION_ALT_FALLBACK" in source
+    assert '"En tu publicación del " + draft.media_day' in source
+    assert '"En tu publicación «" + draft.media_alt + "»"' in source
+    assert '(draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK)' in source
     assert 'text_overflow="ellipsis"' in source
+    assert '"En: "' not in source
 
 
 def test_the_reply_editor_is_labelled() -> None:

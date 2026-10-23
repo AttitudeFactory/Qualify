@@ -269,7 +269,7 @@ def test_never_synced_is_provisional_not_empty() -> None:
     vm = build_access_vm(None, account=_account(), now=NOW, zone=ZONE)
     assert vm.kind == ACCESS_NEVER_SYNCED
     assert vm.provisional and not vm.show_reconnect
-    assert vm.last_sync_label == "Sin sincronizar todavía"
+    assert vm.last_sync_label == "Aún no revisamos los mensajes"
 
 
 @pytest.mark.parametrize(
@@ -289,8 +289,9 @@ def test_sync_access_verdicts_become_banners(
         _sync(access=access, detail="http_403_code_10"), account=_account(), now=NOW, zone=ZONE
     )
     assert (vm.kind, vm.show_reconnect, vm.tone, vm.provisional) == (kind, reconnect, tone, True)
-    if access in ("permission_missing", "auth_expired", "error"):
-        assert "http_403_code_10" in vm.message
+    # m-24842988: Instagram's code is an internal number — never in the banner.
+    assert "http_403_code_10" not in vm.message
+    assert "código" not in vm.message
 
 
 def test_unknown_names_the_owner_toggle() -> None:
@@ -301,7 +302,7 @@ def test_unknown_names_the_owner_toggle() -> None:
 def test_ok_has_no_banner_and_a_failed_sync_has_one() -> None:
     ok = build_access_vm(_sync(), account=_account(), now=NOW, zone=ZONE)
     assert ok.kind == ACCESS_OK and ok.title == ""
-    assert ok.last_sync_label == "Sincronizado hace 3 min"
+    assert ok.last_sync_label == "Mensajes revisados · hace 3 min"
     failed = build_access_vm(
         _sync(sync_status="failed", sync_error="InstagramDirectError"),
         account=_account(),
@@ -312,7 +313,7 @@ def test_ok_has_no_banner_and_a_failed_sync_has_one() -> None:
     # A failed sync is a toast, not a banner: quiet kind, keyed by the failure's instant.
     assert failed.kind in QUIET_ACCESS_KINDS and ACCESS_OK in QUIET_ACCESS_KINDS
     assert failed.failure_key == (NOW - timedelta(minutes=3)).isoformat()
-    assert failed.last_sync_label == "Última sincronización fallida hace 3 min"
+    assert failed.last_sync_label == "No pudimos revisar los mensajes · hace 3 min"
 
 
 def test_the_profile_the_sync_fetched_names_the_row() -> None:
@@ -388,7 +389,8 @@ def test_row_prefixes_our_own_last_message_and_falls_back_without_a_handle() -> 
         zone=ZONE,
     )
     assert row.preview == OUTBOUND_PREFIX + "claro que sí"
-    assert row.title == "Persona ·123456" and row.initials == "6"
+    assert row.title == "Persona sin nombre" and "123456" not in row.title
+    assert row.initials == "6"
     assert row.subtitle == "Instagram Direct"
     assert (row.attention, row.attention_label) == ("answered", "Respondida")
 
@@ -419,7 +421,8 @@ def test_row_states_read_closed_window_media_and_empty() -> None:
 def test_counterpart_title_rules() -> None:
     assert counterpart_title("@a", "x") == "@a"
     assert counterpart_title("a", "x") == "@a"
-    assert counterpart_title("", "") == "Persona"
+    assert counterpart_title("", "") == "Persona sin nombre"
+    assert counterpart_title("", "17841400000123456") == "Persona sin nombre"
 
 
 def test_filters_are_by_attention_and_counted() -> None:
@@ -523,7 +526,7 @@ def test_failure_labels_cover_the_sender_codes() -> None:
     assert "adjuntos" in failure_label("no_media_linker")
     assert "varios intentos" in failure_label("max_attempts:http_503_code_2")
     assert "Puede haber salido" in failure_label("send_ambiguous")
-    assert failure_label("http_400_code_10") == "No se envió (código http_400_code_10)."
+    assert failure_label("http_400_code_10") == "No se envió."  # no internal code
     assert failure_label(None) == "No se envió."
 
 

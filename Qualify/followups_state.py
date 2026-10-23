@@ -57,14 +57,11 @@ _NO_USER = (
     "No encontramos tu usuario en este negocio, así que no podemos firmar el mensaje. "
     "Vuelve a iniciar sesión."
 )
-_DRAFT_UNAVAILABLE = (
-    "Los borradores automáticos no están disponibles en este entorno (falta la clave del "
-    "modelo). Puedes escribir el mensaje tú."
-)
-_DRAFT_FAILED = "No se pudo escribir el borrador. Vuelve a intentarlo o escríbelo tú."
+_DRAFT_UNAVAILABLE = "Ahora no podemos sugerirte un mensaje. Escríbelo tú y apruébalo."
+_DRAFT_FAILED = "No pudimos escribir el mensaje. Vuelve a intentarlo o escríbelo tú."
 _GONE = "Esta consulta ya la decidió otra persona o ya no está disponible."
 _ALREADY_REPLIED = (
-    "Este comentario ya tiene su respuesta privada (Meta solo permite una por comentario)."
+    "Este comentario ya tiene su respuesta privada: Instagram permite solo una por comentario."
 )
 _NO_ROUTE = "Ahora mismo no hay forma de escribirle a esta persona:"
 _EMPTY = "Escribe el mensaje antes de aprobarlo."
@@ -72,11 +69,19 @@ _TOO_LONG = "El mensaje es demasiado largo (máximo 1000 caracteres)."
 _NOTICE_EMPTY = "Escribe el aviso público o desmarca la casilla."
 _NOTICE_TOO_LONG = "El aviso público es demasiado largo (máximo 300 caracteres)."
 _NOTICE_QUEUED = " El aviso público se publicará en el comentario cuando el mensaje salga."
-_SEND_FAILED = "No se pudo poner el mensaje en cola. Vuelve a intentarlo en un momento."
-_QUEUED = {
-    "dm": "Mensaje aprobado: sale por mensaje directo en unos segundos.",
-    "private_reply": "Respuesta privada aprobada: sale en unos segundos.",
-}
+_SEND_FAILED = "No pudimos enviar el mensaje. Vuelve a intentarlo en un momento."
+_DISCARD_FAILED = "No pudimos descartar la consulta. Vuelve a intentarlo en un momento."
+
+
+def queued_message(author: str) -> str:
+    """m-24842988 (m5 hallazgo 12): the confirmation names who gets the message —
+    «Listo, le escribiste a @ana en privado. Sale en unos segundos.» — whichever private
+    route it takes; without a handle (`author` is «Cliente») it stays generic."""
+    if author.startswith("@"):
+        return f"Listo, le escribiste a {author} en privado. Sale en unos segundos."
+    return "Listo, le escribiste en privado. Sale en unos segundos."
+
+
 _DISCARDED = "Consulta descartada."
 _TOAST_MS = 5000
 
@@ -315,7 +320,7 @@ class FollowupsState(rx.State):
             yield rx.toast.warning(_GONE, duration=_TOAST_MS)
         except _DB_ERRORS as exc:
             logger.error("followups discard failed: %s", type(exc).__name__)
-            yield rx.toast.error(_SEND_FAILED, duration=_TOAST_MS)
+            yield rx.toast.error(_DISCARD_FAILED, duration=_TOAST_MS)
         await self._end()
         yield FollowupsState.load
 
@@ -345,7 +350,8 @@ class FollowupsState(rx.State):
             return
         queued = False
         try:
-            route = await asyncio.to_thread(
+            # Both private routes read the same to the owner (m-24842988).
+            await asyncio.to_thread(
                 lambda: gateway().approve(
                     tenant_id,
                     fid,
@@ -356,7 +362,9 @@ class FollowupsState(rx.State):
                 )
             )
             queued = True
-            message = _QUEUED.get(route, _QUEUED["dm"]) + (_NOTICE_QUEUED if notice_text else "")
+            message = queued_message(card.author if card else "") + (
+                _NOTICE_QUEUED if notice_text else ""
+            )
             yield rx.toast.success(message, duration=_TOAST_MS)
         except RouteUnavailable as exc:
             reasons = " ".join(

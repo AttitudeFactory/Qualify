@@ -141,6 +141,7 @@ from .inbox_vm import (
     SyncSummaryVM,
     candidate_picture_url,
     media_format_label,
+    short_day_label,
 )
 from .publishing_vm import ConnectionOptionVM
 
@@ -180,6 +181,7 @@ def _to_vm(media: CandidateMedia) -> CandidateMediaVM:
         permalink=media.permalink or "",
         thumbnail_url=candidate_picture_url(media.media_type, media.thumbnail_url, media.media_url),
         format_label=media_format_label(media.media_product_type, media.media_type),
+        posted_day=short_day_label(media.timestamp),
     )
 
 
@@ -243,6 +245,7 @@ def _to_comment_vm(
     signal: IntentSignal | None = None,
     reliable: dict[IntentClass, bool] | None = None,
 ) -> CommentVM:
+    chips = _intent_chips(signal, reliable or {}) if signal is not None else []
     return CommentVM(
         message_id=str(comment.message_id),
         text=comment.text or "",
@@ -252,7 +255,8 @@ def _to_comment_vm(
         sentiment_label=comment.label or "",
         score_display=f"{comment.score:.2f}" if comment.score is not None else "",
         intent_analyzed=signal is not None,
-        intent_chips=_intent_chips(signal, reliable or {}) if signal is not None else [],
+        intent_chips=chips,
+        intent_unsure=any(not chip.reliable for chip in chips),
     )
 
 

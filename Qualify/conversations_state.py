@@ -137,6 +137,7 @@ from .conversations_vm import (
     newly_pending,
     reply_as_label,
     reply_parts_hint,
+    reply_sent_message,
     suggestion_refusal_label,
     template_counter,
     template_notice,
@@ -159,18 +160,20 @@ _NO_USER = (
     "Pide al equipo de Qualify que lo revise."
 )
 _NO_SENDER = (
-    "Este canal todavía no tiene el envío configurado: la respuesta no se puede poner en cola."
+    "Todavía no podemos enviar mensajes por este canal desde Qualify. "
+    "Responde desde Instagram por ahora."
 )
 _REJECTED = "Instagram no acepta esa respuesta tal como está."
 _ACTION_FAILED = "No se pudo completar la acción. Vuelve a intentarlo en un momento."
-_NEEDS_APPROVAL = "La respuesta no se puso en cola: falta la aprobación de una persona."
+_NEEDS_APPROVAL = "La respuesta no salió: falta que la apruebes."
 _ATTACH_FAILED = "No se pudo guardar el adjunto. Vuelve a intentarlo en un momento."
 _ATTACH_UNREADABLE = "No se pudo leer el archivo."
-_QUEUED = "Respuesta en cola. Sale en unos segundos."
 _HIDDEN = "Mensaje eliminado para ti. La otra persona sigue viéndolo en Instagram."
-_HEART_QUEUED = "Corazón en cola. Sale en unos segundos."
-_SYNC_FAILED_TOAST = "La última sincronización con Instagram falló. Se reintenta enseguida."
-_SUGGEST_UNAVAILABLE = "Las sugerencias no están disponibles: falta configurar la clave del modelo."
+_HEART_QUEUED = "Listo, le enviaste un corazón. Sale en unos segundos."
+_SYNC_FAILED_TOAST = (
+    "No pudimos traer los mensajes nuevos de Instagram. Lo intentamos de nuevo enseguida."
+)
+_SUGGEST_UNAVAILABLE = "Ahora no podemos sugerirte una respuesta. Escríbela tú."
 _SUGGEST_FAILED = "No se pudo generar la sugerencia. Vuelve a intentarlo en un momento."
 _SUGGEST_READY = "Sugerencia lista. Revísala, edítala si hace falta y envíala."
 _MIC_DENIED = "No se pudo usar el micrófono. Revisa el permiso del navegador."
@@ -191,11 +194,11 @@ def _suggest_failure_words(exc: Exception) -> str:
     text = str(exc).lower()
     if "credit balance" in text or "billing" in text:
         return (
-            "No se pudo generar la sugerencia: la cuenta del modelo no tiene saldo. "
-            "Avisa al equipo de Qualify."
+            "Ahora no podemos sugerirte una respuesta por un problema de nuestro lado. "
+            "Escríbela tú y avisa al equipo de Qualify."
         )
     if "rate" in text and "limit" in text:
-        return "El modelo está saturado ahora mismo. Vuelve a intentarlo en un momento."
+        return "Hay mucha demanda ahora mismo. Vuelve a intentarlo en un momento."
     return _SUGGEST_FAILED
 
 
@@ -1337,7 +1340,9 @@ class ConversationsState(rx.State):
                 self.applied_unresolved = []
                 self.applied_blanks = []
                 self._typing_sent_at = 0.0
-        yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
+            row = self.open_thread if self.open_thread_id == thread_id else EMPTY_THREAD
+            who = row.handle or row.title
+        yield rx.toast.success(reply_sent_message(who), duration=_TOAST_MS)
         yield ConversationsState.refresh
         await gw.signal(tenant_id, connection, thread, ACTION_TYPING_OFF)
 
