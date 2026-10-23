@@ -474,7 +474,13 @@ def _more_options() -> rx.Component:
 
 def _fold(title: rx.Var[str] | str, value: str, content: rx.Component) -> rx.Component:
     return rx.accordion.root(
-        rx.accordion.item(header=title, content=content, value=value),
+        rx.accordion.item(
+            header=title,
+            content=content,
+            value=value,
+            # N12: the fold's header is a thumb-sized target at 360 px.
+            style={"& button": {"min_height": "44px", "width": "100%"}},
+        ),
         collapsible=True,
         variant="ghost",
         width="100%",
@@ -546,7 +552,7 @@ def _step_review() -> rx.Component:
                 rx.text(t.body_text, size="2", white_space="pre-wrap"),
                 rx.divider(),
                 kv("A quién", S.audience_label),
-                kv("Nombre", rx.cond(S.w_name.strip() != "", S.w_name, "Con la fecha de hoy")),
+                kv("Nombre", S.review_name),
                 spacing="2",
                 width="100%",
                 align_items="start",
@@ -654,7 +660,10 @@ def campaign_wizard() -> rx.Component:
         open=S.wizard_open,
         on_open_change=S.set_wizard_open,
         title="Enviar una promoción",
-        description="Tres pasos: el mensaje, a quién y revisar. Nada se envía sin tu toque.",
+        description=(
+            "Elige el mensaje, a quién se lo envías y revisa. Nada sale hasta que toques "
+            "«Enviar ahora»."
+        ),
         footer=_wizard_footer(),
         width="40rem",
         icon="megaphone",
@@ -692,14 +701,7 @@ def _detail_body() -> rx.Component:
     row = d.row
     return rx.vstack(
         tone_banner(S.detail_banner, S.detail_banner_tone),
-        rx.hstack(
-            tone_pill(row.status_label, row.status_tone),
-            mono(row.template_label, size="1", color=T.TEXT_MUTED),
-            rx.text("Creada " + row.created_at, size="1", color=T.TEXT_MUTED),
-            spacing="3",
-            align="center",
-            wrap="wrap",
-        ),
+        # N3: the next step after «Enviar ahora» is a solid button, right under the notice.
         rx.cond(
             S.detail_launched,
             rx.button(
@@ -707,11 +709,18 @@ def _detail_body() -> rx.Component:
                 SEE_REPLIES,
                 on_click=S.see_replies,
                 size="3",
-                variant="soft",
                 width=rx.breakpoints(initial="100%", sm="auto"),
                 **_TAP,
             ),
             rx.fragment(),
+        ),
+        rx.hstack(
+            tone_pill(row.status_label, row.status_tone),
+            mono(row.template_label, size="1", color=T.TEXT_MUTED),
+            rx.text("Creada " + row.created_at, size="1", color=T.TEXT_MUTED),
+            spacing="3",
+            align="center",
+            wrap="wrap",
         ),
         rx.cond(
             d.payment_failed, callout(PAYMENT_FAILED, "error", icon="credit-card"), rx.fragment()
@@ -779,18 +788,18 @@ def _detail_footer() -> rx.Component:
             confirm_action(
                 rx.button(
                     rx.icon("circle-stop", size=16),
-                    "Cancelar",
+                    "Detener promoción",
                     loading=S.cancelling,
                     variant="soft",
                     size="3",
                     **_TAP,
                     **T.tone_scheme("error"),
                 ),
-                title="Cancelar la promoción",
+                title="¿Detener la promoción?",
                 description="Los envíos que aún no salieron se retiran; los que ya salieron "
-                "no se pueden deshacer. Una promoción cancelada no se puede reanudar.",
-                verb="Cancelar la promoción",
-                dismiss="Volver",
+                "no se pueden deshacer. Una promoción detenida no se puede reanudar.",
+                verb="Sí, detenerla",
+                dismiss=rx.cond(d.row.status == "running", "Seguir enviando", "Volver"),
                 on_confirm=S.cancel_campaign,
             ),
             rx.fragment(),

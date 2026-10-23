@@ -94,7 +94,7 @@ def confirm_action(
     verb: str,
     on_confirm: Any,
     tone: str = "error",
-    dismiss: str = "Cancelar",
+    dismiss: str | rx.Var = "Cancelar",
 ) -> rx.Component:
     """Destructive or irreversible action: alert dialog with the same verb on the title,
     the button and the toast (docs/design-system.md §6.2)."""

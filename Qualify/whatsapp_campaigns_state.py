@@ -29,9 +29,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import reflex as rx
 from qualify_api.whatsapp.campaigns import (
@@ -42,6 +43,7 @@ from qualify_api.whatsapp.campaigns import (
 from qualify_api.whatsapp.templates import TemplateNotFound
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import inbox_provider
 from .auth_state import AuthState
 from .tenant import tenant_uuid
 from .whatsapp_campaigns_provider import (
@@ -116,7 +118,7 @@ _NOT_SENDABLE = (
 )
 _STATE_CHANGED = "La promoción cambió de estado mientras tanto. Actualizamos el detalle."
 _GONE = "Esa promoción ya no existe. Actualizamos la lista."
-_CANCELLED = "Promoción cancelada: {n} envíos pendientes retirados."
+_CANCELLED = "Promoción detenida: {n} envíos pendientes retirados."
 _DRAFT_SAVED = (
     "Tu promoción quedó guardada sin enviar. Ábrela en la lista y toca «Enviar ahora» "
     "cuando quieras."
@@ -206,6 +208,8 @@ class WhatsAppCampaignsState(rx.State):
     _components: dict[str, Any] = {}
     # Backend-only: what the current draft was created from (reused when unchanged).
     _draft_key: str = ""
+    # Backend-only: the business's zone, so a default name never shifts day at night.
+    _zone_name: str = "UTC"
 
     # ==================================================================================
     # Computed vars
@@ -299,6 +303,15 @@ class WhatsAppCampaignsState(rx.State):
     def review_duration(self) -> str:
         """«unos 3 minutos» — the review's «Tarda» tile."""
         return sending_time(self.audience_count, pace_value(self.w_pace)) or "—"
+
+    def _today(self) -> date:
+        """Today in the business's own zone (the default name's date)."""
+        return datetime.now(ZoneInfo(self._zone_name)).date()
+
+    @rx.var
+    def review_name(self) -> str:
+        """The name the list will show: «Promoción del 23 de octubre» when left blank."""
+        return campaign_name(self.w_name, self._today())
 
     @rx.var
     def has_more_filters(self) -> bool:
@@ -543,6 +556,7 @@ class WhatsAppCampaignsState(rx.State):
             templates = await asyncio.to_thread(wizard_templates, tenant_id, UUID(connection_id))
             brands = await asyncio.to_thread(brands_for, tenant_id)
             total = await asyncio.to_thread(count_audience, tenant_id, {})
+            zone = await asyncio.to_thread(inbox_provider.tenant_zone, tenant_id)
         except (ValueError, SQLAlchemyError) as exc:
             logger.error("whatsapp campaign wizard load failed: %s", type(exc).__name__)
             async with self:
@@ -552,6 +566,7 @@ class WhatsAppCampaignsState(rx.State):
         async with self:
             self.templates_loading = False
             self.total_count = total
+            self._zone_name = zone.key
             self.templates = [t.vm for t in templates]
             self._components = {t.vm.template_id: (t.category, t.components) for t in templates}
             self.brand_options = [
@@ -711,7 +726,7 @@ class WhatsAppCampaignsState(rx.State):
             audience, _problem = audience_filter_json(self._audience_form())
             rate = pace_value(self.w_pace)
             components = build_send_components(self._variables(), self.w_values)
-            name = campaign_name(self.w_name, datetime.now(UTC).date())
+            name = campaign_name(self.w_name, self._today())
             template_id = self.w_template_id
             key = draft_key(template_id, components, audience, rate, self.w_name.strip())
             previous = self.w_campaign_id

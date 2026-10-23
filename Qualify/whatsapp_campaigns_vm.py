@@ -69,11 +69,10 @@ PAYMENT_NOTICE = (
     "Agrégalo en la configuración de pagos de tu cuenta de Meta."
 )
 PAYMENT_FAILED = (
-    "Meta no dejó salir algunos mensajes porque tu cuenta de WhatsApp Business no tiene un "
-    "método de pago válido. Agrégalo en la configuración de pagos de tu "
-    "cuenta de Meta; "
-    "los mensajes que no salieron no se vuelven a enviar solos, así que crea una campaña "
-    "nueva para esos contactos."
+    "WhatsApp no dejó salir algunos mensajes porque tu cuenta de WhatsApp Business no tiene "
+    "un método de pago válido. Agrégalo en la configuración de pagos de tu cuenta de Meta. "
+    "Los mensajes que no salieron no se reenvían solos: cuando lo agregues, toca «Enviar "
+    "una promoción» para enviársela a esas personas."
 )
 SENDER_NOTICE = (
     "Los mensajes salen de a poco para cuidar tu número. Vuelve en unos minutos para ver "

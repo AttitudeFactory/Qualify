@@ -391,3 +391,15 @@ def test_tab_renders() -> None:
     source = inspect.getsource(whatsapp_tab_campaigns)
     assert 'type="number"' not in source
     assert "código" not in source and "131049" not in source and "131042" not in source
+
+
+def test_ux_review_copy() -> None:
+    """m-24842996 UX review: one name for the action, a stop verb that is not «Cancelar»,
+    and the review shows the name the list will show."""
+    assert "campaña" not in PAYMENT_FAILED and "«Enviar una promoción»" in PAYMENT_FAILED
+    source = inspect.getsource(whatsapp_tab_campaigns)
+    for text in ("Detener promoción", "¿Detener la promoción?", "Sí, detenerla", "Seguir enviando"):
+        assert text in source, text
+    assert '"Cancelar"' not in source and "Con la fecha de hoy" not in source
+    assert "sin tu toque" not in source
+    assert "S.review_name" in source
