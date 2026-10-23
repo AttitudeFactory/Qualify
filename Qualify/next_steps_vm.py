@@ -18,6 +18,9 @@ CREATE_LABEL: Final = "Crear publicación"
 #: Zero people waiting for an answer (ticket m-24842961, exact copy).
 ALL_CLEAR_TITLE: Final = "¡Al día!"
 ALL_CLEAR_BODY: Final = "No hay nadie esperando tu respuesta."
+#: The same moment on Comentarios, scoped to comments: private messages or WhatsApp
+#: chats may still wait, so the owner must not read «nadie» there.
+COMMENTS_ALL_CLEAR: Final = "¡Al día con tus comentarios! No queda ninguno esperando respuesta."
 
 #: After answering a comment while others still wait: the next one is on screen.
 NEXT_PENDING_LABEL: Final = "Responder el siguiente"

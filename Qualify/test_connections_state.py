@@ -203,3 +203,22 @@ def test_show_guide_step_keeps_the_guide_open_when_called_twice() -> None:
 def test_hint_reconnect_asks_meta_again_for_unticked_permissions() -> None:
     source = inspect.getsource(ConnectionsState.reconnect_for_permissions.fn)
     assert "self._launch_connect(rerequest=True)" in source
+
+
+def test_ayuda_in_the_link_opens_the_help_drawer_on_arrival() -> None:
+    """m-24842961: WhatsApp's «Pedir ayuda para conectar tu número» lands on the form."""
+    from .connections_state import wants_support
+
+    assert wants_support({"ayuda": "1"})
+    assert not wants_support({})
+    assert not wants_support({"ayuda": "0"})
+    source = inspect.getsource(ConnectionsState.read_connect_result.fn)
+    assert "ConnectionsState.open_support" in source
+
+
+def test_whatsapp_without_a_number_links_straight_to_the_help_form() -> None:
+    from . import whatsapp_page
+
+    source = inspect.getsource(whatsapp_page._no_numbers_state)
+    assert '"Pedir ayuda para conectar tu número"' in source
+    assert 'href="/connections?ayuda=1"' in source

@@ -180,10 +180,10 @@ def _no_numbers_state() -> rx.Component:
         "Aún no hay un número de WhatsApp conectado",
         "Los números de WhatsApp se conectan desde la administración de Qualify. Pide al "
         "equipo de Qualify que conecte el número de tu negocio y aparecerá aquí.",
-        # N8 (m-24842961): «Pedir ayuda 1:1» lives in Tus redes.
+        # N8 (m-24842961): straight to the «Pedir ayuda 1:1» drawer of Tus redes, open.
         action=rx.link(
-            rx.button("Pedir ayuda en Tus redes", variant="soft", size="3"),
-            href="/connections",
+            rx.button("Pedir ayuda para conectar tu número", variant="soft", size="3"),
+            href="/connections?ayuda=1",
         ),
     )
 

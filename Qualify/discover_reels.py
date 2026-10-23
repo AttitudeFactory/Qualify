@@ -865,7 +865,7 @@ def _body() -> rx.Component:
         "Aún no tienes referentes",
         "Marca cuentas como referente en Tu marca (o agrégalas a mano) y aquí verás "
         "sus reels con más vistas.",
-        rx.link(rx.button("Ir a Tu marca", variant="soft"), href="/brand/kit"),
+        rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
     )
     window = DiscoverReelsState.window
     no_reels = empty_state(
@@ -888,8 +888,9 @@ def _body() -> rx.Component:
                 "Ver los del mes",
                 on_click=DiscoverReelsState.set_window("month"),
                 variant="soft",
+                size="3",
             ),
-            rx.link(rx.button("Ir a Tu marca", variant="soft"), href="/brand/kit"),
+            rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
         ),
     )
     filtered_out = empty_state(
@@ -946,7 +947,7 @@ def _body() -> rx.Component:
             "Aún no sabemos qué vende tu marca",
             "Ejecuta la búsqueda de referentes en Tu marca: con ella filtramos los "
             "reels para mostrarte solo los de tu producto.",
-            rx.link(rx.button("Ir a Tu marca", variant="soft"), href="/brand/kit"),
+            rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
         ),
         empty_state(
             "clock",

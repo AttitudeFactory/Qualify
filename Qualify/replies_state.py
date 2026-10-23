@@ -81,6 +81,10 @@ from .replies_provider import (
 from .replies_vm import generation_message, regenerate_error_message, send_block_reason
 from .tenant import tenant_uuid
 
+#: The element id of the lasting «Listo, le respondiste a @…» confirmation
+#: (`inbox_page._replies_sent_block`), scrolled into view after a send (m-24842961).
+REPLIES_SENT_ID = "q-replies-sent"
+
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
@@ -408,6 +412,9 @@ class RepliesState(rx.State):
             return
         async with self:
             self.sent_notice = sent_message(author)
+        # On a phone the answered card vanishes and the confirmation sits above the
+        # section, off screen: bring it into view, or the owner never sees the «Listo».
+        yield rx.scroll_to(REPLIES_SENT_ID)
 
     @rx.event
     def dismiss_sent_notice(self) -> None:

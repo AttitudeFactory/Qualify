@@ -75,15 +75,14 @@ from .inbox_vm import (
     ReelSummaryVM,
 )
 from .next_steps_vm import (
-    ALL_CLEAR_BODY,
-    ALL_CLEAR_TITLE,
+    COMMENTS_ALL_CLEAR,
     CREATE_LABEL,
     CREATE_ROUTE,
     DISMISS_LABEL,
     NEXT_PENDING_LABEL,
 )
 from .publishing_vm import ConnectionOptionVM
-from .replies_state import RepliesState
+from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
     PUBLICATION_ALT_FALLBACK,
@@ -1185,7 +1184,7 @@ def _replies_sent_block() -> rx.Component:
                             RepliesState.has_pending_drafts,
                             rx.fragment(),
                             rx.text(
-                                ALL_CLEAR_TITLE + " " + ALL_CLEAR_BODY,
+                                COMMENTS_ALL_CLEAR,
                                 size="2",
                                 color=T.TEXT_MUTED,
                             ),
@@ -1214,6 +1213,7 @@ def _replies_sent_block() -> rx.Component:
             ),
             padding="0.875rem 1rem",
             role="status",
+            id=REPLIES_SENT_ID,
         ),
     )
 

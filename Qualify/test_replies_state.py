@@ -488,3 +488,24 @@ def test_the_send_no_longer_ends_in_a_toast_only() -> None:
     source = inspect.getsource(RepliesState._decide_and_send)
     assert "rx.toast.success(sent_message" not in source
     assert "self.sent_notice = sent_message(author)" in source
+
+
+def test_the_confirmation_is_scrolled_into_view_after_a_send() -> None:
+    """On a phone the answered card vanishes and the «Listo» sits above, off screen."""
+    from . import inbox_page
+
+    source = inspect.getsource(RepliesState._decide_and_send)
+    assert "rx.scroll_to(REPLIES_SENT_ID)" in source
+    assert "id=REPLIES_SENT_ID" in inspect.getsource(inbox_page._replies_sent_block)
+
+
+def test_the_all_clear_on_comments_speaks_only_of_comments() -> None:
+    """Private messages or WhatsApp chats may still wait: «nadie» would be a lie here."""
+    from . import inbox_page
+    from .next_steps_vm import COMMENTS_ALL_CLEAR
+
+    assert COMMENTS_ALL_CLEAR == (
+        "¡Al día con tus comentarios! No queda ninguno esperando respuesta."
+    )
+    block = inspect.getsource(inbox_page._replies_sent_block)
+    assert "COMMENTS_ALL_CLEAR" in block and "ALL_CLEAR_BODY" not in block
