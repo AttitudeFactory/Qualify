@@ -964,6 +964,8 @@ body {
   padding: 1.25rem 1.5rem 0.75rem;
   border-bottom: 1px solid var(--gray-5);
 }
+/* m-24842987 (N12): the panel's «Cerrar» is a thumb-sized target (≥ 44 px). */
+.q-drawer-head .rt-IconButton { min-width: 44px; min-height: 44px; }
 .q-drawer-body {
   padding: 1rem 1.5rem 1.25rem;
   container-type: inline-size;

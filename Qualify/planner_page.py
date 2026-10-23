@@ -56,6 +56,7 @@ from .ui import (
     app_shell,
     callout,
     card,
+    drawer,
     empty_state,
     page_body,
     page_header,
@@ -77,6 +78,8 @@ _CLAMP_2 = {
     "overflow": "hidden",
 }
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
+# N12: a target a thumb can hit on a phone.
+_TOUCH_MIN = "44px"
 
 
 # ---------------------------------------------------------------------------
@@ -87,18 +90,24 @@ def _card_menu(event) -> rx.Component:
     return rx.dropdown_menu.root(
         rx.dropdown_menu.trigger(
             rx.icon_button(
-                rx.icon("ellipsis", size=T.ICON_SM),
-                size="1",
+                rx.icon("ellipsis", size=T.ICON_MD),
+                size="3",
                 variant="ghost",
                 color_scheme="gray",
                 aria_label="Acciones de la publicación",
+                min_width=_TOUCH_MIN,
+                min_height=_TOUCH_MIN,
             ),
         ),
         rx.dropdown_menu.content(
             rx.dropdown_menu.item("Ver detalle", on_click=PlannerState.open_detail(event.event_id)),
             rx.cond(
                 event.detail_href != "",
-                rx.dropdown_menu.item("Ver publicación", on_click=rx.redirect(event.detail_href)),
+                # m-24842987: the ficha says «‹ Tu semana» and comes back to this week.
+                rx.dropdown_menu.item(
+                    "Ver publicación",
+                    on_click=rx.redirect(event.detail_href + PlannerState.week_return_query),
+                ),
             ),
             rx.cond(
                 event.can_modify,
@@ -114,7 +123,7 @@ def _card_menu(event) -> rx.Component:
                     ),
                 ),
             ),
-            size="1",
+            size="2",
         ),
     )
 
@@ -152,9 +161,9 @@ def _chip_edge(event) -> rx.Var:
 
 
 def _chip_detail(event) -> rx.Component:
-    """Everything about the event, on hover — the chip stays one line so every hour of
-    the grid keeps the same height, and nothing is lost: title, caption, when, channel,
-    destination, temperature, its states, tags and what may keep it from going out."""
+    """Everything about the event, as a preview on hover — the chip stays one line so
+    every hour of the grid keeps the same height. Nothing depends on the hover (N12): a
+    tap on the chip opens the event's panel, which shows all of this and more."""
     return rx.vstack(
         rx.hstack(
             card_media(event.thumbnail_url, event.video_url, "3.25rem"),
@@ -202,7 +211,7 @@ def _chip_detail(event) -> rx.Component:
             rx.flex(rx.foreach(event.tags, tag_badge_plain), wrap="wrap", gap="0.25rem"),
         ),
         readiness_note(event.readiness_note),
-        rx.text("Clic para ver y gestionar", size="1", color=T.TEXT_FAINT),
+        rx.text("Toca para ver y cambiar", size="1", color=T.TEXT_FAINT),
         spacing="2",
         width="17rem",
     )
@@ -629,10 +638,6 @@ def _list_day(day) -> rx.Component:
     )
 
 
-# N12: a target a thumb can hit on a phone.
-_TOUCH_MIN = "44px"
-
-
 def _program_waiting_button() -> rx.Component:
     """«Programar mis {n} publicaciones»: the drawer with all of them preselected."""
     return rx.button(
@@ -712,7 +717,15 @@ def _post_option(post) -> rx.Component:
         actions=rx.hstack(
             rx.cond(
                 post.detail_href != "",
-                rx.link(rx.text("Ver publicación", size="1"), href=post.detail_href),
+                rx.link(
+                    rx.button(
+                        "Ver publicación",
+                        size="2",
+                        variant="ghost",
+                        min_height=_TOUCH_MIN,
+                    ),
+                    href=post.detail_href + PlannerState.week_return_query,
+                ),
             ),
             rx.spacer(),
             rx.button(
@@ -747,11 +760,13 @@ def _unscheduled_panel() -> rx.Component:
             ),
             rx.spacer(),
             rx.icon_button(
-                rx.icon("x", size=T.ICON_SM),
-                size="1",
+                rx.icon("x", size=T.ICON_MD),
+                size="3",
                 variant="ghost",
                 color_scheme="gray",
                 aria_label="Cerrar panel",
+                min_width=_TOUCH_MIN,
+                min_height=_TOUCH_MIN,
                 on_click=PlannerState.close_unscheduled,
             ),
             align="center",
@@ -772,7 +787,10 @@ def _unscheduled_panel() -> rx.Component:
             ),
             rx.vstack(
                 rx.text(NO_APPROVED_BODY, size="2", color=T.TEXT_MUTED),
-                rx.link(rx.button(CREATE_ACTION, size="1", variant="soft"), href="/create"),
+                rx.link(
+                    rx.button(CREATE_ACTION, size="2", variant="soft", min_height=_TOUCH_MIN),
+                    href="/create",
+                ),
                 spacing="2",
                 padding="1rem 0",
             ),
@@ -841,7 +859,7 @@ def _assign_button() -> rx.Component:
 
 def _connection_filter() -> rx.Component:
     return rx.select.root(
-        rx.select.trigger(placeholder="Todas las cuentas", variant="ghost"),
+        rx.select.trigger(placeholder="Todas las cuentas", width="100%", min_height=_TOUCH_MIN),
         rx.select.content(
             rx.select.item("Todas las cuentas", value="all"),
             rx.foreach(
@@ -851,13 +869,14 @@ def _connection_filter() -> rx.Component:
         ),
         value=PlannerState.connection_filter,
         on_change=PlannerState.set_connection_filter,
+        size="3",
     )
 
 
 def _unscheduled_button(is_open: rx.Var[bool]) -> rx.Component:
-    """«Por programar» and its count, the toolbar's way to the panel."""
+    """«Por programar» and its count, the toolbar's way to the panel. No glyph: on a
+    360 px phone the whole bar has to fit one line (m-24842987)."""
     return rx.button(
-        rx.icon("inbox", size=T.ICON_SM),
         "Por programar",
         rx.badge(
             PlannerState.waiting_count,
@@ -866,129 +885,186 @@ def _unscheduled_button(is_open: rx.Var[bool]) -> rx.Component:
             size="1",
             class_name="q-nums",
         ),
+        size="2",
         variant=rx.cond(is_open, "soft", "ghost"),
         color_scheme="gray",
+        min_height=_TOUCH_MIN,
         aria_pressed=is_open,
         on_click=PlannerState.toggle_unscheduled(is_open),
     )
 
 
+def _filters_button() -> rx.Component:
+    """«Filtros»: account, tags and time zone, behind one button (m-24842987) — with
+    how many are on, so a filtered week never looks like an empty one."""
+    return rx.button(
+        rx.icon("sliders-horizontal", size=T.ICON_SM),
+        "Filtros",
+        rx.cond(
+            PlannerState.filters_active_count > 0,
+            rx.badge(
+                PlannerState.filters_active_count,
+                variant="solid",
+                radius="full",
+                size="1",
+                class_name="q-nums",
+            ),
+        ),
+        size="2",
+        variant=rx.cond(PlannerState.filters_active_count > 0, "soft", "ghost"),
+        color_scheme="gray",
+        min_height=_TOUCH_MIN,
+        on_click=PlannerState.open_filters,
+    )
+
+
+def _week_bar() -> rx.Component:
+    """«‹ ›», «Hoy», «Por programar» and its count — one line at 360 px, before the week
+    (m-24842987): four 44 px targets and nothing else."""
+    return rx.hstack(
+        rx.icon_button(
+            rx.icon("chevron-left", size=T.ICON_MD),
+            size="3",
+            variant="ghost",
+            color_scheme="gray",
+            aria_label="Semana anterior",
+            min_width=_TOUCH_MIN,
+            min_height=_TOUCH_MIN,
+            on_click=PlannerState.previous_week,
+        ),
+        rx.icon_button(
+            rx.icon("chevron-right", size=T.ICON_MD),
+            size="3",
+            variant="ghost",
+            color_scheme="gray",
+            aria_label="Semana siguiente",
+            min_width=_TOUCH_MIN,
+            min_height=_TOUCH_MIN,
+            on_click=PlannerState.next_week,
+        ),
+        rx.button(
+            "Hoy",
+            size="2",
+            variant=rx.cond(PlannerState.is_current_week, "soft", "outline"),
+            color_scheme="gray",
+            min_height=_TOUCH_MIN,
+            on_click=PlannerState.go_to_today,
+        ),
+        # One button per width: the panel's automatic default differs between a
+        # phone and a wide screen, so each one toggles what is on its own screen.
+        rx.el.div(
+            _unscheduled_button(PlannerState.unscheduled_open_wide),
+            class_name="q-wide-only",
+        ),
+        rx.el.div(
+            _unscheduled_button(PlannerState.unscheduled_open_narrow),
+            class_name="q-narrow-only",
+        ),
+        align="center",
+        spacing="2",
+        wrap="nowrap",
+        class_name="q-planner-bar",
+    )
+
+
 def _toolbar() -> rx.Component:
-    return rx.flex(
+    """Which week (month and dates) with «Filtros» beside it; under it, the bar."""
+    return rx.vstack(
         rx.hstack(
-            rx.icon_button(
-                rx.icon("chevron-left", size=T.ICON_MD),
-                variant="ghost",
-                color_scheme="gray",
-                aria_label="Semana anterior",
-                on_click=PlannerState.previous_week,
-            ),
-            rx.icon_button(
-                rx.icon("chevron-right", size=T.ICON_MD),
-                variant="ghost",
-                color_scheme="gray",
-                aria_label="Semana siguiente",
-                on_click=PlannerState.next_week,
-            ),
             rx.vstack(
                 rx.heading(PlannerState.month_label, size="4", as_="h2"),
                 rx.text(PlannerState.week_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
                 spacing="0",
+                min_width="0",
             ),
-            rx.button(
-                "Hoy",
-                size="1",
-                variant=rx.cond(PlannerState.is_current_week, "soft", "outline"),
-                color_scheme="gray",
-                on_click=PlannerState.go_to_today,
-            ),
+            rx.spacer(),
+            _filters_button(),
             align="center",
-            spacing="2",
+            width="100%",
         ),
-        rx.spacer(),
-        rx.hstack(
-            # One button per width: the panel's automatic default differs between a
-            # phone and a wide screen, so each one toggles what is on its own screen.
-            rx.el.div(
-                _unscheduled_button(PlannerState.unscheduled_open_wide),
-                class_name="q-wide-only",
-            ),
-            rx.el.div(
-                _unscheduled_button(PlannerState.unscheduled_open_narrow),
-                class_name="q-narrow-only",
-            ),
-            _connection_filter(),
-            _tags_filter(),
-            _timezone_picker(),
-            align="center",
-            spacing="3",
-            wrap="wrap",
-        ),
-        align="center",
-        gap="0.75rem",
-        wrap="wrap",
+        _week_bar(),
+        spacing="2",
         width="100%",
     )
 
 
 # ---------------------------------------------------------------------------
-# Toolbar popovers: Etiquetas (filter) and zona horaria
+# «Filtros» — a side panel (full screen on a phone): account, tags, time zone
 
 
 def _search_box(value: rx.Var[str], on_change, placeholder: str) -> rx.Component:
+    # No auto focus: on a phone it would open the keyboard over the panel.
     return rx.input(
         rx.input.slot(rx.icon("search", size=T.ICON_SM)),
         value=value,
         on_change=on_change,
         placeholder=placeholder,
+        size="3",
         width="100%",
-        auto_focus=True,
+    )
+
+
+def _filter_section(title: str | rx.Var, *children: rx.Component) -> rx.Component:
+    return rx.vstack(
+        rx.heading(title, size="3", as_="h3"),
+        *children,
+        spacing="2",
+        width="100%",
     )
 
 
 def _tag_filter_row(tag) -> rx.Component:
     """One tag in the filter: the row toggles it; the trash turns the row itself into
-    «¿Eliminar?» — the confirmation lives where the click was, no dialog."""
+    «¿Eliminar?» — the confirmation lives where the tap was, no dialog."""
     selected = PlannerState.tag_filter.contains(tag.id)
     row = rx.hstack(
-        rx.checkbox(checked=selected, size="1", pointer_events="none"),
+        rx.checkbox(checked=selected, size="2", pointer_events="none"),
         tag_dot(tag),
         rx.text(tag.name, size="2", style=_ONE_LINE),
         rx.spacer(),
         rx.icon_button(
             rx.icon("trash-2", size=T.ICON_SM),
-            size="1",
+            size="3",
             variant="ghost",
             color_scheme="gray",
             aria_label="Eliminar etiqueta",
-            title="Eliminar etiqueta",
+            min_width=_TOUCH_MIN,
+            min_height=_TOUCH_MIN,
             # stop_propagation: the row itself toggles the filter.
             on_click=PlannerState.ask_delete_tag(tag.id, tag.name).stop_propagation,
         ),
         on_click=PlannerState.toggle_tag_filter(tag.id),
         cursor="pointer",
+        role="checkbox",
+        aria_checked=selected,
         align="center",
         spacing="2",
         width="100%",
-        padding="0.35rem 0.5rem",
+        min_height=_TOUCH_MIN,
+        padding="0 0 0 0.5rem",
         border_radius=T.RADIUS_CONTROL,
-        _hover={"background": T.SURFACE_BG_RAISED},
+        background=rx.cond(selected, T.SURFACE_BG_RAISED, "transparent"),
     )
     confirm = rx.vstack(
         rx.text(
             "¿Eliminar «" + tag.name + "»? Se quita de todas las publicaciones.",
-            size="1",
+            size="2",
         ),
         rx.hstack(
             rx.button(
                 "Volver",
-                size="1",
+                size="2",
                 variant="soft",
                 color_scheme="gray",
+                min_height=_TOUCH_MIN,
                 on_click=PlannerState.cancel_delete_tag,
             ),
             rx.button(
-                "Eliminar", size="1", color_scheme="red", on_click=PlannerState.confirm_delete_tag
+                "Eliminar",
+                size="2",
+                color_scheme="red",
+                min_height=_TOUCH_MIN,
+                on_click=PlannerState.confirm_delete_tag,
             ),
             spacing="2",
         ),
@@ -1003,169 +1079,146 @@ def _tag_filter_row(tag) -> rx.Component:
 
 def _tags_filter() -> rx.Component:
     empty = rx.vstack(
-        rx.center(
-            rx.icon("tag", size=T.ICON_MD, color=T.tone_color("accent", 11)),
-            width="2.75rem",
-            height="2.75rem",
-            border_radius="999px",
-            background=T.tone_color("accent", 3),
-        ),
         rx.text("Sin etiquetas", size="2", weight="bold"),
         rx.text(
-            "Usa etiquetas para organizar tu planificación: escribe un nombre arriba para "
+            "Usa etiquetas para organizar tu semana: escribe un nombre arriba para "
             "crear la primera.",
-            size="1",
+            size="2",
             color=T.TEXT_MUTED,
-            text_align="center",
         ),
-        align="center",
-        spacing="2",
-        padding="1rem 0.5rem",
+        spacing="1",
+        padding="0.5rem 0",
     )
-    return rx.popover.root(
-        rx.popover.trigger(
+    return _filter_section(
+        "Etiquetas",
+        rx.text(
+            "Muestra las publicaciones con cualquiera de las marcadas.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        _search_box(PlannerState.tag_query, PlannerState.set_tag_query, "Buscar etiquetas"),
+        rx.cond(
+            PlannerState.can_create_tag,
             rx.button(
-                rx.icon("tag", size=T.ICON_SM),
-                "Etiquetas",
-                rx.cond(
-                    PlannerState.tag_filter_count > 0,
-                    rx.badge(
-                        PlannerState.tag_filter_count,
-                        variant="solid",
-                        radius="full",
-                        size="1",
-                        class_name="q-nums",
-                    ),
-                ),
-                rx.icon("chevron-down", size=T.ICON_SM),
-                variant=rx.cond(PlannerState.tag_filter_count > 0, "soft", "ghost"),
-                color_scheme="gray",
+                rx.icon("plus", size=T.ICON_SM),
+                "Crear etiqueta «" + PlannerState.tag_query + "»",
+                variant="ghost",
+                size="2",
+                width="100%",
+                justify="start",
+                min_height=_TOUCH_MIN,
+                on_click=PlannerState.create_tag_from_filter,
             ),
         ),
-        rx.popover.content(
+        rx.cond(
+            PlannerState.tags.length() == 0,
+            rx.cond(PlannerState.can_create_tag, rx.fragment(), empty),
             rx.vstack(
-                _search_box(PlannerState.tag_query, PlannerState.set_tag_query, "Buscar etiquetas"),
-                rx.cond(
-                    PlannerState.can_create_tag,
-                    rx.button(
-                        rx.icon("plus", size=T.ICON_SM),
-                        "Crear etiqueta «" + PlannerState.tag_query + "»",
-                        variant="ghost",
-                        size="2",
-                        width="100%",
-                        justify="start",
-                        on_click=PlannerState.create_tag_from_filter,
-                    ),
-                ),
-                rx.cond(
-                    PlannerState.tags.length() == 0,
-                    rx.cond(PlannerState.can_create_tag, rx.fragment(), empty),
-                    rx.vstack(
-                        rx.foreach(PlannerState.tag_results, _tag_filter_row),
-                        spacing="0",
-                        width="100%",
-                        max_height="15rem",
-                        overflow_y="auto",
-                    ),
-                ),
-                rx.divider(),
-                rx.hstack(
-                    rx.button(
-                        "Borrar selección",
-                        variant="ghost",
-                        color_scheme="gray",
-                        size="1",
-                        disabled=PlannerState.tag_filter_count == 0,
-                        on_click=PlannerState.clear_tag_filter,
-                    ),
-                    rx.spacer(),
-                    rx.text(
-                        "Filtra las publicaciones con cualquiera de las marcadas.",
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                    align="center",
-                    width="100%",
-                ),
-                spacing="2",
-                width="18rem",
+                rx.foreach(PlannerState.tag_results, _tag_filter_row),
+                spacing="1",
+                width="100%",
             ),
-            side="bottom",
-            align="end",
+        ),
+        rx.cond(
+            PlannerState.tag_filter_count > 0,
+            rx.button(
+                "Quitar las etiquetas marcadas",
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                min_height=_TOUCH_MIN,
+                on_click=PlannerState.clear_tag_filter,
+            ),
         ),
     )
 
 
 def _tz_row(option) -> rx.Component:
     selected = option.value == PlannerState.tz_name
-    return rx.popover.close(
-        rx.hstack(
-            rx.box(
-                rx.cond(selected, rx.icon("check", size=T.ICON_SM)),
-                width="1rem",
-            ),
-            rx.text(
-                option.city + rx.cond(option.country != "", ", " + option.country, ""),
-                size="2",
-                weight=rx.cond(selected, "bold", "regular"),
-                style=_ONE_LINE,
-            ),
-            rx.text("(" + option.offset_label + ")", size="1", color=T.TEXT_MUTED, flex_shrink="0"),
-            on_click=PlannerState.choose_tz(option.value),
-            cursor="pointer",
-            align="center",
-            spacing="2",
+    return rx.hstack(
+        rx.box(
+            rx.cond(selected, rx.icon("check", size=T.ICON_SM)),
+            width="1rem",
+            flex_shrink="0",
+        ),
+        rx.text(
+            option.city + rx.cond(option.country != "", ", " + option.country, ""),
+            size="2",
+            weight=rx.cond(selected, "bold", "regular"),
+            style=_ONE_LINE,
+        ),
+        rx.spacer(),
+        rx.text("(" + option.offset_label + ")", size="1", color=T.TEXT_MUTED, flex_shrink="0"),
+        on_click=PlannerState.choose_tz(option.value),
+        cursor="pointer",
+        role="button",
+        aria_pressed=selected,
+        align="center",
+        spacing="2",
+        width="100%",
+        min_height=_TOUCH_MIN,
+        padding="0 0.5rem",
+        border_radius=T.RADIUS_CONTROL,
+        background=rx.cond(selected, T.SURFACE_BG_RAISED, "transparent"),
+    )
+
+
+def _timezone_filter() -> rx.Component:
+    return _filter_section(
+        "Zona horaria",
+        rx.text(
+            "Ves y programas la semana con la hora de " + PlannerState.tz_city_label + ". "
+            "Cambiarla aquí no cambia la zona de tu negocio.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        _search_box(
+            PlannerState.tz_query,
+            PlannerState.set_tz_query,
+            "Buscar ciudad o país",
+        ),
+        rx.text("Sugerencias", size="1", color=T.TEXT_MUTED, weight="medium"),
+        rx.vstack(rx.foreach(PlannerState.tz_suggestions, _tz_row), spacing="0", width="100%"),
+        rx.text("Todas las zonas horarias", size="1", color=T.TEXT_MUTED, weight="medium"),
+        rx.vstack(
+            rx.foreach(PlannerState.tz_results, _tz_row),
+            spacing="0",
             width="100%",
-            padding="0.35rem 0.5rem",
-            border_radius=T.RADIUS_CONTROL,
-            background=rx.cond(selected, T.SURFACE_BG_RAISED, "transparent"),
-            _hover={"background": T.SURFACE_BG_RAISED},
+            max_height="18rem",
+            overflow_y="auto",
         ),
     )
 
 
-def _timezone_picker() -> rx.Component:
-    return rx.popover.root(
-        rx.popover.trigger(
+def _filters_drawer() -> rx.Component:
+    """«Filtros» as the module's side panel: a full screen on a phone, so every row is a
+    thumb-sized target and nothing hides behind a hover (N12)."""
+    return drawer(
+        rx.vstack(
+            _filter_section("Cuenta", _connection_filter()),
+            rx.divider(),
+            _tags_filter(),
+            rx.divider(),
+            _timezone_filter(),
+            spacing="4",
+            width="100%",
+        ),
+        open=PlannerState.filters_open,
+        on_open_change=PlannerState.set_filters_open,
+        title="Filtros",
+        icon="sliders-horizontal",
+        description="Elige qué publicaciones ves en tu semana.",
+        footer=rx.hstack(
+            rx.spacer(),
             rx.button(
-                rx.icon("globe", size=T.ICON_SM),
-                PlannerState.tz_city_label,
-                rx.icon("chevron-down", size=T.ICON_SM),
-                variant="ghost",
-                color_scheme="gray",
-                title=PlannerState.tz_name,
+                "Ver mi semana",
+                size="3",
+                min_height=_TOUCH_MIN,
+                on_click=PlannerState.set_filters_open(False),
             ),
+            width="100%",
         ),
-        rx.popover.content(
-            rx.vstack(
-                _search_box(
-                    PlannerState.tz_query,
-                    PlannerState.set_tz_query,
-                    "Buscar ciudad, país o zona horaria",
-                ),
-                rx.text("Sugerencias", size="1", color=T.TEXT_MUTED, weight="medium"),
-                rx.foreach(PlannerState.tz_suggestions, _tz_row),
-                rx.divider(),
-                rx.text("Todas las zonas horarias", size="1", color=T.TEXT_MUTED, weight="medium"),
-                rx.vstack(
-                    rx.foreach(PlannerState.tz_results, _tz_row),
-                    spacing="0",
-                    width="100%",
-                    max_height="16rem",
-                    overflow_y="auto",
-                ),
-                rx.text(
-                    "Cambia la zona en que ves y planificas la semana. La zona del negocio "
-                    "no se modifica.",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="2",
-                width="20rem",
-            ),
-            side="bottom",
-            align="end",
-        ),
+        width="26rem",
     )
 
 
@@ -1237,6 +1290,7 @@ def planner_index() -> rx.Component:
         ),
         assign_drawer(),
         event_panel(),
+        _filters_drawer(),
         # The page's clock: a quiet re-read of the week every REFRESH_SECONDS, so what
         # the worker published (or failed) shows without a manual reload. Client-side,
         # so it stops when the page is left.

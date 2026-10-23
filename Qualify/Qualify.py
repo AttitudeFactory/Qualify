@@ -49,6 +49,7 @@ from .inbox_state import InboxState
 from .leads_page import leads_index
 from .leads_state import LeadsState
 from .piece_download import router as piece_download_router
+from .planner_back import WeekBackState
 from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publish_hub_state import PublishHubState
@@ -416,7 +417,12 @@ app.add_page(
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
-    on_load=[AuthState.require_login, CreativeState.load_draft, CampaignState.load],
+    on_load=[
+        AuthState.require_login,
+        WeekBackState.read,  # m-24842987: «‹ Tu semana» when opened from there
+        CreativeState.load_draft,
+        CampaignState.load,
+    ],
     title="Qualify · Revisar publicación",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).

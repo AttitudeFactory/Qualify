@@ -41,6 +41,7 @@ from .planner_vm import (
     ASSIGN_STEPS,
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
+    BACK_TO_WEEK,
     EXPIRED_NOTE,
     KIND_ICONS,
     NOW_LABEL,
@@ -1742,7 +1743,11 @@ def _detail_body() -> rx.Component:
                 callout(PlannerState.review_error, "warn"),
                 rx.cond(
                     d.detail_href != "",
-                    rx.link(REVIEW_EDIT_LINK, href=d.detail_href, size="2"),
+                    rx.link(
+                        REVIEW_EDIT_LINK,
+                        href=d.detail_href + PlannerState.week_return_query,
+                        size="2",
+                    ),
                 ),
                 spacing="2",
                 width="100%",
@@ -1800,6 +1805,16 @@ def _detail_body() -> rx.Component:
         ),
     )
     return rx.vstack(
+        # m-24842987 (N7): on a phone the panel is the whole screen; its way back
+        # names where it goes — the same week, in the same view.
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_MD),
+            BACK_TO_WEEK,
+            variant="ghost",
+            size="3",
+            min_height="44px",
+            on_click=PlannerState.set_detail_open(False),
+        ),
         stage,
         rx.vstack(
             rx.text(d.title, size="5", weight="bold", line_height="1.25"),
@@ -1823,14 +1838,15 @@ def _detail_body() -> rx.Component:
             ),
             action=rx.cond(
                 d.detail_href != "",
+                # Stays in Qualify (N9: no ↗) and comes back with «‹ Tu semana».
                 rx.link(
-                    rx.hstack(
-                        rx.text("Abrir en Por aprobar", size="1"),
-                        rx.icon("external-link", size=12),
-                        align="center",
-                        spacing="1",
+                    rx.button(
+                        "Abrir en Por aprobar",
+                        size="2",
+                        variant="ghost",
+                        min_height="44px",
                     ),
-                    href=d.detail_href,
+                    href=d.detail_href + PlannerState.week_return_query,
                 ),
             ),
         ),
