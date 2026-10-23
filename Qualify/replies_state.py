@@ -17,7 +17,7 @@ every approval to the owner whoever clicked.
 
 **Fase B (m-24789645, PR 3).** `regenerate` asks the `replies.regenerate_draft` seam
 for another proposal as the logged-in person (never sends), and a draft that needs
-review is sent only after «Revisé el borrador» (`reviewed_draft_ids`, checked inside
+review is sent only after «Ya revisé estos puntos» (`reviewed_draft_ids`, checked inside
 `_decide_and_send` through `replies_vm.send_block_reason` — the disabled button is only
 a hint). The gate only adds a condition in front of the existing decide → approval →
 send path; there is still exactly one way to send.
@@ -141,8 +141,8 @@ class RepliesState(rx.State):
     edit_text: str = ""
 
     # m-24789645: the draft «Regenerar» is working on (it also holds `busy_draft_id`,
-    # so the card's other buttons wait), and the drafts the person ticked «Revisé el
-    # borrador» for — a draft that needs review is not sent without it
+    # so the card's other buttons wait), and the drafts the person ticked «Ya revisé
+    # estos puntos» for — a draft that needs review is not sent without it
     # (`replies_vm.send_block_reason`). A regenerated draft has a new id, so its tick
     # never carries over to text nobody has read yet.
     regenerating_draft_id: str = ""
@@ -264,7 +264,7 @@ class RepliesState(rx.State):
         self.edit_text = value
 
     def set_reviewed(self, draft_id: str, checked: bool) -> None:
-        """The «Revisé el borrador» box of one draft. Ticking it only allows the send;
+        """The «Ya revisé estos puntos» box of one draft. Ticking it only allows the send;
         the send itself still goes through the decision + `HumanApproval` path."""
         others = [i for i in self.reviewed_draft_ids if i != draft_id]
         self.reviewed_draft_ids = [*others, draft_id] if checked else others

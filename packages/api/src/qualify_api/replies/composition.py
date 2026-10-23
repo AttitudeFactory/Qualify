@@ -91,8 +91,8 @@ def generate_drafts(*, tenant_id: UUID, connection_id: UUID) -> GenerationSummar
 
 
 def regenerate_draft(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
-    """«Regenerar» (m-24789645; the button arrives in PR 3): replaces a `proposed` draft
-    with a fresh one, through the gate. Never sends."""
+    """«Regenerar» (m-24789645; the button on each draft card in `/inbox`): replaces a
+    `proposed` draft with a fresh one, through the gate. Never sends."""
     return production_reply_service().regenerate(
         tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
     )
