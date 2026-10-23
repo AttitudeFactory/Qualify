@@ -33,7 +33,6 @@ from .ui import (
     drawer,
     empty_state,
     mono,
-    page_header,
     platform_badge,
     sentiment_badge,
     session_badge,
@@ -55,7 +54,7 @@ __all__ = [
     "sidebar",
     "stat_card",
     "stats_row",
-    "topbar",
+    "mentions_intro",
 ]
 
 # QUA-152: the refresh heartbeat (`rx.moment`'s `interval`, a browser-side setInterval —
@@ -86,6 +85,8 @@ _MENTION_GUTTER = "2rem"
 # Every tap target on this screen (N12): pager, filters, buttons, links.
 _TARGET = "44px"
 
+MENTIONS_INTRO = "Lo que la gente publica o comenta cuando etiqueta a tu negocio."
+
 
 def _refresh_timer() -> rx.Component:
     """Hidden heartbeat: every tick re-reads the current page under the same snapshot and
@@ -102,13 +103,11 @@ def _muted(value: rx.Var | str, **props) -> rx.Component:
     return rx.text(value, size="2", color=T.TEXT_MUTED, **props)
 
 
-def topbar() -> rx.Component:
-    # Channel-neutral on purpose (founder review 2026-10-13): mentions will come from
-    # several channels; the channel of each one is its own column, never the page title.
-    return page_header(
-        "Menciones",
-        "Lo que la gente publica o comenta cuando etiqueta a tu negocio.",
-    )
+def mentions_intro() -> rx.Component:
+    """What the tab is about, under Resultados' tab strip (m-24843003). Channel-neutral on
+    purpose (founder review 2026-10-13): mentions will come from several channels; the
+    channel of each one is its own column, never the title."""
+    return _muted(MENTIONS_INTRO)
 
 
 def _sentiment_card(
@@ -814,10 +813,16 @@ def _mentions_empty_state() -> rx.Component:
             "comentario, aparecerá aquí. Para ver menciones anteriores, elige un periodo "
             "más amplio.",
         ),
+        # N8 (m-24843003): the way out is the connection the mentions come through.
         empty_state(
             "at-sign",
             "Aún no hay menciones",
-            "Cuando alguien mencione tu cuenta en una publicación o un comentario, aparecerá aquí.",
+            "Cuando alguien mencione tu cuenta en una publicación o un comentario, aparecerá "
+            "aquí. Llegan por tu Instagram conectado.",
+            action=rx.link(
+                rx.button("Ver tus redes", size="3", min_height=_TARGET),
+                href="/connections",
+            ),
         ),
     )
 

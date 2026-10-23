@@ -59,8 +59,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "listen",
         "Escuchas",
         [
-            # m-24842962: `/` is Inicio now; Menciones keeps a route of its own.
-            ("Menciones", MENTION_ICON, "/menciones", True),
+            # m-24843003 (RESULTADOS-5): Menciones and Tu página web are tabs of
+            # Resultados now; the place keeps this slot until NAV-1 orders the menu.
+            ("Resultados", "trending-up", "/resultados", True),
             # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
             ("Comentarios", "film", "/inbox", True),
             # QUA-226: the private inbox of the connected accounts. Founder's placement
@@ -89,7 +90,6 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
 NAV_LOOSE: list[Item] = [("Interesados", "user-plus", "/leads", True)]
 
 NAV_BUSINESS: list[Item] = [
-    ("Tu página web", "activity", "/clarity", True),
     ("Tu marca", "swatch-book", "/brand/kit", True),
     # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
     # the templates compose. Next to the Brand Kit — both are what the brand IS.
