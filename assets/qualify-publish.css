@@ -178,6 +178,47 @@
 }
 /* The product picture is `ui.media_thumb` now; `.q-catalog-video` below keeps the
    frame for the one case that is a <video>. */
+/* The catalog card's edit chip (request 2026-10-22): a small accent disc with the
+   pencil, lit a step more under the card's hover, with the kit's tooltip («Editar»). */
+.q-catalog-edit {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.75rem; height: 1.75rem; border-radius: 999px;
+  color: var(--accent-11); background: var(--accent-a3);
+  box-shadow: inset 0 0 0 1px var(--accent-a6);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.q-card:hover .q-catalog-edit { background: var(--accent-a5); transform: translateY(-1px); }
+/* The catalog editor (request 2026-10-22): two surface panels — the fields and the
+   media — inside the product's card, like the review page's sections. */
+.q-catalog-panel {
+  padding: 0.9rem 1rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background: var(--q-field-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+/* One media tile: the picture on top; under it, on the control surface, the format and
+   the two actions (always legible, whatever the picture). */
+.q-catalog-tile {
+  overflow: hidden;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: 0 0 0 1px var(--q-card-edge);
+}
+.q-catalog-tile .q-thumb { border-radius: 0; box-shadow: none; }
+/* Under the drag script the tile keeps its own look, not the ranking card's. */
+.q-catalog-tile.q-rank-card {
+  padding: 0;
+  border: 0;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: 0 0 0 1px var(--q-card-edge);
+  cursor: grab;
+}
+.q-catalog-tile-foot {
+  padding: 0.3rem 0.35rem 0.3rem 0.55rem;
+  border-top: 1px solid var(--q-card-edge);
+}
 .q-catalog-video {
   display: flex;
   align-items: center;

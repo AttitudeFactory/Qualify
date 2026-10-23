@@ -83,7 +83,9 @@ from .creative_state import CreativeState
 from .r2_media import BACKEND_BASE
 from .tenant import tenant_uuid
 from .ui import (
+    DragCard,
     app_shell,
+    asset_script,
     callout,
     card,
     choice_card,
@@ -3257,14 +3259,9 @@ class _DropZone(rx.el.Button):
     on_drop: rx.EventHandler[rx.event.no_args_event_spec]
 
 
-class _RankCard(rx.el.Div):
-    """A card of the influence ranking (§ request 2026-09-29). `assets/rank-drag.js`
-    moves it with pointer events and dispatches a synthetic `dragstart` on it when it is
-    lifted and a `drop` on the card it is released over — the same trick the deck's
-    `_DropZone` uses — so these two triggers are declared here."""
-
-    on_drag_start: rx.EventHandler[rx.event.no_args_event_spec]
-    on_drop: rx.EventHandler[rx.event.no_args_event_spec]
+#: A card of the influence ranking (§ request 2026-09-29): the kit's `DragCard`, which
+#: `assets/rank-drag.js` moves — the same trick the deck's `_DropZone` uses.
+_RankCard = DragCard
 
 
 #: ¿Eres influencer o una marca?'s options — (key, title, blurb). "ambas" (§ request
@@ -6467,8 +6464,7 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
     )
 
 
-def _asset_script(name: str) -> str:
-    return (Path(__file__).resolve().parent.parent / "assets" / name).read_text(encoding="utf-8")
+_asset_script = asset_script
 
 
 #: The deck's and the ranking's pointer scripts, run when their screen mounts. They used

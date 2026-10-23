@@ -1609,7 +1609,7 @@ def _catalog_product_grid() -> rx.Component:
                     rx.grid(
                         rx.foreach(CreativeState.catalog_items, _catalog_card),
                         _script_on_mount(_CATALOG_HOVER_JS),
-                        columns=rx.breakpoints(initial="2", md="3", xl="4"),
+                        columns=rx.breakpoints(initial="1", sm="2", md="3", xl="4"),
                         spacing="3",
                         width="100%",
                         role="radiogroup",

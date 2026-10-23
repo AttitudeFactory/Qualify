@@ -13,6 +13,7 @@ callers on the event loop must run them off-thread.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 from functools import cache
 from uuid import UUID
@@ -28,8 +29,10 @@ __all__ = [
     "CatalogError",
     "add_media",
     "create_product",
+    "deactivate_product",
     "list_products",
     "remove_media",
+    "reorder_media",
     "set_primary",
     "update_product",
 ]
@@ -96,6 +99,12 @@ def update_product(
     )
 
 
+def deactivate_product(tenant_id: UUID, product_id: UUID) -> None:
+    """«Eliminar producto» (request 2026-10-22): the row stays — pieces already made
+    from it keep their provenance — but it leaves the catalog and every picker."""
+    _service().update_product(tenant_id=tenant_id, product_id=product_id, is_active=False)
+
+
 def add_media(tenant_id: UUID, product_id: UUID, *, data: bytes, filename: str) -> None:
     """Normalizes (photo or clip) and stores one file. Raises `CatalogError`."""
     _service().add_media(tenant_id=tenant_id, product_id=product_id, data=data, filename=filename)
@@ -103,6 +112,15 @@ def add_media(tenant_id: UUID, product_id: UUID, *, data: bytes, filename: str) 
 
 def set_primary(tenant_id: UUID, product_id: UUID, media_id: UUID) -> None:
     _service().set_primary(tenant_id=tenant_id, product_id=product_id, media_id=media_id)
+
+
+def reorder_media(tenant_id: UUID, product_id: UUID, ordered_ids: Sequence[str]) -> None:
+    """The media in this order; the first photo becomes the primary."""
+    _service().reorder_media(
+        tenant_id=tenant_id,
+        product_id=product_id,
+        ordered_ids=tuple(UUID(media_id) for media_id in ordered_ids),
+    )
 
 
 def remove_media(tenant_id: UUID, product_id: UUID, media_id: UUID) -> None:

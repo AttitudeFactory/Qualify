@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -326,6 +327,26 @@ class CatalogService:
                 raise UnknownProduct(f"media {media_id} of product {product_id}")
             for m in rows:
                 m.is_primary = m.id == media_id and m.media_type == MEDIA_TYPE_IMAGE
+
+    def reorder_media(
+        self, *, tenant_id: UUID, product_id: UUID, ordered_ids: Sequence[UUID]
+    ) -> None:
+        """The product's media in `ordered_ids` order — every one of its media, once —
+        and the first photo among them becomes the primary: the order IS the choice
+        (request 2026-10-22). A list that is not exactly the product's media is refused."""
+        with tenant_session(tenant_id) as session:
+            rows = list(
+                session.scalars(select(ProductMedia).where(ProductMedia.product_id == product_id))
+            )
+            by_id = {m.id: m for m in rows}
+            if len(ordered_ids) != len(by_id) or set(ordered_ids) != set(by_id):
+                raise UnknownProduct(f"media order of product {product_id}")
+            first_photo = next(
+                (mid for mid in ordered_ids if by_id[mid].media_type == MEDIA_TYPE_IMAGE), None
+            )
+            for position, mid in enumerate(ordered_ids):
+                by_id[mid].position = position
+                by_id[mid].is_primary = mid == first_photo
 
     def remove_media(self, *, tenant_id: UUID, product_id: UUID, media_id: UUID) -> None:
         """Removes the ROW; the object stays (provenance of pieces already rendered)."""

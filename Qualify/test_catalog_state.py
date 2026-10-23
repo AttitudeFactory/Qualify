@@ -126,7 +126,11 @@ async def test_the_form_refuses_an_empty_name_before_any_call(monkeypatch) -> No
     assert calls == []
 
 
-async def test_creating_a_product_closes_the_form_and_opens_the_product(monkeypatch) -> None:
+async def test_creating_a_product_closes_the_form_and_leaves_the_editor_closed(
+    monkeypatch,
+) -> None:
+    """Request 2026-10-22: after «Crear producto» only the card shows; the editor
+    opens when the operator taps it, not on its own."""
     created: list[dict[str, Any]] = []
 
     def fake_create(tenant_id: UUID, brand_id: UUID, user_id: UUID | None, **kwargs: Any) -> UUID:
@@ -143,7 +147,7 @@ async def test_creating_a_product_closes_the_form_and_opens_the_product(monkeypa
     state.new_name = " Shawarma mixto "
     state.new_category = "shawarmas"
 
-    await _drain(CatalogState.submit_new_product.fn(state))
+    events = await _drain(CatalogState.submit_new_product.fn(state))
 
     assert created and created[0]["tenant_id"] == _TENANT_ID
     # m-24803289: the price is an optional field again. Nothing was typed in this form,
@@ -151,9 +155,9 @@ async def test_creating_a_product_closes_the_form_and_opens_the_product(monkeypa
     assert created[0]["price_amount"] is None and created[0]["price_currency"] == ""
     assert state.form_open is False and state.saving is False
     assert state.new_name == "" and state.new_category == ""
-    assert state.selected_id == str(_PRODUCT_ID)
-    assert state.edit_name == "Shawarma mixto"
-    assert "creado" in state.notice.lower()
+    assert state.selected_id == "" and state.selected is None
+    # said in a toast (request 2026-10-22), not in a band at the top of the page
+    assert len(events) == 1 and "creado" in str(events[0]) and "success" in str(events[0])
 
 
 async def test_files_dropped_in_the_form_follow_the_new_product(monkeypatch, tmp_path) -> None:
@@ -169,14 +173,101 @@ async def test_files_dropped_in_the_form_follow_the_new_product(monkeypatch, tmp
     state.new_files = ["a.jpg", "b.mp4"]
     state.remove_new_file(1)  # taken out before creating: its staged file goes too
     assert state.new_files == ["a.jpg"] and not second.exists()
+    # the form draws what is left (request 2026-10-22: the picture, not the name)
+    assert [row["name"] for row in state.new_previews] == ["a.jpg"]
     state.new_name = "Smash"
 
     events = await _drain(CatalogState.submit_new_product.fn(state))
 
-    assert events == [CatalogState.ingest_pending]
+    assert events[-1] == CatalogState.ingest_pending and "fotos" in str(events[0])
     assert state._pending == [[str(first), "a.jpg", str(_PRODUCT_ID)]]
     assert state.upload_total == 1
-    assert state.new_files == [] and state.selected_id == str(_PRODUCT_ID)
+    assert state.new_files == [] and state.selected_id == ""
+
+
+def _media(media_id: str, *, primary: bool = False, position: int = 0) -> ProductMediaVM:
+    return ProductMediaVM(
+        media_id=media_id,
+        media_type="image",
+        key=f"uploads/t/catalog/p/{media_id}.jpg",
+        filename=f"{media_id}.jpg",
+        is_primary=primary,
+        position=position,
+        meta_label="1080×1350",
+    )
+
+
+def test_dropping_a_tile_on_another_moves_it_there_and_asks_for_the_sync() -> None:
+    """Request 2026-10-22: order the photos by dragging; the first is the primary."""
+    state = CatalogState()
+    state.products = [
+        _product(
+            media=(_media("m1", primary=True), _media("m2", position=1), _media("m3", position=2))
+        )
+    ]
+    state.selected_id = str(_PRODUCT_ID)
+    state.media_pick("m3")
+    assert state.media_dragging == "m3"
+    spec = state.media_drop("m1")
+    assert spec is not None and state.media_dragging == ""
+    assert state._media_order == ["m3", "m1", "m2"]
+    # «Hacer principal» is the same move, to the front
+    assert state.make_primary("m2") is not None
+    assert state._media_order == ["m2", "m1", "m3"]
+    # a drop on itself, or of nothing, moves nothing
+    state.media_pick("m1")
+    assert state.media_drop("m1") is None and state.media_drop("m2") is None
+
+
+async def test_the_sync_persists_the_order_and_says_so(monkeypatch) -> None:
+    ordered: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(catalog_state_module, "reorder_media", lambda *a: ordered.append(a))
+    monkeypatch.setattr(
+        catalog_state_module,
+        "list_products",
+        lambda *_: (_product(media=(_media("m2", primary=True), _media("m1", position=1))),),
+    )
+    state = _state(monkeypatch)
+    state.products = [_product(media=(_media("m1", primary=True), _media("m2", position=1)))]
+    state.selected_id = str(_PRODUCT_ID)
+    state._media_order = ["m2", "m1"]
+    events = await _drain(CatalogState.sync_media_order.fn(state))
+    assert ordered == [(_TENANT_ID, _PRODUCT_ID, ["m2", "m1"])]
+    assert state.media_busy is False and state._media_order == []
+    assert state.selected is not None and state.selected.media[0].media_id == "m2"
+    assert len(events) == 1 and "success" in str(events[0])
+
+
+def test_a_staged_file_previews_through_the_upload_store(monkeypatch, tmp_path: Path) -> None:
+    """A JPG parked under the upload dir is drawn from its key; a HEIC or a clip gets the
+    frame with a glyph instead (a browser cannot draw them before the ingest)."""
+    import reflex as rx
+
+    monkeypatch.setattr(rx, "get_upload_dir", lambda: tmp_path)
+    staged = tmp_path / "uploads" / "t" / "catalog_staging"
+    staged.mkdir(parents=True)
+    jpg = catalog_state_module._preview_row(str(staged / "x_a.jpg"), "a.jpg")
+    assert jpg == {"name": "a.jpg", "key": "uploads/t/catalog_staging/x_a.jpg", "kind": "image"}
+    assert catalog_state_module._preview_row(str(staged / "y.HEIC"), "y.HEIC")["kind"] == "file"
+    assert catalog_state_module._preview_row(str(staged / "z.mov"), "z.mov")["kind"] == "video"
+    # parked outside the upload dir: nothing to preview, never a broken picture
+    assert catalog_state_module._preview_row("C:/elsewhere/a.jpg", "a.jpg")["kind"] == "file"
+
+
+async def test_deleting_the_open_product_closes_the_editor_and_says_so(monkeypatch) -> None:
+    """Request 2026-10-22: «Eliminar» in the editor — the product leaves the list."""
+    gone: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(catalog_state_module, "deactivate_product", lambda *a: gone.append(a))
+    monkeypatch.setattr(catalog_state_module, "list_products", lambda *_: ())
+    state = _state(monkeypatch)
+    state.products = [_product()]
+    state.select_product(str(_PRODUCT_ID))
+    state.ask_delete_product()
+    assert state.delete_product_name == "Shawarma mixto"
+    events = await _drain(CatalogState.confirm_delete_product.fn(state))
+    assert gone == [(_TENANT_ID, _PRODUCT_ID)]
+    assert state.selected_id == "" and state.products == [] and state.delete_product_name == ""
+    assert len(events) == 1 and "eliminado" in str(events[0])
 
 
 def test_closing_the_form_drops_the_staged_files(tmp_path) -> None:
@@ -224,7 +315,7 @@ async def test_saving_a_product_sends_the_price_the_editor_shows(monkeypatch) ->
     assert (state.edit_price, state.edit_currency) == ("12.5", "USD")
     state.edit_name = "Shawarma XL"
 
-    await CatalogState.save_product.fn(state)
+    await _drain(CatalogState.save_product.fn(state))
 
     assert updated == [
         {
@@ -239,6 +330,30 @@ async def test_saving_a_product_sends_the_price_the_editor_shows(monkeypatch) ->
     assert state.edit_saving is False and state.edit_error == ""
 
 
+async def test_saving_a_product_closes_the_editor(monkeypatch) -> None:
+    """Request 2026-10-22: «Guardar cambios» closes the editor and leaves the card."""
+    updated: list[dict[str, Any]] = []
+    state = _editor(monkeypatch, updated, _product())
+    assert state.selected_id == str(_PRODUCT_ID)
+
+    events = await _drain(CatalogState.save_product.fn(state))
+
+    assert updated and state.selected_id == "" and state.selected is None
+    assert state.edit_saving is False and state.edit_error == ""
+    assert len(events) == 1 and "guardados" in str(events[0])
+
+
+async def test_a_refused_save_keeps_the_editor_open(monkeypatch) -> None:
+    updated: list[dict[str, Any]] = []
+    state = _editor(monkeypatch, updated, _product())
+    state.edit_name = "   "
+
+    await _drain(CatalogState.save_product.fn(state))
+
+    assert updated == [] and state.selected_id == str(_PRODUCT_ID)
+    assert "nombre" in state.edit_error.lower()
+
+
 async def test_clearing_the_price_field_removes_the_price(monkeypatch) -> None:
     """Emptying the field is the one way the screen drops a price, and it is a
     deliberate act: the provider is told `None`, not "leave it as it was"."""
@@ -248,7 +363,7 @@ async def test_clearing_the_price_field_removes_the_price(monkeypatch) -> None:
     state.set_edit_price("")
     state.set_edit_currency("Sin moneda")
 
-    await CatalogState.save_product.fn(state)
+    await _drain(CatalogState.save_product.fn(state))
 
     assert updated[0]["price_amount"] is None and updated[0]["price_currency"] == ""
 
@@ -261,7 +376,7 @@ async def test_a_price_that_cannot_be_read_exactly_is_refused_before_saving(
     state = _editor(monkeypatch, updated, _product())
     state.set_edit_price("1.234.56")
 
-    await CatalogState.save_product.fn(state)
+    await _drain(CatalogState.save_product.fn(state))
 
     assert updated == [] and "no se entiende" in state.edit_error
     assert state.edit_saving is False
