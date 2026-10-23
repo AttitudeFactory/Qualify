@@ -76,8 +76,9 @@ _TOAST_MS = 4000
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
 _STAGING = "catalog_staging"
 #: A parked file older than this was orphaned (a closed tab, a crashed ingest): the next
-#: `load_catalog` deletes it.
-_STAGING_TTL_S = 6 * 60 * 60
+#: `load_catalog` deletes it. A day, not hours: closing «Agregar producto» halfway keeps
+#: the photos already chosen (N6), so a reload must not sweep them from under the form.
+_STAGING_TTL_S = 24 * 60 * 60
 
 
 class CatalogState(rx.State):
@@ -192,6 +193,22 @@ class CatalogState(rx.State):
         return f"/create?producto={self.created_product_id}" if self.created_product_id else ""
 
     @rx.var
+    def created_ready(self) -> bool:
+        """«Crear publicación» is live only once the new product's photos are in: saved
+        with files, nothing still uploading or queued, and no upload failure."""
+        return (
+            self.created_has_media
+            and not self.uploading
+            and self.upload_total == 0
+            and self.upload_error == ""
+        )
+
+    @rx.var
+    def created_preparing(self) -> bool:
+        """The new product's photos are still on their way: «Preparando tu foto…»."""
+        return self.created_has_media and (self.uploading or self.upload_total > 0)
+
+    @rx.var
     def upload_progress(self) -> int:
         if not self.upload_total:
             return 0
@@ -295,12 +312,23 @@ class CatalogState(rx.State):
         self.form_open = False
         self.form_error = ""
         self.new_media_error = ""
-        self._drop_new_files()
         if self.new_step == STEP_DONE:
+            self._drop_new_files()
             self._reset_new_form()
         else:
-            # what was typed stays for the next time the form opens; the step does not
+            # N6: what was typed AND the photos already chosen stay for the next time
+            # the form opens (the photos are the hardest part to repeat); the step does not
             self.new_step = STEP_PHOTO
+
+    @rx.event
+    def upload_photo_for_created(self) -> None:
+        """«Subirle una foto» from «Listo»: close the drawer and open the new product's
+        editor, where its photos go (on a phone the list is hidden behind the drawer)."""
+        product_id = self.created_product_id
+        self.close_form()
+        if product_id:
+            self.selected_id = ""
+            self.select_product(product_id)
 
     @rx.event
     def set_form_open(self, value: bool) -> None:

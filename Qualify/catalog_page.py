@@ -337,7 +337,7 @@ def _done_step() -> rx.Component:
             rx.hstack(
                 tone_badge(MISSING_PHOTO, "warn", icon="camera"),
                 rx.text(
-                    "Súbela cuando quieras: toca el producto en la lista.",
+                    "Súbele una foto para poder usarlo en tus publicaciones.",
                     size="2",
                     color=T.TEXT_MUTED,
                 ),
@@ -347,6 +347,10 @@ def _done_step() -> rx.Component:
             ),
         ),
         rx.cond(CatalogState.uploading, _upload_progress()),
+        rx.cond(
+            CatalogState.created_has_media & (CatalogState.upload_error != ""),
+            callout(CatalogState.upload_error, "error"),
+        ),
         spacing="3",
         width="100%",
         align_items="start",
@@ -415,8 +419,10 @@ def _new_product_footer() -> rx.Component:
                         on_click=CatalogState.add_another_product,
                         **big,
                     ),
+                    # Live only once the photos are in; while they upload it says so;
+                    # with no photo (or a failed upload) it leads straight to adding one.
                     rx.cond(
-                        CatalogState.created_has_media,
+                        CatalogState.created_ready,
                         rx.link(
                             rx.button(
                                 rx.icon("sparkles", size=T.ICON_SM),
@@ -427,12 +433,22 @@ def _new_product_footer() -> rx.Component:
                             href=CatalogState.created_href,
                             width="100%",
                         ),
-                        rx.button(
-                            rx.icon("camera", size=T.ICON_SM),
-                            "Primero súbele una foto",
-                            type="button",
-                            disabled=True,
-                            **big,
+                        rx.cond(
+                            CatalogState.created_preparing,
+                            rx.button(
+                                rx.icon("hourglass", size=T.ICON_SM),
+                                "Preparando tu foto…",
+                                type="button",
+                                disabled=True,
+                                **big,
+                            ),
+                            rx.button(
+                                rx.icon("camera", size=T.ICON_SM),
+                                "Subirle una foto",
+                                type="button",
+                                on_click=CatalogState.upload_photo_for_created,
+                                **big,
+                            ),
                         ),
                     ),
                 ),
@@ -459,6 +475,9 @@ def _new_product_drawer() -> rx.Component:
                     icons=list(NEW_PRODUCT_STEP_ICONS),
                 ),
                 class_name="q-stepper-wrap",
+                # On a phone «Paso N de 3» and the heading say where the owner is: the
+                # bar would push the tap area below the fold.
+                display=rx.breakpoints(initial="none", sm="block"),
             ),
             rx.vstack(
                 rx.text(CatalogState.new_step_counter, size="2", color=T.TEXT_MUTED),
@@ -489,7 +508,8 @@ def _new_product_drawer() -> rx.Component:
 def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
     """One file waiting in the form, as the editor will show it (request 2026-10-22: the
     picture, not its name): the thumbnail — or the kit's frame with a clip / file glyph —
-    and under it the name and the × that takes it out before anything is uploaded."""
+    and under it «Quitar», which takes it out before anything is uploaded. The phone's
+    file name is never shown (it means nothing to the owner); it stays for screen readers."""
     return rx.box(
         media_thumb(
             rx.get_upload_url(row["key"]),
@@ -501,30 +521,18 @@ def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
             icon=rx.cond(row["kind"] == "video", "film", "file-image"),
         ),
         rx.hstack(
-            rx.text(
-                row["name"],
-                size="1",
-                color=T.TEXT_MUTED,
-                white_space="nowrap",
-                overflow="hidden",
-                text_overflow="ellipsis",
-                min_width="0",
-                title=row["name"],
-            ),
             rx.spacer(),
-            rx.tooltip(
-                rx.icon_button(
-                    rx.icon("x", size=T.ICON_SM),
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="3",
-                    type="button",
-                    min_width=_TOUCH_MIN,
-                    min_height=_TOUCH_MIN,
-                    on_click=CatalogState.remove_new_file(index),
-                    aria_label="Quitar " + row["name"],
-                ),
-                content="Quitar",
+            rx.button(
+                rx.icon("x", size=T.ICON_SM),
+                rx.text("Quitar", size="1"),
+                variant="ghost",
+                color_scheme="gray",
+                size="3",
+                type="button",
+                min_width=_TOUCH_MIN,
+                min_height=_TOUCH_MIN,
+                on_click=CatalogState.remove_new_file(index),
+                aria_label="Quitar " + row["name"],
             ),
             class_name="q-catalog-tile-foot",
             align="center",

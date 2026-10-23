@@ -281,14 +281,56 @@ async def test_deleting_the_open_product_closes_the_editor_and_says_so(monkeypat
     assert len(events) == 1 and "eliminado" in str(events[0])
 
 
-def test_closing_the_form_drops_the_staged_files(tmp_path) -> None:
+def test_closing_midway_keeps_the_chosen_photos(tmp_path) -> None:
+    """N6: the photos are the hardest part to repeat — closing halfway keeps them."""
+    staged = tmp_path / "a.jpg"
+    staged.write_bytes(b"x")
+    state = CatalogState()
+    state.open_form()
+    state._new_pending = [[str(staged), "a.jpg"]]
+    state.new_files = ["a.jpg"]
+    state.close_form()
+    assert state.new_files == ["a.jpg"] and staged.exists()
+    assert state._new_pending == [[str(staged), "a.jpg"]]
+
+
+def test_add_another_drops_the_staged_files(tmp_path) -> None:
     staged = tmp_path / "a.jpg"
     staged.write_bytes(b"x")
     state = CatalogState()
     state._new_pending = [[str(staged), "a.jpg"]]
     state.new_files = ["a.jpg"]
-    state.close_form()
+    state.add_another_product()
     assert state.new_files == [] and not staged.exists()
+
+
+def test_listo_without_a_photo_leads_to_adding_one(monkeypatch) -> None:
+    monkeypatch.setattr(catalog_state_module, "list_products", lambda *a: (_product(),))
+    state = CatalogState()
+    state.products = [_product()]
+    state.form_open = True
+    state.new_step = catalog_state_module.STEP_DONE
+    state.created_product_id = str(_PRODUCT_ID)
+    state.created_name = "Shawarma mixto"
+    assert not state.created_ready and not state.created_preparing
+    state.upload_photo_for_created()
+    assert not state.form_open and state.created_product_id == ""
+    assert state.selected_id == str(_PRODUCT_ID)
+
+
+def test_crear_publicacion_waits_for_the_upload_to_finish() -> None:
+    state = CatalogState()
+    state.created_has_media = True
+    state.upload_total = 1  # queued, ingest not started yet
+    assert state.created_preparing and not state.created_ready
+    state.uploading = True
+    assert state.created_preparing and not state.created_ready
+    state.uploading = False
+    state.upload_total = 0
+    state.upload_error = "a.jpg: no se pudo procesar"
+    assert not state.created_preparing and not state.created_ready
+    state.upload_error = ""
+    assert state.created_ready
 
 
 async def test_the_services_spanish_refusal_shows_as_the_form_error(monkeypatch) -> None:
@@ -568,7 +610,10 @@ def test_the_photo_comes_first_and_is_never_a_gate() -> None:
     state = CatalogState()
     state.open_form()
     assert state.form_open and state.new_step == catalog_state_module.STEP_PHOTO
-    assert state.new_step_counter == "Paso 1 de 3" and state.new_step_title == "La foto"
+    assert (
+        state.new_step_counter == "Paso 1 de 3"
+        and state.new_step_title == "Muestra cómo se ve tu producto"
+    )
     state.next_new_step()  # «Sin foto por ahora»
     assert state.new_step == catalog_state_module.STEP_NAME
     assert state.new_step_title == "¿Cómo se llama?"

@@ -149,7 +149,7 @@ STEP_PHOTO, STEP_NAME, STEP_DONE = 0, 1, 2
 NEW_PRODUCT_STEPS: tuple[str, ...] = ("La foto", "El nombre", "Listo")
 NEW_PRODUCT_STEP_ICONS: tuple[str, ...] = ("camera", "pencil-line", "check")
 NEW_PRODUCT_STEP_TITLES: tuple[str, ...] = (
-    "La foto",
+    "Muestra cómo se ve tu producto",
     "¿Cómo se llama?",
     "Listo",
 )
