@@ -4,9 +4,10 @@ real `ClaudeDraftGenerator` over a fake Anthropic client. No network, no databas
 
 What is pinned: the gate runs before any model call; the model never receives a price
 (D1) and a price token in its text forces review; availability/store/location/hours force
-review (D2); an empty catalog, an unpriced price question, an ungrounded claim and an
-unreliable class force review; grounding + provenance are stored with product ids;
-`regenerate` replaces the live draft atomically; nothing here ever posts a reply."""
+review (D2); an empty catalog, an unpriced price question and an ungrounded claim force
+review, while an unreliable class is only a recorded note; grounding + provenance are
+stored with product ids; `regenerate` replaces the live draft atomically; nothing here
+ever posts a reply."""
 
 from __future__ import annotations
 
@@ -28,6 +29,8 @@ from qualify_api.replies.public_drafts import (
     PUBLIC_GENERATOR_VERSION,
     PUBLIC_GENERATOR_VERSION_PREFIX,
     PUBLIC_SYSTEM_PROMPT,
+    is_blocking_reason,
+    needs_review_for,
     public_context,
 )
 from qualify_api.replies.repository import CandidateComment, MemoryReplyRepository
@@ -260,12 +263,45 @@ def test_unvalidated_classes_always_need_review(intent_class: str) -> None:
     assert "no es un dato validado" in gen.calls[0]["context"]
 
 
-def test_an_unreliable_class_forces_review_without_blocking_the_draft() -> None:
+def test_an_unreliable_class_alone_is_a_note_not_a_review() -> None:
+    """Founder decision (2026-10-23): `unreliable:<class>` is recorded for the screen to
+    show, but on its own it does not make the draft «Requiere revisión»."""
     reliable = {**ALL_RELIABLE, IntentClass.PRODUCT: False}
     gen = FakeGroundedGenerator()
     draft = _draft_one(_candidate(("product",)), gen, reliable=reliable)
-    assert draft.needs_review is True
+    assert draft.needs_review is False
     assert draft.grounding["review_reasons"] == ["unreliable:product"]
+
+
+def test_an_unreliable_class_next_to_a_blocking_reason_still_needs_review() -> None:
+    reliable = {**ALL_RELIABLE, IntentClass.HOURS: False}
+    draft = _draft_one(_candidate(("hours",)), FakeGroundedGenerator(), reliable=reliable)
+    assert draft.needs_review is True
+    assert draft.grounding["review_reasons"] == ["unvalidated:hours", "unreliable:hours"]
+
+
+@pytest.mark.parametrize(
+    ("code", "blocking"),
+    [
+        ("model_unsupported", True),
+        ("price_token", True),
+        ("empty_catalog", True),
+        ("price_unknown", True),
+        ("unvalidated:hours", True),
+        ("unreliable:product", False),
+        ("unreliable:", False),
+        ("something_new", True),  # unknown codes fail closed
+        ("", True),
+    ],
+)
+def test_is_blocking_reason(code: str, blocking: bool) -> None:
+    assert is_blocking_reason(code) is blocking
+
+
+def test_needs_review_for() -> None:
+    assert needs_review_for([]) is False
+    assert needs_review_for(["unreliable:product", "unreliable:models"]) is False
+    assert needs_review_for(["unreliable:product", "price_token"]) is True
 
 
 def test_grounding_and_provenance_are_stored_with_product_ids() -> None:

@@ -53,6 +53,7 @@ from qualify_api.replies.public_drafts import (
     comment_message,
     cost_decimal,
     grounding_record,
+    needs_review_for,
     parse_classes,
     public_context,
     review_reasons,
@@ -271,7 +272,7 @@ class ReplyService:
             self._grounded.version,
             DraftProvenance(
                 grounding=grounding_record(public_view, reasons),
-                needs_review=bool(reasons),
+                needs_review=needs_review_for(reasons),
                 unsupported_claims=tuple(proposal.unsupported_claims),
                 model_id=proposal.model_id,
                 model_revision=proposal.model_revision,
