@@ -349,6 +349,11 @@ eval-escenas *args:
 eval-escenas-imagenes:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/export_images.py
 
+# ATENDER-4a (m-24848532): comment triage (Haiku 5.5) + public drafts for any comment.
+# `--agreement` is free (κ only); `--classify`, `--baseline` and `--drafts` call Claude.
+eval-replies *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/replies_ai/run_experiment.py {{args}}
+
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
 

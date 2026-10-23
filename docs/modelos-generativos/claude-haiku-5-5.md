@@ -49,3 +49,22 @@
 - **No es un golden set:** no hay medición de calidad por clase; el control de calidad es la revisión humana de cada borrador y los motivos de revisión que calcula el código.
 
 > Cuando la bitácora central (`docs/modelos-generativos/pruebas.md`, hoy sin commitear en otra rama) llegue a `main`, copiar esta entrada ahí.
+
+## Prueba ATENDER4A-001 — clasificar cualquier comentario y responderlo (m-24848532) — 2026-10-23
+
+- **Quién:** el agente data-scientist-fde (Claude Code), dentro de la épica UX m-24842956. El fundador no estaba. Clave: `QUALIFY_ANTHROPIC_API_KEY` del `.env` local.
+- **Qué se probó:**
+  - El clasificador `replies/triage.py` (`ClaudeCommentTriager`): una sola llamada devuelve sentimiento (`pos`/`neu`/`neg`), tipo (`praise`/`question`/`complaint`/`other`) y si necesita respuesta. Prompt **`atender4a.1`**, esfuerzo `low`, herramienta estricta `registrar_comentarios`, `tool_choice: auto`, lotes de 25. Es el candidato para reemplazar a robertuito.
+  - Los borradores `replies/any_comment_drafts.py`, con el prompt **`atender4a.1:claude-haiku-5-5`** sobre `ClaudeDraftGenerator`.
+  - La línea base fue el clasificador de intención `intent-claude-v2`.
+- **Material:** 80 comentarios **sintéticos** (`packages/api/evals/replies_ai/synthetic_smoke.jsonl`, 40 en `dev` y 40 en `test`) de tres negocios ficticios de CO/VE/UY. Un solo etiquetador, el mismo agente que escribió el prompt, así que sirve para probar las herramientas y **no mide calidad**.
+- **Resultado en `test`:**
+  - Todas las clases pasaron sus umbrales: precisión ≥ 0,88; cobertura de `neg` 1,00; «necesita respuesta» con cobertura 1,00 y precisión 0,95.
+  - La línea base solo llegó a una cobertura de 0,55 en «necesita respuesta»: no detectó 9 de las 10 quejas.
+  - Borradores: 0 precios fuera del catálogo, 0 marcas de tercera persona, 0 errores. La revisión humana sigue pendiente.
+- **Costo:** US$0,000019 por comentario clasificado y US$0,00017 por borrador; unos US$0,04 por cliente al mes con 300 comentarios. La prueba completa costó ≈ US$0,010.
+- **Hallazgos:**
+  - No conviene preparar borrador para el tipo `other`: el modelo le respondió al spam y a etiquetas entre amigos.
+  - Derivar a mensaje privado vuelve a disparar `model_unsupported` (igual que en FASEB-001).
+  - Los borradores repiten «Gracias por escribirnos» y no usan la voz de la marca.
+- **Estado:** **PENDIENTE de datos reales**. El procedimiento, los umbrales y lo que tiene que dar el fundador están en [respuestas-comentarios-medicion.md](../respuestas-comentarios-medicion.md).
