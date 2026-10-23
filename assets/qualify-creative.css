@@ -38,6 +38,22 @@
 }
 /* Desktop: the media stays in view while the copy scrolls beside it. */
 @media (min-width: 768px) { .q-rv-stage { position: sticky; top: 1rem; } }
+/* The Variaciones tile's ⋯ chip and its hover hint (request 2026-10-22: the hint must be
+   visible; a native title is not). Pure CSS, so it coexists with the dropdown trigger. */
+.q-angle-more { position: relative; }
+.q-angle-more[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute; right: 0; bottom: calc(100% + 6px);
+  white-space: nowrap; pointer-events: none;
+  padding: 0.25rem 0.55rem; border-radius: var(--q-radius-control);
+  font-size: 0.72rem; font-weight: 500; line-height: 1.2;
+  color: var(--gray-1); background: var(--gray-12);
+}
+/* Capped and centred while the layout is one column (phones, or the instant before the
+   grid's breakpoint resolves after a client-side navigation — 2026-10-22: «una imagen
+   gigante que tapa todo»): a 4:5 picture never spans a desktop page. */
+.q-rv-stage { width: 100%; max-width: 30rem; margin-inline: auto; }
+@media (min-width: 768px) { .q-rv-stage { max-width: none; margin-inline: 0; } }
 .q-rv-media {
   display: block;
   width: 100%;
@@ -237,6 +253,10 @@
 .q-gcard-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.6rem 0.9rem 0.9rem; }
 .q-gcard-actions > :only-child { grid-column: 1 / -1; }
 .q-gcard-actions--review { grid-template-columns: 1fr 1fr; }
+/* An approved piece not yet scheduled (2026-10-22): the ✕ beside «Ver POST» on the first
+   row, «Programar» whole on the second — three in one row clipped the verb. */
+.q-gcard-actions--ready { grid-template-columns: auto 1fr; }
+.q-gcard-actions--ready > :last-child { grid-column: 1 / -1; }
 .q-gcard-actions--review > :last-child { grid-column: 1 / -1; }
 
 

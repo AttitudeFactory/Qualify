@@ -16,10 +16,26 @@ it. Every state rule is in `variations_state.py`; every label and tone in
 from __future__ import annotations
 
 import reflex as rx
-from qualify_creative.angles import COMPOSITION_MAX, SCENE_MAX
+from qualify_creative.angles import (
+    COMPOSITION_MAX,
+    CTA_MAX,
+    HOOK_MAX,
+    RATIONALE_MAX,
+    SCENE_MAX,
+    TITLE_MAX,
+)
 
 from .r2_media import BACKEND_BASE
-from .ui import callout, card, choice_card, choice_card_check, empty_state, media_thumb, tone_badge
+from .ui import (
+    callout,
+    card,
+    choice_card,
+    choice_card_check,
+    empty_state,
+    loading_spinner,
+    media_thumb,
+    tone_badge,
+)
 from .ui import tokens as T
 from .variations_state import VariationsState
 
@@ -159,14 +175,16 @@ def _product_facts() -> rx.Component:
                 rx.text(VariationsState.product_name, size="2", weight="bold"),
                 rx.spacer(),
                 rx.button(
+                    rx.icon("arrow-left-right", size=14),
                     "Cambiar producto",
-                    variant="ghost",
+                    variant="soft",
                     color_scheme="gray",
                     size="1",
                     on_click=VariationsState.start_over,
                 ),
                 spacing="2",
                 align="center",
+                wrap="wrap",
                 width="100%",
             ),
             rx.hstack(
@@ -268,6 +286,7 @@ def _plan_step() -> rx.Component:
                     ),
                     spacing="3",
                     align="center",
+                    wrap="wrap",
                     width="100%",
                 ),
                 rx.text(VariationsState.plan_note, size="1", color=T.TEXT_MUTED),
@@ -340,86 +359,17 @@ def _angle_preview(angle: rx.Var) -> rx.Component:
     )
 
 
+def _menu_item(icon: str, label: str, on_click: object, **props: object) -> rx.Component:
+    return rx.menu.item(rx.icon(icon, size=T.ICON_SM), label, on_click=on_click, **props)
+
+
 def _angle_actions(angle: rx.Var) -> rx.Component:
+    """«Aprobar» is the tile's one button. Everything else waits under one icon with a
+    tooltip (request 2026-10-22: five buttons in a row on every tile read as noise), in
+    the kit's overlay material; each entry shows only while the angle allows it."""
     busy = VariationsState.busy_angle_id == angle.id
     return rx.hstack(
         rx.spacer(),
-        rx.cond(
-            angle.can_edit,
-            rx.button(
-                rx.icon("pencil", size=14),
-                "Editar escenario",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                disabled=busy,
-                on_click=VariationsState.open_editor(angle.id),
-            ),
-        ),
-        rx.cond(
-            angle.can_discard,
-            rx.button(
-                rx.icon("circle-x", size=14),
-                "Descartar",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                disabled=busy,
-                on_click=VariationsState.discard_angle(angle.id),
-            ),
-        ),
-        rx.cond(
-            angle.can_restore,
-            rx.button(
-                rx.icon("undo-2", size=14),
-                "Recuperar",
-                variant="soft",
-                size="1",
-                disabled=busy,
-                on_click=VariationsState.restore_angle(angle.id),
-            ),
-        ),
-        rx.cond(
-            angle.can_retry,
-            rx.button(
-                rx.icon("refresh-cw", size=14),
-                "Reintentar",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                disabled=busy,
-                on_click=VariationsState.retry_angle(angle.id),
-            ),
-        ),
-        rx.cond(
-            angle.can_regenerate,
-            rx.button(
-                rx.icon("refresh-cw", size=14),
-                "Regenerar",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                disabled=busy,
-                on_click=VariationsState.regenerate_angle(angle.id),
-                title="Otra toma del mismo escenario",
-            ),
-        ),
-        rx.cond(
-            angle.draft_id != "",
-            rx.link(
-                rx.button(
-                    rx.icon("eye", size=14),
-                    "Ver pieza",
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="1",
-                ),
-                href="/drafts/" + angle.draft_id,
-                display="inline-flex",
-                align_items="center",
-                underline="none",
-            ),
-        ),
         rx.cond(
             angle.can_approve,
             rx.button(
@@ -430,10 +380,95 @@ def _angle_actions(angle: rx.Var) -> rx.Component:
                 on_click=VariationsState.approve_angle(angle.id),
             ),
         ),
+        # put aside / take up, and delete — one tap each (request 2026-10-22: not
+        # buried in the menu; «eliminar es eliminar», nothing to recover)
+        rx.cond(
+            angle.can_save,
+            rx.tooltip(
+                rx.icon_button(
+                    rx.icon("bookmark", size=T.ICON_SM),
+                    variant="soft",
+                    color_scheme="gray",
+                    size="1",
+                    disabled=busy,
+                    on_click=VariationsState.save_angle(angle.id),
+                    aria_label="Guardar para después",
+                ),
+                content="Guardar para después",
+            ),
+        ),
+        rx.cond(
+            angle.saved,
+            rx.tooltip(
+                rx.icon_button(
+                    rx.icon("bookmark-check", size=T.ICON_SM),
+                    variant="soft",
+                    size="1",
+                    disabled=busy,
+                    on_click=VariationsState.unsave_angle(angle.id),
+                    aria_label="Volver a la revisión",
+                ),
+                content="Volver a la revisión",
+            ),
+        ),
+        rx.cond(
+            angle.can_discard,
+            rx.tooltip(
+                rx.icon_button(
+                    rx.icon("trash-2", size=T.ICON_SM),
+                    variant="soft",
+                    size="1",
+                    disabled=busy,
+                    on_click=VariationsState.discard_angle(angle.id),
+                    aria_label="Eliminar",
+                    **T.tone_scheme("error"),
+                ),
+                content="Eliminar",
+            ),
+        ),
+        rx.menu.root(
+            # Reflex only accepts the trigger as the root's direct child, and a Radix
+            # tooltip inside the trigger would swallow the trigger's props — so the hover
+            # hint is a CSS tooltip (`.q-angle-more[data-tip]`) on a visible soft chip.
+            rx.menu.trigger(
+                rx.icon_button(
+                    rx.icon("ellipsis-vertical", size=T.ICON_SM),
+                    variant="soft",
+                    color_scheme="gray",
+                    size="1",
+                    disabled=busy,
+                    aria_label="Más acciones",
+                    class_name="q-angle-more",
+                    custom_attrs={"data-tip": "Más acciones"},
+                ),
+            ),
+            rx.menu.content(
+                rx.cond(
+                    angle.draft_id != "",
+                    _menu_item("eye", "Ver pieza", rx.redirect("/drafts/" + angle.draft_id)),
+                ),
+                rx.cond(
+                    angle.can_edit,
+                    _menu_item("pencil", "Editar escenario", VariationsState.open_editor(angle.id)),
+                ),
+                rx.cond(
+                    angle.can_regenerate,
+                    _menu_item(
+                        "refresh-cw",
+                        "Regenerar: otra toma",
+                        VariationsState.regenerate_angle(angle.id),
+                    ),
+                ),
+                rx.cond(
+                    angle.can_retry,
+                    _menu_item("refresh-cw", "Reintentar", VariationsState.retry_angle(angle.id)),
+                ),
+                align="end",
+            ),
+        ),
         spacing="2",
         align="center",
         width="100%",
-        wrap="wrap",
     )
 
 
@@ -445,12 +480,17 @@ def _angle_card(angle: rx.Var) -> rx.Component:
                 rx.text(angle.position.to_string() + ".", size="2", color=T.TEXT_FAINT),
                 rx.text(angle.title, size="2", weight="bold"),
                 rx.spacer(),
+                rx.cond(angle.in_flight, loading_spinner("sm")),
                 # once a piece exists its own state is the truth; the angle's own
                 # label would read «En generación» next to «Listo para revisar»
                 rx.cond(
-                    angle.draft_label != "",
-                    _tone_badge(angle.draft_label, angle.draft_tone),
-                    _tone_badge(angle.status_label, angle.status_tone),
+                    angle.saved,
+                    tone_badge("Guardada para después", "neutral", icon="bookmark"),
+                    rx.cond(
+                        angle.draft_label != "",
+                        _tone_badge(angle.draft_label, angle.draft_tone),
+                        _tone_badge(angle.status_label, angle.status_tone),
+                    ),
                 ),
                 spacing="2",
                 align="center",
@@ -464,7 +504,7 @@ def _angle_card(angle: rx.Var) -> rx.Component:
             _angle_field("Llamada a la acción", angle.cta),
             _angle_field("Por qué", angle.rationale),
             rx.cond(angle.failure_text != "", callout(angle.failure_text, "error")),
-            rx.foreach(angle.warnings, lambda text: callout(text, "warn")),
+            # what the composition left out is said once for the set, in the header
             _angle_actions(angle),
             spacing="2",
             width="100%",
@@ -534,12 +574,22 @@ def _scene_editor() -> rx.Component:
         rx.dialog.content(
             rx.dialog.title(VariationsState.editor_title),
             rx.dialog.description(
-                "Describe lo que debe mostrar la imagen. El producto siempre es el real: "
-                "cambia lo que lo rodea, no el producto.",
+                "Edita lo que Claude propuso. El producto siempre es el real: cambia lo "
+                "que lo rodea y lo que dice, no el producto.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
             rx.vstack(
+                _editor_field(
+                    "Título",
+                    "El nombre corto del ángulo, para reconocerlo en la galería.",
+                    rx.input(
+                        value=VariationsState.editor_name,
+                        on_change=VariationsState.set_editor_name,
+                        max_length=TITLE_MAX,
+                        width="100%",
+                    ),
+                ),
                 _editor_field(
                     "Escenario",
                     "Dónde está el producto, sobre qué, con qué luz, qué lo acompaña.",
@@ -559,6 +609,42 @@ def _scene_editor() -> rx.Component:
                         on_change=VariationsState.set_editor_composition,
                         rows="2",
                         max_length=COMPOSITION_MAX,
+                        width="100%",
+                    ),
+                ),
+                rx.grid(
+                    _editor_field(
+                        "Gancho",
+                        "La frase que se imprime sobre la imagen.",
+                        rx.input(
+                            value=VariationsState.editor_hook,
+                            on_change=VariationsState.set_editor_hook,
+                            max_length=HOOK_MAX,
+                            width="100%",
+                        ),
+                    ),
+                    _editor_field(
+                        "Llamada a la acción",
+                        "Lo que le pides al público.",
+                        rx.input(
+                            value=VariationsState.editor_cta,
+                            on_change=VariationsState.set_editor_cta,
+                            max_length=CTA_MAX,
+                            width="100%",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2"),
+                    spacing="3",
+                    width="100%",
+                ),
+                _editor_field(
+                    "Por qué",
+                    "Para qué sirve este ángulo; no se imprime.",
+                    rx.text_area(
+                        value=VariationsState.editor_rationale,
+                        on_change=VariationsState.set_editor_rationale,
+                        rows="2",
+                        max_length=RATIONALE_MAX,
                         width="100%",
                     ),
                 ),
@@ -598,7 +684,7 @@ def _scene_editor() -> rx.Component:
                 width="100%",
                 margin_top="1rem",
             ),
-            max_width="36rem",
+            max_width="40rem",
         ),
         open=VariationsState.editor_open,
         on_open_change=VariationsState.set_editor_open,
@@ -623,15 +709,63 @@ def _angles_review() -> rx.Component:
                         VariationsState.set_status_label,
                         VariationsState.set_status_tone,
                     ),
+                    # the ones put aside leave the grid; this shows them to take one up
+                    rx.cond(
+                        VariationsState.saved_count > 0,
+                        rx.button(
+                            rx.icon(
+                                rx.cond(VariationsState.show_saved, "eye-off", "eye"),
+                                size=14,
+                            ),
+                            VariationsState.saved_toggle_label,
+                            variant="soft",
+                            color_scheme="gray",
+                            size="1",
+                            on_click=VariationsState.toggle_saved,
+                        ),
+                    ),
+                    # «una en específico o todas las demás» (request 2026-10-22)
+                    rx.cond(
+                        VariationsState.savable_count > 0,
+                        rx.button(
+                            rx.icon("bookmark", size=14),
+                            VariationsState.save_rest_label,
+                            variant="soft",
+                            color_scheme="gray",
+                            size="1",
+                            disabled=VariationsState.busy_angle_id != "",
+                            on_click=VariationsState.save_rest,
+                            title="Guarda para después las propuestas que no estén aprobadas",
+                        ),
+                    ),
+                    # «elijo 2 o 3 y las demás no las quiero» (request 2026-10-22): one
+                    # gesture for the rest — and «eliminar es eliminar», nothing comes back
+                    rx.cond(
+                        VariationsState.discardable_count > 0,
+                        rx.button(
+                            rx.icon("trash-2", size=14),
+                            VariationsState.discard_rest_label,
+                            variant="soft",
+                            color_scheme=T.tone_scale("error"),
+                            size="1",
+                            disabled=VariationsState.busy_angle_id != "",
+                            on_click=VariationsState.discard_rest,
+                            title="Elimina las propuestas que no estén aprobadas",
+                        ),
+                    ),
+                    # the header's actions share one shape: soft, size 1, icon + verb
+                    # back to the list of groups (request 2026-10-22), product kept
                     rx.button(
-                        "Empezar de nuevo",
-                        variant="ghost",
+                        rx.icon("arrow-left", size=14),
+                        "Volver a los grupos",
+                        variant="soft",
                         color_scheme="gray",
                         size="1",
-                        on_click=VariationsState.start_over,
+                        on_click=VariationsState.close_set,
                     ),
-                    spacing="3",
+                    spacing="2",
                     align="center",
+                    wrap="wrap",
                     width="100%",
                 ),
                 rx.cond(
@@ -642,6 +776,7 @@ def _angles_review() -> rx.Component:
                     VariationsState.set_failure_text != "",
                     callout(VariationsState.set_failure_text, "error"),
                 ),
+                rx.foreach(VariationsState.composition_notes, lambda text: callout(text, "warn")),
                 rx.cond(
                     VariationsState.outcome_message != "",
                     rx.vstack(
@@ -671,15 +806,21 @@ def _angles_review() -> rx.Component:
                         ),
                         spacing="3",
                         align="center",
+                        wrap="wrap",
                         width="100%",
                     ),
                 ),
                 rx.cond(
                     VariationsState.in_flight,
-                    callout(
-                        "Generando las piezas. Esta pantalla se actualiza sola.",
-                        "info",
-                        icon="loader-circle",
+                    rx.hstack(
+                        loading_spinner("sm"),
+                        rx.text(
+                            "Generando las piezas. Esta pantalla se actualiza sola.",
+                            size="2",
+                            color=T.TEXT_MUTED,
+                        ),
+                        spacing="2",
+                        align="center",
                     ),
                 ),
                 spacing="3",
@@ -689,7 +830,7 @@ def _angles_review() -> rx.Component:
             width="100%",
         ),
         rx.grid(
-            rx.foreach(VariationsState.angles, _angle_card),
+            rx.foreach(VariationsState.visible_angles, _angle_card),
             columns=rx.breakpoints(initial="1", lg="2"),
             spacing="3",
             width="100%",
@@ -700,12 +841,41 @@ def _angles_review() -> rx.Component:
 
 
 def _set_row(summary: rx.Var) -> rx.Component:
+    """One group on the list: the row opens it; the trash beside it (its own control,
+    never nested in the row) throws the group out after a dialog."""
+    return rx.hstack(
+        _set_row_button(summary),
+        rx.tooltip(
+            rx.icon_button(
+                rx.icon("trash-2", size=T.ICON_SM),
+                variant="soft",
+                size="2",
+                on_click=VariationsState.ask_archive_set(summary.id, summary.product_name),
+                aria_label="Eliminar grupo",
+                **T.tone_scheme("error"),
+            ),
+            content="Eliminar grupo",
+        ),
+        spacing="2",
+        align="center",
+        width="100%",
+    )
+
+
+def _set_row_button(summary: rx.Var) -> rx.Component:
     return rx.el.button(
         rx.hstack(
             rx.icon("layers", size=T.ICON_SM, color=T.TEXT_MUTED),
             rx.vstack(
                 rx.text(summary.product_name, size="2", weight="bold"),
-                rx.text(summary.created_label, size="1", color=T.TEXT_FAINT),
+                # a GROUP of angles made at one moment — two rows with the same product
+                # are two groups, not two campaigns (request 2026-10-22)
+                rx.text(
+                    summary.count.to_string() + " ángulos · ",
+                    summary.created_label,
+                    size="1",
+                    color=T.TEXT_FAINT,
+                ),
                 spacing="0",
                 align_items="start",
             ),
@@ -720,6 +890,47 @@ def _set_row(summary: rx.Var) -> rx.Component:
         class_name="q-choice-card",
         padding="0.6rem 0.8rem",
         width="100%",
+        min_width="0",
+    )
+
+
+def _archive_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("¿Eliminar este grupo?"),
+            rx.alert_dialog.description(
+                "El grupo «" + VariationsState.archive_set_name + "» desaparece de la "
+                "lista. Sus propuestas pendientes se eliminan; las piezas ya aprobadas "
+                "se conservan en Piezas.",
+                size="2",
+            ),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        rx.icon("arrow-left", size=15),
+                        "Volver",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.icon("trash-2", size=15),
+                        "Sí, eliminar",
+                        size="2",
+                        on_click=VariationsState.confirm_archive_set,
+                        **T.tone_scheme("error"),
+                    ),
+                ),
+                justify="end",
+                gap="0.75rem",
+                margin_top="1.25rem",
+            ),
+            max_width="28rem",
+        ),
+        open=VariationsState.archive_set_id != "",
+        on_open_change=VariationsState.set_archive_open,
     )
 
 
@@ -728,7 +939,7 @@ def _sets_list() -> rx.Component:
     return rx.cond(
         VariationsState.has_sets,
         rx.vstack(
-            rx.text("Tus variaciones", size="1", color=T.TEXT_MUTED),
+            rx.text("Grupos de variaciones anteriores", size="1", color=T.TEXT_MUTED),
             rx.vstack(
                 rx.foreach(VariationsState.sets, _set_row),
                 spacing="2",
@@ -747,6 +958,7 @@ def variations_view() -> rx.Component:
     """What `/create` shows while the «Variaciones» option is the chosen one."""
     return rx.vstack(
         rx.cond(VariationsState.error != "", callout(VariationsState.error, "error")),
+        _archive_dialog(),
         rx.cond(
             VariationsState.has_set,
             _angles_review(),

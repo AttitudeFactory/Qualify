@@ -11,7 +11,7 @@ labels (`creative_vm.status_label`) so a piece reads the same here and in `/draf
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal
 
 from qualify_api.catalog.service import UnknownProduct
@@ -55,7 +55,7 @@ SET_LABELS: dict[str, tuple[str, str]] = {
 }
 ANGLE_LABELS: dict[str, tuple[str, str]] = {
     ANGLE_PROPOSED: ("Propuesto", "neutral"),
-    ANGLE_DISCARDED: ("Descartado", "neutral"),
+    ANGLE_DISCARDED: ("Eliminado", "neutral"),
     ANGLE_RESERVED: ("Enviando", "info"),
     ANGLE_QUEUED: ("En generación", "info"),
     ANGLE_FAILED: ("Falló", "error"),
@@ -203,6 +203,11 @@ class AngleVM:
     can_approve: bool
     can_edit: bool
     can_regenerate: bool
+    #: Its piece is being made right now (`angle_in_flight`): the tile shows the ring.
+    in_flight: bool = False
+    #: «Guardar para después»: aside from the review; `can_save` while it still may be.
+    saved: bool = False
+    can_save: bool = False
 
 
 def _failure_text(view: AngleView) -> str:
@@ -255,6 +260,9 @@ def build_angle_vm(view: AngleView, preview_url: Callable[[str], str]) -> AngleV
         can_approve=view.can_approve,
         can_edit=view.can_edit,
         can_regenerate=view.can_regenerate,
+        in_flight=angle.status in _IN_FLIGHT_ANGLE and draft_status in _IN_FLIGHT_DRAFT,
+        saved=view.saved,
+        can_save=view.can_save,
     )
 
 
@@ -274,6 +282,17 @@ def any_in_flight(angles: Sequence[AngleVM]) -> bool:
     return any(angle_in_flight(angle) for angle in angles)
 
 
+def summarize_warnings(angles: Sequence[AngleVM]) -> tuple[str, ...]:
+    """What the composition left out, said ONCE for the whole set (request 2026-10-22:
+    the same «no pudimos usar la tipografía» under ten tiles is noise, not information):
+    each distinct warning in order of first appearance, with how many pieces it covers."""
+    counts: dict[str, int] = {}
+    for angle in angles:
+        for text in angle.warnings:
+            counts[text] = counts.get(text, 0) + 1
+    return tuple(text if n == 1 else f"{text} ({n} piezas)" for text, n in counts.items())
+
+
 @dataclass(frozen=True)
 class SetSummaryVM:
     id: str
@@ -286,8 +305,23 @@ class SetSummaryVM:
     created_label: str
 
 
-def build_set_summary_vm(record: AngleSetRecord) -> SetSummaryVM:
+def summary_outcome(record: AngleSetRecord) -> tuple[str, str]:
+    """The row's badge: the set's status, except that a COMPLETED set says what came
+    out of it (request 2026-10-22: a group whose pieces all failed read «Piezas listas»).
+    Failed pieces stay in the group on purpose — they can be retried one by one without
+    paying for the successful ones again."""
     label, tone = _label(SET_LABELS, record.status)
+    if record.status != SET_COMPLETED or not record.failed_count:
+        return label, tone
+    if not record.ready_count:
+        return ("Todas las piezas fallaron", "error")
+    ready = "1 pieza lista" if record.ready_count == 1 else f"{record.ready_count} piezas listas"
+    failed = "1 fallida" if record.failed_count == 1 else f"{record.failed_count} fallidas"
+    return (f"{ready} · {failed}", "warn")
+
+
+def build_set_summary_vm(record: AngleSetRecord) -> SetSummaryVM:
+    label, tone = summary_outcome(record)
     return SetSummaryVM(
         id=str(record.id),
         product_name=record.product_name,
@@ -318,9 +352,33 @@ class SetVM:
     angles: tuple[AngleVM, ...]
 
 
+#: A draft an operator can review, or already did: the piece is there.
+_READY_DRAFT = frozenset(
+    {
+        DraftStatus.GENERATED.value,
+        DraftStatus.APPROVED.value,
+        DraftStatus.STAGED.value,
+        DraftStatus.PUBLISHED.value,
+    }
+)
+
+
+def detail_outcome(detail: AngleSetDetail) -> tuple[str, str]:
+    """The open group's badge, counted from its angles (the record alone does not carry
+    the counts `list_sets` adds): the same words as the list's rows."""
+    ready = sum(1 for v in detail.angles if (v.draft_status or "") in _READY_DRAFT)
+    failed = sum(
+        1
+        for v in detail.angles
+        if v.angle.status != ANGLE_DISCARDED
+        and (v.angle.status == ANGLE_FAILED or v.draft_status == DraftStatus.FAILED.value)
+    )
+    return summary_outcome(replace(detail.set, ready_count=ready, failed_count=failed))
+
+
 def build_set_vm(detail: AngleSetDetail, preview_url: Callable[[str], str]) -> SetVM:
     record = detail.set
-    label, tone = _label(SET_LABELS, record.status)
+    label, tone = detail_outcome(detail)
     return SetVM(
         id=str(record.id),
         product_name=record.product_name,
@@ -417,6 +475,9 @@ __all__ = [
     "build_product_check_vm",
     "build_set_summary_vm",
     "build_set_vm",
+    "detail_outcome",
     "money",
+    "summary_outcome",
+    "summarize_warnings",
     "variation_error_message",
 ]
