@@ -328,6 +328,45 @@ def day_title(day: date, today: date) -> str:
 
 
 # ---------------------------------------------------------------------------
+# An empty week (m-24842982, audit m4 H2): on a phone the «Por programar» panel is not
+# on screen, so the empty week itself says how many approved publications are waiting
+# and offers the one button that plans them all.
+
+EMPTY_WEEK_TITLE = "Tu semana está libre"
+NO_APPROVED_BODY = "Todavía no tienes publicaciones aprobadas."
+CREATE_ACTION = "Crear una publicación"
+
+
+@dataclass(frozen=True)
+class WaitingCopy:
+    """What the empty week says for `count` approved publications without a date."""
+
+    body: str
+    action: str
+
+
+def waiting_copy(count: int) -> WaitingCopy:
+    """«Tienes 3 publicaciones aprobadas esperando día y hora.» + «Programar mis 3
+    publicaciones»; one reads in the singular; none sends to «Crear una publicación»."""
+    if count <= 0:
+        return WaitingCopy(body=NO_APPROVED_BODY, action=CREATE_ACTION)
+    if count == 1:
+        return WaitingCopy(
+            body="Tienes 1 publicación aprobada esperando día y hora.",
+            action="Programar mi publicación",
+        )
+    return WaitingCopy(
+        body=f"Tienes {count} publicaciones aprobadas esperando día y hora.",
+        action=f"Programar mis {count} publicaciones",
+    )
+
+
+def waiting_toolbar_label(count: int) -> str:
+    """The toolbar button that opens the panel: «Por programar (3)»."""
+    return f"Por programar ({max(count, 0)})"
+
+
+# ---------------------------------------------------------------------------
 # Timezones — the Planificador's view zone picker
 
 

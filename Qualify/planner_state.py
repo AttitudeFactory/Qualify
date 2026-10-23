@@ -78,6 +78,8 @@ from .planner_vm import (
     split_time,
     timezone_options,
     tz_option,
+    waiting_copy,
+    waiting_toolbar_label,
 )
 from .tenant import tenant_uuid
 
@@ -89,6 +91,8 @@ _FORM_INCOMPLETE = "Elige al menos un POST y completa su fecha, hora y cuenta."
 _POST_REQUIRED = "Elige al menos un POST listo para publicar."
 
 MODE_ASSIGN = "assign"
+UNSCHEDULED_OPEN = "open"
+UNSCHEDULED_CLOSED = "closed"
 # How often an open Planificador re-reads its week, so a publication the worker (which
 # ticks every 60 s) settled shows on its own.
 REFRESH_SECONDS = 30
@@ -267,7 +271,10 @@ class PlannerState(rx.State):
     connection_filter: str = ALL_CONNECTIONS
     # Per-session view preferences (not tenant data; reset on logout like the rest).
     view_mode: str = VIEW_CALENDAR
-    show_unscheduled: bool = False
+    # The «Por programar» panel: "" = automatic (m-24842982: open on a wide screen when
+    # something is waiting, closed on a phone, where the empty week carries the button),
+    # or the owner's own choice, UNSCHEDULED_OPEN / UNSCHEDULED_CLOSED, for every width.
+    unscheduled_pref: str = ""
     # The zone the calendar shows and plans in. "" = CALENDAR_DEFAULT_TZ; a pick here
     # is a per-session view choice and is never written back to the tenant.
     view_tz: str = ""
@@ -337,6 +344,45 @@ class PlannerState(rx.State):
     @rx.var
     def unscheduled_count(self) -> int:
         return len(self.unscheduled)
+
+    # -- «Por programar» (m-24842982) -------------------------------------------
+
+    @rx.var
+    def waiting_count(self) -> int:
+        """Approved publications with no date yet that the drawer can plan."""
+        return sum(1 for post in self.unscheduled if post.schedulable)
+
+    @rx.var
+    def has_waiting(self) -> bool:
+        return self.waiting_count > 0
+
+    @rx.var
+    def waiting_body(self) -> str:
+        return waiting_copy(self.waiting_count).body
+
+    @rx.var
+    def waiting_action(self) -> str:
+        return waiting_copy(self.waiting_count).action
+
+    @rx.var
+    def waiting_toolbar_label(self) -> str:
+        return waiting_toolbar_label(self.waiting_count)
+
+    @rx.var
+    def unscheduled_auto(self) -> bool:
+        return self.unscheduled_pref == ""
+
+    @rx.var
+    def unscheduled_open_wide(self) -> bool:
+        """Is the panel open on a wide screen (≥ 48em)?"""
+        if self.unscheduled_pref == "":
+            return self.waiting_count > 0
+        return self.unscheduled_pref == UNSCHEDULED_OPEN
+
+    @rx.var
+    def unscheduled_open_narrow(self) -> bool:
+        """Is the panel open on a phone? Never on its own: the empty week says it."""
+        return self.unscheduled_pref == UNSCHEDULED_OPEN
 
     # -- timezone picker ------------------------------------------------------
 
@@ -939,8 +985,24 @@ class PlannerState(rx.State):
             self.form_tag_query = ""
 
     @rx.event
-    def toggle_unscheduled(self) -> None:
-        self.show_unscheduled = not self.show_unscheduled
+    def toggle_unscheduled(self, was_open: bool) -> None:
+        """The toolbar's «Por programar»: the button knows whether the panel is open at
+        its width (the automatic default differs between a phone and a wide screen), and
+        the owner's choice then holds for every width."""
+        self.unscheduled_pref = UNSCHEDULED_CLOSED if was_open else UNSCHEDULED_OPEN
+
+    @rx.event
+    def close_unscheduled(self) -> None:
+        self.unscheduled_pref = UNSCHEDULED_CLOSED
+
+    @rx.event
+    def open_assign_waiting(self) -> None:
+        """«Programar mis {n} publicaciones»: the drawer with every waiting approved
+        publication already picked, straight to its date and time."""
+        self._open_assign()
+        added = [self._add_post(post.post_id) for post in self.unscheduled if post.schedulable]
+        if any(added):
+            self._go_to(STEP_WHEN)
 
     @rx.event
     def set_connection_filter(self, value: str):

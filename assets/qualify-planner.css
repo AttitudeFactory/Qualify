@@ -37,6 +37,13 @@
   .q-plist-pills.q-plist-pills { flex-direction: row; flex-basis: 100%; align-items: center; }
 }
 
+/* The «Por programar» panel's slot (m-24842982): full width stacked above the week on a
+   narrow screen; a sticky 20rem column beside it from Radix's `lg` (64em) up. */
+.q-unscheduled-slot { width: 100%; min-width: 0; }
+@media (min-width: 64em) {
+  .q-unscheduled-slot { width: 20rem; min-width: 20rem; flex-shrink: 0; position: sticky; top: 0; }
+}
+
 /* ── The calendar (D13: the weekly, hour-by-hour grid is kept; only its skin moves) ──
    The week is one card: the grid, the hour rows and the cells sit on the card material,
    the hairlines are alpha grays so they read on the translucent fill in both themes, and

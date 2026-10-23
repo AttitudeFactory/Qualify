@@ -2,8 +2,10 @@
 
 Two views of the same week, switched from the header (see `planner_vm.py` for the
 reasoning): **Calendario** — seven day columns on a real hour axis — and **Lista** —
-events grouped by day. A "Sin programar" panel (toggled from the toolbar, closed by
-default so the calendar gets the full width) holds the POSTs waiting to be planned.
+events grouped by day. A «Por programar» panel (toggled from the toolbar) holds the
+approved publications waiting for a date: on a wide screen it opens by itself when
+something is waiting; on a phone it stays closed and the empty week itself says how many
+are waiting, with the button that plans them all (m-24842982).
 Planning, rescheduling and an event's detail open as side panels (`planner_drawer`) —
 never a modal. On a phone the list is always
 used: a seven-column hour grid does not fit a phone width.
@@ -31,7 +33,13 @@ from .planner_drawer import (
     tag_dot,
 )
 from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
-from .planner_vm import VIEW_CALENDAR, VIEW_LIST
+from .planner_vm import (
+    CREATE_ACTION,
+    EMPTY_WEEK_TITLE,
+    NO_APPROVED_BODY,
+    VIEW_CALENDAR,
+    VIEW_LIST,
+)
 from .post_card import (
     DropBox,
     campaign_badge,
@@ -48,6 +56,7 @@ from .ui import (
     app_shell,
     callout,
     card,
+    empty_state,
     page_body,
     page_header,
     platform_badge,
@@ -619,25 +628,38 @@ def _list_day(day) -> rx.Component:
     )
 
 
+def _create_link() -> rx.Component:
+    return rx.link(rx.button(CREATE_ACTION, size="3"), href="/create")
+
+
+def _empty_week() -> rx.Component:
+    """An empty week is never a dead end (N8): with approved publications waiting it
+    counts them and plans them all in one tap (m-24842982 — on a phone this is the only
+    place they show); with none, it sends to create one."""
+    return empty_state(
+        "calendar-days",
+        EMPTY_WEEK_TITLE,
+        PlannerState.waiting_body,
+        rx.cond(
+            PlannerState.has_waiting,
+            rx.button(
+                rx.icon("calendar-plus", size=T.ICON_MD),
+                PlannerState.waiting_action,
+                size="3",
+                variant="solid",
+                on_click=PlannerState.open_assign_waiting,
+                disabled=~PlannerState.has_connections,
+            ),
+            _create_link(),
+        ),
+    )
+
+
 def _list() -> rx.Component:
     return rx.vstack(
         rx.cond(
-            PlannerState.total_events == 0,
-            rx.center(
-                rx.vstack(
-                    rx.icon("calendar-days", size=T.ICON_LG, color=T.TEXT_FAINT),
-                    rx.heading("Nada planificado esta semana", size="4", as_="h2"),
-                    rx.text(
-                        "Asigna un POST a un día, una hora y una cuenta.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    align="center",
-                    spacing="2",
-                ),
-                padding="3rem 1rem",
-                width="100%",
-            ),
+            (PlannerState.total_events == 0) & (PlannerState.load_error == ""),
+            _empty_week(),
         ),
         rx.foreach(PlannerState.days, _list_day),
         spacing="3",
@@ -677,11 +699,11 @@ def _post_option(post) -> rx.Component:
 
 
 def _unscheduled_panel() -> rx.Component:
-    """The POSTs waiting to be planned, as a `card` beside the week (sticky on a wide
-    screen, stacked under it on a narrow one)."""
+    """The approved publications waiting for a date, as a `card` beside the week
+    (sticky on a wide screen, stacked above it on a narrow one — `q-unscheduled-slot`)."""
     body = rx.vstack(
         rx.hstack(
-            rx.heading("Sin programar", size="3", as_="h2"),
+            rx.heading("Por programar", size="3", as_="h2"),
             rx.badge(
                 PlannerState.unscheduled_count,
                 variant="soft",
@@ -696,14 +718,14 @@ def _unscheduled_panel() -> rx.Component:
                 variant="ghost",
                 color_scheme="gray",
                 aria_label="Cerrar panel",
-                on_click=PlannerState.toggle_unscheduled,
+                on_click=PlannerState.close_unscheduled,
             ),
             align="center",
             spacing="2",
             width="100%",
         ),
         rx.text(
-            "POSTs listos para planificar. Asígnalos a un día, una hora y una cuenta.",
+            "Publicaciones aprobadas que esperan día, hora y cuenta.",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -715,8 +737,8 @@ def _unscheduled_panel() -> rx.Component:
                 width="100%",
             ),
             rx.vstack(
-                rx.text("No hay POSTs pendientes de planificar.", size="2", color=T.TEXT_MUTED),
-                rx.link(rx.button("Crear publicación", size="1", variant="soft"), href="/create"),
+                rx.text(NO_APPROVED_BODY, size="2", color=T.TEXT_MUTED),
+                rx.link(rx.button(CREATE_ACTION, size="1", variant="soft"), href="/create"),
                 spacing="2",
                 padding="1rem 0",
             ),
@@ -725,13 +747,22 @@ def _unscheduled_panel() -> rx.Component:
         width="100%",
         align_items="start",
     )
-    return card(
-        body,
-        padding="0.9rem",
-        width=rx.breakpoints(initial="100%", lg="20rem"),
-        min_width=rx.breakpoints(initial="0", lg="20rem"),
-        position=rx.breakpoints(initial="static", lg="sticky"),
-        top="0",
+    return card(body, padding="0.9rem")
+
+
+def _unscheduled_slot() -> rx.Component:
+    """Where the panel sits. Left automatic, it shows only on a wide screen
+    (`q-planner-desktop`); once the owner opens or closes it, that holds everywhere."""
+    return rx.cond(
+        PlannerState.unscheduled_open_wide | PlannerState.unscheduled_open_narrow,
+        rx.el.div(
+            _unscheduled_panel(),
+            class_name=rx.cond(
+                PlannerState.unscheduled_auto,
+                "q-unscheduled-slot q-planner-desktop",
+                "q-unscheduled-slot",
+            ),
+        ),
     )
 
 
@@ -788,6 +819,18 @@ def _connection_filter() -> rx.Component:
     )
 
 
+def _unscheduled_button(is_open: rx.Var[bool]) -> rx.Component:
+    """«Por programar (3)», the toolbar's way to the panel."""
+    return rx.button(
+        rx.icon("inbox", size=T.ICON_SM),
+        rx.text(PlannerState.waiting_toolbar_label, as_="span", class_name="q-nums"),
+        variant=rx.cond(is_open, "soft", "ghost"),
+        color_scheme="gray",
+        aria_pressed=is_open,
+        on_click=PlannerState.toggle_unscheduled(is_open),
+    )
+
+
 def _toolbar() -> rx.Component:
     return rx.flex(
         rx.hstack(
@@ -822,19 +865,15 @@ def _toolbar() -> rx.Component:
         ),
         rx.spacer(),
         rx.hstack(
-            rx.button(
-                rx.icon("inbox", size=T.ICON_SM),
-                "Sin programar",
-                rx.badge(
-                    PlannerState.unscheduled_count,
-                    variant=rx.cond(PlannerState.unscheduled_count > 0, "solid", "soft"),
-                    radius="full",
-                    size="1",
-                    class_name="q-nums",
-                ),
-                variant=rx.cond(PlannerState.show_unscheduled, "soft", "ghost"),
-                color_scheme="gray",
-                on_click=PlannerState.toggle_unscheduled,
+            # One button per width: the panel's automatic default differs between a
+            # phone and a wide screen, so each one toggles what is on its own screen.
+            rx.el.div(
+                _unscheduled_button(PlannerState.unscheduled_open_wide),
+                class_name="q-planner-desktop",
+            ),
+            rx.el.div(
+                _unscheduled_button(PlannerState.unscheduled_open_narrow),
+                class_name="q-planner-mobile",
             ),
             _connection_filter(),
             _tags_filter(),
@@ -1145,7 +1184,7 @@ def planner_index() -> rx.Component:
                 _loading(),
                 rx.flex(
                     _views(),
-                    rx.cond(PlannerState.show_unscheduled, _unscheduled_panel()),
+                    _unscheduled_slot(),
                     direction=rx.breakpoints(initial="column-reverse", lg="row"),
                     gap="1rem",
                     width="100%",
