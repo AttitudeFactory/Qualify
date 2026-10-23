@@ -38,10 +38,9 @@ def _kpis() -> rx.Component:
             ),
             stat_card("Traspasos a persona", m.handoffs, tone="neutral", hint=m.awaiting_human),
             stat_card(
-                "Primera respuesta humana",
+                "Cuánto tardas en responder (la mitad de las veces)",
                 m.median_first_response,
                 tone="neutral",
-                hint="Mediana · p90 " + m.p90_first_response,
             ),
             stat_card("Mensajes recibidos", m.messages_in, tone="neutral"),
             stat_card(

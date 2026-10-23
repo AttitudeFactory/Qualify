@@ -141,7 +141,7 @@ def test_vms_are_frozen_and_carry_no_raw_datetimes() -> None:
 
 def test_window_pill_open_is_ok_with_the_local_closing_time() -> None:
     label, tone = window_pill(True, NOW + timedelta(hours=5), NOW, ZONE)
-    assert (label, tone) == ("Puedes responder hasta 5:00 p. m.", "ok")
+    assert (label, tone) == ("Puedes escribirle hasta las 5:00 p. m.", "ok")
 
 
 def test_window_pill_closing_within_the_hour_is_warn_in_minutes() -> None:
@@ -202,7 +202,7 @@ def test_thread_row_maps_name_number_preview_unread_and_mode() -> None:
     assert row.time_label == "hace 5 min"
     assert (row.unread_label, row.has_unread) == ("2", True)
     assert (row.window_tone, row.window_open) == ("ok", True)
-    assert (row.mode_label, row.mode_tone) == ("Automático", "neutral")
+    assert (row.mode_label, row.mode_tone) == ("Responde el menú", "neutral")
     assert row.agent_initials == ""
 
 
@@ -227,7 +227,7 @@ def test_thread_row_paused_assigned_and_closed() -> None:
         zone=ZONE,
         agents=agents,
     )
-    assert (row.mode_label, row.mode_tone) == ("Persona", "info")
+    assert (row.mode_label, row.mode_tone) == ("Respondes tú", "info")
     assert (row.agent_initials, row.agent_name) == ("AP", "Ana María Pérez")
     assert row.is_closed
 
@@ -472,7 +472,7 @@ def test_conversation_merges_unsent_outbox_rows_chronologically() -> None:
     vms = build_conversation(messages, unsent, now=NOW, zone=ZONE)
     assert [v.tick for v in vms] == ["", "failed", "", "queued"]
     assert vms[1].error_label.startswith("No se entregó")
-    assert vms[3].tick_label == "En cola"
+    assert vms[3].tick_label == "Por enviar"
 
 
 def test_merge_pages_keeps_older_loaded_messages() -> None:

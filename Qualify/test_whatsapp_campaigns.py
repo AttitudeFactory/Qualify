@@ -90,7 +90,8 @@ def test_meta_codes_are_explained_with_the_code() -> None:
     assert "24 h" in send_error_note("131049") and "131049" in send_error_note("131049")
     assert "método de pago" in send_error_note("131042")
     assert send_error_note("999999") == "Meta rechazó el envío (código 999999)"
-    assert send_error_note("not_opted_in", "sin opt-in vigente al encolar").startswith("Sin opt-in")
+    note = send_error_note("not_opted_in", "sin opt-in vigente al encolar")
+    assert note.startswith("Ya no aceptaba")
     assert "131042" in PAYMENT_FAILED
     assert RATE_CARD_NOTICE == "Tarifas de referencia pendientes: el costo es aproximado."
 
@@ -290,5 +291,5 @@ def test_tab_renders() -> None:
     component = whatsapp_tab_campaigns.campaigns_tab()
     assert isinstance(component, rx.Component)
     rendered = str(component.render())
-    for text in ("Nueva campa", "Lanzar", "Cancelar campa", "Mensajes por minuto"):
+    for text in ("Nueva campa", "Enviar ahora", "Cancelar campa", "Mensajes por minuto"):
         assert text in rendered, text
