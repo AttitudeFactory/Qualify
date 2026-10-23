@@ -469,6 +469,10 @@ def zone_countries() -> dict[str, str]:
 
 #: m-24842984: the first sentence of a publication in review, always true on its own.
 REVIEW_NOTHING_WITHOUT_YOU = "Nada sale sin tu aprobación."
+#: m-24842984: left on the panel when «Aprobar» finds no version that passes the brand
+#: rules (or a price the catalog does not have) — where to fix it, with a link there.
+REVIEW_EDIT_NOTE = "Ninguna versión cumple las reglas de tu marca. Edítala en Por aprobar."
+REVIEW_EDIT_LINK = "Ir a Por aprobar ›"
 
 # What the Planificador tells the operator about automatic publication (QUA-111).
 AUTO_PUBLISH_ACTIVE = "active"  # the worker runs for this tenant and it has an account
@@ -860,7 +864,12 @@ class EventDetailVM:
         object.__setattr__(
             self,
             "review_line",
-            review_line(self.local_date, self.local_time, expired=self.expired),
+            review_line(
+                self.local_date,
+                self.local_time,
+                expired=self.expired,
+                publish_note=self.publish_note,
+            ),
         )
 
 
@@ -1933,7 +1942,7 @@ def scheduled_message(
 
 #: m-24842984: the toast after «Aprobar» when the publication cannot go out as planned —
 #: the panel's own note says what is missing (an account, the media, an expired hour).
-APPROVED_CHECK_TOAST = "Publicación aprobada. Revisa en su ficha lo que falta para que salga."
+APPROVED_CHECK_TOAST = "Publicación aprobada. Aquí arriba te decimos qué falta para que salga."
 
 
 def _when_phrase(day_iso: str, at: str) -> str:
@@ -1949,12 +1958,14 @@ def _when_phrase(day_iso: str, at: str) -> str:
     return f"el {weekday} {day.day} de {month} {article} {time_label(at)}"
 
 
-def review_line(day_iso: str, at: str, *, expired: bool = False) -> str:
+def review_line(day_iso: str, at: str, *, expired: bool = False, publish_note: str = "") -> str:
     """m-24842984: the event panel of a publication still in review — «Nada sale sin tu
     aprobación. Si la apruebas, sale el lunes 28 de septiembre a las 3:00 p. m.». Only
     the first sentence when the hour is gone (expired: approving alone does not bring it
-    back) or unknown. No final period after «p. m.»."""
-    when = "" if expired else _when_phrase(day_iso, at)
+    back), unknown, or something else is missing (`publish_note`: the media, the text) —
+    N13, never an hour approving alone will not keep. The panel also drops the second
+    sentence when no account can publish. No final period after «p. m.»."""
+    when = "" if expired or publish_note else _when_phrase(day_iso, at)
     if not when:
         return REVIEW_NOTHING_WITHOUT_YOU
     return f"{REVIEW_NOTHING_WITHOUT_YOU} Si la apruebas, sale {when}"

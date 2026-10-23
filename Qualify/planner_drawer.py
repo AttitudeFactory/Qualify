@@ -45,6 +45,8 @@ from .planner_vm import (
     KIND_ICONS,
     NOW_LABEL,
     PLAN_GOALS,
+    REVIEW_EDIT_LINK,
+    REVIEW_NOTHING_WITHOUT_YOU,
     STEP_POST,
     STEP_PREVIEW,
     STEP_WHEN,
@@ -1722,9 +1724,29 @@ def _detail_body() -> rx.Component:
         ),
         # m-24842984: in review, what approving means — nothing goes out without the
         # owner, and if they approve it goes out on the day and hour they chose (N13).
+        # The hour only when the worker can publish for this tenant and nothing else is
+        # missing (UX review): otherwise just «Nada sale sin tu aprobación.».
         rx.cond(
             d.can_reject_post,
-            callout(d.review_line, "info"),
+            rx.cond(
+                PlannerState.auto_publish == AUTO_PUBLISH_ACTIVE,
+                callout(d.review_line, "info"),
+                callout(REVIEW_NOTHING_WITHOUT_YOU, "info"),
+            ),
+        ),
+        # «Aprobar» refused for the text itself: the way out stays on the panel, with a
+        # link to where it is edited (N3/N4 — the toast alone is a dead end).
+        rx.cond(
+            PlannerState.review_error != "",
+            rx.vstack(
+                callout(PlannerState.review_error, "warn"),
+                rx.cond(
+                    d.detail_href != "",
+                    rx.link(REVIEW_EDIT_LINK, href=d.detail_href, size="2"),
+                ),
+                spacing="2",
+                width="100%",
+            ),
         ),
         rx.match(
             PlannerState.auto_publish,
@@ -1885,7 +1907,16 @@ def _detail_footer() -> rx.Component:
     # the decision never gets mixed with moving or cancelling the date.
     review = rx.cond(
         d.can_reject_post,
+        # «Aprobar» first: on a phone the grid is one column, so the first thing under
+        # the thumb is approving, never discarding (UX review).
         rx.box(
+            rx.button(
+                rx.icon("check", size=16),
+                "Aprobar",
+                size="3",
+                loading=PlannerState.review_busy,
+                on_click=PlannerState.approve_post_from_detail,
+            ),
             rx.button(
                 rx.icon("thumbs-down", size=16),
                 "No la quiero",
@@ -1894,13 +1925,6 @@ def _detail_footer() -> rx.Component:
                 size="3",
                 disabled=PlannerState.review_busy,
                 on_click=PlannerState.reject_post_from_detail,
-            ),
-            rx.button(
-                rx.icon("check", size=16),
-                "Aprobar",
-                size="3",
-                loading=PlannerState.review_busy,
-                on_click=PlannerState.approve_post_from_detail,
             ),
             class_name="q-panel-actions",
         ),

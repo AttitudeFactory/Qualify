@@ -23,6 +23,8 @@ from .planner_vm import (
     APPROVED_CHECK_TOAST,
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
+    REVIEW_EDIT_LINK,
+    REVIEW_EDIT_NOTE,
     REVIEW_NOTHING_WITHOUT_YOU,
     EventDetailVM,
     approved_line,
@@ -296,3 +298,63 @@ async def test_a_second_tap_while_busy_does_nothing(monkeypatch) -> None:
     state.review_busy = True
     events = [e async for e in PlannerState.approve_post_from_detail.fn(state)]
     assert events == [] and approved == []
+
+
+# --- UX review (m-24842984) ------------------------------------------------------------
+
+
+def test_review_line_promises_no_hour_while_something_is_missing() -> None:
+    assert (
+        review_line("2026-09-28", "15:00", publish_note="Falta la foto.")
+        == REVIEW_NOTHING_WITHOUT_YOU
+    )
+    missing = EventDetailVM(
+        local_date="2026-09-28", local_time="15:00", publish_note="Falta el video."
+    )
+    assert missing.review_line == REVIEW_NOTHING_WITHOUT_YOU
+
+
+def test_the_review_hour_shows_only_when_an_account_can_publish() -> None:
+    body = inspect.getsource(planner_drawer._detail_body)
+    assert "PlannerState.auto_publish == AUTO_PUBLISH_ACTIVE" in body
+    assert "callout(REVIEW_NOTHING_WITHOUT_YOU" in body
+
+
+def test_aprobar_comes_before_no_la_quiero() -> None:
+    footer = inspect.getsource(planner_drawer._detail_footer)
+    assert footer.index('"Aprobar"') < footer.index('"No la quiero"')
+
+
+def test_panel_buttons_are_at_least_44px_tall() -> None:
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parent.parent / "assets" / "qualify-planner.css").read_text()
+    assert ".q-panel-actions .rt-Button { width: 100%; min-height: 44px; }" in css
+
+
+def test_the_check_toast_points_up_the_same_panel() -> None:
+    assert APPROVED_CHECK_TOAST == (
+        "Publicación aprobada. Aquí arriba te decimos qué falta para que salga."
+    )
+
+
+async def test_no_passing_version_stays_on_the_panel_with_a_way_out(monkeypatch) -> None:
+    state, _ = _panel_state(monkeypatch, approve=planner_provider.NoPassingVariant(str(_POST)))
+    _ = [e async for e in PlannerState.approve_post_from_detail.fn(state)]
+    assert state.review_error == REVIEW_EDIT_NOTE
+    body = inspect.getsource(planner_drawer._detail_body)
+    assert "PlannerState.review_error" in body and "REVIEW_EDIT_LINK" in body
+    assert REVIEW_EDIT_LINK == "Ir a Por aprobar ›"
+
+
+async def test_a_blocked_price_stays_on_the_panel_in_the_guards_words(monkeypatch) -> None:
+    blocked = planner_provider.PriceBlocked("El precio no es el del catálogo.")
+    state, _ = _panel_state(monkeypatch, approve=blocked)
+    _ = [e async for e in PlannerState.approve_post_from_detail.fn(state)]
+    assert state.review_error == "El precio no es el del catálogo."
+
+
+async def test_a_refusal_not_about_the_text_leaves_no_panel_note(monkeypatch) -> None:
+    state, _ = _panel_state(monkeypatch, approve=planner_provider.UnknownPost(str(_POST)))
+    _ = [e async for e in PlannerState.approve_post_from_detail.fn(state)]
+    assert state.review_error == ""

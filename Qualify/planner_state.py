@@ -34,6 +34,8 @@ from .campaign_provider import (
 from .creative_provider import acting_user_id
 from .planner_provider import (
     ALL_CONNECTIONS,
+    NoPassingVariant,
+    PriceBlocked,
     approve_error_message,
     approve_post,
     cancel_event,
@@ -59,6 +61,7 @@ from .planner_vm import (
     OPENING_HOUR,
     PLAN_GOAL_KEYS,
     PLAN_GOALS,
+    REVIEW_EDIT_NOTE,
     STEP_LAST,
     STEP_POST,
     STEP_WHEN,
@@ -352,6 +355,8 @@ class PlannerState(rx.State):
     detail_confirm: str = ""  # CONFIRM_CANCEL / CONFIRM_REMOVE while the panel asks
     # m-24842984: «Aprobar» / «No la quiero» in flight — both buttons wait (no double tap).
     review_busy: bool = False
+    # m-24842984: «Aprobar» refused for the text itself — kept on the panel with a link.
+    review_error: str = ""
     # -- delete a tag (confirmed inline, in the filter's own row) ------------------
     delete_tag_id: str = ""
     delete_tag_name: str = ""
@@ -898,6 +903,7 @@ class PlannerState(rx.State):
             event_id = self.detail.event_id
             view_tz = self.view_tz
             self.review_busy = True
+            self.review_error = ""
         tenant_id = await self._tenant()
         if tenant_id is None or not event_id:
             async with self:
@@ -910,6 +916,10 @@ class PlannerState(rx.State):
                 logger.error("planner approve_post failed: %s", type(exc).__name__)
             async with self:
                 self.review_busy = False
+                if isinstance(exc, (NoPassingVariant, PriceBlocked)):
+                    self.review_error = (
+                        REVIEW_EDIT_NOTE if isinstance(exc, NoPassingVariant) else exc.detail
+                    )
             yield rx.toast.error(approve_error_message(exc))
             return
         try:
@@ -1611,6 +1621,7 @@ class PlannerState(rx.State):
             self.detail_open = True
             self.detail_loading = True
             self.detail_error = ""
+            self.review_error = ""
             self.detail_confirm = confirm if confirm in (CONFIRM_CANCEL, CONFIRM_REMOVE) else ""
             self.detail = EventDetailVM()
             view_tz = self.view_tz
