@@ -825,3 +825,38 @@ def test_reset_form_is_a_no_op_while_publishing() -> None:
 
     assert state.caption == "hola"
     assert state.phase == "polling"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_pick_stays_on_screen_until_a_valid_one() -> None:
+    """UX review (N3): the dropzone's refusal is kept as a flag for step 1's callout,
+    and the next valid file clears it."""
+    from .publish_wizard_vm import REJECTED_FILE_HELP
+    from .publishing_state import _MAX_ITEMS
+
+    assert f"{_MAX_ITEMS} a la vez" in REJECTED_FILE_HELP
+    state = PublishState()
+    assert state.last_drop_rejected is False
+    PublishState.mark_drop_rejected.fn(state, [{"file": {"name": "x.png"}}])
+    assert state.last_drop_rejected is True
+
+    await state.add_files([_FakeUpload()])
+    assert state.last_drop_rejected is False
+
+
+def test_the_account_picker_labels_come_from_the_provider() -> None:
+    from . import publishing_provider
+
+    class _Row:
+        id = "c-1"
+        external_username = "bianki"
+        platform = "instagram"
+        status = "active"
+
+    original = publishing_provider.connections_for
+    publishing_provider.connections_for = lambda _tenant: [_Row()]
+    try:
+        (option,) = publishing_provider.active_connections(None)  # type: ignore[arg-type]
+    finally:
+        publishing_provider.connections_for = original
+    assert option.label == "@bianki · Instagram"

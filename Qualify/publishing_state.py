@@ -247,6 +247,13 @@ class PublishState(rx.State):
     connections: list[ConnectionOptionVM] = []
     is_loading_connections: bool = False
     load_error: str = ""
+    # PUBLICAR-4 UX review: True once a load finished without error, so «connect your
+    # Instagram first» shows above step 1 only when there really is no account — never
+    # as a flash before the first load.
+    connections_loaded: bool = False
+    # PUBLICAR-4 UX review (N3): the last pick was refused by the dropzone. Step 1 keeps
+    # the reason on screen (the toast alone vanishes); cleared by the next valid pick.
+    last_drop_rejected: bool = False
 
     selected_connection_id: str = ""
     caption: str = ""
@@ -371,6 +378,7 @@ class PublishState(rx.State):
         async with self:
             self.is_loading_connections = True
             self.load_error = ""
+            self.connections_loaded = False
 
         async with self:
             auth = await self.get_state(AuthState)
@@ -396,6 +404,7 @@ class PublishState(rx.State):
         async with self:
             self.connections = options
             self.is_loading_connections = False
+            self.connections_loaded = True
             # PUBLICAR-4: with exactly one connected account, step 2 («¿Dónde sale?»)
             # arrives with it already chosen — the owner only confirms.
             preselected = self._preselect_single_connection()
@@ -535,7 +544,14 @@ class PublishState(rx.State):
         # remains the only count guard; there is no longer a type-based restriction here.
         self._pending_files = self._pending_files + new_pending
         self.pending_items = self.pending_items + new_items
+        self.last_drop_rejected = False
         return None
+
+    @rx.event
+    def mark_drop_rejected(self, _rejected: list[dict] | None = None) -> None:
+        """The dropzone refused a pick (format, size or count). Step 1 then shows the
+        reason in a lasting callout next to the toast (N3); `add_files` clears it."""
+        self.last_drop_rejected = True
 
     @rx.event
     def remove_pending_file(self, index: int) -> None:

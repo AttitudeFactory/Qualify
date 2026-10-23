@@ -69,6 +69,9 @@ import reflex as rx
 
 from .publish_hub_state import FLOW_POSTS, FLOW_STORIES, PublishHubState
 from .publish_wizard_vm import (
+    ASSISTANT_ID,
+    REJECTED_FILE_HELP,
+    REJECTED_FILE_TITLE,
     STEP_REVIEW,
     STEP_TITLES,
     STEP_WHAT,
@@ -76,7 +79,7 @@ from .publish_wizard_vm import (
     STORY_NEEDS_ONE_FILE,
     TOTAL_STEPS,
 )
-from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, _WAIT_EXPLANATION, PublishState
+from .publishing_state import _UPLOAD_ID, _WAIT_EXPLANATION, PublishState
 from .publishing_vm import ConnectionOptionVM, PendingItemVM
 from .stories_page import share_to_instagram_button, stories_status_block
 from .stories_state import StoriesState
@@ -118,7 +121,7 @@ _TARGET = "44px"
 
 
 def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
-    return rx.select.item(conn.external_username + " · " + conn.platform, value=conn.id)
+    return rx.select.item(conn.label, value=conn.id)
 
 
 def _connection_selector() -> rx.Component:
@@ -264,13 +267,12 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
         # PUBLICAR-4: formats and sizes are said HERE, in the error, and nowhere up
         # front. Static on purpose: one message for every rejection reason (wrong
         # format, too large, more than the cap), never `rejected_files` internals.
-        on_drop_rejected=rx.toast.error(
-            "Ese archivo no se puede usar",
-            description=(
-                "Elige fotos JPG o videos MP4 o MOV: hasta 300 MB por video, 8 MB por "
-                f"foto y {_MAX_ITEMS} a la vez."
-            ),
-        ),
+        # UX review: the toast vanishes in seconds, so step 1 also keeps the reason in
+        # a callout (`_rejected_callout`) until the next valid pick (N3).
+        on_drop_rejected=[
+            PublishState.mark_drop_rejected,
+            rx.toast.error(REJECTED_FILE_TITLE, description=REJECTED_FILE_HELP),
+        ],
         variant="tile" if compact else "zone",
     )
 
@@ -380,10 +382,10 @@ def _status_block() -> rx.Component:
                     rx.cond(
                         is_carousel,
                         rx.text(
-                            "Subiendo el contenido y arrancando la publicación del carrusel...",
+                            "Subiendo tus fotos y videos...",
                             size="2",
                         ),
-                        rx.text("Subiendo el video y arrancando la publicación...", size="2"),
+                        rx.text("Subiendo tu publicación...", size="2"),
                     ),
                     spacing="2",
                     align="center",
@@ -472,6 +474,7 @@ def _step_counter() -> rx.Component:
         color=T.TEXT_MUTED,
         letter_spacing="0.08em",
         text_transform="uppercase",
+        aria_live="polite",
     )
 
 
@@ -503,7 +506,7 @@ def _back_button() -> rx.Component:
 
 def _next_button(enabled: rx.Var[bool]) -> rx.Component:
     return rx.button(
-        "Seguir",
+        "Siguiente",
         rx.icon("chevron-right", size=T.ICON_SM),
         on_click=PublishHubState.go_next,
         disabled=~enabled,
@@ -520,10 +523,44 @@ def _step_footer(*buttons: rx.Component) -> rx.Component:
 # -- ① ¿Qué vas a publicar? -------------------------------------------------
 
 
+def _rejected_callout() -> rx.Component:
+    """The refused pick's reason, kept on screen until a valid file comes in (N3)."""
+    return rx.cond(
+        PublishState.last_drop_rejected,
+        callout(f"{REJECTED_FILE_TITLE}. {REJECTED_FILE_HELP}", "error"),
+        rx.fragment(),
+    )
+
+
+def _no_accounts_first() -> rx.Component:
+    """No account connected at all: say so before the owner picks any file, not in
+    step 2 after the work is done (UX review). Step 2 keeps its own as a backstop."""
+    no_account = (
+        PublishState.connections_loaded
+        & (PublishState.load_error == "")
+        & (PublishState.connections.length() == 0)
+    )
+    return rx.cond(
+        no_account,
+        empty_state(
+            "link",
+            "Primero conecta tu Instagram",
+            "Para publicar, primero conecta tu Instagram. Toma un par de minutos.",
+            action=rx.link(
+                rx.button("Conectar mi Instagram", size="3", min_height=_TARGET),
+                href="/connections",
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
 def _what_step() -> rx.Component:
     return _step_panel(
         STEP_WHAT,
+        _no_accounts_first(),
         _gallery_zone(),
+        _rejected_callout(),
         rx.cond(
             _file_count() > 1,
             rx.text(
@@ -586,7 +623,7 @@ def _kind_choices() -> rx.Component:
             rx.cond(
                 story_blocked,
                 rx.text(STORY_NEEDS_ONE_FILE, size="2", color=T.TEXT_MUTED),
-                rx.text("Se ve durante 24 horas y luego desaparece.", size="2", color=T.TEXT_MUTED),
+                rx.text("Se ve durante 24 horas, sin texto.", size="2", color=T.TEXT_MUTED),
             ),
             disabled=_busy() | story_blocked,
         ),
@@ -601,9 +638,9 @@ def _no_accounts() -> rx.Component:
     return empty_state(
         "link",
         "Aún no tienes una cuenta conectada",
-        "Conecta tu Instagram en Tus redes y vuelve aquí para publicar.",
+        "Conecta tu Instagram y vuelve aquí para publicar.",
         action=rx.link(
-            rx.button("Conectar mi cuenta", size="3", min_height=_TARGET),
+            rx.button("Conectar mi Instagram", size="3", min_height=_TARGET),
             href="/connections",
         ),
     )
@@ -729,17 +766,47 @@ def _publish_button() -> rx.Component:
     )
 
 
+def _or_divider() -> rx.Component:
+    """«o» between «Publicar» and the softer way out to Instagram."""
+    return rx.hstack(
+        rx.separator(size="4", flex="1"),
+        rx.text("o", size="2", color=T.TEXT_MUTED),
+        rx.separator(size="4", flex="1"),
+        spacing="3",
+        align="center",
+        width="100%",
+    )
+
+
 def _review_step() -> rx.Component:
+    """Summary → (text box, only for a publication) → the solid «Publicar» → its
+    progress. For a historia, «Abrir en Instagram ↗» comes only after an «o», soft and
+    last, so it never reads as the way to publish (UX review, N6/N9)."""
     return _step_panel(
         STEP_REVIEW,
         _review_summary(),
         rx.cond(
             _is_stories(),
-            share_to_instagram_button(root_id=_GALLERY_ROOT_ID, enabled=_file_count() == 1),
+            rx.text(
+                "Una historia sale sin texto. Si quieres escribirle algo, ábrela en Instagram.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
             _caption_field(),
         ),
         _publish_button(),
         rx.cond(_is_stories(), stories_status_block(), _status_block()),
+        rx.cond(
+            _is_stories(),
+            rx.vstack(
+                _or_divider(),
+                share_to_instagram_button(root_id=_GALLERY_ROOT_ID, enabled=_file_count() == 1),
+                spacing="3",
+                width="100%",
+                align_items="stretch",
+            ),
+            rx.fragment(),
+        ),
         _step_footer(_back_button()),
     )
 
@@ -755,6 +822,9 @@ def _assistant_card() -> rx.Component:
             align_items="stretch",
         ),
         padding="1.5rem",
+        id=ASSISTANT_ID,
+        # Keep the step title clear of the sticky top bar when scrolled to.
+        scroll_margin_top="5rem",
     )
 
 

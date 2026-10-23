@@ -9,6 +9,8 @@ import pytest
 from .publish_wizard_vm import (
     FLOW_POSTS,
     FLOW_STORIES,
+    REJECTED_FILE_HELP,
+    SCROLL_TO_ASSISTANT,
     STEP_REVIEW,
     STEP_TITLES,
     STEP_WHAT,
@@ -17,6 +19,7 @@ from .publish_wizard_vm import (
     account_handle,
     can_advance,
     clamp_step,
+    connection_label,
     done_message,
     next_step,
     platform_name,
@@ -114,3 +117,22 @@ def test_no_english_in_the_copy(word: str) -> None:
         done_message(FLOW_STORIES),
     ]
     assert all(word.lower() not in t.lower().split() for t in texts)
+
+
+def test_connection_label_matches_the_review_sentence() -> None:
+    """Step 2 names the account as step 3 does: «@bianki · Instagram» (UX review)."""
+    assert connection_label("bianki", "instagram") == "@bianki · Instagram"
+    assert connection_label("@polette", "facebook") == "@polette · Facebook"
+    assert connection_label("", "instagram") == "Instagram"
+
+
+def test_the_rejected_file_help_names_formats_sizes_and_count() -> None:
+    assert REJECTED_FILE_HELP == (
+        "Elige fotos JPG o videos MP4 o MOV: hasta 300 MB por video, 8 MB por foto y 10 a la vez."
+    )
+
+
+def test_changing_step_scrolls_to_the_assistant_only() -> None:
+    assert "publish-assistant" in SCROLL_TO_ASSISTANT
+    assert "scrollIntoView" in SCROLL_TO_ASSISTANT
+    assert "location" not in SCROLL_TO_ASSISTANT

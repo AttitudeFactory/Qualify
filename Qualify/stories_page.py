@@ -77,7 +77,7 @@ def share_to_instagram_button(*, root_id: str, enabled: rx.Var[bool]) -> rx.Comp
     return rx.vstack(
         rx.button(
             rx.icon("share-2", size=16),
-            "Abrir en Instagram",
+            "Abrir en Instagram ↗",
             on_click=rx.call_script(
                 share_to_instagram_script(root_id), callback=StoriesState.handle_share_result
             ),
@@ -88,8 +88,8 @@ def share_to_instagram_button(*, root_id: str, enabled: rx.Var[bool]) -> rx.Comp
             min_height="44px",
         ),
         rx.text(
-            "¿Quieres ponerle música oficial? Ábrela en Instagram desde tu celular y "
-            "termina la historia en la app.",
+            "¿Quieres ponerle música oficial? Ábrela en Instagram desde tu teléfono y "
+            "termínala allá. Así no sale desde Qualify.",
             size="1",
             color=T.TEXT_FAINT,
         ),

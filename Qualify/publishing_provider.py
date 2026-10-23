@@ -33,6 +33,7 @@ from qualify_api.publishing import (
 from qualify_api.publishing.service import PublishState as ServicePublishState
 
 from .connections_provider import connections_for
+from .publish_wizard_vm import connection_label
 from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PublishAttemptVM
 
 
@@ -47,6 +48,7 @@ def active_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
             id=connection.id,
             external_username=connection.external_username,
             platform=connection.platform,
+            label=connection_label(connection.external_username, connection.platform),
         )
         for connection in connections_for(tenant_id)
         if connection.status == "active"

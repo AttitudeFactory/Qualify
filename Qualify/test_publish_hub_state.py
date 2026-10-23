@@ -439,3 +439,20 @@ def test_the_url_script_never_navigates() -> None:
     script = hub_module._replace_url_script(FLOW_STORIES)
     assert script.startswith("window.history.replaceState(")
     assert "/publish?flow=stories" in script
+
+
+@pytest.mark.asyncio
+async def test_changing_step_brings_the_assistant_into_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UX review: after a long step 1 the next step starts at its title, not at the
+    buttons at the bottom."""
+    posts, _ = _stub_flows(monkeypatch)
+    state = PublishHubState()
+    _with_files(posts, "a.mp4")
+
+    forward = await PublishHubState.go_next.fn(state)
+    back = await PublishHubState.go_back.fn(state)
+
+    assert forward is not None and back is not None
+    assert state.step == STEP_WHAT

@@ -27,6 +27,7 @@ import reflex as rx
 from .publish_wizard_vm import (
     FLOW_POSTS,
     FLOW_STORIES,
+    SCROLL_TO_ASSISTANT,
     STEP_REVIEW,
     STEP_WHAT,
     done_message,
@@ -118,29 +119,31 @@ class PublishHubState(rx.State):
         ]
 
     @rx.event
-    async def go_next(self) -> None:
-        """«Seguir»: one step forward when the current one is complete (the button is
+    async def go_next(self) -> rx.event.EventSpec | None:
+        """«Siguiente»: one step forward when the current one is complete (the button is
         also disabled otherwise — this is the server-side guard)."""
         posts = await self.get_state(PublishState)
         stories = await self.get_state(StoriesState)
         if not can_switch_flow(posts.phase, stories.phase):
-            return
+            return None
         self.step = next_step(
             self.step,
             file_count=len(posts.pending_items),
             flow=self.active_flow,
             connection_id=posts.selected_connection_id,
         )
+        return rx.call_script(SCROLL_TO_ASSISTANT)
 
     @rx.event
-    async def go_back(self) -> None:
+    async def go_back(self) -> rx.event.EventSpec | None:
         """«Atrás»: one step back, nothing chosen is lost (every step stays mounted and
         every choice lives in state). Not while a publish is in flight."""
         posts = await self.get_state(PublishState)
         stories = await self.get_state(StoriesState)
         if not can_switch_flow(posts.phase, stories.phase):
-            return
+            return None
         self.step = previous_step(self.step)
+        return rx.call_script(SCROLL_TO_ASSISTANT)
 
     @rx.event
     async def publish_now(self) -> rx.event.EventSpec | None:
