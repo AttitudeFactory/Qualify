@@ -348,7 +348,7 @@ Luego actualizar [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-sub
 
 ## 10. Servicios opcionales
 
-Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`.
+Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para `render`, mejor el workflow (*Run workflow* con `main`) que `just deploy`: el workflow baja la imagen ya construida en CI, mientras que `just deploy` la compila en el servidor (descarga de Chrome Headless Shell incluida).
 
 > **`calendar-worker` ya no es opcional (2026-10-21, m-24828928).** Era un perfil que nunca se activó en el servidor, y como el worker embebido de `reflex` está **forzado a `off`**, ninguna publicación programada salía en producción. Ahora es un servicio siempre activo, como `whatsapp-worker`: el ejecutor del Planificador (QUA-111) **publica de verdad**, pero sólo lo que una persona aprobó y programó. Al arrancar, su primer tick publica lo aprobado y vencido que siga dentro de la ventana de 24 h (`EXECUTION_WINDOW`); lo más viejo expira. Alcance por defecto `--all-tenants`; para limitarlo: `QUALIFY_CALENDAR_WORKER_SCOPE=--tenant=<uuid>`. Cada tick deja un latido en Redis que el Planificador lee (QUA-118), así que la pantalla muestra el servicio como disponible.
 
