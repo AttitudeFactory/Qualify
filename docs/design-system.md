@@ -288,7 +288,7 @@ Tres reglas que sostienen esto:
 
 **Zen** (`NavState.zen`, botón en la isla del negocio o `⌘ .`): el rail se contrae a 72 px con muelle, las etiquetas se **revelan con máscara** (`clip-path`) en vez de fundirse, y el nombre aparece en la etiqueta de vidrio de arriba. Todo el colapso es **una clase** (`q-zen`) en el `nav`: las reglas viven en `assets/qualify.css`, no en condicionales de Python — así el navegador puede animarlo y no hay dos árboles que mantener. El estado vive en la sesión del servidor, nunca en el navegador: persistir en el cliente exigiría clave namespaced por tenant y purga en logout (regla firmada), y para un modo de vista no compensa.
 
-**Móvil (< 640 px):** el sidebar es un overlay fijo cerrado por defecto, abierto por el botón hamburguesa (`_mobile_nav_toggle`, fuera del sidebar porque el drawer empieza cerrado) con un fondo que lo cierra al tocar fuera; elegir una página también lo cierra. **Decidido (decisión 5, 2026-10-23):** el botón ☰ se sustituye por la barra inferior de §4.4, cuyo «Más» abre este mismo cajón; hasta que su PR de código entre, el ☰ sigue.
+**Móvil (< 640 px):** el sidebar es un overlay fijo cerrado por defecto, abierto por el botón hamburguesa (`_mobile_nav_toggle`, fuera del sidebar porque el drawer empieza cerrado) con un fondo que lo cierra al tocar fuera; elegir una página también lo cierra. **Decidido (decisión 5, 2026-10-23):** el botón ☰ se sustituye por la barra inferior de §4.4, cuyo «Más» abre este mismo cajón; con el PR de código de NAV-7 el ☰ desaparece.
 
 ### 4.3 Reglas de página
 
@@ -301,7 +301,7 @@ Tres reglas que sostienen esto:
 
 ### 4.4 Barra inferior del celular (patrón nuevo · NAV-7, m-24842964)
 
-> **Estado:** patrón **documentado, aún no construido**. Decisión 5 del fundador (2026-10-23, `docs/ux-guia-navegacion.md` §6 y §7): «Sí, barra inferior de 4 accesos (Inicio · Por responder · Crear · Tu semana) + «Más». Se documenta primero en `docs/design-system.md` como patrón nuevo y luego se construye.» Es el **único componente nuevo** que admite la épica de UX (`docs/epica-ux-navegacion-experiencia.md`); no abre la puerta a otros (§9.1-8). El PR de código de NAV-7 se abre **después** de que el fundador apruebe esta sección, y la implementa tal cual o la corrige aquí primero.
+> **Estado:** patrón **construido** en `feat/m-24842964-barra-inferior` (`_bottom_bar()` en `Qualify/ui/layout.py`, bloque «Bottom bar» de `assets/qualify.css`, muestra en `/design`, `Qualify/test_bottom_bar.py`), pendiente de que el fundador apruebe esta sección y haga merge. Decisión 5 del fundador (2026-10-23, `docs/ux-guia-navegacion.md` §6 y §7): «Sí, barra inferior de 4 accesos (Inicio · Por responder · Crear · Tu semana) + «Más». Se documenta primero en `docs/design-system.md` como patrón nuevo y luego se construye.» Es el **único componente nuevo** que admite la épica de UX (`docs/epica-ux-navegacion-experiencia.md`); no abre la puerta a otros (§9.1-8). El PR de código de NAV-7 se abre **después** de que el fundador apruebe esta sección, y la implementa tal cual o la corrige aquí primero.
 
 **Para qué.** El dueño usa Qualify con una mano, entre cliente y cliente. Hoy, en el celular, todo el menú está detrás de ☰: llegar a lo de todos los días cuesta dos toques y estirar el pulgar hasta la esquina de arriba. La barra deja **lo que más usa a un toque y al alcance del pulgar**; lo demás sigue en el cajón de siempre, detrás de «Más».
 
