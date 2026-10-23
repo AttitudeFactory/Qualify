@@ -340,9 +340,9 @@ def _content_section() -> rx.Component:
 
 def _caption_section() -> rx.Component:
     return section(
-        "Caption",
+        "Texto de la publicación",
         rx.text_area(
-            placeholder="Escribe el caption...",
+            placeholder="Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.",
             value=PublishState.caption,
             on_change=PublishState.set_caption,
             rows="5",
@@ -516,7 +516,7 @@ def _flow_selector() -> rx.Component:
         rx.box(
             rx.segmented_control.root(
                 rx.segmented_control.item("Publicaciones", value=FLOW_POSTS),
-                rx.segmented_control.item("Stories", value=FLOW_STORIES),
+                rx.segmented_control.item("Historias", value=FLOW_STORIES),
                 value=PublishHubState.active_flow,
                 on_change=PublishHubState.select_flow,
                 size="2",
@@ -556,8 +556,7 @@ def _posts_flow() -> rx.Component:
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar ahora",
-        "Publica de inmediato en una de tus cuentas conectadas: una "
-        "publicación (imagen, reel o carrusel) o una Story",
+        "Sube una foto o un video de tu teléfono y publícalo en tu Instagram.",
     )
 
 

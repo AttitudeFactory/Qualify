@@ -116,21 +116,22 @@ PLATFORM_INSTAGRAM = "instagram"
 SCHEDULABLE_PLATFORMS: frozenset[str] = frozenset({PLATFORM_INSTAGRAM})
 
 REASON_TEXT: Mapping[UnpublishableReason, str] = {
-    R.POST_NOT_FOUND: "El POST ya no existe o no es visible.",
-    R.NOT_APPROVED: "El POST no está aprobado.",
-    R.REVISION_NOT_APPROVED: "El POST se editó después de aprobarse: hay que aprobarlo de nuevo.",
-    R.APPROVED_COPY_MISSING: "No se encuentra el texto aprobado del POST.",
-    R.CATEGORY_MISSING: "El POST no tiene categoría.",
+    R.POST_NOT_FOUND: "La publicación ya no existe.",
+    R.NOT_APPROVED: "La publicación no está aprobada.",
+    R.REVISION_NOT_APPROVED: "La publicación se editó después de aprobarse: hay que "
+    "aprobarla de nuevo.",
+    R.APPROVED_COPY_MISSING: "No se encuentra el texto aprobado de la publicación.",
+    R.CATEGORY_MISSING: "La publicación no tiene categoría.",
     R.CATEGORY_NOT_PUBLISHABLE: "Esta categoría no se puede publicar automáticamente.",
-    R.NO_MEDIA: "El POST no tiene imágenes ni video.",
+    R.NO_MEDIA: "La publicación no tiene imágenes ni video.",
     R.TOO_MANY_MEDIA: f"Una galería admite como máximo {MAX_CAROUSEL_ITEMS} elementos.",
-    R.MEDIA_ORDER_AMBIGUOUS: "El orden de los elementos del POST es ambiguo.",
-    R.UNSUPPORTED_MEDIA_TYPE: "El POST tiene un tipo de archivo que no se publica.",
+    R.MEDIA_ORDER_AMBIGUOUS: "El orden de los elementos de la publicación es ambiguo.",
+    R.UNSUPPORTED_MEDIA_TYPE: "La publicación tiene un tipo de archivo que no se publica.",
     R.UNSUPPORTED_SHAPE: "La categoría no corresponde al contenido (p. ej. un reel con dos "
     "archivos, o una salida sin el tipo de archivo que pide).",
     R.CHANNEL_NOT_SUPPORTED: "Esta cuenta no admite publicaciones programadas desde Qualify.",
-    R.MEDIA_NOT_IN_R2: "Los archivos del POST todavía no están listos para publicar (R2).",
-    R.CONTENT_TYPE_MISSING: "Falta el formato de algún archivo del POST.",
+    R.MEDIA_NOT_IN_R2: "Los archivos de la publicación todavía no están listos para publicar.",
+    R.CONTENT_TYPE_MISSING: "Falta el formato de algún archivo de la publicación.",
     R.UNSUPPORTED_CONTENT_TYPE: "Formato no admitido: las imágenes deben ser JPEG.",
     R.DESTINATION_NOT_SUPPORTED: "Instagram no publica este contenido en el destino elegido.",
     R.IMAGE_RATIO_NOT_ALLOWED: "Instagram solo acepta en una publicación imágenes entre 4:5 "
@@ -165,7 +166,7 @@ STORY_VIDEO_WARNING = (
     "Una Historia de video puede durar como máximo 60 segundos. Si este video es más "
     "largo, Instagram la rechazará al publicar."
 )
-STORY_CAPTION_NOTE = "Las historias no muestran el texto del POST."
+STORY_CAPTION_NOTE = "Las historias no muestran el texto de la publicación."
 
 
 @dataclass(frozen=True)

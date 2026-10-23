@@ -315,13 +315,13 @@ def _legend() -> rx.Component:
         ),
         _legend_item(
             rx.box(rx.icon("snowflake", size=12), class_name="q-temp q-temp--cold q-temp--mini"),
-            "Cold",
-            "Probado: ya funcionó, contenido evergreen.",
+            "Ya probada",
+            "Ya salió antes y funcionó: puedes repetirla.",
         ),
         _legend_item(
             rx.box(rx.icon("flame", size=12), class_name="q-temp q-temp--hot q-temp--mini"),
-            "Hot",
-            "Nuevo: todavía en prueba.",
+            "Por probar",
+            "Todavía no ha salido en tus redes.",
         ),
         class_name="q-legend-box",
     )
@@ -330,7 +330,7 @@ def _legend() -> rx.Component:
 def _step_content() -> rx.Component:
     empty = rx.vstack(
         rx.center(rx.icon("layout-grid", size=22), class_name="q-section-glyph q-glyph-lg"),
-        rx.text("No hay POSTs para planificar", size="3", weight="bold"),
+        rx.text("No hay publicaciones para programar", size="3", weight="bold"),
         rx.text(
             "Crea una pieza y apruébala: aparecerá aquí lista para programar.",
             size="2",
@@ -338,7 +338,9 @@ def _step_content() -> rx.Component:
             text_align="center",
         ),
         rx.link(
-            rx.button(rx.icon("sparkles", size=16), "Crear POST", variant="soft", size="3"),
+            rx.button(
+                rx.icon("sparkles", size=16), "Crear una publicación", variant="soft", size="3"
+            ),
             href="/create",
         ),
         align="center",
@@ -658,7 +660,7 @@ def _plan_campaign(row) -> rx.Component:
     (only once its publications were created), and the warning says it reaches every
     publication the POST already has."""
     picker = rx.select.root(
-        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña del POST"),
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña de la publicación"),
         rx.select.content(
             rx.select.item("Sin campaña", value="none"),
             rx.cond(PlannerState.campaigns.length() > 0, rx.select.separator()),
@@ -732,8 +734,8 @@ def _confirm_campaign(row) -> rx.Component:
         "Campaña nueva: se creará al programar.",
         rx.cond(
             row.chosen_campaign_name == "",
-            "El POST quedará sin campaña al programar.",
-            "La campaña del POST cambiará al programar.",
+            "La publicación quedará sin campaña al programar.",
+            "La campaña de la publicación cambiará al programar.",
         ),
     )
     return rx.fragment(
@@ -1658,7 +1660,7 @@ def _detail_body() -> rx.Component:
         facts,
         _panel_section(
             "file-text",
-            "El POST",
+            "Lo que se publica",
             rx.cond(
                 d.caption_excerpt != "",
                 rx.text(d.caption_excerpt, size="2", class_name="q-caption-quote"),
@@ -1762,7 +1764,7 @@ def _detail_footer() -> rx.Component:
             d.can_reject_post,
             rx.button(
                 rx.icon("thumbs-down", size=16),
-                "Rechazar POST",
+                "No la quiero",
                 variant="outline",
                 color_scheme="red",
                 size="3",
@@ -1795,8 +1797,8 @@ def _detail_footer() -> rx.Component:
         (
             CONFIRM_CANCEL,
             _confirm_bar(
-                "¿Cancelar esta publicación? Sale del calendario y el POST vuelve a «Sin "
-                "programar»; su contenido no cambia.",
+                "¿Cancelar esta publicación? Sale del calendario y vuelve a «Sin programar»; "
+                "su contenido no cambia.",
                 "Sí, cancelar",
                 PlannerState.confirm_cancel,
             ),
@@ -1804,7 +1806,7 @@ def _detail_footer() -> rx.Component:
         (
             CONFIRM_REMOVE,
             _confirm_bar(
-                "¿Quitar el POST rechazado del calendario? Se cancelan sus publicaciones "
+                "¿Quitar la publicación rechazada del calendario? Se cancelan sus salidas "
                 "pendientes; lo ya publicado se conserva.",
                 "Sí, quitar",
                 PlannerState.confirm_remove_rejected,

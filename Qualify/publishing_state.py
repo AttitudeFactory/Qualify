@@ -73,10 +73,12 @@ from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
+_NO_TENANT = "No encontramos tu negocio en esta sesión. Cierra sesión y vuelve a entrar."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
-_NOT_CONFIGURED = "El almacenamiento (R2) todavía no está configurado en este entorno."
+_NOT_CONFIGURED = (
+    "No podemos subir archivos en este momento. Inténtalo en unos minutos; si sigue, escríbenos."
+)
 _TOO_LARGE = "El video supera el tamaño máximo permitido (300 MB)."
 _IMAGE_TOO_LARGE = "La imagen supera el tamaño máximo permitido (8 MB)."
 _BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro archivo."
@@ -86,12 +88,15 @@ _UNSUPPORTED_FORMAT = "Formato no soportado. Usa JPG/JPEG para imagen, o MP4/MOV
 # QUA-103 — the ONE real content check (magic bytes), server-side, for the case a file
 # passed the extension/content_type check above but its actual bytes are not a JPEG.
 _UNSUPPORTED_IMAGE_FORMAT = (
-    "El archivo no es un JPEG válido. Solo se aceptan imágenes JPEG (.jpg/.jpeg) — "
-    "PNG, WebP, GIF y HEIC no son compatibles con Instagram."
+    "Esta foto no se puede usar tal cual. Desde tu celular, compártela como “JPG” o "
+    "haz una captura de pantalla y súbela."
 )
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
-_POLL_FAILED = "No se pudo consultar el estado de la publicación."
+_POLL_FAILED = (
+    "No sabemos todavía si se publicó. Revisa tu Instagram en unos minutos antes de "
+    "volver a intentarlo, para no publicarlo dos veces."
+)
 # QUA-99 (6/6): Meta caps a carousel at 10 items (client.py's MAX_CAROUSEL_ITEMS,
 # service.py). Checked HERE too, before a single byte is read off the upload — the
 # dropzone's own `max_files=10` (publishing_page.py) is the client-side nicety on top of

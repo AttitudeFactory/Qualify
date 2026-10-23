@@ -75,6 +75,7 @@ from .planner_vm import (
     assign_steps_done,
     build_plan_row,
     campaign_value,
+    scheduled_message,
     split_time,
     timezone_options,
     tz_option,
@@ -1421,14 +1422,16 @@ class PlannerState(rx.State):
             goals = [g.label for g in PLAN_GOALS if g.key in self.form_goals]
             # Jump to the week the first piece lands in, so the operator sees it appear.
             self.monday_iso = rows[0].date
-        if mode == MODE_RESCHEDULE:
-            message = "Publicación reprogramada"
-        elif created == 1:
-            message = "Publicación programada"
-        else:
-            message = f"{created} publicaciones programadas"
+        message = scheduled_message(
+            created=created,
+            day_iso=rows[0].date,
+            at=rows[0].time,
+            reschedule=mode == MODE_RESCHEDULE,
+        )
         if goals:
-            message += " · Objetivo: " + ", ".join(goals)
+            message += (
+                ("" if message.endswith(".") else ".") + " Objetivo: " + ", ".join(goals) + "."
+            )
         yield rx.toast.success(message)
         yield PlannerState.load
 
