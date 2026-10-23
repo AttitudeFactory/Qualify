@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .auth_pages import country_select, labeled_field, password_field
+from .auth_pages import _TAP, country_select, labeled_field, password_field
 from .auth_state import AuthState
 from .settings_state import SettingsState
 from .ui import app_shell, callout, card, kv, loading_spinner, page_body, page_header, section
@@ -45,14 +45,17 @@ def _locale_card() -> rx.Component:
                         value=SettingsState.country,
                         on_change=SettingsState.set_country,
                     ),
-                    hint="Tu hora sigue al país.",
+                    hint="Tus horarios de publicación usan la hora de este país.",
                 ),
                 labeled_field(
                     "Moneda de tus precios",
                     "settings-currency",
                     rx.select.root(
                         rx.select.trigger(
-                            placeholder="Elige la moneda", id="settings-currency", width="100%"
+                            placeholder="Elige la moneda",
+                            id="settings-currency",
+                            width="100%",
+                            height=_TAP,
                         ),
                         rx.select.content(
                             rx.foreach(
@@ -68,9 +71,10 @@ def _locale_card() -> rx.Component:
                     ),
                 ),
                 rx.button(
-                    "Guardar",
+                    "Guardar país y moneda",
                     size="3",
                     width="100%",
+                    height=_TAP,
                     loading=SettingsState.locale_saving,
                     disabled=SettingsState.country == "",
                     on_click=SettingsState.save_locale,

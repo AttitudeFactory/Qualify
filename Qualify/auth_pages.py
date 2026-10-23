@@ -107,19 +107,31 @@ def password_field(
     )
 
 
+def _hint_text(text: str) -> rx.Component:
+    """The small muted help line under a field."""
+    return rx.text(text, size="1", color=T.TEXT_MUTED)
+
+
 def labeled_field(
-    label: str, field_id: str, control: rx.Component, *, hint: str = ""
+    label: str, field_id: str, control: rx.Component, *, hint: str | rx.Component = ""
 ) -> rx.Component:
     """A field with its label visible above it (m-24842967): a placeholder disappears
     the moment the owner starts typing, a label does not. `html_for` ties the two, so
-    tapping the label focuses the field and screen readers announce it."""
+    tapping the label focuses the field and screen readers announce it. `hint` is a plain
+    string, or a component when it depends on state (e.g. an `rx.cond`)."""
+    if isinstance(hint, rx.Component):
+        hint_component: rx.Component = hint
+    elif hint:
+        hint_component = _hint_text(hint)
+    else:
+        hint_component = rx.fragment()
     return rx.vstack(
         rx.el.label(
             rx.text(label, size="2", weight="medium", color=T.TEXT_STRONG),
             html_for=field_id,
         ),
         control,
-        rx.text(hint, size="1", color=T.TEXT_MUTED) if hint else rx.fragment(),
+        hint_component,
         spacing="1",
         width="100%",
         align_items="start",
@@ -437,7 +449,7 @@ def _signup_form() -> rx.Component:
                 rx.fragment(
                     "Te invitaron a Qualify con ",
                     rx.text.strong(AuthState.invite_email),
-                    ". Elige tu contraseña y entras directo.",
+                    ". Elige tu contraseña y tu país, y entras directo.",
                 ),
                 "ok",
                 icon="mail-check",
@@ -500,19 +512,24 @@ def _signup_form() -> rx.Component:
                         # already on screen.
                         key=AuthState.invite_email,
                     ),
-                    hint="Uno por negocio: con este correo entras siempre.",
+                    hint=rx.cond(
+                        invited,
+                        _hint_text("Es el correo de tu invitación: con él entras siempre."),
+                        _hint_text("Uno por negocio: con este correo entras siempre."),
+                    ),
                 ),
                 labeled_field(
                     "Contraseña",
                     "signup-password",
-                    password_field("Mínimo 8 caracteres", new=True, id="signup-password"),
+                    password_field("", new=True, id="signup-password"),
+                    hint="Mínimo 8 caracteres.",
                 ),
                 labeled_field(
                     "¿En qué país está tu negocio?",
                     "signup-country",
                     country_select("signup-country", name="country", required=True),
-                    hint="Con esto ponemos tu hora y tu moneda. Puedes cambiarlas en "
-                    "Configuración.",
+                    hint="Con esto ponemos tu hora y la moneda de tus precios. La moneda la "
+                    "puedes cambiar después en Configuración.",
                 ),
                 rx.button(
                     rx.cond(invited, "Crear mi cuenta", "Registrar y entrar"),
