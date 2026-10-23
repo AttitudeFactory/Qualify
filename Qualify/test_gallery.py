@@ -218,3 +218,147 @@ def test_every_screen_that_approves_a_draft_says_why_a_price_blocks_it() -> None
         ("gallery_state.py", "quick_approve"),
     }
     assert all(ok for _, _, ok in callers), callers
+
+
+# --- «Aprobar» on a card says it is not out yet (m-24842978) ----------------------------
+
+_QA_POST_ID = "d0000000-0000-4000-8000-000000000002"
+
+
+async def _quick_approve(monkeypatch, gallery) -> tuple[GalleryState, list, list]:
+    """Run «Aprobar» on a card with the backend faked: `gallery` is what the grid reads
+    right after approving (a `GalleryData`, or an exception to raise)."""
+    from uuid import UUID
+
+    from . import gallery_state as gallery_state_module
+    from .creative_vm import CopyVariantVM, DraftVM
+
+    variant = CopyVariantVM(
+        variant_id="e0000000-0000-4000-8000-000000000002",
+        ordinal=0,
+        label="Variante 1",
+        hook="Gancho",
+        caption="Texto",
+        hashtags_text="",
+        cta="",
+        ads_primary_text="",
+        ads_headline="",
+        ads_description="",
+        has_ads=False,
+        passed=True,
+        failure_labels=(),
+        was_edited=False,
+        rendered_caption="Texto",
+    )
+    draft = DraftVM(
+        draft_id=_QA_POST_ID,
+        status="generated",
+        status_label="Por revisar",
+        status_tone="warn",
+        variants=(variant,),
+        can_approve=True,
+    )
+
+    async def fake_tenant(self):
+        return UUID("a0000000-0000-4000-8000-000000000001")
+
+    def fake_load_gallery(tenant_id):
+        if isinstance(gallery, Exception):
+            raise gallery
+        return gallery
+
+    approved: list[UUID] = []
+    monkeypatch.setattr(GalleryState, "_tenant", fake_tenant)
+    monkeypatch.setattr(gallery_state_module, "acting_user_id", lambda tenant_id: tenant_id)
+    monkeypatch.setattr(gallery_state_module, "draft_detail", lambda tenant_id, draft_id: draft)
+    monkeypatch.setattr(
+        gallery_state_module,
+        "approve_draft",
+        lambda tenant_id, draft_id, variant_id, user_id: approved.append(draft_id),
+    )
+    monkeypatch.setattr(gallery_state_module, "load_gallery", fake_load_gallery)
+
+    state = GalleryState()
+    events = [e async for e in GalleryState.quick_approve.fn(state, _QA_POST_ID)]
+    return state, events, approved
+
+
+def _gallery(*, schedulable: bool, note: str = ""):
+    from .planner_provider import GalleryData
+
+    if schedulable:
+        return GalleryData(posts=[_post(_QA_POST_ID, state="schedulable")])
+    # «aprobada pero no lista»: approved, but the evaluator says it cannot go out yet
+    post = _post(
+        _QA_POST_ID,
+        state="needs_action",
+        approval="approved",
+        is_publishable=False,
+        unpublishable_reason=note,
+    )
+    return GalleryData(posts=[post])
+
+
+async def test_quick_approve_toast_says_not_out_yet_and_offers_elegir_dia_y_hora(
+    monkeypatch,
+) -> None:
+    from uuid import UUID
+
+    from . import gallery_state as gallery_state_module
+    from .creative_state import APPROVED_TOAST as DRAFT_PAGE_TOAST
+
+    state, events, approved = await _quick_approve(monkeypatch, _gallery(schedulable=True))
+
+    assert approved == [UUID(_QA_POST_ID)]
+    assert [p.post_id for p in state.posts] == [_QA_POST_ID]  # the grid is fresh
+    assert gallery_state_module.APPROVED_TOAST == DRAFT_PAGE_TOAST  # one wording, both places
+    toast = str(events[0])
+    assert "Publicación aprobada. Ahora elige cuándo sale." in toast
+    # the action button, wired to Tu semana's drawer on this publication
+    assert "label='Elegir día y hora'" in toast and '["onClick"]' in toast
+    assert f"/planner?post={_QA_POST_ID}" in toast
+    assert "POST aprobado" not in toast
+    assert len(events) == 1  # no second read of the grid
+
+
+async def test_quick_approve_of_a_not_ready_publication_offers_no_dead_end(monkeypatch) -> None:
+    gallery = _gallery(schedulable=False, note="Conecta una cuenta de Instagram.")
+    state, events, _ = await _quick_approve(monkeypatch, gallery)
+
+    assert state.posts[0].readiness_note == "Conecta una cuenta de Instagram."
+    toast = str(events[0])
+    assert "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale." in toast
+    assert "Elegir d" not in toast and "/planner" not in toast
+
+
+async def test_quick_approve_with_an_unreadable_grid_still_offers_the_way(monkeypatch) -> None:
+    _state, events, _ = await _quick_approve(monkeypatch, RuntimeError("db down"))
+
+    # the approval stands, so the way to Tu semana is offered (it is the real gate) …
+    assert f"/planner?post={_QA_POST_ID}" in str(events[0])
+    # … and the grid is read again by `load`, which shows its own error if it fails
+    assert events[-1] is GalleryState.load
+
+
+def test_schedule_readiness_reads_the_publication_from_the_grid() -> None:
+    from .gallery_state import schedule_readiness
+
+    ready = _post("p1", state="schedulable")
+    not_ready = _post(
+        "p2",
+        state="needs_action",
+        approval="approved",
+        is_publishable=False,
+        unpublishable_reason="Falta la foto.",
+    )
+    assert schedule_readiness([ready, not_ready], "p1") == (True, "")
+    assert schedule_readiness([ready, not_ready], "p2") == (False, "Falta la foto.")
+    # not in the grid: Tu semana stays the gate and says why itself
+    assert schedule_readiness([], "p3") == (True, "")
+
+
+def test_gallery_review_errors_speak_of_the_publication() -> None:
+    from . import gallery_state as gallery_state_module
+
+    for text in (gallery_state_module._REVIEW_FAILED, gallery_state_module._NO_PASSING_VARIANT):
+        assert "POST" not in text and "variante" not in text
