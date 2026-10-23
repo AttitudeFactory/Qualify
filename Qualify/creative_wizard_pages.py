@@ -76,7 +76,7 @@ from . import (
     referentes_review,
     scrapecreators_client,
 )
-from .auth_state import AuthState, brand_tenant_id
+from .auth_state import BRAND_READY_QUERY, AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
@@ -157,7 +157,7 @@ STEPS: tuple[tuple[str, str], ...] = (
     _TYPOGRAPHY_HEADING,
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
-    ("Resultados e insights", "Tu marca, lista."),
+    ("Así quedó tu marca", "Revisa y termina."),
 )
 LAST_STEP = len(STEPS) - 1
 #: The manual flow's steps a rule names (the rest are read off `_window`).
@@ -385,7 +385,8 @@ class BrandWizardState(rx.State):
         e insights is a destination, not something to resume into.
         """
         # m-24842965: entering the wizard opens the steps, never a card left from before
-        self.brand_ready = False
+        # — unless the signup that adopted this draft sent the owner here for the card
+        self.brand_ready = _asks_for_ready_card(self)
         creative = await self.get_state(CreativeState)
         # ¿Quién es la marca? carries the brief (§ request 2026-10-05): an empty or
         # half-filled identity opens there, where a brief can fill most of what follows.
@@ -513,6 +514,7 @@ class BrandWizardState(rx.State):
         from .brand_finish import MANUAL_FLOW, save_brand_kit
 
         if not await save_brand_kit(self, MANUAL_FLOW):
+            await _explain_finish_failure(self)
             return
         async with self:
             self._reset_fields()
@@ -1159,6 +1161,35 @@ async def _finish_navigation(state: rx.State) -> rx.event.EventSpec | None:
     return None
 
 
+#: The final button of both flows (m-24842965): an account finishes its brand; a
+#: pre-login draft finishes it AND goes on to create the account that adopts it.
+_FINISH_LABEL = "Terminar mi marca"
+_FINISH_DRAFT_LABEL = "Terminar y crear mi cuenta"
+
+
+def _asks_for_ready_card(state: rx.State) -> bool:
+    """Whether this page load came with `?lista=1` — the signup that adopted a draft
+    sends the owner to `AuthState`'s `BRAND_READY_ROUTE`, so that path ends on the same
+    «Tu marca está lista» card a logged-in finish shows."""
+    key, _, value = BRAND_READY_QUERY.partition("=")
+    return state.router.url.query_parameters.get(key, "") == value
+
+
+async def _explain_finish_failure(state: rx.State) -> None:
+    """A failed finish keeps the steps on screen (no card, no redirect) with an error
+    that names the button to press again. Only the kit failure is reworded: «archivos
+    no guardados» and «sin sesión» already say what to do."""
+    from .brand_finish import _KIT_FAILED
+
+    async with state:
+        creative = await state.get_state(CreativeState)
+        if creative.kit_error != _KIT_FAILED:
+            return
+        auth = await state.get_state(AuthState)
+        label = _FINISH_LABEL if auth.session_tenant_id else _FINISH_DRAFT_LABEL
+        creative.kit_error = f"No pudimos guardar tu marca. Toca «{label}» otra vez."
+
+
 #: The three ways out of «Tu marca está lista» (m-24842965, N3): one solid button to the
 #: next job, one soft one, and a link back. The handler only follows these routes — the
 #: route arrives from the client, so anything else falls back to the brand itself.
@@ -1192,7 +1223,7 @@ def _brand_ready_card() -> rx.Component:
             # §8: the page's h1 is `page_header`'s; the card's title is an h2
             rx.heading("Tu marca está lista", size="6", as_="h2", text_align="center"),
             rx.text(
-                "Logo, colores y forma de hablar ya se usan en cada publicación.",
+                "Tus publicaciones saldrán con tu logo, tus colores y tu forma de hablar.",
                 size="3",
                 color=T.TEXT_MUTED,
                 text_align="center",
@@ -1243,9 +1274,12 @@ def _or_ready(header: rx.Component, body: rx.Component) -> tuple[rx.Component, r
     """A wizard page's header and body, swapped for the «Tu marca está lista» ones while
     `BrandWizardState.brand_ready` — `rx.cond` adds no wrapper element, so `app_shell` still gets
     a `page_header` and a `page_body` either way."""
+    # never over a failed save: `finish` only raises the card after `save_brand_kit`
+    # succeeded (which clears `kit_error` first); the error check is the second lock
+    shown = BrandWizardState.brand_ready & (CreativeState.kit_error == "")
     return (
-        rx.cond(BrandWizardState.brand_ready, page_header("Tu marca", title_size="8"), header),
-        rx.cond(BrandWizardState.brand_ready, page_body(_brand_ready_card()), body),
+        rx.cond(shown, page_header("Tu marca", title_size="8"), header),
+        rx.cond(shown, page_body(_brand_ready_card()), body),
     )
 
 
@@ -1315,7 +1349,7 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
     account gets «Tu marca está lista» (`_finish_navigation`), a draft still goes on to
     the signup."""
     return rx.button(
-        "Terminar mi marca",
+        rx.cond(AuthState.session_tenant_id != "", _FINISH_LABEL, _FINISH_DRAFT_LABEL),
         rx.icon("check", size=T.ICON_SM),
         size="2",
         radius=_CONTROL_RADIUS,
@@ -3335,7 +3369,7 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # del resultado"): the accounts the discovery found, sorted by the operator into
     # three buckets by drag and drop or a tap. Optional — nothing blocks Continuar.
     ("Referente, competencia o detractor", "Arrastra cada cuenta a su flecha, o toca la flecha."),
-    ("Resultados e insights", "Cómo se ve tu cuenta hoy."),
+    ("Así se ve tu cuenta hoy", "Revisa y termina."),
 )
 CONNECT_LAST = len(CONNECT_STEPS) - 1
 _SORT_STEP = CONNECT_LAST - 1
@@ -5004,6 +5038,7 @@ class BrandConnectState(rx.State):
         from .brand_finish import CONNECT_FLOW, save_brand_kit
 
         if not await save_brand_kit(self, CONNECT_FLOW):
+            await _explain_finish_failure(self)
             return
         async with self:
             self._reset_fields()
@@ -5023,7 +5058,7 @@ class BrandConnectState(rx.State):
 
         # m-24842965: entering the wizard opens the steps, never a card left from before
         async with self:
-            (await self.get_state(BrandWizardState)).brand_ready = False
+            (await self.get_state(BrandWizardState)).brand_ready = _asks_for_ready_card(self)
         ids = await session_ids(self)
         saved = None
         if ids is not None:
