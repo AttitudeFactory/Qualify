@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-23 · **Estado:** `[HISTORIAS · sin implementar · pendiente del ADR de S0]` · **Meegle:** épica [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (mapa de tickets en §4)
 **Decisión del fundador (Herwin, 2026-10-23, explícita):** se **revierte** la regla firmada «1 login = 1 tenant = 1 negocio, sin switch» ([`modelo-negocio-operador-multi-emprendimiento.md`](modelo-negocio-operador-multi-emprendimiento.md) §6.1, 2026-08-16). Objetivo nuevo: un dueño maneja varios negocios (tenants separados) desde **una** sesión, con un selector para cambiar. Primer caso real: un mismo dueño con **Bianki** (shawarma y ensaladas) y **Polette** (helados de yogur), que se manejan por separado.
-**Producción hoy (chequeo de solo lectura, 2026-10-23):** **Bianki no existe como tenant.** Polette es su propio tenant («POLETTE», 1 marca, 1 login dueño, 0 conexiones de Meta/IG/WhatsApp). Los 8 tenants de producción tienen exactamente 1 marca y 1 dueño. No hay datos que separar: S8 se cerró como «no aplica».
+**Producción hoy (chequeo de solo lectura, 2026-10-23):** **Bianki no existe como tenant.** Polette es su propio tenant («POLETTE», 1 marca, 1 login dueño, 0 conexiones de Meta/IG/WhatsApp). Los 8 tenants de producción tienen exactamente 1 marca y 1 dueño. Las únicas 2 conexiones de IG están en tenants distintos. No hay datos que separar: S8 se cerró como «no aplica».
 **Revisión técnica:** principal-architect, 2026-10-23. Las historias de §3 son su corte, revisado contra el código en `main`. Las líneas de código citadas abajo se comprobaron en disco el mismo día.
 
 ---
@@ -114,9 +114,9 @@ Los enlaces «Bloqueado por» de Meegle siguen la columna «Depende de» de §3.
 ## 6. Preguntas abiertas para el fundador
 
 1. **TTL de la revisión de membresía (S5):** propuesta 60 s al cargar páginas; publicar y enviar siempre se revisan sin caché. ¿Te sirve?
-2. **Con qué login entras a los dos negocios (S2):** el plan es usar el login que hoy es dueño de Polette (un alias `+polette`). ¿Te sirve, o prefieres un login neutro (sin el nombre de un negocio) y vincular a él Polette y Bianki?
+2. ~~Alias por negocio: ¿fusionar alias?~~ **Respondida por producción (2026-10-23):** no hay otros alias que fusionar. Bianki no existe; se da de alta y se le vincula como owner el login que ya es dueño de Polette (S2).
 3. **Quién más puede tener varios negocios:** ¿solo tú por ahora, o S7 entra ya para algún cliente concreto? Si no hay cliente, S7 se puede aparcar.
-4. **Cuenta de IG/FB compartida entre dos negocios (S6):** si producción ya tiene una cuenta activa en dos tenants, ¿cuál se queda con ella?
+4. ~~Cuenta de IG/FB ya activa en dos negocios: ¿cuál se la queda?~~ **Respondida por producción (2026-10-23):** ninguna cuenta está en dos tenants hoy (las 2 conexiones de IG están en tenants distintos), así que el índice único global de S6 se puede crear sin limpiar datos.
 
 ## 7. Fuera de alcance
 
