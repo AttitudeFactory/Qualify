@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -55,10 +56,13 @@ from .planner_vm import (
     AUTO_PUBLISH_NO_CONNECTION,
     AUTO_PUBLISH_UNAVAILABLE,
     COLD_MIN_USES,
+    CREATE_ACTION,
+    EMPTY_WEEK_TITLE,
     EXPIRED_LABEL,
     EXPIRED_NOTE,
     HOUR_ROW_KEYS,
     KIND_ICONS,
+    NO_APPROVED_BODY,
     OPENING_HOUR,
     OUTPUT_NOT_PUBLISHABLE,
     OUTPUT_UNSCHEDULED,
@@ -105,6 +109,7 @@ from .planner_vm import (
     tz_city,
     tz_offset_label,
     tz_option,
+    waiting_copy,
     week_label,
 )
 from .ui.layout import NAV_ITEMS
@@ -375,11 +380,91 @@ def test_view_mode_defaults_to_calendar_and_rejects_unknown_values() -> None:
     assert state.view_mode == VIEW_CALENDAR
 
 
-def test_unscheduled_panel_starts_closed_and_toggles() -> None:
+def test_unscheduled_panel_is_closed_when_nothing_waits_and_toggles() -> None:
     state = _state()
-    assert not state.show_unscheduled
-    state.toggle_unscheduled()
-    assert state.show_unscheduled
+    assert not state.unscheduled_open_wide and not state.unscheduled_open_narrow
+    state.toggle_unscheduled(False)
+    assert state.unscheduled_open_wide and state.unscheduled_open_narrow
+    state.close_unscheduled()
+    assert not state.unscheduled_open_wide and not state.unscheduled_open_narrow
+
+
+def test_unscheduled_panel_opens_by_itself_on_a_wide_screen_when_posts_wait() -> None:
+    # m-24842982: open beside the week on a wide screen; on a phone the empty week
+    # carries the count and the button instead.
+    state = _state()
+    state.unscheduled = [_ready_post("p1"), _ready_post("p2")]
+    assert state.unscheduled_auto
+    assert state.unscheduled_open_wide and not state.unscheduled_open_narrow
+    # The owner's choice, made at either width, then holds for both.
+    state.toggle_unscheduled(True)
+    assert not state.unscheduled_open_wide and not state.unscheduled_open_narrow
+    state.toggle_unscheduled(False)
+    assert state.unscheduled_open_wide and state.unscheduled_open_narrow
+
+
+def test_waiting_copy_counts_the_approved_publications_without_a_date() -> None:
+    three = waiting_copy(3)
+    assert three.body == "Tienes 3 publicaciones aprobadas esperando día y hora."
+    assert three.action == "Programar mis 3 publicaciones"
+    one = waiting_copy(1)
+    assert one.body == "Tienes 1 publicación aprobada esperando día y hora."
+    assert one.action == "Programar mi publicación"
+    none = waiting_copy(0)
+    assert none.body == "Todavía no tienes publicaciones aprobadas."
+    assert none.action == "Crear una publicación"
+    assert EMPTY_WEEK_TITLE == "Tu semana está libre"
+
+
+def test_the_empty_week_never_says_post() -> None:
+    # m-24842982 AC: no text of the empty state contains «POST».
+    texts = [EMPTY_WEEK_TITLE, NO_APPROVED_BODY, CREATE_ACTION]
+    for n in (0, 1, 2, 7):
+        copy = waiting_copy(n)
+        texts += [copy.body, copy.action]
+    assert all("POST" not in text for text in texts)
+    source = (Path(__file__).parent / "planner_page.py").read_text()
+    empty = source[source.index("def _empty_week") : source.index("def _list(")]
+    assert "POST" not in empty
+    assert "Nada planificado" not in source
+
+
+def test_the_week_page_names_the_action_and_keeps_waiting_posts_in_sight() -> None:
+    # m-24842982 UX review: «Elegir día y hora» (never «Asignar»), thumb-sized; the
+    # toolbar count is a badge, not «(n)»; a non-empty week below 64em still shows
+    # what is waiting; the panel opens by itself only from 64em.
+    source = (Path(__file__).parent / "planner_page.py").read_text()
+    assert '"Asignar"' not in source
+    assert source.count('"Elegir día y hora"') == 2
+    assert "Por programar (" not in source
+    assert "def _waiting_line" in source and "_waiting_line()," in source
+    css = (Path(__file__).parent.parent / "assets" / "qualify-planner.css").read_text()
+    assert ".q-wide-only { display: none; }" in css
+    assert "@media (min-width: 64em) {\n  .q-wide-only { display: block; }" in css
+
+
+def test_programar_mis_publicaciones_opens_the_drawer_with_every_waiting_one() -> None:
+    posts = [_ready_post("p1"), _ready_post("p2"), _ready_post("p3")]
+    state = _drawer_state(*posts)
+    state.unscheduled = list(posts)
+    assert state.waiting_count == 3 and state.has_waiting
+    assert state.waiting_body == "Tienes 3 publicaciones aprobadas esperando día y hora."
+    state.open_assign_waiting()
+    assert state.form_open and state.form_mode == MODE_ASSIGN
+    assert state.form_selected_ids == ["p1", "p2", "p3"]
+    assert state.form_step == 1  # straight to «Cuándo»: the pieces are already chosen
+    assert all(item.connection_ids == ["c1"] for item in state.plan_items)
+
+
+def test_a_not_ready_post_is_not_counted_as_waiting() -> None:
+    ready = _ready_post("p1")
+    not_ready = _ready_post("p2", is_publishable=False, unpublishable_reason="no_media")
+    state = _drawer_state(ready, not_ready)
+    state.unscheduled = [ready, not_ready]
+    assert state.waiting_count == 1
+    assert state.waiting_action == "Programar mi publicación"
+    state.open_assign_waiting()
+    assert state.form_selected_ids == ["p1"]
 
 
 def test_open_assign_for_post_preselects_post_connection_and_today() -> None:
@@ -1197,7 +1282,7 @@ def test_the_drawer_opens_on_the_content_step_and_a_chosen_post_skips_ahead() ->
     state.open_assign_blank()
     assert state.form_open and state.form_step == 0 and state.form_reached == 0
     assert state.plan_items == [] and state.form_selection_label == "Nada seleccionado"
-    assert state.form_step_error == "Elige al menos un POST listo para publicar."
+    assert state.form_step_error == "Elige al menos una publicación lista para salir."
     assert not state.form_can_advance
     state.toggle_plan_post("p1")
     assert state.form_can_advance and state.form_selection_label == "1 pieza seleccionada"
