@@ -49,7 +49,7 @@ Extends `qualify-copy-es` §1; if they disagree, `qualify-copy-es` wins and this
 |---|---|
 | post, posteo | publicación |
 | story | historia |
-| reel | video corto (o «reel» solo si el cliente ya lo dice así: validar, `perfil-cliente-pyme.md` §5) |
+| — | «reel (video corto)» is allowed (founder, 2026-10-23): «reel», with «video corto» as the gloss where the owner picks a format; never «story» |
 | feed | tu perfil, tus publicaciones |
 | inbox | conversaciones, chats |
 | engagement, reach, insights | interacción, cuántas personas lo vieron, resultados |
@@ -111,6 +111,12 @@ which inputs go in each, which defaults pre-fill them.
 - Loading, empty and error states exist and say what happens next.
 - For deeper checks run `design:accessibility-review`; for copy, `design:ux-copy`; for a full
   critique, `design:design-critique`; for planning interviews, `design:user-research`.
+
+## 5b. Navigation
+
+Every screen follows `docs/ux-guia-navegacion.md` (rules N1–N13: one name per place, every task
+ends with the next step, everything has its own URL, no dead-end empty states, «volver» says where,
+assisted never autonomous). Cite the rule number in findings («incumple N3»).
 
 ## 6. Reporting on a PR
 
