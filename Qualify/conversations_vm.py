@@ -1044,3 +1044,123 @@ def build_draft_vm(draft: DraftLike) -> DraftVM:
 
 def suggestion_refusal_label(reason: str) -> str:
     return SUGGESTION_REFUSALS.get(reason, SUGGESTION_REFUSED_DEFAULT)
+
+
+# ======================================================================================
+# Message templates (m-24789472, PR 1)
+# ======================================================================================
+
+#: Mirrors of `qualify_api.conversations.templates` (a test pins them equal): the form
+#: counts characters as the person types, the service is still the one that refuses.
+MAX_TEMPLATE_TITLE_CHARS = 60
+MAX_TEMPLATE_BODY_CHARS = 1000
+MAX_TEMPLATES_PER_ACCOUNT = 50
+#: How much of a body the picker shows under the title (one line, «…» when cut).
+TEMPLATE_PREVIEW_CHARS = 90
+
+TEMPLATE_HELP = (
+    "Escribe {nombre} y lo cambiamos por el nombre de la persona; {marca}, por el de tu "
+    "negocio. Lo que pongas entre corchetes, como [precio], lo completas tú antes de enviar."
+)
+TEMPLATE_READY_NOTE = "Plantilla en el cuadro: revísala. Nada sale hasta que pulses «Responder»."
+
+
+class TemplateLike(Protocol):
+    id: Any
+    title: str
+    body: str
+    default_key: str | None
+
+
+@dataclass(frozen=True)
+class TemplateVM:
+    """One template of the account's library, as the picker and the manager show it."""
+
+    template_id: str
+    title: str
+    body: str
+    preview: str
+    is_default: bool
+    is_first: bool
+    is_last: bool
+
+
+def template_preview(body: str, limit: int = TEMPLATE_PREVIEW_CHARS) -> str:
+    """The body on one line, cut at a word with «…» when longer than `limit`."""
+    flat = " ".join(body.split())
+    if len(flat) <= limit:
+        return flat
+    cut = flat[:limit].rsplit(" ", 1)[0] or flat[:limit]
+    return cut.rstrip(" ,.;:") + "…"
+
+
+def build_template_rows(templates: Sequence[TemplateLike]) -> list[TemplateVM]:
+    """The library in the order given (the service's picker order), with the ends marked
+    so «Subir» / «Bajar» can be off on the first and the last."""
+    last = len(templates) - 1
+    return [
+        TemplateVM(
+            template_id=str(t.id),
+            title=t.title,
+            body=t.body,
+            preview=template_preview(t.body),
+            is_default=t.default_key is not None,
+            is_first=i == 0,
+            is_last=i == last,
+        )
+        for i, t in enumerate(templates)
+    ]
+
+
+def template_counter(count: int) -> str:
+    """«12/50» — how many of the account's templates are used."""
+    return f"{count}/{MAX_TEMPLATES_PER_ACCOUNT}"
+
+
+def char_counter(text: str, limit: int) -> str:
+    """«42/60» under a form field."""
+    return f"{len(text)}/{limit}"
+
+
+def moved_order(ids: Sequence[str], template_id: str, step: int) -> list[str] | None:
+    """The whole library's ids after moving one a place up (`step` -1) or down (+1); None
+    when it cannot move (unknown id, already at that end, or a step other than ±1)."""
+    if step not in (-1, 1) or template_id not in ids:
+        return None
+    order = list(ids)
+    index = order.index(template_id)
+    target = index + step
+    if target < 0 or target >= len(order):
+        return None
+    order[index], order[target] = order[target], order[index]
+    return order
+
+
+def _join_es(items: Sequence[str]) -> str:
+    """`a` / `a y b` / `a, b y c`."""
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " y " + items[-1]
+
+
+def pending_fill_ins(
+    text: str, unresolved: Sequence[str], blanks: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """Which of a template's open spots are still in the box: a `{variable}` with no value
+    and a `[fill-in]`. The ones the person already replaced drop out."""
+    return [u for u in unresolved if u in text], [b for b in blanks if b in text]
+
+
+def template_notice(text: str, unresolved: Sequence[str], blanks: Sequence[str]) -> str:
+    """The gentle line over the box after a template is picked, while something is still
+    to be completed. "" once everything was filled — sending is never blocked by it."""
+    left_vars, left_blanks = pending_fill_ins(text, unresolved, blanks)
+    sentences: list[str] = []
+    if left_vars:
+        sentences.append(
+            f"Completa {_join_es(left_vars)} antes de enviar: no tenemos ese dato en esta "
+            "conversación."
+        )
+    if left_blanks:
+        sentences.append(f"Rellena {_join_es(left_blanks)} antes de enviar.")
+    return " ".join(sentences)

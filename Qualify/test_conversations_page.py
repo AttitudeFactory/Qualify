@@ -140,3 +140,67 @@ def test_the_inbox_opens_on_an_account_that_can_read_messages() -> None:
     assert default_account([account("a", dms=False), account("b")]) == "b"
     assert default_account([account("a", status="degraded"), account("b")]) == "b"
     assert default_account([account("a", dms=False), account("b", dms=False)]) == "a"
+
+
+def test_the_composer_offers_templates_and_their_manager() -> None:
+    """m-24789472: «Plantillas» beside «Sugerir respuesta», the fill-in notice over the
+    box, and the drawer that creates, edits, deletes (confirmed) and reorders."""
+    from .conversations_page import conversations_index
+
+    rendered = str(conversations_index().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
+    for text in (
+        "Plantillas",
+        "Administrar plantillas",
+        "Nueva plantilla",
+        "Aún no tienes plantillas en esta cuenta",
+        "Guardar",
+        "Subir",
+        "Bajar",
+        "Editar",
+        "Borrar",
+        "No se puede deshacer",
+        "plantillas en esta cuenta",
+        "Nombre de la plantilla",
+        "Mensaje de la plantilla",
+        "{nombre}",
+    ):
+        assert present(text), text
+    for handler in (
+        "set_templates_menu_open",
+        "load_templates",
+        "apply_template",
+        "open_templates_manager",
+        "set_templates_manager_open",
+        "start_new_template",
+        "start_edit_template",
+        "save_template",
+        "ask_delete_template",
+        "confirm_delete_template",
+        "cancel_delete_template",
+        "move_template",
+        "template_fill_notice",
+        "templates_counter",
+    ):
+        assert handler in rendered, handler
+
+
+def test_picking_a_template_cannot_send() -> None:
+    """B5 by construction: the picker's handler calls no send path of the gateway."""
+    tree = ast.parse((_HERE / "conversations_state.py").read_text(encoding="utf-8"))
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "apply_template"
+    )
+    called = {
+        node.attr
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+    }
+    assert "render_template" in called
+    assert not called & {"reply", "reply_media", "reply_sticker", "send_reply", "send_heart"}

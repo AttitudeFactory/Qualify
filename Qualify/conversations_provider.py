@@ -45,6 +45,14 @@ thread's last inbound (gate → Claude → grounding verdict), `decide_draft` re
 person's verdict, and `reply(..., draft_id=…)` carries it into the outbox's approval.
 Nothing here sends a draft: the approval is still the person pressing «Responder».
 
+**Message templates (m-24789472, PR 1).** The account's library of text templates
+(`ReplyTemplateService`): `templates` lists it (seeding the four defaults on first use),
+`create_template` / `update_template` / `delete_template` / `reorder_templates` manage it,
+and `render_template` turns one into text for THIS thread (`{nombre}`, `{marca}`). Nothing
+here sends a template: the rendered text lands in the box and leaves, if the person wants,
+through `reply` like any other text. A template id from the browser is accepted only if it
+belongs to the account on screen (`_owned_template`).
+
 **Account scoping.** The screen shows ONE account at a time. Every thread-level call
 re-reads the thread and refuses (`ThreadNotFound`) one that belongs to another account of
 the same tenant, so a stale or forged thread id from the browser can never act across
@@ -83,6 +91,13 @@ from qualify_api.conversations.repository import (
 )
 from qualify_api.conversations.service import ConversationService, ThreadNotFound, ThreadView
 from qualify_api.conversations.suggest import ConversationDraftService
+from qualify_api.conversations.templates import (
+    ERR_TEMPLATE_NOT_FOUND,
+    RenderedTemplate,
+    ReplyTemplate,
+    ReplyTemplateNotFound,
+    ReplyTemplateService,
+)
 from qualify_api.inbox.models import Message
 from qualify_api.tenancy.models import Tenant, User
 from qualify_shared.db.session import tenant_session
@@ -268,6 +283,7 @@ class ConversationsGateway:
         connections: ConnectionResolver | None = None,
         drafts: ConversationDraftService | None = None,
         clock: Callable[[], datetime] = _utcnow,
+        templates: ReplyTemplateService | None = None,
     ) -> None:
         self._service = service
         self._repository = repository
@@ -279,6 +295,7 @@ class ConversationsGateway:
         self._connections: ConnectionResolver = connections or _production_connection
         self._drafts = drafts
         self._clock = clock
+        self._templates = templates
 
     # --- lazy production wiring --------------------------------------------------------
 
@@ -325,6 +342,16 @@ class ConversationsGateway:
 
             self._drafts = production_draft_service()
         return self._drafts
+
+    @property
+    def template_service(self) -> ReplyTemplateService:
+        if self._templates is None:
+            from qualify_api.conversations.composition import (  # noqa: PLC0415
+                production_template_service,
+            )
+
+            self._templates = production_template_service()
+        return self._templates
 
     # --- context -----------------------------------------------------------------------
 
@@ -526,6 +553,76 @@ class ConversationsGateway:
             status=status,
             final_text=final_text,
             user_id=user_id,
+        )
+
+    # --- message templates (m-24789472) ------------------------------------------------
+
+    def templates(self, tenant_id: UUID, connection_id: UUID) -> list[ReplyTemplate]:
+        """The account's library in picker order (the four defaults on first use)."""
+        return self.template_service.list_for_connection(
+            tenant_id=tenant_id, connection_id=connection_id
+        )
+
+    def _owned_template(self, tenant_id: UUID, connection_id: UUID, template_id: UUID) -> None:
+        """Refuse a template of another account (RLS already stops another tenant's)."""
+        library = self.templates(tenant_id, connection_id)
+        if template_id not in {t.id for t in library}:
+            raise ReplyTemplateNotFound(ERR_TEMPLATE_NOT_FOUND)
+
+    def create_template(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        user_id: UUID | None,
+        title: str,
+        body: str,
+    ) -> ReplyTemplate:
+        """A new template at the end. Raises `ReplyTemplateError` (Spanish message)."""
+        return self.template_service.create(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            title=title,
+            body=body,
+            user_id=user_id,
+        )
+
+    def update_template(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        template_id: UUID,
+        user_id: UUID | None,
+        title: str,
+        body: str,
+    ) -> ReplyTemplate:
+        self._owned_template(tenant_id, connection_id, template_id)
+        return self.template_service.update(
+            tenant_id=tenant_id,
+            template_id=template_id,
+            title=title,
+            body=body,
+            user_id=user_id,
+        )
+
+    def delete_template(self, tenant_id: UUID, connection_id: UUID, template_id: UUID) -> bool:
+        self._owned_template(tenant_id, connection_id, template_id)
+        return self.template_service.delete(tenant_id=tenant_id, template_id=template_id)
+
+    def reorder_templates(
+        self, tenant_id: UUID, connection_id: UUID, template_ids: list[UUID]
+    ) -> list[ReplyTemplate]:
+        """`template_ids` is the whole library in its new order (`order_stale` else)."""
+        return self.template_service.reorder(
+            tenant_id=tenant_id, connection_id=connection_id, template_ids=template_ids
+        )
+
+    def render_template(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, template_id: UUID
+    ) -> RenderedTemplate:
+        """The template's text for this thread. Reads only: nothing is queued."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.template_service.render(
+            tenant_id=tenant_id, template_id=template_id, thread_id=thread_id
         )
 
     # --- presence ----------------------------------------------------------------------

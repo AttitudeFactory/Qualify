@@ -690,3 +690,104 @@ def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
 
     rendered = str(_story_reply(ConversationsState.messages[0]).render())
     assert "story_reply_label" in rendered and "story_reply_href" in rendered
+
+
+# --- message templates (m-24789472) ----------------------------------------------------
+
+
+def test_the_template_limits_mirror_the_service() -> None:
+    from qualify_api.conversations import templates as backend
+
+    from .conversations_vm import (
+        MAX_TEMPLATE_BODY_CHARS,
+        MAX_TEMPLATE_TITLE_CHARS,
+        MAX_TEMPLATES_PER_ACCOUNT,
+    )
+
+    assert MAX_TEMPLATE_TITLE_CHARS == backend.MAX_TITLE_CHARS
+    assert MAX_TEMPLATE_BODY_CHARS == backend.MAX_BODY_CHARS
+    assert MAX_TEMPLATES_PER_ACCOUNT == backend.MAX_TEMPLATES_PER_CONNECTION
+
+
+def test_template_rows_keep_the_order_and_mark_the_ends() -> None:
+    from qualify_api.conversations.templates import DEFAULT_TEMPLATES, ReplyTemplate
+
+    from .conversations_vm import build_template_rows
+
+    now = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    records = [
+        ReplyTemplate(
+            id=uuid4(),
+            tenant_id=uuid4(),
+            connection_id=uuid4(),
+            title=d.title,
+            body=d.body,
+            position=i,
+            default_key=d.key if i < 2 else None,
+            created_by_user_id=None,
+            updated_by_user_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        for i, d in enumerate(DEFAULT_TEMPLATES)
+    ]
+    rows = build_template_rows(records)
+    assert [r.title for r in rows] == ["Saludo", "Precio", "Horario", "Catálogo"]
+    assert [(r.is_first, r.is_last) for r in rows] == [
+        (True, False),
+        (False, False),
+        (False, False),
+        (False, True),
+    ]
+    assert [r.is_default for r in rows] == [True, True, False, False]
+    assert rows[0].template_id == str(records[0].id)
+    assert build_template_rows([]) == []
+
+
+def test_the_picker_preview_is_one_line_cut_at_a_word() -> None:
+    from .conversations_vm import template_preview
+
+    assert template_preview("Hola,\n  ¿cómo estás?") == "Hola, ¿cómo estás?"
+    cut = template_preview("palabra " * 30, limit=20)
+    assert cut.endswith("…") and len(cut) <= 21 and "palab…" not in cut
+
+
+def test_the_counters_say_used_over_allowed() -> None:
+    from .conversations_vm import char_counter, template_counter
+
+    assert template_counter(12) == "12/50"
+    assert char_counter("Saludo", 60) == "6/60"
+
+
+def test_moving_a_template_returns_the_whole_new_order_or_nothing() -> None:
+    from .conversations_vm import moved_order
+
+    ids = ["a", "b", "c"]
+    assert moved_order(ids, "b", -1) == ["b", "a", "c"]
+    assert moved_order(ids, "b", 1) == ["a", "c", "b"]
+    assert moved_order(ids, "a", -1) is None
+    assert moved_order(ids, "c", 1) is None
+    assert moved_order(ids, "z", 1) is None
+    assert moved_order(ids, "a", 2) is None
+    assert ids == ["a", "b", "c"]  # the input is not mutated
+
+
+def test_the_fill_notice_names_what_is_left_and_goes_away_once_filled() -> None:
+    from .conversations_vm import template_notice
+
+    text = "¡Hola, {nombre}! El precio es [precio]."
+    assert template_notice(text, ["{nombre}"], ["[precio]"]) == (
+        "Completa {nombre} antes de enviar: no tenemos ese dato en esta conversación. "
+        "Rellena [precio] antes de enviar."
+    )
+    assert template_notice("¡Hola, Ana! El precio es [precio].", ["{nombre}"], ["[precio]"]) == (
+        "Rellena [precio] antes de enviar."
+    )
+    assert template_notice("¡Hola, Ana! Cuesta 20.", ["{nombre}"], ["[precio]"]) == ""
+    three = template_notice(
+        "[días] de [hora de apertura] a [hora de cierre]",
+        [],
+        ["[días]", "[hora de apertura]", "[hora de cierre]"],
+    )
+    assert three == "Rellena [días], [hora de apertura] y [hora de cierre] antes de enviar."
+    assert template_notice("", [], []) == ""

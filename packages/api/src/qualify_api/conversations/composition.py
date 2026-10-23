@@ -50,6 +50,10 @@ from qualify_api.conversations.suggest import (
     grounding_from_products,
 )
 from qualify_api.conversations.sync import ConversationSyncService
+from qualify_api.conversations.templates import (
+    PostgresReplyTemplateRepository,
+    ReplyTemplateService,
+)
 
 logger = logging.getLogger("qualify_api.conversations.composition")
 
@@ -274,6 +278,36 @@ def production_draft_service() -> ConversationDraftService:
     )
 
 
+# --- m-24789472: message templates -------------------------------------------------------
+
+
+def brand_name_for(tenant_id: UUID, connection_id: UUID) -> str | None:
+    """`{marca}` for one account: the brand it is linked to (`social_connections.brand_id`
+    → `brands.name`), else the business's own name (`tenants.name` — 1 login = 1 tenant =
+    1 negocio). Read under RLS; None only when neither has a name."""
+    from qualify_api.tenancy.models import Brand, Tenant  # noqa: PLC0415
+
+    with tenant_session(tenant_id) as session:
+        brand_id = session.execute(
+            select(SocialConnection.brand_id).where(SocialConnection.id == connection_id)
+        ).scalar_one_or_none()
+        if brand_id is not None:
+            name = session.scalar(select(Brand.name).where(Brand.id == brand_id))
+            if name and name.strip():
+                return name.strip()
+        tenant_name = session.scalar(select(Tenant.name).where(Tenant.id == tenant_id))
+    return tenant_name.strip() if tenant_name and tenant_name.strip() else None
+
+
+def production_template_service() -> ReplyTemplateService:
+    """The composer's template library. Holds no outbox and no channel: it cannot send."""
+    return ReplyTemplateService(
+        repository=PostgresReplyTemplateRepository(),
+        threads=production_repository(),
+        brand_name=brand_name_for,
+    )
+
+
 class _LazyMediaLinker:
     """QUA-68's public-media linker, built on first use: a worker without
     `QUALIFY_PUBLIC_MEDIA_BASE_URL` still sends text replies and fails only a media one
@@ -325,6 +359,7 @@ __all__ = [
     "DM_CHANNEL_ENV",
     "DM_CHANNEL_INSTAGRAM",
     "DM_CHANNEL_MEMORY",
+    "brand_name_for",
     "dm_channel_mode",
     "granted_scopes_for",
     "grounding_for",
@@ -338,5 +373,6 @@ __all__ = [
     "production_repository",
     "production_sender",
     "production_sync_service",
+    "production_template_service",
     "source_connection_for",
 ]

@@ -157,3 +157,75 @@ class ConversationOutboxItem(Base):
         DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversationReplyTemplate(Base):
+    """One text template of an account's library (m-24789472, 0077). Text a person starts
+    a reply from — never a send: it reaches the counterpart only through `reply_text` and
+    the approved outbox."""
+
+    __tablename__ = "conversation_reply_templates"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_conv_reply_template_conn_tenant",
+            ondelete="CASCADE",
+        ),
+        Index("ix_conv_reply_template_tenant", "tenant_id"),
+        Index("ix_conv_reply_template_order", "connection_id", "position"),
+        Index(
+            "uq_conv_reply_template_default",
+            "tenant_id",
+            "connection_id",
+            "default_key",
+            unique=True,
+            postgresql_where=sql_now("default_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    default_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+
+
+class ConversationReplyTemplateSeed(Base):
+    """One row per account whose library received the defaults (0077): the memory that
+    they were given, so deleting them all does not bring them back — and the per-account
+    lock create and reorder take."""
+
+    __tablename__ = "conversation_reply_template_seeds"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_conv_reply_template_seed_conn_tenant",
+            ondelete="CASCADE",
+        ),
+        Index("ix_conv_reply_template_seed_tenant", "tenant_id"),
+    )
+
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    defaults_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    seeded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
