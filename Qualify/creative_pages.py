@@ -33,6 +33,7 @@ from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
 from .planner_vm import (
+    CARD_ACTION_PLANNER,
     CARD_ACTION_REVIEW,
     CARD_ACTION_SCHEDULE,
     CARD_ACTION_VIEW,
@@ -860,6 +861,7 @@ _CARD_STATE_ICON = {
     "review": "eye",
     "missing": "circle-alert",
     "ready": "circle-check",
+    "scheduled": "calendar-check",
     "used": "history",
     "discarded": "circle-x",
     "drafting": "loader",
@@ -869,6 +871,7 @@ _CARD_ACTION_ICON = {
     CARD_ACTION_REVIEW: "pencil-line",
     CARD_ACTION_SCHEDULE: "calendar-plus",
     CARD_ACTION_VIEW: "eye",
+    CARD_ACTION_PLANNER: "calendar-days",
 }
 
 
@@ -907,21 +910,34 @@ def _card_main_button(post) -> rx.Component:
             width="100%",
             on_click=GalleryState.assign(post.post_id),
         ),
-        rx.link(
-            rx.cond(
-                post.card_action == CARD_ACTION_REVIEW,
-                rx.button(icon(), post.card_action_label, size="2", width="100%"),
-                rx.button(
-                    icon(),
-                    post.card_action_label,
-                    variant="soft",
-                    color_scheme="gray",
-                    size="2",
-                    width="100%",
-                ),
+        rx.cond(
+            # «Programada»: already on the calendar — «Ver en Tu semana» opens it there.
+            post.card_action == CARD_ACTION_PLANNER,
+            rx.button(
+                icon(),
+                post.card_action_label,
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                width="100%",
+                on_click=GalleryState.assign(post.post_id),
             ),
-            href=post.detail_href,
-            width="100%",
+            rx.link(
+                rx.cond(
+                    post.card_action == CARD_ACTION_REVIEW,
+                    rx.button(icon(), post.card_action_label, size="2", width="100%"),
+                    rx.button(
+                        icon(),
+                        post.card_action_label,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                        width="100%",
+                    ),
+                ),
+                href=post.detail_href,
+                width="100%",
+            ),
         ),
     )
 
@@ -936,6 +952,23 @@ def _gallery_card(post) -> rx.Component:
     can_discard = post.can_review | ((post.gallery_state == "schedulable") & ~post.in_calendar)
     actions = rx.box(
         _card_main_button(post),
+        # On a ready card the main button opens Tu semana, so opening the publication
+        # gets its own quiet link — it never depends on knowing the picture is tappable.
+        rx.cond(
+            post.card_action == CARD_ACTION_SCHEDULE,
+            rx.link(
+                rx.button(
+                    rx.icon("eye", size=15),
+                    "Ver publicación",
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    width="100%",
+                ),
+                href=post.detail_href,
+                width="100%",
+            ),
+        ),
         rx.cond(
             can_discard,
             rx.button(
@@ -956,13 +989,15 @@ def _gallery_card(post) -> rx.Component:
             media_fill(post.thumbnail_url, post.video_url, post.kind),
             rx.box(class_name="q-gcard-shade"),
             rx.box(_gallery_state_badge(post), class_name="q-gcard-tl"),
+            # «Ya probada» / «Por probar» only where it helps decide whether to repeat it
+            # (ready and already-out cards: `planner_vm.HISTORY_CARD_STATES`).
             rx.cond(
-                post.temperature != "",
+                (post.temperature != "") & (post.history_word != ""),
                 rx.box(
                     rx.cond(
                         post.temperature == "cold",
-                        rx.icon("snowflake", size=15),
-                        rx.icon("flame", size=15),
+                        rx.icon("badge-check", size=15),
+                        rx.icon("sparkles", size=15),
                     ),
                     rx.text(post.history_word, as_="span"),
                     class_name="q-temp q-temp--big q-temp--" + post.temperature,
@@ -970,7 +1005,10 @@ def _gallery_card(post) -> rx.Component:
             ),
             rx.box(kind_chip(post.kind, post.kind_label, glass=True), class_name="q-gcard-bl"),
             href=post.detail_href,
-            aria_label="Abrir «" + post.title + "»",
+            # The main button is the accessible way in; the picture is a touch shortcut,
+            # so it stays out of the tab order and the screen reader (no double stop).
+            tab_index=-1,
+            aria_hidden="true",
             class_name="q-gcard-media",
         ),
         rx.box(
@@ -1062,7 +1100,7 @@ def _gallery_reject_dialog() -> rx.Component:
 
 
 def _state_chip(value: str, label: str) -> rx.Component:
-    """A state filter: the word, its count, selected = solid. «Todos» first."""
+    """A state filter: the word, its count, selected = solid. «Todas» first."""
     selected = GalleryState.state_filter == value
 
     def count() -> rx.Component:
@@ -1107,8 +1145,16 @@ def _state_chip(value: str, label: str) -> rx.Component:
 def _gallery_toolbar() -> rx.Component:
     return rx.flex(
         rx.flex(
-            _state_chip(GALLERY_FILTER_ALL, "Todos"),
-            *[_state_chip(value, label) for value, label in GALLERY_STATE_FILTERS],
+            _state_chip(GALLERY_FILTER_ALL, "Todas"),
+            # A state with nothing in it is noise on a phone: shown only when it has
+            # publications or is the one selected (UX review, m-24842981).
+            *[
+                rx.cond(
+                    (GalleryState.state_counts[value] > 0) | (GalleryState.state_filter == value),
+                    _state_chip(value, label),
+                )
+                for value, label in GALLERY_STATE_FILTERS
+            ],
             wrap="wrap",
             gap="0.35rem",
             align="center",
@@ -2421,7 +2467,8 @@ def _campaign_field() -> rx.Component:
 def _history_line() -> rx.Component:
     """m-24842981: «Ya probada» / «Por probar» on the publication's own page, with its
     help in sight: «Ya salió 3 veces en tus redes: se puede repetir sin problema.»
-    Nothing while the publication is still being made, failed, or the count is unknown."""
+    Only once the publication is approved (the state fills it then, `_history_texts`) —
+    before that it does not help any decision; nothing either if the count is unknown."""
     return rx.cond(
         (CreativeState.draft_history_help != "")
         & ~CreativeState.draft.is_drafting
@@ -2429,8 +2476,8 @@ def _history_line() -> rx.Component:
         rx.hstack(
             rx.cond(
                 CreativeState.draft_history_word == "Ya probada",
-                tone_badge(CreativeState.draft_history_word, "info", icon="snowflake"),
-                tone_badge(CreativeState.draft_history_word, "neutral", icon="flame"),
+                tone_badge(CreativeState.draft_history_word, "info", icon="badge-check"),
+                tone_badge(CreativeState.draft_history_word, "neutral", icon="sparkles"),
             ),
             rx.text(CreativeState.draft_history_help, size="2", color=T.TEXT_MUTED),
             align="center",

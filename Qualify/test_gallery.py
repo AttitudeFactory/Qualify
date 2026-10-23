@@ -12,6 +12,7 @@ from qualify_api.planner.gallery import GalleryState as DerivedState
 from .gallery_state import GalleryState
 from .planner_state import MODE_ASSIGN, PlannerState
 from .planner_vm import (
+    CARD_ACTION_PLANNER,
     CARD_ACTION_REVIEW,
     CARD_ACTION_SCHEDULE,
     CARD_ACTION_VIEW,
@@ -61,6 +62,7 @@ def test_gallery_labels_are_the_five_post_states_and_none_of_the_event_words() -
         "Por revisar",
         "Le falta algo",
         "Lista para programar",
+        "Programada",
         "Ya salió",
         "Descartada",
         "Creándose",
@@ -91,6 +93,7 @@ def test_each_card_state_has_its_words_and_its_one_main_button() -> None:
             "b", state="needs_action", approval="approved", lifecycle_status="approved"
         ),
         "ready": _post("c", state="schedulable"),
+        "scheduled": _post("g", state="used", has_live_event=True),
         "used": _post("d", state="used", times_published=1),
         "discarded": _post("e", state="discarded", approval="rejected"),
         "drafting": _post("f", state="draft", approval="not_ready", lifecycle_status="drafting"),
@@ -103,6 +106,7 @@ def test_each_card_state_has_its_words_and_its_one_main_button() -> None:
         "review": ("review", "Por revisar", CARD_ACTION_REVIEW, "Revisar"),
         "missing": ("missing", "Le falta algo", CARD_ACTION_REVIEW, "Ver qué falta"),
         "ready": ("ready", "Lista para programar", CARD_ACTION_SCHEDULE, "Elegir día y hora"),
+        "scheduled": ("scheduled", "Programada", CARD_ACTION_PLANNER, "Ver en Tu semana"),
         "used": ("used", "Ya salió", CARD_ACTION_VIEW, "Ver"),
         "discarded": ("discarded", "Descartada", CARD_ACTION_VIEW, "Ver"),
         "drafting": ("drafting", "Creándose", CARD_ACTION_VIEW, "Ver"),
@@ -118,18 +122,46 @@ def test_waiting_for_review_wins_over_what_else_is_missing() -> None:
     assert card_state("nonsense", waiting_review=False) is None
 
 
+def test_on_the_calendar_but_never_out_is_programada_not_ya_salio() -> None:
+    """UX review (m-24842981): a one-use publication already on the calendar for
+    Thursday has not gone out — the card must not say «Ya salió»."""
+    assert card_state("used", waiting_review=False, times_published=0) == CARD_STATES["scheduled"]
+    assert card_state("used", waiting_review=False, times_published=1) == CARD_STATES["used"]
+    post = _post("s", state="used", has_live_event=True)
+    assert (post.card_label, post.card_action_label) == ("Programada", "Ver en Tu semana")
+    assert post.gallery_label == "Programada"  # the drawer pill says the same
+
+
 def test_history_word_and_its_visible_help() -> None:
     assert (history_word(0), history_help(0)) == (
         "Por probar",
         "Todavía no ha salido en tus redes.",
     )
-    assert (history_word(1), history_help(1)) == ("Por probar", "Salió 1 vez en tus redes.")
+    assert (history_word(1), history_help(1)) == (
+        "Por probar",
+        "Salió 1 vez en tus redes: todavía no sabemos si funciona.",
+    )
     assert (history_word(3), history_help(3)) == (
         "Ya probada",
         "Ya salió 3 veces en tus redes: se puede repetir sin problema.",
     )
     post = _post("a", state="schedulable", times_published=3)
     assert (post.history_word, post.history_help) == (history_word(3), history_help(3))
+    used = _post("b", state="used", times_published=2)
+    assert used.history_word == "Ya probada"
+
+
+def test_the_history_line_only_shows_where_it_helps_decide() -> None:
+    """UX review (m-24842981): only ready and already-out cards say «Ya probada» /
+    «Por probar»; review, missing, drafting, scheduled and discarded cards do not."""
+    quiet = [
+        _post("a", state="needs_action", lifecycle_status="generated"),
+        _post("b", state="needs_action", approval="approved", lifecycle_status="approved"),
+        _post("c", state="draft", approval="not_ready", lifecycle_status="drafting"),
+        _post("d", state="used", has_live_event=True),
+        _post("e", state="discarded", approval="rejected", times_published=4),
+    ]
+    assert [(p.history_word, p.history_help) for p in quiet] == [("", "")] * len(quiet)
 
 
 def test_the_gallery_card_prints_no_cold_hot_or_evergreen_and_no_title_only_help() -> None:
@@ -160,6 +192,8 @@ def test_the_gallery_card_prints_no_cold_hot_or_evergreen_and_no_title_only_help
         tokens = s.replace("·", " ").split()
         assert "Cold" not in tokens and "Hot" not in tokens, s
         assert "evergreen" not in s.lower(), s
+        # UX review: the old metaphor's glyphs go too — the icon says what the word says
+        assert s not in ("snowflake", "flame"), s
     for src in sources:
         tree = ast.parse(textwrap.dedent(src))
         assert not any(isinstance(k, ast.keyword) and k.arg == "title" for k in ast.walk(tree))
@@ -182,7 +216,7 @@ def test_filter_posts_by_state_and_category() -> None:
     posts = [
         _post("a", state="schedulable", category="reel"),
         _post("b", state="draft", category="galeria"),
-        _post("c", state="used", category="reel"),
+        _post("c", state="used", category="reel", times_published=1),
         _post("d", state="discarded", category="story"),
     ]
     assert [p.post_id for p in filter_posts(posts, state=GALLERY_FILTER_ALL, category="")] == [

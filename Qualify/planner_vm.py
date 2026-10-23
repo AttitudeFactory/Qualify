@@ -607,6 +607,7 @@ class CardStateVM:
 CARD_ACTION_REVIEW = "review"  # opens the publication's page
 CARD_ACTION_SCHEDULE = "schedule"  # hands it to Tu semana to choose day and time
 CARD_ACTION_VIEW = "view"  # opens the publication's page, nothing to do
+CARD_ACTION_PLANNER = "planner"  # opens Tu semana on it: it is already on the calendar
 
 #: The ready card's button keeps the name CREAR-1 (m-24842978) gave this same step —
 #: it opens Tu semana, where «Programar» is the final, confirming verb (navigation map
@@ -622,6 +623,7 @@ CARD_STATES: dict[str, CardStateVM] = {
         CardStateVM(
             "ready", "Lista para programar", "ok", CARD_ACTION_SCHEDULE, SCHEDULE_ACTION_LABEL
         ),
+        CardStateVM("scheduled", "Programada", "info", CARD_ACTION_PLANNER, "Ver en Tu semana"),
         CardStateVM("used", "Ya salió", "info", CARD_ACTION_VIEW, "Ver"),
         CardStateVM("discarded", "Descartada", "error", CARD_ACTION_VIEW, "Ver"),
         CardStateVM("drafting", "Creándose", "neutral", CARD_ACTION_VIEW, "Ver"),
@@ -639,15 +641,25 @@ GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
 )
 
 
-def card_state(gallery_state: str, *, waiting_review: bool) -> CardStateVM | None:
+def card_state(
+    gallery_state: str, *, waiting_review: bool, times_published: int = 0
+) -> CardStateVM | None:
     """The card's state (m-24842981): a publication generated and waiting for the
-    owner is «Por revisar» whatever else it lacks — reviewing comes first."""
+    owner is «Por revisar» whatever else it lacks — reviewing comes first. A «used» one
+    that has never gone out is only on the calendar: «Programada», not «Ya salió»."""
     key = _CARD_STATE_BY_GALLERY.get(gallery_state)
     if key is None:
         return None
     if gallery_state == "needs_action" and waiting_review:
         key = "review"
+    if gallery_state == "used" and times_published <= 0:
+        key = "scheduled"
     return CARD_STATES[key]
+
+
+#: The card states where «Ya probada» / «Por probar» helps a decision — whether to
+#: repeat it. Everywhere else the line is noise on a phone (UX review, m-24842981).
+HISTORY_CARD_STATES: frozenset[str] = frozenset({"ready", "used"})
 
 
 def history_help(times_published: int) -> str:
@@ -658,7 +670,7 @@ def history_help(times_published: int) -> str:
     if n >= COLD_MIN_USES:
         return f"Ya salió {n} veces en tus redes: se puede repetir sin problema."
     if n == 1:
-        return "Salió 1 vez en tus redes."
+        return "Salió 1 vez en tus redes: todavía no sabemos si funciona."
     return "Todavía no ha salido en tus redes."
 
 
@@ -1143,7 +1155,12 @@ def build_post_option(
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
     chips = list(outputs)
     g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
-    card = card_state(gallery_state, waiting_review=lifecycle_status == "generated")
+    card = card_state(
+        gallery_state,
+        waiting_review=lifecycle_status == "generated",
+        times_published=times_published,
+    )
+    shows_history = card is not None and card.key in HISTORY_CARD_STATES
     if card is not None:  # the same words on every surface that prints the state
         g_label, g_tone = card.label, card.tone
     kind, aspect = frame_shape(category or "", "")
@@ -1190,8 +1207,8 @@ def build_post_option(
         card_tone=card.tone if card is not None else "neutral",
         card_action=card.action if card is not None else CARD_ACTION_VIEW,
         card_action_label=card.action_label if card is not None else "Ver",
-        history_word=history_word(times_published),
-        history_help=history_help(times_published),
+        history_word=history_word(times_published) if shows_history else "",
+        history_help=history_help(times_published) if shows_history else "",
     )
 
 

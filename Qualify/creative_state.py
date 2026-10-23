@@ -45,6 +45,7 @@ from qualify_creative.enums import (
     ContentFormat,
     ContentKind,
     ContentType,
+    DraftStatus,
 )
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
@@ -390,6 +391,13 @@ def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.
 #: 2026-10-08: one view with sections replaced the step-by-step wizard). `presenter`
 #: only applies to the two avatar kinds; «Reglas» is a folded, unnumbered extra.
 GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
+
+
+#: The publication's page shows «Ya probada» / «Por probar» only once it is approved —
+#: that is when the owner decides whether to repeat it (UX review, m-24842981).
+_HISTORY_STATUSES: frozenset[str] = frozenset(
+    {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
+)
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -5284,6 +5292,8 @@ class CreativeState(rx.State):
                 self._polling_draft_id = str(draft_id)
         if should_poll:
             yield CreativeState.poll_draft
+        if vm.status not in _HISTORY_STATUSES:  # before approval it helps no decision
+            return
         word, help_text = await _history_texts(tenant_id, draft_id)
         async with self:
             if self.draft is not None and self.draft.draft_id == str(draft_id):
