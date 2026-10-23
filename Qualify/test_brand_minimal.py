@@ -378,3 +378,70 @@ async def test_progress_is_saved_by_step_name(states: _States) -> None:
     states(wiz.BrandWizardState).step = 4
     manual = await brand_finish._progress_document(Holder(), "manual", completed=False)
     assert manual["step"] == 4
+
+
+# -- UX review (m-24848529) --------------------------------------------------------------
+
+
+def test_each_blocked_step_says_what_it_still_needs() -> None:
+    assert set(vm.MISSING_HINTS) == set(vm.STEP_NAMES) - {vm.STEP_SOCIALS}
+    assert vm.MISSING_HINTS[vm.STEP_VOICE] == (
+        "Para terminar, escribe cómo se lo dirías a un cliente."
+    )
+    assert all(hint.startswith("Para ") for hint in vm.MISSING_HINTS.values())
+
+
+def test_the_account_country_is_never_asked_twice() -> None:
+    known = frozenset({"CO", "VE", "UY"})
+    assert vm.account_country("", "ve", known) == "VE"
+    # what a read profile or a draft already holds wins
+    assert vm.account_country("CO", "VE", known) == "CO"
+    # a country the step cannot name stays out
+    assert vm.account_country("", "AR", known) == ""
+    assert vm.account_country("", None, known) == ""
+
+
+async def test_forgetting_a_profile_puts_the_accounts_country_back(states: _States) -> None:
+    connect = states(wiz.BrandConnectState)
+    connect.profile_username = "otra.cuenta"
+    connect.country_code = "CO"
+    connect.city = "Cúcuta"
+    state = BrandMinimalState()
+    state.account_country = "VE"
+    await BrandMinimalState.skip_socials.fn(state)
+    assert (connect.country_code, connect.city) == ("VE", "")
+
+
+def test_the_optional_parts_open_only_when_asked() -> None:
+    state = BrandMinimalState()
+    assert not state.more_logo_versions and not state.show_place
+    BrandMinimalState.show_more_logo_versions.fn(state)
+    BrandMinimalState.open_place.fn(state)
+    assert state.more_logo_versions and state.show_place
+
+
+def test_the_logo_and_business_steps_ask_in_the_owners_words() -> None:
+    from .brand_minimal import _MAIN_LOGO_VERSION, brand_minimal_index
+
+    assert _MAIN_LOGO_VERSION == "imagotipo"  # the version the palette reads first
+    rendered = str(brand_minimal_index())
+
+    def shown(text: str) -> bool:
+        return text in rendered or json.dumps(text)[1:-1] in rendered
+
+    for text in (
+        "Sube tu logo",
+        "Una foto o imagen de tu logo. Con una basta.",
+        "Tengo otras versiones de mi logo (opcional)",
+        "Más opciones: país y ciudad",
+        "Para seguir, toca la rueda y elige al menos un color.",
+    ):
+        assert shown(text), text
+
+
+def test_the_tone_sliders_have_a_name_and_no_bare_number() -> None:
+    import reflex as rx
+
+    rendered = str(rx.fragment(*wiz._tone_sliders()))
+    assert "Entre " in rendered
+    assert "toString" not in rendered

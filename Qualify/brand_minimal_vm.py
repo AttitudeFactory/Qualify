@@ -226,6 +226,27 @@ def step_complete(
     return False
 
 
+#: What a step still needs, said under its controls while Continuar is off (UX review
+#: of m-24848529: a button that is off without a reason reads as «se trabó»). Tus redes
+#: has none: it shows no Continuar until a profile is read.
+MISSING_HINTS: dict[str, str] = {
+    STEP_BUSINESS: "Para seguir, responde las tres preguntas de arriba.",
+    STEP_LOGO: "Para seguir, sube tu logo o responde la primera pregunta.",
+    STEP_COLOURS: "Para seguir, toca la rueda y elige al menos un color.",
+    STEP_VOICE: "Para terminar, escribe cómo se lo dirías a un cliente.",
+}
+
+
+def account_country(current: str, account: str | None, known: frozenset[str]) -> str:
+    """The country Tu negocio y rubro starts with: what is already there (a read profile,
+    a draft), else the account's own country — chosen at signup (m-24842967), so it is
+    never asked twice — when the step knows how to name it."""
+    if current.strip():
+        return current
+    code = (account or "").strip().upper()
+    return code if code in known else ""
+
+
 def first_example(do_examples: str) -> str:
     """The phrase «Cómo hablas» shows: the kit's first example, if any."""
     for line in do_examples.splitlines():

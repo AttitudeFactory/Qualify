@@ -38,11 +38,15 @@ from .creative_wizard_pages import (  # the wizards' own controls, shared on pur
     _CONTROL_RADIUS,
     _FINISH_DRAFT_LABEL,
     _FINISH_LABEL,
+    _LOGO_VERSION_ACCEPT,
+    _PALETTE_VERSION_ORDER,
     COUNTRY_OPTIONS,
     HAS_LOGO_PROFILE,
     LOGO_SOURCE_PROFILE,
     BrandConnectState,
     BrandWizardState,
+    _asset_src,
+    _brand_extras,
     _change_email_button,
     _choice_card,
     _connect_loading,
@@ -54,9 +58,11 @@ from .creative_wizard_pages import (  # the wizards' own controls, shared on pur
     _labeled_input,
     _loading_view,
     _logo_step_complete,
+    _logo_versions,
     _or_ready,
     _profile_avatar,
     _progress_trigger,
+    _remove_button,
     _select_field,
     _step_body,
     _step_counter,
@@ -66,7 +72,7 @@ from .creative_wizard_pages import (  # the wizards' own controls, shared on pur
     _wizard_shell,
 )
 from .tenant import tenant_uuid
-from .ui import callout, card, page_body, page_header
+from .ui import callout, card, dropzone, page_body, page_header
 from .ui import tokens as T
 
 logger = logging.getLogger(__name__)
@@ -95,6 +101,15 @@ _LOGO_FROM_PROFILE = (
 _PHRASE_LABEL = "¿Cómo le dirías a un cliente que llegó el combo nuevo?"
 _PHRASE_PLACEHOLDER = "Ej.: ¡Llegó el combo nuevo! Pásate hoy y pruébalo."
 
+#: Tu logo on «Sí» (UX review): ONE upload. It fills the version the palette reads
+#: first (`_PALETTE_VERSION_ORDER`); the four versions and «Otros elementos» wait
+#: behind «Tengo otras versiones de mi logo (opcional)».
+_MAIN_LOGO_VERSION = _PALETTE_VERSION_ORDER[0]
+_MAIN_LOGO_UPLOAD_ID = "brand_minimal_logo"
+
+#: Countries Tu negocio y rubro can name (`account_country`).
+_KNOWN_COUNTRIES = frozenset(code for code, _name in COUNTRY_OPTIONS)
+
 
 class BrandMinimalState(rx.State):
     """The five steps' cursor (a step NAME, `brand_minimal_vm.STEP_NAMES`) and the one
@@ -107,6 +122,12 @@ class BrandMinimalState(rx.State):
     #: `enter` finished deciding the step: until then the page shows its loading card,
     #: so an owner coming back never sees Tus redes flash before their own step.
     entered: bool = False
+    #: Tu logo: the four versions and «Otros elementos» are open (behind a soft button).
+    more_logo_versions: bool = False
+    #: Tu negocio y rubro: país and ciudad are open (behind «Más opciones»).
+    show_place: bool = False
+    #: The account's country (a session only), put back when a read profile is forgotten.
+    account_country: str = ""
 
     @rx.var
     def step_number(self) -> int:
@@ -131,11 +152,15 @@ class BrandMinimalState(rx.State):
             self.entered = False
             auth = await self.get_state(AuthState)
             tenant = brand_tenant_id(auth)
+            in_session = auth.session_tenant_id != ""
         tenant_id = tenant_uuid(tenant) if tenant else None
         entry: _Entry | None = None
+        account_country = ""
         if tenant_id is not None:
             try:
                 entry = await asyncio.to_thread(_read_entry, tenant_id)
+                if in_session:
+                    account_country = await asyncio.to_thread(_read_account_country, tenant_id)
             except SQLAlchemyError as exc:
                 logger.warning("brand minimal: entry unreadable: %s", type(exc).__name__)
         if entry is not None and entry.finished:
@@ -144,6 +169,9 @@ class BrandMinimalState(rx.State):
             yield rx.redirect(_EDITOR_ROUTE)
             return
         async with self:
+            self.account_country = vm.account_country("", account_country, _KNOWN_COUNTRIES)
+            self.more_logo_versions = False
+            self.show_place = False
             if entry is None:
                 self.step = vm.FIRST_STEP
             else:
@@ -160,6 +188,10 @@ class BrandMinimalState(rx.State):
                     wizard = await self.get_state(BrandWizardState)
                     if not wizard.has_logo:
                         wizard.has_logo = HAS_LOGO_PROFILE
+            connect = await self.get_state(BrandConnectState)
+            connect.country_code = vm.account_country(
+                connect.country_code, self.account_country, _KNOWN_COUNTRIES
+            )
             self.entered = True
         yield None
 
@@ -216,7 +248,8 @@ class BrandMinimalState(rx.State):
         connect.profile_pic_is_real = False
         connect.logo_from_profile = False
         connect.sector = ""
-        connect.country_code = ""
+        # the profile's country goes; the account's own (chosen at signup) comes back
+        connect.country_code = self.account_country
         connect.city = ""
         connect.error = ""
 
@@ -242,6 +275,17 @@ class BrandMinimalState(rx.State):
         connect.logo_from_profile = False
         if wizard.logo_source == LOGO_SOURCE_PROFILE:
             await wizard.retire_logo_colours()
+
+    @rx.event
+    def show_more_logo_versions(self) -> None:
+        """«Tengo otras versiones de mi logo (opcional)»: the four versions and «Otros
+        elementos», as in the editor."""
+        self.more_logo_versions = True
+
+    @rx.event
+    def open_place(self) -> None:
+        """«Más opciones: país y ciudad», or «Cambiar» next to a read profile's place."""
+        self.show_place = True
 
     @rx.event
     async def change_logo_answer(self) -> None:
@@ -292,6 +336,8 @@ class BrandMinimalState(rx.State):
         async with self:
             self.step = vm.FIRST_STEP
             self.phrase = ""
+            self.more_logo_versions = False
+            self.show_place = False
             navigation = await _finish_navigation(self)
         yield brand_documents.BrandDocumentState.reset_documents
         if navigation is not None:
@@ -312,6 +358,14 @@ class _Entry:
         self.saved_step = saved_step
         self.facts = facts
         self.progress = progress
+
+
+def _read_account_country(tenant_id: UUID) -> str:
+    """The country the owner chose at signup (m-24842967), or "" when unreadable."""
+    from .settings_provider import read_locale
+
+    locale = read_locale(tenant_id)
+    return locale.country if locale is not None else ""
 
 
 def _read_entry(tenant_id: UUID) -> _Entry | None:
@@ -425,26 +479,77 @@ def _step_business() -> rx.Component:
             CreativeState.set_kit_audience,
             "Ej.: Estudiantes y oficinistas de la zona que almuerzan rápido.",
         ),
-        rx.grid(
-            _select_field(
-                "País (opcional)",
-                BrandConnectState.country_code,
-                BrandConnectState.set_country_code,
-                COUNTRY_OPTIONS,
-                "Elige tu país",
-            ),
-            _labeled_input(
-                "Ciudad (opcional)",
-                BrandConnectState.city,
-                BrandConnectState.set_city,
-                "Ej.: San Cristóbal",
-            ),
-            # one column on a phone (N12), two from the small breakpoint up
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="3",
-            width="100%",
-        ),
+        _place(),
         icon="store",
+    )
+
+
+def _place_fields() -> rx.Component:
+    return rx.grid(
+        _select_field(
+            "País (opcional)",
+            BrandConnectState.country_code,
+            BrandConnectState.set_country_code,
+            COUNTRY_OPTIONS,
+            "Elige tu país",
+        ),
+        _labeled_input(
+            "Ciudad (opcional)",
+            BrandConnectState.city,
+            BrandConnectState.set_city,
+            "Ej.: San Cristóbal",
+        ),
+        # one column on a phone (N12), two from the small breakpoint up
+        columns=rx.breakpoints(initial="1", sm="2"),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _place_summary() -> rx.Component:
+    """«San Cristóbal, Venezuela · Cambiar»: the place a read profile brought."""
+    country_name = rx.match(BrandConnectState.country_code, *COUNTRY_OPTIONS, "")
+    return rx.hstack(
+        rx.icon("map-pin", size=T.ICON_SM, color=T.TEXT_MUTED),
+        rx.text(
+            BrandConnectState.city,
+            rx.cond(country_name != "", rx.fragment(", ", country_name)),
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.button(
+            "Cambiar",
+            type="button",
+            variant="ghost",
+            size="3",
+            radius=_CONTROL_RADIUS,
+            min_height="44px",
+            on_click=BrandMinimalState.open_place,
+        ),
+        align="center",
+        spacing="2",
+        width="100%",
+        flex_wrap="wrap",
+    )
+
+
+def _place() -> rx.Component:
+    """País and ciudad (N6: three questions on the step, the rest optional): the fields
+    once opened; a read profile's place as one line; otherwise a soft button. The
+    account's country is already chosen (`BrandMinimalState.enter`)."""
+    return rx.cond(
+        BrandMinimalState.show_place,
+        _place_fields(),
+        rx.cond(
+            BrandConnectState.city != "",
+            _place_summary(),
+            _wide_button(
+                "Más opciones: país y ciudad",
+                "map-pin",
+                BrandMinimalState.open_place,
+                variant="ghost",
+            ),
+        ),
     )
 
 
@@ -474,12 +579,100 @@ def _logo_from_profile() -> rx.Component:
     )
 
 
+def _main_logo_upload() -> rx.Component:
+    """«Sube tu logo»: one dropzone, saved as the version the palette reads first."""
+    staged = BrandWizardState.logo_versions.contains(_MAIN_LOGO_VERSION)
+    return rx.vstack(
+        dropzone(
+            rx.vstack(
+                rx.cond(
+                    staged,
+                    rx.image(
+                        src=_asset_src(BrandWizardState.logo_versions[_MAIN_LOGO_VERSION].to(str)),
+                        alt="Tu logo",
+                        height="5.5rem",
+                        width="100%",
+                        object_fit="contain",
+                    ),
+                    rx.icon("image-plus", size=28, color=T.TEXT_MUTED),
+                ),
+                rx.text(
+                    rx.cond(staged, "Toca para cambiarlo", "Sube tu logo"),
+                    size="3",
+                    weight="medium",
+                ),
+                rx.text(
+                    "Una foto o imagen de tu logo. Con una basta.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    text_align="center",
+                ),
+                spacing="2",
+                align="center",
+                width="100%",
+            ),
+            upload_id=_MAIN_LOGO_UPLOAD_ID,
+            accept=_LOGO_VERSION_ACCEPT,
+            max_files=1,
+            on_drop=BrandWizardState.handle_logo_version_upload(
+                rx.upload_files(upload_id=_MAIN_LOGO_UPLOAD_ID), _MAIN_LOGO_VERSION
+            ),
+            width="100%",
+        ),
+        rx.cond(
+            staged,
+            rx.hstack(
+                rx.text("Quitar este logo", size="2", color=T.TEXT_MUTED),
+                _remove_button(
+                    "Quitar tu logo", BrandWizardState.clear_logo_version(_MAIN_LOGO_VERSION)
+                ),
+                align="center",
+                spacing="1",
+            ),
+        ),
+        spacing="2",
+        align="center",
+        width="100%",
+    )
+
+
+def _logo_upload_minimal() -> rx.Component:
+    """Tu logo on «Sí, ya tengo logo»: one upload, and the versions only if asked for."""
+    return rx.vstack(
+        rx.cond(
+            BrandWizardState.logo_error != "",
+            callout(BrandWizardState.logo_error, "error"),
+        ),
+        rx.cond(
+            BrandMinimalState.more_logo_versions,
+            rx.vstack(_logo_versions(), _brand_extras(), spacing="4", width="100%"),
+            rx.vstack(
+                _main_logo_upload(),
+                _wide_button(
+                    "Tengo otras versiones de mi logo (opcional)",
+                    "chevron-right",
+                    BrandMinimalState.show_more_logo_versions,
+                    variant="ghost",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+        spacing="4",
+        width="100%",
+    )
+
+
 def _step_logo_answered() -> rx.Component:
     return rx.vstack(
         rx.cond(
             BrandWizardState.has_logo == HAS_LOGO_PROFILE,
             _logo_from_profile(),
-            _step_logo(BrandMinimalState.next_step),
+            rx.cond(
+                BrandWizardState.has_logo == "si",
+                _logo_upload_minimal(),
+                _step_logo(BrandMinimalState.next_step),
+            ),
         ),
         _wide_button(
             "Cambiar mi respuesta",
@@ -575,6 +768,25 @@ def _control(label: str, on_click: Any, **props: Any) -> rx.Component:
     )
 
 
+#: The main action takes the whole width on a phone (the thumb's reach), its own from sm.
+_PRIMARY_WIDTH = rx.breakpoints(initial="100%", sm="auto")
+
+
+def _missing_hint() -> rx.Component:
+    """While Continuar (or «Terminar mi marca») is off, what the step still needs."""
+    return rx.cond(
+        ~_can_continue(),
+        rx.match(
+            BrandMinimalState.step,
+            *(
+                (name, rx.text(hint, size="2", color=T.TEXT_MUTED, width="100%"))
+                for name, hint in vm.MISSING_HINTS.items()
+            ),
+            rx.fragment(),
+        ),
+    )
+
+
 def _finish() -> rx.Component:
     return rx.button(
         rx.cond(AuthState.session_tenant_id != "", _FINISH_LABEL, _FINISH_DRAFT_LABEL),
@@ -585,6 +797,7 @@ def _finish() -> rx.Component:
         on_click=BrandMinimalState.finish,
         loading=CreativeState.kit_saving,
         disabled=~_can_continue(),
+        width=_PRIMARY_WIDTH,
     )
 
 
@@ -626,24 +839,40 @@ def _controls() -> rx.Component:
                 min_height="44px",
                 on_click=BrandMinimalState.next_step,
                 disabled=~_can_continue(),
+                width=_PRIMARY_WIDTH,
             ),
         ),
     )
-    return rx.hstack(
-        back,
-        rx.spacer(),
-        later,
-        forward,
-        width="100%",
-        align="center",
+    # A phone: the main action first, at full width; ‹ Atrás and «Seguir después»
+    # below it on one line. From sm: the single row, the main action on the right.
+    return rx.vstack(
+        _missing_hint(),
+        rx.flex(
+            rx.hstack(
+                back,
+                rx.spacer(),
+                later,
+                align="center",
+                spacing="2",
+                width="100%",
+                flex="1",
+            ),
+            forward,
+            direction=rx.breakpoints(initial="column-reverse", sm="row"),
+            align=rx.breakpoints(initial="stretch", sm="center"),
+            gap="0.5rem",
+            width="100%",
+        ),
         spacing="2",
-        flex_wrap="wrap",
+        width="100%",
     )
 
 
 def _column_width() -> rx.Var[str]:
     return rx.cond(
-        (BrandMinimalState.step == vm.STEP_LOGO) & (BrandWizardState.has_logo == "si"),
+        (BrandMinimalState.step == vm.STEP_LOGO)
+        & (BrandWizardState.has_logo == "si")
+        & BrandMinimalState.more_logo_versions,
         _BRANDBOARD_COLUMN_MAX,
         "34rem",
     )
