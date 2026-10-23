@@ -33,10 +33,43 @@ NO_CURRENCY = "Sin moneda"
 CURRENCY_CODES: tuple[str, ...] = ("USD", "UYU", "COP", "VES", "EUR", "CLP", "ARS", "MXN", "PEN")
 CURRENCY_OPTIONS: tuple[str, ...] = (NO_CURRENCY, *CURRENCY_CODES)
 
+#: m-24842974: a currency reads by its name, the code only in brackets. The four of the
+#: markets Qualify serves come first; the rest wait under «Otra moneda».
+MAIN_CURRENCIES: tuple[tuple[str, str], ...] = (
+    ("COP", "Pesos colombianos (COP)"),
+    ("VES", "Bolívares (VES)"),
+    ("USD", "Dólares (USD)"),
+    ("UYU", "Pesos uruguayos (UYU)"),
+)
+OTHER_CURRENCIES: tuple[tuple[str, str], ...] = (
+    ("EUR", "Euros (EUR)"),
+    ("CLP", "Pesos chilenos (CLP)"),
+    ("ARS", "Pesos argentinos (ARS)"),
+    ("MXN", "Pesos mexicanos (MXN)"),
+    ("PEN", "Soles (PEN)"),
+)
+OTHER_CURRENCY_GROUP = "Otra moneda"
+_CURRENCY_NAMES: dict[str, str] = dict(MAIN_CURRENCIES + OTHER_CURRENCIES)
+
 
 def currency_choice(code: str) -> str:
     """The stored code as the select shows it."""
     return code or NO_CURRENCY
+
+
+def currency_name(code: str) -> str:
+    """«Pesos colombianos (COP)» for "COP"; «Sin moneda» for none; an unknown code as-is."""
+    clean = (code or "").strip().upper()
+    if not clean:
+        return NO_CURRENCY
+    return _CURRENCY_NAMES.get(clean, clean)
+
+
+def business_default_currency(code: str | None) -> str:
+    """The business's own currency (`tenants.currency`, set at signup) as the form's
+    starting choice — "" when it is one the catalog does not offer."""
+    clean = (code or "").strip().upper()
+    return clean if clean in CURRENCY_CODES else ""
 
 
 def currency_from_choice(choice: str) -> str:
@@ -110,6 +143,52 @@ def parse_price_input(text: str) -> Decimal | None:
     return amount.quantize(Decimal("0.01"))
 
 
+# -- «Agregar producto» in three steps (m-24842974) --------------------------------------
+#: The photo first, then the name, then what to do with it. Indexes of `NEW_PRODUCT_STEPS`.
+STEP_PHOTO, STEP_NAME, STEP_DONE = 0, 1, 2
+NEW_PRODUCT_STEPS: tuple[str, ...] = ("La foto", "El nombre", "Listo")
+NEW_PRODUCT_STEP_ICONS: tuple[str, ...] = ("camera", "pencil-line", "check")
+NEW_PRODUCT_STEP_TITLES: tuple[str, ...] = (
+    "La foto",
+    "¿Cómo se llama?",
+    "Listo",
+)
+MISSING_PHOTO = "Falta la foto"
+
+
+def step_counter(step: int) -> str:
+    """«Paso 2 de 3» — the step clamped into range."""
+    total = len(NEW_PRODUCT_STEPS)
+    return f"Paso {min(max(int(step), 0), total - 1) + 1} de {total}"
+
+
+def steps_done(step: int) -> list[bool]:
+    """What the stepper draws as checked: every step before the current one."""
+    return [index < int(step) for index in range(len(NEW_PRODUCT_STEPS))]
+
+
+#: The formats only show up when a file is refused (m-24842974: never on the main path).
+MEDIA_NOT_ACCEPTED = "Ese archivo no es una foto ni un video. Prueba con otra foto de tu galería."
+MEDIA_TOO_MANY = "Puedes subir hasta 12 fotos o videos por producto. Elige menos."
+MEDIA_TOO_BIG = "Ese archivo es demasiado pesado. Prueba con otra foto o un video más corto."
+
+
+def rejection_message(rejected: Sequence[object]) -> str:
+    """The owner's sentence for files the upload zone refused (react-dropzone's
+    `fileRejections`: `{"file": …, "errors": [{"code": …}]}` each)."""
+    codes: set[str] = set()
+    for row in rejected or ():
+        errors = row.get("errors", []) if isinstance(row, dict) else []
+        for error in errors or ():
+            if isinstance(error, dict):
+                codes.add(str(error.get("code", "")))
+    if "too-many-files" in codes:
+        return MEDIA_TOO_MANY
+    if "file-too-large" in codes:
+        return MEDIA_TOO_BIG
+    return MEDIA_NOT_ACCEPTED
+
+
 class _MediaLike(Protocol):
     id: object
     media_type: str
@@ -181,13 +260,14 @@ class ProductVM:
 
 
 def counts_label(photo_count: int, video_count: int) -> str:
-    """ "3 fotos · 1 video"; the zero side is dropped; "Sin fotos" when both are zero."""
+    """ "3 fotos · 1 video"; the zero side is dropped; «Falta la foto» when both are zero
+    (m-24842974: the product exists, and the words say what it still needs)."""
     parts: list[str] = []
     if photo_count:
         parts.append("1 foto" if photo_count == 1 else f"{photo_count} fotos")
     if video_count:
         parts.append("1 video" if video_count == 1 else f"{video_count} videos")
-    return " · ".join(parts) if parts else "Sin fotos"
+    return " · ".join(parts) if parts else MISSING_PHOTO
 
 
 def media_meta_label(

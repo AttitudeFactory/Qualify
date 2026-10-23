@@ -15,6 +15,10 @@ Pins:
 4. The upload progress reads "Procesando N de M" and a percentage.
 5. `ingest_pending` stores every parked file, collects the failures as text (the
    service's own Spanish message), and re-reads the product when done.
+7. m-24842974: «Agregar producto» in three steps — the photo first and never a gate,
+   «Atrás» keeps what was typed (N6), «Listo» after saving with the way to Crear, the
+   business's own currency as the start, refused files in the owner's words, and no
+   «arrastra» / «haz clic» / format siglas on the main path.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ def _product(product_id: str = str(_PRODUCT_ID), **kw: Any) -> ProductVM:
         "primary_photo_key": "",
         "photo_count": 0,
         "video_count": 0,
-        "counts_label": "Sin fotos",
+        "counts_label": "Falta la foto",
         "media": (),
     }
     base.update(kw)
@@ -126,11 +130,11 @@ async def test_the_form_refuses_an_empty_name_before_any_call(monkeypatch) -> No
     assert calls == []
 
 
-async def test_creating_a_product_closes_the_form_and_leaves_the_editor_closed(
+async def test_creating_a_product_lands_on_listo_and_leaves_the_editor_closed(
     monkeypatch,
 ) -> None:
-    """Request 2026-10-22: after «Crear producto» only the card shows; the editor
-    opens when the operator taps it, not on its own."""
+    """m-24842974: after «Guardar producto» the drawer shows «Listo» (no toast on top of
+    it); the editor still opens only when the owner taps the card (request 2026-10-22)."""
     created: list[dict[str, Any]] = []
 
     def fake_create(tenant_id: UUID, brand_id: UUID, user_id: UUID | None, **kwargs: Any) -> UUID:
@@ -153,11 +157,17 @@ async def test_creating_a_product_closes_the_form_and_leaves_the_editor_closed(
     # m-24803289: the price is an optional field again. Nothing was typed in this form,
     # so the product is created WITHOUT one and its pieces will print none.
     assert created[0]["price_amount"] is None and created[0]["price_currency"] == ""
-    assert state.form_open is False and state.saving is False
+    assert state.form_open is True and state.saving is False
+    assert state.new_step == catalog_state_module.STEP_DONE
+    assert state.new_step_counter == "Paso 3 de 3"
+    assert state.created_name == "Shawarma mixto"
+    assert state.created_product_id == str(_PRODUCT_ID)
+    # no photo: «Crear publicación» waits for one, and the product says what it lacks
+    assert state.created_has_media is False
+    assert state.created_href == f"/create?producto={_PRODUCT_ID}"
     assert state.new_name == "" and state.new_category == ""
     assert state.selected_id == "" and state.selected is None
-    # said in a toast (request 2026-10-22), not in a band at the top of the page
-    assert len(events) == 1 and "creado" in str(events[0]) and "success" in str(events[0])
+    assert events == []
 
 
 async def test_files_dropped_in_the_form_follow_the_new_product(monkeypatch, tmp_path) -> None:
@@ -179,7 +189,8 @@ async def test_files_dropped_in_the_form_follow_the_new_product(monkeypatch, tmp
 
     events = await _drain(CatalogState.submit_new_product.fn(state))
 
-    assert events[-1] == CatalogState.ingest_pending and "fotos" in str(events[0])
+    assert events == [CatalogState.ingest_pending]
+    assert state.created_has_media is True
     assert state._pending == [[str(first), "a.jpg", str(_PRODUCT_ID)]]
     assert state.upload_total == 1
     assert state.new_files == [] and state.selected_id == ""
@@ -547,3 +558,106 @@ def test_a_missing_brand_shows_the_way_to_complete_it() -> None:
     assert not state.needs_brand
     # Load and save share it: no «base de datos», no blame on the owner's connection.
     assert state.error == "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
+
+
+# ---------------------------------------------------------------------------
+# 7. «Agregar producto» in three steps (m-24842974)
+
+
+def test_the_photo_comes_first_and_is_never_a_gate() -> None:
+    state = CatalogState()
+    state.open_form()
+    assert state.form_open and state.new_step == catalog_state_module.STEP_PHOTO
+    assert state.new_step_counter == "Paso 1 de 3" and state.new_step_title == "La foto"
+    state.next_new_step()  # «Sin foto por ahora»
+    assert state.new_step == catalog_state_module.STEP_NAME
+    assert state.new_step_title == "¿Cómo se llama?"
+    assert state.new_steps_done == [True, False, False]
+
+
+def test_going_back_keeps_everything_typed() -> None:
+    state = CatalogState()
+    state.open_form()
+    state.next_new_step()
+    state.set_new_name("Helado de yogur")
+    state.set_new_price("12000")
+    state.set_new_currency("COP")
+    state.toggle_new_details()
+    state.set_new_category("helados")
+    state.back_new_step()  # «Atrás»
+    assert state.new_step == catalog_state_module.STEP_PHOTO
+    state.next_new_step()
+    assert (state.new_name, state.new_price, state.new_currency, state.new_category) == (
+        "Helado de yogur",
+        "12000",
+        "COP",
+        "helados",
+    )
+    assert state.new_details_open is True
+
+
+def test_the_stepper_never_reaches_listo_before_saving_nor_leaves_it_after() -> None:
+    state = CatalogState()
+    state.open_form()
+    state.go_to_new_step(catalog_state_module.STEP_DONE)
+    assert state.new_step == catalog_state_module.STEP_PHOTO
+    state.new_step = catalog_state_module.STEP_DONE
+    state.go_to_new_step(catalog_state_module.STEP_PHOTO)
+    assert state.new_step == catalog_state_module.STEP_DONE
+
+
+def test_the_form_starts_with_the_business_currency_and_agregar_otro_starts_clean() -> None:
+    state = CatalogState()
+    state._business_currency = "VES"
+    state.open_form()
+    assert state.new_currency == "VES"
+    state.new_step = catalog_state_module.STEP_DONE
+    state.created_product_id = str(_PRODUCT_ID)
+    state.created_name = "Shawarma"
+    state.new_currency = ""
+    state.add_another_product()
+    assert state.form_open and state.new_step == catalog_state_module.STEP_PHOTO
+    assert state.created_product_id == "" and state.created_name == ""
+    assert state.new_currency == "VES"
+
+
+def test_closing_from_listo_resets_and_closing_midway_keeps_the_text() -> None:
+    state = CatalogState()
+    state.open_form()
+    state.next_new_step()
+    state.set_new_name("Combo")
+    state.close_form()
+    assert state.new_step == catalog_state_module.STEP_PHOTO and state.new_name == "Combo"
+    state.set_form_open(True)
+    state.new_step = catalog_state_module.STEP_DONE
+    state.created_name = "Combo"
+    state.set_form_open(False)
+    assert not state.form_open and state.created_name == ""
+    assert state.new_step == catalog_state_module.STEP_PHOTO
+
+
+async def test_load_reads_the_business_currency(monkeypatch) -> None:
+    monkeypatch.setattr(catalog_state_module, "list_products", lambda *a: ())
+    monkeypatch.setattr(catalog_state_module, "business_currency", lambda _t: "UYU")
+    monkeypatch.setattr(catalog_state_module, "_sweep_staging", lambda _t: None)
+    state = _state(monkeypatch)
+    await CatalogState.load_catalog.fn(state)
+    assert state._business_currency == "UYU" and state.new_currency == "UYU"
+
+
+def test_refused_files_say_what_to_do_in_both_drop_zones() -> None:
+    state = CatalogState()
+    state.new_media_rejected([{"errors": [{"code": "file-invalid-type"}]}])
+    assert state.new_media_error.startswith("Ese archivo no es una foto ni un video.")
+    state.media_rejected([{"errors": [{"code": "too-many-files"}]}])
+    assert "hasta 12" in state.upload_error
+
+
+def test_the_main_path_has_no_drag_click_or_format_words() -> None:
+    here = Path(catalog_state_module.__file__).parent
+    texts = _visible_strings((here / "catalog_page.py").read_text(encoding="utf-8"))
+    for text in texts:
+        lowered = text.lower()
+        assert "arrastra" not in lowered and "haz clic" not in lowered, text
+        for sigla in ("JPG", "JPEG", "PNG", "HEIC", "MP4", "MOV"):
+            assert sigla not in text, text
