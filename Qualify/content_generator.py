@@ -3281,13 +3281,20 @@ def _script_source() -> rx.Component:
     """Claude writes the script to the chosen length, or the operator writes it and the
     avatar reads it word for word."""
     return rx.vstack(
-        rx.hstack(
-            rx.switch(
-                checked=CreativeState.own_script_on, on_change=CreativeState.set_own_script_on
+        # UX review (N12): the text toggles the switch too, a ≥ 44 px target with a name
+        rx.el.label(
+            rx.hstack(
+                rx.switch(
+                    checked=CreativeState.own_script_on,
+                    on_change=CreativeState.set_own_script_on,
+                    aria_label="Escribir mi propio guion",
+                ),
+                rx.text("Escribir mi propio guion", size="2"),
+                spacing="2",
+                align="center",
+                min_height="44px",
             ),
-            rx.text("Escribir mi propio guion", size="2"),
-            spacing="2",
-            align="center",
+            cursor="pointer",
         ),
         rx.cond(
             CreativeState.own_script_on,
@@ -3550,9 +3557,9 @@ def _section_channel() -> rx.Component:
     return _section(
         "channel",
         "¿Cómo la quieres?",
-        "De qué trata y en qué formato sale.",
+        "El formato en que sale. Ya elegimos uno por ti; cámbialo si quieres.",
         _field(
-            "De qué trata",
+            "Tipo de publicación",
             rx.select.root(
                 rx.select.trigger(width="100%"),
                 rx.select.content(
@@ -3565,16 +3572,21 @@ def _section_channel() -> rx.Component:
                 on_change=CreativeState.set_content_type,
             ),
         ),
+        # UX review (N12): one option per line, so a long name such as «Reel (video
+        # corto) 9:16» never pushes the screen sideways at 360 px
         _field(
             "Formato",
-            rx.segmented_control.root(
+            rx.radio_group.root(
                 rx.foreach(
                     CreativeState.format_options,
-                    lambda option: rx.segmented_control.item(option[1], value=option[0]),
+                    lambda option: rx.radio_group.item(
+                        option[1], value=option[0], min_height="44px"
+                    ),
                 ),
                 value=CreativeState.effective_format,
                 on_change=CreativeState.set_brief_format,
-                size="2",
+                size="3",
+                aria_label="Formato",
             ),
         ),
         # § request 2026-10-14: the script's length is asked here, with the format
@@ -3701,10 +3713,23 @@ def _section_details() -> rx.Component:
                     "Se componen en una sola imagen detrás del avatar.",
                 ),
                 _images_section(),
-                # § request 2026-10-20: no «Referencia» view of its own for an avatar
+                # § request 2026-10-20: no «Referencia» view of its own for an avatar; UX
+                # review (N6): it and the brand resources are folded under «Más opciones»
                 rx.divider(),
-                _field_label("Video de referencia (opcional)", _REFERENCE_HINT),
-                _reference_body(),
+                _more_options(
+                    CreativeState.show_more_open,
+                    CreativeState.toggle_show_more,
+                    "Un video de referencia y tus fotos de marca. Puedes crear sin tocarlos.",
+                    rx.vstack(
+                        _field_label("Video de referencia (opcional)", _REFERENCE_HINT),
+                        _reference_body(),
+                        rx.cond(CreativeState.brand_media_items.length() > 0, rx.divider()),
+                        _brand_resources(),
+                        spacing="4",
+                        align_items="start",
+                        width="100%",
+                    ),
+                ),
                 spacing="4",
                 align_items="start",
                 width="100%",
@@ -3714,8 +3739,11 @@ def _section_details() -> rx.Component:
         # record with whatever they have
         # nor does a clip here: it takes only a logo, in its own «Referencias» view
         # (§ request 2026-10-20)
+        # an avatar's are behind its «Más opciones», above
         rx.cond(
-            (CreativeState.brief_kind != "creator_script") & (CreativeState.brief_kind != "clip"),
+            (CreativeState.brief_kind != "creator_script")
+            & (CreativeState.brief_kind != "clip")
+            & (CreativeState.gen_category != "video"),
             rx.fragment(
                 rx.cond(CreativeState.brand_media_items.length() > 0, rx.divider()),
                 _brand_resources(),
@@ -3986,7 +4014,8 @@ def _step_show() -> rx.Component:
 
 
 def _step_say() -> rx.Component:
-    """② Qué decir: the context, «Mejorar mi texto» and, for an avatar, its script."""
+    """② Qué decir: the context, «Mejorar mi texto», for an avatar its script, and
+    «Datos clave» behind «Más opciones»."""
     return rx.vstack(
         _section_topic(),
         rx.cond(
@@ -4000,47 +4029,41 @@ def _step_say() -> rx.Component:
                 align_items="start",
             ),
         ),
+        rx.divider(),
+        # UX review: the price or a promotion are what the piece says
+        _more_options(
+            CreativeState.rules_open,
+            CreativeState.toggle_rules,
+            "El precio o una promoción, y qué decir o evitar. Puedes crear sin tocarlos.",
+            _section_rules(),
+        ),
         spacing="5",
         width="100%",
         align_items="start",
     )
 
 
-def _more_options() -> rx.Component:
-    """«Más opciones» (N6): the optional «Datos clave» and «Campaña», folded."""
+def _more_options(
+    is_open: rx.Var[bool],
+    toggle: rx.event.EventHandler,
+    hint: str,
+    body: rx.Component,
+) -> rx.Component:
+    """«Más opciones» (N6): a step's optional fields, folded until the owner opens them,
+    with a hint of what is inside while it is closed."""
     return rx.vstack(
         rx.button(
-            rx.icon(
-                rx.cond(CreativeState.rules_open, "chevron-up", "chevron-down"),
-                size=T.ICON_SM,
-            ),
+            rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
             "Más opciones",
             variant="ghost",
             color_scheme="gray",
             size="3",
             min_height="44px",
-            on_click=CreativeState.toggle_rules,
-            aria_expanded=rx.cond(CreativeState.rules_open, "true", "false"),
+            on_click=toggle,
+            aria_expanded=rx.cond(is_open, "true", "false"),
         ),
-        rx.cond(
-            ~CreativeState.rules_open,
-            rx.text(
-                "Datos clave, qué evitar y campaña. Puedes crear sin tocarlos.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-        ),
-        rx.cond(
-            CreativeState.rules_open,
-            rx.vstack(
-                _section_rules(),
-                rx.divider(),
-                _campaign_view(),
-                spacing="5",
-                width="100%",
-                align_items="start",
-            ),
-        ),
+        rx.cond(~is_open, rx.text(hint, size="1", color=T.TEXT_MUTED)),
+        rx.cond(is_open, body),
         spacing="3",
         width="100%",
         align_items="start",
@@ -4048,11 +4071,16 @@ def _more_options() -> rx.Component:
 
 
 def _step_how() -> rx.Component:
-    """③ Cómo la quieres: format and length, the rest behind «Más opciones»."""
+    """③ Cómo la quieres: format and length, the campaign behind «Más opciones»."""
     return rx.vstack(
         _section_channel(),
         rx.divider(),
-        _more_options(),
+        _more_options(
+            CreativeState.campaign_open,
+            CreativeState.toggle_campaign_open,
+            "Agrupa esta publicación en una campaña. Puedes crear sin tocarla.",
+            _campaign_view(),
+        ),
         spacing="5",
         width="100%",
         align_items="start",
@@ -4101,7 +4129,8 @@ def _summary_view() -> rx.Component:
         rx.vstack(
             rx.heading("Revisa y crea", size="4", as_="h3"),
             rx.text(
-                "Revisa lo que vamos a crear. Si algo no está bien, edítalo antes de crear.",
+                "Revisa lo que vamos a crear. Crear no publica nada: después la revisas y tú "
+                "decides si sale.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),

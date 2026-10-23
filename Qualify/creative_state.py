@@ -435,16 +435,16 @@ _CATEGORY_TITLES = {key: title for key, title, _, _ in CATEGORY_OPTIONS}
 def generator_views(category: str, kind: str) -> list[str]:
     """The views (sections) of `category`/`kind`, in the order of the four steps
     (`generator_steps`, CREAR-2 m-24848530): what the piece shows (Avatar's types, the
-    references, the presenter, the kind's own section), then what it says («topic»),
-    then how it is published («channel»), with «Datos clave» and «Campaña» behind «Más
-    opciones», and the «Resumen» where Crear is."""
+    references, the presenter, the kind's own section), then what it says («topic», with
+    «Datos clave» behind its «Más opciones»), then how it is published («channel», with
+    «Campaña» behind its own «Más opciones»), and the «Resumen» where Crear is."""
     head = ["avatar_type"] if category == "video" else []
     # § request 2026-10-20: an avatar's reference video is asked in «Guion y fondo»,
     # not in a view of its own; «Ad» and Clip keep theirs
     if category in REFERENCE_CATEGORIES and category != "video":
         head.append("reference")
     own = [s for s in generator_sections(kind) if s not in ("topic", "channel")]
-    return [*head, *own, "topic", "channel", "rules", "campaign", "summary"]
+    return [*head, *own, "topic", "rules", "channel", "campaign", "summary"]
 
 
 #: CREAR-2 (m-24848530): the wizard is four short steps — ① Qué mostrar ② Qué decir
@@ -463,13 +463,18 @@ _STEP_OF_VIEW = {
     "presenter": "show",
     "details": "show",
     "topic": "say",
+    # UX review: the price, a discount, what to say or avoid are what the piece says
+    "rules": "say",
     "channel": "how",
-    "rules": "how",
     "campaign": "how",
     "summary": "review",
 }
-#: The optional views, folded in step 3 under «Más opciones».
+#: The optional views, each folded under its step's «Más opciones»: «Datos clave» in
+#: step 2, «Campaña» in step 3.
 OPTIONAL_VIEWS = ("rules", "campaign")
+#: A summary row's view with this suffix lives behind step 1's «Más opciones» (an
+#: avatar's reference video and brand resources).
+SHOW_MORE_SUFFIX = ":more"
 
 
 def generator_steps(category: str, kind: str) -> list[tuple[str, list[str]]]:
@@ -573,10 +578,10 @@ _FORMAT_LABELS = {
 #: no vendor or model (§ request 2026-10-08).
 _GEN_WAITING = {
     "creator_script": "Escribiendo tu guion…",
-    "avatar_video": "Generando tu video. Puede tardar unos minutos…",
-    "animated_avatar_video": "Generando tu video. Puede tardar unos minutos…",
-    "static_flyer": "Generando tu imagen, ya casi está…",
-    "template": "Generando tu publicación, ya casi está…",
+    "avatar_video": "Creando tu video. Puede tardar unos minutos…",
+    "animated_avatar_video": "Creando tu video. Puede tardar unos minutos…",
+    "static_flyer": "Creando tu imagen, ya casi está…",
+    "template": "Creando tu publicación, ya casi está…",
     "carousel": "Armando tu galería. Si lleva un video, puede tardar unos minutos…",
 }
 _TEMPLATE_PHOTO_REQUIRED = (
@@ -924,9 +929,13 @@ class CreativeState(rx.State):
     #: "result" once Generar created a piece: it shows below the form, on the same page
     #: (§ request 2026-10-08); "form" = nothing generated yet, or «Crear otro».
     generator_view: str = "form"
-    #: «Más opciones» of step 3 («Datos clave», «Campaña») is folded until the
-    #: operator opens it (CREAR-2).
+    #: «Más opciones» of step 2 («Datos clave») is folded until the operator opens it
+    #: (CREAR-2).
     rules_open: bool = False
+    #: «Más opciones» of step 3 («Campaña»), folded (CREAR-2).
+    campaign_open: bool = False
+    #: «Más opciones» of an avatar's step 1 (reference video, brand resources), folded.
+    show_more_open: bool = False
     #: The carousel slide in view (§ request 2026-10-08): the generator's result, and
     #: the draft screen's.
     gen_slide: int = 0
@@ -1819,7 +1828,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def gen_waiting_label(self) -> str:
-        return _GEN_WAITING.get(self.gen_kind, "Generando…")
+        return _GEN_WAITING.get(self.gen_kind, "Creando…")
 
     @rx.var
     def video_on_seedance(self) -> bool:
@@ -3229,14 +3238,19 @@ class CreativeState(rx.State):
 
     @rx.event
     def edit_view(self, view: str) -> None:
-        """A summary row's «Editar»: the step that holds `view`, with «Más opciones»
-        unfolded when the view lives behind it."""
-        index = generator_step_of(self.gen_category, self.brief_kind, view)
+        """A summary row's «Editar»: the step that holds `view`, with that step's «Más
+        opciones» unfolded when the row lives behind it."""
+        base, more, _ = view.partition(SHOW_MORE_SUFFIX)
+        index = generator_step_of(self.gen_category, self.brief_kind, base)
         if index < 0:
             return
         self.gen_step = index
-        if view in OPTIONAL_VIEWS:
+        if base == "rules":
             self.rules_open = True
+        elif base == "campaign":
+            self.campaign_open = True
+        elif more:
+            self.show_more_open = True
         self.create_error = ""
 
     # -- «Campaña» (m-24820838): the campaign the piece joins, optional ----------------
@@ -4580,7 +4594,8 @@ class CreativeState(rx.State):
 
         def row(label: str, value: str, view: str = "") -> None:
             # CREAR-2: «Editar» goes to the step that holds the view
-            step = generator_step_of(self.gen_category, kind, view) if view else -1
+            base = view.removesuffix(SHOW_MORE_SUFFIX)
+            step = generator_step_of(self.gen_category, kind, base) if view else -1
             index = str(step) if step >= 0 else ""
             rows.append(
                 {
@@ -4616,7 +4631,8 @@ class CreativeState(rx.State):
             row("Voz", voice or "La de tu marca", "presenter" if kind == "avatar_video" else "")
         if self.gen_category in ("video", "ad"):
             # an avatar's reference is in «Guion y fondo» since 2026-10-20
-            where = "details" if self.gen_category == "video" else "reference"
+            # behind step 1's «Más opciones» for an avatar (UX review, N6)
+            where = "details" + SHOW_MORE_SUFFIX if self.gen_category == "video" else "reference"
             row("Video de referencia", self.reference_video_name or "Ninguno", where)
         if kind == "clip":
             first, last = self.clip_first_frame_name, self.clip_last_frame_name
@@ -4655,7 +4671,11 @@ class CreativeState(rx.State):
             row(
                 "Recursos de tu marca",
                 f"Logo: {logo}" + (f" · {elements} elementos" if elements else ""),
-                "reference" if kind == "clip" else "details",
+                "reference"
+                if kind == "clip"
+                else "details" + SHOW_MORE_SUFFIX
+                if self.gen_category == "video"
+                else "details",
             )
         content_type = dict((opt.value, opt.label) for opt in content_type_options()).get(
             self.brief_content_type, ""
@@ -4706,6 +4726,14 @@ class CreativeState(rx.State):
     @rx.event
     def toggle_rules(self) -> None:
         self.rules_open = not self.rules_open
+
+    @rx.event
+    def toggle_campaign_open(self) -> None:
+        self.campaign_open = not self.campaign_open
+
+    @rx.event
+    def toggle_show_more(self) -> None:
+        self.show_more_open = not self.show_more_open
 
     def _media_inputs(self) -> dict[str, object]:
         kind = self.brief_kind

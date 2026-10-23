@@ -72,7 +72,7 @@ def test_an_independent_piece_is_the_default_and_generates_as_before() -> None:
     assert rows["Campaña"]["view"] == "campaign"
     # «Editar» opens step 3 with «Más opciones» unfolded
     state.edit_view(rows["Campaña"]["view"])
-    assert state.gen_step_key == "how" and state.rules_open
+    assert state.gen_step_key == "how" and state.campaign_open and not state.rules_open
     state.go_to_view(rows["Campaña"]["index"])
     state.go_to_view("99")
     assert state.gen_problem == ""

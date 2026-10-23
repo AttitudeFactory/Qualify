@@ -283,7 +283,8 @@ def test_the_options_live_in_a_side_panel_and_the_centre_names_the_choice() -> N
 def test_each_option_is_a_sequence_of_views() -> None:
     """CREAR-2 (m-24848530): every option is four short steps — ① Qué mostrar ② Qué
     decir ③ Cómo la quieres ④ Revisa y crea. What a kind cannot do without is in step
-    1; «Datos clave» and «Campaña» are in step 3, behind «Más opciones»."""
+    1; «Datos clave» is in step 2 and «Campaña» in step 3, each behind its step's «Más
+    opciones» (UX review: the price or a promotion are what the piece says)."""
     from .creative_state import generator_steps, generator_views
 
     assert generator_views("video", "avatar_video") == [
@@ -291,15 +292,15 @@ def test_each_option_is_a_sequence_of_views() -> None:
         "presenter",
         "details",
         "topic",
-        "channel",
         "rules",
+        "channel",
         "campaign",
         "summary",
     ]
     assert generator_steps("video", "avatar_video") == [
         ("show", ["avatar_type", "presenter", "details"]),
-        ("say", ["topic"]),
-        ("how", ["channel", "rules", "campaign"]),
+        ("say", ["topic", "rules"]),
+        ("how", ["channel", "campaign"]),
         ("review", ["summary"]),
     ]
     # no «Presentador» for the animated avatar: its character is in «Tipo de avatar»
@@ -339,7 +340,7 @@ def test_each_option_is_a_sequence_of_views() -> None:
     assert state.gen_step_key == "review"
     state.prev_view()
     assert state.gen_step_key == "how"
-    assert state.gen_step_views == ["channel", "rules", "campaign"]
+    assert state.gen_step_views == ["channel", "campaign"]
     steps = state.gen_view_steps
     assert [step["label"] for step in steps] == [
         "Qué mostrar",
@@ -356,6 +357,432 @@ def test_each_option_is_a_sequence_of_views() -> None:
     assert state.gen_mode == "discover"
     state.choose_category("carousel")
     assert state.gen_mode == "create"
+
+
+def test_video_opens_on_its_first_type_and_each_type_is_its_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUALIFY_VIDEO_ENGINE", "omnihuman")
+    state = CreativeState()
+    assert state.choose_category("video") is not None  # an avatar loads its voices
+    assert (state.brief_kind, state.video_type) == ("avatar_video", "avatar_video")
+    state.voice_options = [{"id": "vo", "name": "Elena"}]
+    state.choose_video_type("animated_avatar_video")
+    assert state.brief_kind == "animated_avatar_video"
+    assert state.gen_kind_label == "Avatar animado"
+    # choosing Clip again keeps the type already picked
+    state.choose_category("video")
+    assert state.video_type == "animated_avatar_video"
+    # «Ad» (§ 2026-10-14) is the template's video, an option of its own
+    assert state.choose_video_type("ad_video") is None
+    state.choose_category("ad")
+    assert (state.brief_kind, state.video_type) == ("template", "ad_video")
+    assert state.gen_kind_label == "Video publicitario"
+    # § 2026-10-13: in every placement — Reel first, the Story and the feed posts too
+    assert [value for value, _ in state.format_options] == [
+        "reels_9_16",
+        "story_9_16",
+        "feed_4_5",
+        "feed_1_1",
+    ]
+
+
+def test_con_plantilla_is_one_image_for_the_feed_or_the_story() -> None:
+    state = CreativeState()
+    state.choose_category("template")
+    assert (state.brief_kind, state.video_type) == ("template", "")
+    assert state.gen_kind_label == "Con plantilla"
+    # § 2026-10-13: the square post joins; never a Reel, which is a video
+    assert [value for value, _ in state.format_options] == ["feed_4_5", "feed_1_1", "story_9_16"]
+    assert state.effective_format == "feed_4_5"
+    state.choose_category("script")
+    assert (state.gen_category, state.brief_kind) == ("script", "creator_script")
+
+
+def test_a_template_reel_draft_is_named_video_publicitario() -> None:
+    from .creative_vm import MediaVM, build_draft_vm
+
+    def draft(media: tuple[MediaVM, ...]) -> str:
+        return build_draft_vm(
+            draft_id="d",
+            status="generated",
+            failure_reason=None,
+            variants=(),
+            image_url=None,
+            total_cost_usd=None,
+            voice_profile_version=None,
+            model_ids=(),
+            requires_ai_disclosure=False,
+            created_label="",
+            kind="template",
+            media=media,
+        ).kind_label
+
+    reel = MediaVM(key="k/reel.mp4", media_type="video", position=0, label="Reel 9:16")
+    feed = MediaVM(key="k/feed.jpg", media_type="image", position=0, label="Feed 4:5")
+    assert draft((reel,)) == "Video publicitario"
+    assert draft((feed,)) == "Con plantilla"
+
+
+def test_the_topic_is_asked_as_a_general_context() -> None:
+    from .content_generator import _section_topic
+
+    rendered = str(_section_topic())
+    assert "Tema o producto" not in rendered
+    assert "quieres en el video?" in rendered and "Un contexto general" in rendered
+
+
+def _remotion_option(**kw: Any):
+    from .creative_vm import RecipeOptionVM
+
+    base: dict[str, Any] = {
+        "key": "remotion",
+        "engine_label": "Remotion",
+        "engine_tone": "accent",
+        "label": "Promo de producto",
+        "template_id": "promo_producto",
+        "template_version": 1,
+        "cost_label": "USD 0.00",
+        "eta_label": "",
+        "outputs_label": "",
+        "suggested": True,
+        "available": True,
+        "reason": "",
+        "selectable": True,
+        "rule": 2,
+    }
+    base.update(kw)
+    return RecipeOptionVM(**base)
+
+
+@pytest.mark.parametrize(
+    ("option", "fmt", "problem"),
+    [
+        ({}, "feed_4_5", ""),
+        ({}, "reels_9_16", ""),
+        (
+            {"available": False, "reason": "la plantilla «Promo de producto» necesita 2 fotos"},
+            "feed_4_5",
+            "necesita 2 fotos",
+        ),
+    ],
+)
+def test_review_says_why_a_template_cannot_be_made(
+    monkeypatch: pytest.MonkeyPatch, option: dict[str, Any], fmt: str, problem: str
+) -> None:
+    """«¿Cómo la hacemos?» used to say it; since it left, «¿Todo listo?» does — with the
+    real published template (`promo_producto`, which renders reel, feed and story)."""
+    monkeypatch.setattr(
+        creative_provider, "recipe_options", lambda *_a, **_k: (_remotion_option(**option),)
+    )
+    found = creative_provider.template_blocker(
+        _TENANT_ID,
+        _BRAND_ID,
+        content_type="product",
+        product_ref="",
+        product_keys=["uploads/t/a.jpg"],
+        source_media_key="",
+        content_format=fmt,
+    )
+    assert (problem in found) if problem else found == ""
+
+
+def test_generar_checks_the_template_before_creating_anything() -> None:
+    """§ 2026-10-08: the template check moved from «¿Todo listo?» into Generar, before
+    the draft exists — with what the piece really has."""
+    import inspect
+
+    state = CreativeState()
+    state.choose_category("template")
+    state.brief_topic = "Promo"
+    state.media_product_keys = ["uploads/t/a.jpg"]
+    form = state._template_form()
+    assert form["product_keys"] == ["uploads/t/a.jpg"]
+    assert form["content_format"] == state.effective_format
+    source = inspect.getsource(CreativeState.submit_generator_form.fn)
+    assert source.index("_template_blocker") < source.index("_create_draft(form)")
+
+
+def test_a_template_still_is_published_as_what_it_is() -> None:
+    from qualify_creative.enums import ContentFormat, ContentKind, PostCategory, default_category
+
+    assert default_category(ContentKind.TEMPLATE, ContentFormat.FEED_4_5) is PostCategory.GALERIA
+    assert default_category(ContentKind.TEMPLATE, ContentFormat.STORY_9_16) is PostCategory.STORY
+    assert default_category(ContentKind.TEMPLATE, ContentFormat.REELS_9_16) is PostCategory.REEL
+
+
+# --------------------------------------------------------------------------------------
+# «Del Brand Kit»: the images already saved there, used as the piece's media
+# --------------------------------------------------------------------------------------
+
+
+def test_the_brand_kits_images_are_offered_but_never_its_fonts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import brand_kit_store as store_module
+    from qualify_api.creative.brand_kit_store import BrandAsset
+
+    prefix = f"t/{_TENANT_ID}/brand/{_BRAND_ID}"
+    assets = [
+        BrandAsset(kind="logo", slot="", object_key=f"{prefix}/logo.png", content_type="image/png"),
+        BrandAsset(kind="logo_version", slot="isologo", object_key=f"{prefix}/iso.jpg"),
+        BrandAsset(
+            kind="extra",
+            slot="1",
+            object_key=f"{prefix}/bolsa.webp",
+            label="Bolsa",
+            context="En  la bolsa de delivery,\n siempre visible",
+        ),
+        BrandAsset(kind="extra", slot="2", object_key=f"{prefix}/manual.pdf", label="Manual"),
+        BrandAsset(kind="font", slot="heading", object_key=f"{prefix}/f.woff2"),
+    ]
+    monkeypatch.setattr(
+        store_module, "BrandKitStore", lambda: SimpleNamespace(list_assets=lambda **_: assets)
+    )
+    monkeypatch.setattr(creative_provider, "issue_view_path", lambda *_a, **_k: "/r2media/tok")
+    rows = creative_provider.brand_media(_TENANT_ID, _BRAND_ID)
+    assert [(r["label"], r["key"].rsplit("/", 1)[-1]) for r in rows] == [
+        ("Logo", "logo.png"),
+        ("Isologo", "iso.jpg"),
+        ("Bolsa", "bolsa.webp"),
+    ]
+    assert {r["view"] for r in rows} == {"/r2media/tok"}
+    assert [r["kind"] for r in rows] == ["logo", "logo", "element"]
+    assert rows[2]["usage"] == "En la bolsa de delivery, siempre visible"
+
+
+def _state_with_brand_media() -> CreativeState:
+    state = CreativeState()
+    prefix = f"t/{_TENANT_ID}/brand"
+    state.brand_media_items = [
+        {"key": f"{prefix}/logo.png", "label": "Logo", "view": "/r2media/a", "kind": "logo"},
+        {"key": f"{prefix}/iso.png", "label": "Isologo", "view": "/r2media/i", "kind": "logo"},
+        {
+            "key": f"{prefix}/bolsa.png",
+            "label": "Bolsa",
+            "view": "/r2media/b",
+            "kind": "element",
+            "usage": "En la bolsa de delivery",
+        },
+    ]
+    return state
+
+
+def test_brand_resources_are_a_section_of_their_own() -> None:
+    """§ 2026-10-06: apart from the background and the products — one logo for the brand
+    mark's place, and the elements, each used as its usage note says."""
+    state = _state_with_brand_media()
+    logo, iso, bag = (item["key"] for item in state.brand_media_items)
+    state.toggle_brand_logo(logo)
+    state.toggle_brand_logo(iso)  # one logo: another one replaces it
+    state.toggle_brand_element(bag)
+    assert (state.brand_logo_key, state.brand_element_keys) == (iso, [bag])
+    # never mixed with the background or the products
+    assert state.media_product_keys == [] and state.media_background_key == ""
+    # a logo is not an element, and an element is not a logo
+    state.toggle_brand_element(logo)
+    state.toggle_brand_logo(bag)
+    assert (state.brand_logo_key, state.brand_element_keys) == (iso, [bag])
+    assert [c["chosen"] for c in state.brand_logo_choices] == ["", "1"]
+    assert [c["chosen"] for c in state.brand_element_choices] == ["1"]
+    state.brief_kind = "avatar_video"
+    media = state._media_inputs()
+    assert (media["brand_logo_key"], media["brand_element_keys"]) == (iso, [bag])
+    # a second click takes each one out again
+    state.toggle_brand_logo(iso)
+    state.toggle_brand_element(bag)
+    assert state._media_inputs()["brand_logo_key"] is None
+    assert state._media_inputs()["brand_element_keys"] == []
+
+
+def test_a_brand_image_can_still_be_the_animated_character() -> None:
+    state = _state_with_brand_media()
+    logo = state.brand_media_items[0]["key"]
+    state.use_brand_avatar_image(logo)
+    assert (state.avatar_image_key, state.avatar_image_name) == (logo, "Logo")
+    assert state.brand_media_choices[0]["avatar"] == "1"
+    state.use_brand_avatar_image(logo)
+    assert state.avatar_image_key == ""
+
+
+def test_only_a_key_the_brand_kit_listed_is_accepted() -> None:
+    state = _state_with_brand_media()
+    foreign = "t/00000000-0000-4000-8000-000000000999/brand/secret.png"
+    state.toggle_brand_logo(foreign)
+    state.toggle_brand_element(foreign)
+    state.use_brand_avatar_image(foreign)
+    assert state.brand_logo_key == "" and state.brand_element_keys == []
+    assert state.avatar_image_key == ""
+
+
+def test_the_resources_are_their_own_section_not_the_uploads() -> None:
+    from .content_generator import (
+        _avatar_section,
+        _brand_resources,
+        _images_section,
+        _section_details,
+        _template_details,
+    )
+
+    for section in (_images_section(), _template_details()):
+        assert "brand_media_choices" not in str(section)  # not mixed into the uploads
+    resources = str(_brand_resources())
+    assert "Recursos de tu marca" in resources and "brand_logo_choices" in resources
+    assert "brand_element_choices" in resources and "toggle_brand_element" in resources
+    assert "Recursos de tu marca" in str(_section_details())
+    assert "use_brand_avatar_image" in str(_avatar_section())
+
+
+def _kit(**overrides: Any) -> Any:
+    from qualify_creative.schemas import BrandKit, ToneAxes
+
+    return BrandKit(
+        brand_id=_BRAND_ID,
+        positioning="p",
+        audience="a",
+        tone_axes=ToneAxes(
+            formal_casual=50, sober_enthusiastic=50, technical_plain=50, brief_elaborate=50
+        ),
+        **overrides,
+    )
+
+
+def _voice() -> Any:
+    from qualify_creative.enums import VoiceProfileStatus
+    from qualify_creative.schemas import BrandVoiceProfile, ToneAxes
+
+    return BrandVoiceProfile(
+        brand_id=_BRAND_ID,
+        version=1,
+        status=VoiceProfileStatus.ACTIVE,
+        tone_axes=ToneAxes(
+            formal_casual=50, sober_enthusiastic=50, technical_plain=50, brief_elaborate=50
+        ),
+    )
+
+
+def test_the_copy_is_told_the_chosen_resources_and_their_use() -> None:
+    from qualify_creative.brand.render import render_prompt
+    from qualify_creative.enums import BriefObjective, ContentKind, GenerationTask, ImageRoute
+    from qualify_creative.schemas import BrandContext, BrandElement, ContentBrief, MediaInputs
+
+    context = BrandContext(
+        elements=(
+            BrandElement(name="Isologo", context="Sobre fondo oscuro", key="t/x/iso", kind="logo"),
+            BrandElement(name="Bolsa", context="En la bolsa de delivery", key="t/x/bolsa"),
+            BrandElement(name="Patrón", key="t/x/patron"),
+        )
+    )
+    brief = ContentBrief(
+        brand_id=_BRAND_ID,
+        objective=BriefObjective.AWARENESS,
+        topic="La triple",
+        image_route=ImageRoute.TEMPLATE_ONLY,
+        kind=ContentKind.AVATAR_VIDEO,
+        media=MediaInputs(
+            avatar_look_id="lk",
+            voice_id="vo",
+            brand_logo_key="t/x/iso",
+            brand_element_keys=("t/x/bolsa", "t/x/patron", "t/x/borrado"),
+        ),
+    )
+    rendered = render_prompt(
+        kit=_kit(logo_asset_key="t/x/iso"),
+        voice=_voice(),
+        brief=brief,
+        task=GenerationTask.COPY,
+        context=context,
+    )
+    suffix = rendered.volatile_suffix
+    assert "Brand resources chosen for this piece" in suffix
+    assert "- Logo «Isologo»: it is shown in a corner of the video, behind the presenter." in suffix
+    assert "Usage note: Sobre fondo oscuro." in suffix
+    assert "- «Bolsa» — En la bolsa de delivery" in suffix
+    assert "- «Patrón» — no usage note" in suffix
+    assert "borrado" not in suffix  # a key the Brand Kit no longer has is skipped
+    # and the cached prefix names no storage key any more
+    assert "Logo: on file" in rendered.stable_prefix
+    assert "t/x/iso" not in rendered.stable_prefix
+
+
+def test_the_catalog_product_comes_before_the_panel() -> None:
+    """§ request 2026-10-14: «Crear pieza» opens on the catalog product; continuing with
+    one brings the panel, «Cambiar» goes back, and sending a piece to review starts over
+    on the product screen. § 2026-10-19: no «Continuar sin producto» and no tabs — a
+    button switches between the catalog and the inspiration."""
+    from .content_generator import generator_page
+
+    rendered = str(generator_page())
+    assert "product_confirmed" in rendered and "Continuar sin producto" not in rendered
+    assert "Usar inspiraci" in rendered and "Usar mi cat" in rendered
+    state = CreativeState()
+    assert state.product_confirmed is False
+    state.catalog_items = [
+        {"id": "p1", "name": "Smash doble", "photo_key": "t/p1.jpg", "photo_keys": "t/p1.jpg"}
+    ]
+    state.choose_product("p1")
+    state.confirm_product()
+    assert state.product_confirmed and state.brief_product_ref == "Smash doble"
+    state.change_product()
+    assert state.product_confirmed is False and state.selected_product_id == "p1"
+    state.gen_draft_id = "d1"
+    state.review_in_drafts()
+    assert state.product_confirmed is False
+
+
+def test_the_catalog_photos_ride_along_for_every_kind_that_composes_photos() -> None:
+    state = CreativeState()
+    state.catalog_items = [
+        {"id": "p1", "name": "Smash", "photo_key": "t/p1.jpg", "photo_keys": "t/p1.jpg"}
+    ]
+    state.choose_product("p1")
+    for kind in ("template", "static_flyer", "avatar_video", "animated_avatar_video"):
+        state.brief_kind = kind
+        assert state._media_inputs()["product_keys"] == ["t/p1.jpg"], kind
+    state.brief_kind = "creator_script"
+    assert state._media_inputs()["product_keys"] == []
+
+
+def test_clip_and_ad_take_a_reference_video_on_the_brief() -> None:
+    """§ request 2026-10-14: a reference clip before the context — kept on the brief
+    (`MediaInputs.reference_video_key`) for Clip and Ad only. § 2026-10-20: an avatar
+    asks it in «Guion y fondo», «Ad» in its own view."""
+    from qualify_creative.schemas import MediaInputs
+
+    from .content_generator import _reference_view, _section_details
+
+    assert "reference_video" in str(_reference_view())
+    assert "reference_video" in str(_section_details())
+    state = CreativeState()
+    state.reference_video_key = "uploads/t/ref.mp4"
+    state.reference_video_name = "ref.mp4"
+    state.choose_category("video")
+    assert state._media_inputs()["reference_video_key"] == "uploads/t/ref.mp4"
+    state.choose_category("ad")
+    assert state._media_inputs()["reference_video_key"] == "uploads/t/ref.mp4"
+    state.choose_category("image")
+    assert state._media_inputs()["reference_video_key"] is None
+    media = MediaInputs.model_validate({"reference_video_key": "uploads/t/ref.mp4"})
+    assert media.reference_video_key == "uploads/t/ref.mp4"
+    state.clear_reference_video()
+    assert state.reference_video_key == "" and state.reference_video_name == ""
+
+
+def test_an_avatar_type_is_its_avatar_and_its_name() -> None:
+    """§ request 2026-10-14: the skeleton box holds only the avatar (no text-like bars),
+    with the type's name and blurb under it; «Descubrir reels» sits below the options
+    with no section label."""
+    from .content_generator import _avatar_type_view, _kind_picker
+    from .creative_vm import VIDEO_TYPE_OPTIONS
+
+    rendered = str(_avatar_type_view())
+    assert "q-cr-ghost-head" in rendered and "q-cr-ghost-line" not in rendered
+    for _key, title, blurb, _icon in VIDEO_TYPE_OPTIONS:
+        assert all(x in rendered or json.dumps(x)[1:-1] in rendered for x in (title, blurb))
+    picker = str(_kind_picker())
+    assert picker.index("Plantilla") < picker.index("Descubrir reels")
+    assert '"Ad"' not in picker
+    assert '"Crear"' not in picker
 
 
 def test_the_topic_and_siguiente_reach_crear() -> None:
@@ -381,20 +808,50 @@ def test_the_topic_and_siguiente_reach_crear() -> None:
 
 
 def test_the_four_steps_render_with_mas_opciones_folded() -> None:
-    """CREAR-2: «Paso N de M», «Más opciones» folded with its 44 px target, «Crear» as
-    the last step's action, and «Datos clave» saying they never change the brand."""
-    from .content_generator import _create_view, _more_options, _section_rules, _step_say
+    """CREAR-2: «Paso N de M», each step's «Más opciones» folded with its 44 px target,
+    «Crear» as the last step's action — saying it publishes nothing — and «Datos clave»
+    saying they never change the brand."""
+    from .content_generator import (
+        _create_view,
+        _script_source,
+        _section_channel,
+        _section_details,
+        _section_rules,
+        _step_how,
+        _step_say,
+        _summary_view,
+    )
+
+    def has(rendered: str, text: str) -> bool:
+        return text in rendered or json.dumps(text)[1:-1] in rendered
 
     view = str(_create_view())
     assert "gen_step_count" in view and "gen_step_key" in view
     assert '"Crear"' in view and '"Generar"' not in view
-    more = str(_more_options())
-    assert json.dumps("Más opciones")[1:-1] in more
-    assert "toggle_rules" in more and "44px" in more
+    say, how = str(_step_say()), str(_step_how())
+    # step 2 folds «Datos clave»; step 3 folds «Campaña»
+    assert has(say, "Más opciones") and "toggle_rules" in say and "44px" in say
+    assert has(say, "El precio o una promoción, y qué decir o evitar.")
+    assert has(how, "Más opciones") and "toggle_campaign_open" in how
+    assert "toggle_rules" not in how
+    assert has(how, "Agrupa esta publicación en una campaña.")
+    # an avatar's reference video and brand resources are behind step 1's fold
+    details = str(_section_details())
+    assert "toggle_show_more" in details
+    assert has(details, "Un video de referencia y tus fotos de marca.")
     rules = str(_section_rules())
     assert "tu marca no cambia" in rules
-    # the avatar's script is asked in «Qué decir»
-    assert "set_own_script_on" in str(_step_say())
+    # the avatar's script is asked in «Qué decir», with a named switch and a 44 px label
+    assert "set_own_script_on" in say
+    script = str(_script_source())
+    assert '"aria-label":"Escribir mi propio guion"' in script
+    assert 'jsx("label"' in script and "44px" in script
+    # «De qué trata» was the type of publication, asked twice: now it says so
+    channel = str(_section_channel())
+    assert has(channel, "Tipo de publicación") and not has(channel, "De qué trata")
+    assert has(channel, "Ya elegimos uno por ti; cámbialo si quieres.")
+    assert "RadioGroup" in channel  # one format per line at 360 px
+    assert has(str(_summary_view()), "Crear no publica nada")
 
 
 def test_avatar_holds_the_presenters_and_clip_follows_it() -> None:
@@ -433,7 +890,7 @@ def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
     state = _clip_state_with_product()
     state.choose_category("clip")
     assert (state.gen_category, state.brief_kind) == ("clip", "clip")
-    assert state.gen_views == ["reference", "topic", "channel", "rules", "campaign", "summary"]
+    assert state.gen_views == ["reference", "topic", "rules", "channel", "campaign", "summary"]
     labels = [step["label"] for step in state.gen_view_steps]
     assert labels == [
         "Qué mostrar",
@@ -881,9 +1338,9 @@ def test_the_summary_names_every_choice_and_edits_it_in_its_own_view() -> None:
     # «Editar» goes back to the step that sets it (CREAR-2)
     assert (rows["Contexto"]["view"], rows["Contexto"]["index"]) == ("topic", "1")
     assert (rows["Referencias"]["view"], rows["Referencias"]["index"]) == ("reference", "0")
-    assert rows["Datos clave"]["index"] == "2"
+    assert rows["Datos clave"]["index"] == "1"
     state.edit_view(rows["Datos clave"]["view"])  # behind «Más opciones»: unfolded
-    assert state.gen_step_key == "how" and state.rules_open
+    assert state.gen_step_key == "say" and state.rules_open and not state.campaign_open
     state.edit_view(rows["Contexto"]["view"])
     assert state.gen_step_key == "say"
     state.go_to_view("99")
@@ -909,8 +1366,11 @@ def test_the_animated_avatar_takes_its_character_from_the_brand_kit() -> None:
     state.go_to_view(str(len(state.gen_views) - 1))  # the summary
     rows = {row["label"]: row for row in state.gen_summary}
     assert rows["Personaje"]["index"] == ""  # the Brand Kit's: not edited here
-    assert rows["Video de referencia"]["view"] == "details"
-    assert rows["Video de referencia"]["index"] == "0"  # step 1, «Qué mostrar»
+    # step 1, «Qué mostrar», behind its «Más opciones» (UX review, N6)
+    assert rows["Video de referencia"]["view"] == "details:more"
+    assert rows["Video de referencia"]["index"] == "0"
+    state.edit_view(rows["Video de referencia"]["view"])
+    assert state.gen_step_key == "show" and state.show_more_open
 
 
 async def test_the_brand_kits_drawn_avatar_is_the_character(
