@@ -116,7 +116,7 @@ def test_the_gallery_card_shows_the_campaign() -> None:
 
 def test_the_post_detail_has_the_campaign_field() -> None:
     rendered = str(creative_pages._campaign_field())
-    for word in ("Campaña", "Nueva campaña", "Sin campaña (post independiente)"):
+    for word in ("Campaña", "Nueva campaña", "Sin campaña (publicación independiente)"):
         assert _js(word) in rendered
     assert cp.NO_CAMPAIGN in rendered
 
@@ -184,7 +184,7 @@ def test_the_colour_picker_offers_only_the_four_campaign_colours() -> None:
     for state_color in ("teal", "green", "amber", "gray"):
         assert f"q-tint-{state_color}" not in rendered
     assert _js("Color de la campaña") in rendered
-    assert _js("Cambia el color en todos los posts y publicaciones de esta campaña.") in rendered
+    assert _js("Cambia el color en todas las publicaciones de esta campaña.") in rendered
 
 
 def test_new_campaign_preselects_the_suggested_colour() -> None:

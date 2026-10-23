@@ -63,7 +63,7 @@ def test_an_independent_piece_is_the_default_and_generates_as_before() -> None:
     state = _state()
     assert state.gen_campaign == cp.NO_CAMPAIGN
     rows = _summary_rows(state)
-    assert rows["Campaña"]["value"] == "Sin campaña (pieza independiente)"
+    assert rows["Campaña"]["value"] == "Sin campaña (publicación independiente)"
     assert state.gen_views[int(rows["Campaña"]["index"])] == "campaign"
     assert state.gen_problem == ""
 

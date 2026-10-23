@@ -231,8 +231,9 @@ def test_readiness_gaps_link_to_fix_screens() -> None:
     )
     assert vm.completeness_pct == 65
     routes = {gap.key: gap.fix_route for gap in vm.gaps}
-    assert routes["dont_examples"] == "/brand"
-    assert routes["active_voice_profile"] == "/brand"
+    assert routes["dont_examples"] == "/brand/kit"
+    assert routes["active_voice_profile"] == "/brand/kit"
+    assert {gap.fix_label for gap in vm.gaps} == {"Completar mi marca"}
     for gap in vm.gaps:
         assert gap.label and gap.fix_label
 
@@ -383,7 +384,7 @@ def test_voice_proposal_marks_differing_axes_and_labels_sources() -> None:
     assert rows["formal_casual"].differs
     assert not rows["sober_enthusiastic"].differs
     assert rows["formal_casual"].label == "formal ↔ coloquial"
-    assert vm.sources[0].kind_label == "brand kit"
+    assert vm.sources[0].kind_label == "tu marca"
     # An ACTIVE profile is not re-approvable.
     active = build_voice_proposal_vm(
         version=1,
@@ -448,7 +449,7 @@ def test_brand_rule_failures_read_in_spanish_with_what_to_do() -> None:
     labels = [failure_label(f.rule, f.detail) for f in fidelity.check_hard_rules(copy, kit)]
     assert "El texto usa «gratis», una palabra que tu marca tiene prohibida." in labels
     assert any(
-        label.startswith("El caption tiene 11 caracteres y tu marca pide al menos")
+        label.startswith("El texto de la publicación tiene 11 caracteres y tu marca pide")
         for label in labels
     )
     assert "Tu marca no usa emojis y el texto tiene 1." in labels
@@ -460,7 +461,8 @@ def test_the_reported_message_is_translated() -> None:
 
     assert (
         failure_label("caption_length", "caption is 19 characters, below the brand minimum of 80")
-        == "El caption tiene 19 caracteres y tu marca pide al menos 80: agrega 61 más."
+        == "El texto de la publicación tiene 19 caracteres y tu marca pide al menos 80: "
+        "agrega 61 más."
     )
 
 
@@ -487,10 +489,10 @@ def test_template_outputs_are_labelled_by_port_not_as_slides() -> None:
         ("t/d/feed.png", "image", 1, {"port": "feed"}),
     ]
     labels = [vm.label for vm in build_media_vms(rows)]
-    assert labels == ["Reel 9:16", "Feed 4:5", "Historia 9:16"]
+    assert labels == ["Reel (video corto) 9:16", "Publicación 4:5", "Historia 9:16"]
     # without a port the old behaviour stands: numbered slides and a plain video
     plain = build_media_vms([("a", "image", 0, {}), ("b", "image", 1, None)])
-    assert [vm.label for vm in plain] == ["Slide 1 de 2", "Slide 2 de 2"]
+    assert [vm.label for vm in plain] == ["Diapositiva 1 de 2", "Diapositiva 2 de 2"]
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +573,7 @@ def test_recipe_cards_carry_engine_cost_eta_outputs_and_the_suggestion() -> None
     assert presenter.eta_label == ""
     assert presenter.outputs_label == "Reel"
 
-    assert ugc.engine_label == "UGC" and not ugc.selectable
+    assert ugc.engine_label == "Para grabar" and not ugc.selectable
     assert "solo cotiza" in ugc.reason
     assert ugc.cost_label == "USD 1.50 a 3.50"
 

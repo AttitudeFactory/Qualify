@@ -231,20 +231,23 @@ def _option(
 
 
 #: What an option's tooltip explains (§ request 2026-10-14: «Generar guion» goes to a
-#: UGC creator — say briefly what UGC is).
+#: UGC creator; m-24842979: said without the word «UGC»).
+#: Where «Completar mi marca» goes: the kit inside the session (m-24842979 — `/brand`
+#: is the onboarding flow and redirects once inside).
+BRAND_KIT_ROUTE = "/brand/kit"
+
 _OPTION_TOOLTIPS = {
     "script": (
-        "Este guion lo recibe un creador UGC. UGC (contenido generado por usuarios) es el "
-        "video que graba una persona real —un cliente, alguien de tu equipo o un creador— "
-        "con su celular y en tono natural, como si recomendara tu marca. Funciona porque se "
-        "siente auténtico, no como un anuncio."
+        "Este guion lo graba una persona real —un cliente, alguien de tu equipo o un "
+        "creador— con su celular y en tono natural, como si recomendara tu marca. Funciona "
+        "porque se siente auténtico, no como un anuncio."
     ),
 }
 #: m-24803289 — what «Variaciones» is, in the panel's tooltip.
 _VARIATIONS_TOOLTIP = (
     "Parte de un producto de tu catálogo y propone diez ángulos visuales distintos para "
     "anunciarlo: otro escenario, otra composición y otro enfoque en cada uno. Tú eliges "
-    "cuáles se convierten en piezas."
+    "cuáles se convierten en publicaciones."
 )
 
 
@@ -862,9 +865,9 @@ def _inspiration_hits(target: str, image: bool, *, titled: bool = False) -> rx.C
                 width="100%",
             ),
             _picker_note(
-                f"Aún no hay {noun}: busca arriba o deja la caja vacía para usar tu Brand Kit."
+                f"Aún no hay {noun}: busca arriba o deja la caja vacía para usar tu marca."
                 if titled
-                else f"Escribe qué buscas o deja la caja vacía para usar tu Brand Kit. "
+                else f"Escribe qué buscas o deja la caja vacía para usar tu marca. "
                 f"Solo {noun} sin personas."
             ),
         ),
@@ -937,7 +940,7 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
             aria_label="De dónde viene",
         )
 
-    rest = (("upload", "Subir"), ("pieces", "Piezas"))
+    rest = (("upload", "Subir"), ("pieces", "Publicaciones"))
     # with a catalog product, «Inspiración» searches — only where the licence lets stock
     # go (`_INSPIRATION_TARGETS`): never the product photos nor the avatar's reference
     search = (("inspiration", "Inspiración"),) if target in _INSPIRATION_TARGETS else ()
@@ -1024,7 +1027,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
     )
     pieces_tab = rx.cond(
         CreativeState.pieces_loading,
-        _picker_note("Cargando tus piezas…"),
+        _picker_note("Cargando tus publicaciones…"),
         rx.cond(
             pieces.length() > 0,
             rx.flex(
@@ -1045,7 +1048,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
                 overflow_y="auto",
                 width="100%",
             ),
-            _picker_note(f"Aún no tienes piezas con {noun}."),
+            _picker_note(f"Aún no tienes publicaciones con {noun}."),
         ),
     )
     if target == "background":
@@ -1177,14 +1180,14 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
     piece_images, piece_videos = CreativeState.piece_images, CreativeState.piece_videos
     pieces_tab = rx.cond(
         CreativeState.pieces_loading,
-        _picker_note("Cargando tus piezas…"),
+        _picker_note("Cargando tus publicaciones…"),
         rx.cond(
             (piece_images.length() + piece_videos.length()) > 0,
             tiles(
                 rx.foreach(piece_images, lambda item: piece(item, "image")),
                 rx.foreach(piece_videos, lambda item: piece(item, "video")),
             ),
-            _picker_note("Aún no tienes piezas con fotos o videos."),
+            _picker_note("Aún no tienes publicaciones con fotos o videos."),
         ),
     )
     return rx.vstack(
@@ -1552,7 +1555,7 @@ def _product_screen() -> rx.Component:
                             inspiration,
                             "Imágenes y videos que ilustran lo que vendes: elige uno o varios.",
                             "Elige un producto de tu catálogo: su nombre y sus fotos reales "
-                            "entran en la pieza.",
+                            "entran en la publicación.",
                         ),
                         size="2",
                         color=T.TEXT_MUTED,
@@ -1685,16 +1688,16 @@ def _product_screen_nav() -> rx.Component:
 # -- the product from stock (plan-integracion-stock R2, 2026-10-16) ----------------------
 
 _STOCK_NOTE = (
-    "Es una imagen ilustrativa, no la foto de tu producto. Revisa que la pieza no prometa "
-    "algo distinto de lo que vendes."
+    "Es una imagen ilustrativa, no la foto de tu producto. Revisa que la publicación no "
+    "prometa algo distinto de lo que vendes."
 )
 _STOCK_VIDEO_NOTE = (
     "Es un video ilustrativo, no de tu producto: sirve para un Clip o una Galería. Revisa "
-    "que la pieza no prometa algo distinto de lo que vendes."
+    "que la publicación no prometa algo distinto de lo que vendes."
 )
 _STOCK_MIXED_NOTE = (
     "Son imágenes y videos ilustrativos, no de tu producto: los videos sirven para un Clip "
-    "o una Galería. Revisa que la pieza no prometa algo distinto de lo que vendes."
+    "o una Galería. Revisa que la publicación no prometa algo distinto de lo que vendes."
 )
 
 
@@ -1905,7 +1908,7 @@ def _stock_product_panel() -> rx.Component:
                 "image",
                 "Busca una imagen o un video para tu producto",
                 "Escribe qué vendes —«hamburguesa», «uñas acrílicas», «pastel de chocolate»— "
-                "o deja la caja vacía para usar tu Brand Kit. Solo mostramos material sin "
+                "o deja la caja vacía para usar tu marca. Solo mostramos material sin "
                 "personas; los videos, hasta 15 s y sin sonido.",
             ),
         ),
@@ -1992,7 +1995,7 @@ def _stock_product_panel() -> rx.Component:
         rx.cond(
             from_kit,
             rx.text(
-                "Con tu Brand Kit buscamos: ",
+                "Con lo que sabemos de tu marca buscamos: ",
                 rx.text.strong(kit_words),
                 ". Escribe otras palabras si buscas otra cosa.",
                 size="1",
@@ -2254,7 +2257,7 @@ def _brand_resources() -> rx.Component:
         rx.vstack(
             _field_label(
                 "Recursos de tu marca (opcional)",
-                "Lo que ya subiste al Brand Kit. El logo va donde va tu marca; cada "
+                "Lo que ya subiste a tu marca. El logo va donde va tu marca; cada "
                 "elemento se usa según su nota de uso.",
             ),
             _brand_media_picker(
@@ -2377,7 +2380,7 @@ def _slide_source_label(source: rx.Var) -> rx.Var:
         ("generated", "Imagen generada"),
         ("animated", "Video animado"),
         ("stock", "Video de inspiración"),
-        "De una pieza",
+        "De una publicación",
     )
 
 
@@ -2569,7 +2572,7 @@ def _slide_photo() -> rx.Component:
             "Foto del producto",
             "Foto del producto",
             "La foto que la IA usa de referencia para que tu producto salga igual (forma, "
-            "colores, etiqueta): del catálogo, subida o de una pieza que ya hiciste. Si no "
+            "colores, etiqueta): del catálogo, subida o de una publicación que ya hiciste. Si no "
             "eliges ninguna, la escena se crea solo con tu descripción.",
             size="1",
             color=T.TEXT_MUTED,
@@ -2667,7 +2670,7 @@ def _slide_media() -> rx.Component:
             "Imágenes y video",
             "Imágenes y video",
             "Elige una foto y, si quieres, un video, de donde estén: tu catálogo, tu "
-            "inspiración, tus piezas o subidos. La foto es la referencia para que tu "
+            "inspiración, tus publicaciones o subidos. La foto es la referencia para que tu "
             "producto salga igual; el video, el movimiento de cámara y el ritmo que sigue "
             "la animación (no aparece en la galería).",
             size="1",
@@ -2861,15 +2864,16 @@ def _slide_kind_picker() -> rx.Component:
             ),
         ),
         _choice_card(
-            "De una pieza",
+            "De una publicación",
             "Una imagen o un video que ya hiciste.",
             "library",
             selected=source == "existing",
             on_click=CreativeState.set_slide_source("existing"),
             compact=True,
             help_text=(
-                "Reutiliza una imagen o un video de una pieza que ya hiciste con esta "
-                "marca. Se usa tal cual, recortado al formato del post, sin texto nuevo."
+                "Reutiliza una imagen o un video de una publicación que ya hiciste con esta "
+                "marca. Se usa tal cual, recortado al formato de la publicación, sin texto "
+                "nuevo."
             ),
         ),
         columns=rx.breakpoints(initial="1", sm="2"),
@@ -2978,10 +2982,10 @@ def _piece_tile(item: rx.Var) -> rx.Component:
 def _piece_picker() -> rx.Component:
     """«De una pieza»: the images and videos the brand already made, the newest first."""
     return rx.vstack(
-        rx.text("Elige una imagen o un video de tus piezas", size="1", weight="medium"),
+        rx.text("Elige una imagen o un video de tus publicaciones", size="1", weight="medium"),
         rx.cond(
             CreativeState.pieces_loading,
-            rx.text("Cargando tus piezas…", size="1", color=T.TEXT_MUTED),
+            rx.text("Cargando tus publicaciones…", size="1", color=T.TEXT_MUTED),
             rx.cond(
                 CreativeState.piece_items.length() > 0,
                 rx.flex(
@@ -2993,7 +2997,9 @@ def _piece_picker() -> rx.Component:
                     width="100%",
                 ),
                 rx.text(
-                    "Aún no tienes piezas con imágenes o videos.", size="1", color=T.TEXT_MUTED
+                    "Aún no tienes publicaciones con imágenes o videos.",
+                    size="1",
+                    color=T.TEXT_MUTED,
                 ),
             ),
         ),
@@ -3163,7 +3169,7 @@ def _avatar_section() -> rx.Component:
                     CreativeState.brand_media_choices,
                     "avatar",
                     CreativeState.use_brand_avatar_image,
-                    "O elige del Brand Kit",
+                    "O elige de tu marca",
                 ),
                 rx.checkbox(
                     "Tengo derecho a animar esta imagen (no es la foto de una persona real "
@@ -3237,7 +3243,7 @@ def _avatar_section() -> rx.Component:
             ),
             callout(
                 "El video se arma con tu presentador, tus productos y tu fondo. Por ahora sale "
-                "sin voz y dura como máximo 12 s: el guion queda en el texto del post.",
+                "sin voz y dura como máximo 12 s: el guion queda en el texto de la publicación.",
                 "info",
             ),
         ),
@@ -3261,7 +3267,7 @@ def _subtitles_switch() -> rx.Component:
         ),
         rx.text(
             "Lo que dice el presentador, escrito en el video con la tipografía y los colores "
-            "de tu Brand Kit.",
+            "de tu marca.",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -3444,7 +3450,7 @@ def _section_topic() -> rx.Component:
             CreativeState.gen_category,
             ("script", "¿Qué quieres en el guion?"),
             ("image", "Describe la escena"),
-            ("template", "¿Qué quieres en la pieza?"),
+            ("template", "¿Qué quieres en la publicación?"),
             ("carousel", "¿De qué trata la galería?"),
             ("clip", "¿Qué quieres en el clip?"),
             "¿Qué quieres en el video?",
@@ -3493,7 +3499,7 @@ def _context_ai_tools() -> rx.Component:
         rx.hstack(
             rx.button(
                 rx.icon("sparkles", size=T.ICON_SM),
-                rx.cond(enhancing, "Potenciando…", "Potenciar con IA"),
+                rx.cond(enhancing, "Mejorando…", "Mejorar mi texto"),
                 variant="soft",
                 size="2",
                 radius=_CONTROL_RADIUS,
@@ -3512,8 +3518,8 @@ def _context_ai_tools() -> rx.Component:
                 ),
             ),
             rx.text(
-                "La IA ordena y enriquece tu texto con tu Brand Kit y tus datos clave, sin "
-                "inventar precios ni promociones. Revísalo antes de generar.",
+                "Ordenamos tu texto con lo que sabemos de tu marca, sin inventar precios ni "
+                "promociones. Revísalo antes de crear.",
                 size="1",
                 color=T.TEXT_MUTED,
                 flex="1",
@@ -3635,7 +3641,7 @@ def _template_details() -> rx.Component:
                 icon="package",
             ),
         ),
-        _products_upload("Fotos de la pieza"),
+        _products_upload("Fotos de la publicación"),
         _upload_error(),
         spacing="3",
         width="100%",
@@ -3647,13 +3653,14 @@ def _template_details() -> rx.Component:
 _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
     "creator_script": (
         "El guion",
-        "Generamos lo que dice la persona, toma por toma, y el texto del post.",
+        "Generamos lo que dice la persona, toma por toma, y el texto de la publicación.",
     ),
     "static_flyer": ("El anuncio", "Con qué fotos y qué escena armamos la imagen."),
     "template": ("Tus fotos", "Necesita al menos 2 fotos; las del catálogo ya cuentan."),
     "carousel": (
         "Las diapositivas",
-        "Imágenes generadas, videos animados o piezas que ya hiciste, en el orden del post.",
+        "Imágenes generadas, videos animados o publicaciones que ya hiciste, en el orden "
+        "en que salen.",
     ),
     "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
     "clip": (
@@ -3751,7 +3758,7 @@ def _section_rules() -> rx.Component:
         rx.vstack(
             rx.heading("Datos clave (opcional)", size="4", as_="h3"),
             rx.text(
-                "Lo que la pieza tiene que destacar tal cual: el precio, un descuento, una "
+                "Lo que la publicación tiene que destacar tal cual: el precio, un descuento, una "
                 "fecha, un código… La IA los usa exactos, sin cambiarlos ni inventar otros.",
                 size="1",
                 color=T.TEXT_MUTED,
@@ -3811,7 +3818,7 @@ def _campaign_view() -> rx.Component:
     offers. It is applied once Generar created the piece, and the Planificador groups it
     with its campaign."""
     picker = rx.select.root(
-        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña de la pieza"),
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña de la publicación"),
         rx.select.content(
             rx.select.item("Sin campaña", value=NO_CAMPAIGN),
             rx.cond(CreativeState.gen_campaigns.length() > 0, rx.select.separator()),
@@ -3849,7 +3856,7 @@ def _campaign_view() -> rx.Component:
             wrap="wrap",
             width="100%",
         ),
-        rx.text("Se creará al generar la pieza.", size="1", color=T.TEXT_MUTED),
+        rx.text("Se creará al crear la publicación.", size="1", color=T.TEXT_MUTED),
         spacing="1",
         width="100%",
     )
@@ -3857,8 +3864,8 @@ def _campaign_view() -> rx.Component:
         rx.vstack(
             rx.heading("Campaña (opcional)", size="4", as_="h3"),
             rx.text(
-                "Agrupa la pieza con otras de la misma campaña: así se ven juntas en "
-                "Tu semana. Sin campaña, la pieza queda independiente.",
+                "Agrupa la publicación con otras de la misma campaña: así se ven juntas en "
+                "Tu semana. Sin campaña, la publicación queda independiente.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -4094,7 +4101,7 @@ def _create_view() -> rx.Component:
     )
 
 
-_RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Por aprobar para revisarla.")
+_RESULT_HEADING = ("Tu publicación", "Así quedó. Revísala y apruébala para poder programarla.")
 
 
 # -- the result view -------------------------------------------------------------------
@@ -4203,7 +4210,7 @@ def _script_result() -> rx.Component:
             wrap="wrap",
         ),
         rx.divider(),
-        _copy_block("Descripción del post", variant.description, "Descripción copiada"),
+        _copy_block("Descripción de la publicación", variant.description, "Descripción copiada"),
         rx.cond(
             variant.hashtags_text != "",
             _copy_block("Hashtags", variant.hashtags_text, "Hashtags copiados"),
@@ -4237,7 +4244,7 @@ def _post_text() -> rx.Component:
     """The post's own copy under a video or an image: what goes in the caption."""
     variant = CreativeState.gen_variant_vm
     return rx.vstack(
-        rx.text("Texto del post", size="2", weight="medium", color=T.TEXT_MUTED),
+        rx.text("Texto de la publicación", size="2", weight="medium", color=T.TEXT_MUTED),
         rx.text(variant.rendered_caption, size="2", white_space="pre-wrap"),
         rx.button(
             rx.icon("copy", size=14),
@@ -4412,7 +4419,7 @@ def _waiting() -> rx.Component:
         rx.cond(
             CreativeState.gen_timed_out,
             callout(
-                "Está tardando más de lo normal. Revisa la pieza más tarde en Por aprobar.",
+                "Está tardando más de lo normal. Revisa la publicación más tarde en Por aprobar.",
                 "warn",
             ),
         ),
@@ -4424,7 +4431,7 @@ def _failed() -> rx.Component:
         rx.cond(
             CreativeState.gen_failure_label != "",
             CreativeState.gen_failure_label,
-            "No se pudo generar esta pieza.",
+            "No se pudo crear esta publicación.",
         ),
         "error",
     )
@@ -4452,8 +4459,8 @@ def _result_view() -> rx.Component:
         ),
         rx.hstack(
             rx.button(
-                rx.icon("arrow-left", size=16),
-                "Crear otro",
+                rx.icon("plus", size=16),
+                "Crear otra",
                 variant="soft",
                 color_scheme="gray",
                 on_click=CreativeState.new_generation,
@@ -4482,7 +4489,7 @@ def _result_view() -> rx.Component:
                             size="2",
                             disabled=True,
                         ),
-                        content="Disponible cuando termine de generarse la pieza.",
+                        content="Disponible cuando termine de crearse la publicación.",
                     ),
                 ),
             ),
@@ -4502,18 +4509,54 @@ def _voice_flag() -> rx.Component:
     return rx.hstack(
         rx.icon("mic-off", size=T.ICON_SM, color=T.tone_color("warn", 11), flex_shrink="0"),
         rx.text(
-            "Tu marca aún no tiene configurada su voz y tono: lo que generes sonará genérico.",
+            "Tu marca todavía no tiene su voz: lo que crees sonará genérico.",
             size="2",
             color=T.tone_color("warn", 11),
             flex="1",
         ),
         rx.button(
-            "Configurar voz",
+            "Preparar mi voz",
             rx.icon("arrow-right", size=14),
             size="1",
             variant="soft",
             **T.tone_scheme("warn"),
             on_click=CreativeState.configure_voice,
+            flex_shrink="0",
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+        padding="0.6rem 0.85rem",
+        background=T.tone_color("warn", 2),
+        border=f"1px solid {T.tone_color('warn', 6)}",
+        border_radius=T.RADIUS_CONTROL,
+        role="status",
+        flex_wrap="wrap",
+    )
+
+
+def _brand_flag() -> rx.Component:
+    """The brand is not ready to create from (m-24842979): say it in the owner's words,
+    with the one button that goes to complete it — the kit inside the session. It never
+    blocks Generar (the readiness gate is lifted, § request 2026-09-30)."""
+    return rx.hstack(
+        rx.icon("palette", size=T.ICON_SM, color=T.tone_color("warn", 11), flex_shrink="0"),
+        rx.text(
+            "Completa tu marca (colores, logo y forma de hablar) para que todo salga con tu "
+            "estilo.",
+            size="2",
+            color=T.tone_color("warn", 11),
+            flex="1",
+        ),
+        rx.link(
+            rx.button(
+                "Completar mi marca",
+                rx.icon("arrow-right", size=14),
+                size="1",
+                variant="soft",
+                **T.tone_scheme("warn"),
+            ),
+            href=BRAND_KIT_ROUTE,
             flex_shrink="0",
         ),
         spacing="3",
@@ -4644,11 +4687,7 @@ def _workspace(readiness: rx.Var) -> rx.Component:
             readiness,
             rx.cond(
                 ~readiness.can_generate,
-                callout(
-                    "Tu marca aún no está lista para crear publicaciones: completa tu "
-                    "logo, colores y forma de hablar en Tu marca.",
-                    "warn",
-                ),
+                _brand_flag(),
             ),
         ),
         rx.cond(CreativeState.kit_voice_missing, _voice_flag()),
@@ -4657,7 +4696,8 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         rx.cond(
             CreativeState.gen_generating,
             callout(
-                "Generando tu pieza. El formulario se reactiva cuando termine; te avisamos aquí.",
+                "Creando tu publicación. El formulario se reactiva cuando termine; "
+                "te avisamos aquí.",
                 "info",
                 icon="loader-circle",
             ),
