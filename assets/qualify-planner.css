@@ -37,6 +37,15 @@
   .q-plist-pills.q-plist-pills { flex-direction: row; flex-basis: 100%; align-items: center; }
 }
 
+/* «Por programar» (m-24842982): the panel opens by itself only from Radix's `lg`
+   (64em), where it sits beside the week; below, the week says what is waiting. */
+.q-wide-only { display: none; }
+.q-narrow-only { display: block; }
+@media (min-width: 64em) {
+  .q-wide-only { display: block; }
+  .q-narrow-only { display: none; }
+}
+
 /* The «Por programar» panel's slot (m-24842982): full width stacked above the week on a
    narrow screen; a sticky 20rem column beside it from Radix's `lg` (64em) up. */
 .q-unscheduled-slot { width: 100%; min-width: 0; }

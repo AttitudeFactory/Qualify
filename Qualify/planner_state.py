@@ -79,7 +79,6 @@ from .planner_vm import (
     timezone_options,
     tz_option,
     waiting_copy,
-    waiting_toolbar_label,
 )
 from .tenant import tenant_uuid
 
@@ -87,8 +86,8 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar Tu semana. Inténtalo de nuevo."
-_FORM_INCOMPLETE = "Elige al menos un POST y completa su fecha, hora y cuenta."
-_POST_REQUIRED = "Elige al menos un POST listo para publicar."
+_FORM_INCOMPLETE = "Elige al menos una publicación y completa su fecha, hora y cuenta."
+_POST_REQUIRED = "Elige al menos una publicación lista para salir."
 
 MODE_ASSIGN = "assign"
 UNSCHEDULED_OPEN = "open"
@@ -365,23 +364,19 @@ class PlannerState(rx.State):
         return waiting_copy(self.waiting_count).action
 
     @rx.var
-    def waiting_toolbar_label(self) -> str:
-        return waiting_toolbar_label(self.waiting_count)
-
-    @rx.var
     def unscheduled_auto(self) -> bool:
         return self.unscheduled_pref == ""
 
     @rx.var
     def unscheduled_open_wide(self) -> bool:
-        """Is the panel open on a wide screen (≥ 48em)?"""
+        """Is the panel open on a wide screen (≥ 64em, beside the week)?"""
         if self.unscheduled_pref == "":
             return self.waiting_count > 0
         return self.unscheduled_pref == UNSCHEDULED_OPEN
 
     @rx.var
     def unscheduled_open_narrow(self) -> bool:
-        """Is the panel open on a phone? Never on its own: the empty week says it."""
+        """Is the panel open below 64em? Never on its own: the week says it."""
         return self.unscheduled_pref == UNSCHEDULED_OPEN
 
     # -- timezone picker ------------------------------------------------------
@@ -837,7 +832,7 @@ class PlannerState(rx.State):
                 logger.error("planner reject_post failed: %s", type(exc).__name__)
             yield rx.toast.error(planner_error_message(exc))
             return
-        yield rx.toast.success("POST rechazado: no se publicará")
+        yield rx.toast.success("Publicación rechazada: no saldrá.")
         yield PlannerState.load
         yield PlannerState.open_detail(event_id)
 
@@ -863,7 +858,8 @@ class PlannerState(rx.State):
         async with self:
             self.detail_open = False
         yield rx.toast.success(
-            "POST quitado del calendario" + (f" ({removed} publicaciones)" if removed > 1 else "")
+            "Publicación quitada de tu semana"
+            + (f" ({removed} publicaciones)" if removed > 1 else "")
         )
         yield PlannerState.load
 
@@ -1428,7 +1424,7 @@ class PlannerState(rx.State):
         if mode == MODE_RESCHEDULE:
             message = "Publicación reprogramada"
         elif created == 1:
-            message = "POST programado"
+            message = "Publicación programada"
         else:
             message = f"{created} publicaciones programadas"
         if goals:

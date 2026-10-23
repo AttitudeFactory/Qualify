@@ -610,10 +610,11 @@ def _list_day(day) -> rx.Component:
                 rx.cond(
                     ~day.is_past,
                     rx.button(
-                        rx.icon("plus", size=T.ICON_SM),
-                        "Asignar",
-                        size="1",
+                        rx.icon("calendar-plus", size=T.ICON_SM),
+                        "Elegir día y hora",
+                        size="3",
                         variant="ghost",
+                        min_height=_TOUCH_MIN,
                         on_click=PlannerState.open_assign_for_day(day.iso),
                     ),
                 ),
@@ -628,8 +629,50 @@ def _list_day(day) -> rx.Component:
     )
 
 
+# N12: a target a thumb can hit on a phone.
+_TOUCH_MIN = "44px"
+
+
+def _program_waiting_button() -> rx.Component:
+    """«Programar mis {n} publicaciones»: the drawer with all of them preselected."""
+    return rx.button(
+        rx.icon("calendar-plus", size=T.ICON_MD),
+        PlannerState.waiting_action,
+        size="3",
+        variant="solid",
+        min_height=_TOUCH_MIN,
+        on_click=PlannerState.open_assign_waiting,
+        disabled=~PlannerState.has_connections,
+    )
+
+
+def _waiting_line() -> rx.Component:
+    """Below 64em the panel is not beside the week, so a week that already has
+    publications still says what is waiting, with the button that plans it (m-24842982
+    UX review). Hidden once the owner opened the panel, which shows the same."""
+    return rx.cond(
+        PlannerState.has_waiting
+        & (PlannerState.total_events > 0)
+        & ~PlannerState.unscheduled_open_narrow,
+        rx.el.div(
+            card(
+                rx.flex(
+                    rx.text(PlannerState.waiting_body, size="2"),
+                    _program_waiting_button(),
+                    direction="column",
+                    gap="0.75rem",
+                    align="start",
+                ),
+                padding="0.9rem",
+            ),
+            class_name="q-narrow-only",
+            width="100%",
+        ),
+    )
+
+
 def _create_link() -> rx.Component:
-    return rx.link(rx.button(CREATE_ACTION, size="3"), href="/create")
+    return rx.link(rx.button(CREATE_ACTION, size="3", min_height=_TOUCH_MIN), href="/create")
 
 
 def _empty_week() -> rx.Component:
@@ -640,18 +683,7 @@ def _empty_week() -> rx.Component:
         "calendar-days",
         EMPTY_WEEK_TITLE,
         PlannerState.waiting_body,
-        rx.cond(
-            PlannerState.has_waiting,
-            rx.button(
-                rx.icon("calendar-plus", size=T.ICON_MD),
-                PlannerState.waiting_action,
-                size="3",
-                variant="solid",
-                on_click=PlannerState.open_assign_waiting,
-                disabled=~PlannerState.has_connections,
-            ),
-            _create_link(),
-        ),
+        rx.cond(PlannerState.has_waiting, _program_waiting_button(), _create_link()),
     )
 
 
@@ -661,6 +693,7 @@ def _list() -> rx.Component:
             (PlannerState.total_events == 0) & (PlannerState.load_error == ""),
             _empty_week(),
         ),
+        _waiting_line(),
         rx.foreach(PlannerState.days, _list_day),
         spacing="3",
         width="100%",
@@ -684,9 +717,10 @@ def _post_option(post) -> rx.Component:
             rx.spacer(),
             rx.button(
                 rx.icon("calendar-plus", size=T.ICON_SM),
-                "Asignar",
-                size="1",
+                "Elegir día y hora",
+                size="3",
                 variant="soft",
+                min_height=_TOUCH_MIN,
                 on_click=PlannerState.open_assign_for_post(post.post_id),
                 disabled=~PlannerState.has_connections,
             ),
@@ -752,14 +786,15 @@ def _unscheduled_panel() -> rx.Component:
 
 def _unscheduled_slot() -> rx.Component:
     """Where the panel sits. Left automatic, it shows only on a wide screen
-    (`q-planner-desktop`); once the owner opens or closes it, that holds everywhere."""
+    (`q-wide-only`, ≥ 64em, where it sits beside the week); once the owner opens or
+    closes it, that holds everywhere."""
     return rx.cond(
         PlannerState.unscheduled_open_wide | PlannerState.unscheduled_open_narrow,
         rx.el.div(
             _unscheduled_panel(),
             class_name=rx.cond(
                 PlannerState.unscheduled_auto,
-                "q-unscheduled-slot q-planner-desktop",
+                "q-unscheduled-slot q-wide-only",
                 "q-unscheduled-slot",
             ),
         ),
@@ -820,10 +855,17 @@ def _connection_filter() -> rx.Component:
 
 
 def _unscheduled_button(is_open: rx.Var[bool]) -> rx.Component:
-    """«Por programar (3)», the toolbar's way to the panel."""
+    """«Por programar» and its count, the toolbar's way to the panel."""
     return rx.button(
         rx.icon("inbox", size=T.ICON_SM),
-        rx.text(PlannerState.waiting_toolbar_label, as_="span", class_name="q-nums"),
+        "Por programar",
+        rx.badge(
+            PlannerState.waiting_count,
+            variant=rx.cond(PlannerState.waiting_count > 0, "solid", "soft"),
+            radius="full",
+            size="1",
+            class_name="q-nums",
+        ),
         variant=rx.cond(is_open, "soft", "ghost"),
         color_scheme="gray",
         aria_pressed=is_open,
@@ -869,11 +911,11 @@ def _toolbar() -> rx.Component:
             # phone and a wide screen, so each one toggles what is on its own screen.
             rx.el.div(
                 _unscheduled_button(PlannerState.unscheduled_open_wide),
-                class_name="q-planner-desktop",
+                class_name="q-wide-only",
             ),
             rx.el.div(
                 _unscheduled_button(PlannerState.unscheduled_open_narrow),
-                class_name="q-planner-mobile",
+                class_name="q-narrow-only",
             ),
             _connection_filter(),
             _tags_filter(),

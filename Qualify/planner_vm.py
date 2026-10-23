@@ -361,11 +361,6 @@ def waiting_copy(count: int) -> WaitingCopy:
     )
 
 
-def waiting_toolbar_label(count: int) -> str:
-    """The toolbar button that opens the panel: «Por programar (3)»."""
-    return f"Por programar ({max(count, 0)})"
-
-
 # ---------------------------------------------------------------------------
 # Timezones — the Planificador's view zone picker
 
