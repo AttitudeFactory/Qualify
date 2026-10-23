@@ -706,6 +706,7 @@ def test_template_choice_and_fields_vm() -> None:
     from .whatsapp_chats_vm import (
         build_template_choice,
         build_template_fields,
+        preview_values,
         template_fields_complete,
         template_title,
     )
@@ -746,7 +747,22 @@ def test_template_choice_and_fields_vm() -> None:
         ],
         {"body:nombre": "Ana"},
     )
-    assert [f.label for f in fields] == ["Nombre del cliente", "Dato 2", "Dato 1 (encabezado)"]
+    assert [f.label for f in fields] == [
+        "Nombre del cliente",
+        "Dato 2 del mensaje",
+        "Dato 1 del mensaje (arriba del mensaje)",
+    ]
     assert [f.value for f in fields] == ["Ana", "", ""]
+    assert [f.example for f in fields] == ["", "", ""]
+    with_example = build_template_fields(
+        [Variable("body", "2", False)], {}, {"body:2": "2x1 en helados"}
+    )
+    assert with_example[0].example == "Ejemplo: 2x1 en helados"
+    # The preview shows «[label]» in each gap, never a raw {{…}} (UX review).
+    gaps = preview_values(
+        [Variable("body", "nombre", True), Variable("body", "2", False)],
+        {"body:nombre": "Ana", "body:2": "  "},
+    )
+    assert gaps == {"body:nombre": "Ana", "body:2": "[Dato 2 del mensaje]"}
     assert not template_fields_complete(fields)
     assert template_fields_complete([])

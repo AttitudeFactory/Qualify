@@ -58,6 +58,7 @@ from qualify_api.whatsapp.template_reply import (
     TemplateOption,
     TemplateReplyOptions,
     render_preview,
+    variable_examples,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -109,6 +110,7 @@ from .whatsapp_chats_vm import (
     media_control_for,
     merge_pages,
     mode_pill,
+    preview_values,
     resolution_after,
     template_fields_complete,
     validate_compose,
@@ -201,6 +203,9 @@ class WhatsAppChatsState(rx.State):
     tpl_error: str = ""
     tpl_choices: list[TemplateChoiceVM] = []
     tpl_selected: str = ""
+    #: Step 2 of the drawer («Completa y revisa») is showing; «Atrás» goes back to the
+    #: list keeping the choice and what was typed.
+    tpl_reviewing: bool = False
     tpl_fields: list[TemplateFieldVM] = []
     tpl_preview: str = ""
     tpl_promotions_blocked: bool = False
@@ -315,7 +320,9 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def tpl_hint(self) -> str:
-        if not self.tpl_selected:
+        if self.tpl_no_permission:
+            return ""
+        if not self.tpl_selected or not self.tpl_reviewing:
             return TEMPLATE_PICK_HINT if self.tpl_choices else ""
         return "" if template_fields_complete(self.tpl_fields) else TEMPLATE_FILL_HINT
 
@@ -323,6 +330,7 @@ class WhatsAppChatsState(rx.State):
     def can_send_template(self) -> bool:
         return (
             self.tpl_selected != ""
+            and self.tpl_reviewing
             and not self.tpl_sending
             and template_fields_complete(self.tpl_fields)
         )
@@ -371,6 +379,7 @@ class WhatsAppChatsState(rx.State):
 
     def _clear_template_choice(self) -> None:
         self.tpl_selected = ""
+        self.tpl_reviewing = False
         self.tpl_fields = []
         self.tpl_preview = ""
         self._tpl_values = {}
@@ -384,12 +393,21 @@ class WhatsAppChatsState(rx.State):
         if option is None:
             self._clear_template_choice()
             return
-        self.tpl_fields = build_template_fields(option.variables, self._tpl_values)
-        self.tpl_preview = render_preview(option.components, self._tpl_values)
+        self.tpl_fields = build_template_fields(
+            option.variables, self._tpl_values, variable_examples(option.components)
+        )
+        self.tpl_preview = render_preview(
+            option.components, preview_values(option.variables, self._tpl_values)
+        )
 
     def _apply_template_options(self, options: TemplateReplyOptions) -> None:
         self._tpl_options = list(options.options)
-        self.tpl_choices = [build_template_choice(o) for o in options.options]
+        self.tpl_choices = [
+            build_template_choice(
+                o, render_preview(o.components, preview_values(o.variables, o.prefill))
+            )
+            for o in options.options
+        ]
         self.tpl_promotions_blocked = options.promotions_blocked
         consent = options.consent_request
         self.tpl_consent_id = str(consent.template_id) if consent is not None else ""
@@ -922,12 +940,17 @@ class WhatsAppChatsState(rx.State):
     def _choose(self, template_id: str) -> None:
         """Pick one listed message (an id the list does not hold is ignored). A new pick
         starts a new «Enviar» intent, so it gets a new request key."""
-        if not isinstance(template_id, str) or template_id == self.tpl_selected:
+        if not isinstance(template_id, str):
+            return
+        if template_id and template_id == self.tpl_selected:
+            # The same message again (after «Atrás»): back to step 2, values intact.
+            self.tpl_reviewing = True
             return
         option = self._tpl_option(template_id)
         if option is None:
             return
         self.tpl_selected = template_id
+        self.tpl_reviewing = True
         self.tpl_error = ""
         self._tpl_values = dict(option.prefill)
         self._tpl_request_key = str(uuid4())
@@ -936,6 +959,12 @@ class WhatsAppChatsState(rx.State):
     @rx.event
     def choose_template(self, template_id: str) -> None:
         self._choose(template_id)
+
+    @rx.event
+    def back_to_templates(self) -> None:
+        """«Atrás»: step 1 again; the choice and what was typed are kept."""
+        self.tpl_reviewing = False
+        self.tpl_error = ""
 
     @rx.event
     def ask_consent(self) -> None:

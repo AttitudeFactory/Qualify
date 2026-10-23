@@ -203,6 +203,40 @@ def template_variables(components: Sequence[Mapping[str, Any]]) -> list[Template
     return out
 
 
+def _named_examples(raw: Any, kind: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if isinstance(item, Mapping):
+            name, example = item.get("param_name"), item.get("example")
+            if isinstance(name, str) and isinstance(example, str) and example.strip():
+                out[f"{kind}:{name}"] = example.strip()
+    return out
+
+
+def variable_examples(components: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The example Meta stored for each variable (`id` → text), so the screen can show
+    the owner what a valid value looks like. Missing or malformed examples are skipped:
+    Meta only requires them at review time and older templates may lack them."""
+    out: dict[str, str] = {}
+    for kind in ("HEADER", "BODY"):
+        component = _component(components, kind)
+        example = component.get("example") if component is not None else None
+        if not isinstance(example, Mapping):
+            continue
+        lower = kind.lower()
+        out.update(_named_examples(example.get(f"{lower}_text_named_params"), lower))
+        positional = example.get(f"{lower}_text")
+        if kind == "BODY" and isinstance(positional, list) and positional:
+            positional = positional[0]
+        if isinstance(positional, list):
+            for index, value in enumerate(positional, start=1):
+                if isinstance(value, str) and value.strip():
+                    out[f"{lower}:{index}"] = value.strip()
+    return out
+
+
 def _first_name(contact_name: str | None) -> str:
     name = (contact_name or "").strip()
     return name.split()[0] if name else ""
@@ -231,7 +265,8 @@ def _clean(values: Mapping[str, str]) -> dict[str, str]:
 
 def render_preview(components: Sequence[Mapping[str, Any]], values: Mapping[str, str]) -> str:
     """What the person reads: header, body and footer with the values in place (an
-    unfilled variable keeps its `{{…}}` so the preview shows the gap)."""
+    unfilled variable keeps its `{{…}}`; the screen passes a «[label]» per empty value
+    instead, so the owner never sees the raw placeholder)."""
     filled = _clean(values)
     parts: list[str] = []
     for kind in ("HEADER", "BODY", "FOOTER"):
@@ -522,4 +557,5 @@ __all__ = [
     "send_components",
     "template_variables",
     "unfillable_reason",
+    "variable_examples",
 ]

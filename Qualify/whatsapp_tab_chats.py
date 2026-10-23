@@ -67,8 +67,11 @@ from .whatsapp_chats_vm import (
     PROMOTIONS_NEED_CONSENT,
     SEND_APPROVED_DESCRIPTION,
     SEND_APPROVED_LABEL,
+    TEMPLATE_BACK_LABEL,
     TEMPLATE_FIELDS_LABEL,
     TEMPLATE_PREVIEW_LABEL,
+    TEMPLATE_STEP_PICK,
+    TEMPLATE_STEP_REVIEW,
     AgentVM,
     MessageVM,
     OrderFieldVM,
@@ -858,12 +861,21 @@ def _template_choice(choice: TemplateChoiceVM) -> rx.Component:
 
 def _template_field(field: TemplateFieldVM) -> rx.Component:
     return rx.vstack(
-        rx.text(field.label, as_="label", size="2", weight="medium"),
+        rx.el.label(
+            rx.text(field.label, size="2", weight="medium"),
+            html_for="tpl-field-" + field.id,
+        ),
         rx.input(
+            id="tpl-field-" + field.id,
+            aria_label=field.label,
             value=field.value,
             on_change=lambda value: S.set_template_value(field.id, value),
             width="100%",
             size="3",
+        ),
+        rx.cond(
+            field.example != "",
+            rx.text(field.example, size="1", color=T.TEXT_MUTED),
         ),
         spacing="1",
         width="100%",
@@ -916,9 +928,14 @@ def _no_followups() -> rx.Component:
     )
 
 
+def _step_label(text: str) -> rx.Component:
+    return rx.text(text, size="2", weight="bold", color=T.TEXT_MUTED)
+
+
 def _template_picked() -> rx.Component:
-    return rx.cond(
-        S.tpl_selected != "",
+    """Step 2 of 2: the values and «Así le llega»; «Atrás» and «Enviar» are in the foot."""
+    return rx.vstack(
+        _step_label(TEMPLATE_STEP_REVIEW),
         rx.vstack(
             rx.cond(
                 S.tpl_fields.length() > 0,
@@ -937,6 +954,21 @@ def _template_picked() -> rx.Component:
             spacing="2",
             width="100%",
         ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _template_list() -> rx.Component:
+    """Step 1 of 2: the notices and the approved messages; picking one moves on."""
+    return rx.vstack(
+        rx.cond(S.tpl_choices.length() > 0, _step_label(TEMPLATE_STEP_PICK)),
+        rx.cond(S.tpl_no_permission, callout(NO_PERMISSION_NOTICE, "warn")),
+        _promotions_notice(),
+        _no_followups(),
+        rx.foreach(S.tpl_choices, _template_choice),
+        spacing="3",
+        width="100%",
     )
 
 
@@ -944,14 +976,10 @@ def _templates_body() -> rx.Component:
     return rx.cond(
         S.tpl_loading & (S.tpl_choices.length() == 0),
         skeleton_rows(3, height="4rem"),
-        rx.vstack(
-            rx.cond(S.tpl_no_permission, callout(NO_PERMISSION_NOTICE, "warn")),
-            _promotions_notice(),
-            _no_followups(),
-            rx.foreach(S.tpl_choices, _template_choice),
+        rx.cond(
+            (S.tpl_selected != "") & S.tpl_reviewing,
             _template_picked(),
-            spacing="3",
-            width="100%",
+            _template_list(),
         ),
     )
 
@@ -960,28 +988,41 @@ def _templates_footer() -> rx.Component:
     return rx.vstack(
         rx.cond(S.tpl_error != "", callout(S.tpl_error, "error")),
         rx.cond(S.tpl_hint != "", rx.text(S.tpl_hint, size="1", color=T.TEXT_MUTED)),
-        rx.hstack(
-            rx.dialog.close(
+        rx.cond(
+            (S.tpl_selected != "") & S.tpl_reviewing,
+            rx.hstack(
                 rx.button(
-                    "Cancelar",
+                    rx.icon("arrow-left", size=T.ICON_SM),
+                    TEMPLATE_BACK_LABEL,
+                    on_click=S.back_to_templates,
                     variant="soft",
                     size="3",
                     min_height=_TAP_MIN,
                     **T.tone_scheme("neutral"),
                 ),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("send", size=T.ICON_SM),
+                    "Enviar",
+                    on_click=S.send_template,
+                    loading=S.tpl_sending,
+                    disabled=~S.can_send_template,
+                    size="3",
+                    min_height=_TAP_MIN,
+                ),
+                width="100%",
+                align="center",
             ),
-            rx.spacer(),
-            rx.button(
-                rx.icon("send", size=T.ICON_SM),
-                "Enviar",
-                on_click=S.send_template,
-                loading=S.tpl_sending,
-                disabled=~S.can_send_template,
-                size="3",
-                min_height=_TAP_MIN,
+            rx.dialog.close(
+                rx.button(
+                    rx.cond(S.tpl_no_permission, "Cerrar", "Cancelar"),
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    width="100%",
+                    **T.tone_scheme("neutral"),
+                ),
             ),
-            width="100%",
-            align="center",
         ),
         spacing="2",
         width="100%",

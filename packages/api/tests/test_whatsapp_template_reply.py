@@ -39,6 +39,7 @@ from qualify_api.whatsapp.template_reply import (
     send_components,
     template_variables,
     unfillable_reason,
+    variable_examples,
 )
 from qualify_api.whatsapp.templates import MemoryTemplateRepository, TemplateRecord
 from qualify_api.whatsapp.window import is_free_form_allowed, window_state
@@ -490,3 +491,26 @@ def test_unfillable_reasons() -> None:
     assert unfillable_reason(url_var) == "button_variable"
     flow = [{"type": "BUTTONS", "buttons": [{"type": "FLOW"}]}]
     assert unfillable_reason(flow) == "button_kind"
+
+
+def test_variable_examples_reads_meta_positional_and_named_examples() -> None:
+    positional = [
+        {"type": "HEADER", "format": "TEXT", "text": "{{1}}", "example": {"header_text": ["2x1"]}},
+        {"type": "BODY", "text": "Hola {{1}}, {{2}}", "example": {"body_text": [["Ana", "12"]]}},
+    ]
+    assert variable_examples(positional) == {
+        "header:1": "2x1",
+        "body:1": "Ana",
+        "body:2": "12",
+    }
+    named = [
+        {
+            "type": "BODY",
+            "text": "Hola {{nombre}}",
+            "example": {"body_text_named_params": [{"param_name": "nombre", "example": "Ana"}]},
+        }
+    ]
+    assert variable_examples(named) == {"body:nombre": "Ana"}
+    # Missing or malformed examples are skipped, never raised.
+    assert variable_examples([{"type": "BODY", "text": "Hola", "example": "x"}]) == {}
+    assert variable_examples([{"type": "BODY", "text": "Hola {{1}}"}]) == {}
