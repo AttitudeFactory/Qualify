@@ -4,7 +4,7 @@ The Clarity connection used to live on the reading screen (`/clarity`), with a t
 form the owner saw every time. It now lives in Configuración as a short guided step:
 
 1. «¿Tu negocio tiene página web?» — Sí / No.
-2. No → «No hace falta: tus redes ya cuentan.» and nothing else.
+2. No → «No es obligatorio: Qualify te funciona igual solo con tus redes.» and nothing else.
 3. Sí → «Pídele al equipo de Qualify que la conecte» + «Escribir al equipo»; the two
    labelled fields the team fills («Código del proyecto», «Clave de acceso») sit folded
    under «Para el equipo de Qualify», never open by default.
@@ -24,10 +24,10 @@ ANSWER_YES = "si"
 ANSWER_NO = "no"
 
 QUESTION = "¿Tu negocio tiene página web?"
-NO_SITE = "No hace falta: tus redes ya cuentan."
+NO_SITE = "No es obligatorio: Qualify te funciona igual solo con tus redes."
 ASK_TEAM = "Pídele al equipo de Qualify que la conecte."
 ASK_TEAM_BUTTON = "Escribir al equipo"
-CONNECTED = "Tu página web ya está conectada. Mira cómo le va en «Tu página web»."
+CONNECTED = "Tu página web ya está conectada."
 TEAM_FOLD = "Para el equipo de Qualify"
 TEAM_FOLD_HINT = (
     "Estos datos los llena el equipo de Qualify. La clave se guarda protegida y nadie "

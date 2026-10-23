@@ -48,8 +48,8 @@ _NO_TENANTS = "Tu sesión se cerró. Vuelve a entrar para ver tu página web."
 _SAVE_FAILED = "No pudimos guardar la conexión. Inténtalo de nuevo en unos minutos."
 _SAVE_BLANK = "Escribe el código del proyecto y la clave de acceso para poder guardar."
 _TOKEN_REJECTED = (
-    "Clarity no aceptó la clave de acceso. Crea una nueva en Clarity "
-    "(«Settings» → «Data Export») y guárdala en Configuración."
+    "No pudimos leer los datos de tu página web. En Configuración, pídele al equipo de "
+    "Qualify que la vuelva a conectar."
 )
 _QUOTA_MS = "Clarity no permite más consultas por hoy. Vuelve a intentarlo mañana."
 _BUDGET_SPENT = (
@@ -58,7 +58,7 @@ _BUDGET_SPENT = (
 )
 _NOT_CONFIGURED = "Tu página web todavía no está conectada. Conéctala en Configuración."
 _REFRESH_FAILED = "Clarity no respondió. Inténtalo de nuevo en unos minutos."
-_SAVED = "Conexión guardada. Ya puedes ver cómo le va en «Tu página web»."
+_SAVED = "Listo, tu página web quedó conectada."
 _TEAM_SENT = (
     "Listo, le escribimos al equipo (solicitud #{reference}). Te contactarán a {email} "
     "en menos de un día hábil."
@@ -213,8 +213,8 @@ class ClarityState(rx.State):
     async def request_team(self) -> None:
         """«Escribir al equipo»: one tap files a ticket with the session's email."""
         async with self:
-            if self.is_requesting_team:
-                return  # a double tap must not file two tickets
+            if self.is_requesting_team or self.team_notice:
+                return  # a double tap, or a second tap after «Listo», must not file two tickets
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
             email = (auth.user_email or "").strip()

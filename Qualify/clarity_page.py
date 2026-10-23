@@ -281,11 +281,11 @@ def _not_connected() -> rx.Component:
     return empty_state(
         "globe",
         "Tu página web todavía no está conectada",
-        "No hace falta: tus redes ya cuentan. Si tienes página web, en Configuración "
-        "puedes pedirle al equipo de Qualify que la conecte.",
+        "No es obligatorio: Qualify te funciona igual solo con tus redes. Si tienes página "
+        "web, en Configuración puedes pedirle al equipo de Qualify que la conecte.",
         action=rx.link(
             rx.button("Ir a Configuración", size="3", min_height="44px"),
-            href="/settings",
+            href="/settings#tu-pagina-web",
         ),
     )
 

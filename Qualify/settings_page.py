@@ -16,7 +16,17 @@ from . import clarity_vm as W
 from .auth_pages import password_field
 from .auth_state import AuthState
 from .clarity_state import ClarityState
-from .ui import app_shell, callout, card, kv, page_body, page_header, section, signal_pill
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    kv,
+    page_body,
+    page_header,
+    section,
+    signal_pill,
+    skeleton_rows,
+)
 from .ui import tokens as T
 
 
@@ -131,13 +141,21 @@ def _team_fields() -> rx.Component:
 def _ask_team() -> rx.Component:
     return rx.vstack(
         rx.text(W.ASK_TEAM, size="2"),
-        rx.button(
-            rx.icon("send", size=15),
-            W.ASK_TEAM_BUTTON,
-            on_click=ClarityState.request_team,
-            loading=ClarityState.is_requesting_team,
-            size="3",
-            min_height=_TAP,
+        rx.cond(
+            ClarityState.team_notice != "",
+            rx.text(
+                "Ya le escribimos al equipo. Te avisaremos por correo.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            rx.button(
+                rx.icon("send", size=15),
+                W.ASK_TEAM_BUTTON,
+                on_click=ClarityState.request_team,
+                loading=ClarityState.is_requesting_team,
+                size="3",
+                min_height=_TAP,
+            ),
         ),
         spacing="2",
         align_items="start",
@@ -175,51 +193,64 @@ def _website_question() -> rx.Component:
 
 def _website_card() -> rx.Component:
     return card(
-        rx.vstack(
-            rx.cond(
-                ClarityState.team_error != "",
-                callout(ClarityState.team_error, "error"),
-            ),
-            rx.cond(
-                ClarityState.team_notice != "",
-                callout(ClarityState.team_notice, "ok", icon="life-buoy"),
-            ),
-            rx.cond(
-                ClarityState.action_error != "",
-                callout(ClarityState.action_error, "error"),
-            ),
-            rx.cond(
-                ClarityState.action_notice != "",
-                callout(ClarityState.action_notice, "ok"),
-            ),
-            rx.cond(
-                ClarityState.website_view == "connected",
-                rx.vstack(
-                    signal_pill("Conectada", "ok"),
-                    rx.text(W.CONNECTED, size="2", color=T.TEXT_MUTED),
-                    spacing="2",
-                    align_items="start",
-                ),
-                _website_question(),
-            ),
-            rx.cond(
-                ClarityState.website_view == "no_site",
-                callout(W.NO_SITE, "info"),
-            ),
-            rx.cond(ClarityState.website_view == "ask_team", _ask_team()),
-            rx.cond(ClarityState.website_view != "no_site", _team_fields()),
-            spacing="3",
-            align_items="start",
-            width="100%",
+        rx.cond(
+            ClarityState.config_loaded,
+            _website_content(),
+            skeleton_rows(2),
         ),
         width="min(420px, 100%)",
+        id="tu-pagina-web",
         on_mount=ClarityState.load_config,
+    )
+
+
+def _website_content() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            ClarityState.team_error != "",
+            callout(ClarityState.team_error, "error"),
+        ),
+        rx.cond(
+            ClarityState.team_notice != "",
+            callout(ClarityState.team_notice, "ok", icon="life-buoy"),
+        ),
+        rx.cond(
+            ClarityState.action_error != "",
+            callout(ClarityState.action_error, "error"),
+        ),
+        rx.cond(
+            ClarityState.action_notice != "",
+            callout(ClarityState.action_notice, "ok"),
+        ),
+        rx.cond(
+            ClarityState.website_view == "connected",
+            rx.vstack(
+                signal_pill("Conectada", "ok"),
+                rx.text(W.CONNECTED, size="2", color=T.TEXT_MUTED),
+                rx.link(
+                    rx.button("Ver tu página web", size="3", min_height=_TAP),
+                    href="/clarity",
+                ),
+                spacing="2",
+                align_items="start",
+            ),
+            _website_question(),
+        ),
+        rx.cond(
+            ClarityState.website_view == "no_site",
+            callout(W.NO_SITE, "info"),
+        ),
+        rx.cond(ClarityState.website_view == "ask_team", _ask_team()),
+        rx.cond(ClarityState.website_view != "no_site", _team_fields()),
+        spacing="3",
+        align_items="start",
+        width="100%",
     )
 
 
 def settings_index() -> rx.Component:
     return app_shell(
-        page_header("Configuración", "Tu cuenta y su seguridad"),
+        page_header("Configuración", "Tu cuenta, tu contraseña y tu página web"),
         page_body(
             section(
                 "Tu cuenta",
