@@ -16,7 +16,7 @@ from uuid import uuid4
 from .followups_state import FollowupsState
 from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, view_from_param, view_url
 from .inbox_state import InboxState
-from .inbox_vm import inbox_url
+from .inbox_vm import ReelSummaryVM, inbox_url
 from .nav_url import push_url_script, replace_url_script, with_query
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import DEFAULT_TAB, TAB_KEYS, TAB_TEMPLATES, resolve_tab, tab_url
@@ -111,7 +111,39 @@ def test_inbox_back_to_the_list_writes_the_list_address() -> None:
     spec = InboxState.back_to_reel_list.fn(state)  # type: ignore[attr-defined]
     assert state.selected_thread_id == ""
     script = _script_of(spec)
-    assert '"/inbox"' in script and "pushState" in script
+    assert '"/inbox"' in script and "replaceState" in script  # «atrás» never reopens it
+
+
+def test_inbox_back_from_a_publication_keeps_the_loaded_list() -> None:
+    # The phone's «atrás» from ?publicacion= to /inbox closes the detail like
+    # «‹ Comentarios» and does not reload the list it already holds.
+    state = InboxState()
+    state.selected_thread_id = str(uuid4())
+    state.reel_summaries = [
+        ReelSummaryVM(
+            thread_id=state.selected_thread_id,
+            external_thread_id="m1",
+            last_message_at="hoy",
+            total=1,
+            positive=1,
+            neutral=0,
+            negative=0,
+            not_analyzed=0,
+            thumbnail_url="",
+            caption="",
+            permalink="",
+            is_monitored=False,
+        )
+    ]
+    assert InboxState.enter_screen.fn(state) is None  # type: ignore[attr-defined]
+    assert state.selected_thread_id == ""
+    assert len(state.reel_summaries) == 1
+
+
+def test_inbox_unknown_publication_falls_back_to_the_list_with_a_notice() -> None:
+    source = inspect.getsource(InboxState.load_screen.fn)
+    assert "self.missing_post_notice = _MISSING_POST" in source
+    assert "replace_url_script(inbox_url())" in source
 
 
 def test_inbox_open_detail_resets_to_a_clean_first_page() -> None:

@@ -126,6 +126,9 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
+_MISSING_POST = (
+    "No encontramos esa publicación en esta cuenta. Aquí están tus publicaciones recientes."
+)
 _LOAD_FAILED = (
     "No pudimos cargar tus publicaciones recientes. Revisa que tu Instagram siga "
     "conectado en «Tus redes»."
@@ -303,6 +306,9 @@ class InboxState(rx.State):
     # setters reset pagination to a fresh first page.
     selected_thread_id: str = ""
     selected_reel_summary: ReelSummaryVM | None = None
+    # N5 (m-24842960): set when an address names a publication this account's list
+    # does not hold, so the screen falls back to the list and says why.
+    missing_post_notice: str = ""
     thread_comments: list[CommentVM] = []
     is_loading_thread_comments: bool = False
     thread_comments_error: str = ""
@@ -585,12 +591,19 @@ class InboxState(rx.State):
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
 
     @rx.event
-    def enter_screen(self) -> rx.event.EventSpec:
+    def enter_screen(self) -> rx.event.EventSpec | None:
         """The route's `on_load` (N5, m-24842960): `?publicacion=<id>` opens that
         publication's comments; no parameter is the list. Runs on the first visit, on a
         reload and on the browser's «atrás», so each lands where the address says."""
         wanted = str(self.router.url.query_parameters.get(POST_PARAM, "") or "")
         thread_id = wanted if _try_uuid(wanted) is not None else ""
+        self.missing_post_notice = ""
+        if not thread_id and self.selected_thread_id and self.reel_summaries:
+            # «atrás» from a publication to the list: behave like «‹ Comentarios» —
+            # close the detail and keep the list (and the scroll) already loaded.
+            self.selected_thread_id = ""
+            self.selected_reel_summary = None
+            return None
         if thread_id != self.selected_thread_id:
             self._open_detail(thread_id)
         return InboxState.load_screen
@@ -650,13 +663,24 @@ class InboxState(rx.State):
             await self._load_candidates(tenant_id, connection_id)
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
             await self._load_global_summary(tenant_id, connection_id)
-            # N5: an address that names a publication opens its comments.
+            # N5: an address that names a publication opens its comments — unless this
+            # account's list does not hold it (older than the first page, or another
+            # account's): then the list, with a notice, never comments without their
+            # publication.
+            missing = False
             async with self:
                 thread_id = self.selected_thread_id
                 if thread_id:
                     self.selected_reel_summary = next(
                         (r for r in self.reel_summaries if r.thread_id == thread_id), None
                     )
+                    if self.selected_reel_summary is None:
+                        missing = True
+                        self._open_detail("")
+                        self.missing_post_notice = _MISSING_POST
+                        thread_id = ""
+            if missing:
+                yield rx.call_script(replace_url_script(inbox_url()))
             if thread_id:
                 await self._load_thread_comments_first_page(tenant_id)
             # QUA-22: the reply-drafts panel is a separate `RepliesState` (own module,
@@ -1151,7 +1175,9 @@ class InboxState(rx.State):
         round-trip. N5: the address goes back to the list (`/inbox`)."""
         self.selected_thread_id = ""
         self.selected_reel_summary = None
-        return rx.call_script(push_url_script(inbox_url()))
+        # replaceState, not pushState: «‹ Comentarios» closes the detail, so the next
+        # «atrás» must not reopen the publication just left.
+        return rx.call_script(replace_url_script(inbox_url()))
 
     @rx.event(background=True)
     async def set_sentiment_filter(self, value: str) -> None:
