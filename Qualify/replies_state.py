@@ -81,17 +81,20 @@ from .replies_provider import (
     decide_draft,
     generate_drafts,
     pending_drafts,
+    prepare_reply_here,
     regenerate_draft,
     retry_draft,
     retryable_drafts,
     send_draft,
 )
 from .replies_vm import (
+    REPLY_HERE_READY,
     SEND_REFUSED,
     SEND_TRANSIENT_TOAST,
     SEND_UNKNOWN,
     generation_message,
     regenerate_error_message,
+    reply_here_error_message,
     retry_error_message,
     send_block_reason,
     send_failure_message,
@@ -185,6 +188,9 @@ class RepliesState(rx.State):
     retry_drafts: list[DraftVM] = []
     retrying_draft_id: str = ""
 
+    # ATENDER-4b: the comment whose «Responder aquí» is preparing its reply ("" = none).
+    preparing_here_id: str = ""
+
     @rx.var
     def has_pending_drafts(self) -> bool:
         return len(self.drafts) > 0
@@ -192,6 +198,12 @@ class RepliesState(rx.State):
     @rx.var
     def has_retry_drafts(self) -> bool:
         return len(self.retry_drafts) > 0
+
+    @rx.var
+    def draft_message_ids(self) -> list[str]:
+        """The comments that already have a reply waiting for approval — their card shows
+        it instead of «Responder aquí» (ATENDER-4b)."""
+        return [d.message_id for d in self.drafts if d.message_id]
 
     async def _resolve_ids(self) -> tuple[UUID | None, UUID | None]:
         """`(tenant_id, connection_id)` — both `None`-safe; callers branch on whichever
@@ -358,7 +370,10 @@ class RepliesState(rx.State):
                 return  # another action on some draft is already in flight
             # m-24789645: a draft that needs review waits for «Ya revisé estos puntos».
             # Checked here, server side — the disabled button is only a hint.
-            blocked = send_block_reason(self.drafts, draft_id, self.reviewed_draft_ids)
+            # ATENDER-4b: for a complaint alone, changing the text is the review too.
+            blocked = send_block_reason(
+                self.drafts, draft_id, self.reviewed_draft_ids, edited_text=final_text
+            )
             if blocked:
                 self.action_error = blocked
             else:
@@ -613,3 +628,43 @@ class RepliesState(rx.State):
             yield rx.toast.success(
                 "Listo: te propusimos otra respuesta.", duration=_RESULT_TOAST_DURATION_MS
             )
+
+    @rx.event(background=True)
+    async def reply_here(self, message_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:
+        """«Responder aquí» (ATENDER-4b, m-24848533) on one comment card: prepare its
+        public reply, which then shows in that same card waiting for «Aprobar y
+        responder». Never sends (N13). One comment at a time; a second tap on a comment
+        that already has a reply just shows it (`prepare_for_comment` returns it)."""
+        async with self:
+            if self.preparing_here_id or self.busy_draft_id:
+                return
+            self.preparing_here_id = message_id
+            self.action_error = ""
+        resolved = _try_uuid(message_id)
+        tenant_id, connection_id = await self._resolve_ids()
+        if tenant_id is None or connection_id is None or resolved is None:
+            async with self:
+                self.preparing_here_id = ""
+                self.action_error = _NO_TENANT if tenant_id is None else _UNKNOWN_CONNECTION
+            return
+        error = ""
+        try:
+            await asyncio.to_thread(
+                prepare_reply_here,
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                message_id=resolved,
+            )
+        except Exception as exc:
+            logger.error("prepare_reply_here failed: %s", _safe_error_detail(exc))
+            error = reply_here_error_message(exc)
+        finally:
+            async with self:
+                self.preparing_here_id = ""
+
+        yield RepliesState.load_pending_drafts
+        if error:
+            # A toast, not the section callout: the owner is looking at this comment.
+            yield rx.toast.error(error, duration=_RESULT_TOAST_DURATION_MS)
+        else:
+            yield rx.toast.success(REPLY_HERE_READY, duration=_RESULT_TOAST_DURATION_MS)

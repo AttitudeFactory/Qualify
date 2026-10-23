@@ -79,6 +79,8 @@ from .replies_state import RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
     PUBLICATION_ALT_FALLBACK,
+    REPLY_HERE_BUSY_LABEL,
+    REPLY_HERE_LABEL,
     RETRY_BADGE,
     RETRY_BUSY_LABEL,
     RETRY_LABEL,
@@ -441,17 +443,58 @@ def _comment_intent(comment: CommentVM) -> rx.Component:
     )
 
 
-def _reply_by_dm_button(comment: CommentVM) -> rx.Component:
+def _reply_by_dm_button(message_id: rx.Var) -> rx.Component:
     """m-24789646: continue this comment in private — opens its query in Conversaciones
-    with a draft; nothing is sent from here."""
+    with a draft; nothing is sent from here. `size="3"` with «Responder aquí» beside it,
+    the same weight (ATENDER-4b), each a ≥ 44 px target at 360 px (N12)."""
     return rx.button(
         rx.icon("send", size=T.ICON_SM),
         "Escribirle en privado",
         variant="soft",
-        size="2",
-        loading=InboxState.replying_dm_id == comment.message_id,
+        size="3",
+        loading=InboxState.replying_dm_id == message_id,
         disabled=InboxState.replying_dm_id != "",
-        on_click=InboxState.reply_by_dm(comment.message_id),
+        on_click=InboxState.reply_by_dm(message_id),
+    )
+
+
+def _reply_here_button(comment: CommentVM) -> rx.Component:
+    """ATENDER-4b (m-24848533): prepare the public reply to THIS comment; it shows in
+    this same card and goes out only on «Aprobar y responder» (N13)."""
+    is_preparing = RepliesState.preparing_here_id == comment.message_id
+    return rx.button(
+        rx.cond(is_preparing, loading_spinner("sm"), rx.icon("message-circle", size=T.ICON_SM)),
+        rx.cond(is_preparing, REPLY_HERE_BUSY_LABEL, REPLY_HERE_LABEL),
+        variant="soft",
+        size="3",
+        disabled=(RepliesState.preparing_here_id != "") | (RepliesState.busy_draft_id != ""),
+        on_click=RepliesState.reply_here(comment.message_id),
+    )
+
+
+def _has_draft(comment: CommentVM) -> rx.Var:
+    return RepliesState.draft_message_ids.contains(comment.message_id)
+
+
+def _comment_inline_draft(comment: CommentVM) -> rx.Component:
+    """The comment's reply waiting for approval, in its own card («Responder aquí»,
+    ATENDER-4b): the same view/edit controls as the list above, under the comment."""
+    return rx.foreach(
+        RepliesState.drafts,
+        lambda draft: rx.cond(
+            draft.message_id == comment.message_id,
+            rx.vstack(
+                _draft_kind_badges(draft),
+                rx.cond(
+                    RepliesState.editing_draft_id == draft.id,
+                    _draft_edit_mode(draft),
+                    _draft_view_mode(draft),
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
     )
 
 
@@ -481,8 +524,15 @@ def _comment_card(comment: CommentVM) -> rx.Component:
             rx.hstack(
                 rx.icon("clock", size=13, color=T.TEXT_FAINT),
                 rx.text(comment.posted_at, size="1", color=T.TEXT_MUTED),
-                rx.spacer(),
-                _reply_by_dm_button(comment),
+                spacing="2",
+                align="center",
+            ),
+            _comment_inline_draft(comment),
+            # ATENDER-4b: the two ways to answer, side by side and with the same weight;
+            # the row wraps at 360 px so each stays a full target (N12).
+            rx.hstack(
+                rx.cond(_has_draft(comment), rx.fragment(), _reply_here_button(comment)),
+                _reply_by_dm_button(comment.message_id),
                 spacing="2",
                 align="center",
                 width="100%",
@@ -1275,6 +1325,13 @@ def _send_locked(draft: DraftVM) -> rx.Var:
     return draft.needs_review & ~RepliesState.reviewed_draft_ids.contains(draft.id)
 
 
+def _send_locked_editing(draft: DraftVM) -> rx.Var:
+    """Edit mode: a complaint (its only blocking reason) unlocks once its text changed —
+    «edítala o confírmala» (ATENDER-4b). The state checks it again on the click."""
+    edited = draft.review_by_edit_ok & (RepliesState.edit_text != draft.generated_text)
+    return _send_locked(draft) & ~edited
+
+
 def _draft_intents(draft: DraftVM) -> rx.Component:
     return rx.cond(
         draft.intent_chips.length() > 0,
@@ -1381,7 +1438,7 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
                 rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
                 _approve_label(draft),
                 on_click=RepliesState.save_and_send(draft.id),
-                disabled=is_busy | _send_locked(draft),
+                disabled=is_busy | _send_locked_editing(draft),
                 size="3",
                 variant="soft",
                 **T.tone_scheme("ok"),
@@ -1463,6 +1520,35 @@ def _draft_comment_block(draft: DraftVM) -> rx.Component:
     )
 
 
+def _draft_kind_badges(draft: DraftVM) -> rx.Component:
+    """What the reply answers: «Queja» / «Pregunta» / «Te felicita» for a triage-route
+    draft (ATENDER-4b), «Quiere comprar» for a commercial one, else the tone; then
+    «Requiere revisión» when it needs it."""
+    return rx.hstack(
+        rx.cond(
+            draft.comment_kind_label != "",
+            rx.cond(
+                draft.comment_kind == "complaint",
+                tone_badge(draft.comment_kind_label, "warn", icon="circle-alert"),
+                tone_badge(draft.comment_kind_label, "neutral", icon="message-circle"),
+            ),
+            rx.cond(
+                draft.is_commercial,
+                tone_badge(COMMERCIAL_BADGE, "info", icon="shopping-bag"),
+                sentiment_badge(draft.sentiment_label),
+            ),
+        ),
+        rx.cond(
+            draft.needs_review,
+            tone_badge(REVIEW_BADGE, "warn", icon="triangle-alert"),
+            rx.fragment(),
+        ),
+        align="center",
+        spacing="2",
+        wrap="wrap",
+    )
+
+
 def _draft_card(draft: DraftVM) -> rx.Component:
     """One reply waiting for approval: who commented and on which publication, the
     comment, then the prepared reply. No internal id on screen (m5 hallazgo 5). A
@@ -1472,16 +1558,7 @@ def _draft_card(draft: DraftVM) -> rx.Component:
     return card(
         rx.vstack(
             rx.hstack(
-                rx.cond(
-                    draft.is_commercial,
-                    tone_badge(COMMERCIAL_BADGE, "info", icon="shopping-bag"),
-                    sentiment_badge(draft.sentiment_label),
-                ),
-                rx.cond(
-                    draft.needs_review,
-                    tone_badge(REVIEW_BADGE, "warn", icon="triangle-alert"),
-                    rx.fragment(),
-                ),
+                _draft_kind_badges(draft),
                 rx.spacer(),
                 rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
                 align="center",
@@ -1497,6 +1574,13 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                 padding_left="0.25rem",
             ),
             rx.cond(is_editing, _draft_edit_mode(draft), _draft_view_mode(draft)),
+            # ATENDER-4b: a complaint is better continued in private — the way to do it
+            # sits right next to the public answer.
+            rx.cond(
+                draft.comment_kind == "complaint",
+                _reply_by_dm_button(draft.message_id),
+                rx.fragment(),
+            ),
             rx.cond(draft.is_commercial, _draft_sources(draft), rx.fragment()),
             spacing="2",
             align_items="start",
@@ -1616,9 +1700,8 @@ def _replies_section() -> rx.Component:
         _retry_list(),
         _replies_list(),
         description=(
-            "Respuestas listas para los comentarios que te felicitan o preguntan por tus "
-            "productos. Cada una sale en Instagram, debajo del comentario y a la vista de "
-            "todos, solo cuando tú la apruebas."
+            "Respuestas listas para tus comentarios. Cada una sale en Instagram, debajo del "
+            "comentario y a la vista de todos, solo cuando tú la apruebas."
         ),
     )
 
