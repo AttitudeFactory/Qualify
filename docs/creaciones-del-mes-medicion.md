@@ -82,6 +82,9 @@ en el pedido. Si el presentador pasara a **OmniHuman 2.0** (USD 0,07 por segundo
 costaría USD 2,15 → **15 creaciones**; ese cambio necesita su propia prueba de calidad
 (`docs/modelos-generativos/`) antes de bajar el peso.
 
+**Decidido (fundador, 2026-10-23):** el presentador de 30 s se queda en **25 creaciones** con el
+modelo actual (OmniHuman 1.5). No se evalúa OmniHuman 2.0 por ahora.
+
 ## 4. Cupo mensual recomendado
 
 Sin uso real, el cupo se dimensiona con un negocio tipo del segmento (PYME que publica 3 a 4
