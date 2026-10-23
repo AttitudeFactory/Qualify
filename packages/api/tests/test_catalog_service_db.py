@@ -59,6 +59,34 @@ def _jpeg() -> bytes:
     return out.getvalue()
 
 
+def test_reordering_the_media_makes_the_first_photo_primary(seeded, tmp_path: Path) -> None:
+    """Request 2026-10-22: the order of the photos IS the choice of the primary."""
+    tenant_a, brand_a, user_a, _tenant_b, _brand_b = seeded
+    service = CatalogService(store=LocalMediaStore(tmp_path))
+    product_id = service.create_product(
+        tenant_id=tenant_a, brand_id=brand_a, user_id=user_a, name=f"Reorder {uuid4().hex[:8]}"
+    )
+    first = service.add_media(
+        tenant_id=tenant_a, product_id=product_id, data=_jpeg(), filename="a.jpg"
+    )
+    second = service.add_media(
+        tenant_id=tenant_a, product_id=product_id, data=_jpeg(), filename="b.jpg"
+    )
+    assert first.is_primary and not second.is_primary
+
+    service.reorder_media(
+        tenant_id=tenant_a, product_id=product_id, ordered_ids=(second.id, first.id)
+    )
+    record = service.get_product(tenant_id=tenant_a, product_id=product_id)
+    assert [m.id for m in record.media] == [second.id, first.id]
+    assert [m.position for m in record.media] == [0, 1]
+    assert record.media[0].is_primary and not record.media[1].is_primary
+    assert record.primary_photo_key == second.object_key
+
+    with pytest.raises(UnknownProduct):  # not exactly the product's media
+        service.reorder_media(tenant_id=tenant_a, product_id=product_id, ordered_ids=(first.id,))
+
+
 def test_catalog_roundtrip_and_isolation(seeded, tmp_path: Path) -> None:
     tenant_a, brand_a, user_a, tenant_b, brand_b = seeded
     service = CatalogService(store=LocalMediaStore(tmp_path))
