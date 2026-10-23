@@ -1,8 +1,8 @@
 """conversation_reply_templates: the library of text templates an agent picks from the
 Conversaciones composer (m-24789472, PR 1)
 
-Revision ID: 0077
-Revises: 0076
+Revision ID: 0079
+Revises: 0078
 Create Date: 2026-10-22
 
 One library per connected account (a `social_connections` row): «Gracias por escribirnos»,
@@ -55,8 +55,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0077"
-down_revision = "0076"
+revision = "0079"
+down_revision = "0078"
 branch_labels = None
 depends_on = None
 

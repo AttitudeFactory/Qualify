@@ -1,4 +1,4 @@
-"""Message templates for the Conversaciones composer (m-24789472, PR 1; migration 0077).
+"""Message templates for the Conversaciones composer (m-24789472, PR 1; migration 0079).
 
 A per-account library of TEXT templates — «Gracias por escribirnos…», «Te comparto el
 precio…» — that a person picks in the composer, edits, and then sends through the reply
@@ -37,7 +37,7 @@ in `RenderedTemplate.blanks` so the screen can point at them.
 ## The defaults, seeded once and only once
 
 `list_for_connection` seeds `DEFAULT_TEMPLATES` the first time an account's library is
-opened. Two guarantees, both in Postgres (0077):
+opened. Two guarantees, both in Postgres (0079):
 
 - **Idempotent under concurrency.** The seed marker (`conversation_reply_template_seeds`,
   PK = the account) is inserted with `ON CONFLICT DO NOTHING … RETURNING`; only the
@@ -80,7 +80,7 @@ from qualify_api.conversations.repository import ThreadRecord
 
 MAX_TITLE_CHARS: Final = 60
 # One Instagram DM — `service.MAX_REPLY_CHARS` (a test pins the two equal; importing the
-# service here would pull the outbox in). Mirrored by 0077's CHECK.
+# service here would pull the outbox in). Mirrored by 0079's CHECK.
 MAX_BODY_CHARS: Final = 1000
 MAX_TEMPLATES_PER_CONNECTION: Final = 50
 DEFAULTS_VERSION: Final = 1

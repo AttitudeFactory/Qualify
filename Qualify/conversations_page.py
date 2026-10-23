@@ -1001,17 +1001,20 @@ def _suggestion_chip() -> rx.Component:
 
 def _template_item(t: TemplateVM) -> rx.Component:
     """One row of the picker: the title and the start of the text. A click renders it for
-    this person and fills the box — it never sends."""
+    this person and fills the box — it never sends.
+
+    Radix's ghost button is `content-box` with negative margins, so `width: 100%` plus its
+    padding overflowed the popover (a horizontal scrollbar, 2026-10-22): the row is
+    `border-box` with no margin, and each line is a block that truncates (`q-wa-ellipsis`
+    needs `display: block` and a `min-width: 0` chain to cut)."""
+    line = {"class_name": "q-wa-ellipsis", "display": "block", "width": "100%", "min_width": "0"}
     return rx.button(
-        rx.vstack(
-            rx.text(t.title, size="2", weight="medium", class_name="q-wa-ellipsis", width="100%"),
-            rx.text(
-                t.preview, size="1", color=T.TEXT_MUTED, class_name="q-wa-ellipsis", width="100%"
-            ),
-            spacing="0",
-            align_items="start",
+        rx.box(
+            rx.text(t.title, size="2", weight="medium", **line),
+            rx.text(t.preview, size="1", color=T.TEXT_MUTED, **line),
             width="100%",
             min_width="0",
+            overflow="hidden",
         ),
         on_click=S.apply_template(t.template_id),
         loading=S.applying_template_id == t.template_id,
@@ -1020,6 +1023,10 @@ def _template_item(t: TemplateVM) -> rx.Component:
         size="2",
         type="button",
         width="100%",
+        min_width="0",
+        max_width="100%",
+        box_sizing="border-box",
+        margin="0",
         height="auto",
         justify_content="start",
         text_align="left",
@@ -1066,9 +1073,12 @@ def _templates_menu_list() -> rx.Component:
                     ),
                     rx.foreach(S.templates, _template_item),
                     spacing="1",
+                    align_items="stretch",
                     width="100%",
+                    min_width="0",
                     max_height="18rem",
                     overflow_y="auto",
+                    overflow_x="hidden",
                 ),
             ),
             skeleton_rows(3, height="2.75rem"),

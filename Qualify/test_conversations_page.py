@@ -189,6 +189,29 @@ def test_the_composer_offers_templates_and_their_manager() -> None:
         assert handler in rendered, handler
 
 
+def test_the_picker_rows_fit_the_popover() -> None:
+    """A Radix ghost button is `content-box`: at `width: 100%` its padding overflowed the
+    popover into a horizontal scrollbar (2026-10-22). The row is `border-box` and its
+    lines truncate as blocks."""
+    import reflex as rx
+
+    from .conversations_page import _template_item
+    from .conversations_vm import TemplateVM
+
+    template = TemplateVM(
+        template_id="t1",
+        title="Saludo",
+        body="¡Hola!",
+        preview="¡Hola!",
+        is_default=True,
+        is_first=True,
+        is_last=True,
+    )
+    rendered = str(_template_item(rx.Var.create(template)).render())
+    assert "border-box" in rendered
+    assert "q-wa-ellipsis" in rendered and "block" in rendered
+
+
 def test_picking_a_template_cannot_send() -> None:
     """B5 by construction: the picker's handler calls no send path of the gateway."""
     tree = ast.parse((_HERE / "conversations_state.py").read_text(encoding="utf-8"))

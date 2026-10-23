@@ -160,7 +160,7 @@ class ConversationOutboxItem(Base):
 
 
 class ConversationReplyTemplate(Base):
-    """One text template of an account's library (m-24789472, 0077). Text a person starts
+    """One text template of an account's library (m-24789472, 0079). Text a person starts
     a reply from — never a send: it reaches the counterpart only through `reply_text` and
     the approved outbox."""
 
@@ -208,7 +208,7 @@ class ConversationReplyTemplate(Base):
 
 
 class ConversationReplyTemplateSeed(Base):
-    """One row per account whose library received the defaults (0077): the memory that
+    """One row per account whose library received the defaults (0079): the memory that
     they were given, so deleting them all does not bring them back — and the per-account
     lock create and reorder take."""
 

@@ -33,7 +33,7 @@ on the catalog, decided by a person) closed the ticket's scope the same evening.
   the `instagram:messages` intake handler (E3).
 - `sender` / `worker` — the outbox loop (window re-checked at send time) and its CLI (E5).
 - `templates` — m-24789472: the per-account library of text templates the composer
-  starts a reply from (0077), with `{nombre}`/`{marca}` rendering. Never sends: the text
+  starts a reply from (0079), with `{nombre}`/`{marca}` rendering. Never sends: the text
   leaves only through `reply_text` and the approved outbox.
 - `composition` — production wiring; the one place the channel implementation is chosen.
 
