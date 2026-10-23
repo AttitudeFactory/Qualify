@@ -4,6 +4,10 @@ module — not deferred inside it, absent — it stays blocked by Advanced Acces
 Business Verification, tracked in QUA-20/QUA-69, until the "Verificación Meta
 Business — Qualify" project (QUA-5…QUA-12) closes the administrative clock.
 
+Since m-24789645 (Fase B) a comment with commercial intent (Fase A) is a candidate too: the
+gate routes it to a grounded generator (`public_drafts`: catalog only, never a price) and
+its draft records grounding, review verdict, cost and the intent result.
+
 Pipeline: `gate.evaluate_gate` (cheap, pure, pre-generator) → `ReplyDraftProvider`
 (`qualify_models.providers`, lazy-imported — the `ml` group) → `comment_reply_drafts`
 (migration 0014, write-ahead) → human decision (`accepted`/`edited`/`discarded`) →
@@ -24,9 +28,11 @@ from qualify_api.replies.composition import (
     generate_drafts,
     list_pending_drafts,
     production_reply_service,
+    public_reply_generator,
+    regenerate_draft,
     send_draft,
 )
-from qualify_api.replies.gate import GateInput, GateVerdict, evaluate_gate
+from qualify_api.replies.gate import GateInput, GateVerdict, IntentEvidence, evaluate_gate
 from qualify_api.replies.repository import (
     CandidateComment,
     DraftProvenance,
@@ -38,6 +44,7 @@ from qualify_api.replies.repository import (
 from qualify_api.replies.service import (
     DecisionResult,
     GenerationSummary,
+    RegenerationRefused,
     ReplyService,
     UnknownDraft,
     require_approval,
@@ -53,9 +60,11 @@ __all__ = [
     "GateVerdict",
     "GenerationSummary",
     "HumanApproval",
+    "IntentEvidence",
     "MemoryReplyRepository",
     "PostgresReplyRepository",
     "ReplyRepository",
+    "RegenerationRefused",
     "ReplyService",
     "UnknownDraft",
     "current_reply_generator_version",
@@ -64,6 +73,8 @@ __all__ = [
     "generate_drafts",
     "list_pending_drafts",
     "production_reply_service",
+    "public_reply_generator",
+    "regenerate_draft",
     "require_approval",
     "send_draft",
 ]
