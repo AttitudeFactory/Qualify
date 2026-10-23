@@ -96,7 +96,7 @@ _COLUMN_LABELS: dict[str, str] = {
     "PageTitle": "Título de la página",
     "ReferrerUrl": "De dónde llegaron",
     "totalSessionCount": "Visitas",
-    "totalBotSessionCount": "Visitas automáticas (no son personas)",
+    "totalBotSessionCount": "Visitas de robots",
     "distinctUserCount": "Personas",
     "distantUserCount": "Personas",
     "pagesPerSessionPercentage": "Páginas por visita",
@@ -232,7 +232,7 @@ def _headline_stats(payload: list[dict]) -> list[list[str]]:
     users = _sum_of(rows, "distinctUserCount") + _sum_of(rows, "distantUserCount")
     stats = [
         ["Visitas", f"{sessions:,}"],
-        ["Visitas automáticas (no son personas)", f"{bots:,}"],
+        ["Visitas de robots", f"{bots:,}"],
         ["Personas", f"{users:,}"],
     ]
     engagement = _metric_rows(payload, _ENGAGEMENT_METRIC)

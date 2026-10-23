@@ -114,7 +114,7 @@ def _refresh_controls() -> rx.Component:
             value=ClarityState.refresh_dimension,
             on_change=ClarityState.set_refresh_dimension,
             size="2",
-            width="9rem",
+            width="11rem",
         ),
         # The page's one solid action (P3): spend a live request.
         rx.button(

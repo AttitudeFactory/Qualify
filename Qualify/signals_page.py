@@ -17,7 +17,7 @@ from .ui import app_shell, empty_state, page_body, page_header, tone_badge
 def signals_index() -> rx.Component:
     return app_shell(
         page_header(
-            "Avisos de oportunidad",
+            "Señales",
             "Te avisaremos cuando alguien pregunte por precios o quiera trabajar contigo",
             badge=tone_badge("Pronto", "info"),
         ),

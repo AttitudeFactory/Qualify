@@ -521,9 +521,9 @@ def notices() -> rx.Component:
         rx.cond(
             DashboardState.list_changed,
             rx.hstack(
-                callout("Hay cambios en esta lista.", "warn", flex="1"),
+                callout("La lista cambió mientras la mirabas.", "info", flex="1"),
                 rx.button(
-                    "Ver",
+                    "Ver la lista al día",
                     size="2",
                     variant="soft",
                     on_click=DashboardState.go_to_page("1"),

@@ -50,7 +50,7 @@ DOCS_PAYLOAD = [
 def test_headline_stats_sum_across_dimension_rows() -> None:
     stats = _headline_stats(DOCS_PAYLOAD)
     assert ["Visitas", "301,496"] in stats
-    assert ["Visitas automáticas (no son personas)", "39,445"] in stats
+    assert ["Visitas de robots", "39,445"] in stats
     assert ["Personas", "402,569"] in stats
 
 
@@ -70,7 +70,7 @@ def test_metric_table_leads_with_dimension_column() -> None:
     assert set(table.columns) == {
         "Sistema",
         "Visitas",
-        "Visitas automáticas (no son personas)",
+        "Visitas de robots",
         "Personas",
         "Páginas por visita",
     }
