@@ -168,15 +168,18 @@ def _product_fields(
 
 
 def _return_hint() -> rx.Component:
-    """The owner came from a publication to add a product (m-24842973, N4): say that
-    saving takes them back with it chosen, and give a way back without adding one."""
-    return rx.vstack(
+    """The owner came from a publication to add a product (m-24842973, N4). While the
+    form is open: only the hint that saving takes them back with it chosen — the form's
+    own exit («Volver a tu publicación sin agregar», in place of «Cancelar») is the one
+    way out. With the form closed: one soft way back that names its destination (N7)."""
+    return rx.cond(
+        CatalogState.form_open,
         callout(RETURN_HINT, "info", icon="arrow-left"),
         rx.hstack(
             rx.link(
                 rx.button(
                     rx.icon("arrow-left", size=T.ICON_SM),
-                    RETURN_WITHOUT_LABEL,
+                    RETURN_LABEL,
                     variant="soft",
                     color_scheme=T.tone_scale("neutral"),
                     size="3",
@@ -187,9 +190,6 @@ def _return_hint() -> rx.Component:
             width="100%",
             class_name="q-catalog-actions",
         ),
-        spacing="2",
-        align_items="start",
-        width="100%",
     )
 
 
@@ -233,15 +233,30 @@ def _new_product_form() -> rx.Component:
                 rx.hstack(
                     rx.spacer(),
                     # the pair every dialog of the system uses (§7): Cancelar soft, with
-                    # its icon, the same size as the verb beside it
-                    rx.button(
-                        rx.icon("x", size=T.ICON_SM),
-                        "Cancelar",
-                        variant="soft",
-                        color_scheme="gray",
-                        size="2",
-                        type="button",
-                        on_click=CatalogState.close_form,
+                    # its icon, the same size as the verb beside it. Coming from a
+                    # publication (m-24842973) it is the one way out and goes back there.
+                    rx.cond(
+                        CatalogState.returning,
+                        rx.link(
+                            rx.button(
+                                rx.icon("arrow-left", size=T.ICON_SM),
+                                RETURN_WITHOUT_LABEL,
+                                variant="soft",
+                                color_scheme="gray",
+                                size="2",
+                                type="button",
+                            ),
+                            href=CatalogState.return_to,
+                        ),
+                        rx.button(
+                            rx.icon("x", size=T.ICON_SM),
+                            "Cancelar",
+                            variant="soft",
+                            color_scheme="gray",
+                            size="2",
+                            type="button",
+                            on_click=CatalogState.close_form,
+                        ),
                     ),
                     rx.button(
                         rx.icon("plus", size=T.ICON_SM),
@@ -574,17 +589,18 @@ def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
     from a publication (`?volver=`, m-24842973) it says «Volver a tu publicación» and
     goes back there with this product chosen (N4)."""
     label = rx.cond(CatalogState.returning, RETURN_LABEL, "Crear publicación con este producto")
+    icon = rx.icon(rx.cond(CatalogState.returning, "arrow-left", "sparkles"), size=T.ICON_SM)
     return rx.cond(
         product.photo_count > 0,
         rx.link(
-            rx.button(rx.icon("sparkles", size=T.ICON_SM), label, variant="soft", size="2"),
+            rx.button(icon, label, variant="soft", size="3"),
             href=CatalogState.selected_create_href,
         ),
         rx.button(
-            rx.icon("sparkles", size=T.ICON_SM),
+            icon,
             label,
             variant="soft",
-            size="2",
+            size="3",
             disabled=True,
         ),
     )

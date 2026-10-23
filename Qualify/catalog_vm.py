@@ -290,9 +290,10 @@ ADD_PRODUCT_LABEL = "Agregar producto"
 #: The «Listo» button (and the editor's) when the owner came from a publication.
 RETURN_LABEL = "Volver a tu publicación"
 #: Said above the form while the owner is adding a product for a publication.
-RETURN_HINT = "Cuando guardes el producto, vuelves a tu publicación con él ya elegido."
-#: The link beside that hint, for an owner who changes their mind.
-RETURN_WITHOUT_LABEL = "Volver sin agregar"
+RETURN_HINT = "Guárdalo con su foto y vuelve a tu publicación con él ya elegido."
+#: The form's only way out while returning (it replaces «Cancelar»): names where it
+#: leads (N7) and that nothing is added.
+RETURN_WITHOUT_LABEL = "Volver a tu publicación sin agregar"
 #: `/catalog` itself is never a way back: the round trip would never end.
 _NO_RETURN_TO = "/catalog"
 _MAX_RETURN_LENGTH = 300

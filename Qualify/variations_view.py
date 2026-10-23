@@ -172,7 +172,7 @@ def _product_step() -> rx.Component:
                 "package",
                 "Aún no tienes productos",
                 "Variaciones parte de un producto real de tu catálogo: agrégalo con sus "
-                "fotos y vuelve aquí.",
+                "fotos y vuelves aquí con él ya elegido.",
                 # m-24842973 (N4): saving the product comes back to Variaciones with it
                 rx.link(
                     rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),

@@ -1596,9 +1596,11 @@ def _product_screen() -> rx.Component:
                         ADD_PRODUCT_LABEL,
                         variant="soft",
                         size="3",
+                        width=rx.breakpoints(initial="100%", sm="auto"),
                     ),
                     href=new_product_href(CREATE_RETURN_PATH),
                     flex_shrink="0",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
                 ),
                 width="100%",
                 align="start",
@@ -1649,8 +1651,9 @@ def _catalog_product_grid() -> rx.Component:
                     empty_state(
                         "package",
                         "Aún no hay productos en tu catálogo",
-                        "Crea el producto en Tus productos con sus fotos, o usa una inspiración: "
-                        "imágenes y videos que ilustran lo que vendes.",
+                        "Agrega tu producto con sus fotos y vuelves aquí con él ya elegido. "
+                        "También puedes usar una inspiración: imágenes y videos que ilustran "
+                        "lo que vendes.",
                         rx.link(
                             rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
                             href=new_product_href(CREATE_RETURN_PATH),

@@ -129,10 +129,23 @@ def test_the_way_out_and_the_way_back() -> None:
 def test_the_copy() -> None:
     assert ADD_PRODUCT_LABEL == "Agregar producto"
     assert RETURN_LABEL == "Volver a tu publicación"
-    assert RETURN_HINT == (
-        "Cuando guardes el producto, vuelves a tu publicación con él ya elegido."
-    )
-    assert RETURN_WITHOUT_LABEL == "Volver sin agregar"
+    assert RETURN_HINT == "Guárdalo con su foto y vuelve a tu publicación con él ya elegido."
+    assert RETURN_WITHOUT_LABEL == "Volver a tu publicación sin agregar"
+
+
+def test_one_way_out_while_returning() -> None:
+    """UX review: while the form is open and the owner came from a publication, the
+    form's «Cancelar» is replaced by the way back (one exit, N7); the hint shows only
+    while the form is open, and with it closed the way back names its destination."""
+    page = (Path(__file__).parent / "catalog_page.py").read_text(encoding="utf-8")
+    hint = page.split("def _return_hint", 1)[1].split("\ndef ", 1)[0]
+    assert "CatalogState.form_open" in hint
+    assert "RETURN_HINT" in hint and "RETURN_LABEL" in hint
+    assert "RETURN_WITHOUT_LABEL" not in hint
+    form = page.split("def _new_product_form", 1)[1].split("\ndef ", 1)[0]
+    assert "CatalogState.returning" in form and "RETURN_WITHOUT_LABEL" in form
+    editor = page.split("def _create_with_product_button", 1)[1].split("\ndef ", 1)[0]
+    assert 'size="2"' not in editor
 
 
 # ---------------------------------------------------------------------------
