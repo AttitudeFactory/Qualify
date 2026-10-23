@@ -135,6 +135,7 @@ def test_only_the_brand_kit_reads_the_draft_tenant() -> None:
         "auth_pages.py",
         "brand_documents.py",
         "brand_finish.py",
+        "brand_minimal.py",  # m-24848529: «Tu marca» in five steps
         "creative_state.py",
         "creative_wizard_pages.py",
         "voice_lab.py",
@@ -198,8 +199,10 @@ def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
 
     cases = [
         (brand_finish.KitStatus(True, {"completed": True, "flow": "connect"}), "/registro"),
-        (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand/connect"),
-        (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand/manual"),
+        # m-24848529: a draft of either old flow resumes on the five steps, at /brand
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "minimo"}), "/brand"),
         (brand_finish.KitStatus(False, None), "/brand"),
     ]
     for status, expected in cases:

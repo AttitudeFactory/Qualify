@@ -16,6 +16,7 @@ from .auth_pages import (
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
+from .brand_minimal import BrandMinimalState, brand_minimal_index
 from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
@@ -37,7 +38,6 @@ from .creative_state import CreativeState
 from .creative_wizard_pages import (
     BrandConnectState,
     BrandWizardState,
-    brand_choice_index,
     brand_connect_index,
     brand_connect_setup_index,
     brand_manual_index,
@@ -312,15 +312,24 @@ app.add_page(
 # there is no "Marca": `enter_brand_home` sends a login (and a guest whose kit is
 # already finished) to the editor, Negocio → Brand Kit, and a kit left halfway back
 # into its wizard.
+# m-24848529 (MARCA-4): /brand is «Tu marca» in five steps — the one mandatory path.
+# It replaced the «¿Tienes redes?» fork (`brand_choice_index`, left unrouted). Every
+# unfinished kit resumes here (`brand_finish._FLOW_ROUTES`), a draft from either old flow
+# included: the loads put its data back, `BrandMinimalState.enter` picks the step (and
+# sends a finished kit to the editor). The old flows stay routable for «Mejora tu marca».
 app.add_page(
-    brand_choice_index,
+    brand_minimal_index,
     route="/brand",
     on_load=[
         AuthState.require_brand_access,
-        BrandConnectState.clear_entry,
-        BrandConnectState.enter_brand_home,
+        CreativeState.load_brand,
+        CreativeState.load_voice,
+        VoiceLabState.load_clone,
+        BrandWizardState.load_saved_assets,
+        BrandConnectState.load_saved_details,
+        BrandMinimalState.enter,
     ],
-    title="Qualify · Crea tu marca",
+    title="Qualify · Tu marca",
 )
 
 # The "No, todavía no" answer's detour: instructions for creating an Instagram or
