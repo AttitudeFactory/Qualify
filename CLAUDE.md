@@ -81,7 +81,7 @@ module by module, the signed decisions and the house rules.
   table and briefs: **`qualify-lead`** skill.
 - **Subagents** (`.claude/agents/`, each preloads its `qualify-*` skills): `backend-engineer`,
   `creative-engineer`, `reflex-ui-engineer`, `platform-engineer`, `data-scientist-fde`,
-  `principal-architect`, `market-analyst`. Ownership map: `docs/equipo-agentes.md`.
+  `principal-architect`, `market-analyst`, `product-owner`. Ownership map: `docs/equipo-agentes.md`.
 - **Squads** are skills the founder triggers: `/qualify-team-dev`, `/qualify-team-po`,
   `/qualify-team-research`. Agent teams (experimental) are off.
 - **Every change ships as a PR with its Meegle ticket; nobody but the founder merges**
