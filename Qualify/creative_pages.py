@@ -1694,10 +1694,11 @@ def _ai_hashtags() -> rx.Component:
             rx.hstack(
                 rx.icon("sparkles", size=14),
                 rx.vstack(
-                    rx.text("Sugeridos para tu texto", size="2", weight="bold"),
+                    rx.text("Sugeridas para tu texto", size="2", weight="bold"),
                     rx.text(
-                        "La IA lee todo tu texto y propone populares, de nicho y locales, "
-                        "priorizando los que vemos en publicaciones reales.",
+                        "Leemos tu texto y te proponemos etiquetas populares, de tu tipo "
+                        "de negocio y de tu zona, empezando por las que vemos "
+                        "en publicaciones reales.",
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
@@ -1800,7 +1801,7 @@ def _hashtags_field() -> rx.Component:
                     CreativeState.edit_hashtag_query,
                     CreativeState.set_edit_hashtag_query,
                     CreativeState.add_typed_hashtag,
-                    "Escribe una etiqueta",
+                    "Escribe una etiqueta, por ejemplo: shawarma",
                     "hash",
                 ),
                 _ai_hashtags(),

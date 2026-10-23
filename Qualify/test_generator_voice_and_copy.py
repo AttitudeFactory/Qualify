@@ -1542,3 +1542,14 @@ def test_the_piece_review_says_etiquetas_not_hashtags() -> None:
     assert "Escribe una etiqueta" in rendered
     assert "Hashtags" not in rendered
     assert "hashtags todav" not in rendered and "Escribe un hashtag" not in rendered
+    assert "por ejemplo: shawarma" in rendered
+
+
+def test_the_tag_suggestions_agree_with_etiquetas() -> None:
+    """CREAR-7 UX review: the suggestions block speaks of «etiquetas» in the feminine."""
+    from .creative_pages import _ai_hashtags
+
+    rendered = str(_ai_hashtags())
+    assert "Sugeridas para tu texto" in rendered
+    assert "Sugeridos" not in rendered
+    assert "de nicho" not in rendered and "La IA" not in rendered
