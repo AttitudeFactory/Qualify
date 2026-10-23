@@ -32,6 +32,12 @@ from qualify_api.connections.meta_oauth import (
     TokenGrant,
     _parse_accounts_response,
 )
+from qualify_api.connections.page_subscription import (
+    EVENT_PAGE_SUBSCRIBE_FAILED,
+    EVENT_PAGE_SUBSCRIBED,
+    PageSubscriptions,
+    SubscriptionResult,
+)
 from qualify_api.connections.repository import ConnectionRecord, GrantInput
 from qualify_api.connections.service import ConnectOutcome, ConnectService
 from qualify_api.connections.state_token import InvalidState, JtiStore, new_payload, sign_state
@@ -198,6 +204,7 @@ def build_harness(
     scopes: tuple[str, ...] = GRANTED_LITERALS,
     verify_ok: bool = True,
     repo: FakeRepository | None = None,
+    page_subscriptions: PageSubscriptions | None = None,
 ) -> Harness:
     settings = MetaOAuthSettings(
         app_id="app-1",
@@ -218,6 +225,7 @@ def build_harness(
         encryptor=DevEncryptor(),
         verifier=verifier,
         publisher=publisher,
+        page_subscriptions=page_subscriptions,
     )
     return Harness(service, repository, oauth, publisher, verifier, settings, jti_store)
 
@@ -874,3 +882,92 @@ def test_start_request_model_has_no_identity_fields() -> None:
     the user the connection is attributed to (C1 removed `user_id` — same bypass)."""
     assert "tenant_id" not in connections_routes.StartConnectRequest.model_fields
     assert "user_id" not in connections_routes.StartConnectRequest.model_fields
+
+
+# --------------------------------------------------------------------------------------
+# m-24789549: Page subscription to the app's webhooks
+# --------------------------------------------------------------------------------------
+
+
+class _SubscriptionClient:
+    def __init__(self, result: SubscriptionResult | None = None, *, raises: bool = False):
+        self.result = result or SubscriptionResult(ok=True)
+        self.raises = raises
+        self.calls: list[tuple[UUID, UUID, str]] = []
+
+    async def subscribe(
+        self, *, tenant_id: UUID, connection_id: UUID, page_id: str
+    ) -> SubscriptionResult:
+        self.calls.append((tenant_id, connection_id, page_id))
+        if self.raises:
+            raise RuntimeError("graph exploded")
+        return self.result
+
+    def unsubscribe(self, *, page_id: str) -> SubscriptionResult:
+        raise AssertionError("connect never unsubscribes")
+
+
+class _SubscriptionRecorder:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, object]] = []
+
+    def record(self, **kwargs: object) -> None:
+        self.rows.append(kwargs)
+
+    def page_shared_by_live_connection(
+        self, *, tenant_id: UUID, connection_id: UUID, page_id: str
+    ) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_connect_subscribes_the_linked_page_and_records_it() -> None:
+    client, recorder = _SubscriptionClient(), _SubscriptionRecorder()
+    harness = build_harness(page_subscriptions=PageSubscriptions(client=client, recorder=recorder))
+    state = start_and_extract_state(harness)
+
+    result = await harness.service.complete_connect(code="code-1", state=state)
+
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert client.calls == [(TENANT, result.connection_id, IG_PAGE.page_id)]
+    assert [(r["event_type"], r["credential_version"]) for r in recorder.rows] == [
+        (EVENT_PAGE_SUBSCRIBED, 1)
+    ]
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        _SubscriptionClient(SubscriptionResult(ok=False, error_code="200")),
+        _SubscriptionClient(raises=True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_subscription_failure_never_fails_the_connection(
+    client: _SubscriptionClient,
+) -> None:
+    recorder = _SubscriptionRecorder()
+    harness = build_harness(page_subscriptions=PageSubscriptions(client=client, recorder=recorder))
+    state = start_and_extract_state(harness)
+
+    result = await harness.service.complete_connect(code="code-1", state=state)
+
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert harness.repo.only().status == "active"
+    assert [r["event_type"] for r in recorder.rows] == [EVENT_PAGE_SUBSCRIBE_FAILED]
+
+
+@pytest.mark.asyncio
+async def test_no_connection_means_no_subscription_attempt() -> None:
+    client, recorder = _SubscriptionClient(), _SubscriptionRecorder()
+    harness = build_harness(
+        pages=(PAGE_WITHOUT_IG,),
+        page_subscriptions=PageSubscriptions(client=client, recorder=recorder),
+    )
+    state = start_and_extract_state(harness)
+
+    result = await harness.service.complete_connect(code="code-1", state=state)
+
+    assert result.outcome is ConnectOutcome.LINK_REQUIRED
+    assert client.calls == []
+    assert recorder.rows == []

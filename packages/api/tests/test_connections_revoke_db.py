@@ -162,3 +162,55 @@ def test_another_tenant_cannot_revoke_this_connection(
         row = session.get(SocialConnection, connection_id)
         assert row is not None
         assert row.status == "active"  # untouched by the foreign attempt
+
+
+# --- m-24789549: Page subscription audit rows and the card-facing state ---------------
+
+
+def test_page_subscription_state_is_the_latest_audit_row_and_tenant_scoped(
+    revocable_connection: tuple[UUID, UUID],
+) -> None:
+    from qualify_api.connections.page_subscription import (
+        EVENT_PAGE_SUBSCRIBE_FAILED,
+        EVENT_PAGE_SUBSCRIBED,
+        PostgresPageSubscriptionRecorder,
+    )
+    from qualify_api.connections.read import list_connections
+
+    tenant_id, connection_id = revocable_connection
+    recorder = PostgresPageSubscriptionRecorder()
+
+    def _summary_state() -> tuple[str | None, str | None]:
+        (summary,) = [s for s in list_connections(tenant_id) if s.connection_id == connection_id]
+        return summary.page_subscription, summary.page_subscription_error
+
+    assert _summary_state() == (None, None)  # never attempted
+
+    recorder.record(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        credential_version=2,
+        event_type=EVENT_PAGE_SUBSCRIBE_FAILED,
+        actor="system",
+        error_code="200",
+    )
+    assert _summary_state() == ("failed", "200")
+
+    recorder.record(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        credential_version=2,
+        event_type=EVENT_PAGE_SUBSCRIBED,
+        actor="system",
+        error_code=None,
+    )
+    assert _summary_state() == ("subscribed", None)
+
+    # Tenant B sees neither the connection nor its subscription rows.
+    assert all(s.connection_id != connection_id for s in list_connections(TENANT_B))
+    assert recorder.page_shared_by_live_connection(
+        tenant_id=tenant_id, connection_id=uuid4(), page_id="page-1"
+    )
+    assert not recorder.page_shared_by_live_connection(
+        tenant_id=TENANT_B, connection_id=uuid4(), page_id="page-1"
+    )
