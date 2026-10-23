@@ -201,6 +201,15 @@ def test_the_four_default_ice_breakers_are_ours_and_named_in_spanish() -> None:
     assert default_ice_breaker("QF_ENVIOS") is None
 
 
+def test_the_default_questions_are_the_tickets_verbatim() -> None:
+    assert [ib.question for ib in DEFAULT_ICE_BREAKERS] == [
+        "¿Qué producto te interesa?",
+        "¿Quieres consultar un precio?",
+        "¿Dónde están y cuál es su horario?",
+        "¿Quieres conocer el catálogo?",
+    ]
+
+
 def test_normalize_payload() -> None:
     assert normalize_payload("QF_PRECIO") == "QF_PRECIO"
     assert normalize_payload(42) == "42"

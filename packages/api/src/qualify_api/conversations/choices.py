@@ -15,7 +15,7 @@ configures the account. So the convention lives here, in one place:
 
 | Payload prefix | Kind (`messages.choice_kind`) | Configured by |
 |---|---|---|
-| `QF_`  | `ice_breaker` | the account's Ice Breakers (PR 3; the four defaults below) |
+| `QF_`  | `ice_breaker` | the account's Ice Breakers (`ice_breakers.py`, 0083; defaults below) |
 | `QFB_` | `button`      | a button template / generic template Qualify sends |
 | `QFM_` | `menu`        | the account's persistent menu |
 | anything else | `button` | a postback Qualify did not configure (another tool, or by hand) |
@@ -64,20 +64,22 @@ _CONTEXT_PAYLOAD_CHARS: Final = 120
 class DefaultIceBreaker:
     """One of the ticket's four default Ice Breakers. `payload` is what Meta sends back,
     `label` is the short Spanish name Conversaciones shows («Pregunta inicial: Precio»),
-    `question` is the proposed text the person taps (PR 3 publishes it; editable)."""
+    `question` is the proposed text the person taps (`ice_breakers.py` publishes it; editable)."""
 
     payload: str
     label: str
     question: str
 
 
+#: The ticket's four (m-24789472, B2), texts verbatim. Seeded per account by
+#: `ice_breakers.IceBreakerService`; the person may edit them before publishing.
 DEFAULT_ICE_BREAKERS: Final[tuple[DefaultIceBreaker, ...]] = (
-    DefaultIceBreaker("QF_PRODUCTO", "Productos", "¿Qué productos tienen?"),
-    DefaultIceBreaker("QF_PRECIO", "Precio", "¿Cuánto cuesta?"),
+    DefaultIceBreaker("QF_PRODUCTO", "Productos", "¿Qué producto te interesa?"),
+    DefaultIceBreaker("QF_PRECIO", "Precio", "¿Quieres consultar un precio?"),
     DefaultIceBreaker(
-        "QF_UBICACION_HORARIO", "Ubicación y horario", "¿Dónde están y en qué horario atienden?"
+        "QF_UBICACION_HORARIO", "Ubicación y horario", "¿Dónde están y cuál es su horario?"
     ),
-    DefaultIceBreaker("QF_CATALOGO", "Catálogo", "¿Me compartes el catálogo?"),
+    DefaultIceBreaker("QF_CATALOGO", "Catálogo", "¿Quieres conocer el catálogo?"),
 )
 
 _DEFAULT_LABELS: Final[dict[str, str]] = {ib.payload: ib.label for ib in DEFAULT_ICE_BREAKERS}
@@ -133,7 +135,7 @@ def choice_label(kind: str | None, payload: str | None, title: str | None) -> st
     payload, else the title the person saw (the message text), else nothing — a payload
     is an internal key and is never shown to the client.
 
-    >>> choice_label("ice_breaker", "QF_PRECIO", "¿Cuánto cuesta?")
+    >>> choice_label("ice_breaker", "QF_PRECIO", "¿Quieres consultar un precio?")
     'Pregunta inicial: Precio'
     >>> choice_label("quick_reply", "SI", "Sí")
     'Respuesta rápida: Sí'
@@ -163,7 +165,7 @@ def choice_context(kind: str | None, payload: str | None, title: str | None) -> 
     """What the draft generator must know about a tapped message: that it is an option
     the business offered, which one, and its payload (the business's own key, which may
     name a product or a topic). `None` for a typed message — e.g. «La persona tocó la
-    pregunta inicial «¿Cuánto cuesta?» (QF_PRECIO: Precio). No lo escribió: …»."""
+    pregunta inicial «¿Quieres consultar un precio?» (QF_PRECIO: Precio). No lo escribió: …»."""
     lead = _CONTEXT_LEADS.get(kind or "")
     if lead is None:
         return None

@@ -44,6 +44,8 @@ def test_current_states_are_pinned() -> None:
         Capability.STORY_COMMENTS: CapabilityState.META_LIMITATION,
         Capability.STORY_REPLY_CONTEXT: CapabilityState.VERIFIED,
         Capability.PUBLIC_NOTICE: CapabilityState.VERIFIED,
+        # m-24789472: built from the corpus, no live test yet (R6).
+        Capability.ICE_BREAKERS: CapabilityState.TO_VERIFY,
     }
 
 
@@ -124,3 +126,14 @@ def test_from_env_reads_the_process_environment(monkeypatch: pytest.MonkeyPatch)
     assert Capabilities.from_env().switched_on == frozenset()
     monkeypatch.setenv(STORY_COMMENTS_ENV, "on")
     assert Capabilities.from_env().switched_on == frozenset({Capability.STORY_COMMENTS})
+
+
+def test_ice_breakers_has_its_own_switch_and_a_spanish_reason() -> None:
+    spec = REGISTRY[Capability.ICE_BREAKERS]
+    assert spec.env_var == "QUALIFY_ICE_BREAKERS"
+    off = Capabilities.from_env({}).availability(Capability.ICE_BREAKERS)
+    assert off.enabled is False
+    assert off.state_label == "Por verificar"
+    assert "preguntas iniciales" in off.reason and "QUALIFY_ICE_BREAKERS" in off.reason
+    on = Capabilities.from_env({"QUALIFY_ICE_BREAKERS": "on"})
+    assert on.enabled(Capability.ICE_BREAKERS) is True

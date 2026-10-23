@@ -1,5 +1,10 @@
 """Per-origin capabilities of Fase C (m-24789646): which ways of continuing a commercial
-query in private this deployment may use.
+query in private this deployment may use — and, since m-24789472, the other unverified
+Meta operations of Conversaciones (`ice_breakers`: publishing an account's «preguntas
+iniciales»). One registry for the whole deployment on purpose: one switch rule, one state
+vocabulary, one pinned-state test and one «no disponible todavía» reason format, which the
+Conversaciones composition already reads for `story_reply_context` and
+`comment_private_reply`. A second, look-alike registry per module would let the two drift.
 
 Every Meta operation Fase C needs and that is not verified against the real API sits
 behind one of these switches, OFF by default (B6). A switch is an environment variable
@@ -38,6 +43,8 @@ class Capability(StrEnum):
     STORY_COMMENTS = "story_comments"
     STORY_REPLY_CONTEXT = "story_reply_context"
     PUBLIC_NOTICE = "public_notice"
+    # m-24789472: POST / GET / DELETE `messenger_profile` (Ice Breakers) for an account.
+    ICE_BREAKERS = "ice_breakers"
 
 
 class CapabilityState(StrEnum):
@@ -97,6 +104,13 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             "El aviso público «Te enviamos la información por DM 💬» (una respuesta pública "
             "al comentario, solo tras confirmar el mensaje privado) se verificó con Meta el "
             "2026-10-22 (R4).",
+        ),
+        CapabilitySpec(
+            Capability.ICE_BREAKERS,
+            "QUALIFY_ICE_BREAKERS",
+            CapabilityState.TO_VERIFY,
+            "Publicar o quitar las preguntas iniciales en Instagram está hecho según la "
+            "documentación de Meta, pero falta probarlo con una cuenta real (R6).",
         ),
     )
 }

@@ -332,3 +332,19 @@ Cuando la persona **toca** una opción en vez de escribir, Qualify guarda el men
 4. Comprobar en la sincronización si el postback figura en `GET /{conversation-id}/messages` y con qué `message`: es la parte que el corpus no muestra.
 
 **Reproducir los postbacks que ya llegaron** (quedaron `unsupported` / `not_a_message` en `meta_webhook_events`, se guardan 29 días): `just webhook-requeue-postbacks [--account <ig_id>]` cuenta cuáles volverían (no cambia nada); con `--execute` los devuelve a la cola y el `webhook-worker` los convierte en mensajes, uno por `mid`. Repetirlo no duplica nada.
+
+## 9. Preguntas iniciales (Ice Breakers) por cuenta (m-24789472, PR 3)
+
+Cada cuenta de Instagram tiene sus preguntas iniciales en `conversation_ice_breakers` (migración 0083): el borrador que la persona edita (las cuatro del ticket por defecto, payloads `QF_PRODUCTO`, `QF_PRECIO`, `QF_UBICACION_HORARIO`, `QF_CATALOGO`), lo último publicado, quién lo publicó y la última lectura de vuelta. Código: `conversations/ice_breakers.py` (servicio) y `conversations/ice_breakers_client.py` (Graph). Publicar y quitar son acciones de una persona y están detrás de la capacidad `ice_breakers` (`QUALIFY_ICE_BREAKERS=on`, **por verificar**); editar el borrador funciona sin ella.
+
+| Operación | Contrato (corpus, **no verificado en vivo**) | Qué hace Qualify |
+| --- | --- | --- |
+| Publicar | `POST /{page}/messenger_profile?platform=instagram`, cuerpo `{"platform": "instagram", "ice_breakers": [{"call_to_actions": [{question, payload}], "locale": "default"}]}`, token de Página (`features/ice-breakers.md`); máximo 4; `locale: "default"` obligatorio | Un solo bloque `default`; 60 s de espera; después lee de vuelta |
+| Leer de vuelta | `GET /{page}/messenger_profile?fields=ice_breakers&platform=instagram`. **El corpus se contradice:** `ice-breakers.md` muestra `data` como lista de bloques por idioma; `page/messenger_profile.md`, como un objeto por propiedad (`[{"ice_breakers": [...]}]`) | Acepta las dos formas; guarda la lectura con `shape_version` `ig-ice-breakers-messenger-profile-0.1.0` |
+| Quitar | `DELETE /{page}/messenger_profile?platform=instagram` con cuerpo `{"fields": ["ice_breakers"]}` | El borrador se conserva; lee de vuelta |
+| Límite | 10 llamadas cada 10 minutos por Página (`messenger_profile.md`) | Publicar = 2 llamadas; si Meta lo frena, `rate_limited` y un mensaje para esperar |
+| Largo de la pregunta | El corpus no lo dice | 80 caracteres, provisional (el de WhatsApp) |
+
+`{page}` es el `linked_page_id` de la conexión (con un token de Página, `me` es la misma Página). Errores: solo códigos (`last_error_code`: `auth_expired`, `permission_missing`, `rate_limited`, `meta_unavailable`, `ambiguous`, `rejected`, `unexpected_response`, `connection_unavailable`, `unexpected`; `last_error_detail`: `http_<estado>_code_<código>`); la base los restringe a `[a-z0-9_]`, nunca guarda el texto de Meta. Un fallo ambiguo (la petición pudo llegar) se resuelve leyendo de vuelta.
+
+**Prueba real pendiente (R6):** con `QUALIFY_ICE_BREAKERS=on` y un tester, publicar las cuatro desde Qualify, comprobar en el teléfono (no existen en escritorio) que aparecen, anotar aquí qué forma devolvió el `GET` y qué permiso pidió Meta (`pages_messaging` o `instagram_manage_messages`), medir el largo máximo de una pregunta, tocar una y ver que llega a Conversaciones como pregunta inicial (§8), y luego quitarlas. Sin tokens ni textos de usuario en las notas.
