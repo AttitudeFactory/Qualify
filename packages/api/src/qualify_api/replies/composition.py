@@ -11,13 +11,19 @@ from functools import cache
 from uuid import UUID
 
 from qualify_api.assisted.approval import HumanApproval
+from qualify_api.assisted.grounding import catalog_grounding_for
 from qualify_api.config import MetaOAuthSettings
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.resolver import InjectingCredentialResolver
+from qualify_api.conversations.suggest import ClaudeDraftGenerator
 from qualify_api.replies.claude_drafts import DRAFT_MODEL, ClaudeReplyDraftProvider
 from qualify_api.replies.client import CommentReplyClient, HttpCommentReplyClient
+from qualify_api.replies.public_drafts import (
+    PUBLIC_GENERATOR_VERSION_PREFIX,
+    PUBLIC_SYSTEM_PROMPT,
+)
 from qualify_api.replies.repository import DraftRecord, PostgresReplyRepository
 from qualify_api.replies.service import DecisionResult, GenerationSummary, ReplyService
 
@@ -46,8 +52,17 @@ def current_reply_generator_version() -> str:
     return f"qua22.2:{DRAFT_MODEL.model_id}"
 
 
+def public_reply_generator() -> ClaudeDraftGenerator:
+    """Fase B's grounded generator (m-24789645): the private-conversation tool contract
+    with the PUBLIC reply prompt and its own version (`m24789645.1:<model>`)."""
+    return ClaudeDraftGenerator(
+        system_prompt=PUBLIC_SYSTEM_PROMPT, version_prefix=PUBLIC_GENERATOR_VERSION_PREFIX
+    )
+
+
 @cache
 def production_reply_service() -> ReplyService:
+    from qualify_api.intent.composition import CURRENT_INTENT_VERSION  # noqa: PLC0415
     from qualify_api.sentiment.composition import current_analysis_version  # noqa: PLC0415
 
     settings = MetaOAuthSettings.from_env()
@@ -58,6 +73,11 @@ def production_reply_service() -> ReplyService:
         provider=ClaudeReplyDraftProvider(),
         client_factory=ResolverReplyClientFactory(settings, DevEncryptor()),
         connection_degrader=degrade_connection_on_auth_error,
+        intent_version=CURRENT_INTENT_VERSION,
+        grounded_generator=public_reply_generator(),
+        # The comment's own connection → its brand → that brand's active catalog, read
+        # under the tenant's RLS (`tenant_session`): never another tenant's products.
+        grounding=catalog_grounding_for,
     )
 
 
@@ -67,6 +87,14 @@ def generate_drafts(*, tenant_id: UUID, connection_id: UUID) -> GenerationSummar
     manual trigger: nothing here runs on a schedule."""
     return production_reply_service().generate_drafts(
         tenant_id=tenant_id, connection_id=connection_id
+    )
+
+
+def regenerate_draft(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
+    """«Regenerar» (m-24789645; the button arrives in PR 3): replaces a `proposed` draft
+    with a fresh one, through the gate. Never sends."""
+    return production_reply_service().regenerate(
+        tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
     )
 
 
