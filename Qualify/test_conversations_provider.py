@@ -56,6 +56,13 @@ from qualify_api.conversations.suggest import (
     SuggestionRefused,
 )
 from qualify_api.conversations.sync import ConversationSyncService
+from qualify_api.conversations.templates import (
+    MESSAGES,
+    MemoryReplyTemplateRepository,
+    ReplyTemplateError,
+    ReplyTemplateNotFound,
+    ReplyTemplateService,
+)
 
 from . import conversations_provider
 from .conversations_provider import ConversationsGateway
@@ -158,6 +165,15 @@ class World:
             grounding=lambda tenant, connection: Grounding("Bianki"),
             clock=self.clock,
         )
+        # m-24789472: the template library over the backend's own memory repository.
+        self.template_rows = MemoryReplyTemplateRepository(
+            connections={CONNECTION: TENANT, OTHER_CONNECTION: TENANT}, clock=self.clock
+        )
+        self.templates = ReplyTemplateService(
+            repository=self.template_rows,
+            threads=self.repo,
+            brand_name=lambda tenant, connection: "Bianki",
+        )
         self.gateway = ConversationsGateway(
             service=self.service,
             repository=self.repo,
@@ -169,6 +185,7 @@ class World:
             connections=lambda t, c: SOURCE_CONNECTION if c == CONNECTION else None,
             drafts=self.drafts,
             clock=self.clock,
+            templates=self.templates,
         )
 
     def inbound(
@@ -514,3 +531,101 @@ def test_postgres_only_through_tenant_session() -> None:
     source = inspect.getsource(conversations_provider)
     assert "admin_session" not in source
     assert "create_engine" not in source
+
+
+# --- message templates (m-24789472) ----------------------------------------------------
+
+
+def _by_title(world: World, connection_id: UUID = CONNECTION) -> dict[str, UUID]:
+    return {t.title: t.id for t in world.gateway.templates(TENANT, connection_id)}
+
+
+def test_the_library_opens_with_the_four_defaults_in_spanish(world: World) -> None:
+    titles = [t.title for t in world.gateway.templates(TENANT, CONNECTION)]
+    assert titles == ["Saludo", "Precio", "Horario", "Catálogo"]
+    # Seeded once: a second open adds nothing.
+    assert len(world.gateway.templates(TENANT, CONNECTION)) == 4
+
+
+def test_rendering_fills_the_brand_and_leaves_a_missing_name_visible(world: World) -> None:
+    thread = world.inbound()
+    ids = _by_title(world)
+
+    greeting = world.gateway.render_template(TENANT, CONNECTION, thread, ids["Saludo"])
+    assert "Bianki" in greeting.text
+    assert "{nombre}" in greeting.text  # this counterpart has no name on the thread
+    assert greeting.unresolved == ("{nombre}",)
+
+    price = world.gateway.render_template(TENANT, CONNECTION, thread, ids["Precio"])
+    assert price.blanks == ("[precio]",)
+    assert price.unresolved == ()
+
+
+def test_rendering_never_queues_and_never_reaches_the_channel(world: World) -> None:
+    """B5: a template is a starting point for the box. Only `reply` writes the outbox."""
+    thread = world.inbound()
+    for template_id in _by_title(world).values():
+        world.gateway.render_template(TENANT, CONNECTION, thread, template_id)
+    world.gateway.create_template(TENANT, CONNECTION, USER, "Envíos", "Enviamos a todo el país.")
+    assert world.outbox.rows == {}
+    assert world.sender.sent == []
+
+
+def test_rendering_is_scoped_to_the_account_on_screen(world: World) -> None:
+    mine = world.inbound()
+    theirs = world.inbound(connection_id=OTHER_CONNECTION, counterpart="igsid-bob")
+    other_template = _by_title(world, OTHER_CONNECTION)["Saludo"]
+
+    with pytest.raises(ThreadNotFound):
+        world.gateway.render_template(TENANT, CONNECTION, theirs, _by_title(world)["Saludo"])
+    with pytest.raises(ReplyTemplateError) as refused:
+        world.gateway.render_template(TENANT, CONNECTION, mine, other_template)
+    assert refused.value.code == "other_account"
+
+
+def test_a_template_of_another_account_cannot_be_edited_or_deleted(world: World) -> None:
+    other_template = _by_title(world, OTHER_CONNECTION)["Saludo"]
+    with pytest.raises(ReplyTemplateNotFound):
+        world.gateway.update_template(TENANT, CONNECTION, other_template, USER, "X", "Y")
+    with pytest.raises(ReplyTemplateNotFound):
+        world.gateway.delete_template(TENANT, CONNECTION, other_template)
+    assert world.template_rows.rows[other_template].title == "Saludo"
+
+
+def test_create_edit_delete_and_their_spanish_refusals(world: World) -> None:
+    created = world.gateway.create_template(
+        TENANT, CONNECTION, USER, "  Envíos  ", "Enviamos a todo el país."
+    )
+    assert created.title == "Envíos" and created.created_by_user_id == USER
+    assert [t.title for t in world.gateway.templates(TENANT, CONNECTION)][-1] == "Envíos"
+
+    with pytest.raises(ReplyTemplateError) as empty:
+        world.gateway.create_template(TENANT, CONNECTION, USER, "  ", "Algo")
+    assert str(empty.value) == MESSAGES["title_empty"]
+    with pytest.raises(ReplyTemplateError) as long_body:
+        world.gateway.update_template(TENANT, CONNECTION, created.id, USER, "Envíos", "x" * 1001)
+    assert long_body.value.message == MESSAGES["body_too_long"]
+
+    edited = world.gateway.update_template(
+        TENANT, CONNECTION, created.id, USER, "Envíos", "Enviamos a todo Uruguay."
+    )
+    assert edited.body == "Enviamos a todo Uruguay."
+    assert world.gateway.delete_template(TENANT, CONNECTION, created.id) is True
+    assert "Envíos" not in _by_title(world)
+
+
+def test_reorder_takes_the_whole_library_or_nothing(world: World) -> None:
+    library = world.gateway.templates(TENANT, CONNECTION)
+    ids = [t.id for t in library]
+    moved = [ids[1], ids[0], *ids[2:]]
+    assert [t.id for t in world.gateway.reorder_templates(TENANT, CONNECTION, moved)] == moved
+
+    with pytest.raises(ReplyTemplateError) as stale:
+        world.gateway.reorder_templates(TENANT, CONNECTION, moved[:-1])
+    assert stale.value.code == "order_stale"
+    assert [t.id for t in world.gateway.templates(TENANT, CONNECTION)] == moved
+
+
+def test_the_template_service_is_wired_lazily_from_composition() -> None:
+    source = inspect.getsource(ConversationsGateway.template_service.fget)
+    assert "production_template_service" in source

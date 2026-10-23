@@ -32,6 +32,9 @@ on the catalog, decided by a person) closed the ticket's scope the same evening.
 - `instagram_source` / `webhook` — Instagram Direct: the Messenger Platform adapter and
   the `instagram:messages` intake handler (E3).
 - `sender` / `worker` — the outbox loop (window re-checked at send time) and its CLI (E5).
+- `templates` — m-24789472: the per-account library of text templates the composer
+  starts a reply from (0079), with `{nombre}`/`{marca}` rendering. Never sends: the text
+  leaves only through `reply_text` and the approved outbox.
 - `composition` — production wiring; the one place the channel implementation is chosen.
 
 Blocked outside the code (see the ticket): `instagram_manage_messages` is not requested
@@ -94,8 +97,30 @@ from qualify_api.conversations.service import (
     attention_state,
 )
 from qualify_api.conversations.sync import ConversationSyncService, IngestResult, SyncReport
+from qualify_api.conversations.templates import (
+    DEFAULT_TEMPLATES,
+    MemoryReplyTemplateRepository,
+    PostgresReplyTemplateRepository,
+    RenderedTemplate,
+    ReplyTemplate,
+    ReplyTemplateError,
+    ReplyTemplateNotFound,
+    ReplyTemplateRepository,
+    ReplyTemplateService,
+    render_template,
+)
 
 __all__ = [
+    "DEFAULT_TEMPLATES",
+    "MemoryReplyTemplateRepository",
+    "PostgresReplyTemplateRepository",
+    "RenderedTemplate",
+    "ReplyTemplate",
+    "ReplyTemplateError",
+    "ReplyTemplateNotFound",
+    "ReplyTemplateRepository",
+    "ReplyTemplateService",
+    "render_template",
     "ConversationOutboxSender",
     "SendReport",
     "CHANNEL_DM",

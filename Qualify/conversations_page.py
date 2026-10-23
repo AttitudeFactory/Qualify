@@ -29,6 +29,10 @@ What the page says that the service decides elsewhere:
   a voice note, a ❤️ — can go with (or instead of) the text; a long text says in how many
   messages it goes out; «Sugerir respuesta» (E4) fills the box with a model's draft the
   person edits or discards — nothing is sent without pressing «Responder»;
+- **«Plantillas»** (m-24789472) opens the account's saved messages: picking one fills the
+  box with its text for this person (`{nombre}`, `{marca}`), a line says what is still to
+  complete («[precio]»), and it leaves only through «Responder». «Administrar plantillas»
+  opens a drawer to create, edit, delete (confirmed in place) and reorder them;
 - every real bubble has **«Eliminar para mí»** on hover: Instagram's API offers a
   business neither unsend nor edit, so «para todos» and «editar» do not exist here;
 - the conversation shows its **newest 50 messages** (`MESSAGES_PAGE`); older history is a
@@ -51,14 +55,19 @@ from .conversations_vm import (
     FILTER_READ,
     MAX_DOCUMENT_BYTES,
     MAX_MEDIA_BYTES,
+    MAX_TEMPLATE_BODY_CHARS,
+    MAX_TEMPLATE_TITLE_CHARS,
+    MAX_TEMPLATES_PER_ACCOUNT,
     MEDIA_ACCEPT,
     MEDIA_AUDIO,
     MEDIA_IMAGE,
     MEDIA_STICKER,
     MEDIA_VIDEO,
     MESSAGES_PAGE,
+    TEMPLATE_HELP,
     AccountVM,
     MessageVM,
+    TemplateVM,
     ThreadRowVM,
 )
 from .followups_page import followups_panel, followups_toggle
@@ -68,6 +77,7 @@ from .ui import (
     callout,
     card,
     chat_bubble,
+    drawer,
     dropzone,
     empty_state,
     mono,
@@ -986,6 +996,412 @@ def _suggestion_chip() -> rx.Component:
     )
 
 
+# --- message templates (m-24789472) --------------------------------------------------
+
+
+def _template_item(t: TemplateVM) -> rx.Component:
+    """One row of the picker: the title and the start of the text. A click renders it for
+    this person and fills the box — it never sends.
+
+    Radix's ghost button is `content-box` with negative margins, so `width: 100%` plus its
+    padding overflowed the popover (a horizontal scrollbar, 2026-10-22): the row is
+    `border-box` with no margin, and each line is a block that truncates (`q-wa-ellipsis`
+    needs `display: block` and a `min-width: 0` chain to cut)."""
+    line = {"class_name": "q-wa-ellipsis", "display": "block", "width": "100%", "min_width": "0"}
+    return rx.button(
+        rx.box(
+            rx.text(t.title, size="2", weight="medium", **line),
+            rx.text(t.preview, size="1", color=T.TEXT_MUTED, **line),
+            width="100%",
+            min_width="0",
+            overflow="hidden",
+        ),
+        on_click=S.apply_template(t.template_id),
+        loading=S.applying_template_id == t.template_id,
+        disabled=~S.can_use_template | (S.applying_template_id != ""),
+        variant="ghost",
+        size="2",
+        type="button",
+        width="100%",
+        min_width="0",
+        max_width="100%",
+        box_sizing="border-box",
+        margin="0",
+        height="auto",
+        justify_content="start",
+        text_align="left",
+        padding="0.45rem 0.6rem",
+        class_name="q-conv-template-item",
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _templates_menu_list() -> rx.Component:
+    return rx.cond(
+        S.templates_error != "",
+        rx.vstack(
+            callout(S.templates_error, "error"),
+            _retry_button("Reintentar", S.load_templates),
+            spacing="2",
+            width="100%",
+        ),
+        rx.cond(
+            S.templates_ready,
+            rx.cond(
+                S.templates_empty,
+                rx.vstack(
+                    rx.text("Aún no tienes plantillas en esta cuenta.", size="2"),
+                    rx.text(
+                        "Guarda las respuestas que más escribes y úsalas con un clic.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    width="100%",
+                    padding="0.25rem 0.1rem",
+                ),
+                rx.vstack(
+                    rx.cond(
+                        S.can_use_template,
+                        rx.fragment(),
+                        rx.text(
+                            "Para usar una plantilla, la conversación tiene que admitir "
+                            "respuestas.",
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                    rx.foreach(S.templates, _template_item),
+                    spacing="1",
+                    align_items="stretch",
+                    width="100%",
+                    min_width="0",
+                    max_height="18rem",
+                    overflow_y="auto",
+                    overflow_x="hidden",
+                ),
+            ),
+            skeleton_rows(3, height="2.75rem"),
+        ),
+    )
+
+
+def _templates_picker() -> rx.Component:
+    """«Plantillas» beside «Sugerir respuesta»: a popover with the account's library and
+    the door to manage it."""
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.button(
+                rx.icon("message-square-quote", size=T.ICON_SM),
+                "Plantillas",
+                variant="soft",
+                size="2",
+                type="button",
+                disabled=~S.can_open_templates,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.popover.content(
+            rx.vstack(
+                rx.hstack(
+                    rx.text("Plantillas", size="2", weight="bold"),
+                    rx.spacer(),
+                    rx.cond(
+                        S.templates_ready,
+                        rx.text(
+                            S.templates_counter, size="1", color=T.TEXT_MUTED, class_name="q-nums"
+                        ),
+                        rx.fragment(),
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+                _templates_menu_list(),
+                rx.button(
+                    rx.icon("library", size=T.ICON_SM),
+                    "Administrar plantillas",
+                    on_click=S.open_templates_manager,
+                    variant="soft",
+                    size="1",
+                    type="button",
+                    width="100%",
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            side="top",
+            align="end",
+            width="min(22rem, calc(100vw - 2rem))",
+            class_name="q-conv-templates",
+        ),
+        open=S.templates_menu_open,
+        on_open_change=S.set_templates_menu_open,
+    )
+
+
+def _template_fill_notice() -> rx.Component:
+    """What a picked template still asks the person to complete. Gentle: it never
+    blocks «Responder», and it goes away as the person fills each spot."""
+    return rx.cond(
+        S.template_fill_notice != "",
+        callout(S.template_fill_notice, "info", icon="pencil-line"),
+        rx.fragment(),
+    )
+
+
+def _field(label: str, control: rx.Component, counter: rx.Var[str]) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text(label, size="2", weight="medium"),
+            rx.spacer(),
+            rx.text(counter, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            width="100%",
+            align="center",
+        ),
+        control,
+        spacing="1",
+        width="100%",
+    )
+
+
+def _template_form() -> rx.Component:
+    return rx.cond(
+        S.template_form_open,
+        card(
+            rx.vstack(
+                rx.text(S.template_form_heading, size="3", weight="bold"),
+                _field(
+                    "Nombre",
+                    rx.input(
+                        value=S.template_form_title,
+                        on_change=S.set_template_form_title,
+                        placeholder="Ej.: Envíos",
+                        max_length=MAX_TEMPLATE_TITLE_CHARS,
+                        width="100%",
+                        aria_label="Nombre de la plantilla",
+                    ),
+                    S.template_title_counter,
+                ),
+                _field(
+                    "Mensaje",
+                    rx.text_area(
+                        value=S.template_form_body,
+                        on_change=S.set_template_form_body,
+                        placeholder="Ej.: ¡Hola, {nombre}! Hacemos envíos a todo el país.",
+                        max_length=MAX_TEMPLATE_BODY_CHARS,
+                        rows="5",
+                        resize="vertical",
+                        width="100%",
+                        aria_label="Mensaje de la plantilla",
+                    ),
+                    S.template_body_counter,
+                ),
+                rx.text(TEMPLATE_HELP, size="1", color=T.TEXT_MUTED),
+                rx.cond(
+                    S.template_form_error != "",
+                    callout(S.template_form_error, "error"),
+                    rx.fragment(),
+                ),
+                rx.hstack(
+                    rx.button(
+                        "Cancelar",
+                        on_click=S.cancel_template_form,
+                        variant="soft",
+                        size="2",
+                        type="button",
+                        **T.tone_scheme("neutral"),
+                    ),
+                    rx.button(
+                        rx.icon("check", size=T.ICON_SM),
+                        "Guardar",
+                        on_click=S.save_template,
+                        loading=S.template_saving,
+                        size="2",
+                        type="button",
+                    ),
+                    spacing="2",
+                    justify="end",
+                    width="100%",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            padding="1rem",
+        ),
+        rx.fragment(),
+    )
+
+
+def _template_tool(icon: str, label: str, **props) -> rx.Component:
+    return rx.tooltip(
+        rx.icon_button(
+            rx.icon(icon, size=T.ICON_SM),
+            variant="ghost",
+            size="1",
+            type="button",
+            aria_label=label,
+            **T.tone_scheme("neutral"),
+            **props,
+        ),
+        content=label,
+    )
+
+
+def _template_row(t: TemplateVM) -> rx.Component:
+    """A template in the manager: up / down / edit / delete; «Borrar» asks first, in
+    place (a second dialog over the drawer would trap focus twice)."""
+    busy = S.templates_working | S.template_saving
+    confirm = rx.vstack(
+        rx.text("¿Borrar la plantilla «" + t.title + "»? No se puede deshacer.", size="2"),
+        rx.hstack(
+            rx.button(
+                "Cancelar",
+                on_click=S.cancel_delete_template,
+                variant="soft",
+                size="1",
+                type="button",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.button(
+                rx.icon("trash-2", size=T.ICON_SM),
+                "Borrar",
+                on_click=S.confirm_delete_template,
+                loading=S.templates_working,
+                size="1",
+                type="button",
+                **T.tone_scheme("error"),
+            ),
+            spacing="2",
+            justify="end",
+            width="100%",
+        ),
+        spacing="2",
+        width="100%",
+    )
+    normal = rx.hstack(
+        rx.vstack(
+            rx.text(t.title, size="2", weight="medium", class_name="q-wa-ellipsis", width="100%"),
+            rx.text(t.body, size="1", color=T.TEXT_MUTED, white_space="pre-wrap", width="100%"),
+            spacing="1",
+            min_width="0",
+            flex="1",
+        ),
+        rx.hstack(
+            _template_tool(
+                "arrow-up",
+                "Subir",
+                on_click=S.move_template(t.template_id, -1),
+                disabled=t.is_first | busy,
+            ),
+            _template_tool(
+                "arrow-down",
+                "Bajar",
+                on_click=S.move_template(t.template_id, 1),
+                disabled=t.is_last | busy,
+            ),
+            _template_tool(
+                "pencil", "Editar", on_click=S.start_edit_template(t.template_id), disabled=busy
+            ),
+            _template_tool(
+                "trash-2", "Borrar", on_click=S.ask_delete_template(t.template_id), disabled=busy
+            ),
+            spacing="1",
+            flex_shrink="0",
+        ),
+        spacing="3",
+        align="start",
+        width="100%",
+    )
+    return card(
+        rx.cond(S.template_confirm_delete_id == t.template_id, confirm, normal),
+        padding="0.75rem",
+        key=t.template_id,
+    )
+
+
+def _templates_list() -> rx.Component:
+    return rx.cond(
+        S.templates_ready,
+        rx.cond(
+            S.templates_empty,
+            empty_state(
+                "library",
+                "Aún no tienes plantillas en esta cuenta",
+                "Crea la primera con «Nueva plantilla»: un saludo, tus precios o tu horario, "
+                "listos para responder más rápido.",
+            ),
+            rx.vstack(rx.foreach(S.templates, _template_row), spacing="2", width="100%"),
+        ),
+        rx.cond(
+            S.templates_error != "",
+            rx.fragment(),
+            skeleton_rows(4, height="4rem", radius=T.RADIUS_CARD),
+        ),
+    )
+
+
+def templates_manager() -> rx.Component:
+    """«Administrar plantillas»: the account's library in a drawer. The form's «Guardar»
+    is the drawer's one solid button."""
+    return drawer(
+        rx.vstack(
+            rx.hstack(
+                rx.cond(
+                    S.templates_at_limit,
+                    tone_badge(S.templates_counter, "warn"),
+                    tone_badge(S.templates_counter, "neutral"),
+                ),
+                rx.text("plantillas", size="1", color=T.TEXT_MUTED),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Nueva plantilla",
+                    on_click=S.start_new_template,
+                    disabled=S.templates_at_limit | S.template_form_open | ~S.templates_ready,
+                    variant="soft",
+                    size="2",
+                    type="button",
+                ),
+                width="100%",
+                align="center",
+                spacing="2",
+            ),
+            rx.cond(
+                S.templates_at_limit,
+                callout(
+                    f"Llegaste al máximo de {MAX_TEMPLATES_PER_ACCOUNT} plantillas en esta "
+                    "cuenta. Borra alguna que no uses para crear otra.",
+                    "info",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                S.templates_error != "",
+                rx.vstack(
+                    callout(S.templates_error, "error"),
+                    _retry_button("Reintentar", S.load_templates),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.fragment(),
+            ),
+            _template_form(),
+            _templates_list(),
+            spacing="3",
+            width="100%",
+        ),
+        open=S.templates_manager_open,
+        on_open_change=S.set_templates_manager_open,
+        title=S.templates_account_label,
+        icon="library",
+        description=(
+            "Mensajes guardados para empezar una respuesta. Los eliges en «Plantillas» y "
+            "siempre puedes cambiarlos antes de enviar."
+        ),
+    )
+
+
 def _composer() -> rx.Component:
     return rx.vstack(
         rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
@@ -1005,6 +1421,7 @@ def _composer() -> rx.Component:
             rx.fragment(),
         ),
         _suggestion_chip(),
+        _template_fill_notice(),
         _attachment_chip(),
         rx.text_area(
             value=S.draft_text,
@@ -1045,6 +1462,7 @@ def _composer() -> rx.Component:
                 class_name="q-conv-tools",
             ),
             rx.spacer(),
+            _templates_picker(),
             rx.button(
                 rx.icon("sparkles", size=T.ICON_SM),
                 "Sugerir respuesta",
@@ -1169,6 +1587,7 @@ def _chats() -> rx.Component:
                 "q-wa-chats q-conv-chats",
             ),
         ),
+        templates_manager(),
         spacing="4",
         width="100%",
     )

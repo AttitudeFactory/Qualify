@@ -40,6 +40,17 @@ last inbound; its text lands in the box with a chip that says it is a suggestion
 not; on «Responder» the draft is decided (`accepted` / `edited`) and its id travels in
 the approval. «Descartar» decides `discarded`. A gate refusal is a toast, never an error.
 
+**Message templates (m-24789472, PR 1).** «Plantillas», beside the tools, opens the
+account's library (loaded once per account, the four defaults seeded on first use).
+Picking one asks the gateway to render it for THIS thread (`{nombre}`, `{marca}`) and
+puts the text in the box, REPLACING what was there — the same as «Sugerir respuesta»; a
+suggestion in the box is set aside (`discarded`). A line over the box then names what is
+still to be completed (a `{variable}` with no value, a `[fill-in]`) until the person
+replaces it. Picking never sends and never queues: the text leaves only through
+`send_reply`. «Administrar plantillas» opens a drawer to create, edit, delete (with
+confirmation) and reorder; the service's refusals (`ReplyTemplateError.message`) are
+shown inline as they come.
+
 **Refresh.** A hidden `rx.moment` heartbeat in the page (15 s) calls `refresh`, which
 re-reads the access state, the list and the open conversation without skeletons. A thread
 whose newest inbound arrived since the last read pulses and is announced with a toast. A
@@ -73,6 +84,11 @@ from qualify_api.conversations.outbox import ApprovalRequired
 from qualify_api.conversations.repository import MessageRecord
 from qualify_api.conversations.service import ThreadNotFound, WindowClosed
 from qualify_api.conversations.suggest import SuggestionRefused
+from qualify_api.conversations.templates import (
+    ERR_TEMPLATE_NOT_FOUND,
+    ReplyTemplateError,
+    ReplyTemplateNotFound,
+)
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -90,6 +106,9 @@ from .conversations_vm import (
     FILTER_PENDING,
     FILTER_READ,
     HEART_TEXT,
+    MAX_TEMPLATE_BODY_CHARS,
+    MAX_TEMPLATE_TITLE_CHARS,
+    MAX_TEMPLATES_PER_ACCOUNT,
     MEDIA_AUDIO,
     QUIET_ACCESS_KINDS,
     VOICE_CONTENT_TYPE,
@@ -99,22 +118,28 @@ from .conversations_vm import (
     AttachmentVM,
     DraftVM,
     MessageVM,
+    TemplateVM,
     ThreadRowVM,
     UnsentItem,
     attention_pill,
     build_access_vm,
     build_conversation,
     build_draft_vm,
+    build_template_rows,
     build_thread_row,
+    char_counter,
     classify_attachment,
     composer_enabled,
     filter_counts,
     filter_label,
     filter_threads,
+    moved_order,
     newly_pending,
     reply_as_label,
     reply_parts_hint,
     suggestion_refusal_label,
+    template_counter,
+    template_notice,
     validate_reply,
     voice_note_name,
 )
@@ -151,6 +176,13 @@ _SUGGEST_READY = "Sugerencia lista. Revísala, edítala si hace falta y envíala
 _MIC_DENIED = "No se pudo usar el micrófono. Revisa el permiso del navegador."
 _VOICE_EMPTY = "La grabación quedó vacía."
 _VOICE_BROKEN = "No se pudo recibir la grabación. Vuelve a intentarlo."
+_TEMPLATES_FAILED = "No se pudieron cargar las plantillas. Vuelve a intentarlo en un momento."
+_TEMPLATE_FAILED = "No se pudo usar la plantilla. Vuelve a intentarlo en un momento."
+_TEMPLATE_SAVE_FAILED = "No se pudo guardar la plantilla. Vuelve a intentarlo en un momento."
+_TEMPLATE_ACTION_FAILED = "No se pudo cambiar la plantilla. Vuelve a intentarlo en un momento."
+_TEMPLATE_CREATED = "Plantilla creada."
+_TEMPLATE_SAVED = "Cambios guardados."
+_TEMPLATE_DELETED = "Plantilla borrada."
 _TOAST_MS = 4000
 
 
@@ -248,6 +280,27 @@ class ConversationsState(rx.State):
     # Voice note: recording / receiving its parts.
     recording: bool = False
     receiving_voice: bool = False
+
+    # -- message templates (m-24789472) -------------------------------------------------
+    templates: list[TemplateVM] = []
+    templates_loaded_for: str = ""  # the account whose library `templates` holds
+    templates_loading: bool = False
+    templates_error: str = ""
+    templates_menu_open: bool = False
+    applying_template_id: str = ""
+    # What the last picked template left to complete (the notice re-checks the box).
+    applied_unresolved: list[str] = []
+    applied_blanks: list[str] = []
+    # The manager drawer and its form.
+    templates_manager_open: bool = False
+    template_form_open: bool = False
+    template_editing_id: str = ""  # "" while creating
+    template_form_title: str = ""
+    template_form_body: str = ""
+    template_form_error: str = ""
+    template_saving: bool = False
+    template_confirm_delete_id: str = ""
+    templates_working: bool = False
 
     # -- backend only -------------------------------------------------------------------
     _zone_name: str = ""
@@ -403,6 +456,58 @@ class ConversationsState(rx.State):
             return WINDOW_CLOSED_NOTICE
         return ""
 
+    # -- message templates --------------------------------------------------------------
+
+    @rx.var
+    def templates_ready(self) -> bool:
+        return (
+            self.selected_connection_id != ""
+            and self.templates_loaded_for == self.selected_connection_id
+        )
+
+    @rx.var
+    def templates_empty(self) -> bool:
+        return self.templates_ready and len(self.templates) == 0
+
+    @rx.var
+    def templates_counter(self) -> str:
+        return template_counter(len(self.templates))
+
+    @rx.var
+    def templates_at_limit(self) -> bool:
+        return len(self.templates) >= MAX_TEMPLATES_PER_ACCOUNT
+
+    @rx.var
+    def can_open_templates(self) -> bool:
+        """The picker opens with a conversation on screen; using a template also needs
+        the composer (`can_use_template`), managing the library does not."""
+        return self.open_thread_id != "" and not self.busy and not self.recording
+
+    @rx.var
+    def can_use_template(self) -> bool:
+        return self.can_compose and not self.busy and not self.recording
+
+    @rx.var
+    def template_fill_notice(self) -> str:
+        return template_notice(self.draft_text, self.applied_unresolved, self.applied_blanks)
+
+    @rx.var
+    def template_form_heading(self) -> str:
+        return "Editar plantilla" if self.template_editing_id else "Nueva plantilla"
+
+    @rx.var
+    def template_title_counter(self) -> str:
+        return char_counter(self.template_form_title, MAX_TEMPLATE_TITLE_CHARS)
+
+    @rx.var
+    def template_body_counter(self) -> str:
+        return char_counter(self.template_form_body, MAX_TEMPLATE_BODY_CHARS)
+
+    @rx.var
+    def templates_account_label(self) -> str:
+        label = self.selected_account.label
+        return f"Plantillas de {label}" if label else "Plantillas de esta cuenta"
+
     @rx.var
     def account_blocked_notice(self) -> str:
         """Why the composer is off for reasons of the account, not of the window."""
@@ -423,7 +528,28 @@ class ConversationsState(rx.State):
     def _now(self) -> datetime:
         return datetime.now(UTC)
 
+    def _reset_templates(self) -> None:
+        """Everything tied to one account's library (the account changed)."""
+        self.templates = []
+        self.templates_loaded_for = ""
+        self.templates_loading = False
+        self.templates_error = ""
+        self.templates_menu_open = False
+        self.templates_manager_open = False
+        self._close_template_form()
+        self.template_confirm_delete_id = ""
+        self.templates_working = False
+
+    def _close_template_form(self) -> None:
+        self.template_form_open = False
+        self.template_editing_id = ""
+        self.template_form_title = ""
+        self.template_form_body = ""
+        self.template_form_error = ""
+        self.template_saving = False
+
     def _reset_list(self) -> None:
+        self._reset_templates()
         self.rows = []
         self.list_loaded_for = ""
         self.list_loading_for = ""
@@ -451,6 +577,10 @@ class ConversationsState(rx.State):
         self._voice_total = 0
         self.banner = ""
         self._typing_sent_at = 0.0
+        self.applying_template_id = ""
+        self.applied_unresolved = []
+        self.applied_blanks = []
+        self.templates_menu_open = False
 
     def _render_conversation(self) -> None:
         self.messages = build_conversation(
@@ -1003,6 +1133,8 @@ class ConversationsState(rx.State):
                 return
             self.suggestion = build_draft_vm(draft)
             self.draft_text = self.suggestion.text
+            self.applied_unresolved = []
+            self.applied_blanks = []
         yield rx.toast.success(_SUGGEST_READY, duration=_TOAST_MS)
 
     @rx.event(background=True)
@@ -1014,6 +1146,10 @@ class ConversationsState(rx.State):
             tenant_id = await self._tenant()
         if draft_id is None or tenant_id is None:
             return
+        await self._discard_draft(tenant_id, draft_id)
+
+    async def _discard_draft(self, tenant_id: UUID, draft_id: UUID) -> None:
+        """Record `discarded` on a suggestion the person set aside. Best-effort."""
         user = await self._acting_user(tenant_id)
         if user is None:
             return
@@ -1198,7 +1334,349 @@ class ConversationsState(rx.State):
                 self.draft_text = ""
                 self.attachment = EMPTY_ATTACHMENT
                 self.suggestion = EMPTY_DRAFT
+                self.applied_unresolved = []
+                self.applied_blanks = []
                 self._typing_sent_at = 0.0
         yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
         yield ConversationsState.refresh
         await gw.signal(tenant_id, connection, thread, ACTION_TYPING_OFF)
+
+    # ==================================================================================
+    # Message templates (m-24789472): the picker
+    # ==================================================================================
+
+    @rx.event
+    def set_templates_menu_open(self, value: bool) -> rx.event.EventSpec | None:
+        """The «Plantillas» popover. Opening it loads the account's library once."""
+        self.templates_menu_open = bool(value) and self.can_open_templates
+        if self.templates_menu_open and not self.templates_ready and not self.templates_loading:
+            return ConversationsState.load_templates
+        return None
+
+    @rx.event(background=True)
+    async def load_templates(self) -> None:
+        async with self:
+            connection_id = self.selected_connection_id
+            if not connection_id:
+                return
+            self.templates_loading = True
+            self.templates_error = ""
+            tenant_id = await self._tenant()
+        connection = _uuid(connection_id)
+        if tenant_id is None or connection is None:
+            async with self:
+                self.templates_loading = False
+                self.templates_error = _NO_SESSION
+            return
+        try:
+            library = await asyncio.to_thread(gateway().templates, tenant_id, connection)
+        except ReplyTemplateError as refusal:
+            async with self:
+                if self.selected_connection_id == connection_id:
+                    self.templates_loading = False
+                    self.templates_error = refusal.message
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations templates failed: %s", type(exc).__name__)
+            async with self:
+                if self.selected_connection_id == connection_id:
+                    self.templates_loading = False
+                    self.templates_error = _TEMPLATES_FAILED
+            return
+        async with self:
+            if self.selected_connection_id != connection_id:
+                return  # the person switched accounts meanwhile
+            self.templates = build_template_rows(library)
+            self.templates_loaded_for = connection_id
+            self.templates_loading = False
+            self.templates_error = ""
+
+    @rx.event(background=True)
+    async def apply_template(self, template_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """Render the template for the open thread and put its text in the box, replacing
+        what was there. Never sends, never queues: the person reviews and presses
+        «Responder» — the same `send_reply` as any text."""
+        async with self:
+            if not isinstance(template_id, str) or not self.can_use_template:
+                return
+            if template_id not in {t.template_id for t in self.templates}:
+                return  # arrived over the wire; refuse an id the library does not hold
+            if self.applying_template_id:
+                return
+            self.applying_template_id = template_id
+            self.banner = ""
+            thread_id, connection_id = self.open_thread_id, self.selected_connection_id
+            suggestion_id = _uuid(self.suggestion.draft_id)
+            tenant_id = await self._tenant()
+        thread, connection, template = _uuid(thread_id), _uuid(connection_id), _uuid(template_id)
+        if tenant_id is None or thread is None or connection is None or template is None:
+            async with self:
+                self.applying_template_id = ""
+                self._set_banner(_NO_SESSION, "error")
+            return
+        try:
+            rendered = await asyncio.to_thread(
+                gateway().render_template, tenant_id, connection, thread, template
+            )
+        except ThreadNotFound:
+            async with self:
+                self.applying_template_id = ""
+                self.templates_menu_open = False
+                self._set_banner(_THREAD_GONE, "warn")
+            return
+        except ReplyTemplateNotFound as missing:
+            async with self:
+                self.applying_template_id = ""
+                self.templates_menu_open = False
+                self._set_banner(missing.message, "warn")
+                self.templates_loaded_for = ""
+            yield ConversationsState.load_templates
+            return
+        except ReplyTemplateError as refusal:
+            async with self:
+                self.applying_template_id = ""
+                self.templates_menu_open = False
+                self._set_banner(refusal.message, "warn")
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations template render failed: %s", type(exc).__name__)
+            async with self:
+                self.applying_template_id = ""
+                self._set_banner(_TEMPLATE_FAILED, "error")
+            return
+        async with self:
+            self.applying_template_id = ""
+            if self.open_thread_id != thread_id:
+                return  # another conversation was opened meanwhile
+            # A suggestion in the box is set aside: the text is no longer the model's.
+            self.suggestion = EMPTY_DRAFT
+            self.draft_text = rendered.text
+            self.applied_unresolved = list(rendered.unresolved)
+            self.applied_blanks = list(rendered.blanks)
+            self.templates_menu_open = False
+        if suggestion_id is not None:
+            await self._discard_draft(tenant_id, suggestion_id)
+
+    # ==================================================================================
+    # Message templates: the manager (drawer)
+    # ==================================================================================
+
+    @rx.event
+    def open_templates_manager(self) -> rx.event.EventSpec | None:
+        if not self.selected_connection_id:
+            return None
+        self.templates_menu_open = False
+        self.templates_manager_open = True
+        self.template_confirm_delete_id = ""
+        self._close_template_form()
+        if not self.templates_ready and not self.templates_loading:
+            return ConversationsState.load_templates
+        return None
+
+    @rx.event
+    def set_templates_manager_open(self, value: bool) -> None:
+        self.templates_manager_open = bool(value)
+        if not self.templates_manager_open:
+            self._close_template_form()
+            self.template_confirm_delete_id = ""
+
+    @rx.event
+    def start_new_template(self) -> None:
+        if self.templates_at_limit:
+            return
+        self._close_template_form()
+        self.template_confirm_delete_id = ""
+        self.template_form_open = True
+
+    @rx.event
+    def start_edit_template(self, template_id: str) -> None:
+        for t in self.templates:
+            if t.template_id == template_id:
+                self._close_template_form()
+                self.template_confirm_delete_id = ""
+                self.template_form_open = True
+                self.template_editing_id = t.template_id
+                self.template_form_title = t.title
+                self.template_form_body = t.body
+                return
+
+    @rx.event
+    def cancel_template_form(self) -> None:
+        self._close_template_form()
+
+    @rx.event
+    def set_template_form_title(self, value: str) -> None:
+        self.template_form_title = value if isinstance(value, str) else ""
+        self.template_form_error = ""
+
+    @rx.event
+    def set_template_form_body(self, value: str) -> None:
+        self.template_form_body = value if isinstance(value, str) else ""
+        self.template_form_error = ""
+
+    async def _template_context(self) -> tuple[UUID, UUID] | None:
+        """(tenant, account) — call under `async with self`. None without a session."""
+        tenant_id = await self._tenant()
+        connection = _uuid(self.selected_connection_id)
+        if tenant_id is None or connection is None:
+            return None
+        return tenant_id, connection
+
+    @rx.event(background=True)
+    async def save_template(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Guardar»: create or edit. The service validates; its sentence shows inline."""
+        async with self:
+            if self.template_saving or not self.template_form_open:
+                return
+            self.template_saving = True
+            self.template_form_error = ""
+            editing = self.template_editing_id
+            title, body = self.template_form_title, self.template_form_body
+            context = await self._template_context()
+            connection_id = self.selected_connection_id
+        if context is None:
+            async with self:
+                self.template_saving = False
+                self.template_form_error = _NO_SESSION
+            return
+        tenant_id, connection = context
+        gw = gateway()
+        try:
+            user = await self._acting_user(tenant_id)
+            if editing:
+                template = _uuid(editing)
+                if template is None:
+                    raise ReplyTemplateNotFound(ERR_TEMPLATE_NOT_FOUND)
+                await asyncio.to_thread(
+                    gw.update_template, tenant_id, connection, template, user, title, body
+                )
+            else:
+                await asyncio.to_thread(
+                    gw.create_template, tenant_id, connection, user, title, body
+                )
+            library = await asyncio.to_thread(gw.templates, tenant_id, connection)
+        except ReplyTemplateError as refusal:
+            async with self:
+                self.template_saving = False
+                self.template_form_error = refusal.message
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations template save failed: %s", type(exc).__name__)
+            async with self:
+                self.template_saving = False
+                self.template_form_error = _TEMPLATE_SAVE_FAILED
+            return
+        async with self:
+            if self.selected_connection_id != connection_id:
+                return
+            self.templates = build_template_rows(library)
+            self.templates_loaded_for = connection_id
+            self.templates_error = ""
+            self._close_template_form()
+        yield rx.toast.success(
+            _TEMPLATE_SAVED if editing else _TEMPLATE_CREATED, duration=_TOAST_MS
+        )
+
+    @rx.event
+    def ask_delete_template(self, template_id: str) -> None:
+        if template_id in {t.template_id for t in self.templates}:
+            self._close_template_form()
+            self.template_confirm_delete_id = template_id
+
+    @rx.event
+    def cancel_delete_template(self) -> None:
+        self.template_confirm_delete_id = ""
+
+    @rx.event(background=True)
+    async def confirm_delete_template(self) -> AsyncIterator[rx.event.EventSpec]:
+        async with self:
+            template = _uuid(self.template_confirm_delete_id)
+            if template is None or self.templates_working:
+                return
+            self.templates_working = True
+            context = await self._template_context()
+            connection_id = self.selected_connection_id
+        if context is None:
+            async with self:
+                self.templates_working = False
+                self.templates_error = _NO_SESSION
+            return
+        tenant_id, connection = context
+        gw = gateway()
+        try:
+            try:
+                await asyncio.to_thread(gw.delete_template, tenant_id, connection, template)
+            except ReplyTemplateNotFound:
+                pass  # already gone (a double tap, another device): the list catches up
+            library = await asyncio.to_thread(gw.templates, tenant_id, connection)
+        except ReplyTemplateError as refusal:
+            async with self:
+                self.templates_working = False
+                self.template_confirm_delete_id = ""
+                self.templates_error = refusal.message
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations template delete failed: %s", type(exc).__name__)
+            async with self:
+                self.templates_working = False
+                self.template_confirm_delete_id = ""
+                self.templates_error = _TEMPLATE_ACTION_FAILED
+            return
+        async with self:
+            self.templates_working = False
+            self.template_confirm_delete_id = ""
+            if self.selected_connection_id != connection_id:
+                return
+            self.templates = build_template_rows(library)
+            self.templates_loaded_for = connection_id
+            self.templates_error = ""
+        yield rx.toast.success(_TEMPLATE_DELETED, duration=_TOAST_MS)
+
+    @rx.event(background=True)
+    async def move_template(self, template_id: str, step: int) -> None:
+        """«Subir» (-1) / «Bajar» (+1): the whole library in its new order goes to the
+        service; a list that changed meanwhile comes back reloaded, with its words."""
+        async with self:
+            if self.templates_working or not isinstance(template_id, str):
+                return
+            ids = [t.template_id for t in self.templates]
+            order = moved_order(ids, template_id, step if isinstance(step, int) else 0)
+            if order is None:
+                return
+            self.templates_working = True
+            self.templates_error = ""
+            context = await self._template_context()
+            connection_id = self.selected_connection_id
+        wanted = [u for u in (_uuid(i) for i in order) if u is not None]
+        if context is None or len(wanted) != len(order):
+            async with self:
+                self.templates_working = False
+                self.templates_error = _NO_SESSION if context is None else _TEMPLATE_ACTION_FAILED
+            return
+        tenant_id, connection = context
+        gw = gateway()
+        try:
+            library = await asyncio.to_thread(gw.reorder_templates, tenant_id, connection, wanted)
+        except ReplyTemplateError as refusal:
+            try:
+                fresh = await asyncio.to_thread(gw.templates, tenant_id, connection)
+            except (ReplyTemplateError, *_DB_ERRORS):
+                fresh = None
+            async with self:
+                self.templates_working = False
+                self.templates_error = refusal.message
+                if fresh is not None and self.selected_connection_id == connection_id:
+                    self.templates = build_template_rows(fresh)
+            return
+        except _DB_ERRORS as exc:
+            logger.error("conversations template reorder failed: %s", type(exc).__name__)
+            async with self:
+                self.templates_working = False
+                self.templates_error = _TEMPLATE_ACTION_FAILED
+            return
+        async with self:
+            self.templates_working = False
+            if self.selected_connection_id != connection_id:
+                return
+            self.templates = build_template_rows(library)
+            self.templates_loaded_for = connection_id
