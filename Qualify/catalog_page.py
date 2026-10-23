@@ -724,25 +724,40 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
                     tone_badge(product.price_label, "ok", icon="tag"),
                 ),
                 rx.spacer(),
-                rx.text(product.counts_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
-                # The whole card is the button (no nested control): the chip only says
-                # what the tap does, with «Editar» on hover (request 2026-10-22).
-                rx.tooltip(
-                    rx.box(
-                        rx.icon("pencil", size=T.ICON_SM),
-                        class_name="q-catalog-edit",
-                        aria_hidden="true",
-                    ),
-                    content="Editar",
+                rx.text(
+                    product.counts_label,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-nums",
+                    white_space="nowrap",
                 ),
+                # m-24803289: the row wraps instead of pushing past the card's edge
+                # when tag + price + counts are wider than the grid's column.
+                wrap="wrap",
                 width="100%",
+                min_width="0",
                 align="center",
+                row_gap="0.35rem",
             ),
             spacing="2",
             width="100%",
+            min_width="0",
             align_items="start",
         ),
+        # The whole card is the button (no nested control): the chip only says what the
+        # tap does, with «Editar» on hover (request 2026-10-22). It sits on the picture's
+        # top-right corner, out of the meta row, so it can never overflow the card
+        # (m-24803289).
+        rx.tooltip(
+            rx.box(
+                rx.icon("pencil", size=T.ICON_SM),
+                class_name="q-catalog-edit",
+                aria_hidden="true",
+            ),
+            content="Editar",
+        ),
         interactive=True,
+        position="relative",
         on_click=CatalogState.select_product(product.product_id),
         padding="0.75rem",
         # The selected card is ringed and washed in the accent by the sheet
