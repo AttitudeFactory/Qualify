@@ -119,14 +119,16 @@ def test_a_soon_row_says_pronto_in_text_and_is_a_link() -> None:
 
 
 @pytest.mark.parametrize(
-    ("module", "action_route"),
-    [("creators_page.py", "/create"), ("signals_page.py", "/conversations")],
+    ("module", "action_href"),
+    # Oportunidades points at the menu's «Por responder» through its constant, so the button
+    # follows the route when ATENDER-1 (m-24842990) switches it to /responder.
+    [("creators_page.py", 'href="/create"'), ("signals_page.py", "href=RESPOND_ROUTE")],
 )
 def test_a_soon_screen_says_what_is_coming_and_where_to_go_today(
-    module: str, action_route: str
+    module: str, action_href: str
 ) -> None:
     """N10 + N8: never an empty screen — «Pronto», then one button that works today."""
     source = (_HERE / module).read_text(encoding="utf-8")
     assert 'tone_badge("Pronto"' in source
     assert "empty_state(" in source and "action=" in source
-    assert f'href="{action_route}"' in source
+    assert action_href in source

@@ -13,6 +13,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .ui import app_shell, empty_state, page_body, page_header, tone_badge
+from .ui.layout import RESPOND_ROUTE
 
 
 def signals_index() -> rx.Component:
@@ -20,16 +21,16 @@ def signals_index() -> rx.Component:
         page_header(
             "Oportunidades",
             "Te avisaremos cuando alguien pregunte por precios o quiera trabajar contigo",
-            badge=tone_badge("Pronto", "info"),
+            badge=tone_badge("Pronto", "neutral"),
         ),
         page_body(
             empty_state(
                 "radar",
                 "Todavía no hay avisos",
-                "Estamos preparando esta parte. Mientras tanto, revisa quién te escribió.",
+                "Estamos preparando esta parte. Mientras tanto, responde a quien te escribió.",
                 action=rx.link(
-                    rx.button("Ver mis conversaciones", size="3"),
-                    href="/conversations",
+                    rx.button("Ir a Por responder", size="3"),
+                    href=RESPOND_ROUTE,
                 ),
             ),
         ),

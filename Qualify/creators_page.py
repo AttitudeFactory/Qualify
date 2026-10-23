@@ -21,13 +21,14 @@ def creators_index() -> rx.Component:
             "Creadores",
             "Te mostraremos personas de tu ciudad que recomiendan negocios como el tuyo, "
             "para que trabajen juntos",
-            badge=tone_badge("Pronto", "info"),
+            badge=tone_badge("Pronto", "neutral"),
         ),
         page_body(
             empty_state(
                 "users",
-                "Todavía no está lista",
-                "Estamos preparando esta parte. Mientras tanto, prepara tu próxima publicación.",
+                "Esto viene pronto",
+                "Estamos preparando esta parte para que encuentres creadores de tu ciudad. "
+                "Mientras tanto, prepara tu próxima publicación.",
                 action=rx.link(
                     rx.button("Crear publicación", size="3"),
                     href="/create",
