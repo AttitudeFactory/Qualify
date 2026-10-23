@@ -45,7 +45,7 @@ Tres propiedades del kit que condicionan todo lo demás:
 
 **Radix llamado directo desde páginas (lo que §0 obliga a traer al sistema):** `rx.button` 184 · `rx.table` 92 · `rx.select` 70 · `rx.toast` 50 · `rx.input` 48 · `rx.badge` 48 · `rx.segmented_control` 34 · `rx.divider` 27 · `rx.callout` 19 · `rx.alert_dialog` 19 · `rx.spinner` 17 · `rx.text_area` 15 · `rx.popover` 13 · `rx.icon_button` 13 · `rx.dropdown_menu` 13 · `rx.skeleton` 10 · `rx.accordion` 9 · `rx.tooltip` 8 · `rx.switch` 5 · `rx.card` 5 · `rx.checkbox` 4 · `rx.hover_card` 3 · `rx.slider` 2 · `rx.progress` 2 · `rx.tabs` 1 · `rx.scroll_area` 1.
 
-**Estilo inline fuera del sistema (`rx.color(` / `background=` / `border=` / `box_shadow=` por módulo):** `creative_wizard_pages` 60 (+32 colores hex) · `planner_page` 40 · `vitrina_page` 18 · `creative_pages` 16 · `content_generator` 15 · `post_card` 11 · `publishing_page` 8 · `stories_page` 8 · `inbox_page` 7 · `brand_kit_editor` 7 · `planner_drawer` 6 · `trending_panel` 6 · `catalog_page` 6 · `voice_lab` 5 · `brand_documents` 3 · `connections_page` 1. Los `*_state.py` con `background=` son datos de estado (colores de campaña, etc.), no estilo: fuera del alcance.
+**Estilo inline fuera del sistema (`rx.color(` / `background=` / `border=` / `box_shadow=` por módulo):** `creative_wizard_pages` 60 (+32 colores hex) · `planner_page` 40 · `creative_pages` 16 · `content_generator` 15 · `post_card` 11 · `publishing_page` 8 · `stories_page` 8 · `inbox_page` 7 · `brand_kit_editor` 7 · `planner_drawer` 6 · `trending_panel` 6 · `catalog_page` 6 · `voice_lab` 5 · `brand_documents` 3 · `connections_page` 1. Los `*_state.py` con `background=` son datos de estado (colores de campaña, etc.), no estilo: fuera del alcance.
 
 **Pruebas:** 1.193 tests offline en `Qualify/` (verdes tras el lote 0 parcial), lint `ruff` limpio en 918 archivos.
 
@@ -97,7 +97,7 @@ Entregado en este orden (el menú primero, §7):
 
 | Lote | Dominio | Archivos (dueño exclusivo) | CSS propio | Tamaño |
 |---|---|---|---|---|
-| **A** | Shell, auth y escucha | `auth_pages.py`, `components.py` (menciones), `connections_page.py`, `leads_page.py`, `signals_page.py`, `clarity_page.py` (unificar `rx.card` → `card`, deuda 9.3-4), `vitrina_page.py` (retirar `_CARD` dict, deuda 9.3-3), `canva_pages.py` | ninguno | M |
+| **A** | Shell, auth y escucha | `auth_pages.py`, `components.py` (menciones), `connections_page.py`, `leads_page.py`, `signals_page.py`, `clarity_page.py` (unificar `rx.card` → `card`, deuda 9.3-4), `canva_pages.py` (`vitrina_page.py` ya no existe: la pantalla se eliminó en m-24848515) | ninguno | M |
 | **B** | Publicar y catálogo | `publishing_page.py`, `stories_page.py`, `trending_panel.py`, `post_card.py`, `publish_tips.py`, `catalog_page.py` | `qualify-publish.css` | M |
 | **C** | Planificador | `planner_page.py`, `planner_drawer.py` + bloques QUA-108/118 v2 de `qualify.css` | `qualify-planner.css` | L |
 | **D** | Contenido / inbox | `inbox_page.py` + bloque «Contenido» (filtros, tiles) | `qualify-inbox.css` | M |

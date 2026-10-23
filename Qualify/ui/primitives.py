@@ -63,7 +63,7 @@ def stat_card(
 
     A numeric Var is cast to text for the figure; a Var that already holds text is
     passed as is — `to_string()` on a string Var compiles to `JSON.stringify`, which
-    renders the figure in quotes (found by lote A on Clarity's and Vitrina's stats)."""
+    renders the figure in quotes (found by lote A on Clarity's stats)."""
     is_text_var = isinstance(value, rx.Var) and getattr(value, "_var_type", None) is str
     value_var = value.to_string() if isinstance(value, rx.Var) and not is_text_var else value
     return card(

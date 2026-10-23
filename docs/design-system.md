@@ -64,7 +64,7 @@ Lo que **no** se tocó a propósito: la lógica de estados, los VMs/providers y 
 
 ### 2.1 Inventario previo a la migración Liquid Glass (2026-10-08)
 
-Medido en `docs/plan-migracion-liquid-glass.md` §2 y resumido aquí porque explica el alcance de v3: 22 primitivas propias con uso real en páginas (`callout` 93, `card` 72, `tone_badge` 27, `page_header` 19…), pero **Radix llamado directo desde páginas en volumen** (`rx.button` 184, `rx.table` 92, `rx.select` 70, `rx.toast` 50, `rx.input` 48, `rx.badge` 48, `rx.segmented_control` 34…) y **estilo inline fuera del sistema** concentrado en el creativo (`creative_wizard_pages` 60 usos + 32 colores hex, `planner_page` 40, `vitrina_page` 18…). La respuesta de v3 no es envolver esos 184 botones en una primitiva nueva: es un **skin global de Radix** (§5) que les da el material sin tocar su API, más un **guard** (§9.1) que impide que vuelvan los hex y los `rx.color(` sueltos, lote a lote.
+Medido en `docs/plan-migracion-liquid-glass.md` §2 y resumido aquí porque explica el alcance de v3: 22 primitivas propias con uso real en páginas (`callout` 93, `card` 72, `tone_badge` 27, `page_header` 19…), pero **Radix llamado directo desde páginas en volumen** (`rx.button` 184, `rx.table` 92, `rx.select` 70, `rx.toast` 50, `rx.input` 48, `rx.badge` 48, `rx.segmented_control` 34…) y **estilo inline fuera del sistema** concentrado en el creativo (`creative_wizard_pages` 60 usos + 32 colores hex, `planner_page` 40…; `vitrina_page`, con 18, se retiró en m-24848515). La respuesta de v3 no es envolver esos 184 botones en una primitiva nueva: es un **skin global de Radix** (§5) que les da el material sin tocar su API, más un **guard** (§9.1) que impide que vuelvan los hex y los `rx.color(` sueltos, lote a lote.
 
 ---
 
@@ -233,7 +233,6 @@ El Lab es dark-only: el oscuro es su material «liquid» al pie de la letra (bla
   ┌────────────┐ │                                                │
   │ NEGOCIO    │ │                                                │
   │ Clarity    │ │                                                │
-  │ Vitrina    │ │                                                │
   │ Brand Kit  │ │                                                │
   │ Catálogo   │ │                                                │
   │ Config.   ·│ │                                                │
@@ -268,7 +267,7 @@ El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son lo
 | **Escuchas** (inbound) | Menciones · Contenido · Creadores · Señales | `accent` alfa 3, línea alfa 6 |
 | **Publicas** (outbound) | Crear pieza · Borradores · Planificador · Publicar | `iris` alfa 3, línea alfa 6 |
 | Suelta | Leads | neutra |
-| **Negocio** (pie) | Clarity · Vitrina · Brand Kit · Catálogo · Configuración · Salir | neutra |
+| **Negocio** (pie) | Clarity · Brand Kit · Catálogo · Configuración · Salir | neutra |
 
 **El menú es vidrio líquido** (`assets/qualify.css` «Liquid glass menu» + `assets/glass-nav.js`; adaptado de `real-liquid-glass-os-effect.html`, un dock horizontal, a nuestras islas verticales):
 
@@ -282,7 +281,7 @@ El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son lo
 Tres reglas que sostienen esto:
 
 1. **El tinte es superficie, no señal.** Se queda en alfa 3 (lavado) y alfa 6 (línea): agrupa, pero no puede confundirse con un estado (P1/P2). Subirlo es una decisión consciente, no un ajuste.
-2. **Vitrina, Clarity, Brand Kit y Catálogo viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, o son lo que la marca *es*, no conversación.
+2. **Clarity, Brand Kit y Catálogo viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, o son lo que la marca *es*, no conversación.
 3. **Salir es el único control de sesión** (`1 login = 1 negocio`, sin switch). Sin sesión (`/design`) el nombre cae a «Qualify».
 
 **Zen** (`NavState.zen`, botón en la isla del negocio o `⌘ .`): el rail se contrae a 72 px con muelle, las etiquetas se **revelan con máscara** (`clip-path`) en vez de fundirse, y el nombre aparece en la etiqueta de vidrio de arriba. Todo el colapso es **una clase** (`q-zen`) en el `nav`: las reglas viven en `assets/qualify.css`, no en condicionales de Python — así el navegador puede animarlo y no hay dos árboles que mantener. El estado vive en la sesión del servidor, nunca en el navegador: persistir en el cliente exigiría clave namespaced por tenant y purga en logout (regla firmada), y para un modo de vista no compensa.
@@ -409,7 +408,7 @@ Cuatro recetas que los lotes de la migración Liquid Glass repetían en dos o m�
 
 | Primitiva | Cuándo | Anatomía y reglas |
 |---|---|---|
-| `choice_card(*children, selected=, on_select=, role="radio"\|"checkbox", disabled=False, padding=…)` | una opción que se elige entre varias (tipo de pieza, producto del catálogo, look del avatar, receta, local de la vitrina, plan del Brand Kit) | **un `<button>` real** con la tarjeta como cuerpo (§8: nunca `rx.box` + `on_click`); material card; elegida = anillo de 2 px del acento + lavado + halo (`.q-choice-card--on`, gana al hover); `disabled` = punteada y quieta, con el motivo en los hijos; el estado también va en `aria-checked`. `choice_card_check()` pone el check sólido del kit en la esquina de la elegida cuando el anillo solo sería poco (P1). Los chips-píldora del Planificador (`.q-choice`, `qualify-planner.css`) son otra cosa y siguen allí |
+| `choice_card(*children, selected=, on_select=, role="radio"\|"checkbox", disabled=False, padding=…)` | una opción que se elige entre varias (tipo de pieza, producto del catálogo, look del avatar, receta, plan del Brand Kit) | **un `<button>` real** con la tarjeta como cuerpo (§8: nunca `rx.box` + `on_click`); material card; elegida = anillo de 2 px del acento + lavado + halo (`.q-choice-card--on`, gana al hover); `disabled` = punteada y quieta, con el motivo en los hijos; el estado también va en `aria-checked`. `choice_card_check()` pone el check sólido del kit en la esquina de la elegida cuando el anillo solo sería poco (P1). Los chips-píldora del Planificador (`.q-choice`, `qualify-planner.css`) son otra cosa y siguen allí |
 | `dropzone(*children, upload_id=, on_drop=, accept=, max_files=, multiple=, variant="zone"\|"compact"\|"tile"\|"bare", tile_size=…)` | **toda** subida de archivos | `rx.upload.root` vestido con el campo hundido y punteado del kit (`.q-dropzone`), acento al pasar un archivo o llegar con teclado. `zone` = el prompt grande del estado vacío; `compact` = pozo pequeño en un formulario; `tile` = cuadrado en una grilla de medios (`tile_size`); `bare` = sin material, los hijos son el look (un botón, una loseta entera). **El guard prohíbe `rx.upload`/`rx.upload.root` en las páginas**: el `rx.upload` estilizado pinta un borde punteado inline que ninguna clase puede sobreescribir — esa es la trampa que esconde |
 | `media_thumb(src, size="72px", width=, height=, round=False, icon="image", icon_size=, alt="", fit="cover", has=…)` | la foto de un Reel, un producto, un video trending, un referente; el avatar de una cuenta | la imagen en el marco del sistema (`.q-thumb`: material control, hairline, radio control) o, si no hay, el mismo marco con `icon` — una lista nunca muestra un hueco ni el glifo de imagen rota. `round=True` es el avatar (`lq-avatar`). `size` cuadra; `width`/`height` lo sobreescriben (`height` solo + `width="100%"` = la foto arriba de una tarjeta). `has` sustituye la prueba `src != ""` cuando el VM ya lo sabe. `alt=""` por defecto (decorativa junto a su propio título) |
 | `chat_bubble(*children, direction="out"\|"in", meta=None)` | un mensaje de una conversación: el borrador de respuesta del inbox hoy; los DMs de 4-B mañana | la burbuja del kit: `out` = lo que decimos (lavado del acento, cola abajo a la izquierda), `in` = lo que dijeron (material control, cola abajo a la derecha); `meta` (hora, estado) va dentro, debajo del texto |
@@ -450,7 +449,7 @@ Si el tenant no configuró (Clarity sin proyecto), la configuración sube arriba
 ## 7. Escritura UX
 
 ### 7.1 Voz
-- **Español latino neutro, de tú.** "Conecta tu primera cuenta", no "Conecte su cuenta" ni "Conectá tu cuenta" (excepción: `vitrina_page` habla en voseo porque imita el registro del microcentro demo; se mantiene mientras sea demo).
+- **Español latino neutro, de tú.** "Conecta tu primera cuenta", no "Conecte su cuenta" ni "Conectá tu cuenta". Sin excepciones: el voseo no se usa en ninguna pantalla.
 - **Sentence case** en títulos, botones y cabeceras: "Cuentas conectadas", no "Cuentas Conectadas". (Las cabeceras de tabla las pone en mayúsculas el skin, §5.7; el código sigue en sentence case.)
 - Verbos concretos en botones: "Conectar cuenta", "Desconectar", "Publicar", "Sincronizar comentarios". Nunca "Enviar", "OK", "Aceptar" para acciones con consecuencia.
 - Sin relleno ni disculpas: "No se pudo cargar la lista. Recarga la página o vuelve más tarde." — no "Lo sentimos, ha ocurrido un error inesperado".
@@ -538,7 +537,6 @@ Abierto:
 8. **Verificación visual de páginas de negocio con sesión real**: `/design` y `/login` se verifican sin sesión; las páginas tras `require_login` se verifican por render de componentes (misma `app_shell`), no con una sesión viva.
 9. Toasts (`rx.toast`) adoptados en `/inbox` (2026-08-25); el resto de confirmaciones transitorias siguen como callouts persistentes. Migrarlas según §5.4 cuando se toquen.
 10. Fuentes desde Google Fonts: mover a `assets/fonts/` (self-host) si se quiere evitar la dependencia externa en producción.
-11. `vitrina_page` conserva su voseo (demo); si deja de ser demo, migrar a la voz §7.1.
 
 ---
 

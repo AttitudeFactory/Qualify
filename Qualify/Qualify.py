@@ -60,7 +60,6 @@ from .signals_page import signals_index
 from .state import DashboardState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
-from .vitrina_page import vitrina_index
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
 from .whatsapp_state import WhatsAppState
@@ -452,10 +451,18 @@ app.add_page(
     on_load=[AuthState.require_login, CatalogState.load_catalog],
     title="Qualify · Catálogo",
 )
-# UI demo, no backend: nothing to load, but the session gate still applies.
+
+
+# m-24848515: the storefront demo was removed (founder, 2026-10-23: no relation to the
+# product for now). Its route stays as a compatibility route so saved links do not
+# break (ux-guia-navegacion §3): it only redirects home.
+def _retired_demo_redirect() -> rx.Component:
+    return rx.fragment()
+
+
 app.add_page(
-    vitrina_index,
+    _retired_demo_redirect,
     route="/vitrina",
-    on_load=AuthState.require_login,
-    title="Qualify · Vitrina de locales",
+    on_load=rx.redirect("/", replace=True),
+    title="Qualify",
 )
