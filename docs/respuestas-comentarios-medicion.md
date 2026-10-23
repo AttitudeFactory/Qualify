@@ -22,8 +22,12 @@ Los umbrales vienen del ticket m-24848532 y están en el código (`qualify_api/e
 | Cobertura de «necesita respuesta» | ≥ 0,95 (precisión ≥ 0,80) | código |
 | Borradores con datos inventados | 0 | persona (el código solo marca los sospechosos) |
 | Borradores en tercera persona | 0 | persona (el código solo marca los sospechosos) |
+| Borradores que prometen o admiten algo en público (columna `promete_o_admite`: «¿admite o promete algo?») | 0 | persona |
 | Borradores usables | ≥ 90 % en positivos y neutros; ≥ 80 % en negativos | persona |
 | Precios | un precio aparece solo si está en el catálogo (`assisted/grounding.py`); si no, el borrador declina e invita a seguir por mensaje privado | código |
+| Aperturas repetidas (las 3 primeras palabras) | ninguna en más del 20 % de los borradores (se mide desde 10 borradores) | código |
+
+**Usable = el dueño la enviaría tal cual o cambiando una palabra, sin miedo a que diga algo falso, prometa algo o suene a otro negocio.**
 
 Una clase que no llega a su umbral se marca como **no fiable** y se informa con nombre propio. Nunca se esconde dentro de un promedio.
 
@@ -63,7 +67,7 @@ En `packages/api/evals/replies_ai/` (`README` en el docstring de `run_experiment
 just eval-replies --golden <set>.jsonl --agreement                       # κ, sin costo
 just eval-replies --golden <set>.jsonl --split dev  --classify --baseline   # para ajustar
 just eval-replies --golden <set>.jsonl --split test --classify --baseline --drafts
-# una persona llena results/<run>-revision.csv (usable / invented / third_person: si/no)
+# una persona llena results/<run>-revision.csv (usable / invented / third_person / promete_o_admite: si/no)
 just eval-replies --golden <set>.jsonl --score-review results/<run>-revision.csv --results results/<run>.json
 ```
 
@@ -73,7 +77,7 @@ Cada informe registra el modelo, la versión del prompt, el sha256 del conjunto 
 
 - **Línea base (sistema actual):** `intent.ClaudeIntentClassifier` (`intent-claude-v2`). Hoy un comentario recibe borrador solo si tiene intención comercial, así que «necesita respuesta» equivale a «tiene intención comercial». robertuito no entra en la línea base porque no corre en producción (falta torch en la imagen) y no tiene licencia declarada.
 - **Candidato:** `replies.triage.ClaudeCommentTriager`. Es una sola llamada a Claude Haiku 5.5 (`claude-haiku-5-5`, esfuerzo `low`, herramienta estricta `registrar_comentarios`, prompt `atender4a.1`) que devuelve sentimiento, tipo y si necesita respuesta. Reemplaza a robertuito en el camino de comentarios.
-- **Borradores candidatos:** `replies.any_comment_drafts` (prompt `atender4a.1`) sobre el generador con hechos validados de Fase B. Siempre en primera persona, nunca con precio en público (D1), y en las quejas pide disculpas sin admitir nada e invita a seguir por mensaje privado.
+- **Borradores candidatos:** `replies.any_comment_drafts` (prompt `atender4a.2`) sobre el generador con hechos validados de Fase B. Siempre en primera persona, nunca con precio en público (D1), sin una frase de apertura fija, y en las quejas pide disculpas sin admitir ni prometer nada, sin emojis, e invita a la persona a escribir ella por mensaje privado («escríbenos por mensaje privado»): nunca promete que el negocio le va a escribir.
 
 ## 5. Prueba de humo sintética — 2026-10-23
 
@@ -112,8 +116,23 @@ Lectura del agente, que **no reemplaza la revisión humana**:
 - Los elogios, las preguntas y las quejas leen bien, en primera persona y sin inventar nada. Un caso para revisar: «Tienes razón, y lamentamos no haber respondido antes» reconoce un hecho que el negocio no confirmó.
 - **Los comentarios `other` no deberían recibir borrador.** El modelo le contestó al spam («Gana dinero desde casa»: «con gusto te orientamos…») y a etiquetas entre amigos («@sofi_m para tu cumple»). Recomendación para ATENDER-4b: preparar borrador solo si `needs_reply` o `kind = praise`.
 - Casi todos los borradores empiezan con «Gracias por escribirnos». Suenan repetidos y todavía no usan la voz de la marca. Medir «en mi voz» exige darle al generador el tono del negocio, cosa que hoy no recibe.
-- «Te escribimos por mensaje privado» compromete al dueño a escribir. Es correcto solo porque él aprueba cada borrador (asistido, nunca autónomo). La pantalla de ATENDER-4b debería recordárselo.
-- Se repite el hallazgo de FASEB-001: derivar a mensaje privado dispara `model_unsupported`. El costo es poco, porque solo pide revisión, pero conviene una versión `atender4a.2` del prompt que no lo reporte como afirmación.
+- «Te escribimos por mensaje privado» compromete al dueño a escribir, y si nadie escribe queda una promesa pública incumplida. Lo corrigió `atender4a.2` (abajo).
+- Se repite el hallazgo de FASEB-001: derivar a mensaje privado dispara `model_unsupported`. El costo es poco, porque solo pide revisión; sigue abierto en `atender4a.2` (10 marcas).
+
+### Borradores `atender4a.2` en el mismo `test` — 2026-10-23, tras la revisión de UX
+
+La revisión de UX de este ticket encontró que los borradores de `atender4a.1` prometían escribirle a quien se quejó, admitían culpas («Tienes razón…»), prometían resolver, ponían 🙏 en las quejas y empezaban casi siempre con «¡Gracias por escribirnos!». Se cambió el prompt a `atender4a.2` y se volvieron a generar los 40 borradores de `test` (informe `results/20261023-143235.json`, hoja `20261023-143235-revision.csv`, US$0,0066). Detalle en la prueba ATENDER4A-002 de la [ficha de Claude Haiku 5.5](modelos-generativos/claude-haiku-5-5.md).
+
+| Control automático | `atender4a.1` | `atender4a.2` |
+|---|---|---|
+| Errores / precios / tercera persona | 0 / 0 / 0 | 0 / 0 / 0 |
+| Borradores con «te escribimos» | 10 | **0** |
+| Quejas con «tienes razón» / «resolverlo» / emoji | 1 / 7 / 8 | **0 / 0 / 0** |
+| Apertura más repetida | «gracias por escribirnos», 27,5 % (falla) | «qué bueno que», 20,0 % (pasa, en el límite) |
+
+Queda por ver: las 10 quejas cierran casi igual («Escríbenos por mensaje privado y lo revisamos contigo», el ejemplo del prompt). Lo tiene que juzgar la persona que revise.
+
+**«En mi voz» no se mide todavía.** El generador no recibe el tono de la marca, así que ningún resultado de esta sección dice que los borradores suenen al dueño. ATENDER-4b no debe darlo por cumplido hasta que el generador reciba el tono de la marca y una persona lo revise.
 
 ## 6. Costo
 
@@ -144,7 +163,7 @@ Los borradores de Fase B ya lo hacían. Desde este cambio también lo hacen los 
    - Exportar solo el texto, anonimizado, de los comentarios de las cuentas conectadas de los negocios reales (Bianki, Polette, PuntoServis, la inmobiliaria, la agencia de viajes). Esto exige su permiso explícito para leer comentarios de producción, que este ticket no tenía.
    - Usar como base los 408 comentarios públicos de `packages/api/eval_data/intent_golden_v1.jsonl` y completarlos con quejas reales. Esa base no son clientes, y tiene pocas quejas.
 2. **Dos personas que etiqueten por separado** con las reglas de la sección 2 (por ejemplo Raul y Yesika), al menos 50 comentarios en común y mejor todos. Calcula unas 3 horas por persona para 400 comentarios.
-3. **Una persona que revise los 40 o más borradores de `test`** en la hoja CSV (usable / inventado / tercera persona).
+3. **Una persona que revise los 40 o más borradores de `test`** en la hoja CSV (usable / inventado / tercera persona / promete o admite).
 4. **El catálogo de cada negocio** del conjunto, en `catalogs.json`.
 
 Con eso, un agente corre la sección 4 y reemplaza la sección 5 por la medición real.

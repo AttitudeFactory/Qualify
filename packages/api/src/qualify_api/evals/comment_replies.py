@@ -12,11 +12,13 @@ Three gates, all from the ticket:
    and kind class: precision ≥ 0.80 and recall ≥ 0.70, with at least `MIN_SUPPORT`
    examples; `neg` recall ≥ 0.90; `needs_reply` recall ≥ 0.95. A class below its bar is
    reported «no fiable», not averaged away.
-3. **The drafts** — 0 invented data and 0 in third person; usable ≥ 90 % for positive and
-   neutral comments and ≥ 80 % for negative ones; a price is stated only if it is in the
-   catalog (`assisted.grounding`), otherwise the draft declines (invites a private
-   message). «Usable» and «invented» are a PERSON's verdict on the review sheet; the
-   automatic flags here only point the reviewer at suspicious drafts.
+3. **The drafts** — 0 invented data, 0 in third person and 0 that promise or admit
+   something in public; usable ≥ 90 % for positive and neutral comments and ≥ 80 % for
+   negative ones; a price is stated only if it is in the catalog (`assisted.grounding`),
+   otherwise the draft declines (invites a private message); no opening (first
+   `OPENING_WORDS` words) repeated in more than `MAX_OPENING_SHARE` of the drafts.
+   «Usable», «invented» and «promete o admite» are a PERSON's verdict on the review
+   sheet; the automatic flags here only point the reviewer at suspicious drafts.
 
 Golden JSONL, one comment per line (`#` and blank lines ignored):
 
@@ -54,6 +56,13 @@ USABLE_BARS: Final[Mapping[Sentiment, float]] = {
     Sentiment.NEU: 0.90,
     Sentiment.NEG: 0.80,
 }
+
+#: Repeated openings: the same first `OPENING_WORDS` words under every comment read as a
+#: robot to whoever looks at the publication (UX review of ATENDER-4a). Checked only from
+#: `MIN_OPENING_DRAFTS` drafts on — below that any opening is a large share.
+OPENING_WORDS: Final = 3
+MAX_OPENING_SHARE: Final = 0.20
+MIN_OPENING_DRAFTS: Final = 10
 
 FIELDS: Final = ("sentiment", "kind", "needs_reply")
 
@@ -434,7 +443,9 @@ def invented_data_flags(text: str, *, grounding: Grounding, asks_price: bool) ->
 @dataclass(frozen=True)
 class DraftResult:
     """One draft of the experiment, with its automatic flags and (once a person filled
-    the review sheet) the human verdicts: `usable`, `invented`, `third_person`."""
+    the review sheet) the human verdicts: `usable`, `invented`, `third_person` and
+    `promises_or_admits` (does it admit a fault or promise a refund, a solution, that the
+    business will write…?)."""
 
     text: str
     comment: GoldenComment
@@ -447,6 +458,7 @@ class DraftResult:
     usable: bool | None = None
     invented: bool | None = None
     third_person: bool | None = None
+    promises_or_admits: bool | None = None
     error: str = ""
 
 
@@ -483,15 +495,28 @@ class DraftReport:
     reviewed: int
     invented: int
     third_person: int
+    promises_or_admits: int = 0
     usable_rate: Mapping[str, float | None] = field(default_factory=dict)
     cost_usd: float = 0.0
+    top_opening: str = ""
+    top_opening_share: float = 0.0
+
+    @property
+    def repeated_opening(self) -> bool:
+        return (
+            self.drafts - self.errors >= MIN_OPENING_DRAFTS
+            and self.top_opening_share > MAX_OPENING_SHARE
+        )
 
     @property
     def status(self) -> str:
-        """`failed` on any hard failure (error, price, a person-confirmed invention or
-        third person, a usable rate under its bar); `pending` while not every draft has a
-        person's verdict; `passed` otherwise."""
+        """`failed` on any hard failure (error, price, a repeated opening, a
+        person-confirmed invention, third person or promise/admission, a usable rate under
+        its bar); `pending` while not every draft has a person's verdict; `passed`
+        otherwise."""
         if self.errors or self.price_failures or self.invented or self.third_person:
+            return "failed"
+        if self.promises_or_admits or self.repeated_opening:
             return "failed"
         if any(
             rate is not None and rate < USABLE_BARS[Sentiment(s)]
@@ -514,6 +539,13 @@ class DraftReport:
             "reviewed": self.reviewed,
             "invented": self.invented,
             "third_person": self.third_person,
+            "promises_or_admits": self.promises_or_admits,
+            "opening": {
+                "top": self.top_opening,
+                "share": round(self.top_opening_share, 4),
+                "max_share": MAX_OPENING_SHARE,
+                "repeated": self.repeated_opening,
+            },
             "usable_rate": dict(self.usable_rate),
             "usable_bars": {s.value: bar for s, bar in USABLE_BARS.items()},
             "cost_usd": round(self.cost_usd, 6),
@@ -522,12 +554,30 @@ class DraftReport:
         }
 
 
+def opening(text: str, words: int = OPENING_WORDS) -> str:
+    """The first `words` words of a draft, lower-cased and without punctuation or emoji."""
+    return " ".join(re.findall(r"\w+", text.lower())[:words])
+
+
+def top_opening(texts: Iterable[str]) -> tuple[str, float]:
+    """The most frequent opening among the non-empty drafts and its share (0 if none)."""
+    counts: dict[str, int] = {}
+    for t in texts:
+        if key := opening(t):
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "", 0.0
+    top = max(counts, key=lambda k: counts[k])
+    return top, counts[top] / sum(counts.values())
+
+
 def evaluate_drafts(results: Sequence[DraftResult]) -> DraftReport:
     reviewed = [r for r in results if r.usable is not None]
     usable_rate: dict[str, float | None] = {}
     for s in Sentiment:
         group = [r for r in reviewed if r.comment.label.sentiment is s]
         usable_rate[s.value] = sum(1 for r in group if r.usable) / len(group) if group else None
+    first, share = top_opening(r.text for r in results if not r.error)
     return DraftReport(
         drafts=len(results),
         errors=sum(1 for r in results if r.error),
@@ -537,13 +587,18 @@ def evaluate_drafts(results: Sequence[DraftResult]) -> DraftReport:
         reviewed=len(reviewed),
         invented=sum(1 for r in reviewed if r.invented),
         third_person=sum(1 for r in reviewed if r.third_person),
+        promises_or_admits=sum(1 for r in reviewed if r.promises_or_admits),
         usable_rate=usable_rate,
         cost_usd=sum(r.cost_usd for r in results),
+        top_opening=first,
+        top_opening_share=share,
     )
 
 
-#: Columns of the human review sheet (CSV). `usable`, `invented` and `third_person` are
-#: filled by the reviewer with `si` / `no`.
+#: Columns of the human review sheet (CSV). `usable`, `invented`, `third_person` and
+#: `promete_o_admite` («¿admite o promete algo?») are filled by the reviewer with
+#: `si` / `no`. Usable = the owner would send it as is or changing one word, without fear
+#: that it says something false, promises something or sounds like another business.
 REVIEW_COLUMNS: Final = (
     "row",
     "comment",
@@ -556,6 +611,7 @@ REVIEW_COLUMNS: Final = (
     "usable",
     "invented",
     "third_person",
+    "promete_o_admite",
     "reviewer_note",
 )
 
@@ -570,8 +626,11 @@ def parse_verdict(value: str) -> bool | None:
 
 
 __all__ = [
+    "MAX_OPENING_SHARE",
     "MIN_DOUBLE_LABELED",
     "MIN_KAPPA",
+    "MIN_OPENING_DRAFTS",
+    "OPENING_WORDS",
     "REVIEW_COLUMNS",
     "USABLE_BARS",
     "AgreementReport",
@@ -589,8 +648,10 @@ __all__ = [
     "evaluate_drafts",
     "evaluate_needs_reply_baseline",
     "invented_data_flags",
+    "opening",
     "parse_golden",
     "parse_verdict",
     "price_check",
     "third_person_flags",
+    "top_opening",
 ]
