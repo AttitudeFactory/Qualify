@@ -97,6 +97,8 @@ class Lead(Base):
     )
     consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consent_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    # m-24842992 (0086): when the owner marked «Ya le escribiste»; NULL = «Pendiente».
+    contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
