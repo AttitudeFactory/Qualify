@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from qualify_api.replies.repository import DraftRecord
@@ -61,6 +62,8 @@ def records(monkeypatch: pytest.MonkeyPatch) -> list[DraftRecord]:
     monkeypatch.setattr(
         replies_provider, "_list_pending_drafts", lambda **_: tuple(rows), raising=True
     )
+    # Dates use the tenant's zone (m-24789645); keep the test off the database.
+    monkeypatch.setattr(replies_provider, "_tenant_zone", lambda _tenant: ZoneInfo("UTC"))
     return rows
 
 

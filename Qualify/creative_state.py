@@ -117,6 +117,8 @@ from .creative_vm import (
     hashtag_list,
     seen_label,
 )
+from .gallery_state import APPROVED_NOT_READY_TOAST, APPROVED_TOAST, schedule_readiness
+from .planner_provider import load_gallery
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -928,6 +930,14 @@ class CreativeState(rx.State):
     # The review decision asks before discarding: "reject" / "regenerate" while the
     # confirmation is open, "" otherwise — a mis-click must not throw a draft away.
     reject_confirm: str = ""
+    # m-24842978: the owner just approved this draft on this screen — the decision bar
+    # gives way to «Aprobada. Todavía no se publica.» and its way to Tu semana. Cleared
+    # whenever a draft (re)loads, so it never claims a decision taken somewhere else.
+    just_approved: bool = False
+    # …and whether it can be given a day and time yet: an approved publication can still
+    # be «aprobada pero no lista»; `approved_note` is why, in the evaluator's words.
+    approved_ready: bool = True
+    approved_note: str = ""
     action_error: str = ""
     poll_timed_out: bool = False
     poll_elapsed_label: str = ""
@@ -5006,6 +5016,7 @@ class CreativeState(rx.State):
             self.action_error = ""
             self.poll_timed_out = False
             self.edit_mode = False
+            self.just_approved = False
             draft_id = self._route_draft_id()
         if draft_id is None:
             async with self:
@@ -5234,9 +5245,44 @@ class CreativeState(rx.State):
             async with self:
                 self.action_error = _DB_ERROR
             return
+        # m-24842978: «Elegir día y hora» only for a publication Tu semana can plan. The
+        # same reader as the gallery; if it cannot be read the way is offered anyway and
+        # Tu semana, the real gate, says what is missing.
+        try:
+            gallery = await asyncio.to_thread(load_gallery, tenant_id)
+            ready, note = schedule_readiness(list(gallery.posts), str(draft_uuid))
+        except Exception as exc:  # noqa: BLE001 — the approval already stands
+            logger.warning("readiness after approve failed: %s", type(exc).__name__)
+            ready, note = True, ""
         async with self:
             self._apply_detail(vm)
-        yield rx.toast.success("POST aprobado: ya puedes programarlo en Tu semana.")
+            self.just_approved = True
+            self.approved_ready = ready
+            self.approved_note = note
+        # The toast goes with the card, never instead of it — and it never says or
+        # suggests the publication is already out.
+        yield rx.toast.success(APPROVED_TOAST if ready else APPROVED_NOT_READY_TOAST)
+
+    @rx.var
+    def show_approved_next(self) -> bool:
+        """m-24842978: the «Aprobada. Todavía no se publica.» card — right after this
+        screen approved the draft, and only while it is still approved (saving an edit
+        sends it back to review)."""
+        return self.just_approved and self.draft is not None and self.draft.status == "approved"
+
+    @rx.event
+    def go_schedule(self):
+        """«Elegir día y hora»: Tu semana opens its assign drawer on this publication
+        (`/planner?post=<id>`, the same door as the gallery's «Asignar»)."""
+        if self.draft is None:
+            return None
+        return rx.redirect(f"/planner?post={self.draft.draft_id}")
+
+    @rx.event
+    def go_create_another(self):
+        """«Crear otra publicación»: back to the start of the generator."""
+        self.just_approved = False
+        return rx.redirect("/create")
 
     @rx.event
     def ask_reject(self, regenerate: bool) -> None:

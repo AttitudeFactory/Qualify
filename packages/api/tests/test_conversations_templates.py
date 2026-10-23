@@ -97,7 +97,7 @@ def _repo() -> MemoryReplyTemplateRepository:
 def _service(
     repo: MemoryReplyTemplateRepository | None = None,
     *threads: ThreadRecord,
-    brand: str | None = "Polet Bubble Tea",
+    brand: str | None = "Polette",
 ) -> ReplyTemplateService:
     return ReplyTemplateService(
         repository=repo if repo is not None else _repo(),
@@ -316,7 +316,7 @@ def test_render_substitutes_name_and_brand() -> None:
     greeting = service.list_for_connection(tenant_id=TENANT, connection_id=CONN)[0]
     rendered = service.render(tenant_id=TENANT, template_id=greeting.id, thread_id=thread.id)
     assert rendered.text == (
-        "¡Hola, Ana Pérez! Gracias por escribirnos a Polet Bubble Tea. ¿En qué te podemos ayudar?"
+        "¡Hola, Ana Pérez! Gracias por escribirnos a Polette. ¿En qué te podemos ayudar?"
     )
     assert rendered.unresolved == () and rendered.blanks == ()
     assert rendered.template_id == greeting.id

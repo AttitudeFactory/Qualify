@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import inbox_page, replies_state
 from .replies_state import RepliesState
+from .replies_vm import generation_message
 
 _CSS = Path(__file__).resolve().parent.parent / "assets" / "qualify-inbox.css"
 
@@ -130,8 +131,8 @@ def test_the_approve_button_names_who_gets_the_answer() -> None:
 def test_the_replies_description_says_the_answer_is_public() -> None:
     flat = _src(inbox_page._replies_section).replace('"\n            "', "")
     assert (
-        "Revisa cada respuesta. Sale en Instagram, debajo del comentario y a la vista de "
-        "todos, solo cuando tú la apruebas."
+        "Cada una sale en Instagram, debajo del comentario y a la vista de todos, solo "
+        "cuando tú la apruebas."
     ) in flat
 
 
@@ -183,10 +184,15 @@ def test_the_reply_messages_are_plain_and_truthful() -> None:
     assert replies_state._GENERATE_FAILED == (
         "No pudimos preparar las respuestas. Intenta de nuevo en unos minutos."
     )
+    # Founder's decision 2026-10-23: short failure texts.
+    assert replies_state._SEND_REFUSED == "Tu respuesta no salió. Respóndela en Instagram."
+    assert replies_state._SEND_FAILED == "No sabemos si salió. Revísalo en Instagram."
     # A decided draft leaves the queue before the Meta call: never promise it «sigue aquí».
     for message in (replies_state._SEND_FAILED, replies_state._SEND_REFUSED):
         assert "Sigue aquí" not in message and "Meta" not in message and "borrador" not in message
+    # The generation toast says only what waits for the owner (counts go to the log).
     source = _src(RepliesState.generate_drafts.fn)
-    assert '"No hay comentarios nuevos para responder por ahora."' in source
-    assert "respuestas para aprobar. " in source and "la puerta" not in source
+    assert "generation_message(summary.drafts_created)" in source and "la puerta" not in source
+    for created in (0, 1, 3):
+        assert "borrador" not in generation_message(created).lower()
     assert '"Respuesta descartada."' in _src(RepliesState.discard_draft.fn)

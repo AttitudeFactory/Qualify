@@ -39,8 +39,8 @@ def test_page_items_is_a_window_of_up_to_ten(current: int, total: int, expected:
 
 
 def test_pages_label() -> None:
-    assert pages_label(1) == "Total de 1 página"
-    assert pages_label(40) == "Total de 40 páginas"
+    assert pages_label(1) == "1 página"
+    assert pages_label(40) == "40 páginas"
 
 
 def test_only_the_first_page_takes_a_new_snapshot_on_a_tick() -> None:

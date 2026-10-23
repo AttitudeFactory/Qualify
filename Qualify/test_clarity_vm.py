@@ -3,6 +3,7 @@ the headline stats and generic metric tables the page renders. Pure functions, o
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -48,29 +49,30 @@ DOCS_PAYLOAD = [
 
 def test_headline_stats_sum_across_dimension_rows() -> None:
     stats = _headline_stats(DOCS_PAYLOAD)
-    assert ["Sesiones", "301,496"] in stats
-    assert ["Sesiones bot", "39,445"] in stats
-    assert ["Usuarios únicos", "402,569"] in stats
+    assert ["Visitas", "301,496"] in stats
+    assert ["Visitas de robots", "39,445"] in stats
+    assert ["Personas", "402,569"] in stats
 
 
 def test_headline_stats_survive_non_numeric_counts() -> None:
     stats = _headline_stats(
         [{"metricName": "Traffic", "information": [{"totalSessionCount": "n/a"}]}]
     )
-    assert ["Sesiones", "0"] in stats
+    assert ["Visitas", "0"] in stats
 
 
 def test_metric_table_leads_with_dimension_column() -> None:
     table = _metric_table(DOCS_PAYLOAD[0])
-    assert table.name == "Traffic"
-    # The non-numeric (dimension) column sorts first so each row reads label-first.
-    assert table.columns[0] == "OS"
+    assert table.name == "Visitas"
+    # The non-numeric (dimension) column sorts first so each row reads label-first, and
+    # every known API key reaches the owner in their words (m-24842999).
+    assert table.columns[0] == "Sistema"
     assert set(table.columns) == {
-        "OS",
-        "totalSessionCount",
-        "totalBotSessionCount",
-        "distantUserCount",
-        "PagesPerSessionPercentage",
+        "Sistema",
+        "Visitas",
+        "Visitas de robots",
+        "Personas",
+        "Páginas por visita",
     }
     assert table.rows[0][0] == "Other"
     assert len(table.rows) == 2
@@ -134,27 +136,27 @@ FRICTION_PAYLOAD = [
 
 def test_headline_stats_accept_live_distinct_spelling_and_engagement() -> None:
     stats = _headline_stats(FRICTION_PAYLOAD)
-    assert ["Usuarios únicos", "40"] in stats
-    assert ["Tiempo activo", "2 min 5 s"] in stats
+    assert ["Personas", "40"] in stats
+    assert ["Tiempo que se quedaron", "2 min 5 s"] in stats
 
 
 def test_friction_cards_traffic_light_by_volume() -> None:
     cards = {card.label: card for card in _friction_cards(FRICTION_PAYLOAD)}
     # 12 events >= the act-now threshold → "bad", and the affected share is surfaced.
-    assert cards["Rage clicks"].status == "bad"
-    assert cards["Rage clicks"].total == "12"
-    assert cards["Rage clicks"].affected == "8% de sesiones"
+    assert cards["Toques repetidos con enojo"].status == "bad"
+    assert cards["Toques repetidos con enojo"].total == "12"
+    assert cards["Toques repetidos con enojo"].affected == "8% de las visitas"
     # 2 events under both thresholds → "warn"; 0 events → "ok" with no percentage.
-    assert cards["Clics muertos"].status == "warn"
-    assert cards["Errores de JavaScript"].status == "ok"
-    assert cards["Errores de JavaScript"].affected == ""
+    assert cards["Toques en cosas que no hacen nada"].status == "warn"
+    assert cards["Fallas de la página"].status == "ok"
+    assert cards["Fallas de la página"].affected == ""
 
 
 def test_action_items_rank_worst_first_and_skip_zero_rows() -> None:
     actions = _action_items(FRICTION_PAYLOAD)
     assert [action.severity for action in actions] == ["alta", "media"]
-    assert actions[0].title == "Rage clicks en https://example.com/reservas"
-    assert "12 eventos en 45 sesiones (8% afectadas)" in actions[0].detail
+    assert actions[0].title == "Toques repetidos con enojo en https://example.com/reservas"
+    assert "12 veces en 45 visitas (8% de las visitas)" in actions[0].detail
     # The zero-count ScriptErrorCount row must not produce an actionable.
     assert all("JavaScript" not in action.title for action in actions)
 
@@ -167,7 +169,7 @@ def test_traffic_note_flags_low_sample_windows() -> None:
             "information": [{"totalSessionCount": "3", "totalBotSessionCount": "1"}],
         }
     ]
-    assert "Solo 2 sesiones reales" in _traffic_note(tiny)
+    assert "Solo hubo 2 visitas de personas" in _traffic_note(tiny)
 
 
 def test_snapshot_vm_carries_friction_and_actions() -> None:
@@ -195,7 +197,36 @@ def test_snapshot_vm_drops_empty_metrics_and_labels_the_window() -> None:
     vm = _to_vm(snapshot)
     assert vm.fetched_at == "2026-08-15 14:03 UTC"
     assert vm.window == "últimas 72 h"
-    assert vm.dimensions == "OS"
+    assert vm.dimensions == "Sistema"
     # DeadClickCount had no rows — it must not render an empty card.
-    assert [table.name for table in vm.tables] == ["Traffic", "ScrollDepth"]
+    assert [table.name for table in vm.tables] == ["Visitas", "Hasta dónde bajaron"]
     assert len(vm.stats) == 3
+
+
+def test_owner_copy_has_no_analytics_jargon() -> None:
+    """m-24842999: every label, hint, recommendation and message the owner reads speaks
+    their words — no English analytics jargon and no internal vocabulary."""
+    from . import clarity_provider, clarity_state
+
+    forbidden = ("rage", "scroll", "bot", "javascript", "snapshot", "device", "browser")
+    # «sesiones» (analytics sessions) is jargon; «tu sesión se cerró» (login) is not.
+    forbidden += ("token", "sesiones", "clic", "clics", "dimensión")
+    texts = [
+        text
+        for label, hint, advice in clarity_provider._FRICTION_METRICS.values()
+        for text in (label, hint, advice)
+    ]
+    texts += list(clarity_provider._COLUMN_LABELS.values())
+    texts += list(clarity_provider._METRIC_LABELS.values())
+    texts += clarity_state.DIMENSION_CHOICES
+    messages = [
+        value
+        for name, value in vars(clarity_state).items()
+        if name.startswith("_") and name[1:].isupper() and isinstance(value, str)
+    ]
+    assert len(messages) >= 10
+    for text in texts + messages:
+        for word in forbidden:
+            # Whole words only: «botón» is plain Spanish, «bot» is jargon.
+            assert not re.search(rf"\b{word}\b", text.lower()), (word, text)
+    assert "OS" not in clarity_state.DIMENSION_CHOICES

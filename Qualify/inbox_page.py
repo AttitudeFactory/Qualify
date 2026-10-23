@@ -75,8 +75,18 @@ from .inbox_vm import (
     ReelSummaryVM,
 )
 from .publishing_vm import ConnectionOptionVM
-from .replies_provider import PUBLICATION_ALT_FALLBACK, DraftVM
 from .replies_state import RepliesState
+from .replies_vm import (
+    COMMERCIAL_BADGE,
+    PUBLICATION_ALT_FALLBACK,
+    REVIEW_BADGE,
+    REVIEW_CONFIRM_LABEL,
+    SOURCES_EMPTY,
+    SOURCES_PRICE_NOTE,
+    SOURCES_TITLE,
+    DraftVM,
+    SourceProductVM,
+)
 from .ui import (
     app_shell,
     callout,
@@ -1126,6 +1136,152 @@ def _replies_empty_state() -> rx.Component:
     )
 
 
+# -- Fase B (m-24789645): what the draft stands on, and why it needs a closer look ----------
+
+
+def _source_row(product: SourceProductVM) -> rx.Component:
+    """One catalog product the draft was given: its name and when it was last updated.
+    Never its price — a public reply does not state one (D1)."""
+    return rx.hstack(
+        rx.icon("dot", size=14, color=T.TEXT_FAINT),
+        rx.text(product.name, size="1", weight="medium"),
+        rx.cond(
+            product.updated_label != "",
+            rx.text(product.updated_label, size="1", color=T.TEXT_FAINT),
+            rx.fragment(),
+        ),
+        spacing="1",
+        align="center",
+        wrap="wrap",
+    )
+
+
+def _draft_sources(draft: DraftVM) -> rx.Component:
+    """«Datos del catálogo usados»: the first few products in the open, the rest folded
+    so a long catalog does not push the draft off a phone screen."""
+    return rx.vstack(
+        rx.hstack(
+            rx.icon("package", size=13, color=T.TEXT_FAINT),
+            rx.text(SOURCES_TITLE, size="1", weight="medium", color=T.TEXT_MUTED),
+            spacing="2",
+            align="center",
+        ),
+        rx.cond(
+            draft.sources_count > 0,
+            rx.vstack(rx.foreach(draft.sources_head, _source_row), spacing="0"),
+            rx.text(SOURCES_EMPTY, size="1", color=T.TEXT_MUTED),
+        ),
+        rx.cond(
+            draft.sources_rest.length() > 0,
+            rx.accordion.root(
+                rx.accordion.item(
+                    header=rx.text(draft.sources_more_label, size="1"),
+                    content=rx.vstack(rx.foreach(draft.sources_rest, _source_row), spacing="0"),
+                    value="more",
+                ),
+                collapsible=True,
+                variant="ghost",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        rx.text(SOURCES_PRICE_NOTE, size="1", color=T.TEXT_FAINT),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _review_reason_row(reason: str) -> rx.Component:
+    return rx.hstack(
+        rx.icon("triangle-alert", size=13, color=T.tone_color("warn", 11), flex_shrink="0"),
+        rx.text(reason, size="1"),
+        spacing="2",
+        align="start",
+    )
+
+
+def _review_note_row(note: str) -> rx.Component:
+    """A soft note (a class the classifier is not sure about): a hint, not an alarm —
+    neutral icon, faint text, no badge, no gate."""
+    return rx.hstack(
+        rx.icon("info", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
+        rx.text(note, size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align="start",
+    )
+
+
+def _draft_review_notes(draft: DraftVM) -> rx.Component:
+    """Why this draft needs review (one plain sentence per blocking reason, warn tone),
+    then the soft notes in a quieter style."""
+    return rx.fragment(
+        _draft_blocking_reasons(draft),
+        rx.cond(
+            draft.review_notes.length() > 0,
+            rx.vstack(
+                rx.foreach(draft.review_notes, _review_note_row),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+    )
+
+
+def _draft_blocking_reasons(draft: DraftVM) -> rx.Component:
+    return rx.cond(
+        draft.needs_review,
+        rx.vstack(
+            rx.foreach(draft.review_reasons, _review_reason_row),
+            rx.cond(
+                draft.unsupported_claims != "",
+                rx.text(draft.unsupported_claims, size="1", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
+
+
+def _review_confirm(draft: DraftVM) -> rx.Component:
+    """The explicit «Revisé el borrador» a draft that needs review asks for before it
+    can be sent. The state checks it again on the click (`send_block_reason`)."""
+    return rx.cond(
+        draft.needs_review,
+        rx.checkbox(
+            REVIEW_CONFIRM_LABEL,
+            checked=RepliesState.reviewed_draft_ids.contains(draft.id),
+            on_change=lambda checked: RepliesState.set_reviewed(draft.id, checked),
+            size="2",
+        ),
+        rx.fragment(),
+    )
+
+
+def _send_locked(draft: DraftVM) -> rx.Var:
+    """True while a draft that needs review has not been ticked as reviewed."""
+    return draft.needs_review & ~RepliesState.reviewed_draft_ids.contains(draft.id)
+
+
+def _draft_intents(draft: DraftVM) -> rx.Component:
+    return rx.cond(
+        draft.intent_chips.length() > 0,
+        rx.hstack(
+            rx.icon("target", size=13, color=T.TEXT_FAINT),
+            rx.foreach(draft.intent_chips, _intent_chip),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+        ),
+        rx.fragment(),
+    )
+
+
 def _approve_label(draft: DraftVM) -> rx.Var:
     """N13: the button says who gets the answer — «Aprobar y responder a @ana» — and
     falls back to «Aprobar y responder» when the channel did not give the author."""
@@ -1143,18 +1299,28 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
     Main actions at `size="3"`, and the row wraps, so each one stays a ≥ 44 px target
     at 360 px (N12, `.q-inbox-main` in qualify-inbox.css)."""
     is_busy = RepliesState.busy_draft_id == draft.id
+    is_regenerating = RepliesState.regenerating_draft_id == draft.id
     return rx.vstack(
         chat_bubble(rx.text(draft.generated_text, size="2"), direction="out"),
-        rx.hstack(
-            rx.button(
-                rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
-                _approve_label(draft),
-                on_click=RepliesState.accept_and_send(draft.id),
-                disabled=is_busy,
-                size="3",
-                variant="soft",
-                **T.tone_scheme("ok"),
+        _draft_review_notes(draft),
+        _review_confirm(draft),
+        # The main action alone and full width (a thumb target on a phone), the other
+        # three under it; «Descartar» last and quiet, away from «Regenerar».
+        rx.button(
+            rx.cond(
+                is_busy & ~is_regenerating,
+                loading_spinner("sm"),
+                rx.icon("check", size=16),
             ),
+            _approve_label(draft),
+            on_click=RepliesState.accept_and_send(draft.id),
+            disabled=is_busy | _send_locked(draft),
+            size="3",
+            variant="soft",
+            width="100%",
+            **T.tone_scheme("ok"),
+        ),
+        rx.hstack(
             rx.button(
                 rx.icon("pencil", size=16),
                 "Editar",
@@ -1163,6 +1329,15 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
                 size="3",
                 variant="surface",
             ),
+            rx.button(
+                rx.cond(is_regenerating, loading_spinner("sm"), rx.icon("sparkles", size=16)),
+                rx.cond(is_regenerating, "Regenerando...", "Regenerar"),
+                on_click=RepliesState.regenerate(draft.id),
+                disabled=is_busy,
+                size="3",
+                variant="surface",
+            ),
+            rx.spacer(),
             rx.button(
                 rx.icon("x", size=16),
                 "Descartar",
@@ -1174,6 +1349,7 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
             ),
             spacing="2",
             wrap="wrap",
+            width="100%",
         ),
         spacing="2",
         width="100%",
@@ -1191,12 +1367,14 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
             rows="3",
             aria_label="Tu respuesta",
         ),
+        _draft_review_notes(draft),
+        _review_confirm(draft),
         rx.hstack(
             rx.button(
                 rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=16)),
                 _approve_label(draft),
                 on_click=RepliesState.save_and_send(draft.id),
-                disabled=is_busy,
+                disabled=is_busy | _send_locked(draft),
                 size="3",
                 variant="soft",
                 **T.tone_scheme("ok"),
@@ -1226,18 +1404,30 @@ def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
 
 
 def _draft_card(draft: DraftVM) -> rx.Component:
-    """One reply waiting for approval: the comment it answers, then the prepared reply.
-    No internal id on screen (m5 hallazgo 5) — `source_id` used to be shown here."""
+    """One reply waiting for approval: who commented and on which publication, the
+    comment, then the prepared reply. No internal id on screen (m5 hallazgo 5). A
+    commercial draft (m-24789645) adds «Quiere comprar», «Requiere revisión» and its
+    reasons, the intent chips, and the catalog data the draft was given."""
     is_editing = RepliesState.editing_draft_id == draft.id
     return card(
         rx.vstack(
             rx.hstack(
-                sentiment_badge(draft.sentiment_label),
+                rx.cond(
+                    draft.is_commercial,
+                    tone_badge(COMMERCIAL_BADGE, "info", icon="shopping-bag"),
+                    sentiment_badge(draft.sentiment_label),
+                ),
+                rx.cond(
+                    draft.needs_review,
+                    tone_badge(REVIEW_BADGE, "warn", icon="triangle-alert"),
+                    rx.fragment(),
+                ),
                 rx.spacer(),
                 rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
                 align="center",
                 spacing="2",
                 width="100%",
+                wrap="wrap",
             ),
             rx.hstack(
                 _draft_publication_thumb(draft),
@@ -1286,12 +1476,14 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                 align="start",
                 width="100%",
             ),
+            _draft_intents(draft),
             rx.box(
                 rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),
                 display="inline-block",
                 padding_left="0.25rem",
             ),
             rx.cond(is_editing, _draft_edit_mode(draft), _draft_view_mode(draft)),
+            rx.cond(draft.is_commercial, _draft_sources(draft), rx.fragment()),
             spacing="2",
             align_items="start",
             width="100%",
@@ -1342,8 +1534,9 @@ def _replies_section() -> rx.Component:
         _replies_action_error_block(),
         _replies_list(),
         description=(
-            "Revisa cada respuesta. Sale en Instagram, debajo del comentario y a la vista "
-            "de todos, solo cuando tú la apruebas."
+            "Respuestas listas para los comentarios que te felicitan o preguntan por tus "
+            "productos. Cada una sale en Instagram, debajo del comentario y a la vista de "
+            "todos, solo cuando tú la apruebas."
         ),
     )
 

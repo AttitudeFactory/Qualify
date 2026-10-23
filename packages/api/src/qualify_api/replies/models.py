@@ -10,7 +10,8 @@ whose tenant disagrees with any parent is structurally unbuildable.
 
 0080 (m-24789645) added the grounding / review / cost / intent provenance columns and
 replaced `UNIQUE(message_id)` with the partial unique index `uq_reply_draft_live_message`
-(one LIVE draft per comment — see `LIVE_STATUSES`).
+(one LIVE draft per comment — see `LIVE_STATUSES`). 0081 made the sentiment columns
+NULLable: a Fase B draft may stand on a commercial-intent signal alone.
 """
 
 from __future__ import annotations
@@ -97,6 +98,14 @@ class CommentReplyDraft(Base):
         CheckConstraint(
             "sentiment_label IN ('POS','NEG','NEU')", name="ck_reply_draft_sentiment_label"
         ),
+        CheckConstraint(
+            "(sentiment_result_id IS NULL) = (sentiment_label IS NULL)",
+            name="ck_reply_draft_sentiment_pair",
+        ),
+        CheckConstraint(
+            "sentiment_result_id IS NOT NULL OR intent_result_id IS NOT NULL",
+            name="ck_reply_draft_has_signal",
+        ),
         Index("ix_reply_draft_tenant", "tenant_id"),
     )
 
@@ -108,10 +117,13 @@ class CommentReplyDraft(Base):
     message_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     # = messages.external_message_id, denormalized so the row is self-explaining.
     source_id: Mapped[str] = mapped_column(Text, nullable=False)
-    sentiment_result_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    # NULL since 0081 when the draft stands on a commercial-intent signal alone (the
+    # comment has no current sentiment row); `ck_reply_draft_sentiment_pair` keeps the
+    # two together and `ck_reply_draft_has_signal` demands this or `intent_result_id`.
+    sentiment_result_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     # Denormalized from comment_sentiment_results.label AT GENERATION TIME — audit trail
     # independent of whatever a later re-analysis might record.
-    sentiment_label: Mapped[str] = mapped_column(Text, nullable=False)
+    sentiment_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     gate_reason: Mapped[str] = mapped_column(Text, nullable=False)
     generator_version: Mapped[str] = mapped_column(Text, nullable=False)
     generated_text: Mapped[str] = mapped_column(Text, nullable=False)

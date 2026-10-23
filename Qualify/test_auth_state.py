@@ -717,3 +717,13 @@ def test_the_signup_is_served_at_registro_and_at_the_old_signup() -> None:
 def test_invite_token_is_backend_only() -> None:
     assert "_invite_token" in AuthState.__annotations__
     assert "invite_token" not in AuthState.__annotations__
+
+
+def test_an_adopting_signup_ends_on_tu_marca_esta_lista() -> None:
+    """m-24842965: the signup that adopted the pre-login Brand Kit lands on the wizard's
+    «Tu marca está lista» card, the same end a logged-in finish has — and the login's
+    allow-list lets that route through."""
+    assert auth_state_module.BRAND_READY_ROUTE in auth_state_module._POST_LOGIN_ROUTES
+    assert auth_state_module.BRAND_READY_ROUTE.startswith("/brand/manual?")
+    source = inspect.getsource(AuthState.handle_signup.fn)
+    assert '"next": BRAND_READY_ROUTE if adopted else "/"' in source

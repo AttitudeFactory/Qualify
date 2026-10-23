@@ -17,6 +17,11 @@ Two write-aheads, mirroring `publishing/service.py`'s own:
    (`test_replies_send_sanctity.py`) pins `post_reply` to this method and the notice
    poster, and every caller of `send`/`send_draft` to passing an approval.
 
+**Fase B (m-24789645, PR 2).** A comment with commercial intent under the current intent
+version is a candidate too; the gate routes it to the grounded generator (`public_drafts`:
+catalog only, prices withheld, review reasons recorded) instead of the thank-you
+provider. `regenerate` replaces a `proposed` draft atomically. Generation never sends.
+
 No scheduler, no automatic run chained after `sentiment.analyze_pending_comments()` —
 same manual-trigger-only posture that module's own docstring documents. This module
 does not know when it is called, only what to do when it is.
@@ -26,14 +31,39 @@ from __future__ import annotations
 
 import difflib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
+from qualify_api.assisted.grounding import Grounding, GroundingProvider
+from qualify_api.intent.contract import IntentClass
+from qualify_api.intent.reliability import class_reliability
 from qualify_api.replies.client import CommentReplyClient, CommentReplyError
-from qualify_api.replies.gate import GateInput, evaluate_gate
-from qualify_api.replies.repository import DraftRecord, ReplyRepository
+from qualify_api.replies.gate import (
+    ROUTE_COMMERCIAL,
+    GateInput,
+    GateVerdict,
+    IntentEvidence,
+    evaluate_gate,
+)
+from qualify_api.replies.public_drafts import (
+    COMMENT_SPEAKER,
+    ReliabilityReader,
+    comment_message,
+    cost_decimal,
+    grounding_record,
+    needs_review_for,
+    parse_classes,
+    public_context,
+    review_reasons,
+)
+from qualify_api.replies.repository import (
+    CandidateComment,
+    DraftProvenance,
+    DraftRecord,
+    ReplyRepository,
+)
 from qualify_api.sentiment.repository import AnalysisVersion
 
 if TYPE_CHECKING:
@@ -41,6 +71,8 @@ if TYPE_CHECKING:
     # the default install — same TYPE_CHECKING-only reasoning `sentiment/service.py`
     # documents for `SentimentProvider`.
     from qualify_models.providers import ReplyDraftProvider
+
+    from qualify_api.conversations.suggest import DraftGenerator
 
 logger = logging.getLogger("qualify_api.replies.service")
 
@@ -78,6 +110,15 @@ def require_approval(approval: object, *, draft_id: UUID) -> HumanApproval:
     return approval
 
 
+class RegenerationRefused(ValueError):
+    """The comment no longer earns a public draft (the gate said no, or it is gone).
+    `reason` is the gate's reason; the live draft is left exactly as it was."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class GenerationSummary:
     candidates_seen: int
@@ -94,6 +135,22 @@ class DecisionResult:
     diff: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _Composed:
+    text: str
+    generator_version: str
+    provenance: DraftProvenance | None
+
+
+@dataclass
+class _BatchCache:
+    """Per-call memo: one catalog read per connection and one reliability read per
+    detector version, however many comments the batch drafts."""
+
+    grounding: dict[UUID, Grounding] = field(default_factory=dict)
+    reliability: dict[str, dict[IntentClass, bool]] = field(default_factory=dict)
+
+
 class ReplyService:
     def __init__(
         self,
@@ -105,7 +162,15 @@ class ReplyService:
         client_factory: ReplyClientFactory | None = None,
         business_name: str | None = None,
         connection_degrader: ConnectionDegrader | None = None,
+        intent_version: AnalysisVersion | None = None,
+        grounded_generator: DraftGenerator | None = None,
+        grounding: GroundingProvider | None = None,
+        reliability: ReliabilityReader = class_reliability,
     ) -> None:
+        """`version` is the sentiment version (QUA-22's POS path, `provider`).
+        `intent_version` turns on Fase B (m-24789645): commercial comments under it are
+        drafted by `grounded_generator` over `grounding` — both required for that route,
+        which fails loudly without them rather than falling back to the ungrounded one."""
         self._repo = repository
         self._version = version
         self._generator_version = generator_version
@@ -113,52 +178,207 @@ class ReplyService:
         self._clients = client_factory
         self._business_name = business_name
         self._degrade = connection_degrader or _no_op_degrader
+        self._intent_version = intent_version
+        self._grounded = grounded_generator
+        self._grounding = grounding
+        self._reliability = reliability
+
+    # -- generation ---------------------------------------------------------------------
+
+    def _gate_input(self, candidate: CandidateComment, *, has_live_draft: bool) -> GateInput:
+        intent = (
+            IntentEvidence(
+                commercial_intent=candidate.commercial_intent, version=candidate.intent_version
+            )
+            if candidate.intent_version is not None
+            else None
+        )
+        return GateInput(
+            channel="comment",
+            sentiment_label=candidate.sentiment_label,
+            comment_text=candidate.text,
+            has_live_draft=has_live_draft,
+            intent=intent,
+            current_intent_version=self._intent_version,
+            followup_status=candidate.followup_status,
+        )
+
+    def _sentiment_provider(self) -> ReplyDraftProvider:
+        if self._provider is None:
+            from qualify_models.providers import HFInferenceReplyDraftProvider  # noqa: PLC0415
+
+            self._provider = HFInferenceReplyDraftProvider()
+        return self._provider
+
+    def _compose(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        candidate: CandidateComment,
+        verdict: GateVerdict,
+        cache: _BatchCache,
+    ) -> _Composed:
+        """The one place a generator is called — only ever for a verdict that passed."""
+        if verdict.route != ROUTE_COMMERCIAL:
+            text = self._sentiment_provider().draft_reply(
+                comment_text=candidate.text, business_name=self._business_name
+            )
+            provenance = (
+                DraftProvenance(intent_result_id=candidate.intent_result_id)
+                if candidate.intent_result_id is not None
+                else None
+            )
+            return _Composed(text, self._generator_version, provenance)
+
+        if self._grounded is None or self._grounding is None:
+            raise RuntimeError(
+                "ReplyService was built without a grounded generator and grounding provider"
+            )
+        full = cache.grounding.get(connection_id)
+        if full is None:
+            full = self._grounding(tenant_id, connection_id)
+            cache.grounding[connection_id] = full
+        public_view = full.without_prices()  # D1: the model never sees a price
+        classes = parse_classes(candidate.intent_classes)
+        proposal = self._grounded.propose(
+            grounding=public_view,
+            messages=[
+                comment_message(
+                    message_id=candidate.message_id,
+                    connection_id=connection_id,
+                    source_id=candidate.source_id,
+                    text=candidate.text,
+                )
+            ],
+            counterpart=COMMENT_SPEAKER,
+            context=public_context(classes),
+        )
+        detector = candidate.intent_version.detector_version if candidate.intent_version else ""
+        reliable = cache.reliability.get(detector)
+        if reliable is None:
+            reliable = dict(self._reliability(detector)) if detector else {}
+            cache.reliability[detector] = reliable
+        reasons = review_reasons(
+            text=proposal.text,
+            used_only_given_facts=proposal.used_only_given_facts,
+            unsupported_claims=proposal.unsupported_claims,
+            grounding=full,
+            classes=classes,
+            reliable=reliable,
+        )
+        return _Composed(
+            proposal.text,
+            self._grounded.version,
+            DraftProvenance(
+                grounding=grounding_record(public_view, reasons),
+                needs_review=needs_review_for(reasons),
+                unsupported_claims=tuple(proposal.unsupported_claims),
+                model_id=proposal.model_id,
+                model_revision=proposal.model_revision,
+                input_tokens=proposal.input_tokens,
+                output_tokens=proposal.output_tokens,
+                cost_usd=cost_decimal(proposal.cost_usd),
+                intent_result_id=candidate.intent_result_id,
+            ),
+        )
 
     def generate_drafts(self, *, tenant_id: UUID, connection_id: UUID) -> GenerationSummary:
         """The gate runs on EVERY candidate before the generator is ever called — see
         `gate.py`'s module docstring. A rejected candidate produces no draft and no
-        generator call; nothing records a rejection, only what passed does."""
-        provider = self._provider
-        if provider is None:
-            from qualify_models.providers import HFInferenceReplyDraftProvider  # noqa: PLC0415
-
-            provider = HFInferenceReplyDraftProvider()
-
-        candidates = self._repo.list_positive_comments_without_draft(
-            tenant_id=tenant_id, connection_id=connection_id, version=self._version
+        generator call; nothing records a rejection, only what passed does. A comment
+        whose earlier draft was discarded is not a candidate here (`regenerate` is)."""
+        candidates = self._repo.list_reply_candidates(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            sentiment_version=self._version,
+            intent_version=self._intent_version,
         )
+        cache = _BatchCache()
         created = 0
         rejected = 0
         for candidate in candidates:
-            verdict = evaluate_gate(
-                GateInput(
-                    channel="comment",
-                    sentiment_label=candidate.sentiment_label,
-                    comment_text=candidate.text,
-                    has_existing_draft=self._repo.has_draft(
-                        tenant_id=tenant_id, message_id=candidate.message_id
-                    ),
-                )
-            )
+            live = self._repo.get_live_draft(tenant_id=tenant_id, message_id=candidate.message_id)
+            verdict = evaluate_gate(self._gate_input(candidate, has_live_draft=live is not None))
             if not verdict.passed:
                 rejected += 1
                 continue
-            text = provider.draft_reply(
-                comment_text=candidate.text, business_name=self._business_name
+            composed = self._compose(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                candidate=candidate,
+                verdict=verdict,
+                cache=cache,
             )
             result = self._repo.create_draft(
                 tenant_id=tenant_id,
                 connection_id=connection_id,
                 candidate=candidate,
                 gate_reason=verdict.reason,
-                generator_version=self._generator_version,
-                generated_text=text,
+                generator_version=composed.generator_version,
+                generated_text=composed.text,
+                provenance=composed.provenance,
             )
             if result is not None:
                 created += 1
         return GenerationSummary(
             candidates_seen=len(candidates), drafts_created=created, gate_rejected=rejected
         )
+
+    def regenerate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
+        """«Regenerar» (m-24789645): discard the comment's `'proposed'` draft as `user_id`
+        and propose a fresh one, through the same gate minus «no live draft» (this call
+        replaces it). The gate runs on the comment's CURRENT signals before the model.
+
+        The discard and the new draft commit together (`supersede_draft`); on a refusal
+        or a generator error nothing changes. A double click: both requests may pay for
+        a proposal, but only one replaces the draft — the other returns the winner's live
+        draft, so the comment never holds two. Raises `UnknownDraft`, `ValueError` (not
+        `'proposed'`: an approved or sent reply is never regenerated) or
+        `RegenerationRefused`."""
+        old = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if old is None:
+            raise UnknownDraft(str(draft_id))
+        if old.status != "proposed":
+            raise ValueError(f"draft {draft_id} is {old.status!r}; only 'proposed' regenerates")
+        candidate = self._repo.get_reply_candidate(
+            tenant_id=tenant_id,
+            message_id=old.message_id,
+            sentiment_version=self._version,
+            intent_version=self._intent_version,
+        )
+        if candidate is None:
+            raise RegenerationRefused("the comment is no longer available on Instagram")
+        verdict = evaluate_gate(self._gate_input(candidate, has_live_draft=False))
+        if not verdict.passed:
+            raise RegenerationRefused(verdict.reason)
+        composed = self._compose(
+            tenant_id=tenant_id,
+            connection_id=old.connection_id,
+            candidate=candidate,
+            verdict=verdict,
+            cache=_BatchCache(),
+        )
+        new = self._repo.supersede_draft(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            decided_by_user_id=user_id,
+            candidate=candidate,
+            gate_reason=verdict.reason,
+            generator_version=composed.generator_version,
+            generated_text=composed.text,
+            provenance=composed.provenance,
+        )
+        if new is not None:
+            return new
+        # Lost the race (a double click, or a decision made meanwhile): hand back
+        # whichever draft now holds the comment.
+        live = self._repo.get_live_draft(tenant_id=tenant_id, message_id=old.message_id)
+        if live is None:
+            raise RegenerationRefused(f"draft {draft_id} was decided meanwhile")
+        return live
+
+    # -- decision and send ----------------------------------------------------------------
 
     def list_pending_drafts(
         self, *, tenant_id: UUID, connection_id: UUID

@@ -516,7 +516,7 @@ async def test_a_session_without_tenant_says_so(monkeypatch: pytest.MonkeyPatch)
     await _run(state)
 
     assert "visible" not in seen
-    assert state.refresh_notice == "No hay una sesión activa."
+    assert state.refresh_notice == "Tu sesión se cerró. Vuelve a entrar para ver tus menciones."
     assert state.is_refreshing is False
 
 

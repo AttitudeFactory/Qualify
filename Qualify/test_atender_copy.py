@@ -157,9 +157,7 @@ def test_the_unsure_note_is_said_once_per_card() -> None:
 
 def test_moment_label_is_spanish_and_in_the_business_zone() -> None:
     moment = datetime(2026, 10, 23, 19, 5, tzinfo=UTC)
-    assert replies_provider.moment_label(moment, ZoneInfo("America/Bogota")) == (
-        "23 oct, 2:05 p. m."
-    )
+    assert inbox_provider.moment_label(moment, ZoneInfo("America/Bogota")) == ("23 oct, 2:05 p. m.")
     assert short_day_label(datetime(2026, 1, 4, tzinfo=UTC)) == "4 ene"
 
 
