@@ -6366,7 +6366,7 @@ def _kind_flag(item: rx.Var[dict[str, str]]) -> rx.Component:
 def _signal_flags(item: rx.Var[dict[str, str]]) -> rx.Component:
     """What tells an account apart at a glance (§ request 2026-10-01): **IA** when the
     videos the search saw carry the platform's own "made with AI" label (`ai` = how many
-    of how many, hover for the words), and **Señales de pauta** when its reach is far
+    of how many, hover for the words), and **Posible anuncio** when its reach is far
     above the phase's with far less interaction per view (`signal`, the reason on
     hover) — the same test the organic growth estimate runs, here on the search's own
     sightings. Neither says "not AI" / "organic": a card without a flag is simply one
@@ -6384,7 +6384,7 @@ def _signal_flags(item: rx.Var[dict[str, str]]) -> rx.Component:
         rx.cond(
             item["signal"] != "",
             rx.tooltip(
-                tone_badge("Señales de pauta", "warn", icon="megaphone"),
+                tone_badge("Posible anuncio", "warn", icon="megaphone"),
                 content=item["signal"],
             ),
         ),
