@@ -85,14 +85,15 @@ ADR log: `docs/arquitectura.md` §6, plus `docs/adr-NN-*.md` for the long ones (
 
 ## 4. House rules (details live in the named skills)
 
-- **Delivery = a pull request, never a merge** — `qualify-pr`.
+- **Delivery = a pull request**, merged only through `just merge` with CI green — `qualify-pr`.
 - **Environment, tests, workers that act for real** — `qualify-dev-env`. `uv` only; prefer
   `uv run --no-sync`; never `--all-tenants` locally.
 - **Schema changes** — `qualify-migration` (RLS in the same revision, reversible, one owner).
 - **Text a client will read** — `qualify-copy-es` (Spanish, no anglicisms, no slang).
 - **Model/prompt changes and vendor tests** — `qualify-measure` (measure before shipping,
   document the same turn in `docs/modelos-generativos/`).
-- **Anything touching production** — `qualify-prod-ops` (ask first; documented paths only).
+- **Anything touching production** — `qualify-prod-ops` (deploys delegated; rollbacks, restores,
+  `env-push`, `edge-install`, `just down` still ask first; documented paths only).
 - **Long tasks** — `durable-findings`: flush to disk as you go.
 - **Why things are the way they are** (original vision, earned-media pipeline, phase map) —
   `qualify-history`.

@@ -42,6 +42,7 @@ and anything unresolved". Engineers preload their skills (`qualify-migration`,
   and ask it to find mismatches.
 - Run `just ci-lint`, `just ci-test` (and `just test-db` if SQL changed) **through a subagent**
   that returns only the verdict and failing lines.
-- Open the PR per `qualify-pr`. Never merge; never publish, send or deploy for real.
+- Open the PR per `qualify-pr`; merge and deploy are the main thread's, per `qualify-pr` and
+  `qualify-prod-ops`. Never publish or send for real.
 - Synthesis: PR link(s), what was built and tested, what the founder must do before merging,
   open decisions, exact verification commands.

@@ -45,7 +45,7 @@ them.
 - Keep `CLAUDE.md` and `qualify-context` true: when you find drift, fix it in the same
   PR or flag it.
 - Docs in Spanish, `CLAUDE.md` and code in English. Deliver through a PR per
-  `qualify-pr`. Never merge.
+  `qualify-pr`. Merge per `qualify-pr` (only `just merge`, CI green).
 
 ## Skills
 

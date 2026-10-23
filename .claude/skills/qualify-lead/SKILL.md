@@ -57,7 +57,8 @@ verdict and the failing lines, never the full log.
 ## 4. Delivery and synthesis
 
 - You open the PR (`qualify-pr`): run the checks through a subagent, commit, open, move the
-  ticket. Never merge, never deploy, publish or send for real.
+  ticket. Merge through `just merge` once CI is green and deploy per `qualify-prod-ops`; never
+  publish or send for real.
 - Synthesis, same shape every time: PR link(s); what was built or found and how to verify; what
   the founder must do before merging; decisions that need him; next.
 - **Status brief** when asked: shipped (merged PRs/deploys), in flight (open PRs, Meegle in

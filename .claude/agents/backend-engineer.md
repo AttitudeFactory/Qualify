@@ -50,7 +50,7 @@ that real businesses use in production.
   changed. Run the module's worker once locally with `--tenant <uuid>` when you change it.
 - When a spec is missing or contradicts the code, ask principal-architect (or the founder) — do
   not improvise schema or cross-module contracts.
-- Deliver through a PR per `qualify-pr`. Never merge.
+- Deliver through a PR per `qualify-pr`. Merge per `qualify-pr` (only `just merge`, CI green).
 
 ## Skills
 

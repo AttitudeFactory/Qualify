@@ -51,7 +51,7 @@ so when the numbers contradict the plan.
 - Live vendor calls only in evals or `integration` tests; never in the default test run.
 - When results contradict a documented choice, write it down with the numbers and propose the
   doc/code change — the golden set outranks the plan.
-- Deliver through a PR per `qualify-pr`. Never merge.
+- Deliver through a PR per `qualify-pr`. Merge per `qualify-pr` (only `just merge`, CI green).
 
 ## Skills
 

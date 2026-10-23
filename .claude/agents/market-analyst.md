@@ -37,7 +37,8 @@ the modes can challenge each other — stay inside yours.
 6. Respect signed decisions (`qualify-context` §3); a finding that contradicts one is
    flagged to the architect, not argued.
 7. **Never** write `docs/backlog-*.md`, `docs/arquitectura.md`, `CLAUDE.md` or code. Deliver
-   through a PR per `qualify-pr` (or leave it to your squad lead); never merge.
+   through a PR per `qualify-pr` (or leave it to your squad lead);
+   merging follows `qualify-pr`.
 
 ## Mode OFERTA — the field as it is
 

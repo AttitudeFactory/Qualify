@@ -1,6 +1,6 @@
 ---
 name: qualify-pr
-description: How a change reaches main in Qualify — Meegle ticket first, branch `<type>/m-<id>-<slug>`, local CI checks, the PR title/description format, moving the ticket by hand, the `just merge` gate (agents never merge), what each GitHub Actions workflow does and the Actions-minutes budget. Use before opening any PR, when CI fails, when reading a run, or when touching .github/.
+description: How a change reaches main in Qualify — Meegle ticket first, branch `<type>/m-<id>-<slug>`, local CI checks, the PR title/description format, moving the ticket by hand, the `just merge` gate (agents merge through it with CI green; `--admin` is contingency only), what each GitHub Actions workflow does and the Actions-minutes budget. Use before opening any PR, when CI fails, when reading a run, or when touching .github/.
 ---
 
 # Qualify — from change to pull request
@@ -14,15 +14,16 @@ description: How a change reaches main in Qualify — Meegle ticket first, branc
 5. **UX review — mandatory before `gh pr create` on any PR touching client-facing paths** (`Qualify/**`, `assets/**`, and client-string sources: message/reply/WhatsApp templates, invite and mail copy in `packages/api`): run the `ux-designer` subagent on the diff (local only — there is no UX job in GitHub Actions, founder 2026-10-23). **Always show its suggestions to the founder in the same turn**, and paste them into the PR description under a **«Sugerencias de UX»** section, each marked *aplicada* or *pendiente* with the reason. Suggestions only, never blocking; if it finds nothing, the section says «Sin sugerencias».
 6. **Open the PR over REST** (`gh api repos/AttitudeFactory/Qualify/pulls …` — GraphQL is blocked in cloud sessions): title ends in `(m-<id>)`, description starts with `Resolves m-<id>`, says why, what and how to verify, and anything the founder must do before merging (secrets, server prep, auto-deploy off).
 7. **Move the ticket to RESOLVED by hand** (`get_transitable_states` → `transition_state`); Meegle's completion rules do not fire yet.
-8. **Never merge.** Agents never run `gh pr merge` nor `just merge --admin`. The founder merges with `just merge <pr>`.
+8. **Merge through the gate (founder, 2026-10-23).** Agents may merge with `just merge <pr>` once CI is green, without asking — never with `gh pr merge` directly. (GitHub cannot approve one's own PR: `gh` runs as the founder, who authors the PRs, so "approve" means merging through the gate.) **Contingency only — never routine:** `just merge <pr> --admin` with red or missing checks is allowed when production is down or degraded and the PR is the fix, or when a red check is unrelated/flaky and blocks an urgent fix; state why in the PR (the recipe also posts a comment) and notify the founder right after. Deploying after the merge follows `qualify-prod-ops`.
 9. In a squad, only the lead opens the PR; teammates leave changes in the tree.
 
 ## Reference (moved from CLAUDE.md on 2026-10-22)
 
 ### Merging to `main` — the rule and the gate
 
-**Founder's rule (2026-10-05): nothing merges to `main` with CI red; only a repository
-administrator may bypass, deliberately.** GitHub cannot enforce it on this plan (private
+**Founder's rule (2026-10-05): nothing merges to `main` with CI red.** Since 2026-10-23 agents
+hold merge authority through the gate, and the `--admin` bypass only under the contingency of
+step 8. GitHub cannot enforce it on this plan (private
 repo, organization on GitHub Free → branch protection and rulesets answer 403), so the
 gate is `just merge <pr>`: it refuses unless `test` is green, and — **only when they reported** —
 `docker-deploy`, `node-render` and `docker-render` too (they live in path-filtered workflows that

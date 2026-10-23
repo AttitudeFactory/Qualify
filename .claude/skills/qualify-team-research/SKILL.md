@@ -41,6 +41,6 @@ contradicted. Route conflicts on architecture to the architect.
 
 ## 5. Deliver
 
-One PR with the session's docs (`qualify-pr`); never merge. Synthesis: per question, what the
+One PR with the session's docs (`qualify-pr`), merged per `qualify-pr`. Synthesis: per question, what the
 evidence says, confidence and dissent; what it confirms and contradicts; decisions needing the
 founder, listed apart from informational findings.

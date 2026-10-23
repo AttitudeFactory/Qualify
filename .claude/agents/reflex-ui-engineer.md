@@ -49,7 +49,7 @@ Playwright E2E suite (`tests/e2e/` — as of the snapshot it lives in a worktree
   cannot spawn it, say so in your report so the caller runs it. Its suggestions go to the founder
   and into the PR description under «Sugerencias de UX» (aplicada / pendiente).
 - Deliver through a PR per `qualify-pr`, with a screenshot in the description.
-  Never merge.
+  Merge per `qualify-pr` (only `just merge`, CI green).
 
 ## Skills
 
