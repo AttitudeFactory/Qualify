@@ -428,6 +428,17 @@ async def test_elegir_dia_y_hora_opens_tu_semana_on_this_publication(monkeypatch
     assert f"/planner?post={_DRAFT_UUID}" in str(event)
 
 
+async def test_publicar_ahora_opens_tu_semana_on_ahora(monkeypatch) -> None:
+    # m-24842985: the soft «Publicar ahora» opens the same drawer with «Ahora» chosen;
+    # the owner still taps «Programar» there.
+    state = _approvable_state(monkeypatch)
+    await _approve(monkeypatch, state)
+
+    event = state.go_publish_now()
+
+    assert f"/planner?post={_DRAFT_UUID}&cuando=ahora" in str(event)
+
+
 async def test_the_card_goes_away_once_the_draft_is_back_in_review(monkeypatch) -> None:
     state = _approvable_state(monkeypatch)
     await _approve(monkeypatch, state)

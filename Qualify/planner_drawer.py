@@ -11,12 +11,15 @@ and every confirmation is asked inside the panel, never in a dialog on top of it
    Historia, Carrusel, Feed) by colour + glyph + word, and its temperature: **Cold**
    (evergreen, proven — it has gone out again and again) or **Hot** (new, still proving
    itself), see `planner_vm.temperature`.
-2. **Programación** — one card per piece: date, time, accounts, tags, output and weekly
-   repetition, each piece on its own (a story at 2 a. m., a carousel at 10 a. m., a reel
-   at 11 a. m.).
-3. **Confirmar** — the day as it will go out: a phone-shaped mock of each piece in its
-   channel's shape (story bars, reel rail, feed header) on a timeline, each with ✎ / 🗑,
-   and the plan's goals (likes, vistas, comentarios, ads, seguidores, interacción).
+2. **Cuándo sale** («Paso 2 de 3 · ¿Cuándo sale?», m-24842985, N6) — one card per piece
+   asking only the day and the hour, or «Ahora» (planned at the instant «Programar» is
+   tapped). The accounts already chosen are said in one line («Sale en @cuenta
+   (Instagram)»); output, destination, accounts, campaign, tags and weekly repetition
+   sit behind «Más opciones», which opens on its own when what is missing is in there.
+3. **Confirmar** — one sentence («Sale el jueves 30 a las 7:00 p. m. en Instagram
+   @cuenta», N13), then the day as it will go out: a phone-shaped mock of each piece in
+   its channel's shape on a timeline, each with ✎ / 🗑, and the plan's goals folded
+   behind «Más opciones».
 
 Colours are identity here, never state: a format has its scale (`q-kind-*` in
 `assets/qualify.css`), a goal has its scale, and Cold/Hot their own gradient. States keep
@@ -40,6 +43,8 @@ from .planner_vm import (
     AUTO_PUBLISH_NO_CONNECTION,
     EXPIRED_NOTE,
     KIND_ICONS,
+    NOW_HINT,
+    NOW_LABEL,
     PLAN_GOALS,
     STEP_POST,
     STEP_PREVIEW,
@@ -62,6 +67,10 @@ from .post_card import (
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
+
+#: m-24842985 (N6): what is not the day and the hour waits behind this fold.
+MORE_OPTIONS = "Más opciones"
+MORE_OPTIONS_GOALS = "Más opciones: metas de esta planificación"
 
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
 _CLAMP_2 = {
@@ -752,6 +761,163 @@ def _confirm_campaign(row) -> rx.Component:
     )
 
 
+def _when_choice(row, now: bool, label: str, icon: str) -> rx.Component:
+    """One of «Elegir día y hora» / «Ahora» (m-24842985): a radio pair, thumb-sized."""
+    on = row.now if now else ~row.now
+    return rx.el.button(
+        rx.icon(icon, size=14),
+        rx.text(label, as_="span"),
+        type="button",
+        role="radio",
+        aria_checked=on,
+        class_name=rx.cond(on, "q-choice q-choice--on", "q-choice"),
+        on_click=PlannerState.set_item_now(row.post_id, now),
+    )
+
+
+def _when_fields(row) -> rx.Component:
+    """«¿Cuándo sale?» — only the day and the hour, or «Ahora» (N6)."""
+    return rx.vstack(
+        rx.box(
+            _when_choice(row, False, "Elegir día y hora", "calendar-days"),
+            _when_choice(row, True, NOW_LABEL, "zap"),
+            class_name="q-when-choice",
+            role="radiogroup",
+            aria_label="¿Cuándo sale?",
+        ),
+        rx.cond(
+            row.now,
+            rx.hstack(
+                rx.icon("info", size=14, flex_shrink="0", margin_top="2px"),
+                rx.text(NOW_HINT, size="2"),
+                align="start",
+                spacing="2",
+                color=T.TEXT_MUTED,
+            ),
+            rx.box(
+                rx.box(
+                    rx.cond(row.repeat, _label("Desde"), _label("Día")),
+                    rx.input(
+                        type="date",
+                        value=row.date,
+                        on_change=lambda v: PlannerState.set_item_date(row.post_id, v),
+                        min=PlannerState.today_iso,
+                        width="100%",
+                        aria_label="Día",
+                    ),
+                ),
+                rx.box(_label("Hora"), _time_picker(row)),
+                class_name="q-plan-grid",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _where_line(row) -> rx.Component:
+    """Where it goes out, already chosen («Sale en @cuenta (Instagram)»), so the owner
+    does not have to open «Más opciones» to know it."""
+    return rx.cond(
+        row.accounts_line != "",
+        rx.hstack(
+            rx.icon("send", size=14, flex_shrink="0", margin_top="2px"),
+            rx.text(row.accounts_line, size="2"),
+            align="start",
+            spacing="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.cond(
+            PlannerState.connections.length() == 0,
+            rx.text(
+                "No hay cuentas activas: conéctalas en Tus redes.",
+                size="2",
+                color=T.tone_color("warn", 11),
+            ),
+        ),
+    )
+
+
+def _more_options(row) -> rx.Component:
+    """Everything that is not the day and the hour (N6): format, where, accounts,
+    campaign, tags and weekly repetition — closed by default, open on its own when what
+    is missing is in here (`row.needs_more`)."""
+    return rx.accordion.root(
+        rx.accordion.item(
+            header=MORE_OPTIONS,
+            content=rx.vstack(
+                rx.cond(
+                    row.has_outputs,
+                    rx.box(
+                        _label("Formato"),
+                        rx.segmented_control.root(
+                            rx.foreach(
+                                row.outputs,
+                                lambda o: rx.segmented_control.item(o.label, value=o.port),
+                            ),
+                            value=row.output_port,
+                            on_change=lambda v: PlannerState.set_item_output(row.post_id, v),
+                            size="1",
+                        ),
+                        width="100%",
+                    ),
+                ),
+                _destination_selector(row),
+                rx.box(
+                    _label("Canales"),
+                    rx.cond(
+                        PlannerState.connections.length() > 0,
+                        rx.flex(
+                            rx.foreach(PlannerState.connections, lambda c: _account_chip(row, c)),
+                            wrap="wrap",
+                            gap="0.4rem",
+                        ),
+                        rx.text(
+                            "No hay cuentas activas: conéctalas en Tus redes.",
+                            size="1",
+                            color=T.tone_color("warn", 11),
+                        ),
+                    ),
+                    width="100%",
+                ),
+                rx.cond(~PlannerState.form_is_reschedule, _plan_campaign(row)),
+                rx.box(
+                    _label("Etiquetas"),
+                    rx.flex(
+                        rx.foreach(PlannerState.tags, lambda t: _tag_chip(row, t)),
+                        rx.foreach(PlannerState.tag_suggestions, lambda s: _suggested_chip(row, s)),
+                        wrap="wrap",
+                        gap="0.35rem",
+                    ),
+                    width="100%",
+                ),
+                _new_tag_box(),
+                rx.cond(~row.now, _repeat(row)),
+                rx.cond(
+                    PlannerState.form_count > 1,
+                    rx.button(
+                        rx.icon("copy", size=12),
+                        "Usar canales, etiquetas y campaña en todas",
+                        size="2",
+                        variant="ghost",
+                        on_click=PlannerState.apply_to_all(row.post_id),
+                    ),
+                ),
+                spacing="4",
+                width="100%",
+            ),
+            value="more",
+        ),
+        value=rx.cond(PlannerState.more_open.contains(row.post_id) | row.needs_more, "more", ""),
+        on_value_change=lambda v: PlannerState.set_item_more(row.post_id, v),
+        collapsible=True,
+        type="single",
+        variant="ghost",
+        width="100%",
+        class_name="q-plan-more",
+    )
+
+
 def _plan_card(row) -> rx.Component:
     return rx.box(
         rx.hstack(
@@ -790,66 +956,8 @@ def _plan_card(row) -> rx.Component:
             width="100%",
             class_name="q-plan-head",
         ),
-        rx.box(
-            rx.box(
-                rx.cond(row.repeat, _label("Desde"), _label("Fecha")),
-                rx.input(
-                    type="date",
-                    value=row.date,
-                    on_change=lambda v: PlannerState.set_item_date(row.post_id, v),
-                    min=PlannerState.today_iso,
-                    width="100%",
-                ),
-            ),
-            rx.box(_label("Hora"), _time_picker(row)),
-            class_name="q-plan-grid",
-        ),
-        rx.cond(
-            row.has_outputs,
-            rx.box(
-                _label("Formato"),
-                rx.segmented_control.root(
-                    rx.foreach(
-                        row.outputs,
-                        lambda o: rx.segmented_control.item(o.label, value=o.port),
-                    ),
-                    value=row.output_port,
-                    on_change=lambda v: PlannerState.set_item_output(row.post_id, v),
-                    size="1",
-                ),
-                width="100%",
-            ),
-        ),
-        _destination_selector(row),
-        rx.box(
-            _label("Canales"),
-            rx.cond(
-                PlannerState.connections.length() > 0,
-                rx.flex(
-                    rx.foreach(PlannerState.connections, lambda c: _account_chip(row, c)),
-                    wrap="wrap",
-                    gap="0.4rem",
-                ),
-                rx.text(
-                    "No hay cuentas activas: conéctalas en Tus redes.",
-                    size="1",
-                    color=T.tone_color("warn", 11),
-                ),
-            ),
-            width="100%",
-        ),
-        rx.cond(~PlannerState.form_is_reschedule, _plan_campaign(row)),
-        rx.box(
-            _label("Etiquetas"),
-            rx.flex(
-                rx.foreach(PlannerState.tags, lambda t: _tag_chip(row, t)),
-                rx.foreach(PlannerState.tag_suggestions, lambda s: _suggested_chip(row, s)),
-                wrap="wrap",
-                gap="0.35rem",
-            ),
-            width="100%",
-        ),
-        _repeat(row),
+        _when_fields(row),
+        _where_line(row),
         rx.hstack(
             rx.cond(
                 row.error != "",
@@ -871,22 +979,12 @@ def _plan_card(row) -> rx.Component:
                     class_name="q-plan-status q-plan-status--ok",
                 ),
             ),
-            rx.spacer(),
-            rx.cond(
-                PlannerState.form_count > 1,
-                rx.button(
-                    rx.icon("copy", size=12),
-                    "Usar canales, etiquetas y campaña en todas",
-                    size="1",
-                    variant="ghost",
-                    on_click=PlannerState.apply_to_all(row.post_id),
-                ),
-            ),
             align="center",
             width="100%",
             wrap="wrap",
             gap="0.5rem",
         ),
+        _more_options(row),
         class_name="q-plan-card q-kind-" + row.kind,
     )
 
@@ -917,15 +1015,16 @@ def _new_tag_box() -> rx.Component:
 
 
 def _step_schedule() -> rx.Component:
+    """m-24842985 (N6): «Paso 2 de 3 · ¿Cuándo sale?» — one question per piece."""
     return rx.vstack(
         rx.flex(
             _section_title(
                 "calendar-clock",
-                "Programación",
+                PlannerState.form_step_counter + " · ¿Cuándo sale?",
                 rx.cond(
                     PlannerState.form_is_reschedule,
-                    "Mueve la publicación a otra fecha, hora o cuenta.",
-                    "Cuándo y dónde sale cada publicación.",
+                    "Elige el nuevo día y la hora.",
+                    "Elige el día y la hora, o «Ahora».",
                 ),
             ),
             rx.box(
@@ -941,7 +1040,6 @@ def _step_schedule() -> rx.Component:
             width="100%",
         ),
         rx.foreach(PlannerState.plan_rows, _plan_card),
-        _new_tag_box(),
         spacing="4",
         width="100%",
     )
@@ -1116,6 +1214,7 @@ def _timeline_item(row) -> rx.Component:
                     width="100%",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
+                rx.cond(row.sale_line != "", rx.text(row.sale_line, size="2")),
                 rx.flex(
                     rx.foreach(
                         row.accounts,
@@ -1223,7 +1322,7 @@ def _step_confirm() -> rx.Component:
                     size="4",
                     weight="bold",
                 ),
-                rx.text(PlannerState.form_plan_summary, size="2"),
+                rx.text(PlannerState.form_confirm_line, size="3", weight="medium"),
                 rx.text(
                     "Zona horaria " + PlannerState.tz_name + " · Nada se publica antes de su hora.",
                     size="1",
@@ -1234,7 +1333,17 @@ def _step_confirm() -> rx.Component:
             class_name="q-hero",
         ),
         rx.box(rx.foreach(PlannerState.plan_rows_by_time, _timeline_item), class_name="q-tl"),
-        rx.cond(~PlannerState.form_is_reschedule, _goals()),
+        rx.cond(
+            ~PlannerState.form_is_reschedule,
+            rx.accordion.root(
+                rx.accordion.item(header=MORE_OPTIONS_GOALS, content=_goals(), value="goals"),
+                collapsible=True,
+                type="single",
+                variant="ghost",
+                width="100%",
+                class_name="q-plan-more",
+            ),
+        ),
         rx.cond(
             PlannerState.form_story_warnings > 0,
             callout(
