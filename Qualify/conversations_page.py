@@ -64,6 +64,7 @@ from .conversations_vm import (
     MEDIA_STICKER,
     MEDIA_VIDEO,
     MESSAGES_PAGE,
+    TAP_ICON,
     TEMPLATE_HELP,
     AccountVM,
     MessageVM,
@@ -759,6 +760,19 @@ def _story_reply(m: MessageVM) -> rx.Component:
     return rx.cond(m.story_reply_label != "", label, rx.fragment())
 
 
+def _choice_origin(m: MessageVM) -> rx.Component:
+    """«Pregunta inicial: Precio» above an inbound bubble the person tapped instead of
+    typing (m-24789472) — the same quiet line as `_story_reply`."""
+    label = rx.hstack(
+        rx.icon(TAP_ICON, size=T.ICON_SM, color=T.TEXT_FAINT),
+        rx.text(m.choice_label, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        align="center",
+        class_name="q-conv-choice",
+    )
+    return rx.cond(m.choice_label != "", label, rx.fragment())
+
+
 def _message(m: MessageVM) -> rx.Component:
     """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail);
     `.q-conv-msg` is the entrance — keyed by message id, so only a new bubble plays it.
@@ -777,9 +791,11 @@ def _message(m: MessageVM) -> rx.Component:
             ),
             rx.box(
                 _story_reply(m),
+                _choice_origin(m),
                 chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
+                # `--story` stacks a context line above the bubble (story reply or tap).
                 class_name=rx.cond(
-                    m.story_reply_label != "",
+                    (m.story_reply_label != "") | (m.choice_label != ""),
                     "q-wa-msg q-wa-msg--in q-conv-msg q-conv-msg--story",
                     "q-wa-msg q-wa-msg--in q-conv-msg",
                 ),

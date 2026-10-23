@@ -16,8 +16,9 @@ through `tenant_session` (`PostgresConversationsStore`):
   carrying the C-05 verdict on the messages scope;
 - the **access and sync state** of one account (`conversation_sync_state`, E1's repo);
 - per thread, the counterpart's **handle** and the last message's **preview** (from
-  `messages`; the profile — name, picture — travels on `ThreadRecord` itself since the
-  sync fetches it);
+  `messages`, with the tap it came from — `choice_kind`/`choice_payload`, m-24789472;
+  the profile — name, picture — travels on `ThreadRecord` itself since the sync
+  fetches it);
 - the thread's **unsent outbox rows** (pending / sending / failed / dead) so a person sees
   what they queued and why it did not go out — through E1's `list_for_thread`;
 - the **acting user** (`AuthState` carries the login email, not a user id) and the
@@ -150,7 +151,14 @@ class PostgresConversationsStore:
         posted = func.coalesce(Message.posted_at, Message.ingested_at)
         with tenant_session(tenant_id) as session:
             latest = session.execute(
-                select(Message.thread_id, Message.direction, Message.text, Message.media_type)
+                select(
+                    Message.thread_id,
+                    Message.direction,
+                    Message.text,
+                    Message.media_type,
+                    Message.choice_kind,
+                    Message.choice_payload,
+                )
                 .distinct(Message.thread_id)
                 .where(Message.thread_id.in_(ids), Message.deleted_at.is_(None))
                 .order_by(Message.thread_id, posted.desc(), Message.id.desc())
@@ -174,6 +182,8 @@ class PostgresConversationsStore:
                 preview=r.text,
                 preview_direction=r.direction,
                 preview_media_type=r.media_type,
+                preview_choice_kind=r.choice_kind,
+                preview_choice_payload=r.choice_payload,
             )
         for key, username in by_thread.items():
             extras.setdefault(key, ThreadExtra(username=username))

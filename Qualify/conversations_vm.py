@@ -33,6 +33,12 @@ What this module words, and never re-derives:
 outbound one from the R2 object Qualify sent, through the `/r2media/<token>` path the
 provider issues (`media_src`). The view-model never builds a URL itself.
 
+**Taps (m-24789472).** A message the person TAPPED instead of typing (a «pregunta
+inicial», a «respuesta rápida», a button or the menu) carries its origin line
+(`MessageVM.choice_label`, «Pregunta inicial: Precio»), worded by the backend's
+`conversations.choices.choice_label` — never re-derived here, never the raw payload. The
+thread list shows the same line as the last message's preview.
+
 **Drafts (E4).** A model's suggestion is a `DraftVM` the composer shows as a chip; the
 text lands in the box for the person to edit. `needs_review` is the generator's verdict
 (it could not ground something), worded here, never decided here.
@@ -44,6 +50,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
 from typing import Any, Final, Protocol
+
+from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -265,6 +273,9 @@ class ThreadExtra:
     preview: str | None = None
     preview_direction: str | None = None
     preview_media_type: str | None = None
+    # m-24789472: the last message was tapped, not typed (`messages.choice_kind`/payload).
+    preview_choice_kind: str | None = None
+    preview_choice_payload: str | None = None
 
 
 @dataclass(frozen=True)
@@ -676,7 +687,16 @@ def build_thread_row(
     extra = extra or ThreadExtra()
     preview = (extra.preview or "").strip()
     icon = ""
-    if not preview and extra.preview_media_type:
+    # m-24789472: a tapped last message previews as its origin («Pregunta inicial:
+    # Precio») — it already names what was tapped, and is shorter than the question.
+    tapped = (
+        None
+        if extra.preview_direction == "outbound"
+        else tap_origin(extra.preview_choice_kind, extra.preview_choice_payload, extra.preview)
+    )
+    if tapped:
+        preview, icon = tapped, TAP_ICON
+    elif not preview and extra.preview_media_type:
         label, icon, _control = media_label(extra.preview_media_type)
         preview = UNSUPPORTED_PREVIEW if extra.preview_media_type == "other" else label
     if not preview:
@@ -783,9 +803,14 @@ class MessageVM:
     # with the story's link while Meta's (expiring) URL lasts.
     story_reply_label: str = ""
     story_reply_href: str = ""
+    # m-24789472: where an inbound message came from when the person tapped it instead of
+    # typing it («Pregunta inicial: Precio», «Respuesta rápida: Sí»); "" when typed.
+    choice_label: str = ""
 
 
 STORY_REPLY_LABEL: Final = "Respondió a tu historia"
+#: The Lucide icon next to a tapped message's origin (bubble and list preview).
+TAP_ICON: Final = "pointer"
 # m-24842988: who the title shows when Instagram gave neither a name nor a handle.
 UNKNOWN_PERSON: Final = "Persona sin nombre"
 
@@ -838,6 +863,15 @@ def build_message_vm(
         status = (message.delivery_status or "").lower()
         tick = "read" if status == "read" else "sent"
     story = None if outbound else getattr(message, "story_reply_id", None)
+    tapped = (
+        None
+        if outbound
+        else tap_origin(
+            getattr(message, "choice_kind", None),
+            getattr(message, "choice_payload", None),
+            message.text,
+        )
+    )
     return MessageVM(
         message_id=str(message.id),
         is_outbound=outbound,
@@ -851,6 +885,7 @@ def build_message_vm(
         media_src=media_src if control else "",
         story_reply_label=STORY_REPLY_LABEL if story else "",
         story_reply_href=(getattr(message, "story_reply_url", None) or "") if story else "",
+        choice_label=tapped or "",
     )
 
 

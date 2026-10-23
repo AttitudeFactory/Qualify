@@ -45,6 +45,7 @@ from .conversations_vm import (
     NO_MESSAGES_YET,
     OUTBOUND_PREFIX,
     QUIET_ACCESS_KINDS,
+    TAP_ICON,
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_SHORT,
     AccessVM,
@@ -693,6 +694,69 @@ def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
 
     rendered = str(_story_reply(ConversationsState.messages[0]).render())
     assert "story_reply_label" in rendered and "story_reply_href" in rendered
+
+
+# --- taps: ice breakers, quick replies, buttons, menu (m-24789472) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload", "text", "label"),
+    [
+        ("ice_breaker", "QF_PRECIO", "¿Cuánto cuesta?", "Pregunta inicial: Precio"),
+        ("ice_breaker", "QF_OTRA", "¿Hacen envíos?", "Pregunta inicial: ¿Hacen envíos?"),
+        ("quick_reply", "SI", "Sí", "Respuesta rápida: Sí"),
+        ("button", "QFB_VER_CATALOGO", "Ver catálogo", "Botón: Ver catálogo"),
+        ("menu", "QFM_HORARIO", "Horario", "Menú: Horario"),
+        ("menu", "QFM_X", None, "Menú"),
+    ],
+)
+def test_a_tapped_message_says_where_it_came_from(
+    kind: str, payload: str, text: str | None, label: str
+) -> None:
+    tapped = dataclasses.replace(_message(text=text), choice_kind=kind, choice_payload=payload)
+    vm = build_message_vm(tapped, now=NOW, zone=ZONE)
+    assert vm.choice_label == label
+    assert payload not in vm.choice_label  # the payload is an internal key, never shown
+
+
+def test_a_typed_or_outbound_message_has_no_tap_origin() -> None:
+    assert build_message_vm(_message(), now=NOW, zone=ZONE).choice_label == ""
+    ours = dataclasses.replace(
+        _message(direction="outbound"), choice_kind="quick_reply", choice_payload="SI"
+    )
+    assert build_message_vm(ours, now=NOW, zone=ZONE).choice_label == ""
+
+
+def test_a_tapped_last_message_previews_as_its_origin() -> None:
+    view = _view(_thread(inbound=NOW - timedelta(minutes=5)))
+    row = build_thread_row(
+        view,
+        ThreadExtra(
+            preview="¿Cuánto cuesta?",
+            preview_direction="inbound",
+            preview_choice_kind="ice_breaker",
+            preview_choice_payload="QF_PRECIO",
+        ),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert (row.preview, row.preview_icon) == ("Pregunta inicial: Precio", TAP_ICON)
+    typed = build_thread_row(
+        view, ThreadExtra(preview="hola", preview_direction="inbound"), now=NOW, zone=ZONE
+    )
+    assert (typed.preview, typed.preview_icon) == ("hola", "")
+
+
+def test_the_bubble_renders_the_tap_origin_only_when_there_is_one() -> None:
+    from .conversations_page import _choice_origin, _message
+    from .conversations_state import ConversationsState
+
+    m = ConversationsState.messages[0]
+    rendered = str(_choice_origin(m).render())
+    assert "choice_label" in rendered and "LucidePointer" in rendered  # TAP_ICON
+    # The bubble stacks it above the text, like a story reply.
+    bubble = str(_message(m).render())
+    assert "choice_label" in bubble and "q-conv-msg--story" in bubble
 
 
 # --- message templates (m-24789472) ----------------------------------------------------
