@@ -62,7 +62,9 @@ What one change does, in order:
    `sender.id`. Then `ConversationSyncService.ingest_message`: same upsert, same insert
    by `mid`, same bump as the poll — a replayed delivery, or the poll reaching the same
    `mid` later, is one row. An echo of a message the outbox already wrote under its
-   `message_id` is the same `mid` and therefore a no-op. A webhook that reaches a `mid`
+   `message_id` is the same `mid` and therefore a no-op. An echo of a button template
+   (m-24789472) has no `text`: its text is read from the template attachment, and it is
+   stored as `media_type = 'interactive'`. A webhook that reaches a `mid`
    the poll stored first adds the tap's kind and payload (only while the row has none).
 4. `processed`.
 
@@ -183,6 +185,21 @@ def _story_reply_of(message: Mapping[str, Any]) -> tuple[str, str | None] | None
     return story_reference(reply_to.get("story")) if isinstance(reply_to, Mapping) else None
 
 
+def _template_text(message: Mapping[str, Any]) -> str | None:
+    """The text above the buttons of a template attachment (`attachments[0].payload.
+    text`) — what an echo of Qualify's own button template carries instead of `text`
+    (m-24789472). `[CORPUS]`: the echo's attachment shape is read from the send body."""
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list) or not attachments:
+        return None
+    first = attachments[0]
+    if not isinstance(first, Mapping) or first.get("type") != "template":
+        return None
+    payload = first.get("payload")
+    text = payload.get("text") if isinstance(payload, Mapping) else None
+    return text if isinstance(text, str) and text else None
+
+
 def _quick_reply_payload(message: Mapping[str, Any]) -> str | None:
     quick_reply = message.get("quick_reply")
     if not isinstance(quick_reply, Mapping):
@@ -272,6 +289,8 @@ def parse_messaging_item(
     is_echo = message.get("is_echo") is True or sender_id == own_account_id
     counterpart = recipient_id if is_echo else sender_id
     text = message.get("text")
+    if not isinstance(text, str) or not text:
+        text = _template_text(message)
     story = None if is_echo else _story_reply_of(message)
     # A quick reply is the person's tap: an echo (the business's own message) never is one.
     quick_reply = None if is_echo else _quick_reply_payload(message)

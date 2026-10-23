@@ -37,12 +37,15 @@ unknown as zero (`UNCOVERED_SURFACES["direct_messages_human_toggle"]`).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from qualify_api.conversations.interactive import QuickReply, TemplateButton
 
 CHANNEL_DM: Final = "dm"
 
@@ -223,7 +226,22 @@ class ConversationSender(Protocol):
     @property
     def channel(self) -> str: ...
 
-    def build_payload(self, *, recipient_external_id: str, text: str) -> dict[str, Any]: ...
+    def build_payload(
+        self,
+        *,
+        recipient_external_id: str,
+        text: str,
+        quick_replies: Sequence[QuickReply] | None = None,
+    ) -> dict[str, Any]:
+        """A text message; with `quick_replies` (m-24789472) they ride on it. Validation
+        errors of the quick replies are `interactive.InteractiveMessageError`."""
+        ...
+
+    def build_button_template_payload(
+        self, *, recipient_external_id: str, text: str, buttons: Sequence[TemplateButton]
+    ) -> dict[str, Any]:
+        """ONE message: a text of 1–640 characters with 1–3 buttons (m-24789472)."""
+        ...
 
     def build_private_reply_payload(self, *, comment_id: str, text: str) -> dict[str, Any]:
         """The one-off DM to a comment's author, addressed by the COMMENT (m-24789646)."""

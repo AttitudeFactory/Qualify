@@ -46,7 +46,29 @@ def test_current_states_are_pinned() -> None:
         Capability.PUBLIC_NOTICE: CapabilityState.VERIFIED,
         # m-24789472: built from the corpus, no live test yet (R6).
         Capability.ICE_BREAKERS: CapabilityState.TO_VERIFY,
+        # m-24789472, phase 3: quick replies (R7) and button templates (R8), corpus only.
+        Capability.QUICK_REPLIES: CapabilityState.TO_VERIFY,
+        Capability.STRUCTURED_TEMPLATES: CapabilityState.TO_VERIFY,
     }
+
+
+@pytest.mark.parametrize(
+    ("capability", "env_var", "test_id"),
+    [
+        (Capability.QUICK_REPLIES, "QUALIFY_QUICK_REPLIES", "R7"),
+        (Capability.STRUCTURED_TEMPLATES, "QUALIFY_STRUCTURED_TEMPLATES", "R8"),
+    ],
+)
+def test_phase_3_capabilities_are_off_by_default_and_follow_their_switch(
+    capability: Capability, env_var: str, test_id: str
+) -> None:
+    assert REGISTRY[capability].env_var == env_var
+    off = Capabilities.from_env({}).availability(capability)
+    assert off.enabled is False
+    assert off.state_label == "Por verificar"
+    assert test_id in off.reason and env_var in off.reason
+    on = Capabilities.from_env({env_var: "on"}).availability(capability)
+    assert on.enabled is True and on.reason == ""
 
 
 @pytest.mark.parametrize("capability", list(Capability))

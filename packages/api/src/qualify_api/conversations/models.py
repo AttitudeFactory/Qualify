@@ -193,6 +193,12 @@ class ConversationReplyTemplate(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     default_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # m-24789472, 0084: NULL = a text template; else 1–3 buttons in the wire shape
+    # (`interactive.buttons_wire`) and the template is sent as a button template.
+    # `none_as_null`: Python None must be SQL NULL (a text template), not JSON `null`.
+    buttons: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )

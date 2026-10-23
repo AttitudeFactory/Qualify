@@ -222,10 +222,14 @@ def production_outbox() -> PostgresConversationOutboxRepository:
 
 
 def production_conversation_service() -> ConversationService:
+    from qualify_api.followups.capabilities import Capabilities  # noqa: PLC0415
+
     return ConversationService(
         repository=production_repository(),
         outbox=production_outbox(),
         registry=production_registry(),
+        # m-24789472: quick replies / button templates are refused at enqueue when off.
+        capabilities=Capabilities.from_env(),
     )
 
 
@@ -357,6 +361,7 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
         Capability,
     )
 
+    capabilities = Capabilities.from_env()
     return ConversationOutboxSender(
         outbox=production_outbox(),
         repository=production_repository(),
@@ -365,7 +370,10 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
         degrade=degrade_connection_on_auth_error,
         media_linker=_LazyMediaLinker(),
         # m-24789646: a queued private reply leaves only while its capability is on.
-        private_replies=Capabilities.from_env().enabled(Capability.COMMENT_PRIVATE_REPLY),
+        private_replies=capabilities.enabled(Capability.COMMENT_PRIVATE_REPLY),
+        # m-24789472: quick replies and button templates, re-checked at send time.
+        quick_replies=capabilities.enabled(Capability.QUICK_REPLIES),
+        structured_templates=capabilities.enabled(Capability.STRUCTURED_TEMPLATES),
         worker_id=worker_id,
     )
 

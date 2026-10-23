@@ -34,6 +34,18 @@ in `RenderedTemplate.blanks` so the screen can point at them.
 - at most `MAX_TEMPLATES_PER_CONNECTION` (50) per account: a picker longer than that is
   not a picker. Enforced under the per-account lock (see below).
 
+## Templates with buttons (m-24789472, phase 3; migration 0084)
+
+A template may carry 1–3 `buttons` (`interactive.TemplateButton`: a `postback` with a
+`QFB_` payload, or an https `web_url`), validated by `interactive.clean_buttons`. Such a
+template is `kind == "buttons"` and is sent as ONE Instagram button template — never
+split — so its body is at most 640 characters, not 1000. `render` hands the buttons to
+the composer with the text (`RenderedTemplate.buttons`); the composer sends them through
+`ConversationService.reply_buttons(..., approval=HumanApproval)`. Without buttons
+(`buttons` NULL, every template of PR 1) nothing changes: `kind == "text"` and
+`reply_text`. `update(buttons=None)` keeps a template's buttons; `buttons=()` removes
+them.
+
 ## The defaults, seeded once and only once
 
 `list_for_connection` seeds `DEFAULT_TEMPLATES` the first time an account's library is
@@ -72,6 +84,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from qualify_api.connections.models import SocialConnection
+from qualify_api.conversations.interactive import (
+    MAX_BUTTON_TEMPLATE_TEXT_CHARS,
+    InteractiveMessageError,
+    TemplateButton,
+    buttons_from_json,
+    buttons_wire,
+    clean_buttons,
+)
+from qualify_api.conversations.interactive import MESSAGES as INTERACTIVE_MESSAGES
 from qualify_api.conversations.models import (
     ConversationReplyTemplate,
     ConversationReplyTemplateSeed,
@@ -83,6 +104,10 @@ MAX_TITLE_CHARS: Final = 60
 # service here would pull the outbox in). Mirrored by 0079's CHECK.
 MAX_BODY_CHARS: Final = 1000
 MAX_TEMPLATES_PER_CONNECTION: Final = 50
+#: A template with buttons is one button template: `interactive`'s 640, mirrored by 0084.
+MAX_BUTTONS_BODY_CHARS: Final = MAX_BUTTON_TEMPLATE_TEXT_CHARS
+KIND_TEXT: Final = "text"
+KIND_BUTTONS: Final = "buttons"
 DEFAULTS_VERSION: Final = 1
 
 VAR_NAME: Final = "nombre"
@@ -105,6 +130,7 @@ ERR_OTHER_ACCOUNT: Final = "other_account"
 ERR_TEMPLATE_NOT_FOUND: Final = "template_not_found"
 ERR_CONNECTION_NOT_FOUND: Final = "connection_not_found"
 ERR_THREAD_NOT_FOUND: Final = "thread_not_found"
+ERR_BODY_TOO_LONG_FOR_BUTTONS: Final = "body_too_long_for_buttons"
 
 MESSAGES: Final[dict[str, str]] = {
     ERR_TITLE_EMPTY: "Ponle un nombre corto a la plantilla.",
@@ -132,6 +158,12 @@ MESSAGES: Final[dict[str, str]] = {
         "No encontramos esa cuenta conectada. Revisa Cuentas conectadas e inténtalo de nuevo."
     ),
     ERR_THREAD_NOT_FOUND: "No encontramos esa conversación. Vuelve a abrirla.",
+    ERR_BODY_TOO_LONG_FOR_BUTTONS: (
+        f"Un mensaje con botones puede tener hasta {MAX_BUTTONS_BODY_CHARS} caracteres. "
+        "Acórtalo o quita los botones."
+    ),
+    # The button errors (`buttons_empty`, `button_title_too_long`, …) of `interactive`.
+    **INTERACTIVE_MESSAGES,
 }
 
 
@@ -139,9 +171,11 @@ class ReplyTemplateError(ValueError):
     """A request the library refuses. `code` is stable (for tests and the UI's logic);
     `message` — also `str(error)` — is the Spanish sentence to show the person."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, index: int | None = None) -> None:
         self.code = code
         self.message = MESSAGES[code]
+        # The offending button (0-based) for a button error; None otherwise.
+        self.index = index
         super().__init__(self.message)
 
 
@@ -167,10 +201,17 @@ class ReplyTemplate:
     updated_by_user_id: UUID | None
     created_at: datetime
     updated_at: datetime
+    # m-24789472 (0084): empty for a text template.
+    buttons: tuple[TemplateButton, ...] = ()
 
     @property
     def is_default(self) -> bool:
         return self.default_key is not None
+
+    @property
+    def kind(self) -> str:
+        """`buttons` (sent as one button template) or `text` (sent with `reply_text`)."""
+        return KIND_BUTTONS if self.buttons else KIND_TEXT
 
 
 @dataclass(frozen=True)
@@ -190,10 +231,16 @@ class RenderedTemplate:
     unresolved: tuple[str, ...] = ()
     # Fill-in spaces for the person («[precio]»), as they appear in `text`.
     blanks: tuple[str, ...] = ()
+    # The template's buttons (m-24789472): non-empty means «send with `reply_buttons`».
+    buttons: tuple[TemplateButton, ...] = ()
 
     @property
     def needs_attention(self) -> bool:
         return bool(self.unresolved or self.blanks)
+
+    @property
+    def kind(self) -> str:
+        return KIND_BUTTONS if self.buttons else KIND_TEXT
 
 
 # Seeded on an account's first open (`DEFAULTS_VERSION` 1). Plain neighborly Spanish,
@@ -245,6 +292,24 @@ def clean_template(title: str, body: str) -> tuple[str, str]:
     if len(clean_body) > MAX_BODY_CHARS:
         raise ReplyTemplateError(ERR_BODY_TOO_LONG)
     return clean_title, clean_body
+
+
+def clean_template_buttons(
+    body: str, buttons: Sequence[TemplateButton]
+) -> tuple[TemplateButton, ...]:
+    """A template's buttons, cleaned (`interactive.clean_buttons`), and its already
+    cleaned `body` checked against the button template's 640: `()` for no buttons (a text
+    template). `ReplyTemplateError` with `interactive`'s code for a bad button, or
+    `body_too_long_for_buttons`."""
+    if not buttons:
+        return ()
+    try:
+        cleaned = clean_buttons(buttons)
+    except InteractiveMessageError as exc:
+        raise ReplyTemplateError(exc.code, index=exc.index) from exc
+    if len(body) > MAX_BUTTONS_BODY_CHARS:
+        raise ReplyTemplateError(ERR_BODY_TOO_LONG_FOR_BUTTONS)
+    return cleaned
 
 
 def counterpart_display_name(thread: ThreadRecord) -> str | None:
@@ -308,11 +373,21 @@ class ReplyTemplateRepository(Protocol):
         title: str,
         body: str,
         user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
     ) -> ReplyTemplate: ...
 
     def update_template(
-        self, *, tenant_id: UUID, template_id: UUID, title: str, body: str, user_id: UUID | None
-    ) -> ReplyTemplate | None: ...
+        self,
+        *,
+        tenant_id: UUID,
+        template_id: UUID,
+        title: str,
+        body: str,
+        user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
+    ) -> ReplyTemplate | None:
+        """Writes title, body AND buttons (`()` = none): the service resolves «keep»."""
+        ...
 
     def delete_template(self, *, tenant_id: UUID, template_id: UUID) -> bool: ...
 
@@ -377,6 +452,7 @@ class MemoryReplyTemplateRepository:
         position: int,
         default_key: str | None,
         user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
     ) -> ReplyTemplate:
         now = self._clock()
         record = ReplyTemplate(
@@ -391,6 +467,7 @@ class MemoryReplyTemplateRepository:
             updated_by_user_id=user_id,
             created_at=now,
             updated_at=now,
+            buttons=tuple(buttons),
         )
         self.rows[record.id] = record
         return record
@@ -434,6 +511,7 @@ class MemoryReplyTemplateRepository:
         title: str,
         body: str,
         user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
     ) -> ReplyTemplate:
         self._require_connection(tenant_id, connection_id)
         if len(self._of(tenant_id, connection_id)) >= MAX_TEMPLATES_PER_CONNECTION:
@@ -446,16 +524,29 @@ class MemoryReplyTemplateRepository:
             position=self._next_position(tenant_id, connection_id),
             default_key=None,
             user_id=user_id,
+            buttons=buttons,
         )
 
     def update_template(
-        self, *, tenant_id: UUID, template_id: UUID, title: str, body: str, user_id: UUID | None
+        self,
+        *,
+        tenant_id: UUID,
+        template_id: UUID,
+        title: str,
+        body: str,
+        user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
     ) -> ReplyTemplate | None:
         row = self.get_template(tenant_id=tenant_id, template_id=template_id)
         if row is None:
             return None
         updated = replace(
-            row, title=title, body=body, updated_by_user_id=user_id, updated_at=self._clock()
+            row,
+            title=title,
+            body=body,
+            buttons=tuple(buttons),
+            updated_by_user_id=user_id,
+            updated_at=self._clock(),
         )
         self.rows[row.id] = updated
         return updated
@@ -495,7 +586,13 @@ def _record(row: ConversationReplyTemplate) -> ReplyTemplate:
         updated_by_user_id=row.updated_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        buttons=buttons_from_json(row.buttons),
     )
+
+
+def _buttons_json(buttons: Sequence[TemplateButton]) -> list[dict[str, str]] | None:
+    """What 0084's `buttons` column stores: the wire shape, or NULL for a text template."""
+    return buttons_wire(buttons) if buttons else None
 
 
 def _ordered(connection_id: UUID) -> Select[tuple[ConversationReplyTemplate]]:
@@ -600,6 +697,7 @@ class PostgresReplyTemplateRepository:
         title: str,
         body: str,
         user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
     ) -> ReplyTemplate:
         with tenant_session(tenant_id) as session:
             self._lock(session, tenant_id, connection_id)
@@ -616,6 +714,7 @@ class PostgresReplyTemplateRepository:
                 connection_id=connection_id,
                 title=title,
                 body=body,
+                buttons=_buttons_json(buttons),
                 position=(int(last) + 1) if last is not None else 0,
                 created_by_user_id=user_id,
                 updated_by_user_id=user_id,
@@ -626,7 +725,14 @@ class PostgresReplyTemplateRepository:
             return _record(row)
 
     def update_template(
-        self, *, tenant_id: UUID, template_id: UUID, title: str, body: str, user_id: UUID | None
+        self,
+        *,
+        tenant_id: UUID,
+        template_id: UUID,
+        title: str,
+        body: str,
+        user_id: UUID | None,
+        buttons: Sequence[TemplateButton] = (),
     ) -> ReplyTemplate | None:
         with tenant_session(tenant_id) as session:
             row = session.get(ConversationReplyTemplate, template_id)
@@ -634,6 +740,7 @@ class PostgresReplyTemplateRepository:
                 return None
             row.title = title
             row.body = body
+            row.buttons = _buttons_json(buttons)
             row.updated_by_user_id = user_id
             row.updated_at = _utcnow()
             session.flush()
@@ -710,12 +817,25 @@ class ReplyTemplateService:
         title: str,
         body: str,
         user_id: UUID | None,
+        buttons: Sequence[TemplateButton] | None = None,
     ) -> ReplyTemplate:
-        """A new template at the end of the list. Raises `ReplyTemplateError`
-        (`title_*`, `body_*`, `limit_reached`) or `ReplyTemplateNotFound`."""
+        """A new template at the end of the list — with `buttons` (1–3), a template sent
+        as a button template. Raises `ReplyTemplateError` (`title_*`, `body_*`,
+        `limit_reached`, a button code of `interactive`, `body_too_long_for_buttons`) or
+        `ReplyTemplateNotFound`."""
         clean_title, clean_body = clean_template(title, body)
+        cleaned_buttons = clean_template_buttons(clean_body, buttons or ())
         # The defaults come first even when the very first action is «Crear».
         self._repo.ensure_defaults(tenant_id=tenant_id, connection_id=connection_id)
+        if cleaned_buttons:
+            return self._repo.create_template(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                title=clean_title,
+                body=clean_body,
+                user_id=user_id,
+                buttons=cleaned_buttons,
+            )
         return self._repo.create_template(
             tenant_id=tenant_id,
             connection_id=connection_id,
@@ -732,15 +852,26 @@ class ReplyTemplateService:
         title: str,
         body: str,
         user_id: UUID | None,
+        buttons: Sequence[TemplateButton] | None = None,
     ) -> ReplyTemplate:
-        """Edit a template (a seeded default too: it keeps its `default_key`)."""
+        """Edit a template (a seeded default too: it keeps its `default_key`).
+        `buttons=None` keeps the template's buttons as they are (a PR-1 caller that edits
+        only title and body never strips them); `buttons=()` removes them; a sequence
+        replaces them. The body is checked against 640 whenever buttons remain."""
         clean_title, clean_body = clean_template(title, body)
+        if buttons is None:
+            current = self._repo.get_template(tenant_id=tenant_id, template_id=template_id)
+            if current is None:
+                raise ReplyTemplateNotFound(ERR_TEMPLATE_NOT_FOUND)
+            buttons = current.buttons
+        cleaned_buttons = clean_template_buttons(clean_body, buttons)
         updated = self._repo.update_template(
             tenant_id=tenant_id,
             template_id=template_id,
             title=clean_title,
             body=clean_body,
             user_id=user_id,
+            buttons=cleaned_buttons,
         )
         if updated is None:
             raise ReplyTemplateNotFound(ERR_TEMPLATE_NOT_FOUND)
@@ -776,13 +907,17 @@ class ReplyTemplateService:
             VAR_NAME: counterpart_display_name(thread),
             VAR_BRAND: self._brand_name(tenant_id, thread.connection_id),
         }
-        return render_template(template.body, values, template_id=template.id)
+        rendered = render_template(template.body, values, template_id=template.id)
+        return replace(rendered, buttons=template.buttons) if template.buttons else rendered
 
 
 __all__ = [
     "DEFAULTS_VERSION",
     "DEFAULT_TEMPLATES",
+    "KIND_BUTTONS",
+    "KIND_TEXT",
     "MAX_BODY_CHARS",
+    "MAX_BUTTONS_BODY_CHARS",
     "MAX_TEMPLATES_PER_CONNECTION",
     "MAX_TITLE_CHARS",
     "MESSAGES",
@@ -799,6 +934,7 @@ __all__ = [
     "ReplyTemplateService",
     "ThreadReader",
     "clean_template",
+    "clean_template_buttons",
     "counterpart_display_name",
     "render_template",
 ]
