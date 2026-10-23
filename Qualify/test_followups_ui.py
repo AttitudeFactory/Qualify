@@ -411,3 +411,28 @@ def test_the_panel_has_the_steps_the_confirmation_and_no_tooltip() -> None:
         assert text in rendered, text
     assert "Otra idea" in rendered and "/responder?tab=comentarios" in rendered
     assert "44px" in rendered
+
+
+def test_the_ux_review_fixes_are_on_the_card() -> None:
+    """m-24842991 UX review: blocked route said on step 1 with a way out, step 2's
+    «Siguiente» off while the box is empty (and why), a titled preview with «Cambiar
+    mensaje», and a notice label that does not echo the box."""
+    from .followups_page import _notice, _step_asked, _step_reply, _step_review
+
+    c = FollowupsState.cards[0]
+    asked = str(_step_asked(c).render())
+    assert "No disponible todav" in asked and "Volver a comentarios" in asked
+    assert "route_available" in asked
+    reply = str(_step_reply(c).render())
+    assert "para seguir." in reply and "pyStrip" in reply
+    review = str(_step_review(c).render())
+    assert "Tu mensaje:" in review and "Cambiar mensaje" in review
+    label = str(_notice(c).render())
+    assert "notice_default" in label
+
+
+def test_the_notice_messages_use_the_same_words_as_the_card() -> None:
+    from . import followups_state as fs
+
+    for text in (fs._NOTICE_EMPTY, fs._NOTICE_TOO_LONG, fs._NOTICE_QUEUED):
+        assert "aviso público" not in text and "en su comentario" in text

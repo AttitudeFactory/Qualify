@@ -82,9 +82,9 @@ _ALREADY_REPLIED = (
 _NO_ROUTE = "Ahora mismo no hay forma de escribirle a esta persona:"
 _EMPTY = "Escribe el mensaje antes de aprobarlo."
 _TOO_LONG = "El mensaje es demasiado largo (máximo 1000 caracteres)."
-_NOTICE_EMPTY = "Escribe el aviso público o desmarca la casilla."
-_NOTICE_TOO_LONG = "El aviso público es demasiado largo (máximo 300 caracteres)."
-_NOTICE_QUEUED = " El aviso público se publicará en el comentario cuando el mensaje salga."
+_NOTICE_EMPTY = "Escribe lo que dejamos en su comentario o desmarca la casilla."
+_NOTICE_TOO_LONG = "Lo que dejamos en su comentario es demasiado largo (máximo 300 caracteres)."
+_NOTICE_QUEUED = " Lo que dejamos en su comentario aparece cuando el mensaje salga."
 _SEND_FAILED = "No pudimos enviar el mensaje. Vuelve a intentarlo en un momento."
 _DISCARD_FAILED = "No pudimos descartar la consulta. Vuelve a intentarlo en un momento."
 

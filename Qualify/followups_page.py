@@ -226,7 +226,8 @@ def _notice(c: FollowupCardVM) -> rx.Component:
         c.notice_available,
         rx.vstack(
             rx.checkbox(
-                "También dejamos “" + F.notice_edits[c.followup_id] + "” en su comentario.",
+                # Fixed label (UX review): the box below holds the live text.
+                "También dejamos “" + c.notice_default + "” en su comentario.",
                 checked=on,
                 on_change=lambda checked: F.set_notice_on(c.followup_id, checked),
                 size="3",
@@ -278,14 +279,28 @@ def _back(c: FollowupCardVM, step: int) -> rx.Component:
     )
 
 
-def _forward(c: FollowupCardVM, step: int) -> rx.Component:
+def _forward(c: FollowupCardVM, step: int, blank: rx.Var | bool = False) -> rx.Component:
     return rx.button(
         "Siguiente",
         rx.icon("arrow-right", size=T.ICON_SM),
         size="2",
-        disabled=F.busy_id != "",
+        disabled=(F.busy_id != "") | blank,
         on_click=F.go_step(c.followup_id, step),
         **_TAP,
+    )
+
+
+def _to_comments() -> rx.Component:
+    """Step 1 when nobody can be written to: a way out instead of two dead steps."""
+    return rx.link(
+        rx.button(
+            rx.icon("arrow-left", size=T.ICON_SM),
+            "Volver a comentarios",
+            variant="soft",
+            size="2",
+            **_TAP,
+        ),
+        href=COMMENTS_HREF,
     )
 
 
@@ -293,6 +308,8 @@ def _step_asked(c: FollowupCardVM) -> rx.Component:
     busy = F.busy_id == c.followup_id
     return rx.vstack(
         _origin(c),
+        # UX review: say it on step 1, not after the whole message is written.
+        rx.cond(c.route_available, rx.fragment(), _blocked(c)),
         _row(
             rx.button(
                 rx.icon("x", size=T.ICON_SM),
@@ -306,7 +323,7 @@ def _step_asked(c: FollowupCardVM) -> rx.Component:
                 **_TAP,
             ),
             rx.spacer(),
-            _forward(c, STEP_REPLY),
+            rx.cond(c.route_available, _forward(c, STEP_REPLY), _to_comments()),
         ),
         spacing="3",
         width="100%",
@@ -316,6 +333,8 @@ def _step_asked(c: FollowupCardVM) -> rx.Component:
 def _step_reply(c: FollowupCardVM) -> rx.Component:
     busy = F.busy_id == c.followup_id
     acting = F.busy_id != ""
+    # go_step still refuses an empty message; this only says so before the tap.
+    empty = F.edits[c.followup_id].strip() == ""
     idea = rx.cond(
         c.has_draft,
         rx.button(
@@ -342,7 +361,21 @@ def _step_reply(c: FollowupCardVM) -> rx.Component:
     return rx.vstack(
         _asked_summary(c),
         _draft(c),
-        _row(_back(c, STEP_ASKED), idea, rx.spacer(), _forward(c, STEP_REVIEW)),
+        _row(
+            _back(c, STEP_ASKED),
+            idea,
+            rx.spacer(),
+            _forward(c, STEP_REVIEW, blank=empty),
+        ),
+        rx.cond(
+            empty,
+            rx.text(
+                "Escribe tu respuesta o toca «" + SUGGEST_ONE + "» para seguir.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.fragment(),
+        ),
         spacing="3",
         width="100%",
     )
@@ -353,11 +386,25 @@ def _step_review(c: FollowupCardVM) -> rx.Component:
     return rx.vstack(
         _asked_summary(c),
         _route(c),
-        rx.box(
-            rx.text(F.edits[c.followup_id], size="2", white_space="pre-wrap"),
-            padding="0.6rem 0.8rem",
-            border_radius=T.RADIUS_CONTROL,
-            background=T.SURFACE_BG_RAISED,
+        rx.vstack(
+            rx.text("Tu mensaje:", size="1", weight="medium", color=T.TEXT_MUTED),
+            rx.box(
+                rx.text(F.edits[c.followup_id], size="2", white_space="pre-wrap"),
+                padding="0.6rem 0.8rem",
+                border_radius=T.RADIUS_CONTROL,
+                background=T.SURFACE_BG_RAISED,
+                width="100%",
+            ),
+            rx.button(
+                rx.icon("pencil", size=T.ICON_SM),
+                "Cambiar mensaje",
+                variant="ghost",
+                size="2",
+                disabled=F.busy_id != "",
+                on_click=F.go_step(c.followup_id, STEP_REPLY),
+                **_TAP,
+            ),
+            spacing="1",
             width="100%",
         ),
         _notice(c),
