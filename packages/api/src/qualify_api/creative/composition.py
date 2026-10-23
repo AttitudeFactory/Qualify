@@ -78,6 +78,7 @@ from qualify_api.creative.brand_context import DbBrandContextReader
 from qualify_api.creative.brand_fonts import DbBrandFontFiles
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
+from qualify_api.creative.creations import PostgresCreationsLedger
 from qualify_api.creative.dispatch import InlineDispatcher
 from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
 from qualify_api.creative.observed import traced_providers
@@ -341,6 +342,8 @@ def production_content_service() -> ContentService:
         # ticket 24803289: a variations piece approved anywhere (/drafts/{id} too) holds
         # the catalog price; every other draft passes untouched
         approval_guard=_angle_price_guard(),
+        # CREAR-5: «creaciones del mes» — the owner's monthly quota, never money
+        creations=production_creations_ledger(),
         media=MediaProducer(
             store=store,
             router=router,
@@ -458,6 +461,18 @@ def _angle_price_guard() -> AnglePriceGuard:
     return AnglePriceGuard()
 
 
+#: CREAR-5 kill switch: `off`/`0`/`false`/`no` lifts the monthly quota (nothing is
+#: charged, the screens say nothing about creations). On by default.
+CREATIONS_QUOTA_ENV = "QUALIFY_CREATIONS_QUOTA"
+
+
+def production_creations_ledger() -> PostgresCreationsLedger | None:
+    """The «creaciones del mes» ledger, or None when the quota is switched off."""
+    if os.environ.get(CREATIONS_QUOTA_ENV, "").strip().lower() in ("off", "0", "false", "no"):
+        return None
+    return PostgresCreationsLedger()
+
+
 @cache
 def production_angle_set_service() -> AngleSetService:
     """The «10 variaciones» service over the composed content service: the catalog's
@@ -476,4 +491,5 @@ def production_angle_set_service() -> AngleSetService:
         campaigns=_DbCampaignOps(),
         pricing=JsonPricingTable(PRICING_VERSION),
         image_model_id=os.environ.get(SEEDREAM_MODEL_ENV) or DEFAULT_SEEDREAM_MODEL,
+        creations=production_creations_ledger(),
     )

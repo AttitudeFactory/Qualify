@@ -38,6 +38,7 @@ from qualify_creative.brand import (
 )
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.brand.render import VARIANT_ANGLES
+from qualify_creative.creations import weight_for
 from qualify_creative.enums import (
     ContentKind,
     FailureReason,
@@ -71,10 +72,17 @@ from sqlalchemy.exc import IntegrityError
 
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
+from qualify_api.creative.creations import (
+    CreationsBalance,
+    CreationsLedger,
+    NotEnoughCreations,
+)
 from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
 from qualify_api.creative.fsm import (
     DRAFT_STATUSES,
     DRAFTING,
+    FAILED,
+    GENERATED,
     REJECTED,
     DraftTrigger,
     apply_transition,
@@ -1125,8 +1133,11 @@ class ContentService:
         media: MediaProducer | None = None,
         context_reader: BrandContextReader | None = None,
         approval_guard: ApprovalGuard | None = None,
+        creations: CreationsLedger | None = None,
     ) -> None:
         self._media = media
+        #: «Creaciones del mes» (CREAR-5): None = no monthly quota (tests, scripts).
+        self._creations = creations
         self._approval_guard = approval_guard
         self._router = router
         self._pricing = pricing
@@ -1181,6 +1192,13 @@ class ContentService:
         blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
+        # CREAR-5: priced and checked against the month BEFORE any row exists — without
+        # enough creations nothing is created (`CreationNotOffered` / `NotEnoughCreations`)
+        price = weight_for(brief) if self._creations is not None else None
+        if price is not None and self._creations is not None:
+            balance = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+            if not balance.can_pay(price.weight):
+                raise NotEnoughCreations(weight=price.weight, left=balance.left)
 
         # the key only reaches repositories that know it (every other caller sends none)
         keyed: dict[str, UUID] = {"request_key": request_key} if request_key else {}
@@ -1197,9 +1215,33 @@ class ContentService:
             # a concurrent call with the same key won the unique index: its draft is
             # ours, and its generation is already dispatched — never a second one
             return duplicate.draft_id
+        if price is not None and self._creations is not None:
+            try:
+                self._creations.charge(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    draft_id=draft_id,
+                    revision=1,
+                    price=price,
+                )
+            except NotEnoughCreations:
+                # a concurrent ask spent the last creations between the check and here:
+                # the draft never generates (nothing paid), and the caller says why
+                self._fail(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    reason=FailureReason.BUDGET_EXCEEDED.value,
+                )
+                raise
         if self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return draft_id
+
+    def creations_balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance | None:
+        """The month's «creaciones» (CREAR-5), or None when no quota is wired."""
+        if self._creations is None:
+            return None
+        return self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
 
     def draft_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
         """The draft created with `request_key`, if any — how a caller whose create was
@@ -1305,6 +1347,32 @@ class ContentService:
                 draft_id=draft_id,
                 reason=FailureReason.PROVIDER_ERROR.value,
             )
+        self._refund_if_not_delivered(
+            tenant_id=tenant_id, draft_id=draft_id, revision=draft.revision
+        )
+
+    def _refund_if_not_delivered(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> None:
+        """CREAR-5: a generation that failed — the vendor, moderation, a refusal — or a
+        regeneration that kept the previous version gives its creations back. Never a
+        reason to break the run: a refund that cannot be written is logged."""
+        if self._creations is None:
+            return
+        try:
+            after = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+            if after is None:
+                return
+            kept = after.status == GENERATED and (after.failure_detail or "").startswith(
+                KEPT_PREVIOUS_PREFIX
+            )
+            if after.status == FAILED or kept:
+                self._creations.refund(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    revision=revision,
+                    reason=after.failure_reason or "kept_previous_version",
+                )
+        except Exception:
+            logger.exception("draft %s: creations refund failed", draft_id)
 
     def _brand_context(self, tenant_id: UUID, brand_id: UUID) -> BrandContext | None:
         """The business context for the prompt; never a reason to fail generation."""
@@ -1885,6 +1953,19 @@ class ContentService:
             new_status = apply_transition(record.status, DraftTrigger.REJECT)
             if regenerate:
                 new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
+        # CREAR-5: «Pedir otra versión» is a new generation — charged once the edge is
+        # known to be legal and before anything is written, so without enough creations
+        # (`NotEnoughCreations`) the draft stays exactly as it was
+        if regenerate and self._creations is not None:
+            brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+            if brief is not None:
+                self._creations.charge(
+                    tenant_id=tenant_id,
+                    brand_id=record.brand_id,
+                    draft_id=draft_id,
+                    revision=record.revision + 1,
+                    price=weight_for(brief, redo=True),
+                )
         self._repo.update_status(
             tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
         )
