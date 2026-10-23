@@ -11,7 +11,7 @@ import pytest
 from qualify_api.creative import brand_avatar as ba
 
 from . import brand_avatar_panel as panel
-from .brand_kit_editor import _edit_view
+from .brand_kit_editor import _summary_view
 
 
 def test_the_card_renders_with_its_placeholder_and_a_switch_gated_button() -> None:
@@ -24,7 +24,7 @@ def test_the_card_renders_with_its_placeholder_and_a_switch_gated_button() -> No
 
 
 def test_the_editor_shows_the_avatar_above_the_sections() -> None:
-    out = str(_edit_view().render())
+    out = str(_summary_view().render())
     assert out.index("Tu avatar animado") < out.index("te compra y tu documento de marca")
 
 
