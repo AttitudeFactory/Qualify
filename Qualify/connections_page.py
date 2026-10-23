@@ -601,8 +601,8 @@ def connect_requirements_card() -> rx.Component:
                 rx.vstack(
                     rx.heading("Prepara tu Instagram antes de conectar", size="4", as_="h2"),
                     rx.text(
-                        "Son cuatro pasos y toman unos minutos. Si te saltas uno, Qualify "
-                        "no podrá publicar o responder mensajes por ti.",
+                        "Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás "
+                        "publicar ni responder mensajes desde Qualify.",
                         size="2",
                         color=T.TEXT_MUTED,
                     ),
