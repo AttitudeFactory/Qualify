@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
@@ -129,6 +130,35 @@ class CapabilityUnavailable(PermissionError):
     def __init__(self, availability: Availability) -> None:
         super().__init__(availability.reason)
         self.availability = availability
+
+
+class Delivery(StrEnum):
+    """Where an approved private message stands (m-24849131, ATENDER-10), as the screen
+    that approved it needs to say it: still going out, out, or refused for good. A
+    transient error the sender will retry is still `SENDING` — nothing is re-sent by
+    this read, and a terminal failure is never retried by it (N13)."""
+
+    SENDING = "sending"
+    SENT = "sent"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+# `conversation_outbox.status` → what the person is told.
+_DELIVERY_BY_STATUS: Final[dict[str, Delivery]] = {
+    "pending": Delivery.SENDING,
+    "sending": Delivery.SENDING,
+    "sent": Delivery.SENT,
+    "failed": Delivery.FAILED,
+    "dead": Delivery.FAILED,
+}
+
+
+def delivery_of(outbox_status: str | None) -> Delivery:
+    """Pure mapping; an unknown or missing status is `UNKNOWN`, never «sent»."""
+    if outbox_status is None:
+        return Delivery.UNKNOWN
+    return _DELIVERY_BY_STATUS.get(outbox_status, Delivery.UNKNOWN)
 
 
 def _utcnow() -> datetime:
@@ -398,6 +428,15 @@ class FollowupService:
             decided_by_user_id=user_id,
             now=self._clock(),
         )
+
+    def delivery(self, *, tenant_id: UUID, followup_id: UUID) -> Delivery:
+        """m-24849131: the state of the send this followup's approval queued, read from
+        its outbox row. Read-only. Raises `UnknownFollowup`; a followup never approved
+        (no outbox row) is `UNKNOWN`."""
+        followup = self._followup(tenant_id, followup_id)
+        if followup.outbox_id is None:
+            return Delivery.UNKNOWN
+        return delivery_of(self._outbox.status_of(tenant_id=tenant_id, item_id=followup.outbox_id))
 
     def _followup(self, tenant_id: UUID, followup_id: UUID) -> Followup:
         followup = self._followups.get(tenant_id=tenant_id, followup_id=followup_id)

@@ -41,6 +41,10 @@ from qualify_api.followups.workspace import FollowupCard, IntentChip
 from . import inbox_provider, inbox_state
 from .followups_state import FollowupsState
 from .followups_vm import (
+    DELIVERY_FAILED,
+    DELIVERY_SENDING,
+    DELIVERY_SENT,
+    DELIVERY_UNKNOWN,
     STEP_ASKED,
     STEP_REPLY,
     STEP_REVIEW,
@@ -48,9 +52,12 @@ from .followups_vm import (
     VIEW_QUERIES,
     FollowupCardVM,
     build_card_vm,
+    delivery_headline,
     done_title,
+    failed_line,
     notice_line,
     recipient_line,
+    sending_line,
     step_label,
     time_left,
 )
@@ -389,6 +396,7 @@ def test_after_approving_the_confirmation_leads_to_the_next_one() -> None:
     state = _state_with(first)
     state.done_author = "@bea"
     state.done_note = "Tu mensaje privado a @bea sale en unos segundos."
+    state.delivery = DELIVERY_SENT
     assert state.showing_done is True
     assert state.done_text == "Listo. Le escribiste a @bea. ¿Seguimos con la siguiente?"
     FollowupsState.next_query.fn(state)  # type: ignore[attr-defined]
@@ -397,6 +405,7 @@ def test_after_approving_the_confirmation_leads_to_the_next_one() -> None:
     assert state.steps[first.followup_id] == STEP_ASKED
     nobody = _state_with()
     nobody.done_author = "@bea"
+    nobody.delivery = DELIVERY_SENT
     assert nobody.done_text.endswith("No queda nadie más esperando.")
 
 
@@ -436,3 +445,133 @@ def test_the_notice_messages_use_the_same_words_as_the_card() -> None:
 
     for text in (fs._NOTICE_EMPTY, fs._NOTICE_TOO_LONG, fs._NOTICE_QUEUED):
         assert "aviso público" not in text and "en su comentario" in text
+
+
+# --- whether the private message went out (m-24849131, ATENDER-10) -----------------------
+
+
+def _sending(state: FollowupsState, c: FollowupCardVM, *, notice: bool = False) -> None:
+    """What `approve` leaves once the outbox has the message."""
+    state.done_author = c.author
+    state.done_note = "Tu mensaje privado a @ana sale en unos segundos."
+    state.delivery, state.delivery_id = DELIVERY_SENDING, c.followup_id
+    state.delivery_card = [c]
+    state.delivery_text = "Hola Ana, cuesta 50.000"
+    state._delivery_notice = notice  # noqa: SLF001
+
+
+def test_the_outcome_lines_are_the_exact_texts() -> None:
+    assert sending_line("@ana") == "Enviando a @ana…"
+    assert failed_line("@ana") == "No pudimos enviarle el mensaje a @ana. Instagram no lo aceptó."
+    assert failed_line("Cliente") == (
+        "No pudimos enviarle el mensaje a tu cliente. Instagram no lo aceptó."
+    )
+    assert delivery_headline(DELIVERY_SENT, "@ana", more_left=False).startswith(
+        "Listo. Le escribiste a @ana."
+    )
+    assert delivery_headline(DELIVERY_UNKNOWN, "@ana", more_left=True) == (
+        "No sabemos si salió. Revísalo en Instagram."
+    )
+
+
+def test_after_approving_the_card_waits_for_the_result() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with()  # `load` already dropped the approved card from the list
+    _sending(state, c)
+    assert state.showing_done and state.delivery_pending
+    assert state.done_text == "Enviando a @ana…"  # never «Listo» before it is out
+    assert state.delivery_card == [c]
+    # No way past it while it goes out, and re-entering the tab keeps it.
+    assert FollowupsState.next_query.fn(state) is None  # type: ignore[attr-defined]
+    assert state.delivery == DELIVERY_SENDING
+    # Still in the outbox: the watcher keeps waiting.
+    assert state._settle(c.followup_id, DELIVERY_SENDING) is False  # noqa: SLF001
+
+
+def test_a_sent_message_says_listo() -> None:
+    c = build_card_vm(_card(notice_available=True), now=NOW, zone=ZONE)
+    state = _state_with()
+    _sending(state, c, notice=True)
+    assert state._settle(c.followup_id, DELIVERY_SENT) is True  # noqa: SLF001
+    assert state.delivery_sent
+    assert state.done_text == "Listo. Le escribiste a @ana. No queda nadie más esperando."
+    assert state.done_note == "Lo que dejamos en su comentario aparece en unos segundos."
+    assert state.undelivered == []
+
+
+def test_a_refused_message_keeps_the_card_and_resends_nothing() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    other = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(other)
+    _sending(state, c)
+    assert state._settle(c.followup_id, DELIVERY_FAILED) is True  # noqa: SLF001
+    assert state.delivery_failed
+    assert state.done_text == "No pudimos enviarle el mensaje a @ana. Instagram no lo aceptó."
+    [kept] = state.undelivered
+    assert (kept.followup_id, kept.message, kept.failed) == (
+        c.followup_id,
+        "Hola Ana, cuesta 50.000",
+        True,
+    )
+    # A late or repeated result changes nothing and adds no second card.
+    assert state._settle(c.followup_id, DELIVERY_SENT) is True  # noqa: SLF001
+    assert state.delivery_failed and len(state.undelivered) == 1
+    # «Siguiente» moves on; the refused card stays in the list until «Entendido».
+    FollowupsState.next_query.fn(state)  # type: ignore[attr-defined]
+    assert state.showing_done is False and len(state.undelivered) == 1
+    FollowupsState.dismiss_undelivered.fn(state, c.followup_id)  # type: ignore[attr-defined]
+    assert state.undelivered == []
+
+
+def test_no_answer_says_we_do_not_know() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with()
+    _sending(state, c)
+    assert state._settle(c.followup_id, DELIVERY_UNKNOWN) is True  # noqa: SLF001
+    assert state.done_text == "No sabemos si salió. Revísalo en Instagram."
+    [kept] = state.undelivered
+    assert kept.failed is False and kept.next_step == ""
+
+
+def test_only_the_send_on_screen_is_settled() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with()
+    _sending(state, c)
+    assert state._settle(str(uuid4()), DELIVERY_FAILED) is True  # noqa: SLF001 — stop
+    assert state.delivery_pending and state.undelivered == []
+    assert state._settle(c.followup_id, "weird") is False  # noqa: SLF001
+    assert state.delivery_pending
+
+
+def test_the_watcher_only_reads() -> None:
+    import inspect
+
+    from . import followups_state as fs
+
+    source = inspect.getsource(fs.FollowupsState.watch_delivery.fn)
+    assert "gateway().delivery" in source
+    for verb in ("approve", "enqueue", "retry", "send"):
+        assert f"gateway().{verb}" not in source, verb
+    approve = inspect.getsource(fs.FollowupsState.approve.fn)
+    assert "FollowupsState.watch_delivery(followup_id)" in approve
+
+
+def test_the_gateway_reads_the_delivery_from_the_workspace() -> None:
+    from qualify_api.followups import Delivery
+
+    from .followups_provider import FollowupsGateway
+
+    class Workspace:
+        def delivery(self, **kw: object) -> Delivery:
+            return Delivery.FAILED
+
+    assert FollowupsGateway(Workspace()).delivery(TENANT, uuid4()) == DELIVERY_FAILED  # type: ignore[arg-type]
+
+
+def test_the_panel_renders_every_outcome() -> None:
+    from . import followups_page
+
+    rendered = str(followups_page.followups_panel().render())
+    for text in ("Entendido", "q-spinner", "delivery_card", "undelivered", "Tu mensaje:"):
+        assert text in rendered, text
+    assert "Reintentar" not in rendered  # ATENDER-9 decides it
