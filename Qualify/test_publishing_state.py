@@ -56,7 +56,7 @@ from .publishing_state import (
     _PendingFile,
     _success_toast,
 )
-from .publishing_vm import ChildStatusVM, PendingItemVM
+from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PendingItemVM
 
 
 class _FakeUpload:
@@ -760,3 +760,68 @@ def test_poll_attempt_clears_pending_items_once_settled() -> None:
         "expected exactly 4 release sites: the settled branch, UnknownAttempt, the "
         "generic poll exception, and the _MAX_POLLS-exhausted branch"
     )
+
+
+# ----------------------------------------------------------------------------------
+# PUBLICAR-4: preselected account, review in words, «Publicar otra»
+# ----------------------------------------------------------------------------------
+
+
+def _one_account() -> list[ConnectionOptionVM]:
+    return [ConnectionOptionVM(id="c-1", external_username="bianki", platform="instagram")]
+
+
+def test_one_account_is_chosen_for_the_owner_but_two_are_not() -> None:
+    one = PublishState()
+    one.connections = _one_account()
+    assert one._preselect_single_connection() == "c-1"
+    assert one.selected_connection_id == "c-1"
+
+    two = PublishState()
+    two.connections = [
+        ConnectionOptionVM(id="c-1", external_username="a", platform="instagram"),
+        ConnectionOptionVM(id="c-2", external_username="b", platform="instagram"),
+    ]
+    assert two._preselect_single_connection() == ""
+    assert two.selected_connection_id == ""
+
+
+def test_review_sentences_name_the_chosen_account() -> None:
+    state = PublishState()
+    assert state.review_post_sentence == ""
+    state.connections = _one_account()
+    state.selected_connection_id = "c-1"
+
+    assert state.review_post_sentence == "Sale ahora en Instagram @bianki como publicación."
+    assert state.review_story_sentence == (
+        "Sale ahora en Instagram @bianki como historia (se ve 24 horas)."
+    )
+    assert state.selected_platform == "instagram"
+
+
+def test_reset_form_empties_step_one_and_keeps_the_single_account() -> None:
+    state = PublishState()
+    state.connections = _one_account()
+    state.pending_items = [PendingItemVM(filename="a.mp4", kind="video")]
+    state._pending_files = ["buffer"]  # type: ignore[list-item]
+    state.caption = "hola"
+    state.phase = "success"
+
+    state.reset_form()
+
+    assert state.pending_items == []
+    assert state._pending_files == []
+    assert state.caption == ""
+    assert state.phase == "idle"
+    assert state.selected_connection_id == "c-1"
+
+
+def test_reset_form_is_a_no_op_while_publishing() -> None:
+    state = PublishState()
+    state.phase = "polling"
+    state.caption = "hola"
+
+    state.reset_form()
+
+    assert state.caption == "hola"
+    assert state.phase == "polling"

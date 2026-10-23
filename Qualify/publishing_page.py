@@ -48,13 +48,19 @@ after it are cropped to that image's ratio, not their own. Neither this screen n
 selection order is respected exactly as given. Any UX mitigation (a warning, a suggested
 reorder) is a follow-up decision, not part of this ticket's scope.
 
-**QUA-113 (Fase 2): `/publish` is the one module for immediate publishing.** The page
-now hosts two INDEPENDENT flows behind a `Publicaciones | Stories` selector in the form
-card's header (`_flow_selector`, state: `PublishHubState`): the Publicaciones flow is
-everything above, untouched; the Stories flow is `stories_page.stories_flow`, bound to
-its own `StoriesState`. Only the active flow's form (and so its gallery) is mounted.
-Below both sits the shared "Tendencias e inspiración" panel
-(`trending_panel.trending_card`, `TrendingState`), fed with the active flow's account.
+**PUBLICAR-4 (m-24842986): three steps and a «listo».** `/publish` is now one
+assistant (N6) — ① ¿Qué vas a publicar? (this gallery) ② ¿Dónde sale? (publication on
+the profile or a 24-hour historia, and the account, preselected when there is only
+one) ③ Revisa y publica (the review in words, the text only for a publication). Every
+step stays MOUNTED and is only hidden (`_step_panel`), so «Atrás» never loses a file,
+a thumbnail or a word. Formats and sizes no longer show up front: only in the error
+when a file does not fit. A confirmed publish replaces the assistant with a persistent
+`callout` and two buttons (N3: «Ver mi semana», «Publicar otra») — the toast stays as
+an extra. «Tendencias e inspiración» left the flow: it opens behind «Ideas para tu
+próxima publicación». The step and the kind live in `PublishHubState`; a historia is
+published by `StoriesState` (`publish_now` hands the file over); the historia-only
+pieces are in `stories_page.py`. Before this, QUA-113 had put two separate forms
+behind a `Publicaciones | Historias` selector here, with an «Antes de publicar» card.
 """
 
 from __future__ import annotations
@@ -62,13 +68,32 @@ from __future__ import annotations
 import reflex as rx
 
 from .publish_hub_state import FLOW_POSTS, FLOW_STORIES, PublishHubState
-from .publish_tips import main_with_tips, tip_row, tips_card
+from .publish_wizard_vm import (
+    STEP_REVIEW,
+    STEP_TITLES,
+    STEP_WHAT,
+    STEP_WHERE,
+    STORY_NEEDS_ONE_FILE,
+    TOTAL_STEPS,
+)
 from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, _WAIT_EXPLANATION, PublishState
 from .publishing_vm import ConnectionOptionVM, PendingItemVM
-from .stories_page import stories_flow, stories_tips_card
+from .stories_page import share_to_instagram_button, stories_status_block
 from .stories_state import StoriesState
 from .trending_panel import trending_card
-from .ui import app_shell, callout, card, dropzone, loading_spinner, page_body, page_header, section
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    choice_card,
+    choice_card_check,
+    dropzone,
+    empty_state,
+    loading_spinner,
+    page_body,
+    page_header,
+    section,
+)
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
@@ -79,6 +104,17 @@ from .ui.video_preview import gallery_preview_capture_anchor, video_frame_previe
 # module owns the actual DOM structure, `video_preview.py` stays a plain generic helper
 # with no knowledge of this specific screen's layout.
 _GALLERY_ROOT_ID = "publish-gallery-root"
+
+# PUBLICAR-4: «Abrir en Instagram» (a historia) shares the File `ui/video_preview.py`
+# stashed for this gallery — the LAST one picked. Removing any tile forgets it, so a
+# removed file can never be the one shared; the owner picks it again instead.
+_FORGET_SHARED_FILE = (
+    "if (window.__qualifyPreviews && window.__qualifyPreviews.filesByRoot) "
+    f"{{ delete window.__qualifyPreviews.filesByRoot['{_GALLERY_ROOT_ID}']; }}"
+)
+
+# N12: every control on this screen is at least 44 px tall.
+_TARGET = "44px"
 
 
 def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
@@ -95,14 +131,6 @@ def _connection_selector() -> rx.Component:
         on_change=PublishState.select_connection,
         size="3",
         width="100%",
-    )
-
-
-def _connection_section() -> rx.Component:
-    return section(
-        "Cuenta",
-        _connection_selector(),
-        description="La cuenta conectada donde se publicará este contenido.",
     )
 
 
@@ -164,7 +192,10 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
         # the screen's one solid button.
         rx.icon_button(
             rx.icon("x", size=14),
-            on_click=PublishState.remove_pending_file(index),
+            on_click=[
+                PublishState.remove_pending_file(index),
+                rx.call_script(_FORGET_SHARED_FILE),
+            ],
             disabled=~PublishState.can_edit_gallery,
             title="Quitar este archivo",
             aria_label="Quitar este archivo",
@@ -230,9 +261,15 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
         # every rejection reason (wrong format, too large, more than the cap) with one
         # message rather than inspecting `rejected_files` via undocumented internal Var
         # APIs.
+        # PUBLICAR-4: formats and sizes are said HERE, in the error, and nowhere up
+        # front. Static on purpose: one message for every rejection reason (wrong
+        # format, too large, more than the cap), never `rejected_files` internals.
         on_drop_rejected=rx.toast.error(
-            "Formato no permitido",
-            description=f"Solo se aceptan archivos MP4, MOV o JPEG, hasta {_MAX_ITEMS} en total.",
+            "Ese archivo no se puede usar",
+            description=(
+                "Elige fotos JPG o videos MP4 o MOV: hasta 300 MB por video, 8 MB por "
+                f"foto y {_MAX_ITEMS} a la vez."
+            ),
         ),
         variant="tile" if compact else "zone",
     )
@@ -251,19 +288,14 @@ def _add_tile_content() -> rx.Component:
 
 def _empty_state_content() -> rx.Component:
     return rx.vstack(
-        rx.icon("film", size=32, color=T.TEXT_FAINT),
+        rx.icon("image-plus", size=32, color=T.TEXT_FAINT),
+        rx.text("Toca para elegir fotos o videos de tu teléfono", size="3", weight="medium"),
         rx.text(
-            "Arrastra tu contenido aquí o haz clic para elegirlo",
-            size="3",
-            weight="medium",
-        ),
-        rx.text(
-            f"MP4, MOV o JPEG · hasta 300 MB (video) / 8 MB (imagen) · hasta {_MAX_ITEMS} archivos",
-            size="1",
-            color=T.TEXT_MUTED,
+            "Desde la computadora también puedes arrastrarlos aquí.", size="1", color=T.TEXT_MUTED
         ),
         spacing="2",
         align="center",
+        text_align="center",
     )
 
 
@@ -327,29 +359,6 @@ def _gallery_zone() -> rx.Component:
         # above is currently showing.
         id=_GALLERY_ROOT_ID,
         width="100%",
-    )
-
-
-def _content_section() -> rx.Component:
-    return section(
-        "Contenido",
-        _gallery_zone(),
-        description="Lo que se publicará en la cuenta elegida arriba.",
-    )
-
-
-def _caption_section() -> rx.Component:
-    return section(
-        "Texto de la publicación",
-        rx.text_area(
-            placeholder="Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.",
-            value=PublishState.caption,
-            on_change=PublishState.set_caption,
-            rows="5",
-            size="3",
-            width="100%",
-        ),
-        description="Se publicará exactamente como lo escribas.",
     )
 
 
@@ -426,130 +435,389 @@ def _status_block() -> rx.Component:
                 icon="clock",
             ),
         ),
-        # QUA-98: "success" has no inline arm on purpose — the confirmation moved to a
-        # transient `rx.toast.success` fired from `publishing_state.py` (same convention
-        # `inbox_state.py` already established: success = toast, error = persistent
-        # callout below, unchanged). Falls through to the catch-all `rx.fragment()`.
+        # "success" has no arm: since PUBLICAR-4 the page replaces the whole assistant
+        # with a persistent «listo» and the next step (`_done_panel`, N3); the toast
+        # fired from `publishing_state.py` is only an extra.
         ("failure", callout(PublishState.error, "error")),
         rx.fragment(),
     )
 
 
-def _publish_button() -> rx.Component:
-    return rx.button(
-        rx.icon("send", size=18),
-        "Publicar",
-        # QUA-99 UX follow-up: `add_files` already buffered everything the gallery holds
-        # into `PublishState._pending_files`/`pending_items` — `publish()` no longer
-        # receives the upload directly, so this no longer passes `rx.upload_files(...)`.
-        on_click=PublishState.publish(),
-        disabled=~PublishState.can_publish,
-        size="4",
-        width="100%",
-    )
-
-
-def _form_card(header: rx.Component) -> rx.Component:
-    return card(
-        rx.vstack(
-            header,
-            rx.divider(),
-            _connection_section(),
-            rx.divider(),
-            _content_section(),
-            rx.divider(),
-            _caption_section(),
-            rx.divider(),
-            rx.vstack(
-                _publish_button(),
-                _status_block(),
-                spacing="3",
-                width="100%",
-                align_items="stretch",
-            ),
-            spacing="5",
-            align_items="stretch",
-            width="100%",
-        ),
-        padding="2rem",
-    )
-
-
-def _tips_card() -> rx.Component:
-    """Static, informational only — every fact here mirrors an existing constraint
-    already enforced by `PublishState`/`_gallery_zone` (accepted formats, size limit,
-    polling behavior), not a new claim about functionality. Same shell as the Stories
-    flow's block (`publish_tips.tips_card`, QUA-113)."""
-    return tips_card(
-        tip_row("film", "Formatos aceptados: MP4, MOV (video) y JPEG (imagen)."),
-        tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
-        tip_row(
-            "layers",
-            f"Hasta {_MAX_ITEMS} archivos, imágenes y/o videos — 2 o más se "
-            "publican juntos, como un carrusel.",
-        ),
-        tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
-        tip_row("clock", "Instagram puede tardar unos minutos en confirmarlo."),
-    )
-
-
-def _load_error() -> rx.Component:
-    return callout(PublishState.load_error, "error")
-
-
 # ---------------------------------------------------------------------------
-# QUA-113: the flow selector and the page that hosts both flows.
+# PUBLICAR-4: the three steps, the «listo» and the ideas behind a link.
 
 
-def _flow_selector() -> rx.Component:
-    """`Publicaciones | Stories`, both always visible, the active one highlighted by
-    the segmented control itself. Disabled while EITHER flow has a publish in flight
-    (staging or waiting for Meta) — `can_edit_gallery` is exactly "phase is resting"
-    in both states. The segmented control has no `disabled` prop, so the lock is
-    visual + pointer here and enforced server-side by `PublishHubState.select_flow`.
+def _is_stories() -> rx.Var[bool]:
+    return PublishHubState.active_flow == FLOW_STORIES
 
-    `q-flow-switch` (assets/qualify.css) makes the active flow unmistakable — accent
-    fill, contrast text — and gives the inactive one a hover tint; colour only, so
-    nothing moves or resizes."""
-    busy = ~PublishState.can_edit_gallery | ~StoriesState.can_edit_gallery
-    return rx.hstack(
-        rx.box(
-            rx.segmented_control.root(
-                rx.segmented_control.item("Publicaciones", value=FLOW_POSTS),
-                rx.segmented_control.item("Historias", value=FLOW_STORIES),
-                value=PublishHubState.active_flow,
-                on_change=PublishHubState.select_flow,
-                size="2",
-                class_name="q-flow-switch",
-            ),
-            opacity=rx.cond(busy, "0.5", "1"),
-            pointer_events=rx.cond(busy, "none", "auto"),
-            aria_disabled=busy,
-            title=rx.cond(busy, "Espera a que termine la publicación en curso", ""),
-        ),
+
+def _busy() -> rx.Var[bool]:
+    """A publish is in flight in either machine — nothing moves then."""
+    return ~PublishState.can_edit_gallery | ~StoriesState.can_edit_gallery
+
+
+def _file_count() -> rx.Var[int]:
+    return PublishState.pending_items.length()
+
+
+def _step_counter() -> rx.Component:
+    """«Paso N de 3» above the page title — same eyebrow treatment the Brand Kit
+    wizard passes to `page_header(kicker=…)`."""
+    return rx.text(
+        "Paso ",
+        PublishHubState.step,
+        f" de {TOTAL_STEPS}",
+        size="1",
+        weight="bold",
+        color=T.TEXT_MUTED,
+        letter_spacing="0.08em",
+        text_transform="uppercase",
+    )
+
+
+def _step_panel(step: int, *children: rx.Component) -> rx.Component:
+    """One step's content. Hidden — never unmounted — while another step shows, so
+    going back finds every file, thumbnail and word where the owner left it (N6)."""
+    return rx.vstack(
+        rx.heading(STEP_TITLES[step], size="4", as_="h2"),
+        *children,
+        spacing="4",
+        width="100%",
+        align_items="stretch",
+        display=rx.cond(PublishHubState.step == step, "flex", "none"),
+    )
+
+
+def _back_button() -> rx.Component:
+    return rx.button(
+        rx.icon("chevron-left", size=T.ICON_SM),
+        "Atrás",
+        on_click=PublishHubState.go_back,
+        disabled=_busy(),
+        variant="soft",
+        color_scheme="gray",
+        size="3",
+        min_height=_TARGET,
+    )
+
+
+def _next_button(enabled: rx.Var[bool]) -> rx.Component:
+    return rx.button(
+        "Seguir",
+        rx.icon("chevron-right", size=T.ICON_SM),
+        on_click=PublishHubState.go_next,
+        disabled=~enabled,
+        size="3",
+        min_height=_TARGET,
+        flex_grow="1",
+    )
+
+
+def _step_footer(*buttons: rx.Component) -> rx.Component:
+    return rx.hstack(*buttons, spacing="3", width="100%", align="center")
+
+
+# -- ① ¿Qué vas a publicar? -------------------------------------------------
+
+
+def _what_step() -> rx.Component:
+    return _step_panel(
+        STEP_WHAT,
+        _gallery_zone(),
         rx.cond(
-            busy,
+            _file_count() > 1,
             rx.text(
-                "Espera a que termine la publicación en curso para cambiar de flujo.",
-                size="1",
-                color=T.TEXT_FAINT,
+                "Con dos o más, salen juntas en una sola publicación que se desliza "
+                "(carrusel), en este orden.",
+                size="2",
+                color=T.TEXT_MUTED,
             ),
             rx.fragment(),
         ),
-        align="center",
+        _step_footer(_next_button(_file_count() > 0)),
+    )
+
+
+# -- ② ¿Dónde sale? ---------------------------------------------------------
+
+
+def _kind_choice(
+    flow: str, icon: str, title: str, description: rx.Component, *, disabled: rx.Var[bool]
+) -> rx.Component:
+    selected = PublishHubState.active_flow == flow
+    return choice_card(
+        rx.hstack(
+            rx.icon(icon, size=T.ICON_MD, color=T.tone_color("accent", 9)),
+            rx.vstack(
+                rx.text(title, size="3", weight="medium"),
+                description,
+                spacing="1",
+                align_items="start",
+            ),
+            rx.spacer(),
+            rx.cond(selected, choice_card_check(), rx.fragment()),
+            spacing="3",
+            align="start",
+            width="100%",
+        ),
+        selected=selected,
+        on_select=PublishHubState.select_flow(flow),
+        disabled=disabled,
+        width="100%",
+        min_height=_TARGET,
+        text_align="left",
+    )
+
+
+def _kind_choices() -> rx.Component:
+    story_blocked = _file_count() != 1
+    return rx.vstack(
+        _kind_choice(
+            FLOW_POSTS,
+            "layout-grid",
+            "Publicación en tu perfil",
+            rx.text("Queda en tu perfil, con su texto.", size="2", color=T.TEXT_MUTED),
+            disabled=_busy(),
+        ),
+        _kind_choice(
+            FLOW_STORIES,
+            "circle-dashed",
+            "Historia (24 h)",
+            rx.cond(
+                story_blocked,
+                rx.text(STORY_NEEDS_ONE_FILE, size="2", color=T.TEXT_MUTED),
+                rx.text("Se ve durante 24 horas y luego desaparece.", size="2", color=T.TEXT_MUTED),
+            ),
+            disabled=_busy() | story_blocked,
+        ),
         spacing="3",
-        wrap="wrap",
+        width="100%",
+        role="radiogroup",
+        aria_label="Cómo sale",
+    )
+
+
+def _no_accounts() -> rx.Component:
+    return empty_state(
+        "link",
+        "Aún no tienes una cuenta conectada",
+        "Conecta tu Instagram en Tus redes y vuelve aquí para publicar.",
+        action=rx.link(
+            rx.button("Conectar mi cuenta", size="3", min_height=_TARGET),
+            href="/connections",
+        ),
+    )
+
+
+def _account_picker() -> rx.Component:
+    return rx.cond(
+        PublishState.load_error != "",
+        callout(PublishState.load_error, "error"),
+        rx.cond(
+            PublishState.is_loading_connections,
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text("Buscando tus cuentas...", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                PublishState.connections.length() > 0,
+                section(
+                    "Cuenta",
+                    _connection_selector(),
+                    description="Dónde sale lo que elegiste.",
+                ),
+                _no_accounts(),
+            ),
+        ),
+    )
+
+
+def _where_step() -> rx.Component:
+    can_continue = (PublishState.selected_connection_id != "") & (
+        ~_is_stories() | (_file_count() == 1)
+    )
+    return _step_panel(
+        STEP_WHERE,
+        _kind_choices(),
+        _account_picker(),
+        _step_footer(_back_button(), _next_button(can_continue)),
+    )
+
+
+# -- ③ Revisa y publica -----------------------------------------------------
+
+
+def _review_thumb(item: PendingItemVM) -> rx.Component:
+    preview_src = video_frame_preview_src(root_id=_GALLERY_ROOT_ID, filename=item.filename)
+    return rx.box(
+        rx.cond(
+            preview_src != "",
+            rx.el.img(src=preview_src, alt=item.filename, class_name="q-pub-tile-img"),
+            rx.center(
+                rx.cond(
+                    item.kind == "image",
+                    rx.icon("image", size=20, color=T.tone_color("ok", 9)),
+                    rx.icon("film", size=20, color=T.tone_color("ok", 9)),
+                ),
+                height="100%",
+            ),
+        ),
+        class_name="q-pub-tile",
+        style={"--q-dropzone-tile": "4.5rem"},
+    )
+
+
+def _review_summary() -> rx.Component:
+    return rx.vstack(
+        rx.flex(
+            rx.foreach(PublishState.pending_items, _review_thumb),
+            wrap="wrap",
+            gap="0.5rem",
+            width="100%",
+        ),
+        rx.hstack(
+            rx.icon("send", size=T.ICON_SM, color=T.tone_color("accent", 9)),
+            rx.text(
+                rx.cond(
+                    _is_stories(),
+                    PublishState.review_story_sentence,
+                    PublishState.review_post_sentence,
+                ),
+                size="3",
+                weight="medium",
+            ),
+            spacing="2",
+            align="start",
+        ),
+        spacing="3",
         width="100%",
     )
 
 
-def _posts_flow() -> rx.Component:
-    # A failed accounts load replaces the form, as before — but the selector stays,
-    # so the operator can still reach the Stories flow.
-    return rx.cond(
-        PublishState.load_error != "",
-        rx.vstack(_flow_selector(), _load_error(), spacing="4", width="100%"),
-        _form_card(_flow_selector()),
+def _caption_field() -> rx.Component:
+    return section(
+        "Texto de la publicación (opcional)",
+        rx.text_area(
+            placeholder="Ej.: Hoy combo vecino a mitad de precio hasta las 9 p. m.",
+            value=PublishState.caption,
+            on_change=PublishState.set_caption,
+            rows="4",
+            size="3",
+            width="100%",
+            disabled=_busy(),
+        ),
+        description="Sale tal como lo escribas.",
+    )
+
+
+def _publish_button() -> rx.Component:
+    ready = rx.cond(
+        _is_stories(),
+        (_file_count() == 1) & (PublishState.selected_connection_id != ""),
+        PublishState.can_publish,
+    )
+    return rx.button(
+        rx.icon("send", size=18),
+        "Publicar",
+        on_click=PublishHubState.publish_now,
+        disabled=_busy() | ~ready,
+        size="4",
+        width="100%",
+        min_height=_TARGET,
+    )
+
+
+def _review_step() -> rx.Component:
+    return _step_panel(
+        STEP_REVIEW,
+        _review_summary(),
+        rx.cond(
+            _is_stories(),
+            share_to_instagram_button(root_id=_GALLERY_ROOT_ID, enabled=_file_count() == 1),
+            _caption_field(),
+        ),
+        _publish_button(),
+        rx.cond(_is_stories(), stories_status_block(), _status_block()),
+        _step_footer(_back_button()),
+    )
+
+
+def _assistant_card() -> rx.Component:
+    return card(
+        rx.vstack(
+            _what_step(),
+            _where_step(),
+            _review_step(),
+            spacing="5",
+            width="100%",
+            align_items="stretch",
+        ),
+        padding="1.5rem",
+    )
+
+
+# -- the «listo» (N3) and the ideas ------------------------------------------
+
+
+def _is_done() -> rx.Var[bool]:
+    return rx.cond(_is_stories(), StoriesState.phase == "success", PublishState.phase == "success")
+
+
+def _done_panel() -> rx.Component:
+    """Persistent, not a toast: what happened and the next step — one solid button
+    to the next job, one soft to start again (N3)."""
+    return callout(
+        rx.vstack(
+            rx.text(PublishHubState.done_text, size="3", weight="medium"),
+            rx.flex(
+                rx.link(
+                    rx.button("Ver mi semana", size="3", width="100%", min_height=_TARGET),
+                    href="/planner",
+                    width="100%",
+                ),
+                rx.button(
+                    "Publicar otra",
+                    on_click=PublishHubState.start_over,
+                    variant="soft",
+                    size="3",
+                    width="100%",
+                    min_height=_TARGET,
+                ),
+                direction=rx.breakpoints(initial="column", sm="row"),
+                gap="0.75rem",
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="stretch",
+        ),
+        "ok",
+        icon="circle-check",
+    )
+
+
+def _ideas() -> rx.Component:
+    return rx.vstack(
+        rx.button(
+            rx.icon("lightbulb", size=T.ICON_SM),
+            "Ideas para tu próxima publicación",
+            rx.cond(
+                PublishHubState.show_ideas,
+                rx.icon("chevron-up", size=T.ICON_SM),
+                rx.icon("chevron-down", size=T.ICON_SM),
+            ),
+            on_click=PublishHubState.toggle_ideas,
+            variant="ghost",
+            size="3",
+            min_height=_TARGET,
+            aria_expanded=rx.cond(PublishHubState.show_ideas, "true", "false"),
+        ),
+        rx.cond(PublishHubState.show_ideas, trending_card(), rx.fragment()),
+        spacing="3",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -557,24 +825,17 @@ def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar ahora",
         "Sube una foto o un video de tu teléfono y publícalo en tu Instagram.",
+        kicker=rx.cond(_is_done(), rx.fragment(), _step_counter()),
     )
 
 
 def publish_index() -> rx.Component:
-    is_stories = PublishHubState.active_flow == FLOW_STORIES
-    # The form and the trending panel share the main column — one width, one right
-    # edge, in both flows. The active flow's "Antes de publicar" sits beside them
-    # (hidden, as before, when the Publicaciones accounts failed to load).
     main = rx.vstack(
-        rx.cond(is_stories, stories_flow(_flow_selector()), _posts_flow()),
-        trending_card(),
+        rx.cond(_is_done(), _done_panel(), _assistant_card()),
+        _ideas(),
         spacing="5",
         width="100%",
+        max_width="40rem",
         align_items="stretch",
     )
-    tips = rx.cond(
-        is_stories,
-        stories_tips_card(),
-        rx.cond(PublishState.load_error != "", rx.fragment(), _tips_card()),
-    )
-    return app_shell(publish_topbar(), page_body(main_with_tips(main, tips)))
+    return app_shell(publish_topbar(), page_body(main))
