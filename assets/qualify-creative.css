@@ -389,13 +389,25 @@
   .q-cr-layout { grid-template-columns: 15.5rem minmax(0, 1fr); gap: 1.25rem; align-items: stretch; }
   .q-cr-options-inner { position: sticky; top: 7.5rem; }
 }
-/* On a phone the options are one row that slides sideways, so the view is on screen
-   right away instead of below a full screen of buttons. */
+/* CREAR-6 (m-24842980): on a phone the options are one column and every option shows
+   its blurb — no row that slides sideways hiding «Variaciones» and «Descubrir ideas de
+   videos» off screen, no explanation that only a mouse could reveal (N12). The «?»
+   beside an option is for the wide, compact panel, where the blurb is hidden. */
+.q-cr-option-blurb { display: none; }
 @media (max-width: 899px) {
-  .q-cr-options-list { flex-direction: row !important; flex-wrap: nowrap; overflow-x: auto; }
-  .q-cr-options-list > * { flex: 0 0 auto; width: auto !important; }
   .q-cr-options-label { display: none; }
+  .q-cr-option-blurb { display: block; }
+  .q-cr-option-help { display: none; }
 }
+/* CREAR-6: «Datos clave» — each fact's two labelled fields side by side, one under the
+   other on a phone; every control of the section a ≥ 44 px target. */
+.q-cr-highlight-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 0.5rem; }
+@media (max-width: 599px) { .q-cr-highlight-row { grid-template-columns: minmax(0, 1fr); } }
+.q-cr-highlight-label { font-size: var(--font-size-1); font-weight: 500; color: var(--gray-11); }
+.q-cr-rules .rt-TextFieldRoot, .q-cr-rules .rt-Button { min-height: 44px; }
+.q-cr-rules .rt-IconButton { min-height: 44px; min-width: 44px; }
+.q-cr-phrase-chip { min-height: 44px; cursor: pointer; }
+.q-cr-phrase-chip:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
 /* The view's footer sits right under its content, never sticky (§ 2026-10-14). */
 .q-cr-view .q-cr-view-nav {
   padding-top: 0.75rem;

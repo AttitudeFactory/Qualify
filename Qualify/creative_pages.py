@@ -791,13 +791,13 @@ def _create_form() -> rx.Component:
             rx.input(
                 value=CreativeState.brief_must_mention,
                 on_change=CreativeState.set_brief_must_mention,
-                placeholder="Debe mencionar (separado por comas)",
+                placeholder="Debe mencionar (ej.: envío gratis)",
                 width="100%",
             ),
             rx.input(
                 value=CreativeState.brief_must_avoid,
                 on_change=CreativeState.set_brief_must_avoid,
-                placeholder="Debe evitar (separado por comas)",
+                placeholder="Debe evitar (ej.: barato)",
                 width="100%",
             ),
         ),

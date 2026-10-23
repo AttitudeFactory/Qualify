@@ -1389,6 +1389,48 @@ def format_ctas(items: list[str]) -> str:
     return CTA_SEPARATOR.join(items)
 
 
+# CREAR-6 (m-24842980): «Debe mencionar» / «Debe evitar» are typed one phrase at a time
+# and shown as chips; the brief still carries them as one comma-separated text (the
+# contract `context_ai`/the copy pipeline already read), so the owner never types a comma.
+PHRASE_SEPARATOR = ", "
+PHRASE_LIMIT = 12
+
+
+def phrase_list(text: str) -> list[str]:
+    """ "envío gratis, reserva por WhatsApp" → both, each once (case-insensitive), in
+    order; empty pieces dropped."""
+    items: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"\s*[,;\n]\s*", text or ""):
+        part = " ".join(part.split())
+        if part and _fold(part) not in seen:
+            seen.add(_fold(part))
+            items.append(part)
+    return items
+
+
+def format_phrases(items: list[str]) -> str:
+    return PHRASE_SEPARATOR.join(items)
+
+
+def add_phrase(current: str, new: str, limit: int = PHRASE_LIMIT) -> str:
+    """`current` with what was typed in `new` appended (a pasted list is split), never a
+    repeat and never past `limit`."""
+    items = phrase_list(current)
+    folded = {_fold(item) for item in items}
+    for item in phrase_list(new):
+        if len(items) >= limit:
+            break
+        if _fold(item) not in folded:
+            folded.add(_fold(item))
+            items.append(item)
+    return format_phrases(items)
+
+
+def remove_phrase(current: str, phrase: str) -> str:
+    return format_phrases([item for item in phrase_list(current) if item != phrase])
+
+
 HASHTAG_KIND_LABELS: dict[str, str] = {
     "popular": "Populares",
     "nicho": "De nicho",

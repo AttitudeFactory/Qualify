@@ -108,6 +108,7 @@ from .creative_vm import (
     ReadinessVM,
     RouteOptionVM,
     VoiceProposalVM,
+    add_phrase,
     caption_hashtag_suggestions,
     caption_keywords,
     content_type_options,
@@ -115,6 +116,8 @@ from .creative_vm import (
     format_ctas,
     format_hashtags,
     hashtag_list,
+    phrase_list,
+    remove_phrase,
     seen_label,
 )
 from .gallery_state import APPROVED_NOT_READY_TOAST, APPROVED_TOAST, schedule_readiness
@@ -726,6 +729,10 @@ class CreativeState(rx.State):
     brief_intent: str = "organic"
     brief_must_mention: str = ""
     brief_must_avoid: str = ""
+    #: CREAR-6: what is being typed into «Debe mencionar» / «Debe evitar» before
+    #: «Agregar» turns it into a chip (the brief keeps the joined text above).
+    brief_must_mention_draft: str = ""
+    brief_must_avoid_draft: str = ""
     route_options: list[RouteOptionVM] = []
     selected_route: str = "from_upload"
     staged_media_key: str = ""
@@ -2229,6 +2236,42 @@ class CreativeState(rx.State):
     @rx.event
     def set_brief_must_avoid(self, value: str) -> None:
         self.brief_must_avoid = value
+
+    @rx.var
+    def brief_must_mention_items(self) -> list[str]:
+        """CREAR-6: «Debe mencionar» as chips."""
+        return phrase_list(self.brief_must_mention)
+
+    @rx.var
+    def brief_must_avoid_items(self) -> list[str]:
+        """CREAR-6: «Debe evitar» as chips."""
+        return phrase_list(self.brief_must_avoid)
+
+    @rx.event
+    def set_brief_must_mention_draft(self, value: str) -> None:
+        self.brief_must_mention_draft = value
+
+    @rx.event
+    def set_brief_must_avoid_draft(self, value: str) -> None:
+        self.brief_must_avoid_draft = value
+
+    @rx.event
+    def add_must_mention(self) -> None:
+        self.brief_must_mention = add_phrase(self.brief_must_mention, self.brief_must_mention_draft)
+        self.brief_must_mention_draft = ""
+
+    @rx.event
+    def add_must_avoid(self) -> None:
+        self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+        self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def remove_must_mention(self, phrase: str) -> None:
+        self.brief_must_mention = remove_phrase(self.brief_must_mention, phrase)
+
+    @rx.event
+    def remove_must_avoid(self, phrase: str) -> None:
+        self.brief_must_avoid = remove_phrase(self.brief_must_avoid, phrase)
 
     @rx.event
     def set_edit_hook(self, value: str) -> None:

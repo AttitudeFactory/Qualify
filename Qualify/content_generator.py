@@ -198,15 +198,19 @@ def _choice_card(
 
 def _option(
     title: str,
+    blurb: str,
     icon: str,
     *,
     selected: rx.Var[bool],
     on_click: rx.event.EventSpec,
-    tooltip: str = "",
+    help_text: str = "",
 ) -> rx.Component:
     """One entry of the side panel: a compact `choice_card` (a real ``<button>``,
-    ``role="radio"``) with its icon and title — and, when it needs one, a tooltip that
-    explains it on hover (the centre's heading says the same on a phone)."""
+    ``role="radio"``) with its icon, its title and — CREAR-6 (m-24842980) — its blurb,
+    visible on a phone where the panel is one column (`.q-cr-option-blurb`). On a wide
+    screen the panel stays compact: the blurb is the centre's heading once chosen, and
+    the longer explanation of an option that needs one is a «?» opened by a click or a
+    tap (`_help`), never a hover-only tooltip (N12)."""
     entry = choice_card(
         rx.hstack(
             rx.icon(
@@ -215,7 +219,14 @@ def _option(
                 color=rx.cond(selected, T.tone_color("accent", 11), T.TEXT_FAINT),
                 flex_shrink="0",
             ),
-            rx.text(title, size="2", weight="medium"),
+            rx.vstack(
+                rx.text(title, size="2", weight="medium"),
+                rx.text(blurb, size="1", color=T.TEXT_MUTED, class_name="q-cr-option-blurb"),
+                spacing="1",
+                align_items="start",
+                flex="1",
+                min_width="0",
+            ),
             spacing="3",
             align="center",
             width="100%",
@@ -224,27 +235,35 @@ def _option(
         on_select=on_click,
         padding="0.6rem 0.8rem",
         width="100%",
+        min_height="2.75rem",
     )
-    if not tooltip:
+    if not help_text:
         return entry
-    return rx.tooltip(entry, content=tooltip, side="right", max_width="20rem")
+    return rx.hstack(
+        entry,
+        rx.box(_help(title, help_text), class_name="q-cr-option-help"),
+        spacing="1",
+        align="center",
+        width="100%",
+    )
 
 
-#: What an option's tooltip explains (§ request 2026-10-14: «Generar guion» goes to a
-#: UGC creator; m-24842979: said without the word «UGC»).
+#: The longer explanation of an option, behind its «?» on a wide screen (§ request
+#: 2026-10-14: «Generar guion» goes to a UGC creator; m-24842979: said without the word
+#: «UGC»).
 #: Where «Completar mi marca» goes: the kit inside the session (m-24842979 — `/brand`
 #: is the onboarding flow and redirects once inside).
 BRAND_KIT_ROUTE = "/brand/kit"
 
-_OPTION_TOOLTIPS = {
+_OPTION_HELP = {
     "script": (
         "Este guion lo graba una persona real —un cliente, alguien de tu equipo o un "
         "creador— con su celular y en tono natural, como si recomendara tu marca. Funciona "
         "porque se siente auténtico, no como un anuncio."
     ),
 }
-#: m-24803289 — what «Variaciones» is, in the panel's tooltip.
-_VARIATIONS_TOOLTIP = (
+#: m-24803289 — what «Variaciones» is, behind its «?».
+_VARIATIONS_HELP = (
     "Parte de un producto de tu catálogo y propone diez ángulos visuales distintos para "
     "anunciarlo: otro escenario, otra composición y otro enfoque en cada uno. Tú eliges "
     "cuáles se convierten en publicaciones."
@@ -254,14 +273,15 @@ _VARIATIONS_TOOLTIP = (
 def _create_options(creating: rx.Var[bool]) -> list[rx.Component]:
     """What can be created, in the panel's order (`CATEGORY_OPTIONS`)."""
     options: list[rx.Component] = []
-    for key, title, _blurb, icon in CATEGORY_OPTIONS:
+    for key, title, blurb, icon in CATEGORY_OPTIONS:
         options.append(
             _option(
                 title,
+                blurb,
                 icon,
                 selected=creating & (CreativeState.gen_category == key),
                 on_click=CreativeState.choose_category(key),
-                tooltip=_OPTION_TOOLTIPS.get(key, ""),
+                help_text=_OPTION_HELP.get(key, ""),
             )
         )
     return options
@@ -269,8 +289,10 @@ def _create_options(creating: rx.Var[bool]) -> list[rx.Component]:
 
 def _kind_picker() -> rx.Component:
     """The side panel's list (§ request 2026-10-14): what can be created — Guion · Clip ·
-    Galería · Flyer · Plantilla · Ad — and, below them, «Descubrir reels». Clip's types
-    are its first view, in the centre, not a sub-list here."""
+    Galería · Flyer · Plantilla · Ad — and, below them, «Descubrir ideas de videos»
+    (ex «Descubrir reels», CREAR-6: no English word). Clip's types are its first view,
+    in the centre, not a sub-list here. On a phone it is one column, every option with
+    its blurb (CREAR-6, `.q-cr-option-blurb`)."""
     creating = CreativeState.gen_mode == "create"
     return rx.vstack(
         rx.vstack(
@@ -286,15 +308,15 @@ def _kind_picker() -> rx.Component:
         # it MAKES pieces of a kind — so it sits below the rule, next to «Descubrir
         # reels», and opens its own view with its own state.
         _option(
-            "Variaciones",
-            "layers",
+            _VARIATIONS_HEADING[0],
+            _VARIATIONS_HEADING[1],
+            _VARIATIONS_HEADING[2],
             selected=CreativeState.gen_mode == "variations",
             on_click=[CreativeState.open_variations, VariationsState.load],
-            tooltip=_VARIATIONS_TOOLTIP,
+            help_text=_VARIATIONS_HELP,
         ),
         _option(
-            "Descubrir reels",
-            "compass",
+            *_DISCOVER_HEADING,
             selected=CreativeState.gen_mode == "discover",
             on_click=CreativeState.open_discover,
         ),
@@ -340,8 +362,9 @@ def _options_panel() -> rx.Component:
 _CATEGORY_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in CATEGORY_OPTIONS}
 _VIDEO_TYPE_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in VIDEO_TYPE_OPTIONS}
 _DISCOVER_HEADING = (
-    "Descubrir reels",
-    "Los reels con más vistas de tus referentes, solo de tu rubro, para inspirarte o replicarlos.",
+    "Descubrir ideas de videos",
+    "Los videos con más vistas de las cuentas que tomas de referencia, solo de tu rubro, "
+    "para inspirarte o hacer uno parecido.",
     "compass",
 )
 _VARIATIONS_HEADING = (
@@ -3752,35 +3775,148 @@ def _section_details() -> rx.Component:
     )
 
 
+def _highlight_field(
+    label: str,
+    field_id: str,
+    control: rx.Component,
+) -> rx.Component:
+    """One labelled half of a «Datos clave» row (CREAR-6: a visible label, not only a
+    placeholder)."""
+    return rx.vstack(
+        rx.el.label(label, html_for=field_id, class_name="q-cr-highlight-label"),
+        control,
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _highlight_row(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
+    """One fact of «Datos clave» (CREAR-6, m-24842980): «¿Qué dato?» and «¿Cuánto o
+    cuál?», each with its label — side by side on a wide screen, one under the other on
+    a phone (`.q-cr-highlight-row`) — and a ≥ 44 px «Quitar»."""
+    key_id = f"q-cr-hl-key-{index}"
+    value_id = f"q-cr-hl-value-{index}"
     return rx.hstack(
-        rx.input(
-            value=row["key"],
-            on_change=lambda value: CreativeState.set_highlight(index, "key", value),
-            placeholder="Dato (precio, descuento…)",
-            max_length=40,
-            width="38%",
-            aria_label="Nombre del dato",
-        ),
-        rx.input(
-            value=row["value"],
-            on_change=lambda value: CreativeState.set_highlight(index, "value", value),
-            placeholder="Valor (18.900, 20 %…)",
-            max_length=200,
+        rx.box(
+            _highlight_field(
+                "¿Qué dato?",
+                key_id,
+                rx.input(
+                    id=key_id,
+                    value=row["key"],
+                    on_change=lambda value: CreativeState.set_highlight(index, "key", value),
+                    placeholder="Ej.: precio, descuento, fecha",
+                    max_length=40,
+                    size="3",
+                    width="100%",
+                ),
+            ),
+            _highlight_field(
+                "¿Cuánto o cuál?",
+                value_id,
+                rx.input(
+                    id=value_id,
+                    value=row["value"],
+                    on_change=lambda value: CreativeState.set_highlight(index, "value", value),
+                    placeholder="Ej.: 18.900, 20 %, viernes 31",
+                    max_length=200,
+                    size="3",
+                    width="100%",
+                ),
+            ),
+            class_name="q-cr-highlight-row",
             flex="1",
-            aria_label="Valor del dato",
+            min_width="0",
         ),
-        _slide_icon_button("x", "Quitar este dato", CreativeState.remove_highlight(index)),
+        rx.icon_button(
+            rx.icon("x", size=16),
+            on_click=CreativeState.remove_highlight(index),
+            variant="ghost",
+            color_scheme="gray",
+            size="3",
+            aria_label="Quitar este dato",
+            flex_shrink="0",
+        ),
         spacing="2",
         width="100%",
-        align="center",
+        align="end",
+    )
+
+
+def _phrase_chip(phrase: rx.Var[str], on_remove: rx.event.EventSpec) -> rx.Component:
+    """A phrase of «Debe mencionar» / «Debe evitar» (CREAR-6): the whole chip is the
+    button that removes it, so the target is the chip (≥ 44 px), not a tiny «x»."""
+    return rx.el.button(
+        rx.text(phrase, as_="span"),
+        rx.icon("x", size=14, aria_hidden="true"),
+        type="button",
+        class_name="q-rv-chip q-cr-phrase-chip",
+        aria_label="Quitar «" + phrase + "»",
+        on_click=on_remove,
+    )
+
+
+def _phrase_field(
+    label: str,
+    hint: str,
+    items: rx.Var[list[str]],
+    draft: rx.Var[str],
+    on_change: rx.event.EventHandler,
+    on_add: rx.event.EventHandler,
+    on_remove: object,
+    placeholder: str,
+) -> rx.Component:
+    """«Debe mencionar» / «Debe evitar» (CREAR-6): one phrase per «Agregar»,
+    each a chip — never a single field «separado por comas»."""
+    return _field(
+        label,
+        rx.vstack(
+            rx.cond(
+                items.length() > 0,
+                rx.flex(
+                    rx.foreach(items, lambda phrase: _phrase_chip(phrase, on_remove(phrase))),
+                    wrap="wrap",
+                    gap="2",
+                    width="100%",
+                ),
+            ),
+            rx.hstack(
+                rx.input(
+                    value=draft,
+                    on_change=on_change,
+                    placeholder=placeholder,
+                    max_length=80,
+                    size="3",
+                    flex="1",
+                    min_width="0",
+                    aria_label=label,
+                ),
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Agregar",
+                    on_click=on_add,
+                    variant="soft",
+                    size="3",
+                    disabled=draft.strip() == "",
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        hint,
     )
 
 
 def _section_rules() -> rx.Component:
     """«Datos clave» (ex «Reglas», § request 2026-10-14 — and before «Contexto» now):
     the facts the piece must feature exactly — the price, a discount, a date… — as
-    rows of name and value, or as one JSON object; then what it must say or avoid."""
+    rows of name and value, or as one JSON object; then what it must say or avoid —
+    CREAR-6: one labelled row per fact and one chip per phrase, never «separado por
+    comas»; every control a ≥ 44 px target (`.q-cr-rules`)."""
     return rx.vstack(
         rx.vstack(
             rx.heading("Datos clave (opcional)", size="4", as_="h3"),
@@ -3820,29 +3956,30 @@ def _section_rules() -> rx.Component:
             align_items="start",
         ),
         rx.divider(),
-        _field(
+        _phrase_field(
             "Debe mencionar",
-            rx.input(
-                value=CreativeState.brief_must_mention,
-                on_change=CreativeState.set_brief_must_mention,
-                placeholder="Ej.: envío gratis, reserva por WhatsApp",
-                width="100%",
-            ),
-            "Separado por comas.",
+            "Escribe una frase y toca «Agregar». Puedes agregar varias.",
+            CreativeState.brief_must_mention_items,
+            CreativeState.brief_must_mention_draft,
+            CreativeState.set_brief_must_mention_draft,
+            CreativeState.add_must_mention,
+            CreativeState.remove_must_mention,
+            "Ej.: envío gratis",
         ),
-        _field(
+        _phrase_field(
             "Debe evitar",
-            rx.input(
-                value=CreativeState.brief_must_avoid,
-                on_change=CreativeState.set_brief_must_avoid,
-                placeholder="Ej.: barato, el más",
-                width="100%",
-            ),
-            "Separado por comas.",
+            "Palabras o frases que no quieres en la publicación, una por vez.",
+            CreativeState.brief_must_avoid_items,
+            CreativeState.brief_must_avoid_draft,
+            CreativeState.set_brief_must_avoid_draft,
+            CreativeState.add_must_avoid,
+            CreativeState.remove_must_avoid,
+            "Ej.: barato",
         ),
         spacing="4",
         width="100%",
         align_items="start",
+        class_name="q-cr-rules",
     )
 
 
