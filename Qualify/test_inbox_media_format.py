@@ -139,7 +139,8 @@ def test_candidate_media_labels_every_row_and_keeps_a_reel_s_fields(
     assert reel.caption == "caption reel"
     assert reel.permalink == "https://www.instagram.com/p/reel/"
     assert reel.thumbnail_url == "https://cdn/reel.jpg"
-    assert reel.posted_at == datetime(2026, 10, 8, 10, 0, tzinfo=UTC).strftime("%d %b %Y, %H:%M")
+    # m-24842988: Spanish month and 12-hour clock (the offline zone is UTC, conftest).
+    assert reel.posted_at == "8 oct, 10:00 a. m."
 
 
 def test_candidate_media_gives_photos_and_carousels_their_picture(

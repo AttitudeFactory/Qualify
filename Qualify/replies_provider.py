@@ -31,8 +31,8 @@ from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
-from .inbox_vm import CandidateMediaVM, short_day_label
-from .planner_vm import time_label_12h
+from .inbox_provider import moment_label, tenant_zone
+from .inbox_vm import CandidateMediaVM
 
 # m-24842989: the thumbnail's alt text when the publication has no caption we know of.
 PUBLICATION_ALT_FALLBACK = "Publicación"
@@ -83,23 +83,6 @@ class GenerationSummaryVM:
     gate_rejected: int
 
 
-def moment_label(moment: datetime, zone: ZoneInfo) -> str:
-    """«23 oct, 2:05 p. m.» — Spanish short month and 12-hour time in the business's
-    zone (m-24842988), the same clock the Planificador shows."""
-    local = moment.astimezone(zone)
-    return f"{short_day_label(local)}, {time_label_12h(local)}"
-
-
-def _tenant_zone(tenant_id: UUID) -> ZoneInfo:
-    """The business's own zone (`tenants.timezone`, read through `tenant_session` by
-    the Conversaciones gateway); UTC if it cannot be read — a date is never worth an
-    error on the reply panel."""
-    try:
-        return ZoneInfo(conversations_gateway().timezone(tenant_id) or "UTC")
-    except Exception:  # noqa: BLE001 - the zone is cosmetic; the queue must still load
-        return ZoneInfo("UTC")
-
-
 def _to_vm(
     record: DraftRecord,
     candidates_by_media_id: dict[str, CandidateMediaVM] | None = None,
@@ -142,7 +125,7 @@ def pending_drafts(
     drafts = _list_pending_drafts(tenant_id=tenant_id, connection_id=connection_id)
     if not drafts:
         return []
-    zone = _tenant_zone(tenant_id)
+    zone = tenant_zone(tenant_id)
     return [_to_vm(d, by_media_id, zone) for d in drafts]
 
 

@@ -791,12 +791,13 @@ UNKNOWN_PERSON: Final = "Persona sin nombre"
 
 
 def reply_sent_message(who: str) -> str:
-    """m-24842988 (m5 hallazgo 12): «Listo, le respondiste a @ana. Sale en unos
-    segundos.» — `who` is the open chat's handle, else its name; generic without one."""
+    """m-24842988 (m5 hallazgo 12): «Tu respuesta a @ana sale en unos segundos.» —
+    `who` is the open chat's handle, else its name; generic without one. It is still
+    queued, so it never says «Listo» (N13)."""
     who = (who or "").strip()
     if who and who != UNKNOWN_PERSON:
-        return f"Listo, le respondiste a {who}. Sale en unos segundos."
-    return "Listo, respondiste. Sale en unos segundos."
+        return f"Tu respuesta a {who} sale en unos segundos."
+    return "Tu respuesta sale en unos segundos."
 
 
 def failure_label(code: str | None) -> str:

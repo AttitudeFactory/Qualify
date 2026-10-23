@@ -19,7 +19,7 @@ from .ui import tokens as T
 def _topbar() -> rx.Component:
     return page_header(
         "Clientes interesados",
-        "Personas que dejaron sus datos para que las contactes, con su permiso guardado.",
+        "Personas que te dejaron sus datos y aceptaron que las contactes.",
         # The count badge of docs/design-system.md §5.3: soft, neutral — a figure
         # about the page, never a state.
         badge=rx.badge(
@@ -80,8 +80,8 @@ def _empty_state() -> rx.Component:
     return empty_state(
         "user-plus",
         "Todavía no tienes clientes interesados",
-        "Comparte el formulario de captura de este negocio: cada registro "
-        "con consentimiento aparecerá aquí.",
+        "Comparte tu formulario: cada persona que deje sus datos y acepte que la "
+        "contactes aparecerá aquí.",
     )
 
 

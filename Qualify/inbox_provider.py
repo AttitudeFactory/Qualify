@@ -86,6 +86,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from qualify_api.inbox import (
     list_candidate_media,
@@ -124,6 +125,7 @@ from qualify_api.sentiment.repository import (
 
 from .capabilities import Capability
 from .connections_provider import connections_for
+from .conversations_provider import gateway as conversations_gateway
 from .inbox_vm import (
     MONITORING_ACTIVE,
     MONITORING_EXPIRED,
@@ -143,6 +145,7 @@ from .inbox_vm import (
     media_format_label,
     short_day_label,
 )
+from .planner_vm import time_label_12h
 from .publishing_vm import ConnectionOptionVM
 
 logger = logging.getLogger(__name__)
@@ -172,16 +175,48 @@ def instagram_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
     ]
 
 
-def _to_vm(media: CandidateMedia) -> CandidateMediaVM:
+_UTC = ZoneInfo("UTC")
+
+
+def tenant_zone(tenant_id: UUID) -> ZoneInfo:
+    """The business's own zone — see `_read_tenant_zone`. The seam the offline tests
+    replace (`Qualify/conftest.py`), so they never reach the database for it."""
+    return _read_tenant_zone(tenant_id)
+
+
+def _read_tenant_zone(tenant_id: UUID) -> ZoneInfo:
+    """The business's own zone (`tenants.timezone`, read through `tenant_session` by the
+    Conversaciones gateway) — the clock every date on these screens is shown in
+    (m-24842988). Blocking: callers on the event loop run it off-thread. UTC when it
+    cannot be read: a date is never worth an error on the screen."""
+    try:
+        return ZoneInfo(conversations_gateway().timezone(tenant_id) or "UTC")
+    except Exception:  # noqa: BLE001 - the zone is cosmetic; the screen must still load
+        return _UTC
+
+
+def _local(moment: datetime, zone: ZoneInfo) -> datetime:
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return aware.astimezone(zone)
+
+
+def moment_label(moment: datetime, zone: ZoneInfo) -> str:
+    """«23 oct, 2:05 p. m.» — Spanish short month and 12-hour time in the business's
+    zone (m-24842988), the same clock the Planificador shows."""
+    local = _local(moment, zone)
+    return f"{short_day_label(local)}, {time_label_12h(local)}"
+
+
+def _to_vm(media: CandidateMedia, zone: ZoneInfo = _UTC) -> CandidateMediaVM:
     return CandidateMediaVM(
         external_media_id=media.external_media_id,
-        posted_at=media.timestamp.strftime("%d %b %Y, %H:%M"),
+        posted_at=moment_label(media.timestamp, zone),
         is_monitored=media.is_monitored,
         caption=media.caption or "",
         permalink=media.permalink or "",
         thumbnail_url=candidate_picture_url(media.media_type, media.thumbnail_url, media.media_url),
         format_label=media_format_label(media.media_product_type, media.media_type),
-        posted_day=short_day_label(media.timestamp),
+        posted_day=short_day_label(_local(media.timestamp, zone)),
     )
 
 
@@ -197,7 +232,8 @@ async def candidate_media(*, tenant_id: UUID, connection_id: UUID) -> list[Candi
     empty list — an empty list means "really nothing in the window", not "failed").
     """
     media = await list_candidate_media(tenant_id=tenant_id, connection_id=connection_id)
-    return [_to_vm(m) for m in sorted(media, key=lambda m: m.timestamp, reverse=True)]
+    zone = await asyncio.to_thread(tenant_zone, tenant_id)
+    return [_to_vm(m, zone) for m in sorted(media, key=lambda m: m.timestamp, reverse=True)]
 
 
 async def toggle_monitoring(
@@ -244,13 +280,14 @@ def _to_comment_vm(
     comment: AnalyzedComment,
     signal: IntentSignal | None = None,
     reliable: dict[IntentClass, bool] | None = None,
+    zone: ZoneInfo = _UTC,
 ) -> CommentVM:
     chips = _intent_chips(signal, reliable or {}) if signal is not None else []
     return CommentVM(
         message_id=str(comment.message_id),
         text=comment.text or "",
         author_username=comment.author_username or "",
-        posted_at=comment.posted_at.strftime("%d %b %Y, %H:%M") if comment.posted_at else "",
+        posted_at=moment_label(comment.posted_at, zone) if comment.posted_at else "",
         external_thread_id=comment.external_thread_id,
         sentiment_label=comment.label or "",
         score_display=f"{comment.score:.2f}" if comment.score is not None else "",
@@ -293,13 +330,16 @@ def _monitoring_state(summary: ReelSummary, now: datetime) -> str:
 
 
 def _to_reel_summary_vm(
-    summary: ReelSummary, candidates_by_media_id: dict[str, CandidateMediaVM], now: datetime
+    summary: ReelSummary,
+    candidates_by_media_id: dict[str, CandidateMediaVM],
+    now: datetime,
+    zone: ZoneInfo = _UTC,
 ) -> ReelSummaryVM:
     enrichment = candidates_by_media_id.get(summary.external_thread_id)
     return ReelSummaryVM(
         thread_id=str(summary.thread_id),
         external_thread_id=summary.external_thread_id,
-        last_message_at=summary.last_message_at.strftime("%d %b %Y, %H:%M"),
+        last_message_at=moment_label(summary.last_message_at, zone),
         total=summary.total,
         positive=summary.positive,
         neutral=summary.neutral,
@@ -346,7 +386,8 @@ def reel_summaries_page(
         limit=DEFAULT_REEL_PAGE_SIZE,
     )
     reference_now = now if now is not None else datetime.now(UTC)
-    items = [_to_reel_summary_vm(s, candidates_by_media_id, reference_now) for s in page]
+    zone = tenant_zone(tenant_id) if page else _UTC
+    items = [_to_reel_summary_vm(s, candidates_by_media_id, reference_now, zone) for s in page]
     next_cursor = None
     if page:
         last = page[-1]
@@ -414,7 +455,8 @@ def thread_comments_page(
         else {}
     )
     reliable = class_reliability(CURRENT_INTENT_VERSION.detector_version) if signals else {}
-    items = [_to_comment_vm(c, signals.get(c.message_id), reliable) for c in page]
+    zone = tenant_zone(tenant_id) if page else _UTC
+    items = [_to_comment_vm(c, signals.get(c.message_id), reliable, zone) for c in page]
     next_cursor = None
     if page:
         last = page[-1]

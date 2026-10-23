@@ -994,15 +994,10 @@ class InboxState(rx.State):
         # Same plain-`return`-of-an-`EventSpec` shape `sync_comments` uses above, and for
         # the same reason (`analyze_sentiment.fn` is called directly and awaited in
         # tests — this must stay a plain coroutine, never an async generator).
-        # m-24842988: one click runs this AND the intent pass; with nothing new the
-        # intent toast alone speaks, so the owner never reads «no hay…» twice.
-        if result.comments_checked == 0:
-            return None
-        message = (
-            "Listo: revisamos el tono de "
-            f"{_count(result.new_results, 'comentario', 'comentarios')}."
-        )
-        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+        # m-24842988: «Ordenar por prioridad» runs this AND the intent pass on one
+        # click; only the intent result speaks, so success here is silent. Errors still
+        # show (`analyze_error`, above).
+        return None
 
     @rx.event(background=True)
     async def analyze_intent(self) -> rx.event.EventSpec | None:

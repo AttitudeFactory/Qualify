@@ -756,7 +756,7 @@ def _reel_detail_header() -> rx.Component:
 # one value the backend never sees (`inbox_provider.thread_comments_page` maps it to
 # "no filter").
 _SENTIMENT_FILTER_OPTIONS = [
-    (FILTER_ALL, "Todos"),
+    (FILTER_ALL, "Todos los tonos"),
     ("POS", "Positivos"),
     ("NEU", "Neutros"),
     ("NEG", "Negativos"),
@@ -770,7 +770,12 @@ def _sentiment_filter_item(value: str, label: str) -> rx.Component:
 
 def _sentiment_filter_select() -> rx.Component:
     return rx.select.root(
-        rx.select.trigger(width="100%", max_width="180px", class_name="q-inbox-tap"),
+        rx.select.trigger(
+            width="100%",
+            max_width="180px",
+            class_name="q-inbox-tap",
+            aria_label="Filtrar por tono",
+        ),
         rx.select.content(
             *[_sentiment_filter_item(value, label) for value, label in _SENTIMENT_FILTER_OPTIONS]
         ),
@@ -783,14 +788,19 @@ def _sentiment_filter_select() -> rx.Component:
 # m-24789644: «Quieren comprar» = the comments whose intent signal under the current
 # version is commercial. Same "ALL means no filter" convention as above.
 _INTENT_FILTER_OPTIONS = [
-    (FILTER_ALL, "Todos"),
+    (FILTER_ALL, "Todos los comentarios"),
     (FILTER_COMMERCIAL, "Quieren comprar"),
 ]
 
 
 def _intent_filter_select() -> rx.Component:
     return rx.select.root(
-        rx.select.trigger(width="100%", max_width="240px", class_name="q-inbox-tap"),
+        rx.select.trigger(
+            width="100%",
+            max_width="240px",
+            class_name="q-inbox-tap",
+            aria_label="Filtrar por interés en comprar",
+        ),
         rx.select.content(
             *[_sentiment_filter_item(value, label) for value, label in _INTENT_FILTER_OPTIONS]
         ),

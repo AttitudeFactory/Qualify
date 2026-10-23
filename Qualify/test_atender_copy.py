@@ -5,6 +5,7 @@ and the reply confirmations say who got the answer."""
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import re
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from . import (
     followups_state,
     followups_vm,
     inbox_page,
+    inbox_provider,
     inbox_state,
     inbox_vm,
     leads_page,
@@ -129,10 +131,16 @@ def test_prioritizing_is_busy_while_either_pass_runs() -> None:
 
 def test_the_filters_and_summary_use_the_new_words() -> None:
     assert ("PENDING", "Sin revisar") in inbox_page._SENTIMENT_FILTER_OPTIONS
+    # Two selectors side by side: each «all» says what it is about.
+    assert inbox_page._SENTIMENT_FILTER_OPTIONS[0][1] == "Todos los tonos"
     assert [label for _, label in inbox_page._INTENT_FILTER_OPTIONS] == [
-        "Todos",
+        "Todos los comentarios",
         "Quieren comprar",
     ]
+    assert 'aria_label="Filtrar por tono"' in inspect.getsource(inbox_page._sentiment_filter_select)
+    assert 'aria_label="Filtrar por interés en comprar"' in inspect.getsource(
+        inbox_page._intent_filter_select
+    )
     assert '"Resumen de tus comentarios"' in inspect.getsource(inbox_page._global_summary_widget)
 
 
@@ -188,7 +196,7 @@ def test_a_reply_card_dates_in_the_business_zone_and_names_the_publication_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(replies_provider, "_list_pending_drafts", lambda **_: (_draft(),))
-    monkeypatch.setattr(replies_provider, "_tenant_zone", lambda _t: ZoneInfo("America/Caracas"))
+    monkeypatch.setattr(replies_provider, "tenant_zone", lambda _t: ZoneInfo("America/Caracas"))
     candidate = CandidateMediaVM(
         external_media_id="m1",
         posted_at="",
@@ -210,27 +218,69 @@ def test_the_zone_never_breaks_the_queue(monkeypatch: pytest.MonkeyPatch) -> Non
         def timezone(self, _tenant_id: UUID) -> str:
             raise RuntimeError("db down")
 
-    monkeypatch.setattr(replies_provider, "conversations_gateway", lambda: Broken())
-    assert replies_provider._tenant_zone(UUID(int=2)) == ZoneInfo("UTC")  # noqa: SLF001
+    monkeypatch.setattr(inbox_provider, "conversations_gateway", lambda: Broken())
+    assert inbox_provider._read_tenant_zone(UUID(int=2)) == ZoneInfo("UTC")  # noqa: SLF001
+
+
+def test_publication_days_and_comment_dates_use_the_business_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-24842988: 02:00 UTC on 22 oct is still 21 oct, 9:00 p. m. in Bogotá — the day
+    on «En tu publicación del …» and every inbox date follow the business's clock."""
+    from qualify_api.inbox.service import CandidateMedia
+
+    media = CandidateMedia(
+        external_media_id="m1",
+        caption="Shawarma",
+        media_type="IMAGE",
+        media_product_type="FEED",
+        permalink=None,
+        thumbnail_url=None,
+        media_url=None,
+        timestamp=datetime(2026, 10, 22, 2, 0, tzinfo=UTC),
+        is_monitored=True,
+    )
+
+    async def _fake(**_: object) -> list[CandidateMedia]:
+        return [media]
+
+    monkeypatch.setattr(inbox_provider, "list_candidate_media", _fake)
+    monkeypatch.setattr(inbox_provider, "tenant_zone", lambda _t: ZoneInfo("America/Bogota"))
+    (vm,) = asyncio.run(
+        inbox_provider.candidate_media(tenant_id=UUID(int=2), connection_id=UUID(int=3))
+    )
+    assert vm.posted_day == "21 oct"
+    assert vm.posted_at == "21 oct, 9:00 p. m."
 
 
 # --- confirmations name who got it ---------------------------------------------------
 
 
 def test_the_chat_reply_toast_names_the_person() -> None:
-    assert reply_sent_message("@ana") == "Listo, le respondiste a @ana. Sale en unos segundos."
-    assert reply_sent_message("María") == "Listo, le respondiste a María. Sale en unos segundos."
-    assert reply_sent_message(UNKNOWN_PERSON) == "Listo, respondiste. Sale en unos segundos."
-    assert reply_sent_message("") == "Listo, respondiste. Sale en unos segundos."
+    # Still queued: never «Listo» (N13), and an info toast, not a success one.
+    assert reply_sent_message("@ana") == "Tu respuesta a @ana sale en unos segundos."
+    assert reply_sent_message("María") == "Tu respuesta a María sale en unos segundos."
+    assert reply_sent_message(UNKNOWN_PERSON) == "Tu respuesta sale en unos segundos."
+    assert reply_sent_message("") == "Tu respuesta sale en unos segundos."
     source = inspect.getsource(conversations_state.ConversationsState.send_reply.fn)
-    assert "reply_sent_message(who)" in source
+    assert "rx.toast.info(reply_sent_message(who)" in source
+    heart = inspect.getsource(conversations_state.ConversationsState.send_heart.fn)
+    assert "rx.toast.info(_HEART_QUEUED" in heart
+    assert conversations_state._HEART_QUEUED == "Tu corazón sale en unos segundos."  # noqa: SLF001
 
 
 def test_the_private_message_toast_names_the_person() -> None:
-    assert queued_message("@ana") == (
-        "Listo, le escribiste a @ana en privado. Sale en unos segundos."
-    )
-    assert queued_message("Cliente") == "Listo, le escribiste en privado. Sale en unos segundos."
+    assert queued_message("@ana") == "Tu mensaje privado a @ana sale en unos segundos."
+    assert queued_message("Cliente") == "Tu mensaje privado sale en unos segundos."
+    source = inspect.getsource(followups_state.FollowupsState.approve.fn)
+    assert "rx.toast.info(message" in source and "rx.toast.success(message" not in source
+
+
+def test_only_the_intent_pass_speaks_after_ordering() -> None:
+    source = inspect.getsource(InboxState.analyze_sentiment.fn)
+    tail = source[source.index("await self._refresh_after_write") :]
+    assert "rx.toast" not in tail
+    assert "self.analyze_error = _ANALYZE_FAILED" in source  # the error path stays
 
 
 def test_no_model_key_tells_the_owner_to_write_it() -> None:
@@ -250,9 +300,7 @@ def test_followup_trigger_labels() -> None:
 def test_leads_screen_copy() -> None:
     source = inspect.getsource(leads_page)
     assert '"Clientes interesados"' in source
-    assert (
-        '"Personas que dejaron sus datos para que las contactes, con su permiso guardado."'
-        in source
-    )
+    assert '"Personas que te dejaron sus datos y aceptaron que las contactes."' in source
+    assert '"Comparte tu formulario: cada persona que deje sus datos y acepte que la "' in source
     assert '"Lo que te contaron"' in source
     assert "Datos extra" not in source

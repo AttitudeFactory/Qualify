@@ -169,7 +169,7 @@ _NEEDS_APPROVAL = "La respuesta no salió: falta que la apruebes."
 _ATTACH_FAILED = "No se pudo guardar el adjunto. Vuelve a intentarlo en un momento."
 _ATTACH_UNREADABLE = "No se pudo leer el archivo."
 _HIDDEN = "Mensaje eliminado para ti. La otra persona sigue viéndolo en Instagram."
-_HEART_QUEUED = "Listo, le enviaste un corazón. Sale en unos segundos."
+_HEART_QUEUED = "Tu corazón sale en unos segundos."
 _SYNC_FAILED_TOAST = (
     "No pudimos traer los mensajes nuevos de Instagram. Lo intentamos de nuevo enseguida."
 )
@@ -1254,7 +1254,7 @@ class ConversationsState(rx.State):
             return
         async with self:
             self.sending = False
-        yield rx.toast.success(_HEART_QUEUED, duration=_TOAST_MS)
+        yield rx.toast.info(_HEART_QUEUED, duration=_TOAST_MS)
         yield ConversationsState.refresh
 
     @rx.event(background=True)
@@ -1342,7 +1342,7 @@ class ConversationsState(rx.State):
                 self._typing_sent_at = 0.0
             row = self.open_thread if self.open_thread_id == thread_id else EMPTY_THREAD
             who = row.handle or row.title
-        yield rx.toast.success(reply_sent_message(who), duration=_TOAST_MS)
+        yield rx.toast.info(reply_sent_message(who), duration=_TOAST_MS)
         yield ConversationsState.refresh
         await gw.signal(tenant_id, connection, thread, ACTION_TYPING_OFF)
 

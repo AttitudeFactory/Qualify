@@ -75,11 +75,12 @@ _DISCARD_FAILED = "No pudimos descartar la consulta. Vuelve a intentarlo en un m
 
 def queued_message(author: str) -> str:
     """m-24842988 (m5 hallazgo 12): the confirmation names who gets the message —
-    «Listo, le escribiste a @ana en privado. Sale en unos segundos.» — whichever private
-    route it takes; without a handle (`author` is «Cliente») it stays generic."""
+    «Tu mensaje privado a @ana sale en unos segundos.» — whichever private route it
+    takes; without a handle (`author` is «Cliente») it stays generic. Still queued, so
+    never «Listo» (N13)."""
     if author.startswith("@"):
-        return f"Listo, le escribiste a {author} en privado. Sale en unos segundos."
-    return "Listo, le escribiste en privado. Sale en unos segundos."
+        return f"Tu mensaje privado a {author} sale en unos segundos."
+    return "Tu mensaje privado sale en unos segundos."
 
 
 _DISCARDED = "Consulta descartada."
@@ -365,7 +366,7 @@ class FollowupsState(rx.State):
             message = queued_message(card.author if card else "") + (
                 _NOTICE_QUEUED if notice_text else ""
             )
-            yield rx.toast.success(message, duration=_TOAST_MS)
+            yield rx.toast.info(message, duration=_TOAST_MS)
         except RouteUnavailable as exc:
             reasons = " ".join(
                 f"{o.reason}" for o in (exc.options.dm, exc.options.private_reply) if o.reason
