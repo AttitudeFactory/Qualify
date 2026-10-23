@@ -38,7 +38,8 @@ from qualify_api.intent import COMMERCIAL_CLASSES, INTENT_CLASS_LABELS, IntentCl
 from qualify_api.replies.public_drafts import is_blocking_reason
 from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
-from .inbox_vm import CandidateMediaVM, IntentChipVM
+from .inbox_vm import CandidateMediaVM, IntentChipVM, short_day_label
+from .planner_vm import time_label_12h
 
 # -- copy ---------------------------------------------------------------------------------
 
@@ -173,6 +174,9 @@ class DraftVM:
     author_username: str = ""
     media_thumbnail_url: str = ""
     media_alt: str = PUBLICATION_ALT_FALLBACK
+    # m-24842988: the day the publication went up («21 oct»), for «En tu publicación
+    # del 21 oct». `""` when the publication is outside the loaded 2-week list.
+    media_day: str = ""
 
 
 class DraftLike(Protocol):
@@ -205,9 +209,10 @@ def short_date(value: datetime, zone: ZoneInfo) -> str:
 
 
 def date_time_label(value: datetime, zone: ZoneInfo) -> str:
-    """«12 oct 2026, 14:05» in the tenant's zone."""
+    """«23 oct, 2:05 p. m.» in the business's zone — the same clock as the rest of the
+    screen and the Planificador (m-24842988, `inbox_provider.moment_label`)."""
     local = value.astimezone(zone)
-    return f"{short_date(value, zone)}, {local:%H:%M}"
+    return f"{short_day_label(local)}, {time_label_12h(local)}"
 
 
 def _class_label(value: str) -> str:
@@ -360,6 +365,7 @@ def build_draft_vm(
         author_username=record.author_username or "",
         media_thumbnail_url=media.thumbnail_url if media else "",
         media_alt=caption or PUBLICATION_ALT_FALLBACK,
+        media_day=media.posted_day if media else "",
     )
 
 

@@ -221,7 +221,7 @@ def test_a_sentiment_era_draft_keeps_its_old_shape() -> None:
 
 def test_dates_are_spanish_in_the_tenant_zone() -> None:
     draft = vm.build_draft_vm(_record(), zone=_ZONE)
-    assert draft.created_at == "23 oct 2026, 14:30"
+    assert draft.created_at == "23 oct, 2:30 p. m."
 
 
 def test_sources_show_name_and_update_date_but_never_a_price() -> None:

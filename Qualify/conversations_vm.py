@@ -437,12 +437,12 @@ _TOGGLE_HINT = (
 
 def _sync_label(state: SyncStateLike | None, now: datetime, zone: tzinfo) -> str:
     if state is None or state.last_sync_finished_at is None:
-        return "Sin sincronizar todavía"
+        return "Aún no revisamos los mensajes"
     when = relative_time(state.last_sync_finished_at, now, zone)
     status = state.last_sync_status or ""
     if status == "failed":
-        return f"Última sincronización fallida {when}"
-    return f"Sincronizado {when}"
+        return f"No pudimos revisar los mensajes · {when}"
+    return f"Mensajes revisados · {when}"
 
 
 def build_access_vm(
@@ -480,23 +480,23 @@ def build_access_vm(
         return AccessVM(
             kind=ACCESS_NEVER_SYNCED,
             tone="info",
-            title="Todavía no se ha sincronizado esta cuenta",
+            title="Aún no revisamos los mensajes de esta cuenta",
             message=(
-                "Los mensajes aparecen cuando llega el primer aviso de Instagram o la "
-                "primera sincronización. Una lista vacía ahora no significa que no haya "
-                "mensajes."
+                "Los mensajes aparecen cuando Instagram nos avisa o cuando los revisamos "
+                "por primera vez. Una lista vacía ahora no significa que no haya mensajes."
             ),
             provisional=True,
             last_sync_label=last_sync,
         )
     status = (state.access_status or "").lower()
-    detail = f" (código {state.access_detail})" if state.access_detail else ""
+    # m-24842988: Instagram's error code (`state.access_detail`) is never shown — it is
+    # an internal number; the logs and the sync row keep it.
     if status == ACCESS_PERMISSION_MISSING:
         return AccessVM(
             kind=ACCESS_PERMISSION_MISSING,
             tone="warn",
             title="Instagram rechazó la lectura de mensajes",
-            message="La cuenta no tiene el permiso de mensajes concedido" + detail + ". "
+            message="La cuenta no tiene el permiso de mensajes concedido. "
             "Reconecta la cuenta y concede el permiso.",
             show_reconnect=True,
             provisional=True,
@@ -507,7 +507,7 @@ def build_access_vm(
             kind=ACCESS_AUTH_EXPIRED,
             tone="warn",
             title="La conexión caducó",
-            message="Instagram ya no acepta la credencial de esta cuenta" + detail + ". "
+            message="Instagram ya no acepta la conexión de esta cuenta. "
             "Reconéctala para volver a leer y responder mensajes.",
             show_reconnect=True,
             provisional=True,
@@ -527,8 +527,8 @@ def build_access_vm(
             kind=ACCESS_ERROR,
             tone="warn",
             title="No se pudo comprobar el acceso a los mensajes",
-            message="Instagram respondió con un error" + detail + ". Se volverá a intentar "
-            "en la próxima sincronización.",
+            message="Instagram respondió con un error. Lo intentamos de nuevo la próxima "
+            "vez que revisemos los mensajes.",
             provisional=True,
             last_sync_label=last_sync,
         )
@@ -549,8 +549,8 @@ def build_access_vm(
         return AccessVM(
             kind=ACCESS_SYNC_FAILED,
             tone="warn",
-            title="La última sincronización falló",
-            message="La lista puede estar incompleta. Se vuelve a intentar enseguida.",
+            title="No pudimos revisar los mensajes nuevos",
+            message="La lista puede estar incompleta. Lo intentamos de nuevo enseguida.",
             last_sync_label=last_sync,
             failure_key=finished.isoformat() if finished is not None else "failed",
         )
@@ -651,8 +651,9 @@ def counterpart_title(username: str | None, counterpart_external_id: str) -> str
     handle = (username or "").strip()
     if handle:
         return handle if handle.startswith("@") else f"@{handle}"
-    tail = counterpart_external_id[-6:] if counterpart_external_id else ""
-    return f"Persona ·{tail}" if tail else "Persona"
+    # m-24842988: never a slice of Instagram's internal id on screen.
+    # (`counterpart_external_id` stays in the signature for the callers.)
+    return UNKNOWN_PERSON
 
 
 def media_label(media_type: str | None) -> tuple[str, str, str]:
@@ -785,6 +786,18 @@ class MessageVM:
 
 
 STORY_REPLY_LABEL: Final = "Respondió a tu historia"
+# m-24842988: who the title shows when Instagram gave neither a name nor a handle.
+UNKNOWN_PERSON: Final = "Persona sin nombre"
+
+
+def reply_sent_message(who: str) -> str:
+    """m-24842988 (m5 hallazgo 12): «Tu respuesta a @ana sale en unos segundos.» —
+    `who` is the open chat's handle, else its name; generic without one. It is still
+    queued, so it never says «Listo» (N13)."""
+    who = (who or "").strip()
+    if who and who != UNKNOWN_PERSON:
+        return f"Tu respuesta a {who} sale en unos segundos."
+    return "Tu respuesta sale en unos segundos."
 
 
 def failure_label(code: str | None) -> str:
@@ -794,7 +807,7 @@ def failure_label(code: str | None) -> str:
         return _FAILURE_LABELS[code]
     if code.startswith("max_attempts"):
         return "No se envió tras varios intentos."
-    return f"No se envió (código {code})."
+    return "No se envió."
 
 
 def _day_of(value: datetime, zone: tzinfo, now: datetime) -> str:
@@ -1062,7 +1075,7 @@ TEMPLATE_HELP = (
     "Escribe {nombre} y lo cambiamos por el nombre de la persona; {marca}, por el de tu "
     "negocio. Lo que pongas entre corchetes, como [precio], lo completas tú antes de enviar."
 )
-TEMPLATE_READY_NOTE = "Plantilla en el cuadro: revísala. Nada sale hasta que pulses «Responder»."
+TEMPLATE_READY_NOTE = "Plantilla en el cuadro: revísala. Nada sale hasta que la envíes tú."
 
 
 class TemplateLike(Protocol):

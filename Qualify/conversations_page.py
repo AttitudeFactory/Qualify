@@ -80,7 +80,6 @@ from .ui import (
     drawer,
     dropzone,
     empty_state,
-    mono,
     page_body,
     page_header,
     platform_badge,
@@ -546,7 +545,7 @@ def _conversation_header() -> rx.Component:
                 flex_wrap="wrap",
             ),
             rx.hstack(
-                mono(thread.subtitle, size="1"),
+                rx.text(thread.subtitle, size="1", color=T.TEXT_MUTED),
                 _tone_pill(thread.attention_label, thread.attention_tone),
                 spacing="2",
                 flex_wrap="wrap",
@@ -970,7 +969,7 @@ def _suggestion_chip() -> rx.Component:
                 rx.cond(
                     d.claims != "",
                     rx.text("Por confirmar: " + d.claims, size="1", color=T.TEXT_MUTED),
-                    rx.text("Nada sale sin que pulses «Responder».", size="1", color=T.TEXT_MUTED),
+                    rx.text("Nada sale hasta que la envíes tú.", size="1", color=T.TEXT_MUTED),
                 ),
                 spacing="0",
                 min_width="0",
@@ -1328,8 +1327,8 @@ def _templates_list() -> rx.Component:
             empty_state(
                 "library",
                 "Aún no tienes plantillas en esta cuenta",
-                "Crea la primera con «Nueva plantilla»: un saludo, tus precios o tu horario, "
-                "listos para responder más rápido.",
+                "Crea la primera: un saludo, tus precios o tu horario, listos para "
+                "responder más rápido.",
             ),
             rx.vstack(rx.foreach(S.templates, _template_row), spacing="2", width="100%"),
         ),

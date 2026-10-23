@@ -11,7 +11,7 @@ What a card says, and where it comes from:
   and how the query was opened (an intent analysis, or by hand) — or, for a DM that
   replied to a story (PR 5), «Respondió a tu historia» with the story's link while Meta's
   URL lasts;
-- **why**: the intents, highest confidence first, «no fiable» when the golden set does not
+- **why**: the intents, highest confidence first, «revísalo» when the golden set does not
   back the class (same rule as Interacciones);
 - **how it would go out right now**: the route the service would use (a normal DM while
   the person's 24 h window is open, else Meta's private reply to the comment) and how long
@@ -51,8 +51,8 @@ ROUTE_NOTES: Final = {
     ),
 }
 TRIGGER_LABELS: Final = {
-    FollowupTrigger.INTENT: "Intención comercial",
-    FollowupTrigger.MANUAL: "Abierta desde Comentarios",
+    FollowupTrigger.INTENT: "Quiere comprar",
+    FollowupTrigger.MANUAL: "La abriste tú desde Comentarios",
 }
 CAPTION_CHARS: Final = 120
 STORY_WHERE: Final = "tu historia"
@@ -95,6 +95,8 @@ class FollowupCardVM:
     permalink: str
     trigger_label: str
     intents: list[FollowupIntentVM] = field(default_factory=list)
+    # m-24842988: one of the intents is «· revísalo» — the card says why, once.
+    intent_unsure: bool = False
     route_available: bool = False
     route_label: str = ""
     route_deadline: str = ""
@@ -174,6 +176,7 @@ def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> Follo
         permalink=(origin.story_reply_url if story else origin.media_permalink) or "",
         trigger_label=TRIGGER_LABELS[followup.trigger],
         intents=[FollowupIntentVM(c.label, c.commercial, c.reliable) for c in card.intents],
+        intent_unsure=any(not c.reliable for c in card.intents),
         has_draft=draft is not None,
         draft_id=str(draft.id) if draft else "",
         draft_text=draft.generated_text if draft else "",

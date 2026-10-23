@@ -24,7 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from qualify_api.assisted.approval import HumanApproval
 from qualify_api.intent import (
@@ -43,6 +43,7 @@ from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
+from .inbox_provider import tenant_zone
 from .inbox_vm import CandidateMediaVM
 from .replies_vm import PUBLICATION_ALT_FALLBACK, DraftVM, build_draft_vm
 
@@ -69,16 +70,10 @@ class GenerationSummaryVM:
     gate_rejected: int
 
 
-def _zone(name: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(name or "UTC")
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("UTC")
-
-
 def _tenant_zone(tenant_id: UUID) -> ZoneInfo:
-    """The tenant's timezone for dates on the card (same read Conversaciones uses)."""
-    return _zone(conversations_gateway().timezone(tenant_id))
+    """The business's zone for dates on the card — `inbox_provider.tenant_zone`
+    (m-24842988), the same clock the rest of the screen uses; UTC if unreadable."""
+    return tenant_zone(tenant_id)
 
 
 def _to_vm(record: DraftRecord, *, zone: ZoneInfo | None = None) -> DraftVM:
