@@ -89,6 +89,8 @@ def test_the_manual_flow_is_seven_screens_and_resumes_on_the_review(
     state.has_logo = "no"
     state.logo_brief_1 = "minimalista"
 
+    state.brand_ready = True  # a card left from an earlier finish
+
     async def get_state(_self: Any, _cls: type) -> Any:
         return creative
 
@@ -96,6 +98,7 @@ def test_the_manual_flow_is_seven_screens_and_resumes_on_the_review(
     import asyncio
 
     asyncio.run(wiz.BrandWizardState.resume.fn(state))
+    assert state.brand_ready is False  # m-24842965: entering opens the steps, not the card
     # no examples yet: they are filled on the review now, so that is where it opens
     assert state.step == wiz._CONFIRM_STEP
 
@@ -196,18 +199,70 @@ def test_an_empty_finished_search_says_why() -> None:
     assert state.results_note == ""
 
 
-async def test_mejorar_tu_perfil_goes_to_the_signup() -> None:
+async def test_finishing_a_draft_goes_to_the_signup_and_an_account_sees_its_brand_ready() -> None:
+    """m-24842965: a pre-login draft still goes on to the signup; an account no longer
+    lands on `/` (Menciones) — it gets «Tu marca está lista», with no navigation."""
     from .auth_state import AuthState
 
     auth = AuthState()
+    ready = wiz.BrandWizardState()
 
-    class Holder:
-        async def get_state(self, _cls: type) -> Any:
-            return auth
+    class Holder:  # the connect flow's state, which reaches the wizard's through get_state
+        async def get_state(self, cls: type) -> Any:
+            return ready if cls is wiz.BrandWizardState else auth
 
     assert await wiz._finish_route(Holder()) == "/registro"  # a pre-login draft
+    navigation = await wiz._finish_navigation(Holder())
+    assert navigation is not None and "/registro" in str(navigation)
+    assert ready.brand_ready is False
+
     auth.session_tenant_id = "00000000-0000-4000-8000-000000000001"
-    assert await wiz._finish_route(Holder()) == "/"  # an account has nothing to sign up for
+    assert await wiz._finish_route(Holder()) is None  # nothing to sign up for
+    assert await wiz._finish_navigation(Holder()) is None  # no redirect to Menciones
+    assert ready.brand_ready is True
+
+
+def test_the_brand_ready_card_only_leaves_to_its_own_routes() -> None:
+    ready = wiz.BrandWizardState()
+    for route in ("/create", "/connections", "/brand/kit"):
+        ready.brand_ready = True
+        spec = wiz.BrandWizardState.leave_brand_ready.fn(ready, route)
+        assert ready.brand_ready is False
+        assert route in str(spec)
+    # the route comes from the client: anything else falls back to the brand
+    spec = wiz.BrandWizardState.leave_brand_ready.fn(ready, "https://example.com")
+    assert "example.com" not in str(spec) and "/brand/kit" in str(spec)
+    ready.brand_ready = True
+    wiz.BrandWizardState.hide_brand_ready.fn(ready)
+    assert ready.brand_ready is False
+
+
+def test_the_brand_ready_card_says_it_in_the_owners_words() -> None:
+    """The exact strings of m-24842965, the three ways out, ≥ 44 px targets (N12), and
+    the old final button's text gone from both flows."""
+    import inspect
+    import json
+
+    def js(text: str) -> str:  # the compiled JSX escapes «á» as «\\u00e1»
+        return json.dumps(text)[1:-1]
+
+    rendered = str(wiz._brand_ready_card())
+    for text in (
+        "Tu marca está lista",
+        "Logo, colores y forma de hablar ya se usan en cada publicación.",
+        "Crear mi primera publicación",
+        "Conectar mi Instagram",
+        "Ver mi marca",
+    ):
+        assert js(text) in rendered, text
+    assert rendered.count("44px") == 3
+    source = inspect.getsource(wiz)
+    assert "Mejorar tu perfil" not in source
+    assert "_APP_HOME_ROUTE" not in source
+    assert "Terminar mi marca" in str(wiz._finish_button(wiz.BrandWizardState.finish))
+    for page in (wiz.brand_manual_index, wiz.brand_connect_index):
+        assert "_or_ready(" in inspect.getsource(page), page.__name__
+        assert js("Tu marca está lista") in str(page()), page.__name__
 
 
 def test_the_login_has_a_way_to_the_brand_kit() -> None:
