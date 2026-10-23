@@ -41,6 +41,9 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
+# m-24840590: the DOM id of the connection guide card, the target of «Ver el paso N».
+GUIDE_ELEMENT_ID = "guia-conexion"
+
 # QUA-202: "Pedir ayuda 1:1" copy. Two success notices, because the two outcomes are not
 # the same promise: a ticket the channel accepted gets a callback window; a ticket saved
 # while no channel was configured (or the channel was down) is only "registrada".
@@ -174,6 +177,14 @@ class ConnectionsState(rx.State):
     @rx.event
     def toggle_checklist(self) -> None:
         self.checklist_open = not self.checklist_open
+
+    @rx.event
+    def show_guide_step(self, key: str) -> rx.event.EventSpec:
+        """«Ver el paso N» on a card hint (m-24840590): unfold the guide with exactly that
+        step open and bring it into view — on a phone the guide is a long scroll away."""
+        self.checklist_open = True
+        self.expanded_requirement = key
+        return rx.scroll_to(GUIDE_ELEMENT_ID)
 
     @rx.event
     async def open_support(self) -> None:
@@ -317,6 +328,14 @@ class ConnectionsState(rx.State):
         async with self:
             rerequest = self.guidance_rerequest
         async for event in self._launch_connect(rerequest=rerequest):
+            yield event
+
+    @rx.event(background=True)
+    async def reconnect_for_permissions(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Volver a conectar» from a card hint (m-24840590): the account is missing a
+        permission, so Meta must ask again for what was left unticked
+        (`auth_type=rerequest`) — a plain retry would silently skip it."""
+        async for event in self._launch_connect(rerequest=True):
             yield event
 
     async def _launch_connect(self, *, rerequest: bool) -> AsyncIterator[rx.event.EventSpec]:

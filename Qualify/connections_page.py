@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .connections_state import ConnectionsState
+from .connections_state import GUIDE_ELEMENT_ID, ConnectionsState
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
     WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
+    ConnectionHintVM,
     ConnectionVM,
     ConnectRequirementVM,
 )
@@ -212,6 +213,52 @@ def _instagram_revoked_banner() -> rx.Component:
     )
 
 
+def _hint_row(hint: ConnectionHintVM) -> rx.Component:
+    """One missing thing: what, why, and «Ver el paso N» — which opens the guide on
+    exactly that step (`show_guide_step`), so the card and the guide share numbers."""
+    return rx.vstack(
+        rx.text(hint.title, size="2", weight="medium", color=T.TEXT_STRONG),
+        rx.text(hint.detail, size="2"),
+        rx.button(
+            rx.icon("list-checks", size=T.ICON_SM),
+            "Ver el paso ",
+            hint.step_number,
+            on_click=ConnectionsState.show_guide_step(hint.step_key),
+            variant="ghost",
+            size="1",
+            color_scheme="gray",
+        ),
+        spacing="1",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _hints_callout(conn: ConnectionVM) -> rx.Component:
+    """«A esta cuenta le falta algo» (m-24840590): only on an active Instagram card,
+    only for what the stored permissions show (`connection_hints`). One reconnect
+    button for all of them — the fix is the same Meta window, asked again with
+    `rerequest` so what was unticked comes back. `soft`, never the page's solid."""
+    return callout(
+        rx.vstack(
+            rx.foreach(conn.hints, _hint_row),
+            rx.button(
+                rx.icon("refresh-cw", size=15),
+                "Volver a conectar",
+                on_click=ConnectionsState.reconnect_for_permissions,
+                variant="soft",
+                size="2",
+                **T.tone_scheme("warn"),
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        "warn",
+        icon="list-checks",
+    )
+
+
 def disconnect_action(conn: ConnectionVM) -> rx.Component:
     """Disconnect with confirmation — fires the C-03 `-> revoked` transition."""
     return rx.alert_dialog.root(
@@ -299,6 +346,8 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # QUA-91: independent of the FSM-driven banners below — never shown at the
             # same time as claiming the connection is `degraded`.
             _data_access_badge(conn.data_access_state, conn.data_access_message),
+            # m-24840590: what this account is missing, each with its guide step.
+            rx.cond(conn.hints.length() > 0, _hints_callout(conn), rx.fragment()),
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
@@ -533,9 +582,10 @@ def _requirement_row(requirement: ConnectRequirementVM, number: int) -> rx.Compo
 
 
 def connect_requirements_card() -> rx.Component:
-    """«Antes de conectar»: the three things the account needs, each with its steps in
-    the Instagram app. A pre-flight hint (R4a), not a check — the screen cannot verify
-    any of it, and the copy never pretends to."""
+    """«Prepara tu Instagram»: the four things only the client can do (m-24840590),
+    each with its steps in the Instagram app or Meta's window. A pre-flight hint (R4a),
+    not a check — the screen cannot verify the Instagram side, and the copy never
+    pretends to; the card hints cover what the stored permissions do show."""
     rows: list[rx.Component] = []
     for number, requirement in enumerate(CONNECT_REQUIREMENTS, start=1):
         if number > 1:
@@ -546,10 +596,10 @@ def connect_requirements_card() -> rx.Component:
             rx.hstack(
                 rx.icon("list-checks", size=T.ICON_MD, color=T.tone_color("accent", 9)),
                 rx.vstack(
-                    rx.heading("Antes de conectar", size="4", as_="h2"),
+                    rx.heading("Prepara tu Instagram antes de conectar", size="4", as_="h2"),
                     rx.text(
-                        "Tu cuenta de Instagram necesita tres cosas. Revisarlas toma dos "
-                        "minutos y evita que la conexión falle.",
+                        "Son cuatro pasos y toman unos minutos. Si te saltas uno, Qualify "
+                        "no podrá publicar o responder mensajes por ti.",
                         size="2",
                         color=T.TEXT_MUTED,
                     ),
@@ -573,6 +623,19 @@ def connect_requirements_card() -> rx.Component:
                 width="100%",
             ),
             *rows,
+            # With accounts on screen there is no empty state, so the guide carries the
+            # page's one «Conectar cuenta» (solid: P3). Without accounts the empty state
+            # below already has it, and a second solid would compete.
+            rx.cond(
+                ConnectionsState.has_connections,
+                rx.button(
+                    rx.icon("plus", size=16),
+                    "Conectar cuenta",
+                    on_click=ConnectionsState.start_connect_flow,
+                    size="2",
+                ),
+                rx.fragment(),
+            ),
             rx.hstack(
                 rx.text(
                     "¿Tienes dudas? Una persona del equipo lo revisa contigo.",
@@ -591,6 +654,9 @@ def connect_requirements_card() -> rx.Component:
             width="100%",
         ),
         padding="1.25rem 1.5rem",
+        id=GUIDE_ELEMENT_ID,
+        # Scrolled into view by «Ver el paso N»: keep its top clear of the app bar.
+        scroll_margin_top="5rem",
     )
 
 
@@ -600,7 +666,7 @@ def _folded_checklist() -> rx.Component:
         rx.icon("list-checks", size=T.ICON_SM, color=T.TEXT_FAINT),
         rx.text("¿Vas a conectar otra cuenta?", size="2", color=T.TEXT_MUTED),
         rx.button(
-            "Ver los tres requisitos",
+            "Ver la guía de conexión",
             on_click=ConnectionsState.toggle_checklist,
             variant="ghost",
             size="1",

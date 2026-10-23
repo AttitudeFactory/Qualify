@@ -58,9 +58,12 @@ from .connections_vm import (
     CONNECT_REQUIREMENTS,
     CONNECT_RESULT_NOTICES,
     WHATSAPP_RECONNECT_HINT,
+    REQUIREMENT_NUMBERS,
     CapabilityVM,
+    ConnectionHintVM,
     ConnectionVM,
     connect_result_guidance,
+    connection_hints,
     connect_result_notice,
     whatsapp_label,
 )
@@ -654,14 +657,135 @@ def test_guidance_and_checklist_copy_have_no_jargon() -> None:
             _no_jargon(step)
 
 
-def test_checklist_names_the_three_requirements_in_order() -> None:
+def test_guide_has_the_four_client_steps_in_order() -> None:
+    """m-24840590: the four things only the client can do, in the order they do them —
+    and the Instagram menu paths spelled the way the app shows them."""
     keys = [requirement.key for requirement in CONNECT_REQUIREMENTS]
-    assert keys == ["professional", "page", "linked"]
-    # The Page path is spelled identically wherever it appears, so a renamed menu is a
-    # one-line change.
+    assert keys == ["professional", "messages", "permissions", "reconnect"]
+    assert REQUIREMENT_NUMBERS == {"professional": 1, "messages": 2, "permissions": 3, "reconnect": 4}
+    professional, messages, permissions, reconnect = CONNECT_REQUIREMENTS
     path = "Editar perfil → Información pública de la empresa → Página"
-    assert all(any(path in step for step in r.steps) for r in CONNECT_REQUIREMENTS[1:])
-    assert any("marca la de tu negocio" in step for step in CONNECT_REQUIREMENTS[2].steps)
+    assert any(path in step for step in professional.steps)
+    joined = " ".join(messages.steps)
+    for label in (
+        "Mensajes y respuestas a historias",
+        "Controles de mensajes",
+        "Herramientas conectadas",
+        "Permitir acceso a los mensajes",
+    ):
+        assert label in joined, label
+    assert any("Conectar cuenta" in step for step in permissions.steps)
+    assert "desmarcas" in permissions.summary
+    assert any("Volver a conectar" in step for step in reconnect.steps)
+
+
+def test_guide_copy_avoids_anglicisms() -> None:
+    """qualify-copy-es: «publicación», never «post»; no «Brand Kit», no «inbox»."""
+    texts = [r.title for r in CONNECT_REQUIREMENTS] + [r.summary for r in CONNECT_REQUIREMENTS]
+    texts += [step for r in CONNECT_REQUIREMENTS for step in r.steps]
+    for text in texts:
+        lowered = f" {text.lower()} "
+        for word in (" post ", " posts ", "brand kit", "inbox", " dm ", " app review", "login"):
+            assert word not in lowered, f"{word!r} in {text!r}"
+
+
+# -- m-24840590: card hints ---------------------------------------------------------------
+
+_FB_LOGIN_SCOPES = [
+    "pages_show_list",
+    "pages_read_engagement",
+    "business_management",
+    "instagram_basic",
+    "instagram_content_publish",
+    "instagram_manage_comments",
+    "pages_manage_metadata",
+    "instagram_manage_messages",
+    "pages_messaging",
+]
+
+
+def _hint_keys(**overrides: object) -> list[str]:
+    return [hint.key for hint in _to_vm(_row(**overrides), "Polet").hints]
+
+
+def test_a_complete_production_grant_has_no_hints() -> None:
+    assert _hint_keys(granted_scopes=list(_FB_LOGIN_SCOPES), linked_page_id="1029") == []
+    # Instagram Login vocabulary, no Page: the Page scopes do not apply.
+    assert _hint_keys(granted_scopes=list(_FULL_SCOPES), linked_page_id=None) == []
+
+
+def test_missing_messages_permission_points_to_the_messages_step() -> None:
+    without = [s for s in _FB_LOGIN_SCOPES if s != "instagram_manage_messages"]
+    (hint,) = _to_vm(_row(granted_scopes=without, linked_page_id="1029"), "Polet").hints
+    assert hint.key == "messages"
+    assert hint.step_key == "messages" and hint.step_number == 2
+    assert "mensajes directos" in hint.title
+
+
+def test_missing_page_messaging_alone_still_flags_messages() -> None:
+    """Fase C sends through the Page: `instagram_manage_messages` without
+    `pages_messaging` still leaves Direct, private replies and story replies dead."""
+    without = [s for s in _FB_LOGIN_SCOPES if s != "pages_messaging"]
+    assert _hint_keys(granted_scopes=without, linked_page_id="1029") == ["messages"]
+
+
+def test_missing_page_metadata_asks_for_a_reconnect() -> None:
+    without = [s for s in _FB_LOGIN_SCOPES if s != "pages_manage_metadata"]
+    (hint,) = _to_vm(_row(granted_scopes=without, linked_page_id="1029"), "Polet").hints
+    assert hint.key == "page" and hint.step_key == "reconnect" and hint.step_number == 4
+
+
+def test_missing_publish_and_comments_are_named_in_one_hint() -> None:
+    granted = ["instagram_basic", "instagram_manage_messages", "pages_messaging"]
+    vm = _to_vm(_row(granted_scopes=granted + ["pages_manage_metadata"], linked_page_id="9"), "P")
+    (hint,) = vm.hints
+    assert hint.key == "permissions" and hint.step_number == 3
+    assert "publicar ni leer y responder comentarios" in hint.detail
+
+
+def test_an_old_grant_gets_every_hint_in_guide_order() -> None:
+    """The connection made before Fase C: basic + publish + comments only."""
+    old = [
+        "pages_show_list",
+        "pages_read_engagement",
+        "business_management",
+        "instagram_basic",
+        "instagram_content_publish",
+        "instagram_manage_comments",
+    ]
+    hints = _to_vm(_row(granted_scopes=old, linked_page_id="1029"), "Polet").hints
+    assert [h.key for h in hints] == ["messages", "page"]
+    assert [h.step_number for h in hints] == sorted(h.step_number for h in hints)
+
+
+def test_hints_only_on_active_instagram_cards() -> None:
+    """Degraded/revoked cards already carry their reconnect banner; WhatsApp is
+    connected by an administrator, never through these steps."""
+    for status in ("degraded", "revoked"):
+        assert _hint_keys(status=status, granted_scopes=["instagram_basic"]) == []
+    assert _to_vm(_wa_row(granted_scopes=[]), "Bianki").hints == []
+
+
+def test_hint_copy_has_no_jargon_and_valid_steps() -> None:
+    hints = connection_hints(
+        platform="instagram",
+        status="active",
+        granted_literals=frozenset(),
+        resolved_keys=frozenset(),
+        has_linked_page=True,
+    )
+    assert [h.key for h in hints] == ["permissions", "messages", "page"]
+    for hint in hints:
+        _no_jargon(hint.title)
+        _no_jargon(hint.detail)
+        assert hint.step_key in REQUIREMENT_NUMBERS
+        assert REQUIREMENT_NUMBERS[hint.step_key] == hint.step_number
+
+
+def test_hint_vm_has_no_credential_fields() -> None:
+    for f in dataclasses.fields(ConnectionHintVM):
+        for fragment in _FORBIDDEN_FIELD_FRAGMENTS:
+            assert fragment not in f.name.lower()
 
 
 def test_request_support_delegates_to_the_real_seam_with_a_fixed_topic() -> None:
