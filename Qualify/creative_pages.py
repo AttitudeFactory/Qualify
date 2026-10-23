@@ -1547,7 +1547,7 @@ def _edit_actions() -> rx.Component:
             rx.box(
                 rx.flex(
                     rx.text(
-                        "Edita el gancho, el texto, los hashtags, el llamado a la acción y el "
+                        "Edita el gancho, el texto, las etiquetas, el llamado a la acción y el "
                         "guion.",
                         size="1",
                         color=T.TEXT_MUTED,
@@ -1777,7 +1777,7 @@ def _hashtags_field() -> rx.Component:
     return _rv_section(
         _field_head(
             "hash",
-            "Hashtags",
+            "Etiquetas",
             "Ayudan a que te encuentre gente que aún no te sigue.",
             CreativeState.hashtag_count_label,
         ),
@@ -1791,7 +1791,7 @@ def _hashtags_field() -> rx.Component:
                 wrap="wrap",
                 gap="0.4rem",
             ),
-            rx.text("Sin hashtags todavía.", class_name="q-rv-read q-rv-read--empty"),
+            rx.text("Sin etiquetas todavía.", class_name="q-rv-read q-rv-read--empty"),
         ),
         rx.cond(
             CreativeState.edit_mode,
@@ -1800,7 +1800,7 @@ def _hashtags_field() -> rx.Component:
                     CreativeState.edit_hashtag_query,
                     CreativeState.set_edit_hashtag_query,
                     CreativeState.add_typed_hashtag,
-                    "Escribe un hashtag",
+                    "Escribe una etiqueta",
                     "hash",
                 ),
                 _ai_hashtags(),

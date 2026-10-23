@@ -74,7 +74,9 @@ def test_the_script_result_shows_the_description_and_the_hashtags() -> None:
     assert (
         r"Descripci\u00f3n de la publicaci\u00f3n" in rendered and "description" in rendered
     )  # JS-escaped
-    assert "Hashtags" in rendered and "hashtags_text" in rendered
+    assert "Etiquetas" in rendered and "hashtags_text" in rendered
+    assert r"Etiquetas copiadas" in rendered
+    assert "Hashtags" not in rendered
 
 
 def test_a_script_without_shots_copies_alone() -> None:
@@ -1528,3 +1530,15 @@ def test_the_clips_middle_images_are_named_on_the_summary() -> None:
     state.go_to_view(str(len(state.gen_views) - 1))  # the summary
     rows = {row["label"]: row for row in state.gen_summary}
     assert "modelo de video avanzado" in rows["Imágenes del medio"]["value"]
+
+
+def test_the_piece_review_says_etiquetas_not_hashtags() -> None:
+    """CREAR-7 (m-24849133): the owner reads «Etiquetas»; the «#» of each tag stays."""
+    from .creative_pages import _hashtags_field
+
+    rendered = str(_hashtags_field())
+    assert "Etiquetas" in rendered
+    assert "Sin etiquetas todav" in rendered
+    assert "Escribe una etiqueta" in rendered
+    assert "Hashtags" not in rendered
+    assert "hashtags todav" not in rendered and "Escribe un hashtag" not in rendered
