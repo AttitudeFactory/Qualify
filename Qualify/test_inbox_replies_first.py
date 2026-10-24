@@ -110,7 +110,8 @@ def test_phone_targets_reach_44px() -> None:
 def test_a_reply_card_shows_who_commented_and_the_publication() -> None:
     """Criterion 2 (m-24842989): the author line sits above the comment, next to a small
     thumbnail of the publication whose alt names it."""
-    card = _src(inbox_page._draft_card)
+    assert "_draft_comment_block(draft)" in _src(inbox_page._draft_card)
+    card = _src(inbox_page._draft_comment_block)
     assert "_draft_publication_thumb(draft)" in card
     assert card.index('"@" + draft.author_username') < card.index("draft.comment_text")
     thumb = _src(inbox_page._draft_publication_thumb)
@@ -153,7 +154,7 @@ def test_the_empty_comments_state_offers_the_search() -> None:
 def test_a_reply_card_names_the_publication_by_day_else_by_caption() -> None:
     """m-24842988: «En tu publicación del 21 oct»; without the day, its caption in
     Latin quotes; with neither, nothing (the fallback alt says nothing)."""
-    source = _src(inbox_page._draft_card)
+    source = _src(inbox_page._draft_comment_block)
     assert '"En tu publicación del " + draft.media_day' in source
     assert '"En tu publicación «" + draft.media_alt + "»"' in source
     assert '(draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK)' in source
@@ -177,7 +178,9 @@ def test_only_a_sent_reply_gets_the_success_toast() -> None:
     source = _src(RepliesState._decide_and_send)
     after = source[source.index("await send_draft(") :]
     assert after.index('if sent.status != "sent":') < after.index("sent_message(author)")
-    assert "_SEND_REFUSED" in after and "_SEND_FAILED" in after
+    assert "self._report_failure(sent)" in after
+    report = _src(RepliesState._report_failure)
+    assert "_SEND_REFUSED" in report and "_SEND_FAILED" in report
 
 
 def test_the_reply_messages_are_plain_and_truthful() -> None:

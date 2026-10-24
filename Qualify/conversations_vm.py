@@ -33,6 +33,12 @@ What this module words, and never re-derives:
 outbound one from the R2 object Qualify sent, through the `/r2media/<token>` path the
 provider issues (`media_src`). The view-model never builds a URL itself.
 
+**Taps (m-24789472).** A message the person TAPPED instead of typing (a «pregunta
+inicial», a «respuesta rápida», a button or the menu) carries its origin line
+(`MessageVM.choice_label`, «Pregunta inicial: Precio»), worded by the backend's
+`conversations.choices.choice_label` — never re-derived here, never the raw payload. The
+thread list shows the same line as the last message's preview.
+
 **Drafts (E4).** A model's suggestion is a `DraftVM` the composer shows as a chip; the
 text lands in the box for the person to edit. `needs_review` is the generator's verdict
 (it could not ground something), worded here, never decided here.
@@ -44,6 +50,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
 from typing import Any, Final, Protocol
+
+from qualify_api.conversations.choices import choice_label as tap_origin
 
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -124,6 +132,23 @@ FILTERS: tuple[tuple[str, str], ...] = (
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_ALL
 
+# m-24842962 (N11): Inicio's «personas esperan tu respuesta» opens the list already
+# filtered — `/conversations?filtro=pendientes`. The slugs are the chips' own words.
+FILTER_PARAM = "filtro"
+FILTER_SLUGS = {
+    "todas": FILTER_ALL,
+    "pendientes": FILTER_PENDING,
+    "leidas": FILTER_READ,
+    "respondidas": FILTER_ANSWERED,
+}
+
+
+def filter_from_param(slug: str) -> str | None:
+    """`?filtro=pendientes` → `FILTER_PENDING`; absent or unknown → None (keep the
+    filter the owner already had)."""
+    return FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+
+
 #: `service.AttentionState` value → (label, tone).
 ATTENTION_PILLS: dict[str, tuple[str, str]] = {
     "pending": ("Pendiente", "warn"),
@@ -144,7 +169,10 @@ _MEDIA_KINDS: dict[str, tuple[str, str, str]] = {
     "audio": ("Audio", "mic", MEDIA_AUDIO),
     "video": ("Video", "video", MEDIA_VIDEO),
     "document": ("Archivo", "file-text", MEDIA_FILE),
-    "interactive": ("Respuesta rápida", "mouse-pointer-click", ""),
+    # m-24789472: `interactive` is a `template` attachment (webhook / instagram_source
+    # `_ATTACHMENT_MEDIA_TYPES`) — a message with buttons. A quick reply is NOT one: its
+    # tap arrives as text with `choice_kind` (the bubble's origin line words it).
+    "interactive": ("Mensaje con botones", "mouse-pointer-click", ""),
     # Meta's `is_unsupported`: a voice note, or any content the API does not expose.
     # Verified 2026-10-16: EVERY audio comes back so — the person's and our own echoes.
     "other": (
@@ -265,6 +293,9 @@ class ThreadExtra:
     preview: str | None = None
     preview_direction: str | None = None
     preview_media_type: str | None = None
+    # m-24789472: the last message was tapped, not typed (`messages.choice_kind`/payload).
+    preview_choice_kind: str | None = None
+    preview_choice_payload: str | None = None
 
 
 @dataclass(frozen=True)
@@ -676,7 +707,16 @@ def build_thread_row(
     extra = extra or ThreadExtra()
     preview = (extra.preview or "").strip()
     icon = ""
-    if not preview and extra.preview_media_type:
+    # m-24789472: a tapped last message previews as its origin («Pregunta inicial:
+    # Precio») — it already names what was tapped, and is shorter than the question.
+    tapped = (
+        None
+        if extra.preview_direction == "outbound"
+        else tap_origin(extra.preview_choice_kind, extra.preview_choice_payload, extra.preview)
+    )
+    if tapped:
+        preview, icon = tapped, TAP_ICON
+    elif not preview and extra.preview_media_type:
         label, icon, _control = media_label(extra.preview_media_type)
         preview = UNSUPPORTED_PREVIEW if extra.preview_media_type == "other" else label
     if not preview:
@@ -783,9 +823,17 @@ class MessageVM:
     # with the story's link while Meta's (expiring) URL lasts.
     story_reply_label: str = ""
     story_reply_href: str = ""
+    # m-24789472: where an inbound message came from when the person tapped it instead of
+    # typing it («Pregunta inicial: Precio», «Respuesta rápida: Sí»); "" when typed.
+    choice_label: str = ""
+    # m-24789472: «Mensaje con botones» under the text of a button template (its echo
+    # keeps the text; the buttons themselves are not part of the stored message).
+    kind_note: str = ""
 
 
 STORY_REPLY_LABEL: Final = "Respondió a tu historia"
+#: The Lucide icon next to a tapped message's origin (bubble and list preview).
+TAP_ICON: Final = "pointer"
 # m-24842988: who the title shows when Instagram gave neither a name nor a handle.
 UNKNOWN_PERSON: Final = "Persona sin nombre"
 
@@ -838,6 +886,15 @@ def build_message_vm(
         status = (message.delivery_status or "").lower()
         tick = "read" if status == "read" else "sent"
     story = None if outbound else getattr(message, "story_reply_id", None)
+    tapped = (
+        None
+        if outbound
+        else tap_origin(
+            getattr(message, "choice_kind", None),
+            getattr(message, "choice_payload", None),
+            message.text,
+        )
+    )
     return MessageVM(
         message_id=str(message.id),
         is_outbound=outbound,
@@ -851,7 +908,20 @@ def build_message_vm(
         media_src=media_src if control else "",
         story_reply_label=STORY_REPLY_LABEL if story else "",
         story_reply_href=(getattr(message, "story_reply_url", None) or "") if story else "",
+        choice_label=tapped or "",
+        kind_note=_kind_note(message.media_type, (message.text or "").strip()),
     )
+
+
+MEDIA_INTERACTIVE: Final = "interactive"
+
+
+def _kind_note(media_type: str | None, text: str) -> str:
+    """The quiet line under a button template's text ("" otherwise, and "" when the text
+    is missing — then the label itself is the bubble's text)."""
+    if (media_type or "").lower() != MEDIA_INTERACTIVE or not text:
+        return ""
+    return _MEDIA_KINDS[MEDIA_INTERACTIVE][0]
 
 
 def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> MessageVM:
@@ -871,20 +941,40 @@ def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> Message
         media_control=control,
         media_label=label,
         media_src=item.media_src if control else "",
+        kind_note=_kind_note(item.media_type, item.text),
     )
 
 
 def outbox_text(payload: Mapping[str, Any]) -> str:
-    """The readable text of a queued Messenger-Platform body (`message.text`); "" for an
-    attachment-only body (the caller words it by its media type)."""
+    """The readable text of a queued Messenger-Platform body (`message.text`, or the text
+    of a button template, m-24789472); "" for an attachment-only body (the caller words
+    it by its media type)."""
     message = payload.get("message")
     if isinstance(message, Mapping):
         text = message.get("text")
         if isinstance(text, str) and text.strip():
             return text.strip()
-        if isinstance(message.get("attachment"), Mapping):
+        attachment = message.get("attachment")
+        if isinstance(attachment, Mapping):
+            inner = attachment.get("payload")
+            if attachment.get("type") == "template" and isinstance(inner, Mapping):
+                body = inner.get("text")
+                if isinstance(body, str) and body.strip():
+                    return body.strip()
             return ""
     return "Mensaje"
+
+
+def outbox_media_type(media_type: str | None, payload: Mapping[str, Any]) -> str | None:
+    """An outbox row's media type for the bubble: a queued button template has none of
+    its own, so it reads as `interactive` — the same as its echo once sent."""
+    if media_type:
+        return media_type
+    message = payload.get("message")
+    attachment = message.get("attachment") if isinstance(message, Mapping) else None
+    if isinstance(attachment, Mapping) and attachment.get("type") == "template":
+        return MEDIA_INTERACTIVE
+    return None
 
 
 def build_conversation(
@@ -1085,6 +1175,62 @@ class TemplateLike(Protocol):
     default_key: str | None
 
 
+class ButtonLike(Protocol):
+    type: str
+    title: str
+    payload: str | None
+    url: str | None
+
+
+#: `interactive.BUTTON_POSTBACK` / `BUTTON_WEB_URL` — mirrored (a test pins them).
+BUTTON_REPLY = "postback"
+BUTTON_LINK = "web_url"
+#: What each kind of button is called on screen, and its icon.
+BUTTON_KINDS: dict[str, tuple[str, str]] = {
+    BUTTON_REPLY: ("Responder con un toque", "reply"),
+    BUTTON_LINK: ("Abrir una página", "external-link"),
+}
+
+
+@dataclass(frozen=True)
+class ButtonVM:
+    """One button of a template: in the manager's form (editable) and under the draft
+    (read-only). `payload` is the postback the template stored ("" for a new one: the
+    service derives it from the title); `url` only for an «Abrir enlace» button."""
+
+    kind: str
+    title: str
+    url: str = ""
+    payload: str = ""
+
+    @property
+    def kind_label(self) -> str:
+        return BUTTON_KINDS.get(self.kind, BUTTON_KINDS[BUTTON_REPLY])[0]
+
+    @property
+    def icon(self) -> str:
+        return BUTTON_KINDS.get(self.kind, BUTTON_KINDS[BUTTON_REPLY])[1]
+
+
+def build_button_vms(buttons: Iterable[ButtonLike]) -> list[ButtonVM]:
+    return [
+        ButtonVM(
+            kind=b.type if b.type in BUTTON_KINDS else BUTTON_REPLY,
+            title=b.title,
+            url=b.url or "",
+            payload=b.payload or "",
+        )
+        for b in buttons
+    ]
+
+
+def buttons_summary(buttons: Sequence[ButtonVM]) -> str:
+    """«Con botones: Ver catálogo · Hacer pedido» ("" without buttons)."""
+    if not buttons:
+        return ""
+    return "Con botones: " + " · ".join(b.title for b in buttons)
+
+
 @dataclass(frozen=True)
 class TemplateVM:
     """One template of the account's library, as the picker and the manager show it."""
@@ -1096,6 +1242,9 @@ class TemplateVM:
     is_default: bool
     is_first: bool
     is_last: bool
+    # m-24789472: a template with 1–3 buttons goes out as ONE message with buttons.
+    buttons: tuple[ButtonVM, ...] = ()
+    buttons_label: str = ""
 
 
 def template_preview(body: str, limit: int = TEMPLATE_PREVIEW_CHARS) -> str:
@@ -1111,18 +1260,23 @@ def build_template_rows(templates: Sequence[TemplateLike]) -> list[TemplateVM]:
     """The library in the order given (the service's picker order), with the ends marked
     so «Subir» / «Bajar» can be off on the first and the last."""
     last = len(templates) - 1
-    return [
-        TemplateVM(
-            template_id=str(t.id),
-            title=t.title,
-            body=t.body,
-            preview=template_preview(t.body),
-            is_default=t.default_key is not None,
-            is_first=i == 0,
-            is_last=i == last,
+    rows: list[TemplateVM] = []
+    for i, t in enumerate(templates):
+        buttons = tuple(build_button_vms(getattr(t, "buttons", None) or ()))
+        rows.append(
+            TemplateVM(
+                template_id=str(t.id),
+                title=t.title,
+                body=t.body,
+                preview=template_preview(t.body),
+                is_default=t.default_key is not None,
+                is_first=i == 0,
+                is_last=i == last,
+                buttons=buttons,
+                buttons_label=buttons_summary(buttons),
+            )
         )
-        for i, t in enumerate(templates)
-    ]
+    return rows
 
 
 def template_counter(count: int) -> str:
@@ -1177,3 +1331,137 @@ def template_notice(text: str, unresolved: Sequence[str], blanks: Sequence[str])
     if left_blanks:
         sentences.append(f"Rellena {_join_es(left_blanks)} antes de enviar.")
     return " ".join(sentences)
+
+
+# ======================================================================================
+# Quick replies and messages with buttons (m-24789472, phase 3)
+# ======================================================================================
+
+#: Mirrors of `qualify_api.conversations.interactive` (a test pins them equal): the
+#: composer counts as the person types; the service validates again before writing.
+MAX_QUICK_REPLIES = 13
+MAX_QUICK_REPLY_TITLE_CHARS = 20
+MAX_TEMPLATE_BUTTONS = 3
+MAX_BUTTON_TITLE_CHARS = 20
+MAX_BUTTON_TEXT_CHARS = 640
+
+QUICK_REPLIES_HINT = (
+    "Son opciones para que la persona responda con un toque. Solo se ven en la aplicación "
+    "de Instagram del celular y desaparecen cuando toca una."
+)
+BUTTONS_HINT = (
+    "Con botones, la plantilla sale en un solo mensaje de hasta "
+    f"{MAX_BUTTON_TEXT_CHARS} caracteres. Los botones solo se ven en la aplicación de "
+    "Instagram del celular."
+)
+QUICK_REPLIES_WITH_BUTTONS = (
+    "Un mensaje con botones no lleva respuestas rápidas. Quita los botones para usarlas."
+)
+QUICK_REPLIES_NEED_TEXT = "Escribe un mensaje: las respuestas rápidas van debajo de él."
+BUTTONS_OFF_NOTICE = (
+    "Los botones de esta plantilla todavía no se pueden enviar: tu mensaje saldrá sin ellos."
+)
+BUTTONS_OFF_FORM_NOTICE = (
+    "Los mensajes con botones todavía no se pueden enviar desde Qualify. Puedes guardarlos "
+    "ya: mientras tanto, la plantilla sale sin botones."
+)
+
+
+@dataclass(frozen=True)
+class FeatureVM:
+    """Whether the composer may send one kind of interactive message, and — when not —
+    the plain sentence. Built from the service's `Availability`; its `reason` names a
+    deployment switch and `state_label` the team's verdict — neither is shown."""
+
+    enabled: bool
+    notice: str
+    state_label: str
+
+
+_FEATURE_NOTICES: dict[str, str] = {
+    "quick_replies": (
+        "Las respuestas rápidas todavía no están disponibles: estamos terminando de "
+        "probarlas con Instagram."
+    ),
+    "structured_templates": (
+        "Los mensajes con botones todavía no están disponibles: estamos terminando de "
+        "probarlos con Instagram."
+    ),
+}
+
+FEATURE_OFF = FeatureVM(enabled=False, notice="", state_label="")
+
+
+class AvailabilityLike(Protocol):
+    capability: Any
+    enabled: bool
+
+    @property
+    def state_label(self) -> str: ...
+
+
+def build_feature_vm(availability: AvailabilityLike) -> FeatureVM:
+    if availability.enabled:
+        return FeatureVM(enabled=True, notice="", state_label="")
+    key = str(getattr(availability.capability, "value", availability.capability))
+    return FeatureVM(
+        enabled=False,
+        notice=_FEATURE_NOTICES.get(key, "Esta opción todavía no está disponible."),
+        state_label=availability.state_label,
+    )
+
+
+def _quick_reply_messages() -> dict[str, str]:
+    from qualify_api.conversations import interactive  # noqa: PLC0415
+
+    return interactive.MESSAGES
+
+
+def add_quick_reply(current: Sequence[str], title: str) -> tuple[list[str], str]:
+    """(the list with `title` added, "") or (the list unchanged, why not) — the service's
+    own sentences, so the composer and a refused send say the same thing."""
+    messages = _quick_reply_messages()
+    clean = " ".join(title.split())
+    if len(current) >= MAX_QUICK_REPLIES:
+        return list(current), messages["quick_replies_too_many"]
+    if not clean:
+        return list(current), messages["quick_reply_title_empty"]
+    if len(clean) > MAX_QUICK_REPLY_TITLE_CHARS:
+        return list(current), messages["quick_reply_title_too_long"]
+    if clean.casefold() in {c.casefold() for c in current}:
+        return list(current), messages["quick_reply_title_repeated"]
+    return [*current, clean], ""
+
+
+def remove_at(items: Sequence[Any], index: int) -> list[Any]:
+    """`items` without the one at `index` (unchanged when out of range)."""
+    if not isinstance(index, int) or index < 0 or index >= len(items):
+        return list(items)
+    return [item for i, item in enumerate(items) if i != index]
+
+
+def quick_replies_counter(count: int) -> str:
+    return f"{count}/{MAX_QUICK_REPLIES}"
+
+
+def buttons_body_error(body: str, has_buttons: bool) -> str:
+    """The 640-character rule of a message with buttons, checked as the person types:
+    the template form (the service's `body_too_long_for_buttons`) and the composer."""
+    if has_buttons and len(body.strip()) > MAX_BUTTON_TEXT_CHARS:
+        from qualify_api.conversations.templates import MESSAGES  # noqa: PLC0415
+
+        return MESSAGES["body_too_long_for_buttons"]
+    return ""
+
+
+def composer_interactive_error(text: str, *, quick_replies: int, buttons_will_send: bool) -> str:
+    """What stops «Responder» because of quick replies or buttons ("" when nothing does):
+    quick replies need a text to hang under, and a message with buttons is one message of
+    at most 640 characters (never split)."""
+    if buttons_will_send:
+        if len(text.strip()) > MAX_BUTTON_TEXT_CHARS:
+            return _quick_reply_messages()["button_text_too_long"]
+        return ""
+    if quick_replies and not text.strip():
+        return QUICK_REPLIES_NEED_TEXT
+    return ""

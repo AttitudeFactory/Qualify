@@ -52,7 +52,12 @@ class CommentReplyError(Exception):
     `is_ambiguous` distinguishes a TRANSPORT failure (timeout, connection reset — the
     reply may or may not have posted) from a definite platform refusal (Meta answered
     with a non-200 and a body). Only the caller (the service) decides what to DO with
-    that distinction; this exception only carries the fact."""
+    that distinction; this exception only carries the fact.
+
+    ATENDER-9 (m-24849130) adds two facts for `replies.failures.classify_reply_error`:
+    `not_sent` — the request provably never reached Meta (connect error, connect or
+    pool timeout), so a retry cannot duplicate the reply; and `platform_is_transient` —
+    Meta's own `error.is_transient` flag."""
 
     def __init__(
         self,
@@ -62,12 +67,16 @@ class CommentReplyError(Exception):
         platform_subcode: int | None = None,
         http_status: int | None = None,
         is_ambiguous: bool = False,
+        not_sent: bool = False,
+        platform_is_transient: bool = False,
     ) -> None:
         super().__init__(message)
         self.platform_code = platform_code
         self.platform_subcode = platform_subcode
         self.http_status = http_status
         self.is_ambiguous = is_ambiguous
+        self.not_sent = not_sent
+        self.platform_is_transient = platform_is_transient
 
 
 class CommentReplyClient(Protocol):
@@ -101,6 +110,19 @@ def _error_codes(response: httpx.Response) -> tuple[int | None, int | None]:
     )
 
 
+def _is_transient_flag(response: httpx.Response) -> bool:
+    """Meta's `error.is_transient` ("Handling errors": retry later), False if absent."""
+    try:
+        error = dict(response.json()).get("error")
+    except ValueError:
+        return False
+    return isinstance(error, dict) and error.get("is_transient") is True
+
+
+#: Transport failures that happen BEFORE the request is written: nothing reached Meta.
+_NOT_SENT_ERRORS: Final = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
 def _parse_reply_response(payload: dict[str, Any]) -> str:
     """[VERIFIED] `{"id": "<new_comment_id>"}` — corpus citation and the live
     observations in the module docstring. The failure mode of an unexpected shape is a
@@ -130,6 +152,13 @@ class HttpCommentReplyClient:
                 params={"message": message},
                 timeout=REPLY_TIMEOUT,
             )
+        except _NOT_SENT_ERRORS as exc:
+            # ATENDER-9: the connection was never made, so the reply cannot have posted —
+            # the one transport failure a retry cannot turn into a duplicate.
+            raise CommentReplyError(
+                f"could not reach Meta to reply to comment {ig_comment_id}: {type(exc).__name__}",
+                not_sent=True,
+            ) from exc
         except httpx.TransportError as exc:
             # The measured ambiguity `publishing/service.py` already names: a timeout or
             # connection reset here does NOT prove the reply did not post. The caller
@@ -147,5 +176,6 @@ class HttpCommentReplyClient:
                 platform_code=code,
                 platform_subcode=subcode,
                 http_status=response.status_code,
+                platform_is_transient=_is_transient_flag(response),
             )
         return _parse_reply_response(dict(response.json()))

@@ -4,11 +4,21 @@ runtime beyond state objects, no database."""
 
 from __future__ import annotations
 
+import ast
+import textwrap
+
 from qualify_api.planner.gallery import GalleryState as DerivedState
 
 from .gallery_state import GalleryState
+from .pending_state import PendingState
 from .planner_state import MODE_ASSIGN, PlannerState
 from .planner_vm import (
+    CARD_ACTION_PLANNER,
+    CARD_ACTION_REVIEW,
+    CARD_ACTION_SCHEDULE,
+    CARD_ACTION_VIEW,
+    CARD_ACTION_WAIT,
+    CARD_STATES,
     GALLERY_FILTER_ALL,
     GALLERY_LABELS,
     GALLERY_STATE_FILTERS,
@@ -16,8 +26,11 @@ from .planner_vm import (
     CategoryOptionVM,
     ConnectionChoiceVM,
     build_post_option,
+    card_state,
     category_options,
     filter_posts,
+    history_help,
+    history_word,
 )
 
 
@@ -44,22 +57,230 @@ def _post(post_id: str, *, state: str = "schedulable", category: str = "galeria"
 def test_gallery_labels_are_the_five_post_states_and_none_of_the_event_words() -> None:
     assert {s.value for s in DerivedState} == set(GALLERY_LABELS)
     words = {label for label, _tone in GALLERY_LABELS.values()}
-    assert words == {"Borrador", "Por completar", "Listo", "Usado", "Desechado"}
+    assert words == {"Creándose", "Le falta algo", "Lista para programar", "Ya salió", "Descartada"}
     assert words.isdisjoint({"Programado", "Pendiente", "Publicado", "Vencido", "Fallido"})
-    assert [value for value, _label in GALLERY_STATE_FILTERS] == list(GALLERY_LABELS)
+    # m-24842981: the filters are the card's states — «Por revisar» split out first
+    assert [label for _value, label in GALLERY_STATE_FILTERS] == [
+        "Por revisar",
+        "Le falta algo",
+        "Preparando el video final",
+        "Lista para programar",
+        "Programada",
+        "Ya salió",
+        "Descartada",
+        "Creándose",
+    ]
 
 
 def test_the_card_carries_state_word_tone_and_history_badges() -> None:
     post = _post("p1", state="schedulable", times_published=3, has_live_event=True)
-    assert (post.gallery_label, post.gallery_tone) == ("Listo", "ok")
-    assert post.used_count == 3 and post.in_calendar is True  # Listo + Usado ×3 + En calendario
+    assert (post.gallery_label, post.gallery_tone) == ("Lista para programar", "ok")
+    assert post.used_count == 3 and post.in_calendar is True
     used = _post("p2", state="used", times_published=1)
-    assert (used.gallery_label, used.gallery_tone) == ("Usado", "info")
+    assert (used.gallery_label, used.gallery_tone) == ("Ya salió", "info")
     draft = _post("p3", state="draft", approval="not_ready", is_publishable=False)
-    assert (draft.gallery_label, draft.gallery_tone) == ("Borrador", "neutral")
+    assert (draft.gallery_label, draft.gallery_tone) == ("Creándose", "neutral")
     assert not draft.schedulable
     unknown = _post("p4", state="")
     assert (unknown.gallery_label, unknown.gallery_tone) == ("", "neutral")
+    assert unknown.card_state == ""
+
+
+# --- m-24842981 (CREAR-3): the state in words and ONE main button per card --------------
+
+
+def test_each_card_state_has_its_words_and_its_one_main_button() -> None:
+    cases = {
+        "review": _post("a", state="needs_action", lifecycle_status="generated"),
+        "missing": _post(
+            "b", state="needs_action", approval="approved", lifecycle_status="approved"
+        ),
+        "ready": _post("c", state="schedulable"),
+        "scheduled": _post("g", state="used", has_live_event=True),
+        "used": _post("d", state="used", times_published=1),
+        "discarded": _post("e", state="discarded", approval="rejected"),
+        "drafting": _post("f", state="draft", approval="not_ready", lifecycle_status="drafting"),
+    }
+    seen = {
+        key: (p.card_state, p.card_label, p.card_action, p.card_action_label)
+        for key, p in cases.items()
+    }
+    assert seen == {
+        "review": ("review", "Por revisar", CARD_ACTION_REVIEW, "Revisar"),
+        "missing": ("missing", "Le falta algo", CARD_ACTION_REVIEW, "Ver qué falta"),
+        "ready": ("ready", "Lista para programar", CARD_ACTION_SCHEDULE, "Elegir día y hora"),
+        "scheduled": ("scheduled", "Programada", CARD_ACTION_PLANNER, "Ver en Tu semana"),
+        "used": ("used", "Ya salió", CARD_ACTION_VIEW, "Ver"),
+        "discarded": ("discarded", "Descartada", CARD_ACTION_VIEW, "Ver"),
+        "drafting": ("drafting", "Creándose", CARD_ACTION_VIEW, "Ver"),
+    }
+    # the drawer's pill prints the same words as the card
+    assert cases["review"].gallery_label == "Por revisar"
+
+
+def test_waiting_for_review_wins_over_what_else_is_missing() -> None:
+    assert card_state("needs_action", waiting_review=True) == CARD_STATES["review"]
+    assert card_state("needs_action", waiting_review=False) == CARD_STATES["missing"]
+    assert card_state("schedulable", waiting_review=True) == CARD_STATES["ready"]
+    assert card_state("nonsense", waiting_review=False) is None
+
+
+def test_an_approved_publication_whose_final_is_being_made_waits_with_the_button_off() -> None:
+    """Review 2026-10-24 (finding 8): approved, its video final still being made — the
+    card says «Preparando el video final» and its one button says the same, disabled
+    (the page renders CARD_ACTION_WAIT as a disabled button). A failed final stays «Le
+    falta algo»: its page offers «Intentar de nuevo». Review still comes first."""
+    assert (
+        card_state("needs_action", waiting_review=False, final_rendering=True)
+        == (CARD_STATES["preparing"])
+    )
+    assert (
+        card_state("needs_action", waiting_review=True, final_rendering=True)
+        == (CARD_STATES["review"])
+    )
+    post = _post(
+        "w",
+        state="needs_action",
+        approval="approved",
+        lifecycle_status="approved",
+        final_rendering=True,
+    )
+    assert (post.card_state, post.card_label, post.card_action, post.card_action_label) == (
+        "preparing",
+        "Preparando el video final",
+        CARD_ACTION_WAIT,
+        "Preparando el video final",
+    )
+    assert post.gallery_label == "Preparando el video final"  # the drawer pill too
+
+
+def test_the_gallery_card_disables_the_button_while_the_final_is_made() -> None:
+    from . import creative_pages
+    from .test_campaigns_ui import _PostVar
+
+    rendered = str(creative_pages._gallery_card(_PostVar))
+    assert CARD_ACTION_WAIT in rendered and "disabled:true" in rendered.replace(" ", "")
+
+
+def test_the_gallery_asks_for_the_final_only_of_posts_held_by_a_preview(monkeypatch) -> None:
+    """`load_gallery` reads the final's state (the final poll's light read) only for a
+    post the gate holds as «still a preview», and a failed read leaves the card alone."""
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from qualify_api.planner.post_reader import UnpublishableReason
+    from qualify_api.planner.publishable import REASON_TEXT
+
+    from . import planner_provider
+    from .creative_vm import video_draft_vm
+
+    pending = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
+    asked: list[UUID] = []
+    answers = {
+        UUID(int=1): video_draft_vm("rendering", None),
+        UUID(int=2): video_draft_vm("failed", None, "x", approved=True),
+    }
+
+    def fake_state(tenant_id, draft_id):  # noqa: ANN001, ANN202
+        asked.append(draft_id)
+        if draft_id == UUID(int=3):
+            raise RuntimeError("db down")
+        return answers.get(draft_id)
+
+    monkeypatch.setattr(planner_provider, "final_video_state", fake_state)
+
+    def post(n: int, reason: str = pending, outputs: tuple = ()):  # noqa: ANN202
+        return SimpleNamespace(post_id=UUID(int=n), unpublishable_reason=reason, outputs=outputs)
+
+    tenant = UUID(int=99)
+    assert planner_provider._final_rendering(tenant, post(1)) is True
+    assert planner_provider._final_rendering(tenant, post(2)) is False  # failed: «Le falta algo»
+    assert planner_provider._final_rendering(tenant, post(3)) is False  # unreadable
+    assert planner_provider._final_rendering(tenant, post(4, "Falta la foto.")) is False
+    by_output = post(5, "", (SimpleNamespace(unpublishable_reason=pending),))
+    answers[UUID(int=5)] = video_draft_vm("rendering", None)
+    assert planner_provider._final_rendering(tenant, by_output) is True
+    assert asked == [UUID(int=1), UUID(int=2), UUID(int=3), UUID(int=5)]
+
+
+def test_on_the_calendar_but_never_out_is_programada_not_ya_salio() -> None:
+    """UX review (m-24842981): a one-use publication already on the calendar for
+    Thursday has not gone out — the card must not say «Ya salió»."""
+    assert card_state("used", waiting_review=False, times_published=0) == CARD_STATES["scheduled"]
+    assert card_state("used", waiting_review=False, times_published=1) == CARD_STATES["used"]
+    post = _post("s", state="used", has_live_event=True)
+    assert (post.card_label, post.card_action_label) == ("Programada", "Ver en Tu semana")
+    assert post.gallery_label == "Programada"  # the drawer pill says the same
+
+
+def test_history_word_and_its_visible_help() -> None:
+    assert (history_word(0), history_help(0)) == (
+        "Por probar",
+        "Todavía no ha salido en tus redes.",
+    )
+    assert (history_word(1), history_help(1)) == (
+        "Por probar",
+        "Salió 1 vez en tus redes: todavía no sabemos si funciona.",
+    )
+    assert (history_word(3), history_help(3)) == (
+        "Ya probada",
+        "Ya salió 3 veces en tus redes: se puede repetir sin problema.",
+    )
+    post = _post("a", state="schedulable", times_published=3)
+    assert (post.history_word, post.history_help) == (history_word(3), history_help(3))
+    used = _post("b", state="used", times_published=2)
+    assert used.history_word == "Ya probada"
+
+
+def test_the_history_line_only_shows_where_it_helps_decide() -> None:
+    """UX review (m-24842981): only ready and already-out cards say «Ya probada» /
+    «Por probar»; review, missing, drafting, scheduled and discarded cards do not."""
+    quiet = [
+        _post("a", state="needs_action", lifecycle_status="generated"),
+        _post("b", state="needs_action", approval="approved", lifecycle_status="approved"),
+        _post("c", state="draft", approval="not_ready", lifecycle_status="drafting"),
+        _post("d", state="used", has_live_event=True),
+        _post("e", state="discarded", approval="rejected", times_published=4),
+    ]
+    assert [(p.history_word, p.history_help) for p in quiet] == [("", "")] * len(quiet)
+
+
+def test_the_gallery_card_prints_no_cold_hot_or_evergreen_and_no_title_only_help() -> None:
+    """m-24842981: no visible «Cold», «Hot» nor «evergreen» on «Por aprobar» and its
+    publication page, and the help is not in a `title=` attribute."""
+    import inspect
+
+    from . import creative_pages
+
+    sources = [
+        inspect.getsource(fn)
+        for fn in (
+            creative_pages._gallery_state_badge,
+            creative_pages._card_main_button,
+            creative_pages._gallery_card,
+            creative_pages._history_line,
+            creative_pages.drafts_index,
+        )
+    ]
+    strings = [
+        node.value
+        for src in sources
+        for node in ast.walk(ast.parse(textwrap.dedent(src)))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    # "cold" / "hot" in lower case are the temperature keys (class names, comparisons)
+    for s in strings:
+        tokens = s.replace("·", " ").split()
+        assert "Cold" not in tokens and "Hot" not in tokens, s
+        assert "evergreen" not in s.lower(), s
+        # UX review: the old metaphor's glyphs go too — the icon says what the word says
+        assert s not in ("snowflake", "flame"), s
+    for src in sources:
+        tree = ast.parse(textwrap.dedent(src))
+        assert not any(isinstance(k, ast.keyword) and k.arg == "title" for k in ast.walk(tree))
+    words = {label for _key, label in GALLERY_STATE_FILTERS}
+    words |= {s.action_label for s in CARD_STATES.values()}
+    assert not any(w in " ".join(words) for w in ("Cold", "Hot", "evergreen", "POST"))
 
 
 def test_the_media_label_names_medium_and_format() -> None:
@@ -76,7 +297,7 @@ def test_filter_posts_by_state_and_category() -> None:
     posts = [
         _post("a", state="schedulable", category="reel"),
         _post("b", state="draft", category="galeria"),
-        _post("c", state="used", category="reel"),
+        _post("c", state="used", category="reel", times_published=1),
         _post("d", state="discarded", category="story"),
     ]
     assert [p.post_id for p in filter_posts(posts, state=GALLERY_FILTER_ALL, category="")] == [
@@ -87,11 +308,11 @@ def test_filter_posts_by_state_and_category() -> None:
     ]
     assert [p.post_id for p in filter_posts(posts, state="used", category="all")] == ["c"]
     assert [p.post_id for p in filter_posts(posts, state="all", category="reel")] == ["a", "c"]
-    assert [p.post_id for p in filter_posts(posts, state="draft", category="reel")] == []
+    assert [p.post_id for p in filter_posts(posts, state="drafting", category="reel")] == []
     assert category_options(posts) == [
         CategoryOptionVM(value="reel", label="Reel"),
         CategoryOptionVM(value="galeria", label="Galería"),
-        CategoryOptionVM(value="story", label="Story"),
+        CategoryOptionVM(value="story", label="Historia"),
     ]
 
 
@@ -104,9 +325,9 @@ def test_gallery_state_filters_count_and_clear() -> None:
     ]
     assert state.total_count == 3 and state.visible_count == 3 and not state.is_filtered
     assert state.state_counts["all"] == 3
-    assert state.state_counts["schedulable"] == 2 and state.state_counts["discarded"] == 1
-    assert state.state_counts["draft"] == 0
-    state.set_state_filter("schedulable")
+    assert state.state_counts["ready"] == 2 and state.state_counts["discarded"] == 1
+    assert state.state_counts["drafting"] == 0 and state.state_counts["review"] == 0
+    state.set_state_filter("ready")
     state.set_category_filter("reel")
     assert [p.post_id for p in state.visible] == ["a"] and state.is_filtered
     state.set_state_filter("nonsense")  # unknown → all
@@ -225,9 +446,11 @@ def test_every_screen_that_approves_a_draft_says_why_a_price_blocks_it() -> None
 _QA_POST_ID = "d0000000-0000-4000-8000-000000000002"
 
 
-async def _quick_approve(monkeypatch, gallery) -> tuple[GalleryState, list, list]:
+async def _quick_approve(monkeypatch, gallery, video_draft=None) -> tuple[GalleryState, list, list]:
     """Run «Aprobar» on a card with the backend faked: `gallery` is what the grid reads
-    right after approving (a `GalleryData`, or an exception to raise)."""
+    right after approving (a `GalleryData`, or an exception to raise); `video_draft` is
+    the approved piece's Seedance 2.5 draft state (m-24820142), none by default."""
+    from dataclasses import replace
     from uuid import UUID
 
     from . import gallery_state as gallery_state_module
@@ -268,14 +491,18 @@ async def _quick_approve(monkeypatch, gallery) -> tuple[GalleryState, list, list
         return gallery
 
     approved: list[UUID] = []
+    approved_vm = replace(draft, status="approved")
+    if video_draft is not None:
+        approved_vm = replace(approved_vm, video_draft=video_draft)
+
+    def fake_approve(tenant_id, draft_id, variant_id, user_id):
+        approved.append(draft_id)
+        return approved_vm
+
     monkeypatch.setattr(GalleryState, "_tenant", fake_tenant)
     monkeypatch.setattr(gallery_state_module, "acting_user_id", lambda tenant_id: tenant_id)
     monkeypatch.setattr(gallery_state_module, "draft_detail", lambda tenant_id, draft_id: draft)
-    monkeypatch.setattr(
-        gallery_state_module,
-        "approve_draft",
-        lambda tenant_id, draft_id, variant_id, user_id: approved.append(draft_id),
-    )
+    monkeypatch.setattr(gallery_state_module, "approve_draft", fake_approve)
     monkeypatch.setattr(gallery_state_module, "load_gallery", fake_load_gallery)
 
     state = GalleryState()
@@ -305,7 +532,7 @@ async def test_quick_approve_toast_says_not_out_yet_and_offers_elegir_dia_y_hora
     from uuid import UUID
 
     from . import gallery_state as gallery_state_module
-    from .creative_state import APPROVED_TOAST as DRAFT_PAGE_TOAST
+    from .creative_vm import APPROVED_TOAST as DRAFT_PAGE_TOAST
 
     state, events, approved = await _quick_approve(monkeypatch, _gallery(schedulable=True))
 
@@ -314,11 +541,13 @@ async def test_quick_approve_toast_says_not_out_yet_and_offers_elegir_dia_y_hora
     assert gallery_state_module.APPROVED_TOAST == DRAFT_PAGE_TOAST  # one wording, both places
     toast = str(events[0])
     assert "Publicación aprobada. Ahora elige cuándo sale." in toast
+    assert "Ver publicación" not in toast  # nothing to wait for: the way is Tu semana
     # the action button, wired to Tu semana's drawer on this publication
     assert "label='Elegir día y hora'" in toast and '["onClick"]' in toast
     assert f"/planner?post={_QA_POST_ID}" in toast
     assert "POST aprobado" not in toast
-    assert len(events) == 1  # no second read of the grid
+    # no second read of the grid; only the menu's pending counts (m-24842963)
+    assert len(events) == 2 and events[-1] is PendingState.refresh_now
 
 
 async def test_quick_approve_of_a_not_ready_publication_offers_no_dead_end(monkeypatch) -> None:
@@ -337,7 +566,8 @@ async def test_quick_approve_with_an_unreadable_grid_still_offers_the_way(monkey
     # the approval stands, so the way to Tu semana is offered (it is the real gate) …
     assert f"/planner?post={_QA_POST_ID}" in str(events[0])
     # … and the grid is read again by `load`, which shows its own error if it fails
-    assert events[-1] is GalleryState.load
+    assert events[-2] is GalleryState.load
+    assert events[-1] is PendingState.refresh_now  # m-24842963: the menu's count
 
 
 def test_schedule_readiness_reads_the_publication_from_the_grid() -> None:
@@ -362,3 +592,57 @@ def test_gallery_review_errors_speak_of_the_publication() -> None:
 
     for text in (gallery_state_module._REVIEW_FAILED, gallery_state_module._NO_PASSING_VARIANT):
         assert "POST" not in text and "variante" not in text
+
+
+async def test_a_quick_approval_whose_final_could_not_be_ordered_says_so(monkeypatch) -> None:
+    """Review round 3 (m-24820142): the card's «Aprobar» uses the piece's own notice — a
+    final that could not be ordered never reads «ya puedes programarlo»."""
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from . import gallery_state as module
+    from .creative_vm import video_draft_vm
+
+    tenant, user, post = UUID(int=1), UUID(int=2), str(UUID(int=3))
+
+    async def _tenant(self) -> UUID:  # noqa: ANN001
+        return tenant
+
+    monkeypatch.setattr(GalleryState, "_tenant", _tenant)
+    monkeypatch.setattr(module, "acting_user_id", lambda t: user)
+    variant = SimpleNamespace(passed=True, variant_id=str(UUID(int=4)))
+    monkeypatch.setattr(module, "draft_detail", lambda t, d: SimpleNamespace(variants=[variant]))
+    failed = video_draft_vm("failed", None, "El video final no se llegó a pedir.", approved=True)
+    monkeypatch.setattr(module, "approve_draft", lambda *a: SimpleNamespace(video_draft=failed))
+    monkeypatch.setattr(module, "load_gallery", lambda t: _gallery(schedulable=True))
+
+    events = [e async for e in GalleryState.quick_approve.fn(GalleryState(), post)]
+
+    toast = str(events[0])
+    assert "reintentarlo" in toast and "programarlo" not in toast
+    # m-24842978 merged: a final that could not be ordered holds the publication back,
+    # so no day and time is offered even when the grid says it could be planned
+    assert "Elegir d" not in toast and "/planner" not in toast
+    # m-24842981 (finding 8): the way to its page, where «Intentar de nuevo» lives
+    assert "label='Ver publicación'" in toast and f"/drafts/{post}" in toast
+
+
+async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
+    monkeypatch,
+) -> None:
+    """m-24820142 over m-24842978: approving a 2.5 draft orders its 1080p final; until it
+    lands the publication cannot be scheduled (MEDIA_DRAFT_PENDING), so the toast says
+    the final is being made and offers no «Elegir día y hora»."""
+    from .creative_vm import video_draft_vm
+
+    rendering = video_draft_vm("rendering", None)
+    _state, events, approved = await _quick_approve(
+        monkeypatch, _gallery(schedulable=True), video_draft=rendering
+    )
+
+    assert approved
+    toast = str(events[0])
+    assert "Estamos preparando el video en alta calidad" in toast and "Ábrela" in toast
+    assert "Elegir d" not in toast and "/planner" not in toast
+    # m-24842981 (finding 8): «Ábrela» comes with somewhere to tap
+    assert "label='Ver publicación'" in toast and f"/drafts/{_QA_POST_ID}" in toast

@@ -11,10 +11,32 @@ off the event loop.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from uuid import UUID
 
 from qualify_api.clarity import production_clarity_service
 from qualify_api.clarity.repository import SnapshotRow
+from qualify_api.support import SupportTicket, create_support_request
+from qualify_api.tenancy.models import Tenant
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import select
+
+from .clarity_vm import (
+    DEFAULT_TIMEZONE,
+    HEADLINE_LABELS,
+    TEAM_ALERT_SCREEN,
+    TEAM_REQUEST_MESSAGE,
+    TEAM_REQUEST_SCREEN,
+    date_line,
+    day_label,
+    es_int,
+    es_number,
+    es_percent,
+    needs_daily_refresh,
+    page_path,
+    team_alert_message,
+    window_label,
+)
 
 # Metrics whose information rows are single aggregate objects worth headline cards.
 _HEADLINE_METRIC = "Traffic"
@@ -149,16 +171,23 @@ class ActionItemVM:
     severity: str  # "alta" | "media"
     title: str  # "Toques repetidos con enojo en /reservas"
     detail: str  # counts + the recommended action, in Spanish
+    url: str = ""  # the full address, for the team's ticket only (never rendered)
 
 
 @dataclass(frozen=True)
 class SnapshotVM:
-    fetched_at: str  # "2026-08-15 14:03 UTC"; "" when no snapshot exists
-    window: str  # "últimas 72 h"
-    dimensions: str  # "Página · Dispositivo" or ""
+    fetched_at: str  # "15 de agosto" (business time zone); "" when no snapshot exists
+    window: str  # "Últimos 3 días"
+    dimensions: str  # "Página · Dispositivo" or "" — kept for the raw tables only
     stats: list[list[str]] = field(default_factory=list)  # [label, value] pairs
     friction: list[FrictionCardVM] = field(default_factory=list)
     actions: list[ActionItemVM] = field(default_factory=list)
+    # RESULTADOS-3: what the owner reads first — visits and people, and only the
+    # urgent («alta») problems; `has_minor` says whether anything smaller exists.
+    headline: list[list[str]] = field(default_factory=list)
+    urgent: list[ActionItemVM] = field(default_factory=list)
+    has_minor: bool = False
+    date_line: str = ""  # «Datos de hoy.» / «Datos del 22 de octubre.»
     traffic_note: str = ""  # low-sample warning; "" when the sample is fine
     tables: list[MetricTableVM] = field(default_factory=list)
 
@@ -181,9 +210,66 @@ def save_config(tenant_id: UUID, *, project_id: str, api_token: str) -> None:
     )
 
 
+def request_website_connection(tenant_id: UUID, *, contact_email: str) -> SupportTicket:
+    """RESULTADOS-4: «Escribir al equipo» in Configuración — a support ticket asking the
+    Qualify team to connect the business's website. Same service as the connections
+    screen's «Pedir ayuda 1:1», topic `other`, with only the closed `screen` context key.
+
+    Raises `InvalidSupportRequest` on a bad email. Blocking (Postgres + one HTTP call).
+    """
+    return create_support_request(
+        tenant_id=tenant_id,
+        topic="other",
+        contact_email=contact_email,
+        contact_whatsapp="",
+        message=TEAM_REQUEST_MESSAGE,
+        context={"screen": TEAM_REQUEST_SCREEN},
+    )
+
+
+def alert_team(
+    tenant_id: UUID, *, contact_email: str, title: str, detail: str, url: str = ""
+) -> SupportTicket:
+    """RESULTADOS-3: «Avisar al equipo» on one urgent problem — a support ticket with the
+    problem in plain words, topic `other`, only the closed `screen` context key.
+
+    Raises `InvalidSupportRequest` on a bad email. Blocking (Postgres + one HTTP call).
+    """
+    return create_support_request(
+        tenant_id=tenant_id,
+        topic="other",
+        contact_email=contact_email,
+        contact_whatsapp="",
+        message=team_alert_message(title, detail, url),
+        context={"screen": TEAM_ALERT_SCREEN},
+    )
+
+
+def _tenant_timezone(tenant_id: UUID) -> str:
+    """The business's IANA zone: dates on this screen and «already read today» use it."""
+    with tenant_session(tenant_id) as session:
+        zone = session.execute(
+            select(Tenant.timezone).where(Tenant.id == tenant_id)
+        ).scalar_one_or_none()
+    return zone or DEFAULT_TIMEZONE
+
+
 def latest_snapshot_for(tenant_id: UUID) -> SnapshotVM | None:
     snapshot = production_clarity_service().latest(tenant_id=tenant_id)
-    return _to_vm(snapshot) if snapshot else None
+    return _to_vm(snapshot, tz=_tenant_timezone(tenant_id)) if snapshot else None
+
+
+def latest_snapshot_and_staleness(
+    tenant_id: UUID, *, now: datetime | None = None
+) -> tuple[SnapshotVM | None, bool]:
+    """The cached snapshot plus whether today's automatic read is still due
+    (RESULTADOS-3: the screen refreshes itself once a day, counted in the business's
+    time zone). Costs no API request."""
+    tz = _tenant_timezone(tenant_id)
+    moment = now or datetime.now(UTC)
+    snapshot = production_clarity_service().latest(tenant_id=tenant_id)
+    due = needs_daily_refresh(snapshot.fetched_at if snapshot else None, moment, tz)
+    return (_to_vm(snapshot, tz=tz, now=moment) if snapshot else None), due
 
 
 def refresh_snapshot(tenant_id: UUID, *, num_of_days: int, dimension: str) -> SnapshotVM:
@@ -193,22 +279,28 @@ def refresh_snapshot(tenant_id: UUID, *, num_of_days: int, dimension: str) -> Sn
         num_of_days=num_of_days,
         dimensions=[dimension] if dimension else [],
     )
-    return _to_vm(snapshot)
+    return _to_vm(snapshot, tz=_tenant_timezone(tenant_id))
 
 
-_WINDOW_LABEL = {1: "últimas 24 h", 2: "últimas 48 h", 3: "últimas 72 h"}
-
-
-def _to_vm(snapshot: SnapshotRow) -> SnapshotVM:
+def _to_vm(
+    snapshot: SnapshotRow, *, tz: str = DEFAULT_TIMEZONE, now: datetime | None = None
+) -> SnapshotVM:
+    stats = _headline_stats(snapshot.payload)
+    actions = _action_items(snapshot.payload)
+    urgent = [item for item in actions if item.severity == "alta"]
     return SnapshotVM(
-        fetched_at=snapshot.fetched_at.strftime("%Y-%m-%d %H:%M UTC"),
-        window=_WINDOW_LABEL.get(snapshot.num_of_days, f"{snapshot.num_of_days} días"),
+        fetched_at=day_label(snapshot.fetched_at, tz),
+        window=window_label(snapshot.num_of_days),
         dimensions=" · ".join(DIMENSION_LABELS.get(d, d) for d in snapshot.dimensions),
-        stats=_headline_stats(snapshot.payload),
+        stats=stats,
         friction=_friction_cards(snapshot.payload),
-        actions=_action_items(snapshot.payload),
+        actions=actions,
         traffic_note=_traffic_note(snapshot.payload),
         tables=[table for table in map(_metric_table, snapshot.payload) if table.rows],
+        headline=[stat for stat in stats if stat[0] in HEADLINE_LABELS],
+        urgent=urgent,
+        has_minor=len(urgent) < len(actions),
+        date_line=date_line(snapshot.fetched_at, now or datetime.now(UTC), tz),
     )
 
 
@@ -231,9 +323,9 @@ def _headline_stats(payload: list[dict]) -> list[list[str]]:
     # Accept both — rows carry one or the other, never both.
     users = _sum_of(rows, "distinctUserCount") + _sum_of(rows, "distantUserCount")
     stats = [
-        ["Visitas", f"{sessions:,}"],
-        ["Visitas de robots", f"{bots:,}"],
-        ["Personas", f"{users:,}"],
+        ["Visitas", es_int(sessions)],
+        ["Visitas de robots", es_int(bots)],
+        ["Personas", es_int(users)],
     ]
     engagement = _metric_rows(payload, _ENGAGEMENT_METRIC)
     if engagement:
@@ -264,37 +356,54 @@ def _friction_cards(payload: list[dict]) -> list[FrictionCardVM]:
             status, affected = "ok", ""
         else:
             status = "bad" if (pct >= _BAD_PCT or total >= _BAD_TOTAL) else "warn"
-            affected = f"{pct:g}% de las visitas" if pct else ""
+            affected = f"{es_percent(pct)} de las visitas" if pct else ""
         cards.append(
             FrictionCardVM(
-                label=label, total=f"{total:,}", affected=affected, status=status, hint=hint
+                label=label, total=es_int(total), affected=affected, status=status, hint=hint
             )
         )
     return cards
 
 
 def _action_items(payload: list[dict]) -> list[ActionItemVM]:
-    """Per-URL recommendations, worst first. Only rows with actual events qualify —
-    an empty list means the window really had no friction."""
-    scored: list[tuple[int, int, ActionItemVM]] = []
+    """Per-page recommendations, worst first. Only rows with actual events qualify —
+    an empty list means the window really had no friction. Rows for the same page
+    with different tracking tails («?utm_source=…») count as one page."""
+    grouped: dict[tuple[str, str], dict] = {}
     for name, (label, _hint, advice) in _FRICTION_METRICS.items():
         for row in _metric_rows(payload, name):
             events = _as_int(row.get("subTotal"))
             if events <= 0:
                 continue
+            url = str(row.get("Url", "") or "").strip()
+            entry = grouped.setdefault(
+                (name, page_path(url)),
+                {"label": label, "advice": advice, "url": url, "events": 0, "sessions": 0},
+            )
+            entry["events"] += events
+            entry["sessions"] += _as_int(row.get("sessionsCount"))
             pct = _as_float(row.get("sessionsWithMetricPercentage"))
-            sessions = _as_int(row.get("sessionsCount"))
-            where = str(row.get("Url", "") or "").strip()
-            severity = "alta" if (pct >= _BAD_PCT or events >= _BAD_TOTAL) else "media"
-            title = f"{label} en {where}" if where else f"{label} en tu página"
-            counts = "1 vez" if events == 1 else f"{events:,} veces"
-            if sessions:
-                counts += " en 1 visita" if sessions == 1 else f" en {sessions:,} visitas"
-            if pct:
-                counts += f" ({pct:g}% de las visitas)"
-            item = ActionItemVM(severity=severity, title=title, detail=f"{counts}. {advice}")
-            scored.append((0 if severity == "alta" else 1, -events, item))
-    scored.sort(key=lambda entry: entry[:2])
+            entry["pct"] = max(entry.get("pct", 0.0), pct)
+
+    scored: list[tuple[int, int, ActionItemVM]] = []
+    for (_name, where), entry in grouped.items():
+        events, sessions, pct = entry["events"], entry["sessions"], entry["pct"]
+        severity = "alta" if (pct >= _BAD_PCT or events >= _BAD_TOTAL) else "media"
+        label = entry["label"]
+        title = f"{label} en {where}" if where else f"{label} en tu página"
+        counts = "1 vez" if events == 1 else f"{es_int(events)} veces"
+        if sessions:
+            counts += " en 1 visita" if sessions == 1 else f" en {es_int(sessions)} visitas"
+        if pct:
+            counts += f" ({es_percent(pct)} de las visitas)"
+        item = ActionItemVM(
+            severity=severity,
+            title=title,
+            detail=f"{counts}. {entry['advice']}",
+            url=entry["url"],
+        )
+        scored.append((0 if severity == "alta" else 1, -events, item))
+    scored.sort(key=lambda ranked: ranked[:2])
     return [item for _, _, item in scored[:8]]
 
 
@@ -367,5 +476,5 @@ def _metric_table(metric: dict) -> MetricTableVM:
     return MetricTableVM(
         name=name,
         columns=[_COLUMN_LABELS.get(column, column) for column in ordered],
-        rows=[[str(row.get(column, "")) for column in ordered] for row in rows_in],
+        rows=[[es_number(str(row.get(column, ""))) for column in ordered] for row in rows_in],
     )

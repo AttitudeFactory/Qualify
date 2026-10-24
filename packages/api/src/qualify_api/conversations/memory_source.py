@@ -14,7 +14,7 @@ here, not in production.
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any
@@ -32,6 +32,13 @@ from qualify_api.conversations.contracts import (
     RemoteProfile,
     SendResult,
     SourceConnection,
+)
+from qualify_api.conversations.interactive import (
+    QuickReply,
+    TemplateButton,
+    button_template_message,
+    clean_quick_replies,
+    quick_replies_wire,
 )
 
 SHAPE_VERSION_MEMORY = "memory-conversations-1.0.0"
@@ -130,12 +137,32 @@ class MemoryConversationSender:
     comment_authors: dict[str, str] = field(default_factory=dict)
     _ids: Any = field(default_factory=lambda: count(1), repr=False)
 
-    def build_payload(self, *, recipient_external_id: str, text: str) -> dict[str, Any]:
+    def build_payload(
+        self,
+        *,
+        recipient_external_id: str,
+        text: str,
+        quick_replies: Sequence[QuickReply] | None = None,
+    ) -> dict[str, Any]:
         if not recipient_external_id:
             raise ValueError("a recipient is required")
         if not text.strip():
             raise ValueError("an empty message cannot be sent")
-        return {"recipient": {"id": recipient_external_id}, "message": {"text": text}}
+        message: dict[str, Any] = {"text": text}
+        replies = clean_quick_replies(quick_replies or ())
+        if replies:
+            message["quick_replies"] = quick_replies_wire(replies)
+        return {"recipient": {"id": recipient_external_id}, "message": message}
+
+    def build_button_template_payload(
+        self, *, recipient_external_id: str, text: str, buttons: Sequence[TemplateButton]
+    ) -> dict[str, Any]:
+        if not recipient_external_id:
+            raise ValueError("a recipient is required")
+        return {
+            "recipient": {"id": recipient_external_id},
+            "message": button_template_message(text, buttons),
+        }
 
     def build_private_reply_payload(self, *, comment_id: str, text: str) -> dict[str, Any]:
         if not comment_id:
