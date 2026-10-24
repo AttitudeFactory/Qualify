@@ -81,6 +81,10 @@ from .replies_provider import (
 from .replies_vm import generation_message, regenerate_error_message, send_block_reason
 from .tenant import tenant_uuid
 
+#: The element id of the lasting «Listo, le respondiste a @…» confirmation
+#: (`inbox_page._replies_sent_block`), scrolled into view after a send (m-24842961).
+REPLIES_SENT_ID = "q-replies-sent"
+
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
@@ -150,6 +154,9 @@ class RepliesState(rx.State):
     # that draft's buttons, so reviewing one comment never blocks acting on another.
     busy_draft_id: str = ""
     action_error: str = ""
+    # m-24842961 (N3): «Listo, le respondiste a @…» stays on screen with the next step
+    # until the owner closes it or acts again — a toast alone is gone in six seconds.
+    sent_notice: str = ""
 
     # Which draft's textarea is open for editing, and its current (uncommitted) text.
     editing_draft_id: str = ""
@@ -329,6 +336,7 @@ class RepliesState(rx.State):
             else:
                 self.busy_draft_id = draft_id
                 self.action_error = ""
+                self.sent_notice = ""
                 self.editing_draft_id = ""
             # m-24842989: for the confirmation, who the answer goes to — read before the
             # list reloads.
@@ -402,7 +410,15 @@ class RepliesState(rx.State):
             async with self:
                 self.action_error = _SEND_REFUSED if sent.status == "send_failed" else _SEND_FAILED
             return
-        yield rx.toast.success(sent_message(author), duration=_RESULT_TOAST_DURATION_MS)
+        async with self:
+            self.sent_notice = sent_message(author)
+        # On a phone the answered card vanishes and the confirmation sits above the
+        # section, off screen: bring it into view, or the owner never sees the «Listo».
+        yield rx.scroll_to(REPLIES_SENT_ID)
+
+    @rx.event
+    def dismiss_sent_notice(self) -> None:
+        self.sent_notice = ""
 
     @rx.event(background=True)
     async def discard_draft(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:

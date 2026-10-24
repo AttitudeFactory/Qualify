@@ -1651,6 +1651,11 @@ def _catalog_product_grid() -> rx.Component:
                         "Aún no hay productos en tu catálogo",
                         "Crea el producto en Tus productos con sus fotos, o usa una inspiración: "
                         "imágenes y videos que ilustran lo que vendes.",
+                        # N8 (m-24842961). Coming back with it chosen is PRODUCTOS-2 (N4).
+                        action=rx.link(
+                            rx.button(rx.icon("plus", size=16), "Agregar producto", size="3"),
+                            href="/catalog",
+                        ),
                     ),
                 ),
             ),

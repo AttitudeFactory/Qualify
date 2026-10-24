@@ -162,6 +162,14 @@ def _list() -> rx.Component:
                 "Solo puedes enviar promociones a quien aceptó recibir mensajes de WhatsApp "
                 "de tu negocio. Impórtalos del formulario de clientes interesados o agrégalos "
                 "a mano.",
+                # N8 (m-24842961).
+                action=rx.button(
+                    rx.icon("user-plus", size=16),
+                    "Agregar cliente",
+                    on_click=S.open_add,
+                    variant="soft",
+                    size="3",
+                ),
             ),
         ),
         rx.cond(
