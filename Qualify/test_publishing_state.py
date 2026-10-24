@@ -56,7 +56,7 @@ from .publishing_state import (
     _PendingFile,
     _success_toast,
 )
-from .publishing_vm import ChildStatusVM, PendingItemVM
+from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PendingItemVM
 
 
 class _FakeUpload:
@@ -551,7 +551,7 @@ def test_carousel_stage_label_names_the_first_unfinished_child() -> None:
         ChildStatusVM(position=0, status="finished"),
         ChildStatusVM(position=1, status="processing"),
     ]
-    assert state.carousel_stage_label == "Procesando video 2 de 2 en Meta"
+    assert state.carousel_stage_label == "Preparando video 2 de 2 en Instagram"
 
 
 def test_carousel_stage_label_falls_back_once_every_child_is_finished() -> None:
@@ -760,3 +760,103 @@ def test_poll_attempt_clears_pending_items_once_settled() -> None:
         "expected exactly 4 release sites: the settled branch, UnknownAttempt, the "
         "generic poll exception, and the _MAX_POLLS-exhausted branch"
     )
+
+
+# ----------------------------------------------------------------------------------
+# PUBLICAR-4: preselected account, review in words, «Publicar otra»
+# ----------------------------------------------------------------------------------
+
+
+def _one_account() -> list[ConnectionOptionVM]:
+    return [ConnectionOptionVM(id="c-1", external_username="bianki", platform="instagram")]
+
+
+def test_one_account_is_chosen_for_the_owner_but_two_are_not() -> None:
+    one = PublishState()
+    one.connections = _one_account()
+    assert one._preselect_single_connection() == "c-1"
+    assert one.selected_connection_id == "c-1"
+
+    two = PublishState()
+    two.connections = [
+        ConnectionOptionVM(id="c-1", external_username="a", platform="instagram"),
+        ConnectionOptionVM(id="c-2", external_username="b", platform="instagram"),
+    ]
+    assert two._preselect_single_connection() == ""
+    assert two.selected_connection_id == ""
+
+
+def test_review_sentences_name_the_chosen_account() -> None:
+    state = PublishState()
+    assert state.review_post_sentence == ""
+    state.connections = _one_account()
+    state.selected_connection_id = "c-1"
+
+    assert state.review_post_sentence == "Sale ahora en Instagram @bianki como publicación."
+    assert state.review_story_sentence == (
+        "Sale ahora en Instagram @bianki como historia (se ve 24 horas)."
+    )
+    assert state.selected_platform == "instagram"
+
+
+def test_reset_form_empties_step_one_and_keeps_the_single_account() -> None:
+    state = PublishState()
+    state.connections = _one_account()
+    state.pending_items = [PendingItemVM(filename="a.mp4", kind="video")]
+    state._pending_files = ["buffer"]  # type: ignore[list-item]
+    state.caption = "hola"
+    state.phase = "success"
+
+    state.reset_form()
+
+    assert state.pending_items == []
+    assert state._pending_files == []
+    assert state.caption == ""
+    assert state.phase == "idle"
+    assert state.selected_connection_id == "c-1"
+
+
+def test_reset_form_is_a_no_op_while_publishing() -> None:
+    state = PublishState()
+    state.phase = "polling"
+    state.caption = "hola"
+
+    state.reset_form()
+
+    assert state.caption == "hola"
+    assert state.phase == "polling"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_pick_stays_on_screen_until_a_valid_one() -> None:
+    """UX review (N3): the dropzone's refusal is kept as a flag for step 1's callout,
+    and the next valid file clears it."""
+    from .publish_wizard_vm import REJECTED_FILE_HELP
+    from .publishing_state import _MAX_ITEMS
+
+    assert f"{_MAX_ITEMS} a la vez" in REJECTED_FILE_HELP
+    state = PublishState()
+    assert state.last_drop_rejected is False
+    PublishState.mark_drop_rejected.fn(state, [{"file": {"name": "x.png"}}])
+    assert state.last_drop_rejected is True
+
+    await state.add_files([_FakeUpload()])
+    assert state.last_drop_rejected is False
+
+
+def test_the_account_picker_labels_come_from_the_provider() -> None:
+    from . import publishing_provider
+
+    class _Row:
+        id = "c-1"
+        external_username = "bianki"
+        platform = "instagram"
+        status = "active"
+
+    original = publishing_provider.connections_for
+    publishing_provider.connections_for = lambda _tenant: [_Row()]
+    try:
+        (option,) = publishing_provider.active_connections(None)  # type: ignore[arg-type]
+    finally:
+        publishing_provider.connections_for = original
+    assert option.label == "@bianki · Instagram"

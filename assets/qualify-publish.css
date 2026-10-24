@@ -167,35 +167,12 @@
 }
 
 /* ── Catálogo ────────────────────────────────────────────────────────────────
- * A product card in the grid is `ui.card` (interactive); the selected one is ringed
- * and washed in the accent through its `data-selected` flag, so the card keeps its
- * own material instead of an inline opaque fill. Thumbnails (grid and editor) share
- * one frame on the control material. */
-.q-card[data-selected="true"] {
-  border-color: var(--accent-8);
-  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
-  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a4), var(--q-elev-island);
-}
+ * A product card in the grid is a real <button> on the choice-card material
+ * (`.q-choice-card`, m-24842976): the product being edited is ringed through
+ * `.q-choice-card--on`, and the card writes «Editar» itself (no hover-only chip).
+ * Thumbnails (grid and editor) share one frame on the control material. */
 /* The product picture is `ui.media_thumb` now; `.q-catalog-video` below keeps the
    frame for the one case that is a <video>. */
-/* The catalog card's edit chip (request 2026-10-22): a small accent disc with the
-   pencil, lit a step more under the card's hover, with the kit's tooltip («Editar»).
-   It sits on the picture's top-right corner (m-24803289: in the meta row it pushed past
-   the card's edge), so the accent wash goes over the solid panel to stay legible on any
-   photo. */
-.q-catalog-edit {
-  position: absolute; top: 1.35rem; right: 1.35rem; z-index: 2;
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 1.75rem; height: 1.75rem; border-radius: 999px;
-  color: var(--accent-11);
-  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--color-panel-solid);
-  box-shadow: inset 0 0 0 1px var(--accent-a6), 0 1px 3px rgba(0, 0, 0, 0.18);
-  transition: background 0.15s ease, transform 0.15s ease;
-}
-.q-card:hover .q-catalog-edit {
-  background: linear-gradient(var(--accent-a5), var(--accent-a5)), var(--color-panel-solid);
-  transform: translateY(-1px);
-}
 /* The catalog editor (request 2026-10-22): two surface panels — the fields and the
    media — inside the product's card, like the review page's sections. */
 .q-catalog-panel {
@@ -224,7 +201,7 @@
   cursor: grab;
 }
 .q-catalog-tile-foot {
-  padding: 0.3rem 0.35rem 0.3rem 0.55rem;
+  padding: 0.5rem; /* m-24842977: room for two 44 px buttons */
   border-top: 1px solid var(--q-card-edge);
 }
 .q-catalog-video {

@@ -41,22 +41,29 @@ from .mentions_paging import (
     ALL_ORIGINS,
     ALL_SENTIMENTS,
     DEFAULT_PERIOD,
+    NEW_MENTIONS_NOTICE,
     ORIGIN_OPTIONS,
     PERIOD_OPTIONS,
     REFRESH_FAILED_NOTICE,
     REFRESH_STARTED_TOAST,
     SENTIMENT_OPTIONS,
+    SENTIMENT_PARAM,
     THROTTLED_NOTICE,
     USAGE_PAUSED_NOTICE,
     decide_tick,
+    more_filters_count,
+    new_mentions_arrived,
     refresh_outcome,
     refresh_still_running,
+    sentiment_from_param,
     stopped_outcome,
     tick_takes_new_snapshot,
+    toggle_sentiment,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
     MentionPageVM,
+    list_total_now,
     load_page,
     refresh_content,
     refresh_scope,
@@ -119,6 +126,9 @@ class DashboardState(rx.State):
     as_of: str = ""
     snapshot_total: int = 0
     list_changed: bool = False
+    # A later page's tick found more mentions in the scope than its snapshot holds:
+    # «Llegaron menciones nuevas.» + «Verlas» (RESULTADOS-1, QUA-152).
+    new_mentions_waiting: bool = False
     last_updated: str = ""
     # True for the whole "Actualizar menciones" run: the visible page first, then the
     # rest of the scope (account + period) in the background.
@@ -144,6 +154,10 @@ class DashboardState(rx.State):
     search_query: str = ""
     # '@username' -> connection id, for the account filter.
     accounts: dict[str, str] = {}
+    # RESULTADOS-1 (m-24843000): the mentions opened with «Ver más», and the phone's
+    # «Más filtros» panel.
+    expanded_ids: list[str] = []
+    filters_open: bool = False
 
     # ----------------------------------------------------------------- derived
 
@@ -155,6 +169,21 @@ class DashboardState(rx.State):
     def show_account_filter(self) -> bool:
         """Only useful with more than one connected account — the common case has one."""
         return len(self.accounts) > 1
+
+    @rx.var
+    def more_filters_label(self) -> str:
+        """«Más filtros», with how many are in use: a filter kept behind the button on
+        the phone is never invisible."""
+        used = more_filters_count(
+            account=self.account_filter,
+            origin=self.origin_filter,
+            sentiment=self.sentiment_filter,
+        )
+        return f"Más filtros ({used})" if used else "Más filtros"
+
+    @rx.var
+    def new_mentions_notice(self) -> str:
+        return NEW_MENTIONS_NOTICE if self.new_mentions_waiting else ""
 
     @rx.var
     def is_windowed(self) -> bool:
@@ -203,15 +232,17 @@ class DashboardState(rx.State):
 
     @rx.var
     def states_hint(self) -> str:
-        """What is not (yet) a polarity, under the total — never folded into one. "Sin
-        análisis" groups the mentions with no text and the ones the model could not read:
-        neither is a sentiment (founder review 2026-10-13)."""
+        """What is not (yet) a polarity, under the total — never folded into one, and in
+        the same words as each row's reason (N1, UX review): «por revisar», «sin texto para
+        leer», «que no pudimos leer». Neither of the last two is a sentiment (founder review
+        2026-10-13)."""
         parts = []
         if self.pending_count:
-            parts.append(f"{self.pending_count} pendientes de análisis")
-        unanalyzed = self.no_text_count + self.error_count
-        if unanalyzed:
-            parts.append(f"{unanalyzed} sin análisis")
+            parts.append(f"{self.pending_count} por revisar")
+        if self.no_text_count:
+            parts.append(f"{self.no_text_count} sin texto para leer")
+        if self.error_count:
+            parts.append(f"{self.error_count} que no pudimos leer")
         return " · ".join(parts)
 
     # ---------------------------------------------------------------- helpers
@@ -265,6 +296,7 @@ class DashboardState(rx.State):
             self.as_of = vm.as_of
             self.snapshot_total = vm.filtered_total
             self.list_changed = False
+            self.new_mentions_waiting = False
         self.last_updated = _utc_stamp()
         self.refresh_error = ""
 
@@ -333,6 +365,10 @@ class DashboardState(rx.State):
             self.accounts = {}
         if self.account_filter not in self.accounts:
             self.account_filter = ALL_ACCOUNTS
+        # `?sentimiento=negativas` (N11): a figure elsewhere opens the list it counts.
+        wanted = self.router.url.query_parameters.get(SENTIMENT_PARAM)
+        if wanted is not None:
+            self.sentiment_filter = sentiment_from_param(str(wanted))
         await self._restart()
         self.is_loading_mentions = False
 
@@ -354,6 +390,34 @@ class DashboardState(rx.State):
     @rx.event
     async def set_sentiment_filter(self, value: str) -> None:
         self.sentiment_filter = value
+        await self._restart()
+
+    @rx.event
+    async def pick_sentiment(self, label: str) -> None:
+        """A summary card was tapped: show only that sentiment, or all again when it
+        was already the one shown (the «Total» card always shows all)."""
+        self.sentiment_filter = toggle_sentiment(self.sentiment_filter, label)
+        await self._restart()
+
+    @rx.event
+    def toggle_expanded(self, mention_id: str) -> None:
+        """«Ver más» / «Ver menos» on one mention."""
+        if mention_id in self.expanded_ids:
+            self.expanded_ids = [m for m in self.expanded_ids if m != mention_id]
+        else:
+            self.expanded_ids = [*self.expanded_ids, mention_id]
+
+    @rx.event
+    def set_filters_open(self, value: bool) -> None:
+        self.filters_open = value
+
+    @rx.event
+    async def clear_more_filters(self) -> None:
+        """«Quitar filtros» in the phone's panel: back to every account, origin and
+        sentiment; the period stays (it is the one filter always on screen)."""
+        self.account_filter = ALL_ACCOUNTS
+        self.origin_filter = ALL_ORIGINS
+        self.sentiment_filter = ALL_SENTIMENTS
         await self._restart()
 
     @rx.event
@@ -508,11 +572,25 @@ class DashboardState(rx.State):
         if fresh:
             self.since = since
             self._apply_page(reread, new_snapshot=True)
-        elif decide_tick(
-            snapshot_total=self.snapshot_total, reread_total=reread.filtered_total
-        ) == ("update_rows"):
+            return
+        if decide_tick(snapshot_total=self.snapshot_total, reread_total=reread.filtered_total) == (
+            "update_rows"
+        ):
             self._apply_page(reread, new_snapshot=False)
         else:
             self.list_changed = True
             self.last_updated = _utc_stamp()
             self.refresh_error = ""
+        # A later page never shows what arrived after its snapshot; one count says whether
+        # anything did (QUA-152). The count uses the list's own filters and is compared with
+        # the list's own total, so «Verlas» always leads to something new (UX review). Best
+        # effort: a failed count only skips the notice.
+        try:
+            now_total = await asyncio.to_thread(
+                list_total_now, tenant_id, query=self._query(since=since)
+            )
+        except Exception as exc:  # noqa: BLE001 — the notice is optional
+            logger.warning("mentions new-arrivals count failed: %s", type(exc).__name__)
+            return
+        if new_mentions_arrived(snapshot_total=self.snapshot_total, current_total=now_total):
+            self.new_mentions_waiting = True

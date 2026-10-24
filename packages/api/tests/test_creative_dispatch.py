@@ -290,3 +290,109 @@ def test_a_reference_link_outlives_omnihumans_queue() -> None:
     from qualify_api.publishing.media_token import TOKEN_TTL_SECONDS
 
     assert REFERENCE_LINK_TTL_SECONDS > DEFAULT_POLL_TIMEOUT_SECONDS > TOKEN_TTL_SECONDS
+
+
+class _FakeGate:
+    """Records writes; `stored` maps key -> size, a missing key raises like R2's HEAD."""
+
+    def __init__(self, stored: dict[str, int]) -> None:
+        self.stored = stored
+        self.puts: list[str] = []
+
+    def object_size(self, tenant_id: UUID, object_key: str) -> int:
+        from qualify_shared.objects.gate import ObjectNotFound
+
+        if object_key not in self.stored:
+            raise ObjectNotFound(object_key)
+        return self.stored[object_key]
+
+    def put_media(self, tenant_id: UUID, object_key: str, body: object, ct: str) -> None:
+        self.puts.append(object_key)
+
+
+def _wire_reference_links(monkeypatch: pytest.MonkeyPatch, gate: _FakeGate) -> list[str]:
+    """Swap R2, Redis and the token store for fakes; returns the keys tokens were issued for."""
+    import redis
+    from qualify_shared.objects import config, s3
+    from qualify_shared.objects import gate as gate_module
+
+    from qualify_api import config as api_config
+    from qualify_api.publishing import media_token
+
+    issued: list[str] = []
+
+    class _Tokens:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def issue(self, *, tenant_id: UUID, object_key: str, content_type: str) -> str:
+            issued.append(object_key)
+            return "tok"
+
+    class _Settings:
+        def public_media_url(self, token: str) -> str:
+            return f"https://media.example/m/{token}"
+
+    monkeypatch.setattr(api_config.PublicMediaSettings, "from_env", lambda: _Settings())
+    monkeypatch.setattr(config.R2Settings, "from_env", lambda: None)
+    monkeypatch.setattr(s3, "R2ObjectStore", lambda settings: None)
+    monkeypatch.setattr(gate_module, "ObjectGate", lambda store: gate)
+    monkeypatch.setattr(redis.Redis, "from_url", lambda *a, **k: None)
+    monkeypatch.setattr(media_token, "MediaTokenStore", _Tokens)
+    return issued
+
+
+def test_a_reused_reference_is_not_rewritten_under_the_object_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second use of the same bytes finds the content-addressed key and skips the put
+    the bucket's retention lock would refuse (`ObjectLockedByBucketPolicy`)."""
+    import hashlib
+
+    from qualify_shared.objects.keys import tenant_prefix
+
+    from qualify_api.creative.composition import PublicReferenceLinks
+
+    tenant, data = uuid4(), b"same clip bytes"
+    key = f"{tenant_prefix(tenant)}creative-refs/{hashlib.sha256(data).hexdigest()[:32]}.mp4"
+    gate = _FakeGate({key: len(data)})
+    issued = _wire_reference_links(monkeypatch, gate)
+
+    url = PublicReferenceLinks()(tenant_id=tenant, key="clip.MP4", data=data, content_type="v")
+
+    assert gate.puts == []
+    assert issued == [key]
+    assert url == "https://media.example/m/tok"
+
+
+def test_a_new_reference_is_uploaded_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.creative.composition import PublicReferenceLinks
+
+    gate = _FakeGate({})
+    issued = _wire_reference_links(monkeypatch, gate)
+
+    PublicReferenceLinks()(tenant_id=uuid4(), key="voz.mp3", data=b"new", content_type="a")
+
+    assert len(gate.puts) == 1
+    assert gate.puts[0].endswith(".mp3")
+    assert issued == gate.puts
+
+
+def test_a_reference_whose_size_r2_cannot_tell_is_still_put(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 4: the size probe answered 403/503/a timeout and the link was lost;
+    an unknown answer falls through to the put, as before the probe existed."""
+    from qualify_api.creative.composition import PublicReferenceLinks
+
+    class _Flaky(_FakeGate):
+        def object_size(self, tenant_id: UUID, object_key: str) -> int:
+            raise TimeoutError("R2 HEAD timed out")
+
+    gate = _Flaky({})
+    issued = _wire_reference_links(monkeypatch, gate)
+
+    url = PublicReferenceLinks()(tenant_id=uuid4(), key="voz.mp3", data=b"new", content_type="a")
+
+    assert len(gate.puts) == 1 and issued == gate.puts
+    assert url == "https://media.example/m/tok"

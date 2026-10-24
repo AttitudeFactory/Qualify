@@ -161,8 +161,8 @@ def test_with_no_route_a_card_gives_the_reason_for_each() -> None:
     vm = build_card_vm(_card(private_reply=blocked), now=NOW, zone=ZONE)
     assert vm.route_available is False
     assert vm.blocked_reasons == [
-        "Mensaje directo: No ha escrito en 24 h.",
-        "Respuesta privada al comentario: Por verificar (QUALIFY_COMMENT_PRIVATE_REPLY).",
+        "No ha escrito en 24 h.",
+        "Por verificar (QUALIFY_COMMENT_PRIVATE_REPLY).",
     ]
 
 

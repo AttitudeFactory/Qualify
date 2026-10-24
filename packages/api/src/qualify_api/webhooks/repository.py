@@ -61,6 +61,11 @@ PURGEABLE_STATUSES = (
 # `last_error` of a `comments` change kept `unsupported` because its connection had no
 # username to recognize a mention with — replayable by `requeue_unsupported_comments`.
 COMMENT_USERNAME_UNKNOWN = "connection_username_unknown"
+# `last_error` of an Instagram `messages` item the handler could not read as a message —
+# `conversations.webhook.NOT_A_MESSAGE`; a `postback` among them is replayable by
+# `requeue_unsupported_postbacks` (m-24789472). Spelled here so the queue never imports a
+# handler.
+MESSAGING_NOT_A_MESSAGE = "not_a_message"
 
 MAX_ATTEMPTS = 6
 # Wait after the Nth failed attempt (N = 1..5); the 6th failure is `dead`.
@@ -258,6 +263,37 @@ class WebhookQueue:
             "now": now,
             "entry_id": entry_id,
         }
+        return self._requeue(where, params, execute=execute)
+
+    def requeue_unsupported_postbacks(
+        self, *, now: datetime, execute: bool = False, entry_id: str | None = None
+    ) -> int:
+        """Put Instagram `postback` items (an Ice Breaker, a template button, a menu item)
+        settled `unsupported` back in the queue, so the `instagram:messages` handler turns
+        the ones recorded before it read postbacks (m-24789472, PR 2) into inbound messages.
+        Dry run (count only) unless `execute`.
+
+        Takes only `field = 'messages'` items whose `value` carries a `postback` object and
+        that were settled `unsupported` as `NOT_A_MESSAGE` (or with no reason): a postback
+        the handler has since judged (`postback_echo`) or any other state is never taken.
+        A replay is single on both sides — this query never takes a `processed` row, and
+        the message's own key (`mid`, or the synthetic one) keeps the row single. Same
+        queue-columns-only update and same 29-day clock as `requeue_unsupported_comments`;
+        events older than `RETENTION` are already purged and cannot come back."""
+        where = """
+            object = 'instagram' AND field = 'messages' AND status = 'unsupported'
+            AND (last_error IS NULL OR last_error = :replayable)
+            AND jsonb_typeof(value -> 'postback') = 'object'
+            AND (CAST(:entry_id AS text) IS NULL OR entry_id = :entry_id)
+        """
+        params: dict[str, Any] = {
+            "replayable": MESSAGING_NOT_A_MESSAGE,
+            "now": now,
+            "entry_id": entry_id,
+        }
+        return self._requeue(where, params, execute=execute)
+
+    def _requeue(self, where: str, params: dict[str, Any], *, execute: bool) -> int:
         with self._session() as session:
             if not execute:
                 return int(

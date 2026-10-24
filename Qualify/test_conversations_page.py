@@ -13,13 +13,13 @@ from .ui.layout import NAV_ITEMS, NAV_ZONES
 _HERE = Path(__file__).parent
 
 
-def test_nav_item_sits_in_escuchas_after_comentarios_before_creadores() -> None:
-    assert ("Conversaciones", "messages-square", "/conversations", True) in NAV_ITEMS
+def test_por_responder_heads_atiende_and_reaches_the_private_inbox_today() -> None:
+    """NAV-1 (m-24842957): the private inbox is reached through «Por responder», the
+    first entry of «Atiende», which opens its hub (ATENDER-1, m-24842990)."""
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
-    listen = zones["listen"]
-    assert listen.index("Conversaciones") == listen.index("Comentarios") + 1
-    assert listen.index("Creadores") == listen.index("Conversaciones") + 1
-    assert "Conversaciones" not in zones["publish"]
+    assert zones["listen"][0] == "Por responder"
+    assert ("Por responder", "messages-square", "/responder", True) in NAV_ITEMS
+    assert "Conversaciones" not in [label for label, *_ in NAV_ITEMS]
 
 
 def test_route_is_registered_behind_login() -> None:
@@ -71,7 +71,6 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Todavía no se han leído mensajes de esta cuenta",
         "Aún no hay conversaciones en esta cuenta",
         "Se muestran los últimos 50 mensajes",
-        "Volver a las conversaciones",
         "Escribe una respuesta",
         "Enviar una foto o un video",
         "Enviar un archivo (PDF)",
@@ -216,6 +215,73 @@ def test_the_picker_rows_fit_the_popover() -> None:
     rendered = str(_template_item(rx.Var.create(template)).render())
     assert "border-box" in rendered
     assert "q-wa-ellipsis" in rendered and "block" in rendered
+
+
+def test_the_composer_offers_quick_replies_and_template_buttons() -> None:
+    """m-24789472 (phase 3): «Respuestas rápidas» among the tools with its panel, the
+    picked template's buttons under the box, and the buttons editor in the manager."""
+    from .conversations_page import conversations_index
+    from .conversations_vm import (
+        BUTTONS_HINT,
+        BUTTONS_OFF_FORM_NOTICE,
+        BUTTONS_OFF_NOTICE,
+        QUICK_REPLIES_HINT,
+        QUICK_REPLIES_WITH_BUTTONS,
+    )
+
+    rendered = str(conversations_index().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
+    for text in (
+        "Respuestas rápidas",
+        "Nueva respuesta rápida",
+        "Agregar",
+        "Cerrar las respuestas rápidas",
+        "Quitar esta respuesta rápida",
+        "Botones que van con este mensaje",
+        "Enviar sin botones",
+        "Botones (opcional)",
+        "Agregar botón",
+        "Texto del botón",
+        "Qué hace el botón",
+        "Responder con un toque",
+        "Abrir una página",
+        "Quitar el botón",
+        "Enlace que abre el botón",
+        QUICK_REPLIES_HINT,
+        QUICK_REPLIES_WITH_BUTTONS,
+        BUTTONS_HINT,
+        BUTTONS_OFF_NOTICE,
+        BUTTONS_OFF_FORM_NOTICE,
+    ):
+        assert present(text), text
+    for handler in (
+        "toggle_quick_replies",
+        "set_quick_reply_input",  # «Agregar» submits a form: its handler lives in a hook
+        "remove_quick_reply",
+        "drop_applied_buttons",
+        "add_template_button",
+        "remove_template_button",
+        "set_template_button_kind",
+        "set_template_button_title",
+        "set_template_button_url",
+        "template_form_body_error",
+        "buttons_will_send",
+        "kind_note",
+    ):
+        assert handler in rendered, handler
+
+
+def test_no_session_is_never_confused_with_a_closed_window() -> None:
+    """`WindowClosed` and `CapabilityUnavailable` subclass `PermissionError`: the send
+    handlers signal a missing session with their own exception, so a closed window or
+    a feature switched off is never worded as «vuelve a iniciar sesión»."""
+    source = (_HERE / "conversations_state.py").read_text(encoding="utf-8")
+    assert "raise PermissionError" not in source
+    assert "except PermissionError" not in source
 
 
 def test_picking_a_template_cannot_send() -> None:

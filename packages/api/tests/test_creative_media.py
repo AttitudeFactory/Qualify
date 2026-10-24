@@ -868,6 +868,64 @@ def test_a_refusal_that_cannot_change_is_not_retried(error: str, waits: list[flo
     assert gate.attempts == 1 and waits == []
 
 
+class _LockedGate(_Gate):
+    """R2 with the bucket's object lock: a key already written refuses another put."""
+
+    def __init__(self, stored: dict[str, bytes], *, size_error: Exception | None = None):
+        super().__init__()
+        self.stored = stored
+        self.size_error = size_error
+
+    def put_media(self, tenant_id: UUID, key: str, fileobj: io.BytesIO, ctype: str) -> None:
+        self.attempts += 1
+        if key in self.stored:
+            raise RuntimeError("ObjectLockedByBucketPolicy")
+        self.stored[key] = fileobj.read()
+
+    def object_size(self, tenant_id: UUID, key: str) -> int:
+        from qualify_shared.objects.gate import ObjectNotFound
+
+        if self.size_error is not None:
+            raise self.size_error
+        if key not in self.stored:
+            raise ObjectNotFound(key)
+        return len(self.stored[key])
+
+    def open_object(self, tenant_id: UUID, key: str) -> io.BytesIO:
+        return io.BytesIO(self.stored[key])
+
+
+def test_a_retry_that_writes_the_same_file_again_is_a_success(waits: list[float]) -> None:
+    """Review round 4: every fixed per-revision key (video.mp4, clip.mp4, slide-N.mp4,
+    first-frame.jpg…) is safe on retry — the object lock's refusal of the very same
+    bytes is the earlier success, found in one place (`keep`)."""
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _LockedGate({R2_KEY: b"mp4"})
+    assert R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
+    assert gate.attempts == 1 and waits == []
+
+
+@pytest.mark.parametrize("stored", [b"other", b"MP4"])
+def test_a_different_file_under_the_key_is_never_taken_for_this_one(
+    stored: bytes, waits: list[float]
+) -> None:
+    """Another size, or the same size with other bytes: the refusal stands."""
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _LockedGate({R2_KEY: stored})
+    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "x")
+    assert gate.attempts == 3 and gate.stored[R2_KEY] == stored
+
+
+def test_a_refused_write_r2_cannot_explain_still_fails(waits: list[float]) -> None:
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    gate = _LockedGate({R2_KEY: b"mp4"}, size_error=ConnectionError("HEAD reset"))
+    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "x")
+    assert gate.attempts == 3
+
+
 def test_the_posts_preview_is_the_key_the_app_shows() -> None:
     from qualify_api.creative.service import preview_of
 

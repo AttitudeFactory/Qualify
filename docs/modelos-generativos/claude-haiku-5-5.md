@@ -49,3 +49,47 @@
 - **No es un golden set:** no hay medición de calidad por clase; el control de calidad es la revisión humana de cada borrador y los motivos de revisión que calcula el código.
 
 > Cuando la bitácora central (`docs/modelos-generativos/pruebas.md`, hoy sin commitear en otra rama) llegue a `main`, copiar esta entrada ahí.
+
+## Prueba ATENDER4A-001 — clasificar cualquier comentario y responderlo (m-24848532) — 2026-10-23
+
+- **Quién:** el agente data-scientist-fde (Claude Code), dentro de la épica UX m-24842956. El fundador no estaba. Clave: `QUALIFY_ANTHROPIC_API_KEY` del `.env` local.
+- **Qué se probó:**
+  - El clasificador `replies/triage.py` (`ClaudeCommentTriager`): una sola llamada devuelve sentimiento (`pos`/`neu`/`neg`), tipo (`praise`/`question`/`complaint`/`other`) y si necesita respuesta. Prompt **`atender4a.1`**, esfuerzo `low`, herramienta estricta `registrar_comentarios`, `tool_choice: auto`, lotes de 25. Es el candidato para reemplazar a robertuito.
+  - Los borradores `replies/any_comment_drafts.py`, con el prompt **`atender4a.1:claude-haiku-5-5`** sobre `ClaudeDraftGenerator`.
+  - La línea base fue el clasificador de intención `intent-claude-v2`.
+- **Material:** 80 comentarios **sintéticos** (`packages/api/evals/replies_ai/synthetic_smoke.jsonl`, 40 en `dev` y 40 en `test`) de tres negocios ficticios de CO/VE/UY. Un solo etiquetador, el mismo agente que escribió el prompt, así que sirve para probar las herramientas y **no mide calidad**.
+- **Resultado en `test`:**
+  - Todas las clases pasaron sus umbrales: precisión ≥ 0,88; cobertura de `neg` 1,00; «necesita respuesta» con cobertura 1,00 y precisión 0,95.
+  - La línea base solo llegó a una cobertura de 0,55 en «necesita respuesta»: no detectó 9 de las 10 quejas.
+  - Borradores: 0 precios fuera del catálogo, 0 marcas de tercera persona, 0 errores. La revisión humana sigue pendiente.
+- **Costo:** US$0,000019 por comentario clasificado y US$0,00017 por borrador; unos US$0,04 por cliente al mes con 300 comentarios. La prueba completa costó ≈ US$0,010.
+- **Hallazgos:**
+  - No conviene preparar borrador para el tipo `other`: el modelo le respondió al spam y a etiquetas entre amigos.
+  - Derivar a mensaje privado vuelve a disparar `model_unsupported` (igual que en FASEB-001).
+  - Los borradores repiten «Gracias por escribirnos» y no usan la voz de la marca.
+- **Estado:** **PENDIENTE de datos reales**. El procedimiento, los umbrales y lo que tiene que dar el fundador están en [respuestas-comentarios-medicion.md](../respuestas-comentarios-medicion.md).
+
+## Prueba ATENDER4A-002 — borradores `atender4a.2` tras la revisión de UX (m-24848532) — 2026-10-23
+
+- **Quién:** el agente data-scientist-fde (Claude Code), dentro de la épica UX m-24842956. El fundador no estaba. Clave: `QUALIFY_ANTHROPIC_API_KEY` del `.env` local.
+- **Qué cambió:** el prompt de borradores `replies/any_comment_drafts.py` pasó a **`atender4a.2:claude-haiku-5-5`** (mismo modelo, mismo generador `ClaudeDraftGenerator`, mismos ajustes). Cambios pedidos por la revisión de UX: en las quejas, invitar a la persona a escribir («escríbenos por mensaje privado») en lugar de prometer que el negocio le escribe; no decir «tienes razón», «resolverlo» ni «solucionarlo»; no decir en público que falta un dato; sin emojis en las quejas; no empezar siempre con la misma frase ni usar «gracias por escribirnos». El clasificador no cambió (`atender4a.1`) y no se volvió a correr.
+- **Material:** los mismos 40 comentarios sintéticos de `test` de ATENDER4A-001 (`synthetic_smoke.jsonl`). Sigue siendo una prueba de las herramientas, **no una medición de calidad**.
+- **Informe:** `packages/api/evals/replies_ai/results/20261023-143235.json` y su hoja `20261023-143235-revision.csv` (con la columna nueva `promete_o_admite`).
+- **Resultado (controles automáticos, `atender4a.1` → `atender4a.2`):**
+
+| Control | `atender4a.1` | `atender4a.2` |
+|---|---|---|
+| Errores / precios fuera del catálogo / tercera persona | 0 / 0 / 0 | 0 / 0 / 0 |
+| Borradores con «te escribimos» (promesa) | 10 | **0** |
+| Quejas con «tienes razón» | 1 | **0** |
+| Quejas con «resolverlo»/«solucionarlo» | 7 | **0** |
+| Quejas con emoji | 8 de 10 | **0** |
+| Apertura más repetida (3 primeras palabras) | «gracias por escribirnos», 27,5 % | «qué bueno que», 20,0 % (justo en el límite de 20 %) |
+| Marcas `model_unsupported` | 12 | 10 |
+
+- **Costo:** US$0,0066 por los 40 borradores (US$0,00016 por borrador), igual que la versión anterior.
+- **Hallazgos:**
+  - Las 10 quejas terminan casi igual: «Escríbenos por mensaje privado y lo revisamos contigo», copiado del ejemplo del prompt. Debajo de una misma publicación con varias quejas se notaría. El control de aperturas no lo detecta porque mira el comienzo.
+  - Los `other` siguen recibiendo borrador (spam, amigos que se etiquetan); eso se corta en la compuerta de ATENDER-4b, no aquí.
+  - La revisión humana sigue pendiente.
+- **Estado:** **PENDIENTE de datos reales**, igual que ATENDER4A-001.
