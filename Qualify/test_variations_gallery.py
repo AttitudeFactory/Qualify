@@ -449,7 +449,30 @@ async def test_an_approval_that_lands_says_so(monkeypatch: pytest.MonkeyPatch) -
     # m-24842981: the gallery's words, never «Pieza aprobada.»
     toast = str(yielded[0])
     assert len(yielded) == 1 and "Publicación aprobada. Ahora elige cuándo sale." in toast
-    assert "Pieza aprobada." not in toast and "Ver publicación" not in toast
+    assert "Pieza aprobada." not in toast
+    # UX review (PR #274): «elige cuándo sale» always comes with somewhere to tap — the
+    # publication's own page, which offers «Elegir día y hora» or says what is missing
+    assert "Ver publicación" in toast
+    assert "/drafts/d0000000-0000-4000-8000-000000000001" in toast
+
+
+async def test_an_approval_without_a_draft_promises_no_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UX review (PR #274): with no draft there is no button, so the toast never says
+    «elige cuándo sale» — this screen does not check what the publication is missing."""
+    state = _state(monkeypatch)
+    state.set_id = _SET_ID
+    monkeypatch.setattr(module, "approve_variation_angle", lambda *_: NO_VIDEO_DRAFT)
+    monkeypatch.setattr(
+        module,
+        "variation_set_detail",
+        lambda *_: _set_vm(_angle(status="approved", draft_status="approved", draft_id="")),
+    )
+    yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
+    toast = str(yielded[0])
+    assert len(yielded) == 1 and "Revisa lo que falta antes de elegir cuándo sale." in toast
+    assert "Ahora elige cuándo sale." not in toast and "Ver publicación" not in toast
 
 
 async def test_an_approval_whose_final_is_rendering_says_so(
@@ -468,6 +491,9 @@ async def test_an_approval_whose_final_is_rendering_says_so(
     )
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
     assert len(yielded) == 1 and "preparando el video en alta calidad" in str(yielded[0])
+    # UX review (PR #274): the words point where the button goes, not to «Por aprobar»
+    assert "Ábrela para ver cuándo está listo." in str(yielded[0])
+    assert "Por aprobar" not in str(yielded[0])
     # m-24842981 (finding 8): the toast offers the way to the publication's own page
     assert "Ver publicación" in str(yielded[0])
     assert "/drafts/d0000000-0000-4000-8000-000000000001" in str(yielded[0])

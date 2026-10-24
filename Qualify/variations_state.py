@@ -75,8 +75,13 @@ _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."
 _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."
 #: m-24820142: where the approved piece is followed when its 1080p final is being made
-#: or could not be ordered (`creative_vm.approval_notice`).
-_APPROVED_ELSEWHERE = "Ábrela en Por aprobar"
+#: or could not be ordered (`creative_vm.approval_notice`). With a draft the toast
+#: carries its own «Ver publicación» button to the publication's page, so the words say
+#: only «Ábrela» (the gallery's) — naming «Por aprobar» there would point to a different
+#: place than the button (UX review, PR #274). Without one, there is no button and the
+#: words keep saying where to look.
+_APPROVED_ELSEWHERE = "Ábrela"
+_APPROVED_ELSEWHERE_NO_DRAFT = "Ábrela en Por aprobar"
 #: `approval_notice` kinds → this screen's toast tones.
 _NOTICE_TONES = {"success": "ok", "error": "error", "info": "info"}
 _RETRYING = "Reintentando esa pieza."
@@ -740,9 +745,17 @@ class VariationsState(rx.State):
         # the piece's own notice (m-24820142): its final renders, could not be ordered, or
         # there is none to wait for — the same choice every screen that approves makes,
         # in the gallery's words (`APPROVED_TOAST`, m-24842981)
-        notice = approval_notice(video, elsewhere=_APPROVED_ELSEWHERE)
+        # This screen never checks the publication's readiness, so it never promises
+        # «elige cuándo sale» on its own: with a draft, the toast always opens the
+        # publication's page (which offers «Elegir día y hora» or says what is missing);
+        # without one, the text asks to review what is missing (UX review, PR #274).
+        notice = approval_notice(
+            video,
+            ready=bool(draft_id),
+            elsewhere=_APPROVED_ELSEWHERE if draft_id else _APPROVED_ELSEWHERE_NO_DRAFT,
+        )
         action = None
-        if notice.offer_open and draft_id:  # finding 8: somewhere to tap, not only words
+        if draft_id:  # finding 8: somewhere to tap, not only words
             action = {
                 "label": APPROVED_OPEN_ACTION,
                 "on_click": rx.redirect(f"/drafts/{draft_id}"),

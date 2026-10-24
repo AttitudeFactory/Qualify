@@ -932,14 +932,26 @@ def _card_main_button(post) -> rx.Component:
             ),
             rx.cond(
                 post.card_action == CARD_ACTION_WAIT,
-                rx.button(
-                    icon(),
-                    post.card_action_label,
-                    variant="soft",
-                    color_scheme="gray",
-                    size="2",
+                rx.vstack(
+                    rx.button(
+                        icon(),
+                        post.card_action_label,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                        width="100%",
+                        disabled=True,
+                    ),
+                    # «Por aprobar» does not refresh on its own: say how long it takes
+                    # and that the owner can leave (UX review, PR #274).
+                    rx.text(
+                        "Tarda unos minutos. Puedes salir: cuando esté lista aquí podrás "
+                        "elegir el día y la hora.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
                     width="100%",
-                    disabled=True,
                 ),
                 rx.link(
                     rx.cond(
@@ -972,10 +984,12 @@ def _gallery_card(post) -> rx.Component:
     can_discard = post.can_review | ((post.gallery_state == "schedulable") & ~post.in_calendar)
     actions = rx.box(
         _card_main_button(post),
-        # On a ready card the main button opens Tu semana, so opening the publication
-        # gets its own quiet link — it never depends on knowing the picture is tappable.
+        # On a ready card the main button opens Tu semana, and on a «preparing» card it
+        # is disabled, so opening the publication gets its own quiet link — it never
+        # depends on knowing the picture is tappable (the picture is hidden from
+        # keyboard and screen readers).
         rx.cond(
-            post.card_action == CARD_ACTION_SCHEDULE,
+            (post.card_action == CARD_ACTION_SCHEDULE) | (post.card_action == CARD_ACTION_WAIT),
             rx.link(
                 rx.button(
                     rx.icon("eye", size=15),
