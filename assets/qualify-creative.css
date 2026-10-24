@@ -407,7 +407,8 @@
    onto a second line (a word is never split), the joining lines give way first, and if
    it still does not fit the bar goes on to a second row — nothing is ever clipped. */
 .q-cr-view .q-stepper { overflow: visible; flex-wrap: wrap; row-gap: 0.35rem; }
-.q-cr-view .q-step { flex: 0 1 auto; }
+/* CREAR-2: four steps now; each one is a ≥ 44 px target on a phone (N12). */
+.q-cr-view .q-step { flex: 0 1 auto; min-height: 44px; }
 .q-cr-view .q-step-label {
   white-space: normal;
   line-height: 1.15;

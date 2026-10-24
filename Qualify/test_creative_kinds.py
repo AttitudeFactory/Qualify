@@ -429,8 +429,9 @@ def test_a_clip_brief_carries_the_chosen_length(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_a_clip_comes_with_sound_unless_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """§ request 2026-10-23: «Con audio» — on by default (every clip had sound before)."""
-    from .content_generator import _section_channel
+    """§ request 2026-10-23: «Con sonido» — on by default (every clip had sound before);
+    behind step ③'s «Más opciones», never in step ① (UX review 2026-10-24, finding 4)."""
+    from .content_generator import _section_channel, _step_how
 
     state = CreativeState()
     assert state.clip_audio is True
@@ -438,7 +439,11 @@ def test_a_clip_comes_with_sound_unless_turned_off(monkeypatch: pytest.MonkeyPat
     state.set_clip_audio(False)
     assert _submit(monkeypatch, "clip", state._clip_media()).media.clip_audio is False
     channel = str(_section_channel())
-    assert "set_clip_audio" in channel and "Con audio" in channel
+    assert "set_clip_audio" not in channel and "set_clip_duration" in channel
+    how = str(_step_how())
+    assert "set_clip_audio" in how and "Con sonido" in how
+    assert "Si el modelo de video" not in how
+    assert "El sonido del video y la campa\\u00f1a. Puedes crear sin tocarlos." in how
     state.set_clip_duration("10")
     state._reset_media_inputs()
     assert state.clip_audio is True
@@ -446,7 +451,7 @@ def test_a_clip_comes_with_sound_unless_turned_off(monkeypatch: pytest.MonkeyPat
 
 
 def test_the_gallerys_video_is_silent_unless_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """§ request 2026-10-23: «igual la galería» — the animated slide's «Con audio», off
+    """§ request 2026-10-23: «igual la galería» — the animated slide's «Con sonido», off
     by default; only the animated slide takes it, and it goes on the brief."""
     from .content_generator import _slide_generated_fields
 
@@ -467,7 +472,7 @@ def test_the_gallerys_video_is_silent_unless_turned_on(monkeypatch: pytest.Monke
     state.toggle_slide_audio(1)
     assert state.carousel_slides[1]["audio"] == ""
     fields = str(_slide_generated_fields())
-    assert "toggle_slide_audio" in fields and "Con audio" in fields
+    assert "toggle_slide_audio" in fields and "Con sonido" in fields
 
 
 def test_a_script_can_be_as_short_as_five_seconds() -> None:
