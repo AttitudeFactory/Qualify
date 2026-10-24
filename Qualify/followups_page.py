@@ -20,6 +20,13 @@ y aprueba» («Le llega a @ana por mensaje privado.», the notice ticked by defa
 escribiste a @ana. ¿Seguimos con la siguiente?» with «Siguiente» and «Volver a
 comentarios». No tooltips: what used to hide behind an info icon is visible text. Every
 button is at least 44 px tall and the rows wrap, so a 360 px phone gets one column.
+
+**Whether it went out** (m-24849131, ATENDER-10): after «Aprobar y enviar» the card stays
+as «Enviando a @ana…» (the kit's spinner, what was asked and what was written) until the
+send ends: «Listo…» with the next step, or «No pudimos enviarle el mensaje a @ana.
+Instagram no lo aceptó.» (error tone) / «No sabemos si salió. Revísalo en Instagram.»
+(warning tone). A card that did not go out stays at the top of the list, with
+«Entendido» to put it away. There is no «Reintentar» here (ATENDER-9 decides it).
 """
 
 from __future__ import annotations
@@ -38,10 +45,11 @@ from .followups_vm import (
     VIEW_QUERIES,
     FollowupCardVM,
     FollowupIntentVM,
+    UndeliveredVM,
     step_label,
 )
 from .inbox_vm import UNSURE_INTENT_NOTE
-from .ui import callout, card, empty_state, skeleton_rows, tone_badge
+from .ui import callout, card, empty_state, loading_spinner, skeleton_rows, tone_badge
 from .ui import tokens as T
 
 F = FollowupsState
@@ -457,44 +465,158 @@ def _card(c: FollowupCardVM) -> rx.Component:
     )
 
 
-def _done() -> rx.Component:
-    """N3: the task ends with «Listo», the next query (solid) and the way back (soft;
-    solid when nobody is left)."""
-    return card(
-        rx.vstack(
+def _what_was_sent(c: FollowupCardVM) -> rx.Component:
+    """The card itself stays in view while its send is in flight or did not go out."""
+    return rx.vstack(
+        _asked_summary(c),
+        rx.text("Tu mensaje:", size="1", weight="medium", color=T.TEXT_MUTED),
+        rx.box(
+            rx.text(F.delivery_text, size="2", white_space="pre-wrap"),
+            padding="0.6rem 0.8rem",
+            border_radius=T.RADIUS_CONTROL,
+            background=T.SURFACE_BG_RAISED,
+            width="100%",
+        ),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _outcome_line() -> rx.Component:
+    """One line per outcome: sending (spinner), sent (ok), refused (error), unknown
+    (warning). Tones only, through the design system."""
+    return rx.box(
+        rx.cond(
+            F.delivery_pending,
             rx.hstack(
-                rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                loading_spinner("sm"),
                 rx.text(F.done_text, size="3", weight="medium"),
                 spacing="2",
-                align="start",
+                align="center",
             ),
-            rx.text(F.done_note, size="2", color=T.TEXT_MUTED),
-            _row(
+            rx.cond(
+                F.delivery_sent,
+                rx.hstack(
+                    rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                    rx.text(F.done_text, size="3", weight="medium"),
+                    spacing="2",
+                    align="start",
+                ),
                 rx.cond(
-                    F.followups_count > 0,
-                    rx.button(
-                        "Siguiente",
-                        rx.icon("arrow-right", size=T.ICON_SM),
-                        size="2",
-                        on_click=F.next_query,
-                        **_TAP,
-                    ),
-                    rx.fragment(),
-                ),
-                rx.link(
-                    rx.button(
-                        "Volver a comentarios",
-                        variant=rx.cond(F.followups_count > 0, "soft", "solid"),
-                        size="2",
-                        **_TAP,
-                    ),
-                    href=COMMENTS_HREF,
+                    F.delivery_failed,
+                    callout(F.done_text, "error"),
+                    callout(F.done_text, "warn"),
                 ),
             ),
+        ),
+        # UX review (m-24849131): one live region, so all four outcomes are announced.
+        role="status",
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _done() -> rx.Component:
+    """N3: the task ends with «Listo», the next query (solid) and the way back (soft;
+    solid when nobody is left) — but «Siguiente» only once the send's result is
+    known (m-24849131): while it goes out the card stays, with only the way back."""
+    return card(
+        rx.vstack(
+            _outcome_line(),
+            rx.cond(
+                F.done_note != "",
+                rx.text(F.done_note, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            rx.cond(
+                F.delivery_sent,
+                rx.fragment(),
+                rx.foreach(F.delivery_card, _what_was_sent),
+            ),
+            rx.cond(F.delivery_pending, _back_while_sending(), _done_actions()),
             spacing="3",
             width="100%",
         ),
         id="consulta-listo",
+    )
+
+
+def _back_while_sending() -> rx.Component:
+    """UX review (m-24849131, N3): while it goes out only «Siguiente» is held back —
+    the way out stays, and the result still reaches the list through `undelivered`."""
+    return _row(
+        rx.link(
+            rx.button("Volver a comentarios", variant="soft", size="2", **_TAP),
+            href=COMMENTS_HREF,
+        ),
+    )
+
+
+def _done_actions() -> rx.Component:
+    return _row(
+        rx.cond(
+            F.followups_count > 0,
+            rx.button(
+                "Siguiente",
+                rx.icon("arrow-right", size=T.ICON_SM),
+                size="2",
+                on_click=F.next_query,
+                **_TAP,
+            ),
+            rx.fragment(),
+        ),
+        rx.link(
+            rx.button(
+                "Volver a comentarios",
+                variant=rx.cond(F.followups_count > 0, "soft", "solid"),
+                size="2",
+                **_TAP,
+            ),
+            href=COMMENTS_HREF,
+        ),
+    )
+
+
+def _undelivered(u: UndeliveredVM) -> rx.Component:
+    """A card whose message did not go out stays in the list until the person says
+    «Entendido» — nothing is re-sent from here (N13)."""
+    return card(
+        rx.vstack(
+            rx.cond(u.failed, callout(u.headline, "error"), callout(u.headline, "warn")),
+            rx.text(
+                rx.text.strong(u.author),
+                " preguntó: «" + u.comment_text + "»",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.text("Tu mensaje:", size="1", weight="medium", color=T.TEXT_MUTED),
+            rx.box(
+                rx.text(u.message, size="2", white_space="pre-wrap"),
+                padding="0.6rem 0.8rem",
+                border_radius=T.RADIUS_CONTROL,
+                background=T.SURFACE_BG_RAISED,
+                width="100%",
+            ),
+            rx.cond(
+                u.next_step != "",
+                rx.text(u.next_step, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            _row(
+                rx.spacer(),
+                rx.button(
+                    "Entendido",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    on_click=F.dismiss_undelivered(u.followup_id),
+                    **_TAP,
+                ),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        id="consulta-no-salio-" + u.followup_id,
     )
 
 
@@ -507,22 +629,35 @@ def followups_panel() -> rx.Component:
             rx.cond(
                 F.showing_done,
                 _done(),
-                rx.cond(
-                    F.followups_count > 0,
-                    rx.vstack(rx.foreach(F.cards, _card), spacing="3", width="100%"),
-                    empty_state(
-                        "shopping-bag",
-                        "Nadie más está esperando para comprar",
-                        "Cuando alguien pregunte por precios o pedidos en tus comentarios, "
-                        "aparecerá aquí con un mensaje listo para que lo revises y lo envíes.",
-                        action=rx.link(
-                            rx.button("Ver comentarios", size="3", min_height="44px"),
-                            href=COMMENTS_HREF,
-                        ),
-                    ),
+                rx.vstack(
+                    rx.foreach(F.undelivered, _undelivered),
+                    _list_or_empty(),
+                    spacing="3",
+                    width="100%",
                 ),
             ),
         ),
         spacing="3",
         width="100%",
+    )
+
+
+def _list_or_empty() -> rx.Component:
+    return rx.cond(
+        F.followups_count > 0,
+        rx.vstack(rx.foreach(F.cards, _card), spacing="3", width="100%"),
+        rx.cond(
+            F.undelivered_count > 0,
+            rx.fragment(),
+            empty_state(
+                "shopping-bag",
+                "Nadie más está esperando para comprar",
+                "Cuando alguien pregunte por precios o pedidos en tus comentarios, "
+                "aparecerá aquí con un mensaje listo para que lo revises y lo envíes.",
+                action=rx.link(
+                    rx.button("Ver comentarios", size="3", min_height="44px"),
+                    href=COMMENTS_HREF,
+                ),
+            ),
+        ),
     )
