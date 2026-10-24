@@ -9,8 +9,10 @@ Lifecycle (`status`): `pending` → `running` (claimed) → `commenting` (the pr
 outcome is stored, the Meegle comment is due) → `done`. A transient read failure goes back
 to `pending` once (`retry`). The claim counts the attempt — `attempts` while the prefill
 has no outcome yet, `comment_attempts` after — so a worker that dies mid-run still spends
-one, and a `running` row whose lock is older than `STALE_AFTER` is reclaimed. Every
-settlement is a compare-and-set on `(status = 'running', locked_by = <me>)`.
+one, and a `running` row whose lock is older than `STALE_AFTER` is reclaimed — flagged
+`reclaimed`, so the runner closes it instead of running the vendor again (its spend was
+never recorded: a rerun could exceed the cap). Every settlement is a compare-and-set on
+`(status = 'running', locked_by = <me>)`.
 
 `InMemoryPrefillJobs` is the offline fake with the same contract.
 """
@@ -34,9 +36,10 @@ STATUS_RUNNING = "running"
 STATUS_COMMENTING = "commenting"
 STATUS_DONE = "done"
 
-#: A `running` row older than this lost its worker (crash, deploy): it is reclaimed. A
-#: prefill is a handful of HTTP calls with their own timeouts — far below this.
-STALE_AFTER = timedelta(minutes=15)
+#: A `running` row older than this lost its worker (crash, deploy): it is reclaimed. It
+#: must exceed the slowest possible run: `prefill.MAX_RUN_SECONDS` (~21 min with the
+#: bounded Claude client) — a test pins the margin.
+STALE_AFTER = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,9 @@ class NewPrefillJob:
     handle: str
     max_usd: Decimal
     pipeline_version: str
+    #: Set for a job that needs no prefill, only its comment (an Alta without an
+    #: account: `handle == ""`, outcome `no_handle`): enqueued straight to `commenting`.
+    outcome: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,9 @@ class PrefillJob:
     max_usd: Decimal
     spent_usd: Decimal
     runs: tuple[Mapping[str, Any], ...] = ()
+    #: This claim took the row back from a worker whose lock went stale (it crashed, or
+    #: failed to settle): whatever that worker was doing may have happened.
+    reclaimed: bool = False
 
     @property
     def needs_prefill(self) -> bool:
@@ -141,6 +150,7 @@ _DUE = """
 """
 
 _HELD = "id = :id AND status = 'running' AND locked_by = :worker"
+_RETURNING = ", ".join(f"j.{c.strip()}" for c in _COLUMNS.split(","))
 
 
 def _job(row: Any) -> PrefillJob:
@@ -159,6 +169,7 @@ def _job(row: Any) -> PrefillJob:
         max_usd=Decimal(row.max_usd),
         spent_usd=Decimal(row.spent_usd),
         runs=tuple(runs),
+        reclaimed=bool(getattr(row, "reclaimed", False)),
     )
 
 
@@ -193,9 +204,11 @@ class PostgresPrefillJobs:
                         """
                         INSERT INTO alta_prefill_jobs
                             (tenant_id, brand_id, meegle_work_item_id, network, handle,
-                             max_usd, pipeline_version)
+                             max_usd, pipeline_version, outcome, status)
                         VALUES (:tenant_id, :brand_id, :item, :network, :handle,
-                                :max_usd, :pipeline_version)
+                                :max_usd, :pipeline_version, :outcome,
+                                CASE WHEN CAST(:outcome AS text) IS NULL THEN 'pending'
+                                     ELSE 'commenting' END)
                         ON CONFLICT ON CONSTRAINT uq_alta_prefill_jobs_key DO NOTHING
                         """
                     ),
@@ -207,6 +220,7 @@ class PostgresPrefillJobs:
                         "handle": job.handle,
                         "max_usd": job.max_usd,
                         "pipeline_version": job.pipeline_version,
+                        "outcome": job.outcome,
                     },
                 ).rowcount
                 == 1
@@ -227,20 +241,23 @@ class PostgresPrefillJobs:
             rows = session.execute(
                 text(
                     f"""
-                    UPDATE alta_prefill_jobs
-                       SET status = 'running', locked_at = :now, locked_by = :worker,
-                           updated_at = :now,
-                           attempts = CASE WHEN outcome IS NULL THEN attempts + 1
-                                           ELSE attempts END,
-                           comment_attempts = CASE WHEN outcome IS NULL THEN comment_attempts
-                                                   ELSE comment_attempts + 1 END
-                     WHERE id IN (
-                        SELECT id FROM alta_prefill_jobs
+                    WITH due AS (
+                        SELECT id, status AS prior_status FROM alta_prefill_jobs
                          WHERE tenant_id = :tenant AND ({_DUE})
                          ORDER BY next_attempt_at
                          LIMIT :limit
                          FOR UPDATE SKIP LOCKED)
-                    RETURNING {_COLUMNS}
+                    UPDATE alta_prefill_jobs j
+                       SET status = 'running', locked_at = :now, locked_by = :worker,
+                           updated_at = :now,
+                           attempts = CASE WHEN j.outcome IS NULL THEN j.attempts + 1
+                                           ELSE j.attempts END,
+                           comment_attempts = CASE WHEN j.outcome IS NULL
+                                                   THEN j.comment_attempts
+                                                   ELSE j.comment_attempts + 1 END
+                      FROM due
+                     WHERE j.id = due.id
+                    RETURNING {_RETURNING}, due.prior_status = 'running' AS reclaimed
                     """
                 ),
                 {
@@ -393,7 +410,13 @@ class InMemoryPrefillJobs:
             max_usd=job.max_usd,
             spent_usd=Decimal("0"),
         )
-        self.rows[new.id] = _Row(job=new, pipeline_version=job.pipeline_version)
+        if job.outcome is not None:
+            new = replace(new, outcome=job.outcome)
+        self.rows[new.id] = _Row(
+            job=new,
+            status=STATUS_COMMENTING if job.outcome is not None else STATUS_PENDING,
+            pipeline_version=job.pipeline_version,
+        )
         return True
 
     def _due(self, row: _Row, now: datetime) -> bool:
@@ -417,10 +440,13 @@ class InMemoryPrefillJobs:
                 break
             if row.job.tenant_id != tenant_id or not self._due(row, now):
                 continue
+            reclaimed = row.status == STATUS_RUNNING
             if row.job.outcome is None:
-                row.job = replace(row.job, attempts=row.job.attempts + 1)
+                row.job = replace(row.job, attempts=row.job.attempts + 1, reclaimed=reclaimed)
             else:
-                row.job = replace(row.job, comment_attempts=row.job.comment_attempts + 1)
+                row.job = replace(
+                    row.job, comment_attempts=row.job.comment_attempts + 1, reclaimed=reclaimed
+                )
             row.status, row.locked_at, row.locked_by = STATUS_RUNNING, now, worker_id
             out.append(row.job)
         return out

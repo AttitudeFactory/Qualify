@@ -4,6 +4,7 @@ tenant isolation, and the proposal surviving the signup that adopts the reserved
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -33,7 +34,7 @@ from qualify_api.meegle.prefill import (
     AltaPrefillScheduler,
     AltaPrefillSettings,
 )
-from qualify_api.meegle.prefill_jobs import NewPrefillJob, PostgresPrefillJobs
+from qualify_api.meegle.prefill_jobs import STALE_AFTER, NewPrefillJob, PostgresPrefillJobs
 
 pytestmark = pytest.mark.db
 
@@ -260,3 +261,34 @@ def test_the_proposal_survives_the_signup_that_adopts_the_draft() -> None:
     assert prefill["provenance"]["source"]["meegle_work_item_id"] == item
     ((status, *_rest),) = _rows(draft_tenant, item)
     assert status == "done"
+
+
+def test_a_stale_running_job_comes_back_flagged_reclaimed(seeded_ab: tuple[UUID, UUID]) -> None:
+    tenant_a, _ = seeded_ab
+    jobs, item = PostgresPrefillJobs(), _item()
+    jobs.enqueue(_new(tenant_a, _brand(tenant_a), item))
+    now = _now()
+    first = [j for j in jobs.claim(tenant_a, now=now, worker_id="w1", limit=50) if j.id]
+    (job,) = [j for j in first if j.meegle_work_item_id == item]
+    assert job.reclaimed is False
+    later = now + STALE_AFTER + timedelta(minutes=1)
+    (again,) = [
+        j
+        for j in jobs.claim(tenant_a, now=later, worker_id="w2", limit=50)
+        if j.meegle_work_item_id == item
+    ]
+    assert again.reclaimed is True and again.attempts == 2
+    # the first worker lost its lock: its late settlement writes nothing
+    assert not jobs.comment_posted(job, worker_id="w1", now=later)
+
+
+def test_an_alta_without_an_account_is_one_comment_job_per_item(
+    seeded_ab: tuple[UUID, UUID],
+) -> None:
+    tenant_a, _ = seeded_ab
+    jobs, item, brand = PostgresPrefillJobs(), _item(), _brand(tenant_a)
+    no_handle = replace(_new(tenant_a, brand, item, ""), outcome="no_handle")
+    assert jobs.enqueue(no_handle) is True
+    assert jobs.enqueue(no_handle) is False
+    ((status, attempts, comments, outcome, *_rest),) = _rows(tenant_a, item)
+    assert (status, attempts, comments, outcome) == ("commenting", 0, 0, "no_handle")

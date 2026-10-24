@@ -70,8 +70,10 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
 - **Flow.** «Datos» completed → `start_invitation` sends the email → only then
   `AltaPrefillScheduler.schedule`: with a «Cuenta de Instagram», `start_alta_brand_kit_draft`
   (reserved draft, PB-0) + one row in `alta_prefill_jobs` keyed by item + network + username;
-  without one, the comment «No se precargó la identidad de marca: no hay cuenta de Instagram en
-  el Alta.». The event is settled `processed` with `prefill=<label>` in `last_error`
+  without one, the same draft + a row with `handle = ''` and outcome `no_handle` that only
+  carries the comment «No se precargó la identidad de marca: no hay cuenta de Instagram en el
+  Alta.» (once per item, written by the runner). The handler itself never calls Meegle or a
+  vendor. The event is settled `processed` with `prefill=<label>` in `last_error`
   (`enqueued`, `duplicate`, `no_handle`, `email_has_account`, `error`…); with the prefill off it
   settles exactly as before (no label). Anything the scheduler raises is swallowed — a retried
   «Datos» event would email the invitation again (§7).
@@ -95,8 +97,16 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
   attempt: caps, usage, real cost, outcome), `pipeline_version`. Inspect:
   `select meegle_work_item_id, handle, status, outcome, attempts, spent_usd, last_error from alta_prefill_jobs order by created_at desc limit 10`
   (as `qualify_owner`; RLS hides it from `qualify_app` without a tenant).
-- **Budget.** One comment per Alta (Meegle Free: 500 Open API calls/day); the «no handle»
-  comment is not deduplicated across a replayed event (neither is the invitation).
+- **Never twice.** A `running` job whose lock is older than `STALE_AFTER` (30 min) is reclaimed
+  and closed `interrupted` («…no se pudo leer…»), never run again — its spend was not
+  recorded. A run is bounded to ~20.5 min (`MAX_RUN_SECONDS`: Claude through a client with a
+  90 s timeout and no SDK retries, up to 12 turns; ScrapeCreators 6 × 20 s; picture 4 × 8 s), so
+  a live run is not mistaken for a dead one. The comment is at most once: retried (3 tries) only
+  when Meegle answered a refusal (`err_code` or 4xx); a timeout, transport failure or 5xx, or a
+  reclaimed comment phase, closes the job with `last_error = comment_unconfirmed` — check the
+  item by hand in that case.
+- **Budget.** One comment per Alta (Meegle Free: 500 Open API calls/day), deduplicated per item
+  like the job (the invitation itself is not: §7).
 
 ## 3. Configuration in the UIs (where things actually are)
 

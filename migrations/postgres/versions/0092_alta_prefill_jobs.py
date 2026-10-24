@@ -20,7 +20,9 @@ twice. So the job lives with its tenant, under RLS, with the cost it spent on re
 
 - `(meegle_work_item_id, network, handle)` is the idempotency key
   (`uq_alta_prefill_jobs_key`): completing «Datos» twice, or a replayed event, is an
-  `INSERT … ON CONFLICT DO NOTHING`; a corrected username is a new key, a new job.
+  `INSERT … ON CONFLICT DO NOTHING`; a corrected username is a new key, a new job. An
+  Alta WITHOUT an account is a row too (`handle = ''`, outcome `no_handle`, straight to
+  `commenting`): its one comment is then as idempotent per item as any other.
 - `status` `pending` → `running` → `commenting` → `done` (or back to `pending` once, for
   the single retry of a transient read failure). `attempts` counts prefill runs and
   `comment_attempts` the Meegle comment, both at claim time, so a crash still spends one.
@@ -127,9 +129,7 @@ def upgrade() -> None:
             "status IN ('pending','running','commenting','done')",
             name="ck_alta_prefill_jobs_status",
         ),
-        sa.CheckConstraint(
-            "handle <> '' AND handle = lower(btrim(handle))", name="ck_alta_prefill_jobs_handle"
-        ),
+        sa.CheckConstraint("handle = lower(btrim(handle))", name="ck_alta_prefill_jobs_handle"),
         sa.CheckConstraint(
             "attempts >= 0 AND comment_attempts >= 0", name="ck_alta_prefill_jobs_attempts"
         ),

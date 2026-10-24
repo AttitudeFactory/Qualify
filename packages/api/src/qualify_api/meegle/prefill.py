@@ -46,10 +46,24 @@ real cost of every attempt is stored in the job (`runs`, `spent_usd`).
 `OK` with the proposal written → «Identidad de marca propuesta.»; `PRIVATE_ACCOUNT` →
 «…la cuenta de Instagram es privada.»; `NOT_FOUND`, `READ_FAILED`, `CAP_REACHED`,
 `ACCOUNT_TAKEN` and an unwritten proposal → «…no se pudo leer la cuenta de Instagram.».
-An Alta without an account gets «…no hay cuenta de Instagram en el Alta.» from
-`schedule` — only while the prefill is on and configured, so production stays silent
-while it is off. Exactly one retry, only for a transient failure (`READ_FAILED`, or a
-proposal that could not be saved), never for private / not found / cap reached.
+An Alta without an account gets «…no hay cuenta de Instagram en el Alta.» — only while
+the prefill is on and configured, so production stays silent while it is off. That case
+is a job too (reserved draft + a row with `handle = ''`, enqueued straight to its
+comment), so a replayed «Datos» never comments twice. Exactly one retry, only for a
+transient failure (`READ_FAILED`, or a proposal that could not be saved), never for
+private / not found / cap reached.
+
+**Never twice.** A job taken back from a worker whose lock went stale (`reclaimed`: it
+crashed, hung, or could not record what it did) is never run again: its spend is
+unknown, so it is closed `interrupted` (the «no se pudo leer» comment). With the
+recorded spend of every attempt subtracted before the next one, the estimated spend of a
+job never exceeds its `max_usd`. A run is time-bounded so a live run is never mistaken
+for a dead one: Claude through a client with `CLAUDE_TIMEOUT_SECONDS` and no SDK retries
+(a timed-out turn degrades like any failed Claude call), worst case `MAX_RUN_SECONDS`,
+under `prefill_jobs.STALE_AFTER`. The comment is at most once: it is retried only when
+Meegle answered a refusal (it did not save it); a transport failure or timeout may have
+saved it, and a reclaimed comment may have been posted, so both are closed without
+posting again (`last_error = comment_unconfirmed`).
 """
 
 from __future__ import annotations
@@ -60,6 +74,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal, InvalidOperation
+from functools import partial
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -74,6 +89,7 @@ from qualify_api.creative.brand_prefill import (
 )
 from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import from_profile
+from qualify_api.meegle.client import MeegleApiError
 from qualify_api.meegle.prefill_jobs import NewPrefillJob, PrefillJob, PrefillJobs
 
 logger = logging.getLogger("qualify_api.meegle.prefill")
@@ -105,6 +121,20 @@ MIN_RUN = CallCaps(scrapecreators_requests=2, claude_calls=2)
 #: The Claude models a prefill may run — priced at the dearest.
 PREFILL_MODELS = (from_profile.MODEL, hashtag_ai.SELECT_MODEL)
 
+#: The Claude client of a prefill run: one HTTP wait at most this long per turn and no SDK
+#: retries (its defaults are 600 s and 2 retries — over half an hour per turn).
+CLAUDE_TIMEOUT_SECONDS = 90.0
+#: The turns a run can take at most: rubro (2) + catalog (`hashtag_ai.MAX_TURNS`) +
+#: created hashtags (2), each bounded by the timeout above.
+CLAUDE_MAX_TURNS = 2 + hashtag_ai.MAX_TURNS + 2
+#: ScrapeCreators: `DEFAULT_CAPS` requests x the client's 20 s; the picture: 4 hops x 8 s.
+_SCRAPECREATORS_SECONDS = 6 * 20.0
+_PICTURE_SECONDS = 4 * 8.0
+#: The slowest a run can be (~21 min) — `prefill_jobs.STALE_AFTER` stays above it.
+MAX_RUN_SECONDS = (
+    CLAUDE_MAX_TURNS * CLAUDE_TIMEOUT_SECONDS + _SCRAPECREATORS_SECONDS + _PICTURE_SECONDS
+)
+
 #: One run plus exactly one retry, for a transient failure only.
 MAX_PREFILL_ATTEMPTS = 2
 RETRY_AFTER = timedelta(minutes=5)
@@ -121,7 +151,10 @@ COMMENT_UNREADABLE = "No se precargó la identidad de marca: no se pudo leer la 
 OUTCOME_NOT_WRITTEN = "not_written"  # OK, but the proposal could not be saved
 OUTCOME_DISABLED = "disabled"  # the setting was off (or misconfigured) when the job ran
 OUTCOME_NO_BUDGET = "no_budget"  # the retry's remaining budget buys no minimum run
-OUTCOME_INTERRUPTED = "interrupted"  # attempts spent by crashes, no outcome recorded
+OUTCOME_INTERRUPTED = "interrupted"  # reclaimed from a stale lock: never run again
+OUTCOME_NO_HANDLE = "no_handle"  # the Alta names no Instagram account
+#: `last_error` of a comment that may or may not be on the item: never posted again.
+COMMENT_UNCONFIRMED = "comment_unconfirmed"
 
 _TRANSIENT = frozenset({PrefillOutcome.READ_FAILED.value, OUTCOME_NOT_WRITTEN})
 
@@ -264,6 +297,8 @@ def comment_for(outcome: str) -> str | None:
         return COMMENT_OK
     if outcome == PrefillOutcome.PRIVATE_ACCOUNT.value:
         return COMMENT_PRIVATE
+    if outcome == OUTCOME_NO_HANDLE:
+        return COMMENT_NO_HANDLE
     if outcome == OUTCOME_DISABLED:
         return None
     return COMMENT_UNREADABLE
@@ -314,10 +349,29 @@ def _draft_brand(tenant_id: UUID) -> UUID | None:
         ).scalar_one_or_none()
 
 
+def bounded_claude_client(api_key: str) -> Any:
+    """`claude_tools.default_client` with a wall-clock bound per turn and no SDK retries."""
+    import anthropic  # noqa: PLC0415 — lazy, like `claude_tools.default_client`
+
+    return anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_TIMEOUT_SECONDS, max_retries=0)
+
+
+def bounded_ports() -> Any:
+    """The prefill's real ports, with both Claude callers on `bounded_claude_client`."""
+    from qualify_api.creative.brand_prefill import CatalogHashtags, PrefillPorts  # noqa: PLC0415
+
+    return PrefillPorts(
+        generate=partial(from_profile.generate, client_factory=bounded_claude_client),
+        catalog=CatalogHashtags(
+            selector=partial(hashtag_ai.select_hashtags, client_factory=bounded_claude_client)
+        ),
+    )
+
+
 def _prefill(*args: Any, **kwargs: Any) -> PrefillResult:
     from qualify_api.creative.brand_prefill import prefill_brand_kit  # noqa: PLC0415
 
-    return prefill_brand_kit(*args, **kwargs)
+    return prefill_brand_kit(*args, ports=bounded_ports(), **kwargs)
 
 
 # --------------------------------------------------------------------------------------
@@ -351,7 +405,9 @@ class AltaPrefillScheduler:
 
     def schedule(self, work_item_id: int, *, email: str, handle: str | None) -> str:
         """Prepare the draft and enqueue the job; returns a short log-safe label. Called
-        only after the invitation went out. May raise (database): the caller swallows it."""
+        only after the invitation went out. Never calls Meegle or a vendor itself (the
+        runner does). May raise (database): the caller swallows it. Without an account
+        the job only carries the «no hay cuenta» comment."""
         from qualify_api.auth.drafts import DraftEmailInvalid, EmailHasAccount  # noqa: PLC0415
 
         settings = self._settings()
@@ -365,10 +421,6 @@ class AltaPrefillScheduler:
                 )
             return SKIP_OFF
         assert settings.max_usd is not None  # active implies a cap
-        if not handle:
-            self._comment(work_item_id, COMMENT_NO_HANDLE)
-            logger.info("alta prefill: work_item=%s has no Instagram account", work_item_id)
-            return SKIP_NO_HANDLE
         try:
             draft = self._start_draft(email, work_item_id)
         except EmailHasAccount:
@@ -388,9 +440,11 @@ class AltaPrefillScheduler:
                 brand_id=brand_id,
                 meegle_work_item_id=work_item_id,
                 network=NETWORK,
-                handle=handle,
+                handle=handle or "",
                 max_usd=settings.max_usd,
                 pipeline_version=PIPELINE_VERSION,
+                # no account: nothing to read, only the comment — still once per item
+                outcome=None if handle else OUTCOME_NO_HANDLE,
             )
         )
         logger.info(
@@ -399,7 +453,9 @@ class AltaPrefillScheduler:
             draft.tenant_id,
             "enqueued" if inserted else "already queued",
         )
-        return ENQUEUED if inserted else DUPLICATE
+        if not inserted:
+            return DUPLICATE
+        return ENQUEUED if handle else SKIP_NO_HANDLE
 
 
 # --------------------------------------------------------------------------------------
@@ -470,11 +526,13 @@ class AltaPrefillRunner:
             )
             return "finished" if comment else outcome
 
+        if job.reclaimed or job.attempts > MAX_PREFILL_ATTEMPTS:
+            # A worker took it and never recorded what it spent (crash, hang, a failed
+            # settlement): running it again could exceed the cap or race that worker.
+            logger.warning("alta prefill: job=%s reclaimed, closed without a rerun", job.id)
+            return finish(OUTCOME_INTERRUPTED)
         if not settings.active or settings.units is None:
             return finish(OUTCOME_DISABLED)
-        if job.attempts > MAX_PREFILL_ATTEMPTS:
-            # Every attempt was spent by a worker that died before recording an outcome.
-            return finish(OUTCOME_INTERRUPTED)
         caps = caps_for_budget(job.max_usd - job.spent_usd, settings.units)
         if caps is None:
             return finish(OUTCOME_NO_BUDGET)
@@ -531,9 +589,26 @@ class AltaPrefillRunner:
         if text is None:  # nothing to say: settle quietly
             self._jobs.comment_posted(job, worker_id=self._worker, now=now)
             return "done"
+        if job.reclaimed:
+            # The worker before may have posted it and failed to record it: never twice.
+            self._jobs.comment_failed(
+                job, worker_id=self._worker, now=now, next_at=None, error=COMMENT_UNCONFIRMED
+            )
+            return "comment_unconfirmed"
         try:
             self._comment(job.meegle_work_item_id, text)
-        except Exception as exc:  # noqa: BLE001 — Meegle down: the comment is retried
+        except Exception as exc:  # noqa: BLE001 — classified below
+            if not _refused(exc):
+                # A timeout or a dropped connection may come after Meegle saved it.
+                self._jobs.comment_failed(
+                    job, worker_id=self._worker, now=now, next_at=None, error=COMMENT_UNCONFIRMED
+                )
+                logger.warning(
+                    "alta prefill: job=%s comment unconfirmed (%s), not retried",
+                    job.id,
+                    type(exc).__name__,
+                )
+                return "comment_unconfirmed"
             attempt = max(job.comment_attempts, 1)
             next_at = (
                 now + COMMENT_BACKOFF[min(attempt, len(COMMENT_BACKOFF)) - 1]
@@ -552,3 +627,13 @@ class AltaPrefillRunner:
             return "comment_failed"
         self._jobs.comment_posted(job, worker_id=self._worker, now=now)
         return "done"
+
+
+def _refused(exc: Exception) -> bool:
+    """Meegle answered and did not save the comment: its `err_code`, or a 4xx. Anything
+    else (transport failure, timeout, 5xx, an unexpected error) may have saved it."""
+    if not isinstance(exc, MeegleApiError):
+        return False
+    if exc.code is not None:  # Meegle's own err_code: it read the request and said no
+        return True
+    return exc.status is not None and 400 <= exc.status < 500

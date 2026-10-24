@@ -24,6 +24,7 @@ from qualify_api.creative.brand_prefill import (
     PrefillUsage,
 )
 from qualify_api.meegle import prefill as mod
+from qualify_api.meegle.client import MeegleApiError
 from qualify_api.meegle.handlers import meegle_handlers
 from qualify_api.meegle.onboarding import InvitationResult
 from qualify_api.meegle.prefill import (
@@ -42,7 +43,12 @@ from qualify_api.meegle.prefill import (
     unit_costs,
     usage_cost,
 )
-from qualify_api.meegle.prefill_jobs import STATUS_DONE, STATUS_PENDING, InMemoryPrefillJobs
+from qualify_api.meegle.prefill_jobs import (
+    STALE_AFTER,
+    STATUS_DONE,
+    STATUS_PENDING,
+    InMemoryPrefillJobs,
+)
 from qualify_api.meegle.settings import MeegleNames
 from qualify_api.webhooks.processor import Processor
 from qualify_api.webhooks.repository import ClaimedEvent
@@ -253,11 +259,21 @@ def test_misconfigured_is_the_same_as_off() -> None:
     assert (world.draft_calls, world.jobs.rows, world.comments) == ([], {}, [])
 
 
-def test_no_handle_comments_once_and_prepares_nothing() -> None:
+def test_no_handle_comments_once_per_item_even_when_replayed() -> None:
     world = World(_on())
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle=None) == "no_handle"
+    scheduler = world.scheduler()
+    assert scheduler.schedule(ITEM, email=EMAIL, handle=None) == "no_handle"
+    assert scheduler.schedule(ITEM, email=EMAIL, handle=None) == "duplicate"  # a replay
+    assert world.comments == []  # the runner writes it, outside the event
+    (row,) = world.jobs.rows.values()
+    assert (row.job.handle, row.job.outcome, row.status) == ("", "no_handle", "commenting")
+    for _ in range(3):
+        world.runner().run_once()
+        world.clock += timedelta(hours=1)
     assert world.comments == [(ITEM, COMMENT_NO_HANDLE)]
-    assert world.draft_calls == [] and world.jobs.rows == {}
+    assert world.prefill_calls == [] and row.status == STATUS_DONE
+    # the account added later is a new key: that one does run
+    assert scheduler.schedule(ITEM, email=EMAIL, handle="bianki.ve") == "enqueued"
 
 
 def test_a_handle_prepares_the_draft_and_enqueues_one_job() -> None:
@@ -431,31 +447,125 @@ def test_a_job_found_while_off_is_settled_quietly() -> None:
     assert row.status == STATUS_DONE and row.job.outcome == mod.OUTCOME_DISABLED
 
 
-def test_a_failed_comment_is_retried_then_given_up_without_rerunning_the_prefill() -> None:
+def test_a_refused_comment_is_retried_then_given_up_without_rerunning_the_prefill() -> None:
     world = World(_on())
     _enqueued(world)
     world.results = [_result(PrefillOutcome.OK)]
-    world.comment_raises = RuntimeError("meegle down")
+    world.comment_raises = MeegleApiError("Meegle refused (429)", code=429, status=200)
     for _ in range(5):
         world.runner().run_once()
         world.clock += timedelta(minutes=30)
     assert len(world.prefill_calls) == 1
     (row,) = world.jobs.rows.values()
-    assert row.status == STATUS_DONE and row.last_error == "RuntimeError"
+    assert row.status == STATUS_DONE and row.last_error == "MeegleApiError"
     assert row.job.comment_attempts == mod.MAX_COMMENT_ATTEMPTS
 
 
-def test_a_job_whose_attempts_crashes_spent_is_closed_without_a_run() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        MeegleApiError("could not reach Meegle (comment)"),  # transport / timeout
+        MeegleApiError("Meegle answered 502", status=502),
+        RuntimeError("unexpected"),
+    ],
+)
+def test_a_comment_that_may_have_been_saved_is_never_posted_again(error: Exception) -> None:
     world = World(_on())
     _enqueued(world)
-    (row,) = world.jobs.rows.values()
-    for _ in range(mod.MAX_PREFILL_ATTEMPTS):  # two claims, the worker died each time
-        world.jobs.claim(row.job.tenant_id, now=world.clock, worker_id="dead", limit=1)
-        world.clock += timedelta(hours=1)
+    world.results = [_result(PrefillOutcome.OK)]
+    world.comment_raises = error
     world.runner().run_once()
-    assert world.prefill_calls == []
+    world.comment_raises = None
+    for _ in range(3):
+        world.clock += timedelta(hours=1)
+        world.runner().run_once()
+    assert world.comments == []  # the one try may be on the item; none after it
+    (row,) = world.jobs.rows.values()
+    assert row.status == STATUS_DONE and row.last_error == mod.COMMENT_UNCONFIRMED
+    assert row.job.comment_attempts == 1
+
+
+class _FailingSettle(InMemoryPrefillJobs):
+    """`comment_posted` / `finish_prefill` fail once after the side effect happened."""
+
+    fail_finish: bool = False
+    fail_posted: bool = False
+
+    def finish_prefill(self, job, **kw):  # noqa: ANN001, ANN003, ANN201
+        if self.fail_finish:
+            self.fail_finish = False
+            raise RuntimeError("database down")
+        return super().finish_prefill(job, **kw)
+
+    def comment_posted(self, job, **kw):  # noqa: ANN001, ANN003, ANN201
+        if self.fail_posted:
+            self.fail_posted = False
+            raise RuntimeError("database down")
+        return super().comment_posted(job, **kw)
+
+
+def test_a_comment_posted_but_not_recorded_is_not_posted_again() -> None:
+    world = World(_on())
+    world.jobs = _FailingSettle()
+    _enqueued(world)
+    world.results = [_result(PrefillOutcome.OK)]
+    world.jobs.fail_posted = True
+    world.runner().run_once()
+    assert world.comments == [(ITEM, COMMENT_OK)]
+    world.clock += STALE_AFTER + timedelta(minutes=1)
+    world.runner().run_once()  # reclaimed in its comment phase
+    assert world.comments == [(ITEM, COMMENT_OK)]
+    (row,) = world.jobs.rows.values()
+    assert row.status == STATUS_DONE and row.last_error == mod.COMMENT_UNCONFIRMED
+
+
+def test_a_crash_mid_run_is_closed_not_rerun_and_never_exceeds_the_cap() -> None:
+    """The worker ran the vendor, then died before recording the spend: the reclaimed job
+    must not get the whole cap again."""
+    units = unit_costs()
+    assert units is not None
+    world = World(_on(str(units.cost(DEFAULT_CAPS))))
+    world.jobs = _FailingSettle()
+    _enqueued(world)
+    world.results = [_result(PrefillOutcome.OK)]
+    world.jobs.fail_finish = True  # the run happened; its outcome and spend are lost
+    assert world.runner().run_once()["error"] == 1
+    assert len(world.prefill_calls) == 1
+    world.runner().run_once()  # still locked: not due yet
+    world.clock += STALE_AFTER + timedelta(minutes=1)
+    world.runner().run_once()
+    assert len(world.prefill_calls) == 1  # no second run, no second charge
     assert world.comments == [(ITEM, COMMENT_UNREADABLE)]
+    (row,) = world.jobs.rows.values()
+    assert row.job.outcome == mod.OUTCOME_INTERRUPTED and row.status == STATUS_DONE
+
+
+def test_a_crash_after_the_retry_was_scheduled_keeps_the_one_retry() -> None:
+    world = World(_on())
+    _enqueued(world)
+    world.results = [_result(PrefillOutcome.READ_FAILED)]
+    world.runner().run_once()  # attempt 1 recorded, retry scheduled
+    world.clock += mod.RETRY_AFTER
+    (row,) = world.jobs.rows.values()
+    world.jobs.claim(row.job.tenant_id, now=world.clock, worker_id="dead", limit=1)  # dies
+    world.clock += STALE_AFTER + timedelta(minutes=1)
+    world.runner().run_once()
+    assert len(world.prefill_calls) == 1  # the retry's worker died: no third chance
     assert row.job.outcome == mod.OUTCOME_INTERRUPTED
+    assert world.comments == [(ITEM, COMMENT_UNREADABLE)]
+
+
+def test_a_live_run_is_never_taken_for_a_dead_one() -> None:
+    assert mod.MAX_RUN_SECONDS < STALE_AFTER.total_seconds() * 0.8
+    assert mod.MAX_RUN_SECONDS == 12 * 90 + 120 + 32  # ~20.5 min against a 30 min window
+
+
+def test_the_real_prefill_runs_claude_through_the_bounded_client() -> None:
+    ports = mod.bounded_ports()
+    assert ports.generate.keywords["client_factory"] is mod.bounded_claude_client
+    assert ports.catalog.selector.keywords["client_factory"] is mod.bounded_claude_client
+    client = mod.bounded_claude_client("sk-test")
+    assert client.max_retries == 0 and client.timeout == mod.CLAUDE_TIMEOUT_SECONDS
 
 
 def test_jobs_of_one_tenant_are_claimed_only_under_that_tenant() -> None:
@@ -556,6 +666,8 @@ async def test_on_without_a_handle_the_event_comments_the_reason(meegle_events: 
     world = World(_on())
     queue = await _process(_Engine(None), world.scheduler(), _datos(meegle_events))
     assert queue.settled == [("processed", "prefill=no_handle")]
+    assert world.comments == []  # never a Meegle call inside the event
+    world.runner().run_once()
     assert world.comments == [(ITEM, COMMENT_NO_HANDLE)]
 
 
