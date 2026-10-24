@@ -19,7 +19,7 @@ an unclaimed draft can resume it. A claimed draft is an account and never resume
 That accepted risk covers `web` drafts only — the ones the visitor typed themselves.
 
 Drafts prepared for a Meegle «Alta de cliente» are reserved (PB-0, m-24852193, migration
-0090; `docs/epica-prellenado-brand-kit-alta.md` §2.8). `start_alta_brand_kit_draft` creates
+0091; `docs/epica-prellenado-brand-kit-alta.md` §2.8). `start_alta_brand_kit_draft` creates
 them with `origin = 'alta'` and the item id, idempotently per item. They open only with the
 Alta's own invitation:
 
@@ -52,7 +52,7 @@ from qualify_api.tenancy.models import Brand, BrandKitDraft, Tenant, TenantMembe
 #: The brand's name until the signup names the business.
 DRAFT_BRAND_NAME = "Mi marca"
 
-#: `brand_kit_drafts.origin` (migration 0090).
+#: `brand_kit_drafts.origin` (migration 0091).
 ORIGIN_WEB = "web"
 ORIGIN_ALTA = "alta"
 
@@ -142,7 +142,7 @@ def adoptable_draft(
     """The draft a signup with this email adopts. `meegle_work_item_id` is the item of the
     signup's VALID invite (`signup_invites.meegle_work_item_id`, already locked and
     re-checked by the caller), None without an invite or for one not made from Meegle.
-    That item's reserved draft wins; otherwise the email's `web` draft, as before 0090."""
+    That item's reserved draft wins; otherwise the email's `web` draft, as before 0091."""
     if meegle_work_item_id is not None:
         draft = find_open_alta_draft(session, email, meegle_work_item_id)
         if draft is not None:

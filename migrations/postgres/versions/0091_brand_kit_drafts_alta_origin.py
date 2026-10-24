@@ -1,7 +1,7 @@
 """brand_kit_drafts: drafts made for a Meegle «Alta de cliente» are reserved (m-24852193)
 
-Revision ID: 0090
-Revises: 0089
+Revision ID: 0091
+Revises: 0090
 Create Date: 2026-10-24
 
 PB-0 of the epic m-24852192 (`docs/epica-prellenado-brand-kit-alta.md` §2.8, approved by
@@ -37,8 +37,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0090"
-down_revision = "0089"
+revision = "0091"
+down_revision = "0090"
 branch_labels = None
 depends_on = None
 

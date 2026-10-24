@@ -102,7 +102,7 @@ class BrandKitDraft(Base):
     """The email a pre-login Brand Kit was started with (migration 0037): resuming the
     draft by email and adopting its tenant at signup (`qualify_api.auth.drafts`).
 
-    `origin` (migration 0090): `web` = typed on the first view; `alta` = prepared for a
+    `origin` (migration 0091): `web` = typed on the first view; `alta` = prepared for a
     Meegle «Alta de cliente» (`meegle_work_item_id`), reserved to that Alta's invitation."""
 
     __tablename__ = "brand_kit_drafts"

@@ -1,5 +1,5 @@
 """`db`-marked: Brand Kit drafts prepared by a Meegle «Alta de cliente» are reserved to
-that Alta's invitation (PB-0, m-24852193, migration 0090).
+that Alta's invitation (PB-0, m-24852193, migration 0091).
 
 The three paths of the ticket — the public first view does not resume a reserved draft,
 an invite of the same item adopts it, an invite of another item (or none) does not — plus
@@ -162,7 +162,7 @@ def test_signup_without_an_invite_does_not_adopt_it() -> None:
 
 def test_web_drafts_keep_their_behaviour_with_any_invite() -> None:
     """An invite not made from Meegle (`just invite`), or one whose item has no reserved
-    draft, adopts the web draft typed with that email, as before 0090."""
+    draft, adopts the web draft typed with that email, as before 0091."""
     email = _email()
     web = start_brand_kit_draft(email, **_DEFAULTS)
     invite = create_invite(email, meegle_work_item_id=_item())
