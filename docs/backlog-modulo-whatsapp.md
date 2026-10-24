@@ -1,6 +1,8 @@
 # Backlog — Módulo WhatsApp (Cloud API): plan de ejecución
 
-**Fecha:** 2026-10-14 · **Estado:** `[EJECUTADO 2026-10-14 — 16 de 17 historias en main; WA-13 bloqueada por D1]`
+**Fecha:** 2026-10-14 · **Estado:** `[EJECUTADO 2026-10-14 — 16 de 17 historias en main; WA-13 pendiente solo de operación]`
+
+> **Corrección 2026-10-24 (m-24849204, m-24789629):** el fundador aclaró que **la integración con Baileys nunca existió**. La gate D1 (número nuevo / migrar / coexistencia) no aplica y no hay bot que apagar. El número +58 424-8837639 es el del negocio y está en la Cloud API desde el 2026-10-16. Lo que queda de WA-13 es operación: alta en Qualify, perfil y primera conversación real. El plan padre §4 se conserva como registro histórico.
 **Plan padre:** [plan-modulo-whatsapp-cloud-api.md](plan-modulo-whatsapp-cloud-api.md) (contexto, permisos de Meta, arquitectura, decisiones). Este documento lo ordena en **entregas que Bianki usa** y le da a cada historia su contrato técnico sobre el código que existe hoy.
 **Hecho antes de este backlog:** WA-00 parcial (D3 y D4 aplicados de facto), WA-01 (caso de uso WhatsApp, WABA de prueba `2338576026889338`, número de prueba `1393787420477981`, Paso 1 del panel completado), WA-03 (receptor `/api/whatsapp/webhook` grabando en el intake de QUA-147; PRs #123 y #125).
 **Linear:** proyecto «Módulo WhatsApp (Cloud API)», un hito por entrega. El autoservicio para tenants ajenos es [QUA-203](https://linear.app/qualify-market/issue/QUA-203), fuera de estas entregas.
@@ -20,7 +22,7 @@ Todo lo de abajo está en `main`, mergeado por `just merge` con CI verde. Suite 
 | WA-10 API de chats | QUA-209 | #134 | hilos, mensajes, responder, asignar, tomar el control |
 | WA-11 pestaña Chats | QUA-210 | #140, #144 | atención desde el computador, tarjeta de pedido, media entrante |
 | WA-12 Conexión/Perfil/QR | QUA-211 | #136, #144 | página `/whatsapp`, foto de perfil con subida reanudable |
-| WA-13 número real | QUA-212 | — | **bloqueada por D1** (ver runbook abajo) |
+| WA-13 número real | m-24789629 | — | pendiente de operación (ver runbook abajo) |
 | WA-14 motor de menús | QUA-213 | #128, #132 | motor determinista puro + `0058` versiones de menú |
 | WA-15 pedido desde catálogo | QUA-214 | #135 | `0059`, catálogo real, pedido estructurado para la persona |
 | WA-16 editor de menús | QUA-215 | #141 | formulario, vista previa con el catálogo, versiones, publicación |
@@ -32,7 +34,7 @@ Todo lo de abajo está en `main`, mergeado por `just merge` con CI verde. Suite 
 
 ### Pendiente fuera del código
 
-1. **WA-13** (abajo): el número real ya está en la Cloud API y el webhook verificado (2026-10-16); falta el alta en Qualify (`just whatsapp-connect` en producción), el perfil de empresa y la primera conversación real. Queda por dejar escrita en el plan §9.1 la opción de D1 que corresponde a ese número.
+1. **WA-13** (abajo): el número real ya está en la Cloud API y el webhook verificado (2026-10-16); falta el alta en Qualify (`just whatsapp-connect` en producción), el perfil de empresa y la primera conversación real.
 2. **Tarifas reales.** `qualify_api/whatsapp/pricing.py` lleva `[RATE CARD PENDING]`; el costo estimado de campañas no es real hasta cargar el rate card vigente de Meta.
 3. **Consentimiento del formulario de leads.** Importar leads como opt-ins solo es válido si el texto de consentimiento cubre recibir mensajes de WhatsApp del negocio.
 4. **Método de pago en la WABA** para enviar plantillas (crearlas no lo necesita).
@@ -58,15 +60,15 @@ Ninguno tiene credenciales reales; todos usan un token basura. **No correr `just
 
 Para un local de comida rápida lo que mueve dinero es **el pedido**; el 80 % de los chats son cuatro preguntas repetidas y la quinta es la venta. De ahí el orden:
 
-| Entrega | Qué puede hacer Bianki al terminarla | Historias | Apaga Baileys |
+| Entrega | Qué puede hacer Bianki al terminarla | Historias | Bianki atiende solo con Qualify |
 |---|---|---|---|
 | **1. Cimientos** | El número está conectado a Qualify; cada mensaje entrante queda en `threads`/`messages`; Qualify puede enviar texto, media y botones dentro de la ventana de 24 h | WA-04 · WA-05 · WA-06 · WA-07 · WA-08 | no |
 | **2. Chats** | Una persona atiende desde el computador: lista de conversaciones, hilo, responder, asignar, "pedido listo"; perfil del negocio y QR por canal; el número real de Bianki en la API | WA-10 · WA-11 · WA-12 · WA-13 | **sí** (paridad mínima: atender) |
-| **3. Menú que toma el pedido** | Bienvenida, atajos, menú de productos desde el catálogo, pedido estructurado que pasa a una persona; editor de menús; métricas por entrada | WA-14 · WA-15 · WA-16 · WA-17 | **sí, del todo** (paridad con el bot + pedido) |
+| **3. Menú que toma el pedido** | Bienvenida, atajos, menú de productos desde el catálogo, pedido estructurado que pasa a una persona; editor de menús; métricas por entrada | WA-14 · WA-15 · WA-16 · WA-17 | **sí, del todo** (menú + pedido) |
 | **4. Volver a vender** | Plantillas, opt-ins, campañas con costo visible, analítica | WA-18 · WA-19 · WA-20 · WA-21 | — |
 | 5. Después | Flows de pedido, catálogo nativo con carrito, llamadas, autoservicio multi-tenant (QUA-203) | WA-22 · WA-23 · WA-24 | — |
 
-**Gates de decisión:** D1 (número de Bianki) bloquea **solo WA-13**; todo lo demás se prueba con el número de prueba. D2 (menús deterministas bajo ADR 21) se toma como **sí** porque el fundador pidió implementar el módulo entero; queda escrito en el plan §9.1 como aplicado salvo objeción.
+**Gates de decisión:** D1 no aplica (corrección 2026-10-24: no hubo Baileys). D2 (menús deterministas bajo ADR 21) se toma como **sí** porque el fundador pidió implementar el módulo entero; queda escrito en el plan §9.1 como aplicado salvo objeción.
 
 ---
 
@@ -157,7 +159,7 @@ Errores: `WhatsAppApiError(status, code, subcode, error_data.details sin texto d
 
 ---
 
-## 3. Entrega 2 — Chats (apaga Baileys en su mínimo)
+## 3. Entrega 2 — Chats (atender en su mínimo)
 
 ### WA-10 · API HTTP de chats
 
@@ -171,19 +173,19 @@ Errores: `WhatsAppApiError(status, code, subcode, error_data.details sin texto d
 
 Conexión: número, nombre verificado, `name_status`, calidad, nivel de mensajería, salud (`check_connection_health`), último webhook recibido, botón "Verificar ahora". Perfil: formulario del `whatsapp_business_profile` (descripción, dirección, email, web, categoría, foto vía `upload_media`). QR: lista y alta de códigos con texto prellenado por canal (mostrador, empaque, bio de Instagram), descarga del PNG que devuelve Meta y enlace `wa.me`; el texto prellenado es la clave de entrada que WA-17 mide.
 
-### WA-13 · Número real de Bianki y apagado de Baileys *(gate D1)*
+### WA-13 · Número real de Bianki en Qualify y primera conversación real (m-24789629)
 
 Todo el código que necesita ya está en `main`. Lo que falta son pasos de operación, en este orden:
 
-1. **Decidir D1** (plan §4): número nuevo, migrar el actual de Baileys (hay que borrarlo de la app antes de registrarlo) o coexistencia.
+1. ~~**Decidir D1**~~ **NO APLICA (2026-10-24):** nunca hubo integración con Baileys; el número del negocio se registró directo en la Cloud API.
 2. ~~**Producción lista para webhooks**~~ **HECHO (verificado 2026-10-16):** callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` guardado y verificado por Meta en el caso de uso WhatsApp de la app; suscritos `messages`, `account_alerts`, `account_review_update`, `account_update`, `calls`, `message_template_quality_update`, `message_template_status_update`, `phone_number_name_update`, `phone_number_quality_update`, `security`.
-3. ~~**Paso 2 del panel**~~ **HECHO (verificado 2026-10-16):** WABA real «Bianki» (`2424476465026205`) bajo Qualify.co; número +58 424-8837639 (`phone_number_id` `1355617947639492`) conectado, calidad alta, nombre visible «Bianki» aprobado; pago y envío de prueba marcados como completados en la guía de Meta. Perfil de empresa por llenar en WhatsApp Manager → Números de teléfono → Perfil: dirección «Feria de Comida, Korner Club, Av. Los Agustinos, San Cristóbal, Táchira», web `https://bianki.com.ve`, horario lunes a domingo de 4 pm a 12 de la medianoche, categoría «Comida y comestibles», foto = isotipo del sello sobre rojo (fuera del repo, `Desktop/bianki_locales/whatsapp/`). Falta anotar en el plan §9.1 cuál opción de D1 es este número (nuevo o el de Baileys).
+3. ~~**Paso 2 del panel**~~ **HECHO (verificado 2026-10-16):** WABA real «Bianki» (`2424476465026205`) bajo Qualify.co; número +58 424-8837639 (`phone_number_id` `1355617947639492`) conectado, calidad alta, nombre visible «Bianki» aprobado; pago y envío de prueba marcados como completados en la guía de Meta. Perfil de empresa por llenar en WhatsApp Manager → Números de teléfono → Perfil: dirección «Feria de Comida, Korner Club, Av. Los Agustinos, San Cristóbal, Táchira», web `https://bianki.com.ve`, horario lunes a domingo de 4 pm a 12 de la medianoche, categoría «Comida y comestibles», foto = isotipo del sello sobre rojo (fuera del repo, `Desktop/bianki_locales/whatsapp/`).
 4. **Token de usuario de sistema** en Business Settings con `whatsapp_business_messaging`, `whatsapp_business_management` y `business_management`.
 5. **Alta en Qualify**, en producción y con el token solo en el entorno de ese proceso:
    `QUALIFY_WA_SYSTEM_USER_TOKEN=… just whatsapp-connect --tenant <tenant de Bianki> --brand <marca Bianki> --waba-id <id> --phone-number-id <id>`
 6. **Menú:** en `/whatsapp` → Menú, crear desde el ejemplo de comida rápida, ajustar y publicar.
 7. **Humo:** escribir desde un teléfono propio, ver el menú, confirmar un pedido, responder desde Chats, comprobar las marcas de entrega.
-8. **Apagar Baileys** y, si D1 = migrar, exportar antes el historial del teléfono.
+8. ~~**Apagar Baileys**~~ **NO APLICA:** no existe. Sí comprobar que nadie del local siga atendiendo ese número desde la app de WhatsApp: al registrarlo en la API dejó de funcionar allí.
 
 Criterio: el primer pedido real atendido desde `/whatsapp`. Cierra V-WA-3 (tiempo real de aprobación del nombre visible).
 
@@ -243,10 +245,10 @@ Espejo de las plantillas de la WABA (`name, language, category, status, quality,
 ## 7. Orden de trabajo y dependencias
 
 ```
-WA-04 ──► WA-05 ──► WA-06 ──► WA-07 ──► WA-08 ──► WA-10 ──► WA-11 ──► WA-13 (D1)
+WA-04 ──► WA-05 ──► WA-06 ──► WA-07 ──► WA-08 ──► WA-10 ──► WA-11 ──► WA-13
                                   │                 └──► WA-12
                                   └──► WA-14 ──► WA-15 ──► WA-16 ──► WA-17
                                                    WA-18 ──► WA-19 ──► WA-20 ──► WA-21
 ```
 
-Cada historia es un PR propio, mergeado por `just merge` con CI verde. Una historia no empieza hasta que la anterior de su fila esté en `main`. Las verificaciones empíricas del plan (§9.2) se cierran así: V-WA-1 en WA-05, V-WA-3 en WA-13, V-WA-2 solo si D1 = C.
+Cada historia es un PR propio, mergeado por `just merge` con CI verde. Una historia no empieza hasta que la anterior de su fila esté en `main`. Las verificaciones empíricas del plan (§9.2) se cierran así: V-WA-1 en WA-05, V-WA-3 en WA-13; V-WA-2 (coexistencia) queda sin objeto.

@@ -80,6 +80,30 @@ El flyer o el video se producen con la primera variante de copy que pasa las reg
   - ~~**HeyGen** sigue disponible con `QUALIFY_VIDEO_ENGINE=heygen`.~~ `[RETIRADO 2026-10-16]`: ya no está en el código; el presentador que habla es OmniHuman, ver §6.
 - Las claves de los proveedores las paga la plataforma (decisión D4); no hay «trae tu propia clave».
 
+### 4.1 Seedance 2.5: modo borrador y render final al aprobar `[HECHO 2026-10-22, borradores probados en vivo 2026-10-23]` (m-24820142)
+
+- **Cómo funciona.** Si el modelo de Seedance tiene modo borrador (hoy solo `dreamina-seedance-2-5-260628`), todo video se genera primero como **borrador a 480p** (`draft: true`), sin importar `QUALIFY_SEEDANCE_RESOLUTION`. Aplica al clip, al video con presentador de Seedance y a las diapositivas animadas de la galería.
+  - Al pulsar **«Aprobar esta versión»** se aprueba el texto y se lanza el **final a 1080p** solo con el id del borrador (`content: [{"type": "draft_task", ...}]`). Ni el prompt ni las referencias, `ratio`, `duration`, `seed`, `generate_audio` u `omni_reference_task_type` se reenvían: ModelArk da error aunque coincidan.
+- **El final reemplaza al borrador en la misma fila de `image_assets`.** Así Piezas, las descargas y el Planificador no cambian.
+  - Lo que el final necesita se guarda en `params["draft"]`: id, `created_at`, modelo, cómo se terminó el video y el costo del borrador. Ver `qualify_api/creative/draft_mode.py`.
+  - La salida 1080p de 2.5 es HEVC de 10 bits: se **transcodifica a H.264** con `PyAvVideoFitter`. A la vez se vuelve a poner el logo (en el clip) o el texto (en la diapositiva).
+- **Cuándo se bloquea.**
+  - Mientras el final no está, el Planificador no publica la pieza (`MEDIA_DRAFT_PENDING`).
+  - Si el borrador tiene más de 7 días, se avisa antes de llamar a la API (`DraftExpired`) y la solución es regenerar.
+  - Si el final falla, la versión aprobada se conserva y aparece «Reintentar video final».
+- **Costos.** El borrador y el final se registran por separado en `creative_usage_events`, con los tokens reales de cada tarea (desde 2026-10-23 también en la columna `output_tokens` de esa fila, no solo en `image_assets.params`).
+  - **Con video de entrada la tarifa es otra** (tabla de precios `v7`, 2026-10-23): BytePlus cobra 2.5 a USD 6,40/M tokens a 480p/720p y 7,00/M a 1080p cuando la tarea lleva videos de referencia, frente a 10,70/M y 11,70/M sin video. El final paga la tarifa que corresponde a su **borrador**: por eso el borrador guarda `video_input` y la duración de sus videos en `params["draft"]`.
+  - **Los tokens cobrados incluyen el video de entrada.** La estimación previa al gasto (`estimate_video_tokens`) suma los segundos de los videos de referencia (medidos con PyAV; si no se pueden leer, el máximo de 30 s) a los del video que se genera. Sin eso se quedaba corta unas 2,4 veces. Medición: [modelos-generativos/seedance-2-5.md](modelos-generativos/seedance-2-5.md).
+- **Pendiente.**
+  - ~~**Activar Seedance 2.5 en ModelArk.**~~ `[HECHO 2026-10-23]`: `dreamina-seedance-2-5-260628` es el modelo activo en `QUALIFY_SEEDANCE_MODEL` y en `QUALIFY_SEEDANCE_REFERENCE_MODEL` (el 2026-10-22 la cuenta respondía `403 AccessDenied`).
+  - ~~**Probar en vivo un borrador.**~~ `[HECHO 2026-10-23]`: tres borradores con referencias y uno sin ellas, en [modelos-generativos/seedance-2-5.md](modelos-generativos/seedance-2-5.md).
+  - **Probar en vivo el final** de un borrador: medir su costo (y si sus tokens vuelven a contar el video de entrada; hoy la estimación supone que sí), ver si los fotogramas salen iguales y obtener el error real de un borrador caducado.
+  - `omni_reference_task_type`: el generador solo manda `reference` (crea videos a partir de referencias). Editar o extender un video **no está implementado**: `edit` exige `ratio: adaptive` y `duration: -1`, y `extend` exige `ratio: adaptive`.
+- **Para probar en local con videos o audios de referencia** hace falta una URL pública, porque ModelArk descarga esos archivos y no acepta Base64.
+  - `QUALIFY_PUBLIC_MEDIA_BASE_URL` debe apuntar al servidor de **`qualify_api`**: la ruta `/public/media/{token}` vive ahí, no en Reflex.
+  - En local: `uvicorn --factory qualify_api.http.app:create_app --host 127.0.0.1 --port 8010 --env-file .env` y, en otra terminal, `cloudflared tunnel --url http://127.0.0.1:8010`. En Git Bash hay que anteponer `MSYS_NO_PATHCONV=1`, o la URL se estropea.
+  - La URL de un túnel rápido cambia en cada arranque y caduca: hay que copiarla al `.env` y reiniciar Reflex.
+
 ---
 
 ## 5. «Regenerar» en Borradores — aviso `[HECHO 2026-10-09]`, reinicio del proceso `[PENDIENTE]`
@@ -127,7 +151,7 @@ Costos que se registran (`pricing_data/v5.json`): Seedream USD 0.035 por imagen,
 **Lo que falta para probarlo en vivo:**
 
 - [ ] Las dos llaves de BytePlus en el `.env` (Seed Speech de la consola Voice; Vision AI para OmniHuman — según la investigación, con verificación empresarial).
-- [ ] `QUALIFY_PUBLIC_MEDIA_BASE_URL` alcanzable desde internet: OmniHuman descarga la foto y la voz, `localhost` no le sirve. En local, un túnel (p. ej. cloudflared) o probar en staging.
+- [ ] `QUALIFY_PUBLIC_MEDIA_BASE_URL` alcanzable desde internet: OmniHuman descarga la foto y la voz, `localhost` no le sirve. En local, un túnel hacia `qualify_api` (no hacia Reflex): los pasos están en §4.1, «Para probar en local».
 - [ ] Confirmar con la primera factura la tarifa real de OmniHuman 2.0 y de las voces públicas (TTS 1.0 está tarifado como Voice Replication, el lado conservador).
 - [ ] Las voces ya clonadas en HeyGen no se migran: el Brand Kit las muestra como «sin voz» y hay que clonar de nuevo.
 - [ ] Seed Speech no tiene API para borrar voces: una voz reemplazada queda en la cuenta (BytePlus borra las no usadas a los 7 días).
