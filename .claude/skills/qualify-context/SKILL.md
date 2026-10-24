@@ -71,7 +71,7 @@ GitHub Actions (`deploy.yml`), runbook in `README.md` and `docs/despliegue-hetzn
 
 ## 3. Decisions an agent must not undo
 
-ADR log: `docs/arquitectura.md` §6, plus `docs/adr-NN-*.md` for the long ones (32, 34, 38, 39).
+ADR log: `docs/arquitectura.md` §6, plus `docs/adr-NN-*.md` for the long ones (32, 34, 38, 39, 40, 41).
 
 - **Buy commodity, build the differentiated core** — generation, reels data, sending infra are
   bought; the angle engine, intent, assisted replies and the CRM are ours.
