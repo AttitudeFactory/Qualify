@@ -5434,6 +5434,14 @@ class CreativeState(rx.State):
         return rx.redirect(f"/planner?post={self.draft.draft_id}")
 
     @rx.event
+    def go_publish_now(self):
+        """«Publicar ahora» (m-24842985): the same drawer with «Ahora» already chosen. It
+        still waits for the owner's «Programar» there — nothing goes out from here."""
+        if self.draft is None:
+            return None
+        return rx.redirect(f"/planner?post={self.draft.draft_id}&cuando=ahora")
+
+    @rx.event
     def go_create_another(self):
         """«Crear otra publicación»: back to the start of the generator."""
         self.just_approved = False

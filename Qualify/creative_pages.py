@@ -2189,6 +2189,7 @@ APPROVED_BODY = "Elige el día y la hora en que sale."
 #: (`approved_note`, the evaluator's words) follows, and no way to a dead end is offered.
 APPROVED_NOT_READY_BODY = "Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_SCHEDULE = "Elegir día y hora"
+APPROVED_PUBLISH_NOW = "Publicar ahora"
 APPROVED_CREATE_ANOTHER = "Crear otra publicación"
 
 # N12: every tap target at least 44 px tall on a phone.
@@ -2225,6 +2226,19 @@ def _approved_next() -> rx.Component:
                     size="3",
                     min_height=_TAP_MIN_HEIGHT,
                     on_click=CreativeState.go_schedule,
+                ),
+            ),
+            # m-24842985: the soft way to «Ahora» — Tu semana opens with it chosen and
+            # still asks for «Programar».
+            rx.cond(
+                ready,
+                rx.button(
+                    rx.icon("zap", size=16),
+                    APPROVED_PUBLISH_NOW,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN_HEIGHT,
+                    on_click=CreativeState.go_publish_now,
                 ),
             ),
             rx.button(
