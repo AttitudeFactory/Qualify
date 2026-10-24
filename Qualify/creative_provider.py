@@ -103,6 +103,7 @@ from .creative_vm import (
     draft_kind_label,
     failure_label,
     purged_label,
+    recreate_use_text,
     renewal_day_label,
     retention_notice,
     video_draft_vm,
@@ -117,6 +118,7 @@ __all__ = [
     "approval_videos",
     "creations_balance",
     "recreate_draft",
+    "recreate_note",
     "regeneration_creations",
     "approve_draft",
     "approve_voice",
@@ -1027,6 +1029,19 @@ def approval_videos(tenant_id: UUID, draft_id: UUID) -> tuple[int, int, int, str
     return videos, balance.videos_left, balance.video_quota, renewal_day_label(balance.renews_on)
 
 
+def recreate_note(tenant_id: UUID, brand_id: UUID, draft_id: UUID) -> str:
+    """The line under «Crearla otra vez» (founder, 2026-10-24): «Usa 1 de tus vistas
+    previas. Te quedan {p}.» — "" without a quota or a price."""
+    service = production_content_service()
+    price = service.recreate_price(tenant_id=tenant_id, draft_id=draft_id)
+    balance = service.creations_balance(tenant_id=tenant_id, brand_id=brand_id)
+    if price is None or balance is None:
+        return ""
+    return recreate_use_text(
+        price.weight, price.videos, balance.previews_left, balance.preview_quota
+    )
+
+
 def recreate_draft(tenant_id: UUID, draft_id: UUID, user_id: UUID) -> str:
     """«Crearla otra vez»: a new piece from an expired one's request (one vista previa
     per video). Raises `NotEnoughCreations` when the month cannot pay it."""
@@ -1110,7 +1125,7 @@ def _with_expiry(
     from .inbox_provider import tenant_zone  # noqa: PLC0415 — keeps the import graph flat
 
     when = datetime.fromtimestamp(ends, tz=UTC).astimezone(tenant_zone(tenant_id))
-    return dataclasses.replace(video, expiry_note=draft_expiry_text(when))
+    return dataclasses.replace(video, expiry_note=draft_expiry_text(when), expires_at=ends)
 
 
 def reject_draft(

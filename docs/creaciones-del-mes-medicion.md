@@ -467,3 +467,18 @@ fija, tiene que quedar por encima de este techo (decisión del fundador).
   la frase antes de aprobar y el botón desactivado en 0, la fecha de vencimiento en la zona
   del negocio, la tarjeta con «Crearla otra vez», el aviso de Inicio, y ningún texto con
   dinero ni palabras técnicas.
+
+### 7.6 Decisiones finales del fundador y pedidos de arquitectura (2026-10-24)
+
+- **«Crearla otra vez» dice lo que usa antes de tocarlo**, en una línea debajo del botón, sin
+  diálogo: «Usa 1 de tus vistas previas. Te quedan {p}.» Con varias vistas previas, o con
+  creaciones si la publicación tiene imágenes: «Usa 2 vistas previas y 1 creación. Te quedan
+  10 vistas previas.» (`recreate_use_text`, con el precio de `ContentService.recreate_price`).
+- **El aviso de Inicio «{n} videos vencen pronto»** abre «Por aprobar › Por completar» con
+  **todas** las publicaciones, ordenadas por vencimiento: primero las vistas previas que vencen
+  antes y después el resto en el orden de siempre (`/drafts?estado=por-completar&orden=vence`).
+- **El mismo cupo Básico para todos los negocios**, también Bianki y Polette.
+- **Arquitectura:** `charge` y `charge_videos` devuelven el id de la fila del cobro (None si no
+  se cobró nada nuevo). `quota_for` es el cupo mensual base; los planes lo cambiarán ahí en un
+  PR posterior, y los **paquetes** (extras de 90 días) se calculan aparte, en una función
+  hermana `packs_for` (migración 0089).

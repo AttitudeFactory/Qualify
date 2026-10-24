@@ -49,6 +49,8 @@ from .planner_provider import load_gallery
 from .planner_vm import (
     GALLERY_FILTER_ALL,
     GALLERY_FILTER_PARAM,
+    GALLERY_ORDER_EXPIRY,
+    GALLERY_ORDER_PARAM,
     GALLERY_STATE_FILTERS,
     CategoryOptionVM,
     PostOptionVM,
@@ -114,9 +116,15 @@ def schedule_readiness(posts: list[PostOptionVM], post_id: str) -> tuple[bool, s
 _STATE_ORDER = {"schedulable": 0, "needs_action": 1, "draft": 2, "used": 3, "discarded": 4}
 
 
-def sort_for_gallery(posts: list[PostOptionVM]) -> list[PostOptionVM]:
-    """Ready POSTs first, history last (pure — tested directly)."""
-    return sorted(posts, key=lambda p: _STATE_ORDER.get(p.gallery_state, 9))
+def sort_for_gallery(posts: list[PostOptionVM], *, by_expiry: bool = False) -> list[PostOptionVM]:
+    """Ready POSTs first, history last (pure — tested directly). `by_expiry` (Inicio's
+    «videos vencen pronto», founder 2026-10-24): the vistas previas that expire soonest
+    first, then every other POST in the usual order."""
+    usual = sorted(posts, key=lambda p: _STATE_ORDER.get(p.gallery_state, 9))
+    if not by_expiry:
+        return usual
+    expiring = sorted((p for p in usual if p.expires_at > 0), key=lambda p: p.expires_at)
+    return expiring + [p for p in usual if p.expires_at <= 0]
 
 
 class GalleryState(rx.State):
@@ -131,11 +139,14 @@ class GalleryState(rx.State):
     busy_post_id: str = ""
     reject_post_id: str = ""
     reject_post_title: str = ""
+    #: Opened from Inicio's «videos vencen pronto»: the soonest-expiring first.
+    sort_by_expiry: bool = False
 
     @rx.var
     def visible(self) -> list[PostOptionVM]:
         return sort_for_gallery(
-            filter_posts(self.posts, state=self.state_filter, category=self.category_filter)
+            filter_posts(self.posts, state=self.state_filter, category=self.category_filter),
+            by_expiry=self.sort_by_expiry,
         )
 
     @rx.var
@@ -190,6 +201,8 @@ class GalleryState(rx.State):
             )
             if requested is not None:
                 self.state_filter = requested
+            order = str(self.router.url.query_parameters.get(GALLERY_ORDER_PARAM, "") or "")
+            self.sort_by_expiry = order.strip().lower() == GALLERY_ORDER_EXPIRY
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id)
         if tenant_id is None:

@@ -26,6 +26,8 @@ from qualify_api.home import HomeCounts
 # screens read it (`conversations_vm.filter_from_param`, `planner_vm.gallery_filter_from_param`).
 CONVERSATIONS_PENDING_URL = "/conversations?filtro=pendientes"
 DRAFTS_TO_APPROVE_URL = "/drafts?estado=por-completar"
+# founder 2026-10-24: the same list, every piece, the soonest-expiring vistas previas first
+VIDEOS_EXPIRING_URL = "/drafts?estado=por-completar&orden=vence"
 COMMENTS_URL = "/inbox"
 CONVERSATIONS_URL = "/conversations"
 WHATSAPP_CHATS_URL = "/whatsapp?tab=chats"
@@ -146,7 +148,7 @@ def _today(counts: HomeCounts) -> list[TodayCardVM]:
             "expiring",
             counts.videos_expiring_soon,
             videos_expiring_label(counts.videos_expiring_soon),
-            DRAFTS_TO_APPROVE_URL,
+            VIDEOS_EXPIRING_URL,
             "clock",
         ),
         TodayCardVM(

@@ -101,6 +101,7 @@ from .creative_provider import (
     preview_brief_prompt,
     propose_voice,
     recreate_draft,
+    recreate_note,
     regeneration_creations,
     reject_draft,
     retry_final,
@@ -5745,6 +5746,7 @@ class CreativeState(rx.State):
             final_poll = self._starts_final_poll(vm)
         await self._load_regen_creations(tenant_id, brand_id, draft_id)
         await self._load_approval_videos(tenant_id, draft_id)
+        await self._load_recreate_note(tenant_id, brand_id, draft_id, vm.video_draft.expired)
         if should_poll:
             yield CreativeState.poll_draft
         if final_poll:
@@ -6008,6 +6010,22 @@ class CreativeState(rx.State):
                 if quota > 0
                 else ""
             )
+
+    #: Under «Crearla otra vez», before it is pressed (founder, 2026-10-24): «Usa 1 de
+    #: tus vistas previas. Te quedan {p}.»
+    recreate_note: str = ""
+
+    async def _load_recreate_note(
+        self, tenant_id: UUID, brand_id: UUID, draft_id: UUID, expired: bool
+    ) -> None:
+        note = ""
+        if expired:
+            try:
+                note = await asyncio.to_thread(recreate_note, tenant_id, brand_id, draft_id)
+            except Exception as exc:  # noqa: BLE001 — the button still says what it does
+                logger.warning("recreate note unreadable: %s", type(exc).__name__)
+        async with self:
+            self.recreate_note = note
 
     @rx.event(background=True)
     async def recreate_expired(self) -> AsyncIterator[rx.event.EventSpec]:

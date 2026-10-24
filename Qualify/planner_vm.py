@@ -732,6 +732,10 @@ GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
 # m-24842962 (N11): Inicio's «publicaciones listas para que las apruebes» opens the
 # gallery already filtered — `/drafts?estado=por-completar`. Slugs = the chips' words.
 GALLERY_FILTER_PARAM = "estado"
+# founder 2026-10-24: Inicio's «videos vencen pronto» opens the same list sorted by
+# expiry — `&orden=vence`.
+GALLERY_ORDER_PARAM = "orden"
+GALLERY_ORDER_EXPIRY = "vence"
 GALLERY_FILTER_SLUGS: dict[str, str] = {
     "todas": GALLERY_FILTER_ALL,
     "borrador": "draft",
@@ -994,6 +998,11 @@ class PostOptionVM:
     # expired, the card offers «Crearla otra vez».
     expiry_note: str = ""
     preview_expired: bool = False
+    # …and what «Crearla otra vez» uses, before it is pressed («Usa 1 de tus vistas
+    # previas. Te quedan {p}.»); when the vista previa expires (Unix seconds, 0 = none),
+    # for the «vencen pronto» order.
+    recreate_note: str = ""
+    expires_at: float = 0.0
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1286,6 +1295,8 @@ def build_post_option(
     final_rendering: bool = False,
     expiry_note: str = "",
     preview_expired: bool = False,
+    recreate_note: str = "",
+    expires_at: float = 0.0,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1347,6 +1358,8 @@ def build_post_option(
         history_word=history_word(times_published) if shows_history else "",
         expiry_note=expiry_note,
         preview_expired=preview_expired and lifecycle_status == "generated",
+        recreate_note=recreate_note if preview_expired else "",
+        expires_at=expires_at if lifecycle_status == "generated" else 0.0,
         history_help=history_help(times_published) if shows_history else "",
     )
 

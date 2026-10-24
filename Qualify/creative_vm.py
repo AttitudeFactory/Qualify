@@ -1004,6 +1004,9 @@ class VideoDraftVM:
     #: «Apruébala antes del jueves 30 de octubre para tener el video final.» — while
     #: the vista previa waits for approval (founder, 2026-10-24); "" otherwise.
     expiry_note: str = ""
+    #: When that vista previa expires (Unix seconds; 0 = none) — «Por aprobar» sorted
+    #: by expiry when opened from Inicio's «videos vencen pronto».
+    expires_at: float = 0.0
 
     @property
     def expired(self) -> bool:
@@ -1532,6 +1535,7 @@ __all__ = [
     "approval_videos_notice",
     "draft_expiry_text",
     "RECREATE_LABEL",
+    "recreate_use_text",
     "PREVIEWS_SHOWN_AT",
     "VIDEO_TOO_LONG",
     "gap_vm",
@@ -1819,6 +1823,27 @@ def draft_expiry_text(expires: datetime | None) -> str:
 
 #: The expired piece's way out (founder, 2026-10-24): a new piece from the same request.
 RECREATE_LABEL = "Crearla otra vez"
+
+
+def recreate_use_text(weight: int, previews: int, previews_left: int, preview_quota: int) -> str:
+    """The line under «Crearla otra vez», before it is pressed (founder, 2026-10-24):
+    «Usa 1 de tus vistas previas. Te quedan {p}.» — or, with several vistas previas or
+    creations too, «Usa 2 vistas previas y 1 creación. Te quedan 10 vistas previas.»
+    "" without a quota."""
+    if preview_quota <= 0 or previews <= 0:
+        return ""
+    if previews == 1 and weight <= 0:
+        left = "Te queda 1." if previews_left == 1 else f"Te quedan {previews_left}."
+        return f"Usa 1 de tus vistas previas. {left}"
+    uses = "1 vista previa" if previews == 1 else f"{previews} vistas previas"
+    if weight > 0:
+        uses += " y 1 creación" if weight == 1 else f" y {weight} creaciones"
+    left = (
+        "Te queda 1 vista previa."
+        if previews_left == 1
+        else f"Te quedan {previews_left} vistas previas."
+    )
+    return f"Usa {uses}. {left}"
 
 
 _MONTHS_LONG = (

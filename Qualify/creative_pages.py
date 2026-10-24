@@ -988,13 +988,22 @@ def _gallery_card(post) -> rx.Component:
         # founder 2026-10-24: the vista previa expired — a new piece from the same request
         rx.cond(
             post.preview_expired,
-            rx.button(
-                rx.icon("refresh-cw", size=15),
-                RECREATE_LABEL,
-                size="2",
+            rx.vstack(
+                rx.button(
+                    rx.icon("refresh-cw", size=15),
+                    RECREATE_LABEL,
+                    size="2",
+                    width="100%",
+                    disabled=busy,
+                    on_click=GalleryState.recreate_post(post.post_id),
+                ),
+                # founder 2026-10-24: what it uses, before it is pressed
+                rx.cond(
+                    post.recreate_note != "",
+                    rx.text(post.recreate_note, size="2", color=T.TEXT_MUTED),
+                ),
+                spacing="1",
                 width="100%",
-                disabled=busy,
-                on_click=GalleryState.recreate_post(post.post_id),
             ),
             _card_main_button(post),
         ),
@@ -1526,6 +1535,11 @@ def _video_draft_notice() -> rx.Component:
                 wrap="wrap",
             ),
             # «Apruébala antes del jueves 30 de octubre para tener el video final.»
+            # founder 2026-10-24: what «Crearla otra vez» uses, before it is pressed
+            rx.cond(
+                (video.state == VIDEO_EXPIRED) & (CreativeState.recreate_note != ""),
+                rx.text(CreativeState.recreate_note, size="2", color=T.TEXT_MUTED),
+            ),
             # hidden while approving is blocked for want of videos: a deadline next to a
             # button that cannot be pressed reads as a contradiction (UX review)
             rx.cond(

@@ -59,9 +59,35 @@ def _charge(ledger: PostgresCreationsLedger, brand: UUID, price: CreationPrice) 
 
 
 def _approve(ledger: PostgresCreationsLedger, brand: UUID, draft: UUID, videos: int = 1) -> bool:
-    return ledger.charge_videos(
+    charged = ledger.charge_videos(
         tenant_id=TENANT_A, brand_id=brand, draft_id=draft, revision=1, videos=videos
     )
+    return charged is not None
+
+
+def test_charges_return_the_row_id() -> None:
+    ledger = PostgresCreationsLedger()
+    brand = _brand(TENANT_A)
+    draft = uuid4()
+    row_id = ledger.charge(
+        tenant_id=TENANT_A, brand_id=brand, draft_id=draft, revision=1, price=CLIP
+    )
+    assert isinstance(row_id, UUID)
+    assert (
+        ledger.charge(tenant_id=TENANT_A, brand_id=brand, draft_id=draft, revision=1, price=CLIP)
+        is None
+    )
+    assert (
+        ledger.charge_videos(
+            tenant_id=TENANT_A, brand_id=brand, draft_id=draft, revision=1, videos=1
+        )
+        == row_id
+    )
+    with tenant_session(TENANT_A) as session:
+        assert (
+            session.scalar(select(CreationCharge.id).where(CreationCharge.draft_id == draft))
+            == row_id
+        )
 
 
 def test_creation_charges_a_vista_previa_and_approval_the_video() -> None:

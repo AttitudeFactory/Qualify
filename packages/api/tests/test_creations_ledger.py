@@ -575,6 +575,36 @@ def test_crearla_otra_vez_makes_a_new_piece_from_the_same_request() -> None:
     assert _videos_left(ledger, repo, draft_id) == 4  # no video for either yet
 
 
+def test_charges_return_the_charge_row_id() -> None:
+    """principal-architect 2026-10-24: `charge` and `charge_videos` return the row id
+    (None when nothing new was charged) — what the grants PR links to."""
+    from uuid import UUID
+
+    ledger = InMemoryCreationsLedger()
+    draft = uuid4()
+    clip = CreationPrice("generated_video", 0, videos=1)
+    row_id = ledger.charge(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, price=clip
+    )
+    assert isinstance(row_id, UUID) and row_id == ledger.rows[(draft, 1)].id
+    assert (
+        ledger.charge(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, price=clip
+        )
+        is None
+    )
+    videos_id = ledger.charge_videos(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, videos=1
+    )
+    assert videos_id == row_id
+    assert (
+        ledger.charge_videos(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, videos=1
+        )
+        is None
+    )
+
+
 def test_the_quota_lives_in_one_function() -> None:
     from qualify_creative.creations import load_weights
 

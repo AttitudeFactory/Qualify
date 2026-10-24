@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_creative.creations import (
@@ -112,8 +112,11 @@ def quota_for(
 ) -> MonthlyQuota:
     """THE one place a brand's monthly quota is decided (principal-architect,
     2026-10-24): today the base of the weights table, the same for every business
-    (founder, 2026-10-24). Grants (a later migration) add to it here and nowhere else.
-    Pure; `session`-free on purpose so a grants reader can be passed in later."""
+    (founder, 2026-10-24). Plans (a later stacked PR) change the monthly base here and
+    nowhere else. Packs — 90-day extras bought on top — are NOT part of the monthly
+    quota: they are computed separately by a sibling `packs_for` (migration 0089) and
+    added to the balance next to this. Pure; no session, so the plan reader can be
+    passed in later."""
     del tenant_id, brand_id, period  # the base quota does not depend on them yet
     return MonthlyQuota(
         creations=weights.monthly_quota,
@@ -193,16 +196,18 @@ class CreationsLedger(Protocol):
         draft_id: UUID,
         revision: int,
         price: CreationPrice,
-    ) -> bool:
-        """Charge one generation at creation (creations + vistas previas); False when it
-        was already charged. Raises `NotEnoughCreations` when the month cannot pay."""
+    ) -> UUID | None:
+        """Charge one generation at creation (creations + vistas previas): the charge
+        row's id, or None when it was already charged. Raises `NotEnoughCreations` when
+        the month cannot pay."""
         ...
 
     def charge_videos(
         self, *, tenant_id: UUID, brand_id: UUID, draft_id: UUID, revision: int, videos: int
-    ) -> bool:
-        """Charge a generation's videos at approval, all or nothing; False when they were
-        already charged. Raises `NotEnoughCreations` when the month has not enough."""
+    ) -> UUID | None:
+        """Charge a generation's videos at approval, all or nothing: the charge row's id,
+        or None when they were already charged (or there are none). Raises
+        `NotEnoughCreations` when the month has not enough."""
         ...
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
@@ -334,7 +339,7 @@ class PostgresCreationsLedger:
         draft_id: UUID,
         revision: int,
         price: CreationPrice,
-    ) -> bool:
+    ) -> UUID | None:
         with tenant_session(tenant_id) as session:
             self._lock(session, brand_id)
             already = session.scalar(
@@ -343,17 +348,17 @@ class PostgresCreationsLedger:
                 )
             )
             if already is not None:
-                return False
+                return None
             period = self._period(session, tenant_id)
             short = self._balance(session, tenant_id, brand_id, period).shortfall(price)
             if short is not None:
                 raise short
-            result = session.execute(
+            return session.scalar(
                 insert(CreationCharge)
                 .values(**self._row(tenant_id, brand_id, draft_id, revision, price, period))
                 .on_conflict_do_nothing(constraint="uq_creation_charges_generation")
+                .returning(CreationCharge.id)
             )
-            return bool(result.rowcount)
 
     def _row(
         self,
@@ -383,9 +388,9 @@ class PostgresCreationsLedger:
 
     def charge_videos(
         self, *, tenant_id: UUID, brand_id: UUID, draft_id: UUID, revision: int, videos: int
-    ) -> bool:
+    ) -> UUID | None:
         if videos <= 0:
-            return False
+            return None
         with tenant_session(tenant_id) as session:
             self._lock(session, brand_id)
             row = session.scalar(
@@ -394,7 +399,7 @@ class PostgresCreationsLedger:
                 .with_for_update()
             )
             if row is not None and (row.videos > 0 or row.status != CHARGED):
-                return False
+                return None
             period = self._period(session, tenant_id)
             short = self._balance(session, tenant_id, brand_id, period).video_shortfall(videos)
             if short is not None:
@@ -410,7 +415,8 @@ class PostgresCreationsLedger:
             row.monthly_video_quota = self._weights.monthly_video_quota
             row.videos_period_month = period
             row.videos_charged_at = self._clock()
-            return True
+            session.flush()
+            return row.id
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
         with tenant_session(tenant_id) as session:
@@ -501,6 +507,7 @@ def refund_in_session(
 class _MemoryRow:
     brand_id: UUID
     price: CreationPrice
+    id: UUID = field(default_factory=uuid4)
     status: str = CHARGED
     reason: str | None = None
     #: The videos charged at approval (0 until then).
@@ -562,23 +569,24 @@ class InMemoryCreationsLedger:
         draft_id: UUID,
         revision: int,
         price: CreationPrice,
-    ) -> bool:
+    ) -> UUID | None:
         if (draft_id, revision) in self.rows:
-            return False
+            return None
         short = self.balance(tenant_id=tenant_id, brand_id=brand_id).shortfall(price)
         if short is not None:
             raise short
-        self.rows[(draft_id, revision)] = _MemoryRow(brand_id=brand_id, price=price)
-        return True
+        row = _MemoryRow(brand_id=brand_id, price=price)
+        self.rows[(draft_id, revision)] = row
+        return row.id
 
     def charge_videos(
         self, *, tenant_id: UUID, brand_id: UUID, draft_id: UUID, revision: int, videos: int
-    ) -> bool:
+    ) -> UUID | None:
         if videos <= 0:
-            return False
+            return None
         row = self.rows.get((draft_id, revision))
         if row is not None and (row.videos > 0 or row.status != CHARGED):
-            return False
+            return None
         short = self.balance(tenant_id=tenant_id, brand_id=brand_id).video_shortfall(videos)
         if short is not None:
             raise short
@@ -586,7 +594,7 @@ class InMemoryCreationsLedger:
             row = _MemoryRow(brand_id=brand_id, price=CreationPrice(REQUEST_GENERATED_VIDEO, 0))
             self.rows[(draft_id, revision)] = row
         row.videos = videos
-        return True
+        return row.id
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
         row = self.rows.get((draft_id, revision))

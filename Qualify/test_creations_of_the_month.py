@@ -342,6 +342,21 @@ def test_the_expiry_date_and_crearla_otra_vez() -> None:
     assert VideoDraftVM(VIDEO_EXPIRED, "", "warn", "").expired
 
 
+def test_crearla_otra_vez_says_what_it_uses_before_it_is_pressed() -> None:
+    """Founder 2026-10-24: one line under the button, no dialog."""
+    from .creative_vm import recreate_use_text
+
+    assert recreate_use_text(0, 1, 12, 20) == "Usa 1 de tus vistas previas. Te quedan 12."
+    assert recreate_use_text(0, 1, 1, 20) == "Usa 1 de tus vistas previas. Te queda 1."
+    assert recreate_use_text(1, 2, 10, 20) == (
+        "Usa 2 vistas previas y 1 creación. Te quedan 10 vistas previas."
+    )
+    assert recreate_use_text(2, 1, 10, 20) == (
+        "Usa 1 vista previa y 2 creaciones. Te quedan 10 vistas previas."
+    )
+    assert recreate_use_text(0, 1, 12, 0) == ""  # no quota wired: nothing is said
+
+
 def test_the_piece_page_shows_the_expiry_in_the_business_zone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -383,10 +398,11 @@ def test_the_por_aprobar_card_carries_the_expiry_and_crearla_otra_vez() -> None:
         "lifecycle_status": "generated",
     }
     note = "Apruébala antes del viernes 30 de octubre para tener el video final."
-    card = build_post_option(**common, expiry_note=note)
-    assert (card.expiry_note, card.preview_expired) == (note, False)
-    expired = build_post_option(**common, preview_expired=True)
-    assert expired.preview_expired
+    card = build_post_option(**common, expiry_note=note, recreate_note="x")
+    assert (card.expiry_note, card.preview_expired, card.recreate_note) == (note, False, "")
+    uses = "Usa 1 de tus vistas previas. Te quedan 12."
+    expired = build_post_option(**common, preview_expired=True, recreate_note=uses)
+    assert expired.preview_expired and expired.recreate_note == uses
     # an approved piece never offers to make it again
     approved = build_post_option(**{**common, "lifecycle_status": "approved"}, preview_expired=True)
     assert not approved.preview_expired

@@ -61,7 +61,7 @@ from qualify_api.planner.service import (
 
 from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
-from .creative_provider import default_brand_id, final_video_state
+from .creative_provider import default_brand_id, final_video_state, recreate_note
 from .creative_vm import VideoDraftVM
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
@@ -267,6 +267,7 @@ def _post_option(
     video_url: str = "",
     final_rendering: bool = False,
     video: VideoDraftVM | None = None,
+    recreate_note: str = "",
 ) -> PostOptionVM:
     """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
     so each chip can say when and where that output goes out. `video_url` is the
@@ -319,6 +320,8 @@ def _post_option(
         final_rendering=final_rendering,
         expiry_note=video.expiry_note if video is not None else "",
         preview_expired=video is not None and video.expired,
+        recreate_note=recreate_note,
+        expires_at=video.expires_at if video is not None else 0.0,
     )
 
 
@@ -346,6 +349,15 @@ def _video_state(tenant_id: UUID, post: PostSummary) -> VideoDraftVM | None:
     except Exception as exc:  # noqa: BLE001 — one card's extra state never breaks the grid
         logger.warning("gallery final state read failed: %s", type(exc).__name__)
         return None
+
+
+def _recreate_note(tenant_id: UUID, brand_id: UUID, post_id: UUID) -> str:
+    """What «Crearla otra vez» uses, for an expired card; "" when it cannot be read."""
+    try:
+        return recreate_note(tenant_id, brand_id, post_id)
+    except Exception as exc:  # noqa: BLE001 — one card's extra line never breaks the grid
+        logger.warning("gallery recreate note failed: %s", type(exc).__name__)
+        return ""
 
 
 def _final_rendering(tenant_id: UUID, post: PostSummary) -> bool:
@@ -410,6 +422,11 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
             video_url=videos.get(str(p.post_id), ""),
             final_rendering=(video := states[p.post_id]) is not None and video.rendering,
             video=video,
+            recreate_note=(
+                _recreate_note(tenant_id, brand_id, p.post_id)
+                if video is not None and video.expired
+                else ""
+            ),
         )
         for p in posts
     ]

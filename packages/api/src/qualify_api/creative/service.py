@@ -1453,6 +1453,23 @@ class ContentService:
             return None
         return self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
 
+    def recreate_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
+        """What «Crearla otra vez» of this piece would use — the same rule `recreate`
+        charges with (a new piece from the same brief). None without a quota or a brief,
+        or when the table does not price it."""
+        if self._creations is None:
+            return None
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record is None:
+            return None
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None:
+            return None
+        try:
+            return weight_for(brief)
+        except CreationNotOffered:
+            return None
+
     def regeneration_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
         """What «Pedir otra versión» of this draft would use (CREAR-5) — the same rule
         `reject(regenerate=True)` charges with. None without a quota or a brief, or when
@@ -2172,7 +2189,7 @@ class ContentService:
         # CREAR-5 (founder, 2026-10-24): approving orders the finals, and that is when
         # the piece's videos are counted — all or nothing; without enough videos left
         # (`NotEnoughCreations`) nothing is written and the piece waits as it was
-        videos = self._charge_videos(tenant_id, record)
+        charge_id = self._charge_videos(tenant_id, record)
         try:
             self._repo.set_approved(
                 tenant_id=tenant_id,
@@ -2183,7 +2200,8 @@ class ContentService:
                 approved_at=datetime.now(UTC),
             )
         except Exception:
-            if videos and self._creations is not None:
+            # only what THIS approval charged is undone
+            if charge_id is not None and self._creations is not None:
                 self._creations.uncharge_videos(
                     tenant_id=tenant_id, draft_id=draft_id, revision=record.revision
                 )
@@ -2218,17 +2236,19 @@ class ContentService:
         except CreationNotOffered:
             return 0
 
-    def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> int:
+    def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
+        """The charge row this approval wrote its videos on, or None (no video, no
+        quota, or already charged by an earlier approval of the same generation)."""
         videos = self._videos_of(tenant_id, record)
-        if videos and self._creations is not None:
-            self._creations.charge_videos(
-                tenant_id=tenant_id,
-                brand_id=record.brand_id,
-                draft_id=record.id,
-                revision=record.revision,
-                videos=videos,
-            )
-        return videos
+        if not videos or self._creations is None:
+            return None
+        return self._creations.charge_videos(
+            tenant_id=tenant_id,
+            brand_id=record.brand_id,
+            draft_id=record.id,
+            revision=record.revision,
+            videos=videos,
+        )
 
     def approval_videos(
         self, *, tenant_id: UUID, draft_id: UUID
