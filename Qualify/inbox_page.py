@@ -357,21 +357,33 @@ def _connected_body() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    return page_body(
+def _body(wrapped: bool = True) -> rx.Component:
+    """`wrapped=False` returns the content without the page gutter, for the «Comentarios»
+    tab of «Por responder» (m-24842990), which already sits inside a `page_body`."""
+    content = rx.cond(
+        InboxState.connections_error != "",
+        _connections_error(),
         rx.cond(
-            InboxState.connections_error != "",
-            _connections_error(),
+            InboxState.is_loading_connections,
+            _card_skeleton(),
             rx.cond(
-                InboxState.is_loading_connections,
-                _card_skeleton(),
-                rx.cond(
-                    ~InboxState.has_connections,
-                    _no_connections_state(),
-                    _connected_body(),
-                ),
+                ~InboxState.has_connections,
+                _no_connections_state(),
+                _connected_body(),
             ),
         ),
+    )
+    return page_body(content) if wrapped else content
+
+
+def comments_tab() -> rx.Component:
+    """m-24842990: the «Comentarios» tab of «Por responder». The account selector moves
+    from the page header to the top of the tab."""
+    return rx.vstack(
+        rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
+        _body(wrapped=False),
+        spacing="4",
+        width="100%",
     )
 
 
@@ -692,7 +704,19 @@ def _load_more_reels_button() -> rx.Component:
     )
 
 
+def _missing_post_notice() -> rx.Component:
+    return rx.cond(
+        InboxState.missing_post_notice != "",
+        callout(InboxState.missing_post_notice, "info"),
+        rx.fragment(),
+    )
+
+
 def _reel_summaries_list() -> rx.Component:
+    return rx.vstack(_missing_post_notice(), _reel_summaries_list_body(), spacing="3", width="100%")
+
+
+def _reel_summaries_list_body() -> rx.Component:
     return rx.cond(
         InboxState.reel_summaries_error != "",
         _reel_summaries_error_block(),
@@ -720,11 +744,12 @@ def _reel_detail_header() -> rx.Component:
     reel = InboxState.selected_reel_summary
     return rx.vstack(
         rx.button(
-            rx.icon("arrow-left", size=16),
-            "Volver",
+            rx.icon("chevron-left", size=16),
+            "Comentarios",
             on_click=InboxState.back_to_reel_list,
             variant="ghost",
             size="2",
+            min_height="44px",
         ),
         rx.cond(
             reel,

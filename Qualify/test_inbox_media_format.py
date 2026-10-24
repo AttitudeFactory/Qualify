@@ -302,7 +302,15 @@ def test_the_body_keeps_its_first_block_off_the_header_line() -> None:
 
 @pytest.mark.parametrize(
     ("path", "on_inbox"),
-    [("/inbox", True), ("/inbox/", True), ("/", False), ("/login/", False), ("", False)],
+    [
+        ("/inbox", True),
+        ("/inbox/", True),
+        ("/responder", True),
+        ("/responder/", True),
+        ("/", False),
+        ("/login/", False),
+        ("", False),
+    ],
 )
 def test_is_inbox_path(path: str, on_inbox: bool) -> None:
     assert inbox_state.is_inbox_path(path) is on_inbox

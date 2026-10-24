@@ -167,6 +167,21 @@ class Message(Base):
             "story_reply_id IS NULL OR direction = 'inbound'",
             name="ck_message_story_reply_inbound",
         ),
+        CheckConstraint(
+            "choice_kind IS NULL OR choice_kind IN ('ice_breaker','quick_reply','button','menu')",
+            name="ck_message_choice_kind",
+        ),
+        CheckConstraint(
+            "choice_payload IS NULL OR choice_kind IS NOT NULL",
+            name="ck_message_choice_payload_has_kind",
+        ),
+        CheckConstraint(
+            "choice_payload IS NULL OR char_length(choice_payload) <= 1000",
+            name="ck_message_choice_payload_length",
+        ),
+        CheckConstraint(
+            "choice_kind IS NULL OR direction = 'inbound'", name="ck_message_choice_inbound"
+        ),
         Index("ix_message_tenant", "tenant_id"),
         Index("ix_message_thread", "thread_id", "posted_at"),
     )
@@ -216,6 +231,10 @@ class Message(Base):
     # the CDN URL it gave (expiring). NULL on everything that is not a story reply.
     story_reply_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     story_reply_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0082 (m-24789472, PR 2): the option an inbound Instagram DM was tapped from — its
+    # kind (`conversations.choices.CHOICE_KINDS`) and Meta's payload. NULL when typed.
+    choice_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    choice_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxMetaCallLog(Base):

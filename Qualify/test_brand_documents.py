@@ -16,11 +16,11 @@ from .creative_state import CreativeState
 
 def _proposals() -> list[FieldProposal]:
     return [
-        FieldProposal("positioning", "Posicionamiento", "", "Cocina de autor", "cita", True),
-        FieldProposal("audience", "Audiencia", "", "Familias", "otra cita", False),
+        FieldProposal("positioning", "Qué te hace distinto", "", "Cocina de autor", "cita", True),
+        FieldProposal("audience", "Quién te compra", "", "Familias", "otra cita", False),
         FieldProposal("dont_examples", "Así no habla la marca", "", "¡Oferta!", "", None),
-        FieldProposal("banned_words", "Palabras prohibidas", "", "barato\ngratis", "", True),
-        FieldProposal("cta_patterns", "Llamados a la acción", "", "Reserva hoy", "", None),
+        FieldProposal("banned_words", "Palabras vetadas", "", "barato\ngratis", "", True),
+        FieldProposal("cta_patterns", "Cómo invitas a comprar", "", "Reserva hoy", "", None),
     ]
 
 
@@ -64,7 +64,7 @@ def session(monkeypatch: pytest.MonkeyPatch) -> tuple[BrandDocumentState, Creati
 
     monkeypatch.setattr(BrandDocumentState, "get_state", get_state)
     docs.proposals = proposal_rows("brief", _proposals()) + proposal_rows(
-        "brandboard", [FieldProposal("audience", "Audiencia", "", "Parejas", "", None)]
+        "brandboard", [FieldProposal("audience", "Quién te compra", "", "Parejas", "", None)]
     )
     return docs, creative
 

@@ -24,7 +24,7 @@ import reflex as rx
 
 from . import whatsapp_page, whatsapp_tab_chats, whatsapp_tab_menu
 from .connections_vm import WHATSAPP_RECONNECT_HINT
-from .ui.layout import NAV_BASE, NAV_ITEMS
+from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_vm import (
     DEFAULT_TAB,
     EMPTY_NUMBER,
@@ -531,10 +531,11 @@ def test_route_is_registered_behind_login() -> None:
     assert "WhatsAppState.enter_page" in block
 
 
-def test_nav_item_sits_after_tus_redes() -> None:
+def test_nav_item_sits_in_atiende_after_por_responder() -> None:
+    """NAV-1 (m-24842957, guide §3): WhatsApp is the second entry of «Atiende»."""
     assert ("WhatsApp", "message-circle", "/whatsapp", True) in NAV_ITEMS
-    labels = [label for label, *_ in NAV_BASE]
-    assert labels.index("WhatsApp") == labels.index("Tus redes") + 1
+    labels = {zone: [label for label, *_ in items] for zone, _t, items in NAV_ZONES}["listen"]
+    assert labels.index("WhatsApp") == labels.index("Por responder") + 1
 
 
 def test_empty_vms_are_valid_defaults() -> None:

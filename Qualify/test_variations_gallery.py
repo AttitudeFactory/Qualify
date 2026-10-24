@@ -25,6 +25,7 @@ from uuid import UUID
 import pytest
 
 from . import variations_state as module
+from .creative_vm import NO_VIDEO_DRAFT, video_draft_vm
 from .variations_state import VariationsState
 from .variations_vm import AngleVM, OutcomeVM, SetSummaryVM, SetVM, any_in_flight
 
@@ -432,7 +433,11 @@ async def test_an_approval_that_lands_says_so(monkeypatch: pytest.MonkeyPatch) -
     state = _state(monkeypatch)
     state.set_id = _SET_ID
     approved: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(module, "approve_variation_angle", lambda *a: approved.append(a))
+    monkeypatch.setattr(
+        module,
+        "approve_variation_angle",
+        lambda *a: approved.append(a) or NO_VIDEO_DRAFT,
+    )
     monkeypatch.setattr(
         module,
         "variation_set_detail",
@@ -442,6 +447,43 @@ async def test_an_approval_that_lands_says_so(monkeypatch: pytest.MonkeyPatch) -
     assert approved == [(_TENANT_ID, _ANGLE_ID, _USER_ID)]
     assert state.error == "" and state.outcome_message == ""
     assert len(yielded) == 1 and "Pieza aprobada." in str(yielded[0])
+
+
+async def test_an_approval_whose_final_is_rendering_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-24820142: approving a piece with a 480p draft video orders its 1080p final."""
+    state = _state(monkeypatch)
+    state.set_id = _SET_ID
+    monkeypatch.setattr(
+        module, "approve_variation_angle", lambda *_: video_draft_vm("rendering", None)
+    )
+    monkeypatch.setattr(
+        module,
+        "variation_set_detail",
+        lambda *_: _set_vm(_angle(status="approved", draft_status="approved")),
+    )
+    yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
+    assert len(yielded) == 1 and "preparando el video en alta calidad" in str(yielded[0])
+
+
+async def test_an_approval_whose_final_could_not_be_ordered_never_says_approved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 3: the final could not be ordered (the piece offers «Reintentar»):
+    the toast says so — the shared `approval_notice` — instead of «Pieza aprobada.»."""
+    state = _state(monkeypatch)
+    state.set_id = _SET_ID
+    failed = video_draft_vm("failed", None, "El video final no se llegó a pedir.", approved=True)
+    monkeypatch.setattr(module, "approve_variation_angle", lambda *_: failed)
+    monkeypatch.setattr(
+        module,
+        "variation_set_detail",
+        lambda *_: _set_vm(_angle(status="approved", draft_status="approved")),
+    )
+    yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
+    assert len(yielded) == 1 and "reintentarlo" in str(yielded[0])
+    assert "Pieza aprobada." not in str(yielded[0])
 
 
 async def test_regenerate_goes_through_the_service_and_resumes_the_poll(
