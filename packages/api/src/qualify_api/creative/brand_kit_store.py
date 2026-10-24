@@ -52,7 +52,15 @@ AVATAR_DOCUMENT = "logo_brief"
 AVATAR_KEY = "brand_avatar"
 #: Keys a document keeps across `save_details` unless the caller writes them itself:
 #: they are written by another path (a background generation), not by the wizards.
-RESERVED_DETAIL_KEYS: dict[str, tuple[str, ...]] = {AVATAR_DOCUMENT: (AVATAR_KEY,)}
+#: `connect.prefill` (m-24852197) is the Brand Kit proposed from the account
+#: (`creative.brand_prefill`): written in the background and reviewed by the owner, so a
+#: wizard's save of its own answers must not erase it.
+PREFILL_DOCUMENT = "connect"
+PREFILL_KEY = "prefill"
+RESERVED_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
+    AVATAR_DOCUMENT: (AVATAR_KEY,),
+    PREFILL_DOCUMENT: (PREFILL_KEY,),
+}
 
 
 def carry_reserved(
