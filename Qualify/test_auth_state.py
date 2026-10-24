@@ -135,6 +135,7 @@ def test_only_the_brand_kit_reads_the_draft_tenant() -> None:
         "auth_pages.py",
         "brand_documents.py",
         "brand_finish.py",
+        "brand_minimal.py",  # m-24848529: «Tu marca» in five steps
         "creative_state.py",
         "creative_wizard_pages.py",
         "voice_lab.py",
@@ -198,8 +199,10 @@ def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
 
     cases = [
         (brand_finish.KitStatus(True, {"completed": True, "flow": "connect"}), "/registro"),
-        (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand/connect"),
-        (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand/manual"),
+        # m-24848529: a draft of either old flow resumes on the five steps, at /brand
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "minimo"}), "/brand"),
         (brand_finish.KitStatus(False, None), "/brand"),
     ]
     for status, expected in cases:
@@ -304,6 +307,8 @@ def test_logout_resets_every_business_state() -> None:
         "BrandWizardState",
         "BrandConnectState",
         "CatalogState",
+        # m-24789472: «Preguntas iniciales» (draft questions per Instagram account)
+        "IceBreakersState",
     ):
         assert state_name in source, f"logout does not reset {state_name}"
 
@@ -662,7 +667,7 @@ async def test_an_uninvited_signup_is_refused_before_the_provider(monkeypatch) -
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("gate must stop it first")),
     )
     state = _state()
-    form = {"business_name": "Polet", "email": "a@b.co", "password": "x" * 8}
+    form = {"business_name": "Polet", "email": "a@b.co", "password": "x" * 8, "country": "VE"}
     async for _ in AuthState.handle_signup.fn(state, form):
         raise AssertionError("a refused signup must not navigate")
     assert "invitación" in state.auth_error
@@ -683,7 +688,7 @@ async def test_an_invite_for_another_email_is_refused(monkeypatch) -> None:
     monkeypatch.setattr(invites_module, "lookup_invite", lambda token: view)
     state = _state()
     state._invite_token = "tok"
-    form = {"business_name": "X", "email": "otro@negocio.com", "password": "x" * 8}
+    form = {"business_name": "X", "email": "otro@negocio.com", "password": "x" * 8, "country": "CO"}
     async for _ in AuthState.handle_signup.fn(state, form):
         raise AssertionError("a refused signup must not navigate")
     assert "cliente@negocio.com" in state.auth_error
@@ -727,3 +732,54 @@ def test_an_adopting_signup_ends_on_tu_marca_esta_lista() -> None:
     assert auth_state_module.BRAND_READY_ROUTE.startswith("/brand/manual?")
     source = inspect.getsource(AuthState.handle_signup.fn)
     assert '"next": BRAND_READY_ROUTE if adopted else "/"' in source
+
+
+# --------------------------------------------------------------------------------------
+# m-24842967 (MARCA-3): the signup asks the country, never the zone or the currency
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("country", "timezone", "currency"),
+    [
+        ("CO", "America/Bogota", "COP"),
+        ("UY", "America/Montevideo", "UYU"),
+        ("VE", "America/Caracas", "USD"),  # founder decision 10
+    ],
+)
+async def test_the_signup_deduces_zone_and_currency_from_the_country(
+    monkeypatch, country: str, timezone: str, currency: str
+) -> None:
+    seen: dict[str, str] = {}
+
+    def fake_signup(business_name, email, password, country_, timezone_, currency_, token=""):
+        seen.update(country=country_, timezone=timezone_, currency=currency_)
+        raise auth_state_module.SignupNotAllowed("stop here")
+
+    monkeypatch.setattr(auth_state_module, "_signup_blocking", fake_signup)
+    state = _state()
+    form = {
+        "business_name": "Polet",
+        "email": "a@b.co",
+        "password": "x" * 8,
+        "country": country,
+        # a stale page still posting the old fields is ignored
+        "timezone": "Europe/Madrid",
+        "currency": "EUR",
+    }
+    async for _ in AuthState.handle_signup.fn(state, form):
+        raise AssertionError("a refused signup must not navigate")
+    assert seen == {"country": country, "timezone": timezone, "currency": currency}
+
+
+async def test_a_signup_without_country_asks_for_it(monkeypatch) -> None:
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("must stop before the provider")
+
+    monkeypatch.setattr(auth_state_module, "_signup_blocking", must_not_run)
+    state = _state()
+    form = {"business_name": "Polet", "email": "a@b.co", "password": "x" * 8}
+    async for _ in AuthState.handle_signup.fn(state, form):
+        raise AssertionError("a refused signup must not navigate")
+    assert state.auth_error == "Elige el país de tu negocio: Colombia, Venezuela o Uruguay."
+    assert state.is_authenticating is False

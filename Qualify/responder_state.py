@@ -92,7 +92,9 @@ class ResponderState(rx.State):
         elif self.active_tab == TAB_BUYERS:
             events.append(FollowupsState.enter_page)
         elif self.active_tab == TAB_COMMENTS:
-            events.append(InboxState.load_screen)
+            # m-24842960: `enter_screen` honours `?publicacion=<id>` (one publication's
+            # comments) and the browser's «atrás» from it, then loads the list.
+            events.append(InboxState.enter_screen)
         elif self.active_tab == TAB_LEADS:
             events.append(LeadsState.load_leads)
         return events

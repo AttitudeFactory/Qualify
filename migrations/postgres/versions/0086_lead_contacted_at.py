@@ -1,7 +1,7 @@
 """leads: «Ya le escribiste» — when the owner wrote to an interested client (m-24842992)
 
 Revision ID: 0086
-Revises: 0081
+Revises: 0087
 Create Date: 2026-10-23
 
 `contacted_at` records when the owner marked the person as written to from «Clientes
@@ -14,7 +14,7 @@ it updates on conflict, so a person who fills the form again keeps their mark.
 **Downgrade** drops the column: every person shows «Pendiente» again.
 
 Parallel lanes of epic m-24842956 reserve their own numbers; this revision chains onto
-`0081` (main's head when the branch was cut) and must be re-pointed if another revision
+`0087` (main's head at the last refresh) and must be re-pointed if another revision
 lands first.
 """
 
@@ -24,7 +24,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0086"
-down_revision = "0081"
+down_revision = "0087"
 branch_labels = None
 depends_on = None
 

@@ -145,3 +145,32 @@ def test_a_piece_carries_its_chosen_copys_hook_as_its_title() -> None:
     listed = {piece.object_key: piece for piece in files}
     assert listed[image].title == "La smash del domingo"
     assert listed[untitled].title == ""
+
+
+def test_a_video_still_at_its_480p_draft_is_not_offered() -> None:
+    """m-24820142: a carousel reusing a Seedance 2.5 draft video would carry a 480p
+    video with no draft block of its own (publishable); its final is offered."""
+    (brand,) = _brands(TENANT_P, 1)
+    image, video = _piece(TENANT_P, brand, "pieza con borrador")
+    reader = DbPieceFiles()
+
+    def set_draft(block: dict | None) -> None:
+        with tenant_session(TENANT_P) as session:
+            row = session.scalars(
+                select(creative.ImageAsset).where(creative.ImageAsset.object_key == video)
+            ).one()
+            params = {key: value for key, value in (row.params or {}).items() if key != "draft"}
+            if block is not None:
+                params["draft"] = block
+            row.params = params
+
+    for status in ("draft", "rendering", "failed"):
+        set_draft({"status": status, "task_id": "cgt-draft"})
+        keys = [piece.object_key for piece in reader.files(tenant_id=TENANT_P, brand_id=brand)]
+        assert video not in keys and image in keys, status
+        assert reader.file(tenant_id=TENANT_P, brand_id=brand, object_key=video) is None
+
+    set_draft({"status": "final", "task_id": "cgt-draft"})
+    keys = [piece.object_key for piece in reader.files(tenant_id=TENANT_P, brand_id=brand)]
+    assert video in keys
+    assert reader.file(tenant_id=TENANT_P, brand_id=brand, object_key=video) is not None

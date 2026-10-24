@@ -1,5 +1,6 @@
-"""Señales — the «Pronto» screen behind the sidebar's Señales item (founder decision 4,
-UX epic m-24842956: Creadores and Señales stay in the menu marked «Pronto»).
+"""Oportunidades (formerly «Señales», founder decision §2b-6) — the «Pronto» screen behind
+the menu's Oportunidades entry (founder decision 4, UX epic m-24842956: Creadores and
+Oportunidades stay in the menu marked «Pronto»).
 
 The signal layer (typed opportunity detectors with provenance, `signals.events` — see
 `docs/plan-ingesta-social.md`) is not built: no schema, no detectors, no data. This
@@ -12,23 +13,24 @@ from __future__ import annotations
 import reflex as rx
 
 from .ui import app_shell, empty_state, page_body, page_header, tone_badge
+from .ui.layout import RESPOND_ROUTE
 
 
 def signals_index() -> rx.Component:
     return app_shell(
         page_header(
-            "Señales",
+            "Oportunidades",
             "Te avisaremos cuando alguien pregunte por precios o quiera trabajar contigo",
-            badge=tone_badge("Pronto", "info"),
+            badge=tone_badge("Pronto", "neutral"),
         ),
         page_body(
             empty_state(
                 "radar",
                 "Todavía no hay avisos",
-                "Estamos preparando esta parte. Mientras tanto, revisa quién te escribió.",
+                "Estamos preparando esta parte. Mientras tanto, responde a quien te escribió.",
                 action=rx.link(
-                    rx.button("Ver mis conversaciones", size="3"),
-                    href="/conversations",
+                    rx.button("Ir a Por responder", size="3"),
+                    href=RESPOND_ROUTE,
                 ),
             ),
         ),

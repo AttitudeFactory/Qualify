@@ -54,6 +54,7 @@ from sqlalchemy.exc import IntegrityError
 # m-24789645 (the public comment reply demands the same object); re-exported here.
 from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.conversations.contracts import MEDIA_TYPE_STICKER, REPLY_MEDIA_TYPES
+from qualify_api.conversations.interactive import template_payload
 from qualify_api.conversations.models import OUTBOX_CHANNELS, OUTBOX_KINDS
 
 logger = logging.getLogger("qualify_api.conversations.outbox")
@@ -75,11 +76,16 @@ def backoff(attempts: int) -> timedelta:
 
 
 def payload_text(payload: Mapping[str, Any]) -> str | None:
-    """The human-readable text of a Messenger-Platform body (`message.text`), or None."""
+    """The human-readable text of a Messenger-Platform body (`message.text`, or — for a
+    button template, m-24789472 — the text above its buttons), or None."""
     message = payload.get("message")
     if isinstance(message, Mapping):
         value = message.get("text")
-        return value if isinstance(value, str) else None
+        if isinstance(value, str):
+            return value
+        template = template_payload(payload)
+        text_above = template.get("text") if template is not None else None
+        return text_above if isinstance(text_above, str) else None
     return None
 
 

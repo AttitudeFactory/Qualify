@@ -44,6 +44,7 @@ from qualify_api.creative.brand_kit_store import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState, brand_tenant_id
+from .brand_minimal_vm import MINIMAL_FLOW as _MINIMAL_FLOW
 from .connections_provider import acting_user_id
 from .creative_provider import brand_readiness, default_brand_id, save_kit
 from .creative_vm import KitFormVM
@@ -318,7 +319,17 @@ def _profile_document(connect: Any) -> dict[str, Any] | None:
 PROGRESS_KEY = "progress"
 CONNECT_FLOW = "connect"
 MANUAL_FLOW = "manual"
-_FLOW_ROUTES = {CONNECT_FLOW: "/brand/connect", MANUAL_FLOW: "/brand/manual"}
+#: «Tu marca» in five steps (m-24848529): the one mandatory path since 2026-10-23.
+MINIMAL_FLOW = _MINIMAL_FLOW
+#: m-24848529: a kit left halfway in ANY flow — the five steps, or a draft from the old
+#: manual or connect flow — resumes on /brand, where the five steps map an old position
+#: to the step that holds the same data (`brand_minimal_vm.step_from_progress`).
+MINIMAL_ROUTE = "/brand"
+_FLOW_ROUTES = {
+    CONNECT_FLOW: MINIMAL_ROUTE,
+    MANUAL_FLOW: MINIMAL_ROUTE,
+    MINIMAL_FLOW: MINIMAL_ROUTE,
+}
 
 
 @dataclass(frozen=True)
@@ -384,15 +395,29 @@ def tenant_kit_status(tenant_id: UUID) -> KitStatus:
     return kit_status(tenant_id, brand_id)
 
 
-async def _progress_document(state: Any, flow: str, *, completed: bool) -> dict[str, Any]:
-    """The wizard's position (caller holds the lock)."""
+async def _flow_step(state: Any, flow: str) -> int | str:
+    """The cursor of `flow` (caller holds the lock): a position in the old flows, a step
+    NAME in the five-step one (m-24848529 — stored by name so a reorder never misplaces
+    an owner)."""
     from .creative_wizard_pages import BrandConnectState, BrandWizardState
 
-    wizard = await state.get_state(BrandWizardState)
+    if flow == MINIMAL_FLOW:
+        from .brand_minimal import BrandMinimalState
+
+        return (await state.get_state(BrandMinimalState)).step
+    if flow == CONNECT_FLOW:
+        return (await state.get_state(BrandConnectState)).step
+    return (await state.get_state(BrandWizardState)).step
+
+
+async def _progress_document(state: Any, flow: str, *, completed: bool) -> dict[str, Any]:
+    """The wizard's position (caller holds the lock)."""
+    from .creative_wizard_pages import BrandConnectState
+
     connect = await state.get_state(BrandConnectState)
     return {
         "flow": flow,
-        "step": connect.step if flow == CONNECT_FLOW else wizard.step,
+        "step": await _flow_step(state, flow),
         "completed": completed,
         "started_without_socials": connect.started_without_socials,
         "rubro_asked": connect.rubro_asked,
@@ -515,7 +540,7 @@ async def save_progress(state: Any, flow: str) -> None:
         # Until the page's loads have put the stored kit, brandboard and answers in the
         # session, a save would overwrite them with an empty one: wait for the next step.
         loaded = creative._kit_draft_loaded and wizard._assets_loaded
-        if flow == CONNECT_FLOW:
+        if flow in (CONNECT_FLOW, MINIMAL_FLOW):
             loaded = loaded and connect._details_loaded
         if not loaded:
             return
@@ -532,12 +557,10 @@ async def save_progress(state: Any, flow: str) -> None:
             # A finished kit is only rewritten by a finish (or the editor): walking a
             # wizard over it must not turn it back into a half-written one.
             return
-        saved_step: int | None = None
+        saved_step: int | str | None = None
         while True:
             async with state:
-                connect = await state.get_state(BrandConnectState)
-                wizard = await state.get_state(BrandWizardState)
-                step = connect.step if flow == CONNECT_FLOW else wizard.step
+                step = await _flow_step(state, flow)
                 if step == saved_step:
                     return
                 progress = await _progress_document(state, flow, completed=False)

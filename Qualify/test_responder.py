@@ -237,7 +237,9 @@ def test_the_page_renders_header_tabs_counts_and_all_clear() -> None:
         "Quieren comprar",
         "Comentarios",
         "WhatsApp",
-        "Interesados",
+        # «Interesados» is not checked here: the tab labels come from `R.tabs` (covered by
+        # the view-model tests above); the static match used to come from the old menu row
+        # that NAV-1 (m-24842957) folded into «Por responder».
         "Reintentar",
         "Responder en WhatsApp",
         "Chats de WhatsApp",
