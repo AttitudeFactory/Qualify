@@ -467,6 +467,13 @@ def zone_countries() -> dict[str, str]:
     return zones
 
 
+#: m-24842984: the first sentence of a publication in review, always true on its own.
+REVIEW_NOTHING_WITHOUT_YOU = "Nada sale sin tu aprobación."
+#: m-24842984: left on the panel when «Aprobar» finds no version that passes the brand
+#: rules (or a price the catalog does not have) — where to fix it, with a link there.
+REVIEW_EDIT_NOTE = "Ninguna versión cumple las reglas de tu marca. Edítala en Por aprobar."
+REVIEW_EDIT_LINK = "Ir a Por aprobar ›"
+
 # What the Planificador tells the operator about automatic publication (QUA-111).
 AUTO_PUBLISH_ACTIVE = "active"  # the worker runs for this tenant and it has an account
 AUTO_PUBLISH_NO_CONNECTION = "no_connection"  # worker fine; the tenant has no active account
@@ -866,9 +873,22 @@ class EventDetailVM:
     # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
     # — derived from local_date/local_time, so every builder gets it without passing it.
     approved_line: str = field(init=False, default="")
+    # m-24842984: what a publication in review says above «Aprobar» / «No la quiero» —
+    # «Nada sale sin tu aprobación. Si la apruebas, sale el lunes 28 … a las 3:00 p. m.»
+    review_line: str = field(init=False, default=REVIEW_NOTHING_WITHOUT_YOU)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "approved_line", approved_line(self.local_date, self.local_time))
+        object.__setattr__(
+            self,
+            "review_line",
+            review_line(
+                self.local_date,
+                self.local_time,
+                expired=self.expired,
+                publish_note=self.publish_note,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1938,11 +1958,13 @@ def scheduled_message(
     return head + (f" para {when}" if when else "")
 
 
-def approved_line(day_iso: str, at: str) -> str:
-    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
-    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
-    "" without a valid date; no final period, «p. m.» already ends the sentence. The
-    owner approved it; Qualify never publishes on its own."""
+#: m-24842984: the toast after «Aprobar» when the publication cannot go out as planned —
+#: the panel's own note says what is missing (an account, the media, an expired hour).
+APPROVED_CHECK_TOAST = "Publicación aprobada. Aquí arriba te decimos qué falta para que salga."
+
+
+def _when_phrase(day_iso: str, at: str) -> str:
+    """«el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»); "" without a valid date."""
     try:
         day = date.fromisoformat(day_iso)
     except ValueError:
@@ -1951,4 +1973,41 @@ def approved_line(day_iso: str, at: str) -> str:
     article = "a la" if hour % 12 == 1 else "a las"
     weekday = _WEEKDAYS_LONG[day.weekday()].lower()
     month = _MONTHS_LONG[day.month - 1]
-    return f"Aprobada por ti: sale el {weekday} {day.day} de {month} {article} {time_label(at)}"
+    return f"el {weekday} {day.day} de {month} {article} {time_label(at)}"
+
+
+def review_line(day_iso: str, at: str, *, expired: bool = False, publish_note: str = "") -> str:
+    """m-24842984: the event panel of a publication still in review — «Nada sale sin tu
+    aprobación. Si la apruebas, sale el lunes 28 de septiembre a las 3:00 p. m.». Only
+    the first sentence when the hour is gone (expired: approving alone does not bring it
+    back), unknown, or something else is missing (`publish_note`: the media, the text) —
+    N13, never an hour approving alone will not keep. The panel also drops the second
+    sentence when no account can publish. No final period after «p. m.»."""
+    when = "" if expired or publish_note else _when_phrase(day_iso, at)
+    if not when:
+        return REVIEW_NOTHING_WITHOUT_YOU
+    return f"{REVIEW_NOTHING_WITHOUT_YOU} Si la apruebas, sale {when}"
+
+
+def approved_toast(detail: EventDetailVM, auto_publish: str) -> str:
+    """m-24842984: what «Aprobar» says once the panel is read again. The day and hour
+    only when the publication will really go out then — approved and ready, still
+    scheduled, not expired, and the worker able to publish (N13: the same conditions as
+    the panel's «Aprobada por ti: sale …» line); otherwise, look at what is missing."""
+    goes_out = (
+        detail.approval_tone == "ok"
+        and detail.status_tone == "info"
+        and not detail.expired
+        and auto_publish == AUTO_PUBLISH_ACTIVE
+        and detail.approved_line != ""
+    )
+    return detail.approved_line if goes_out else APPROVED_CHECK_TOAST
+
+
+def approved_line(day_iso: str, at: str) -> str:
+    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
+    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
+    "" without a valid date; no final period, «p. m.» already ends the sentence. The
+    owner approved it; Qualify never publishes on its own."""
+    when = _when_phrase(day_iso, at)
+    return f"Aprobada por ti: sale {when}" if when else ""

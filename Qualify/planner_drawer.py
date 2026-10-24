@@ -45,6 +45,8 @@ from .planner_vm import (
     KIND_ICONS,
     NOW_LABEL,
     PLAN_GOALS,
+    REVIEW_EDIT_LINK,
+    REVIEW_NOTHING_WITHOUT_YOU,
     STEP_POST,
     STEP_PREVIEW,
     STEP_WHEN,
@@ -1720,6 +1722,32 @@ def _detail_body() -> rx.Component:
             d.destination == "story",
             callout(STORY_CAPTION_NOTE, "info"),
         ),
+        # m-24842984: in review, what approving means — nothing goes out without the
+        # owner, and if they approve it goes out on the day and hour they chose (N13).
+        # The hour only when the worker can publish for this tenant and nothing else is
+        # missing (UX review): otherwise just «Nada sale sin tu aprobación.».
+        rx.cond(
+            d.can_reject_post,
+            rx.cond(
+                PlannerState.auto_publish == AUTO_PUBLISH_ACTIVE,
+                callout(d.review_line, "info"),
+                callout(REVIEW_NOTHING_WITHOUT_YOU, "info"),
+            ),
+        ),
+        # «Aprobar» refused for the text itself: the way out stays on the panel, with a
+        # link to where it is edited (N3/N4 — the toast alone is a dead end).
+        rx.cond(
+            PlannerState.review_error != "",
+            rx.vstack(
+                callout(PlannerState.review_error, "warn"),
+                rx.cond(
+                    d.detail_href != "",
+                    rx.link(REVIEW_EDIT_LINK, href=d.detail_href, size="2"),
+                ),
+                spacing="2",
+                width="100%",
+            ),
+        ),
         rx.match(
             PlannerState.auto_publish,
             (
@@ -1874,6 +1902,33 @@ def _detail_footer() -> rx.Component:
     the plan (outlined red) on the left, what moves it (solid) on the right. Every
     button the same size, each with its glyph."""
     d = PlannerState.detail
+    # m-24842984: a publication still in review is decided right here — «No la quiero»
+    # (outlined red) and «Aprobar» (solid), the gallery's own approval. Its own row, so
+    # the decision never gets mixed with moving or cancelling the date.
+    review = rx.cond(
+        d.can_reject_post,
+        # «Aprobar» first: on a phone the grid is one column, so the first thing under
+        # the thumb is approving, never discarding (UX review).
+        rx.box(
+            rx.button(
+                rx.icon("check", size=16),
+                "Aprobar",
+                size="3",
+                loading=PlannerState.review_busy,
+                on_click=PlannerState.approve_post_from_detail,
+            ),
+            rx.button(
+                rx.icon("thumbs-down", size=16),
+                "No la quiero",
+                variant="outline",
+                color_scheme="red",
+                size="3",
+                disabled=PlannerState.review_busy,
+                on_click=PlannerState.reject_post_from_detail,
+            ),
+            class_name="q-panel-actions",
+        ),
+    )
     actions = rx.box(
         rx.cond(
             d.can_remove_rejected,
@@ -1884,18 +1939,6 @@ def _detail_footer() -> rx.Component:
                 color_scheme="red",
                 size="3",
                 on_click=PlannerState.ask_remove_rejected,
-            ),
-        ),
-        # A POST still in review can be rejected from here (the creative FSM decides).
-        rx.cond(
-            d.can_reject_post,
-            rx.button(
-                rx.icon("thumbs-down", size=16),
-                "No la quiero",
-                variant="outline",
-                color_scheme="red",
-                size="3",
-                on_click=PlannerState.reject_post_from_detail,
             ),
         ),
         rx.cond(
@@ -1939,7 +1982,7 @@ def _detail_footer() -> rx.Component:
                 PlannerState.confirm_remove_rejected,
             ),
         ),
-        actions,
+        rx.vstack(review, actions, spacing="3", width="100%"),
     )
 
 
@@ -1962,7 +2005,7 @@ def event_panel() -> rx.Component:
         on_open_change=PlannerState.set_detail_open,
         title="Publicación planificada",
         icon="calendar-check",
-        description="Qué sale, cuándo y dónde. Desde aquí la mueves o la cancelas.",
+        description="Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas.",
         footer=_detail_footer(),
         width="36rem",
     )

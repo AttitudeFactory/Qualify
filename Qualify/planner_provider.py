@@ -18,6 +18,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
+from qualify_api.creative.service import ApprovalBlocked
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
@@ -99,6 +100,26 @@ ALL_CONNECTIONS = "all"
 
 class NoBrand(PlannerError):
     """The tenant has no brand row yet — nothing to plan for."""
+
+
+class NoPassingVariant(PlannerError):
+    """m-24842984: no version of the POST's text passes the brand rules, so there is
+    nothing Tu semana can approve — the owner edits it on its own page first."""
+
+
+class PriceBlocked(PlannerError):
+    """m-24842984: the approval guard refused the text (ticket 24803289: a price that is
+    not the catalog's); `detail` is the guard's own Spanish — what to correct."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+#: m-24842984: the gallery's own words for the same refusal (one wording, both places).
+NO_PASSING_VARIANT_MESSAGE = (
+    "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
+)
 
 
 @dataclass(frozen=True)
@@ -708,6 +729,50 @@ def reject_post(tenant_id: UUID, event_id: str) -> None:
         reason="Rechazado desde Tu semana",
         regenerate=False,
     )
+
+
+def approve_post(tenant_id: UUID, event_id: str) -> None:
+    """m-24842984: «Aprobar» on the event panel — the gallery's approval, unchanged: the
+    first version of the text that passes the brand rules becomes the POST's approved
+    text (the creative FSM's guarded `approve` edge, legal only for a POST in review).
+
+    Approving publishes nothing (N13): the event keeps the day and hour the owner chose
+    and the calendar worker takes it only then. `ApprovalBlocked` (a price that is not
+    the catalog's) comes back as `PriceBlocked` with the guard's words;
+    `InvalidTransition` (no longer in review) propagates."""
+    from .creative_provider import approve_draft, draft_detail  # noqa: PLC0415 — import cycle
+
+    planned = production_planner_service().get(
+        tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent)
+    )
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoBrand(str(tenant_id))
+    post_id = planned.event.post_id
+    draft = draft_detail(tenant_id, post_id)
+    if draft is None:
+        raise UnknownPost(str(post_id))
+    variant = next((v for v in draft.variants if v.passed), None)
+    if variant is None:
+        raise NoPassingVariant(str(post_id))
+    try:
+        approve_draft(tenant_id, post_id, UUID(variant.variant_id), user_id)
+    except ApprovalBlocked as exc:
+        raise PriceBlocked(exc.detail) from exc
+
+
+def approve_error_message(exc: Exception) -> str:
+    """The owner's words when «Aprobar» on the event panel is refused."""
+    if isinstance(exc, (PriceBlocked, ApprovalBlocked)):
+        return exc.detail  # the guard's own Spanish: what to correct
+    if isinstance(exc, NoPassingVariant):
+        return NO_PASSING_VARIANT_MESSAGE
+    if isinstance(exc, CreativeInvalidTransition):
+        return (
+            "Esa publicación ya no está en revisión, así que no se puede aprobar. "
+            "Actualiza la página."
+        )
+    return planner_error_message(exc)
 
 
 def remove_rejected_post(tenant_id: UUID, event_id: str) -> int:

@@ -34,6 +34,10 @@ from .campaign_provider import (
 from .creative_provider import acting_user_id
 from .planner_provider import (
     ALL_CONNECTIONS,
+    NoPassingVariant,
+    PriceBlocked,
+    approve_error_message,
+    approve_post,
     cancel_event,
     create_tag,
     delete_tag,
@@ -48,6 +52,7 @@ from .planner_provider import (
     set_event_tags,
 )
 from .planner_vm import (
+    APPROVED_CHECK_TOAST,
     ASSIGN_STEPS,
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
@@ -56,6 +61,7 @@ from .planner_vm import (
     OPENING_HOUR,
     PLAN_GOAL_KEYS,
     PLAN_GOALS,
+    REVIEW_EDIT_NOTE,
     STEP_LAST,
     STEP_POST,
     STEP_WHEN,
@@ -74,6 +80,7 @@ from .planner_vm import (
     TagSuggestionVM,
     TagVM,
     TzOptionVM,
+    approved_toast,
     assign_steps_done,
     build_plan_row,
     campaign_value,
@@ -346,6 +353,10 @@ class PlannerState(rx.State):
     detail: EventDetailVM = EventDetailVM()
     detail_error: str = ""
     detail_confirm: str = ""  # CONFIRM_CANCEL / CONFIRM_REMOVE while the panel asks
+    # m-24842984: «Aprobar» / «No la quiero» in flight — both buttons wait (no double tap).
+    review_busy: bool = False
+    # m-24842984: «Aprobar» refused for the text itself — kept on the panel with a link.
+    review_error: str = ""
     # -- delete a tag (confirmed inline, in the filter's own row) ------------------
     delete_tag_id: str = ""
     delete_tag_name: str = ""
@@ -880,21 +891,77 @@ class PlannerState(rx.State):
     # -- the POST's own review from the dialog ------------------------------------
 
     @rx.event(background=True)
+    async def approve_post_from_detail(self):
+        """m-24842984: «Aprobar» on the panel of a publication in review — the gallery's
+        approval (creative FSM `generated → approved`), nothing more. It publishes
+        nothing (N13): the event keeps the day and hour the owner chose and the calendar
+        worker takes it only then. The panel is read again in place (no skeleton, no
+        page reload), so its state turns to approved and its line says when it goes out."""
+        async with self:
+            if self.review_busy:
+                return
+            event_id = self.detail.event_id
+            view_tz = self.view_tz
+            self.review_busy = True
+            self.review_error = ""
+        tenant_id = await self._tenant()
+        if tenant_id is None or not event_id:
+            async with self:
+                self.review_busy = False
+            return
+        try:
+            await asyncio.to_thread(approve_post, tenant_id, event_id)
+        except Exception as exc:
+            if not isinstance(exc, (PlannerError, CreativeInvalidTransition)):
+                logger.error("planner approve_post failed: %s", type(exc).__name__)
+            async with self:
+                self.review_busy = False
+                if isinstance(exc, (NoPassingVariant, PriceBlocked)):
+                    self.review_error = (
+                        REVIEW_EDIT_NOTE if isinstance(exc, NoPassingVariant) else exc.detail
+                    )
+            yield rx.toast.error(approve_error_message(exc))
+            return
+        try:
+            detail = await asyncio.to_thread(event_detail, tenant_id, event_id, view_tz)
+        except Exception as exc:  # noqa: BLE001 — the approval stands; `load` re-reads
+            logger.warning("planner detail after approve failed: %s", type(exc).__name__)
+            detail = None
+        async with self:
+            self.review_busy = False
+            if detail is not None and self.detail.event_id == event_id:
+                self.detail = detail
+            auto_publish = self.auto_publish
+        yield rx.toast.success(
+            approved_toast(detail, auto_publish) if detail is not None else APPROVED_CHECK_TOAST
+        )
+        yield PlannerState.load
+
+    @rx.event(background=True)
     async def reject_post_from_detail(self):
         """Reject the event's POST (creative FSM `generated → rejected`). The event stays
         scheduled; the worker will not publish a rejected POST."""
         async with self:
+            if self.review_busy:
+                return
             event_id = self.detail.event_id
+            self.review_busy = True
         tenant_id = await self._tenant()
         if tenant_id is None or not event_id:
+            async with self:
+                self.review_busy = False
             return
         try:
             await asyncio.to_thread(reject_post, tenant_id, event_id)
         except Exception as exc:
             if not isinstance(exc, (PlannerError, CreativeInvalidTransition)):
                 logger.error("planner reject_post failed: %s", type(exc).__name__)
+            async with self:
+                self.review_busy = False
             yield rx.toast.error(planner_error_message(exc))
             return
+        async with self:
+            self.review_busy = False
         yield rx.toast.success("Publicación rechazada: no saldrá.")
         yield PlannerState.load
         yield PlannerState.open_detail(event_id)
@@ -1554,6 +1621,7 @@ class PlannerState(rx.State):
             self.detail_open = True
             self.detail_loading = True
             self.detail_error = ""
+            self.review_error = ""
             self.detail_confirm = confirm if confirm in (CONFIRM_CANCEL, CONFIRM_REMOVE) else ""
             self.detail = EventDetailVM()
             view_tz = self.view_tz

@@ -727,7 +727,7 @@
   width: 100%;
 }
 .q-panel-actions:empty { display: none; }
-.q-panel-actions .rt-Button { width: 100%; }
+.q-panel-actions .rt-Button { width: 100%; min-height: 44px; }
 
 /* «Contenido» step: header panel and the legend box. */
 .q-step-panel {
