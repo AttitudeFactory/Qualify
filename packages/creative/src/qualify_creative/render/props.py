@@ -137,13 +137,15 @@ def _without_dangling(phrase: str) -> str:
     return " ".join(words).rstrip(" ,;:—-")
 
 
-def fit_text(text: str, limit: int | None) -> str:
+def fit_text(text: str, limit: int | None, *, min_keep: int = 0) -> str:
     """`text` within `limit` characters, shortened where a person would stop — at the
     last pause (comma, colon, dash, end of sentence) or the last start of a clause («y»,
     «que»…) that fits, else at the last whole word, never on a dangling article or
     preposition. A render used to fail outright for a CTA 6 characters over its port
     (§ request 2026-10-08). With no place to cut (one long word) the text is returned
-    as is, and `validate_props` still reports it."""
+    as is, and `validate_props` still reports it. `min_keep`: a pause that keeps fewer
+    characters than this is not taken (the last whole word is), so a long text over its
+    limit by a little is not cut back to its first comma."""
     text = " ".join(text.split())
     if limit is None or len(text) <= limit:
         return text
@@ -154,7 +156,7 @@ def fit_text(text: str, limit: int | None) -> str:
         elif ch == " " and text[i + 1 :].split(" ", 1)[0].lower() in _CLAUSE_STARTS:
             cuts.append(text[:i])
     phrases = [_without_dangling(c) for c in cuts]
-    phrases = [p for p in phrases if _MIN_PHRASE <= len(p) <= limit]
+    phrases = [p for p in phrases if max(_MIN_PHRASE, min_keep) <= len(p) <= limit]
     if phrases:
         return phrases[-1]
     words: list[str] = []

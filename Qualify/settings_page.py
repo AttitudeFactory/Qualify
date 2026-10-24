@@ -1,8 +1,9 @@
-"""Configuración (2026-10-06): the account's own settings — who is logged in, changing
-the password without leaving the app, and (RESULTADOS-4, m-24843002) the «Tu página
-web» connection.
+"""Configuración (2026-10-06): the account's own settings — who is logged in, the
+business's country and currency (m-24842967), changing the password without leaving the
+app, and (RESULTADOS-4, m-24843002) the «Tu página web» connection.
 
-The account and password sections read only what `AuthState` holds for the session.
+The country and currency are tenant data, held in `SettingsState` (reset on logout); the
+account and password sections read what `AuthState` already holds for the session.
 «Tu página web» borrows `ClarityState` (loaded on mount with `load_config`, which reads
 the connection status only): a guided question for the owner, and the two labelled
 fields the Qualify team fills, folded away. The access key is write-only — cleared from
@@ -13,14 +14,16 @@ from __future__ import annotations
 import reflex as rx
 
 from . import clarity_vm as W
-from .auth_pages import password_field
+from .auth_pages import _TAP, country_select, labeled_field, password_field
 from .auth_state import AuthState
 from .clarity_state import ClarityState
+from .settings_state import SettingsState
 from .ui import (
     app_shell,
     callout,
     card,
     kv,
+    loading_spinner,
     page_body,
     page_header,
     section,
@@ -28,6 +31,78 @@ from .ui import (
     skeleton_rows,
 )
 from .ui import tokens as T
+
+
+def _locale_card() -> rx.Component:
+    """«País y moneda» (m-24842967): what the signup deduced from the country, changeable
+    here. The hour follows the country; the currency is the one prices are shown in."""
+    return card(
+        rx.cond(
+            SettingsState.locale_loading,
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text("Cargando…", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.vstack(
+                rx.cond(
+                    SettingsState.locale_error != "",
+                    callout(SettingsState.locale_error, "error"),
+                ),
+                rx.cond(
+                    SettingsState.locale_saved,
+                    callout("Listo, guardamos el país y la moneda.", "ok"),
+                ),
+                labeled_field(
+                    "País del negocio",
+                    "settings-country",
+                    country_select(
+                        "settings-country",
+                        value=SettingsState.country,
+                        on_change=SettingsState.set_country,
+                    ),
+                    hint="Tus horarios de publicación usan la hora de este país.",
+                ),
+                labeled_field(
+                    "Moneda de tus precios",
+                    "settings-currency",
+                    rx.select.root(
+                        rx.select.trigger(
+                            placeholder="Elige la moneda",
+                            id="settings-currency",
+                            width="100%",
+                            height=_TAP,
+                        ),
+                        rx.select.content(
+                            rx.foreach(
+                                SettingsState.currency_choices,
+                                lambda option: rx.select.item(
+                                    option["label"], value=option["value"]
+                                ),
+                            )
+                        ),
+                        value=SettingsState.currency,
+                        on_change=SettingsState.set_currency,
+                        size="3",
+                    ),
+                ),
+                rx.button(
+                    "Guardar país y moneda",
+                    size="3",
+                    width="100%",
+                    height=_TAP,
+                    loading=SettingsState.locale_saving,
+                    disabled=SettingsState.country == "",
+                    on_click=SettingsState.save_locale,
+                ),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+        width="min(420px, 100%)",
+        on_mount=SettingsState.load_locale,
+    )
 
 
 def _password_card() -> rx.Component:
@@ -69,10 +144,6 @@ def _password_card() -> rx.Component:
         ),
         width="min(420px, 100%)",
     )
-
-
-# N12: every tap target on this block is at least 44 px tall.
-_TAP = "44px"
 
 
 def _labelled(label: str, field_id: str, control: rx.Component) -> rx.Component:
@@ -250,7 +321,7 @@ def _website_content() -> rx.Component:
 
 def settings_index() -> rx.Component:
     return app_shell(
-        page_header("Configuración", "Tu cuenta, tu contraseña y tu página web"),
+        page_header("Configuración", "Tu cuenta, tu país, tu contraseña y tu página web"),
         page_body(
             section(
                 "Tu cuenta",
@@ -267,6 +338,11 @@ def settings_index() -> rx.Component:
                     ),
                     width="min(420px, 100%)",
                 ),
+            ),
+            section(
+                "País y moneda",
+                _locale_card(),
+                description="Con esto mostramos tus horarios y tus precios.",
             ),
             section(
                 "Contraseña",

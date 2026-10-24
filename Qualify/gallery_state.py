@@ -1,7 +1,8 @@
 """State for `/drafts` — the POST gallery (QUA-118).
 
-Every POST of the brand as a card with its derived state (Borrador · Por completar ·
-Listo · Usado · Desechado), filters by state and category, and «Asignar», which hands
+Every POST of the brand as a card with its state in words (Por revisar · Le falta algo ·
+Lista para programar · Ya salió · Descartada · Creándose, m-24842981), filters by that
+state and by category, and «Programar», which hands
 the POST to the Planificador's own drawer (`/planner?post=<id>`) — the gallery never
 plans anything itself and never duplicates the assign flow.
 
@@ -16,10 +17,21 @@ import logging
 from uuid import UUID
 
 import reflex as rx
-from qualify_api.creative.service import ApprovalBlocked
+from qualify_api.creative.service import ApprovalBlocked, DraftExpired
 
 from .auth_state import AuthState
 from .creative_provider import acting_user_id, approve_draft, draft_detail, reject_draft
+
+# m-24842978: the same words here and on the publication's own page after approving —
+# it is not out yet — live with `approval_notice`; re-exported for the screens' tests.
+from .creative_vm import (  # noqa: F401
+    APPROVED_NOT_READY_TOAST,
+    APPROVED_OPEN_ACTION,
+    APPROVED_TOAST,
+    APPROVED_TOAST_ACTION,
+    approval_notice,
+)
+from .pending_state import PendingState
 from .planner_provider import load_gallery
 from .planner_vm import (
     GALLERY_FILTER_ALL,
@@ -37,11 +49,6 @@ logger = logging.getLogger(__name__)
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar la galería. Inténtalo de nuevo."
 _REVIEW_FAILED = "No se pudo completar. Abre la publicación y vuelve a intentarlo."
-#: m-24842978: the same words here and on the publication's own page after approving —
-#: it is not out yet — with the way to choose when it goes out, when it can go out.
-APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
-APPROVED_NOT_READY_TOAST = "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale."
-APPROVED_TOAST_ACTION = "Elegir día y hora"
 _NO_PASSING_VARIANT = (
     "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
 )
@@ -101,8 +108,8 @@ class GalleryState(rx.State):
         """How many POSTs each state filter would show — the number on each chip."""
         counts = {value: 0 for value, _label in GALLERY_STATE_FILTERS}
         counts[GALLERY_FILTER_ALL] = len(self.posts)
-        for post in self.posts:
-            counts[post.gallery_state] = counts.get(post.gallery_state, 0) + 1
+        for post in self.posts:  # by the card's state (m-24842981), as the filters
+            counts[post.card_state] = counts.get(post.card_state, 0) + 1
         return counts
 
     @rx.var
@@ -190,12 +197,18 @@ class GalleryState(rx.State):
                     self.busy_post_id = ""
                 yield rx.toast.warning(_NO_PASSING_VARIANT)
                 return
-            await asyncio.to_thread(
+            approved = await asyncio.to_thread(
                 approve_draft, tenant_id, draft_id, UUID(variant.variant_id), user_id
             )
         except ApprovalBlocked as exc:
             # ticket 24803289: a variations piece quoting a price that is not the
             # catalog's — said as it is, so the operator knows what to correct
+            async with self:
+                self.busy_post_id = ""
+            yield rx.toast.error(exc.detail)
+            return
+        except DraftExpired as exc:
+            # m-24820142: a 480p draft too old to make its final
             async with self:
                 self.busy_post_id = ""
             yield rx.toast.error(exc.detail)
@@ -220,19 +233,33 @@ class GalleryState(rx.State):
                 self.posts = list(data.posts)
                 self.categories = list(data.categories)
         ready, _note = schedule_readiness(list(data.posts) if data else [], post_id)
-        if ready:
-            yield rx.toast.success(
-                APPROVED_TOAST,
+        # m-24820142 first: a 1080p final being made (or that could not be ordered) holds
+        # the publication back, so no day and time is offered — the piece says the rest.
+        # Otherwise m-24842978: it is not out yet; the card shows what is missing, if any.
+        notice = approval_notice(approved.video_draft, ready=ready, elsewhere="Ábrela")
+        if notice.offer_schedule:
+            yield getattr(rx.toast, notice.kind)(
+                notice.text,
                 action={
                     "label": APPROVED_TOAST_ACTION,
                     "on_click": rx.redirect(f"/planner?post={post_id}"),
                 },
             )
+        elif notice.offer_open:
+            # m-24842981 (finding 8): its final is being made or could not be ordered —
+            # the publication's own page says when it is ready and offers to try again.
+            yield getattr(rx.toast, notice.kind)(
+                notice.text,
+                action={
+                    "label": APPROVED_OPEN_ACTION,
+                    "on_click": rx.redirect(f"/drafts/{post_id}"),
+                },
+            )
         else:
-            # the card itself shows what is missing (`readiness_note`)
-            yield rx.toast.success(APPROVED_NOT_READY_TOAST)
+            yield getattr(rx.toast, notice.kind)(notice.text)
         if data is None:
             yield GalleryState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     @rx.event
     def ask_reject_post(self, post_id: str, title: str) -> None:
@@ -279,3 +306,4 @@ class GalleryState(rx.State):
             self.busy_post_id = ""
         yield rx.toast.success("Publicación descartada.")
         yield GalleryState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now

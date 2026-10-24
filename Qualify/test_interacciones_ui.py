@@ -29,10 +29,12 @@ _NOW = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
 # --- B1: the name ------------------------------------------------------------------
 
 
-def test_the_sidebar_names_the_module_comentarios_on_the_same_route() -> None:
-    """m-24842958 (N1): «Interacciones» is «Comentarios», in the owner's words."""
-    assert ("Comentarios", "film", "/inbox", True) in NAV_ITEMS
+def test_the_sidebar_never_says_interacciones_and_comentarios_keeps_its_route() -> None:
+    """m-24842958 (N1): «Interacciones» is «Comentarios», in the owner's words. Since
+    NAV-1 (m-24842957) comments are a tab of «Por responder», not a menu entry of their
+    own; the `/inbox` address keeps working."""
     assert not any(label in ("Contenido", "Interacciones") for label, *_ in NAV_ITEMS)
+    assert 'route="/inbox"' in (_HERE / "Qualify.py").read_text(encoding="utf-8")
 
 
 def test_the_tab_title_and_the_header_say_comentarios() -> None:

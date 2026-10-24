@@ -19,6 +19,7 @@ line with the rest in «Más filtros» and every target is ≥ 44 px (N12).
 import reflex as rx
 
 from .mentions_paging import (
+    ALL_HISTORY,
     ALL_SENTIMENTS,
     NEW_MENTIONS_BUTTON,
     ORIGIN_OPTIONS,
@@ -26,6 +27,7 @@ from .mentions_paging import (
     SENTIMENT_OPTIONS,
 )
 from .mentions_provider import NO_LINK
+from .next_steps_vm import CREATE_LABEL, CREATE_ROUTE
 from .results_state import ResultsState
 from .state import DashboardState, MentionRow
 from .ui import (
@@ -813,6 +815,13 @@ def _mentions_empty_state() -> rx.Component:
             "Cuando alguien mencione tu cuenta en una publicación o un "
             "comentario, aparecerá aquí. Para ver menciones anteriores, elige un periodo "
             "más amplio.",
+            # N8 (m-24842961): the wider period, one tap away.
+            action=rx.button(
+                "Ver todo el historial",
+                on_click=DashboardState.set_period_filter(ALL_HISTORY),
+                variant="soft",
+                size="3",
+            ),
         ),
         # N8 (m-24843003): without Instagram the way out is connecting it; with it, a new
         # publication is what invites people to tag the business.
@@ -824,8 +833,13 @@ def _mentions_empty_state() -> rx.Component:
                 "Cuando alguien te etiquete en una publicación o un comentario, aparecerá "
                 "aquí. Una publicación nueva invita a que te etiqueten.",
                 action=rx.link(
-                    rx.button("Crear publicación", size="3", min_height=_TARGET),
-                    href="/create",
+                    rx.button(
+                        rx.icon("wand-sparkles", size=16),
+                        CREATE_LABEL,
+                        size="3",
+                        min_height=_TARGET,
+                    ),
+                    href=CREATE_ROUTE,
                 ),
             ),
             empty_state(
@@ -846,6 +860,9 @@ def _no_results_state() -> rx.Component:
         "search-x",
         "Ninguna mención coincide con estos filtros",
         "Cambia o quita algún filtro para ver más menciones.",
+        action=rx.button(
+            "Quitar filtros", on_click=DashboardState.clear_filters, variant="soft", size="3"
+        ),
     )
 
 

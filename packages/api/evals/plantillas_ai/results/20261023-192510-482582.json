@@ -1,0 +1,60 @@
+{
+  "stamp": "20261023-192510-482582",
+  "pricing_version": "v6",
+  "prompt_version": "plantillas-ai-v1",
+  "size": "2K",
+  "ceiling_usd": "0.05",
+  "spent_usd": "0.035",
+  "reservations": 1,
+  "ledger": {
+    "ceiling_usd": "0.05",
+    "spent_usd": "0.035",
+    "held_usd": "0.000",
+    "reserved_usd": "0.035",
+    "overage_usd": "0",
+    "over_ceiling_usd": "0",
+    "reservations": 1,
+    "settlements": 1,
+    "releases": 0,
+    "open_reservations": 0
+  },
+  "totales": {
+    "estimado_usd": "0.035",
+    "reservado_usd": "0.035",
+    "gastado_usd": "0.035",
+    "exceso_sobre_reserva_usd": "0",
+    "exceso_sobre_tope_usd": "0",
+    "retenido_usd": "0.000",
+    "alerta": false
+  },
+  "stopped": null,
+  "error_inesperado": null,
+  "lector": {
+    "tipo": "ninguno"
+  },
+  "results_path": "packages/api/evals/plantillas_ai/results/20261023-192510-482582.json",
+  "salidas": "packages/api/evals/plantillas_ai/imagenes/salidas/20261023-192510-482582",
+  "items": {
+    "texture:fix-luma+textura-rayas-cobre@seedream-5-0-lite-260128": {
+      "provider": "seedream",
+      "model_id": "seedream-5-0-lite-260128",
+      "prompt_version": "plantillas-ai-v1",
+      "pricing_version": "v6",
+      "estimated_usd": "0.035",
+      "block": "texture",
+      "model_revision": "seedream-5-0-260128",
+      "legibilidad": {
+        "metricas_version": "metricas-v1",
+        "estado": "pendiente"
+      },
+      "estado": "hecho",
+      "estimado_usd": "0.035",
+      "reservado_usd": "0.035",
+      "gastado_usd": "0.035",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    }
+  }
+}
