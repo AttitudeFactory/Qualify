@@ -209,7 +209,9 @@ class FakeSession:
         self.world.locked.append(with_for_update)
         return self.world.details.get(key)
 
-    def scalar(self, _statement: Any) -> Any:
+    def scalar(self, statement: Any) -> Any:
+        if "brand_kit_assets" in str(statement):
+            return self.world.asset
         return self.world.kit
 
     def add(self, obj: Any) -> None:
@@ -226,11 +228,14 @@ class World:
         row = SimpleNamespace(
             connect=connect if connect is not None else {PREFILL_KEY: _document()},
             profile={},
+            logo_brief={},
             updated_by=None,
             updated_at=None,
         )
         self.details: dict[UUID, Any] = {BRAND: row}
         self.kit = kit
+        #: A brandboard file of the owner's (any value) or None.
+        self.asset: Any = None
         self.added: list[Any] = []
         self.tenants: list[UUID] = []
         self.locked: list[bool] = []
@@ -262,21 +267,23 @@ def test_approve_promotes_the_proposal_and_creates_the_kits_colours() -> None:
     assert world.locked == [True]
 
 
-def test_approve_adds_the_colours_to_an_existing_kit() -> None:
+def test_approve_fills_the_empty_kit_the_wizard_saved_first() -> None:
+    """Tus redes shown once saves an empty, unfinished kit row: approving fills its
+    colours and keeps the rest of it (the tone) as it was."""
     kit = BrandKitRow(tenant_id=TENANT, brand_id=BRAND, language="es")
-    kit.positioning, kit.audience = "Lo de siempre", "Vecinos"
+    kit.positioning, kit.audience = "", ""
     kit.tone_axes = {
         "formal_casual": 70,
         "sober_enthusiastic": 60,
         "technical_plain": 80,
         "brief_elaborate": 40,
     }
-    kit.palette_rgb = ["#111111"]
+    kit.palette_rgb = []
     world = World({PREFILL_KEY: _document(), "progress": {"completed": False}}, kit=kit)
     assert approve_prefill(TENANT, BRAND, USER, session_factory=world.session).done
     assert world.kit is kit and not world.added
-    assert kit.palette_rgb == ["#111111", "#0f766e", "#f8fafc"]
-    assert kit.positioning == "Lo de siempre" and kit.tone_axes["formal_casual"] == 70
+    assert kit.palette_rgb == ["#0f766e", "#f8fafc"]
+    assert kit.tone_axes["formal_casual"] == 70
 
 
 @pytest.mark.parametrize("button", [change_prefill, discard_prefill])
@@ -333,42 +340,148 @@ def test_the_module_reaches_the_database_only_through_tenant_scoped_doors() -> N
 
 
 # --------------------------------------------------------------------------------------
-# db: the real rows under RLS
+# the owner's own answers come first (review of PB-5)
 # --------------------------------------------------------------------------------------
 
 
-def _brand_of(tenant: UUID) -> UUID:
-    from qualify_shared.db.session import tenant_session
-    from sqlalchemy import select
+def test_an_empty_draft_is_not_a_start() -> None:
+    empty_save = {
+        "network": "",
+        "username": "",
+        "sector": "",
+        "rubro_text": "",
+        "country_code": "CO",  # prefilled from the signup's country, not typed
+        "city": "",
+        "hashtags": [],
+        "account_kind": "",
+        "has_maps": "",
+        "voice_configured": False,
+        "progress": {"flow": "minimo", "step": "redes", "completed": False},
+    }
+    assert not brand_prefill_review.owner_started(
+        empty_save, {}, {"brand_avatar": {"x": 1}}, kit_answers=["", "", "", ""]
+    )
 
-    from qualify_api.tenancy.models import Brand
 
-    with tenant_session(tenant) as session:
-        return session.scalar(select(Brand.id).where(Brand.tenant_id == tenant))
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"connect": {"rubro_text": "Heladería"}},
+        {"connect": {"city": "Cali"}},
+        {"connect": {"hashtags": [{"tag": "x"}]}},
+        {"connect": {"progress": {"started_without_socials": True}}},
+        {"connect": {"progress": {"logo_from_profile": True}}},
+        {"profile": {"username": "mi.cuenta"}},
+        {"logo_brief": {"style": "moderno"}},
+        {"kit_answers": ["Lo hacemos al momento"]},
+        {"kit_answers": ["", "", "#111111"]},
+        {"has_files": True},
+    ],
+)
+def test_any_answer_of_the_owner_is_a_start(kw: dict[str, Any]) -> None:
+    assert brand_prefill_review.owner_started(
+        kw.get("connect"),
+        kw.get("profile"),
+        kw.get("logo_brief"),
+        kit_answers=kw.get("kit_answers", ()),
+        has_files=kw.get("has_files", False),
+    )
 
 
-def _fresh_proposal(store: Any, tenant: UUID, brand: UUID) -> None:
-    """A pending proposal on a kit left halfway (the shared tenants may hold a kit row
-    from other tests: an unfinished progress keeps it reviewable)."""
-    for key, value in ((PREFILL_KEY, _document()), ("progress", {"completed": False})):
-        store.set_document_key(
-            tenant_id=tenant, brand_id=brand, document="connect", key=key, value=value
-        )
+def test_a_proposal_is_not_offered_over_the_owners_answers() -> None:
+    connect = {PREFILL_KEY: _document(), "rubro_text": "Lo que escribí"}
+    assert review_of(connect, has_kit=False, started=True).notice is Notice.NONE
+    assert review_of(connect, has_kit=False, started=False).pending
+
+
+@pytest.mark.parametrize("button", [approve_prefill, change_prefill, discard_prefill])
+def test_an_owner_who_already_started_supersedes_the_proposal(button: Any) -> None:
+    """Re-checked under the lock: the owner typed while the card was open (or before
+    the proposal landed) — nothing is promoted, the proposal is kept as superseded."""
+    world = World({PREFILL_KEY: _document(), "rubro_text": "Lo que escribí", "city": "Cali"})
+    world.row.profile = {}
+    decision = button(TENANT, BRAND, USER, session_factory=world.session)
+    assert not decision.done and decision.proposal == {}
+    connect = world.row.connect
+    assert connect["rubro_text"] == "Lo que escribí" and connect["city"] == "Cali"
+    assert "progress" not in connect and world.kit is None and not world.added
+    assert connect[PREFILL_KEY]["state"] == "superseded"
+    assert connect[PREFILL_KEY]["provenance"] == _document()["provenance"]
+    assert brand_prefill_review.is_decided(connect[PREFILL_KEY])
+
+
+def test_an_uploaded_logo_supersedes_the_proposal() -> None:
+    world = World()
+    world.asset = BRAND  # a file of the owner's brandboard
+    assert not approve_prefill(TENANT, BRAND, USER, session_factory=world.session).done
+    assert world.row.connect[PREFILL_KEY]["state"] == "superseded"
+    assert world.row.profile == {} and world.kit is None
+
+
+def test_decided_states_are_the_ones_a_rerun_keeps() -> None:
+    assert brand_prefill_review.DECIDED_STATES == {"approved", "changed", "discarded", "superseded"}
+    assert not brand_prefill_review.is_decided({"state": "proposed"})
+    assert not brand_prefill_review.is_decided({"state": ""})
+    assert not brand_prefill_review.is_decided(None)
+
+
+# --------------------------------------------------------------------------------------
+# db: the real rows under RLS — two tenants of this file's own, a fresh brand each run
+# --------------------------------------------------------------------------------------
+
+DB_TENANT_A = UUID("c0000000-0000-4000-8000-0000000000e1")
+DB_TENANT_B = UUID("d0000000-0000-4000-8000-0000000000e2")
+
+
+@pytest.fixture
+def fresh_brands() -> tuple[tuple[UUID, UUID], tuple[UUID, UUID]]:
+    """((tenant A, its new brand), (tenant B, its new brand)): nothing another test
+    wrote can make the owner look started."""
+    from uuid import uuid4
+
+    from qualify_shared.db.admin import admin_session
+
+    from qualify_api.tenancy.models import Brand, Tenant
+
+    out = []
+    with admin_session() as session:
+        for tenant_id, name in ((DB_TENANT_A, "A"), (DB_TENANT_B, "B")):
+            if session.get(Tenant, tenant_id) is None:
+                session.add(
+                    Tenant(
+                        id=tenant_id,
+                        name=f"prefill-review-{name}",
+                        country="CO",
+                        timezone="America/Bogota",
+                        currency="COP",
+                    )
+                )
+                session.flush()
+            brand = Brand(tenant_id=tenant_id, name=f"prefill-review-{uuid4()}")
+            session.add(brand)
+            session.flush()
+            out.append((tenant_id, brand.id))
+    return out[0], out[1]
+
+
+def _propose(store: Any, tenant: UUID, brand: UUID) -> None:
+    store.set_document_key(
+        tenant_id=tenant, brand_id=brand, document="connect", key=PREFILL_KEY, value=_document()
+    )
 
 
 @pytest.mark.db
-def test_approving_writes_only_the_own_tenants_brand_kit(seeded_ab: tuple[UUID, UUID]) -> None:
+def test_approving_writes_only_the_own_tenants_brand_kit(fresh_brands: Any) -> None:
     from qualify_shared.db.session import tenant_session
 
     from qualify_api.creative.brand_kit_store import BrandKitStore
     from qualify_api.creative.brand_service import BrandKitService
     from qualify_api.creative.models import BrandKitDetails as DetailsRow
 
-    tenant_a, tenant_b = seeded_ab
-    brand_a, brand_b = _brand_of(tenant_a), _brand_of(tenant_b)
+    (tenant_a, brand_a), (tenant_b, brand_b) = fresh_brands
     store = BrandKitStore()
-    _fresh_proposal(store, tenant_a, brand_a)
-    theirs_before = store.load_details(tenant_id=tenant_b, brand_id=brand_b)
+    _propose(store, tenant_a, brand_a)
+    _propose(store, tenant_b, brand_b)
 
     # tenant B's session cannot see, let alone approve, tenant A's proposal
     assert not approve_prefill(tenant_b, brand_a, None).done
@@ -385,29 +498,65 @@ def test_approving_writes_only_the_own_tenants_brand_kit(seeded_ab: tuple[UUID, 
     assert mine.connect[PREFILL_KEY]["state"] == "approved"
     assert mine.profile["username"] == "heladeria.polar"
     kit = BrandKitService().get_kit(tenant_id=tenant_a, brand_id=brand_a)
-    assert kit is not None and "#0f766e" in kit.palette_rgb
+    assert kit is not None and kit.palette_rgb == ("#0f766e", "#f8fafc")
 
-    # tenant B's Brand Kit is exactly as it was
-    assert store.load_details(tenant_id=tenant_b, brand_id=brand_b) == theirs_before
+    # tenant B's proposal still waits, nothing promoted there
+    theirs = store.load_details(tenant_id=tenant_b, brand_id=brand_b)
+    assert theirs.connect == {PREFILL_KEY: _document()} and theirs.profile == {}
+    assert BrandKitService().get_kit(tenant_id=tenant_b, brand_id=brand_b) is None
 
 
 @pytest.mark.db
 def test_discarding_in_postgres_keeps_the_proposal_and_promotes_nothing(
-    seeded_ab: tuple[UUID, UUID],
+    fresh_brands: Any,
 ) -> None:
     from qualify_api.creative.brand_kit_store import BrandKitStore
 
-    tenant_a, _tenant_b = seeded_ab
-    brand = _brand_of(tenant_a)
+    (tenant, brand), _other = fresh_brands
     store = BrandKitStore()
-    _fresh_proposal(store, tenant_a, brand)
-    before = store.load_details(tenant_id=tenant_a, brand_id=brand)
-    assert discard_prefill(tenant_a, brand, None).done
-    saved = store.load_details(tenant_id=tenant_a, brand_id=brand)
+    _propose(store, tenant, brand)
+    assert discard_prefill(tenant, brand, None).done
+    saved = store.load_details(tenant_id=tenant, brand_id=brand)
+    assert set(saved.connect) == {PREFILL_KEY} and saved.profile == {}
     assert saved.connect[PREFILL_KEY]["state"] == "discarded"
     assert saved.connect[PREFILL_KEY]["proposal"] is not None
-    # everything generation reads is exactly as it was
-    assert {k: v for k, v in saved.connect.items() if k != PREFILL_KEY} == {
-        k: v for k, v in before.connect.items() if k != PREFILL_KEY
-    }
-    assert saved.profile == before.profile
+    assert build_context(saved, [], []) is None
+
+
+@pytest.mark.db
+def test_a_second_tab_cannot_undo_an_approval_in_postgres(fresh_brands: Any) -> None:
+    """Tab A approves; tab B, still showing the card, taps «Cambiar» then «Empezar de
+    cero»: both answer done=False and the approved rows stay as they are."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.creative.brand_service import BrandKitService
+
+    (tenant, brand), _other = fresh_brands
+    store = BrandKitStore()
+    _propose(store, tenant, brand)
+    assert approve_prefill(tenant, brand, None).done
+    approved = store.load_details(tenant_id=tenant, brand_id=brand)
+    assert not change_prefill(tenant, brand, None).done
+    assert not discard_prefill(tenant, brand, None).done
+    assert store.load_details(tenant_id=tenant, brand_id=brand) == approved
+    kit = BrandKitService().get_kit(tenant_id=tenant, brand_id=brand)
+    assert kit is not None and kit.palette_rgb == ("#0f766e", "#f8fafc")
+
+
+@pytest.mark.db
+def test_the_owners_answers_in_postgres_supersede_the_proposal(fresh_brands: Any) -> None:
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+
+    (tenant, brand), _other = fresh_brands
+    store = BrandKitStore()
+    _propose(store, tenant, brand)
+    # the owner typed and saved while the card was open
+    store.save_details(
+        tenant_id=tenant,
+        brand_id=brand,
+        user_id=None,
+        documents={"connect": {"rubro_text": "Lo que escribí"}},
+    )
+    assert not approve_prefill(tenant, brand, None).done
+    saved = store.load_details(tenant_id=tenant, brand_id=brand)
+    assert saved.connect["rubro_text"] == "Lo que escribí" and saved.profile == {}
+    assert saved.connect[PREFILL_KEY]["state"] == "superseded"

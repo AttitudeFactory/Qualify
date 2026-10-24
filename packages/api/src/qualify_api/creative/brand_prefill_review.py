@@ -17,8 +17,12 @@ the other half — what the owner's three buttons do with it:
 
 Each one reads the details row under `FOR UPDATE` and acts only on a proposal still
 `proposed` on an unfinished kit, so a double tap or a second tab is a no-op, never a
-second promotion. Nothing is ever deleted: status, proposal, usage and provenance stay
-in the document, with who decided and when.
+second promotion. If the owner already saved answers of their own (`owner_started`,
+re-checked under the lock), nothing is promoted over them: the proposal is marked
+`superseded` and the button answers done=False. A decided proposal is never put back
+to `proposed` by a re-run (`brand_prefill._write_status`, `DECIDED_STATES`). Nothing
+is ever deleted: status, proposal, usage and provenance stay in the document, with who
+decided and when.
 
 **What "pending" means** (`review_of`), decided for PB-5:
 
@@ -40,7 +44,7 @@ so RLS scopes every read and write to the caller's tenant.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -57,6 +61,7 @@ from qualify_api.creative import logo_palette
 from qualify_api.creative.brand_kit_store import PREFILL_KEY
 from qualify_api.creative.brand_service import _apply_kit, kit_from_row
 from qualify_api.creative.models import BrandKit as BrandKitRow
+from qualify_api.creative.models import BrandKitAsset as AssetRow
 from qualify_api.creative.models import BrandKitDetails as DetailsRow
 
 #: The proposal's review states (`brand_prefill.STATE_PROPOSED` is the first one).
@@ -64,6 +69,12 @@ STATE_PROPOSED = "proposed"
 STATE_APPROVED = "approved"
 STATE_CHANGED = "changed"
 STATE_DISCARDED = "discarded"
+#: The owner had already started their own Brand Kit when the proposal was decided (or
+#: landed): it is never promoted over their answers (review of PB-5, 2026-10-24).
+STATE_SUPERSEDED = "superseded"
+#: Decided: a re-run of the prefill never puts these back to `proposed`
+#: (`brand_prefill._write_status`).
+DECIDED_STATES = frozenset({STATE_APPROVED, STATE_CHANGED, STATE_DISCARDED, STATE_SUPERSEDED})
 
 #: The run outcomes (`brand_prefill.PrefillOutcome` values) and the notice each shows.
 _STATUS_OK = "ok"
@@ -81,6 +92,22 @@ PROMOTED_CONNECT_KEYS = (
     "city",
     "hashtags",
 )
+#: The `connect` answers only the owner gives (the wizard's own; `country_code` is left
+#: out: the five steps prefill it from the signup's country, `BrandMinimalState.enter`).
+_OWNER_CONNECT_KEYS = (
+    "network",
+    "username",
+    "sector",
+    "rubro_text",
+    "city",
+    "hashtags",
+    "account_kind",
+    "has_maps",
+)
+#: Progress flags only an owner's choice sets («No tengo redes», «Usar mi foto de perfil»).
+_OWNER_PROGRESS_FLAGS = ("started_without_socials", "logo_from_profile")
+#: The logo brief's answers (the avatar's reserved key is not the owner's).
+_OWNER_BRIEF_KEYS = ("style", "feeling", "references")
 #: The five-step flow's key in `connect.progress` (`Qualify/brand_minimal_vm.MINIMAL_FLOW`):
 #: an approved proposal resumes there, on the first step that still misses data.
 RESUME_FLOW = "minimo"
@@ -116,7 +143,9 @@ class PrefillReview:
 @dataclass(frozen=True)
 class PrefillDecision:
     """What a button did. `done` False: there was no pending proposal (already decided,
-    a finished kit, no document) and nothing was written."""
+    a finished kit, no document) and nothing was written — or the owner had already
+    started, and the proposal was only marked `superseded`. Either way the screen
+    reloads from the database."""
 
     done: bool
     #: The proposal as it was decided, for the screen to show it in the wizard.
@@ -159,7 +188,40 @@ def _progress(connect: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return dict(raw) if isinstance(raw, Mapping) else None
 
 
-def _pending_proposal(connect: Mapping[str, Any] | None, *, has_kit: bool) -> dict[str, Any] | None:
+def is_decided(document: Any) -> bool:
+    """A proposal document the owner (or their own answers) already decided."""
+    return isinstance(document, Mapping) and document.get("state") in DECIDED_STATES
+
+
+def owner_started(
+    connect: Mapping[str, Any] | None,
+    profile: Mapping[str, Any] | None,
+    logo_brief: Mapping[str, Any] | None,
+    *,
+    kit_answers: Iterable[str] = (),
+    has_files: bool = False,
+) -> bool:
+    """Has the owner saved anything of their own Brand Kit? A typed answer of the
+    connect flow, a read account, a logo brief, a file of their brandboard, or a kit
+    answer (`kit_answers`: positioning, audience, palette, examples). An empty draft —
+    the wizard saves one as soon as Tus redes is shown — is not a start."""
+    connect = connect or {}
+    if has_files:
+        return True
+    if any(connect.get(key) for key in _OWNER_CONNECT_KEYS):
+        return True
+    progress = _progress(connect) or {}
+    if any(progress.get(flag) for flag in _OWNER_PROGRESS_FLAGS):
+        return True
+    if str((profile or {}).get("username") or "").strip():
+        return True
+    if any(str((logo_brief or {}).get(key) or "").strip() for key in _OWNER_BRIEF_KEYS):
+        return True
+    return any(str(answer or "").strip() for answer in kit_answers)
+
+
+def _waiting_proposal(connect: Mapping[str, Any] | None, *, has_kit: bool) -> dict[str, Any] | None:
+    """The proposal still `proposed` on an unfinished kit (started or not)."""
     document = _prefill(connect)
     if document is None or kit_finished(has_kit, _progress(connect)):
         return None
@@ -168,17 +230,23 @@ def _pending_proposal(connect: Mapping[str, Any] | None, *, has_kit: bool) -> di
     return _proposal(document)
 
 
-def review_of(connect: Mapping[str, Any] | None, *, has_kit: bool) -> PrefillReview:
-    """The notice for the stored `connect` document (see the module docstring)."""
+def review_of(
+    connect: Mapping[str, Any] | None, *, has_kit: bool, started: bool = False
+) -> PrefillReview:
+    """The notice for the stored `connect` document (see the module docstring).
+    `started` (`owner_started`): the owner already saved answers of their own — a
+    proposal is then never offered over them."""
     document = _prefill(connect)
     if document is None or kit_finished(has_kit, _progress(connect)):
         return PrefillReview()
     username = str(document.get("username") or "").lstrip("@")
-    proposal = _pending_proposal(connect, has_kit=has_kit)
+    proposal = _waiting_proposal(connect, has_kit=has_kit)
+    if proposal is not None and started:
+        return PrefillReview()
     if proposal is not None:
         username = str(proposal["connect"].get("username") or username).lstrip("@")
         return PrefillReview(Notice.PROPOSAL, username, proposal)
-    if document.get("state"):  # a proposal already approved, changed or discarded
+    if document.get("state"):  # a proposal already decided
         return PrefillReview()
     status = document.get("status")
     if status == _STATUS_PRIVATE:
@@ -254,6 +322,22 @@ def _kit_row(session: Session, brand_id: UUID) -> BrandKitRow | None:
     return session.scalar(select(BrandKitRow).where(BrandKitRow.brand_id == brand_id))
 
 
+def _has_files(session: Session, brand_id: UUID) -> bool:
+    found = session.scalar(select(AssetRow.brand_id).where(AssetRow.brand_id == brand_id).limit(1))
+    return found is not None
+
+
+def _kit_answers(kit: BrandKitRow | None) -> list[str]:
+    if kit is None:
+        return []
+    return [
+        kit.positioning or "",
+        kit.audience or "",
+        ",".join(kit.palette_rgb or ()),
+        "\n".join(str(e) for e in kit.do_examples or ()),
+    ]
+
+
 def _set_palette(
     session: Session, tenant_id: UUID, brand_id: UUID, kit: BrandKitRow | None, colours: list[str]
 ) -> None:
@@ -297,10 +381,22 @@ def _decide(
             return PrefillDecision(False)
         connect = dict(row.connect or {})
         kit = _kit_row(session, brand_id)
-        proposal = _pending_proposal(connect, has_kit=kit is not None)
+        proposal = _waiting_proposal(connect, has_kit=kit is not None)
         if proposal is None:
             return PrefillDecision(False)
         now = datetime.now(UTC)
+        started = owner_started(
+            connect,
+            row.profile,
+            row.logo_brief,
+            kit_answers=_kit_answers(kit),
+            has_files=_has_files(session, brand_id),
+        )
+        if started:
+            # re-checked under the lock: the owner's own answers win, the proposal is
+            # kept (with its provenance) as superseded, and nothing is promoted
+            state = STATE_SUPERSEDED
+            proposal = {}
         if state == STATE_APPROVED:
             row.connect = approved_connect(connect, proposal, user_id, now)
             row.profile = dict(proposal["profile"])
@@ -315,7 +411,7 @@ def _decide(
         row.updated_by = user_id
         row.updated_at = now
         session.flush()
-        return PrefillDecision(True, proposal)
+        return PrefillDecision(not started, proposal)
 
 
 def approve_prefill(
@@ -360,6 +456,8 @@ __all__ = [
     "STATE_APPROVED",
     "STATE_CHANGED",
     "STATE_DISCARDED",
+    "STATE_SUPERSEDED",
+    "DECIDED_STATES",
     "STATE_PROPOSED",
     "Notice",
     "PrefillDecision",
@@ -368,6 +466,8 @@ __all__ = [
     "approved_connect",
     "change_prefill",
     "discard_prefill",
+    "is_decided",
+    "owner_started",
     "kit_finished",
     "merged_palette",
     "palette_colours",

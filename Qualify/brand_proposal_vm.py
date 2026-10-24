@@ -43,6 +43,11 @@ TAGS_LABEL = "Etiquetas para tus publicaciones"
 DECISION_FAILED = "No pudimos guardar tu respuesta. Revisa tu conexión e inténtalo de nuevo."
 
 
+def colours_label(count: int) -> str:
+    """The colour group's accessible name: how many, never their codes."""
+    return f"{COLOURS_LABEL}: {count} {'color' if count == 1 else 'colores'}"
+
+
 def notice_text(notice: Notice | str, username: str) -> str:
     """The notice for a review (`brand_prefill_review.Notice`); "" for none."""
     notice = Notice(notice) if notice in {n.value for n in Notice} else Notice.NONE

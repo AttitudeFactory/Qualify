@@ -305,6 +305,90 @@ def test_the_entry_reads_the_review_for_an_unfinished_kit(monkeypatch: pytest.Mo
     assert entry.review.username == "heladeria.polar"
 
 
+@pytest.mark.parametrize(
+    ("button", "name"),
+    [
+        (BrandProposalState.approve, "approve_prefill"),
+        (BrandProposalState.change, "change_prefill"),
+        (BrandProposalState.discard, "discard_prefill"),
+    ],
+)
+async def test_a_proposal_decided_in_another_tab_reloads_before_any_step(
+    states: _States, monkeypatch: pytest.MonkeyPatch, button: Any, name: str
+) -> None:
+    """Review of PB-5: tab A approved; tab B still shows the card and taps a button.
+    The backend answers done=False; tab B must not mount the steps on its old (empty)
+    wizard states — the save-as-you-go would write them over the approval. Its states
+    are dropped (the save waits for the loads) and /brand's loads run again."""
+    from . import brand_finish
+
+    monkeypatch.setattr(brand_prefill_review, name, lambda *ids: PrefillDecision(False))
+    state = _pending(states)
+    creative = states(CreativeState)
+    creative._kit_draft_loaded = True
+    creative.kit_palette = ""  # tab B's view from before the approval
+    wizard = states(wiz.BrandWizardState)
+    wizard._assets_loaded = True
+    connect = states(wiz.BrandConnectState)
+    connect._details_loaded = True
+    minimal = states(BrandMinimalState)
+    minimal.entered = True
+    minimal.step = minimal_vm.STEP_VOICE
+
+    events = [e async for e in button.fn(state)]
+
+    names = " ".join(str(e) for e in events)
+    for load in ("load_brand", "load_saved_assets", "load_saved_details", "enter"):
+        assert load in names, load
+    assert state.notice == "" and not state.approved and state.busy == ""
+    # the loading card is up (no step mounted) and the save-as-you-go would refuse
+    assert minimal.entered is False
+    assert creative._kit_draft_loaded is False
+    assert wizard._assets_loaded is False
+    assert connect._details_loaded is False
+    assert connect.profile_username == "" and creative.kit_palette == ""
+
+    # and the save-as-you-go indeed writes nothing until the loads are back
+    persisted: list[Any] = []
+    monkeypatch.setattr(brand_finish, "persist_brand_kit", lambda *a, **k: persisted.append(a))
+    holder = states
+
+    async def _get_state(_self: object, cls: type) -> Any:
+        return holder(cls)
+
+    monkeypatch.setattr(CreativeState, "get_state", _get_state)
+    await brand_finish.save_progress(minimal, brand_finish.MINIMAL_FLOW)
+    assert persisted == []
+
+
+def test_the_colour_group_says_how_many_never_the_codes() -> None:
+    assert vm.colours_label(3) == "Tus colores: 3 colores"
+    assert vm.colours_label(1) == "Tus colores: 1 color"
+    rendered = str(brand_proposal._colours())
+    assert "aria-hidden" in rendered or "ariaHidden" in rendered
+
+
+def test_an_owner_who_already_started_sees_no_proposal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.creative import brand_kit_store
+
+    from . import creative_provider
+
+    class Store:
+        def load_details(self, **_kw: Any) -> Any:
+            return brand_kit_store.BrandKitDetails(
+                connect={**_connect(), "rubro_text": "Lo que escribí"}
+            )
+
+        def list_assets(self, **_kw: Any) -> list:
+            return []
+
+    monkeypatch.setattr(brand_kit_store, "BrandKitStore", Store)
+    monkeypatch.setattr(creative_provider, "default_brand_id", lambda _t: IDS[1])
+    monkeypatch.setattr(creative_provider, "load_kit_form", lambda _t, _b: None)
+    entry = brand_minimal._read_entry(IDS[0])
+    assert entry is not None and not entry.review.pending
+
+
 def test_the_page_swaps_the_steps_for_the_review_while_pending() -> None:
     page = str(brand_minimal.brand_minimal_index())
     assert "Tu identidad de marca" in page and "Empezar de cero" in page

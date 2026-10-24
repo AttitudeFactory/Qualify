@@ -69,6 +69,7 @@ from qualify_api.claude_tools import (
 )
 from qualify_api.creative import account_claims, logo_palette
 from qualify_api.creative.brand_kit_store import PREFILL_DOCUMENT, PREFILL_KEY, BrandKitStore
+from qualify_api.creative.brand_prefill_review import is_decided
 from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
@@ -1091,15 +1092,20 @@ def _write_status(
     try:
         # only the `prefill` key, atomically: the owner's own answers in `connect` are
         # whatever the database holds at the write, never a copy read earlier
-        ports.store.set_document_key(
+        written = ports.store.set_document_key(
             tenant_id=tenant_id,
             brand_id=brand_id,
             document=PREFILL_DOCUMENT,
             key=PREFILL_KEY,
             value=document,
+            # m-24852199: a proposal the owner already decided stays decided
+            keep_current=is_decided,
         )
     except (SQLAlchemyError, ValueError) as exc:
         logger.warning("brand prefill: proposal not written: %s", exc)
+        return False
+    if written is False:
+        logger.info("brand prefill: proposal already decided by the owner, kept")
         return False
     return True
 

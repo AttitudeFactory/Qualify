@@ -87,6 +87,11 @@ class BrandProposalState(rx.State):
         return vm.notice_text(self.notice, self.username)
 
     @rx.var
+    def colours_label(self) -> str:
+        """The colour group's accessible name («Tus colores: 3 colores»)."""
+        return vm.colours_label(len(self.colours))
+
+    @rx.var
     def avatar_src(self) -> str:
         """The account's picture through the backend proxy, like the read profile's."""
         return creator_discovery.avatar_path(
@@ -129,12 +134,15 @@ class BrandProposalState(rx.State):
         if decision is None:
             yield brand_documents.notify(vm.DECISION_FAILED, "error")
             return
+        if not decision.done:
+            for event in await self._reload():
+                yield event
+            return
         from .brand_minimal import BrandMinimalState
 
         async with self:
-            if decision.done:
-                await _into_wizard(self, decision.proposal)
-                self.approved = True
+            await _into_wizard(self, decision.proposal)
+            self.approved = True
             self._clear()
         yield BrandMinimalState.enter
 
@@ -147,7 +155,11 @@ class BrandProposalState(rx.State):
         if decision is None:
             yield brand_documents.notify(vm.DECISION_FAILED, "error")
             return
-        await self._open_steps(decision.proposal if decision.done else None)
+        if not decision.done:
+            for event in await self._reload():
+                yield event
+            return
+        await self._open_steps(decision.proposal)
         yield None
 
     @rx.event(background=True)
@@ -158,6 +170,10 @@ class BrandProposalState(rx.State):
         decision = await self._run(_DISCARD, brand_prefill_review.discard_prefill)
         if decision is None:
             yield brand_documents.notify(vm.DECISION_FAILED, "error")
+            return
+        if not decision.done:
+            for event in await self._reload():
+                yield event
             return
         await self._open_steps(None)
         yield None
@@ -200,6 +216,29 @@ class BrandProposalState(rx.State):
             minimal = await self.get_state(BrandMinimalState)
             minimal.step = brand_minimal_vm.FIRST_STEP
             minimal.entered = True
+
+    async def _reload(self) -> list[Any]:
+        """The proposal was decided elsewhere (another tab or device) or the owner's own
+        answers came first (`superseded`): this tab's wizard states are older than the
+        database. They are dropped — so the save-as-you-go, which waits for the loads
+        (`brand_finish.save_progress`), cannot write them over what is stored — and
+        /brand's own loads read everything again; the page shows its loading card until
+        `enter` is done, so no step is mounted on the old data."""
+        from .brand_minimal import BrandMinimalState
+
+        async with self:
+            self._clear()
+            for cls in (CreativeState, BrandWizardState, BrandConnectState):
+                (await self.get_state(cls)).reset()
+            minimal = await self.get_state(BrandMinimalState)
+            minimal.entered = False
+        return [
+            CreativeState.load_brand,
+            CreativeState.load_voice,
+            BrandWizardState.load_saved_assets,
+            BrandConnectState.load_saved_details,
+            BrandMinimalState.enter,
+        ]
 
     def _clear(self) -> None:
         self.notice = ""
@@ -275,15 +314,14 @@ def _field(label: str, value: rx.Var[str]) -> rx.Component:
 
 
 def _colour_dot(colour: rx.Var[str]) -> rx.Component:
+    """Decorative: the group says how many colours there are, not their codes."""
     return rx.box(
         width="2.25rem",
         height="2.25rem",
         border_radius="9999px",
         background=colour,
         border=T.BORDER,
-        title=colour,
-        aria_label=colour,
-        role="img",
+        aria_hidden="true",
     )
 
 
@@ -296,6 +334,8 @@ def _colours() -> rx.Component:
                 rx.foreach(BrandProposalState.colours, _colour_dot),
                 spacing="2",
                 flex_wrap="wrap",
+                role="group",
+                aria_label=BrandProposalState.colours_label,
             ),
             spacing="1",
             width="100%",
@@ -401,6 +441,8 @@ def proposal_review() -> rx.Component:
                         color_scheme="gray",
                         flex="1",
                         min_width="0",
+                        # apart from «Cambiar» on a phone, so it is not tapped by mistake
+                        margin_top=rx.breakpoints(initial="1rem", sm="0"),
                     ),
                     direction=rx.breakpoints(initial="column", sm="row"),
                     gap="0.5rem",

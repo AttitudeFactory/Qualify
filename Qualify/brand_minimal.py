@@ -27,7 +27,7 @@ from typing import Any
 from uuid import UUID
 
 import reflex as rx
-from qualify_api.creative.brand_prefill_review import PrefillReview, review_of
+from qualify_api.creative.brand_prefill_review import PrefillReview, owner_started, review_of
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import brand_documents
@@ -411,7 +411,16 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
         file_kinds=kinds,
         progress=progress,
     )
-    review = review_of(details.connect, has_kit=form is not None)
+    started = owner_started(  # m-24852199: a proposal never goes over the owner's own
+        details.connect,
+        details.profile,
+        details.logo_brief,
+        kit_answers=(
+            [form.positioning, form.audience, form.palette_rgb, form.do_examples] if form else []
+        ),
+        has_files=bool(kinds),
+    )
+    review = review_of(details.connect, has_kit=form is not None, started=started)
     return _Entry(False, vm.step_from_progress(progress), facts, progress, review)
 
 

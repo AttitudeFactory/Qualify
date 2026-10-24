@@ -24,7 +24,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from qualify_api.claude_tools import CallStats, MissingAPIKey
-from qualify_api.creative import brand_prefill
+from qualify_api.creative import brand_prefill, brand_prefill_review
 from qualify_api.creative.account_claims import AccountTaken
 from qualify_api.creative.brand_kit_store import BrandKitDetails, carry_reserved
 from qualify_api.creative.brand_prefill import (
@@ -157,17 +157,27 @@ class Store:
         self.rows[(tenant_id, brand_id)] = BrandKitDetails(**values)
 
     def set_document_key(
-        self, *, tenant_id: UUID, brand_id: UUID, document: str, key: str, value: Any
-    ) -> None:
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        document: str,
+        key: str,
+        value: Any,
+        keep_current: Any = None,
+    ) -> bool:
         """One key, over what the row holds NOW (the real one locks the row)."""
         self.tenants.append(tenant_id)
-        self.saved.append({document: {key: value}})
         if self.before_write is not None:
             self.before_write()  # e.g. the owner saving while the run was working
         row = self.rows.get((tenant_id, brand_id), BrandKitDetails())
         values = {name: dict(getattr(row, name)) for name in ("logo_brief", "connect", "profile")}
+        if keep_current is not None and keep_current(values[document].get(key)):
+            return False
+        self.saved.append({document: {key: value}})
         values[document][key] = value
         self.rows[(tenant_id, brand_id)] = BrandKitDetails(**values)
+        return True
 
 
 class Claude:
@@ -882,3 +892,61 @@ def test_an_owners_save_during_the_run_survives_in_postgres(
     )
     again = store.load_details(tenant_id=tenant_a, brand_id=brand).connect
     assert again["city"] == "Lima" and again[brand_prefill.PREFILL_KEY]["status"] == "ok"
+
+
+# --------------------------------------------------------------------------------------
+# m-24852199: a re-run never undoes the owner's decision
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("state", ["approved", "changed", "discarded", "superseded"])
+def test_a_rerun_keeps_a_proposal_the_owner_already_decided(world: World, state: str) -> None:
+    decided = {"status": "ok", "state": state, "proposal": {"connect": {}, "profile": {}}}
+    world.store.rows[(TENANT, BRAND)] = BrandKitDetails(
+        connect={brand_prefill.PREFILL_KEY: decided}
+    )
+    result = world.run()
+    assert result.ok and not result.written
+    assert world.prefill() == decided
+
+
+def test_a_rerun_replaces_a_proposal_still_waiting(world: World) -> None:
+    waiting = {"status": "ok", "state": "proposed", "proposal": {"connect": {}, "profile": {}}}
+    world.store.rows[(TENANT, BRAND)] = BrandKitDetails(
+        connect={brand_prefill.PREFILL_KEY: waiting}
+    )
+    assert world.run().written
+    assert world.prefill()["proposal"]["connect"]["username"] == "heladeria.demo"
+
+
+@pytest.mark.db
+def test_a_rerun_in_postgres_keeps_the_decision(seeded_ab: tuple[UUID, UUID]) -> None:
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.tenancy.models import Brand
+
+    tenant_a, _tenant_b = seeded_ab
+    with tenant_session(tenant_a) as session:
+        brand = session.scalar(select(Brand.id).where(Brand.tenant_id == tenant_a))
+    store = BrandKitStore()
+    decided = {"status": "ok", "state": "approved", "proposal": None}
+    store.set_document_key(
+        tenant_id=tenant_a, brand_id=brand, document="connect", key="prefill", value=decided
+    )
+    try:
+        assert not store.set_document_key(
+            tenant_id=tenant_a,
+            brand_id=brand,
+            document="connect",
+            key="prefill",
+            value={"status": "ok", "state": "proposed"},
+            keep_current=brand_prefill_review.is_decided,
+        )
+        kept = store.load_details(tenant_id=tenant_a, brand_id=brand).connect["prefill"]
+        assert kept == decided
+    finally:  # the shared tenant's next run starts from a waiting proposal
+        store.set_document_key(
+            tenant_id=tenant_a, brand_id=brand, document="connect", key="prefill", value={}
+        )

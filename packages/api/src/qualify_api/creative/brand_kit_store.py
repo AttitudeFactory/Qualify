@@ -14,7 +14,7 @@ the brandboard's files and the wizards' own answers.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -224,11 +224,14 @@ class BrandKitStore:
         document: str,
         key: str,
         value: Any,
-    ) -> None:
+        keep_current: Callable[[Any], bool] | None = None,
+    ) -> bool:
         """Write ONE key of one document (e.g. `connect.prefill`), the rest of it exactly
         as it is in the database at this moment: read under `FOR UPDATE` and written in
         the same transaction, so an owner's save in between is never overwritten with
-        what a background job read earlier (m-24852197)."""
+        what a background job read earlier (m-24852197). `keep_current(stored value)`
+        True keeps what is stored, under the same lock (m-24852199: a decided proposal
+        is never put back to `proposed`). True when the value was written."""
         if document not in DETAIL_DOCUMENTS:
             raise ValueError(f"unknown brand kit document {document!r}")
         with tenant_session(tenant_id) as session:
@@ -242,9 +245,13 @@ class BrandKitStore:
                     profile={},
                 )
                 session.add(row)
+            current = (getattr(row, document) or {}).get(key)
+            if keep_current is not None and keep_current(current):
+                return False
             setattr(row, document, {**(getattr(row, document) or {}), key: value})
             row.updated_at = datetime.now(UTC)
             session.flush()
+            return True
 
     def load_avatar(self, *, tenant_id: UUID, brand_id: UUID) -> dict[str, Any] | None:
         """The brand avatar's stored record (`creative.brand_avatar.BrandAvatar`), or None."""
