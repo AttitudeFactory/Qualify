@@ -25,6 +25,7 @@ from qualify_creative.angles import (
     TITLE_MAX,
 )
 
+from .catalog_vm import ADD_PRODUCT_LABEL, VARIATIONS_RETURN_PATH, new_product_href
 from .r2_media import BACKEND_BASE
 from .ui import (
     callout,
@@ -147,9 +148,23 @@ def _product_step() -> rx.Component:
         _step_heading("1", "Elige el producto", "Solo productos de tu catálogo."),
         rx.cond(
             VariationsState.has_products,
-            rx.grid(
-                rx.foreach(VariationsState.products, _product_tile),
-                columns=rx.breakpoints(initial="2", sm="3", lg="4"),
+            rx.vstack(
+                rx.grid(
+                    rx.foreach(VariationsState.products, _product_tile),
+                    columns=rx.breakpoints(initial="2", sm="3", lg="4"),
+                    spacing="3",
+                    width="100%",
+                ),
+                # m-24842973 (N4): the one that is missing, added and back here chosen
+                rx.link(
+                    rx.button(
+                        rx.icon("plus", size=T.ICON_SM),
+                        ADD_PRODUCT_LABEL,
+                        variant="soft",
+                        size="3",
+                    ),
+                    href=new_product_href(VARIATIONS_RETURN_PATH),
+                ),
                 spacing="3",
                 width="100%",
             ),
@@ -157,8 +172,12 @@ def _product_step() -> rx.Component:
                 "package",
                 "Aún no tienes productos",
                 "Variaciones parte de un producto real de tu catálogo: agrégalo con sus "
-                "fotos y vuelve aquí.",
-                rx.link(rx.button("Ir a Tus productos", size="2"), href="/catalog"),
+                "fotos y vuelves aquí con él ya elegido.",
+                # m-24842973 (N4): saving the product comes back to Variaciones with it
+                rx.link(
+                    rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
+                    href=new_product_href(VARIATIONS_RETURN_PATH),
+                ),
             ),
         ),
         spacing="3",

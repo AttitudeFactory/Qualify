@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 #: What the upload zone accepts: photos of any type the normalizer reads, and the two
@@ -447,3 +448,97 @@ def product_id_from_query(params: object) -> str:
         return str(UUID(text))
     except ValueError:
         return ""
+
+
+# -- «Agregar producto» from Crear / Variaciones, and back (m-24842973, PRODUCTOS-2, N4) --
+#: `/catalog?nuevo=1` opens with the «Agregar producto» form already open.
+NEW_PRODUCT_PARAM = "nuevo"
+#: `/catalog?volver=<ruta>`: where the owner came from, to go back with the product.
+RETURN_PARAM = "volver"
+#: Where the generator's «Agregar producto» comes back to.
+CREATE_RETURN_PATH = "/create"
+#: The query parameter `/create` reads to reopen on one of its modes.
+CREATE_MODE_PARAM = "modo"
+#: `?modo=` value that reopens Variaciones (a mode of the generator, not a route).
+VARIATIONS_MODE = "variaciones"
+#: Where Variaciones' «Agregar producto» comes back to.
+VARIATIONS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={VARIATIONS_MODE}"
+#: What «Agregar producto» says from Crear and Variaciones.
+ADD_PRODUCT_LABEL = "Agregar producto"
+#: The «Listo» button (and the editor's) when the owner came from a publication.
+RETURN_LABEL = "Volver a tu publicación"
+#: Said above the form while the owner is adding a product for a publication.
+RETURN_HINT = "Guárdalo con su foto y vuelve a tu publicación con él ya elegido."
+#: The form's only way out while returning (it replaces «Cancelar»): names where it
+#: leads (N7) and that nothing is added.
+RETURN_WITHOUT_LABEL = "Volver a tu publicación sin agregar"
+#: `/catalog` itself is never a way back: the round trip would never end.
+_NO_RETURN_TO = "/catalog"
+_MAX_RETURN_LENGTH = 300
+
+
+def _first_param(params: object, name: str) -> str:
+    getter = getattr(params, "get", None)
+    raw = getter(name, "") if callable(getter) else ""
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else ""
+    return str(raw or "").strip()
+
+
+def safe_return_path(raw: object) -> str:
+    """The `?volver=` route when it is one of the app's own — a path that starts with
+    ONE «/», with no scheme, no host, no backslash and no control character — else "".
+    That keeps «Volver a tu publicación» from ever leading off Qualify (an open
+    redirect): `https://…`, `//otro.sitio`, `/\\otro.sitio` and `javascript:` are all
+    refused, and so is `/catalog` itself."""
+    text = str(raw or "").strip()
+    if not text or len(text) > _MAX_RETURN_LENGTH:
+        return ""
+    if not text.startswith("/") or text.startswith("//") or "\\" in text:
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return ""
+    parts = urlsplit(text)
+    if parts.scheme or parts.netloc or parts.fragment:
+        return ""
+    path = parts.path.rstrip("/")
+    if path == _NO_RETURN_TO or path.startswith(f"{_NO_RETURN_TO}/"):
+        return ""
+    return text
+
+
+def return_path_from_query(params: object) -> str:
+    """`?volver=` read from the router's query parameters, already made safe."""
+    return safe_return_path(_first_param(params, RETURN_PARAM))
+
+
+def opens_new_product_form(params: object) -> bool:
+    """`?nuevo=1`: the catalog opens with the «Agregar producto» form open."""
+    return _first_param(params, NEW_PRODUCT_PARAM) == "1"
+
+
+def new_product_href(return_to: str) -> str:
+    """`/catalog?nuevo=1&volver=<ruta>` — «Agregar producto» from another screen (N4)."""
+    query = {NEW_PRODUCT_PARAM: "1"}
+    safe = safe_return_path(return_to)
+    if safe:
+        query[RETURN_PARAM] = safe
+    return f"/catalog?{urlencode(query)}"
+
+
+def return_with_product_href(return_to: str, product_id: str) -> str:
+    """The way back with the new product chosen: `<ruta>` plus `producto=<id>`, any
+    query the route already had (`modo=variaciones`) kept. "" when the route is not
+    one of the app's own."""
+    safe = safe_return_path(return_to)
+    if not safe or not product_id:
+        return safe
+    parts = urlsplit(safe)
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k != CREATE_PRODUCT_PARAM]
+    query.append((CREATE_PRODUCT_PARAM, product_id))
+    return urlunsplit(("", "", parts.path, urlencode(query), ""))
+
+
+def create_mode_from_query(params: object) -> str:
+    """`?modo=` on `/create`: VARIATIONS_MODE or "" (anything else is ignored)."""
+    return VARIATIONS_MODE if _first_param(params, CREATE_MODE_PARAM) == VARIATIONS_MODE else ""
