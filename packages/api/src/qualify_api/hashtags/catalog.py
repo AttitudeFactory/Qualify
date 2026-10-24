@@ -1,5 +1,8 @@
-"""The bridge between the referentes search (`creator_discovery`) and the shared hashtag
-catalog (`qualify_api.hashtags`, migration 0023).
+"""The bridge between the referentes search (`Qualify/creator_discovery.py`) and the shared
+hashtag catalog (`qualify_api.hashtags`, migration 0023). Moved here from
+`Qualify/hashtag_catalog.py` unchanged (m-24852197) so the Brand Kit prefill
+(`qualify_api.creative.brand_prefill`) runs the same catalog step from a worker as the
+wizard does; what it reads of the search is the backend's `referentes.discovery_seed`.
 
 Two Claude-backed jobs sit on top of the three below (`qualify_api.hashtags.ai`):
 
@@ -45,8 +48,9 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from typing import Protocol
 from uuid import UUID
 
 from qualify_api.hashtags import (
@@ -58,9 +62,8 @@ from qualify_api.hashtags import (
     StoredHashtag,
 )
 from qualify_api.hashtags import ai as hashtag_ai
-
-from . import creator_discovery
-from .creator_discovery import Candidate, DiscoverySeed
+from qualify_api.referentes import discovery_seed
+from qualify_api.referentes.discovery_seed import DiscoverySeed
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,21 @@ REPOSITORY: HashtagRepository = PostgresHashtagRepository()
 MIN_ACCOUNTS_FOR_LINK = 2
 
 #: The one phase whose accounts are filtered for being about the rubro
-#: (`creator_discovery._about_the_sector`). The national and local phases are scoped by
+#: (`Qualify/creator_discovery._about_the_sector`). The national and local phases are scoped by
 #: place, so an account there proves nothing about the rubro's hashtags.
 LINKING_PHASE = "sector"
+
+
+class SeenAccount(Protocol):
+    """What `capture` reads of an account a phase found (`Qualify/creator_discovery.
+    Candidate`)."""
+
+    network: str
+    username: str
+    hashtags_seen: list[str]
+
+    @property
+    def key(self) -> tuple[str, str]: ...
 
 
 @dataclass(frozen=True)
@@ -86,16 +101,16 @@ class CaptureSummary:
 
 def classify_tag(tag: str, seed: DiscoverySeed) -> tuple[str, str | None, str | None]:
     """`(kind, niche, country_code)` a rule can decide from the tag alone — the same
-    heuristics the search already trusts (`creator_discovery._GENERIC_HASHTAGS`, the place
+    heuristics the search already trusts (`discovery_seed._GENERIC_HASHTAGS`, the place
     tables, the taxonomy's keywords). What no rule can decide stays `unknown`, for a later
     (AI or manual) pass to settle."""
-    slug = creator_discovery._slug(tag)
-    if slug in creator_discovery._GENERIC_HASHTAGS or tag in creator_discovery._GENERIC_HASHTAGS:
+    slug = discovery_seed._slug(tag)
+    if slug in discovery_seed._GENERIC_HASHTAGS or tag in discovery_seed._GENERIC_HASHTAGS:
         return "generic", None, None
-    if creator_discovery._is_place_tag(tag, seed) or creator_discovery._is_place_tag_anywhere(tag):
+    if discovery_seed._is_place_tag(tag, seed) or discovery_seed._is_place_tag_anywhere(tag):
         country = seed.country_code.upper() if seed.country_code else None
         return "place", None, country
-    niches = creator_discovery.detect_niches(f"#{tag}")
+    niches = discovery_seed.detect_niches(f"#{tag}")
     if niches:
         return "topic", niches[0], None
     return "unknown", None, None
@@ -110,8 +125,8 @@ def seed_taxonomy(
     repo = repository or REPOSITORY
     tags: list[NewHashtag] = []
     links: list[NewTermLink] = []
-    for niche, spec in creator_discovery.NICHE_TAXONOMY.items():
-        terms = [*spec["queries"], creator_discovery.NICHE_LABELS.get(niche, "")]
+    for niche, spec in discovery_seed.NICHE_TAXONOMY.items():
+        terms = [*spec["queries"], discovery_seed.NICHE_LABELS.get(niche, "")]
         for tag in spec["hashtags"]:
             tags.append(NewHashtag(tag=tag, source="taxonomy", kind="topic", niche=niche))
             for term in terms:
@@ -141,7 +156,7 @@ def ensure_seeded(tenant_id: UUID, *, repository: HashtagRepository | None = Non
 
 
 #: How many catalog hashtags one seed carries. The sector phase uses two
-#: (`creator_discovery.SECTOR_CATALOG_TAGS`) and the chips show three; the rest is the
+#: (`discovery_seed.SECTOR_CATALOG_TAGS`) and the chips show three; the rest is the
 #: reserve for tags the place/own-tag filters drop.
 CATALOG_HASHTAGS = 4
 
@@ -167,12 +182,12 @@ def catalog_hashtags_for(
     (`capture`), so the next operator who types it is recognised."""
     repo = repository or REPOSITORY
     ensure_seeded(tenant_id, repository=repo)
-    own = {creator_discovery._slug(t) for t in seed.hashtags}
-    handle = creator_discovery._slug(seed.handle)
+    own = {discovery_seed._slug(t) for t in seed.hashtags}
+    handle = discovery_seed._slug(seed.handle)
     found: list[str] = []
 
     def take(tag: str) -> None:
-        slug = creator_discovery._slug(tag)
+        slug = discovery_seed._slug(tag)
         if slug in own or (handle and handle in slug) or tag in found:
             return
         found.append(tag)
@@ -221,6 +236,12 @@ class HashtagChoice:
     by: str
     #: For AI-chosen tags: tag → `{"model", "fit", "reason"}` — stored with the phase.
     picks: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    #: The Claude run behind THIS answer (m-24852197: the prefill reports its tokens);
+    #: None for the rule path and for a choice served from `_choices`, which cost nothing.
+    stats: hashtag_ai.CallStats | None = field(default=None, compare=False)
+    #: A Claude run was made for this answer, even if it failed (then `stats` is None
+    #: and its tokens are unknown here — Langfuse still has them).
+    attempted: bool = field(default=False, compare=False)
 
 
 _choices: dict[tuple[str, ...], tuple[float, HashtagChoice]] = {}
@@ -232,17 +253,17 @@ def _steers(stored: StoredHashtag, seed: DiscoverySeed) -> bool:
     compose places themselves), not generic, not the brand's own name or tags."""
     if stored.kind not in _STEERING_KINDS:
         return False
-    slug = creator_discovery._slug(stored.tag)
-    if slug in creator_discovery._GENERIC_HASHTAGS:
+    slug = discovery_seed._slug(stored.tag)
+    if slug in discovery_seed._GENERIC_HASHTAGS:
         return False
-    if slug in {creator_discovery._slug(t) for t in seed.hashtags}:
+    if slug in {discovery_seed._slug(t) for t in seed.hashtags}:
         return False
-    handle = creator_discovery._slug(seed.handle)
+    handle = discovery_seed._slug(seed.handle)
     if handle and handle in slug:
         return False
     return not (
-        creator_discovery._is_place_tag(stored.tag, seed)
-        or creator_discovery._is_place_tag_anywhere(stored.tag)
+        discovery_seed._is_place_tag(stored.tag, seed)
+        or discovery_seed._is_place_tag_anywhere(stored.tag)
     )
 
 
@@ -318,9 +339,9 @@ def _brand_profile(seed: DiscoverySeed, bio: str, category: str) -> hashtag_ai.B
         bio=bio,
         category=category,
         rubro=seed.terms,
-        niches=tuple(creator_discovery.NICHE_LABELS.get(n, n) for n in seed.niches),
+        niches=tuple(discovery_seed.NICHE_LABELS.get(n, n) for n in seed.niches),
         city=seed.city,
-        country=creator_discovery.country_name(seed.country_code),
+        country=discovery_seed.country_name(seed.country_code),
         own_hashtags=seed.hashtags,
     )
 
@@ -336,7 +357,7 @@ def ai_hashtags_for(
     selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
     | None = None,
     now: float | None = None,
-    max_picks: int = creator_discovery.SECTOR_CATALOG_TAGS,
+    max_picks: int = discovery_seed.SECTOR_CATALOG_TAGS,
 ) -> HashtagChoice:
     """The catalog hashtags that fit this brand, chosen by Claude with its catalog tools
     (`hashtag_ai.select_hashtags` over `CatalogTools`, at most `max_picks`: the search's
@@ -355,7 +376,8 @@ def ai_hashtags_for(
     with _choices_lock:
         hit = _choices.get(cache_key)
         if hit is not None and moment - hit[0] < _CHOICE_TTL_SECONDS:
-            return hit[1]
+            # served from memory: no run made now, no tokens spent
+            return replace(hit[1], stats=None, attempted=False)
 
     def fallback() -> HashtagChoice:
         return HashtagChoice(catalog_hashtags_for(tenant_id, seed, repository=repo), "rule")
@@ -370,14 +392,14 @@ def ai_hashtags_for(
         picks, stats = select(
             _brand_profile(seed, bio, category),
             CatalogTools(tenant_id, seed, repo),
-            creator_discovery.NICHE_LABELS,
+            discovery_seed.NICHE_LABELS,
             api_key=key,
             starting=starting,
             max_picks=max_picks,
         )
     except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
         logger.warning("hashtags: AI selection failed, using the rule path: %s", exc)
-        return fallback()
+        return replace(fallback(), attempted=True)
     logger.info(
         "hashtags: %s chose %s for @%s in %d turns / %d tool calls ($%.4f)",
         stats.model_revision or stats.model_id,
@@ -392,6 +414,8 @@ def ai_hashtags_for(
         tags=tuple(p.tag for p in picks),
         by="ai",
         picks={p.tag: {"model": model, "fit": p.fit, "reason": p.reason} for p in picks},
+        stats=stats,
+        attempted=True,
     )
     with _choices_lock:
         _choices[cache_key] = (moment, choice)
@@ -478,7 +502,7 @@ def suggest_hashtags(
         repository=repository,
         api_key=api_key,
         selector=selector,
-        max_picks=creator_discovery.CHOSEN_HASHTAGS,
+        max_picks=discovery_seed.CHOSEN_HASHTAGS,
     )
 
 
@@ -537,7 +561,7 @@ def _classify_batch(
     classify = classifier or hashtag_ai.classify_hashtags
     try:
         results, stats = classify(
-            [p.tag for p in pending], creator_discovery.NICHE_LABELS, api_key=key
+            [p.tag for p in pending], discovery_seed.NICHE_LABELS, api_key=key
         )
     except Exception as exc:  # noqa: BLE001 — the catalog only ever gains; never raise
         logger.warning("hashtags: AI classification failed: %s", exc)
@@ -558,12 +582,12 @@ def _rubro_terms(seed: DiscoverySeed) -> list[str]:
     """How the operator (and the taxonomy) name the rubro this run searched for."""
     terms = list(seed.terms)
     for niche in seed.niches[:2]:
-        terms.append(creator_discovery.NICHE_TAXONOMY[niche]["queries"][0])
+        terms.append(discovery_seed.NICHE_TAXONOMY[niche]["queries"][0])
     seen: set[str] = set()
     return [
         t
         for t in terms
-        if not (creator_discovery._slug(t) in seen or seen.add(creator_discovery._slug(t)))
+        if not (discovery_seed._slug(t) in seen or seen.add(discovery_seed._slug(t)))
     ]
 
 
@@ -571,7 +595,7 @@ def capture(
     tenant_id: UUID,
     seed: DiscoverySeed,
     phase_key: str,
-    accounts: list[Candidate],
+    accounts: Sequence[SeenAccount],
     *,
     repository: HashtagRepository | None = None,
 ) -> CaptureSummary:

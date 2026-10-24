@@ -56,6 +56,7 @@ import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 from qualify_api.claude_tools import api_key_from_env
 from qualify_api.creative import brand_prefill, logo_palette
+from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_api.referentes import discovery_seed, scrapecreators_client
 from qualify_creative.brand import fonts as brand_fonts
@@ -71,7 +72,6 @@ from . import (
     creator_discovery,
     creator_pool_provider,
     growth_provider,
-    hashtag_catalog,
     referentes_provider,
     referentes_review,
 )
@@ -3510,35 +3510,15 @@ def merge_suggestions(
     return out, note
 
 
-class _WizardHashtagCatalog:
-    """The shared hashtag catalog (`hashtag_catalog`, which stands on the referentes
-    search and so lives in this app) as `brand_prefill.HashtagCatalog` — the one seam the
-    backend's step functions cannot provide on their own."""
-
-    def suggest(
-        self, tenant_id: UUID, seed: creator_discovery.DiscoverySeed, *, bio: str, category: str
-    ) -> brand_prefill.HashtagChoice:
-        found = hashtag_catalog.suggest_hashtags(tenant_id, seed, bio=bio, category=category)
-        return brand_prefill.HashtagChoice(found.tags, found.by, found.picks)
-
-    def remember_created(
-        self,
-        tenant_id: UUID,
-        seed: creator_discovery.DiscoverySeed,
-        tags: tuple[str, ...],
-        *,
-        network: str | None,
-    ) -> None:
-        hashtag_catalog.remember_created(tenant_id, seed, tags, network=network)
-
-
-_HASHTAG_CATALOG = _WizardHashtagCatalog()
+#: The shared hashtag catalog (`qualify_api.hashtags.catalog`), as the prefill's step
+#: functions take it — the same object path the Alta's worker runs.
+_HASHTAG_CATALOG = brand_prefill.CatalogHashtags()
 
 
 def _prefill_ports() -> brand_prefill.PrefillPorts:
-    """What `brand_prefill.prefill_brand_kit` talks to from this app: the backend's own
-    claim, cache and Scrape Creators read, plus this app's hashtag catalog. A function so
-    tests can swap the whole set."""
+    """What `brand_prefill.prefill_brand_kit` talks to: the backend's own claim, cache,
+    Scrape Creators read and hashtag catalog — the Alta's defaults. A function so tests
+    can swap the whole set."""
     return brand_prefill.PrefillPorts(catalog=_HASHTAG_CATALOG)
 
 

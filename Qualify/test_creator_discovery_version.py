@@ -119,7 +119,11 @@ FINGERPRINTS: dict[int, str] = {
     # reads moved verbatim to `qualify_api.referentes.discovery_seed`, and the fingerprint
     # now covers both modules. Same code, same accounts. Was
     # "1fc685cc844f93fa7b18792c0d704e725e1dc6b5b48d24af93e78bb5d199fad8".
-    12: "48c38afca303731b21563875114286b3ae48512849d4f1b1c51d3705813c0d44",
+    # Re-pinned again, not bumped (m-24852197): `_is_place_tag`, `SECTOR_CATALOG_TAGS` and
+    # `CHOSEN_HASHTAGS` moved verbatim to `discovery_seed` with the hashtag catalog (now
+    # `qualify_api.hashtags.catalog`); the same nodes, only in another order. Was
+    # "48c38afca303731b21563875114286b3ae48512849d4f1b1c51d3705813c0d44".
+    12: "c217b646cd5fdf98b09ab1f2e7e3fa2013838f20f74c633751551b5ec358e885",
 }
 
 

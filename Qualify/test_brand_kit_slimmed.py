@@ -402,8 +402,7 @@ def test_the_catalog_answers_first_and_a_creation_is_stored(monkeypatch) -> None
     from uuid import UUID
 
     from qualify_api.hashtags import MemoryHashtagRepository
-
-    from . import hashtag_catalog
+    from qualify_api.hashtags import catalog as hashtag_catalog
 
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(hashtag_catalog, "REPOSITORY", MemoryHashtagRepository())
@@ -429,8 +428,7 @@ def test_the_three_cases_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     from uuid import UUID
 
     from qualify_api.hashtags import MemoryHashtagRepository
-
-    from . import hashtag_catalog
+    from qualify_api.hashtags import catalog as hashtag_catalog
 
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(hashtag_catalog, "REPOSITORY", MemoryHashtagRepository())

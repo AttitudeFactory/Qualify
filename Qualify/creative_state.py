@@ -1268,7 +1268,7 @@ class CreativeState(rx.State):
             seen: list[SeenTag] = []
             if ids is not None:
                 try:
-                    from . import hashtag_catalog
+                    from qualify_api.hashtags import catalog as hashtag_catalog
 
                     for term in caption_keywords(caption, limit=8):
                         for hit in hashtag_catalog.REPOSITORY.resolve(
@@ -1338,7 +1338,7 @@ class CreativeState(rx.State):
         tenant_id = ids[0]
 
         def lookup() -> list[str]:
-            from . import hashtag_catalog  # the catalog pulls in discovery; load it late
+            from qualify_api.hashtags import catalog as hashtag_catalog
 
             found: list[str] = []
             for term in terms:

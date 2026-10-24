@@ -67,6 +67,7 @@ from qualify_api.claude_tools import (
 from qualify_api.creative import account_claims, logo_palette
 from qualify_api.creative.brand_kit_store import PREFILL_KEY, BrandKitStore
 from qualify_api.hashtags import ai as hashtag_ai
+from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
 from qualify_api.referentes import discovery_seed, scrapecreators_client
 from qualify_api.referentes.discovery_seed import DiscoverySeed
@@ -81,9 +82,8 @@ logger = logging.getLogger(__name__)
 PREFILL_VERSION = 1
 #: The proposal's review state. PB-5 writes the others ("approved", "discarded").
 STATE_PROPOSED = "proposed"
-#: `Qualify/creator_discovery.CHOSEN_HASHTAGS`: the pills Tu rubro holds (a Qualify test
-#: pins that both stay equal).
-CHOSEN_HASHTAGS = 5
+#: The pills Tu rubro holds — the referentes search's own cap.
+CHOSEN_HASHTAGS = discovery_seed.CHOSEN_HASHTAGS
 #: Where the palette came from — `Qualify/creative_wizard_pages.LOGO_SOURCE_PROFILE`.
 LOGO_SOURCE_PROFILE = "profile"
 #: Same name the wizard's cache provider uses for the brand's own account snapshot.
@@ -152,8 +152,8 @@ class PrefillUsage:
     """What a run spent — what PB-6 measures. A live Scrape Creators request costs one
     credit on these endpoints (`scrapecreators instagram profile --help`, 2026-10-24);
     a cache hit makes none. Claude tokens are summed from every run whose stats are
-    known; `claude_tokens_complete` is False when a run did not surface them (the
-    wizard's catalog choice, `HashtagCatalog`)."""
+    known; `claude_tokens_complete` is False only when a run was made but failed before
+    returning its stats (the SDK raised mid-run; Langfuse still has those tokens)."""
 
     scrapecreators_requests: int = 0
     scrapecreators_credits: int = 0
@@ -279,24 +279,16 @@ class CallBudget:
 
 
 # --------------------------------------------------------------------------------------
-# The seams (fakes in tests; the wizard passes its catalog)
+# The seams (fakes in tests)
 # --------------------------------------------------------------------------------------
 
-
-@dataclass(frozen=True)
-class HashtagChoice:
-    """The shape of `Qualify/hashtag_catalog.HashtagChoice` (duck-typed both ways)."""
-
-    tags: tuple[str, ...]
-    #: `ai` (Claude chose or created), `rule` (catalog rule path or the account's own).
-    by: str
-    picks: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+#: `ai` (Claude chose or created) / `rule`, the tags, their reasons, and the Claude run.
+HashtagChoice = hashtag_catalog.HashtagChoice
 
 
 class HashtagCatalog(Protocol):
-    """The shared hashtag catalog's read side and its writer of created tags — today in
-    `Qualify/hashtag_catalog.py` (it stands on the referentes search), so the wizard
-    passes it in. Without one, `hashtags_db_first` starts at the account's own tags."""
+    """The shared hashtag catalog's read side and its writer of created tags. Without
+    one, `hashtags_db_first` starts at the account's own tags."""
 
     def suggest(
         self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
@@ -305,6 +297,37 @@ class HashtagCatalog(Protocol):
     def remember_created(
         self, tenant_id: UUID, seed: DiscoverySeed, tags: tuple[str, ...], *, network: str | None
     ) -> None: ...
+
+
+@dataclass
+class CatalogHashtags:
+    """`qualify_api.hashtags.catalog` — the one the wizard and the Alta both use.
+    `repository` / `selector` / `api_key` are for tests (None = the catalog's own:
+    Postgres, `hashtag_ai.select_hashtags`, the env key)."""
+
+    repository: Any = None
+    selector: Callable[..., Any] | None = None
+    api_key: str | None = None
+
+    def suggest(
+        self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
+    ) -> HashtagChoice:
+        return hashtag_catalog.suggest_hashtags(
+            tenant_id,
+            seed,
+            bio=bio,
+            category=category,
+            repository=self.repository,
+            api_key=self.api_key,
+            selector=self.selector,
+        )
+
+    def remember_created(
+        self, tenant_id: UUID, seed: DiscoverySeed, tags: tuple[str, ...], *, network: str | None
+    ) -> None:
+        hashtag_catalog.remember_created(
+            tenant_id, seed, tags, network=network, repository=self.repository
+        )
 
 
 class AccountClaims(Protocol):
@@ -418,7 +441,8 @@ class PrefillPorts:
     store: BrandKitStore = field(default_factory=BrandKitStore)
     read_profile: ProfileReader = _read_profile
     fetch_picture: PictureFetcher = fetch_picture
-    catalog: HashtagCatalog | None = None
+    #: The shared hashtag catalog — the same for the wizard and the Alta.
+    catalog: HashtagCatalog | None = field(default_factory=CatalogHashtags)
     #: `from_profile.generate`'s signature; tests pass a fake Claude.
     generate: AccountReader = from_profile.generate
     api_key: Callable[[], str] = api_key_from_env
@@ -515,9 +539,13 @@ def generate_from_account(
         proposal = generate(account, api_key=key, max_tags=CHOSEN_HASHTAGS)
     except (ClaudeToolError, ValueError) as exc:
         logger.warning("hashtags: creation failed: %s", exc)
+        if budget is not None:
+            budget.claude_tokens_complete = False  # a run was made; its tokens are lost
         return None
     except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
         logger.warning("hashtags: creation failed: %s", exc)
+        if budget is not None:
+            budget.claude_tokens_complete = False
         return None
     if proposal.stats is not None:
         if budget is not None:
@@ -563,6 +591,24 @@ def _as_choice(proposal: from_profile.Proposal, by: str) -> HashtagChoice:
     )
 
 
+def _account_catalog_run(
+    found: HashtagChoice, budget: CallBudget | None, trail: _Trail | None
+) -> None:
+    """The catalog's answer into the run's books: its Claude run (stats and tokens) when
+    it made one; no call at all for the rule path or a choice served from memory."""
+    stats = getattr(found, "stats", None)
+    attempted = bool(getattr(found, "attempted", False)) or stats is not None
+    if budget is not None:
+        if stats is not None:
+            budget.claude_stats.append(stats)
+        elif attempted:
+            budget.claude_tokens_complete = False  # the run failed mid-way
+        else:
+            budget.claude_calls -= 1  # no run was made: give the call back
+    if trail is not None and attempted:
+        trail.add("hashtags_catalog", catalog_prompt_version(), stats)
+
+
 def hashtags_db_first(
     tenant_id: UUID | None,
     seed: DiscoverySeed,
@@ -591,19 +637,15 @@ def hashtags_db_first(
     # 1. the database
     if catalog is not None and tenant_id is not None and (seed.terms or seed.niches):
         if budget is not None:
-            budget.spend_claude()
-            budget.claude_tokens_complete = False  # the catalog run does not surface them
+            budget.spend_claude()  # before: the run may happen, and the cap is a ceiling
         try:
             found = catalog.suggest(tenant_id, seed, bio=account.bio, category=account.category)
         except (SQLAlchemyError, OSError, ValueError) as exc:
             logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)
+            if budget is not None:
+                budget.claude_calls -= 1  # the catalog failed before any Claude run
         else:
-            if trail is not None:
-                model = next(
-                    (str(p.get("model", "")) for p in found.picks.values() if p.get("model")),
-                    "",
-                )
-                trail.add("hashtags_catalog", catalog_prompt_version(), model=model)
+            _account_catalog_run(found, budget, trail)
             if found.tags:
                 return found, ""
     # 2. the latest posts
@@ -766,7 +808,7 @@ def prefill_brand_kit(
        posts), remembered for the next run.
     3. What it says: rubro category, country and city (`seed_from_profile`), metrics.
     4. With `propose`: Tu rubro named by Claude, its hashtags (`hashtags_db_first`,
-       the catalog when `ports.catalog` is given — the catalog is never written here),
+       the shared catalog first, as the wizard — but never written to from here),
        the profile picture's colours as the palette; then the proposal, written.
 
     `propose=False` is the wizard's read: steps 1-3, no Claude, nothing written beyond
@@ -1028,6 +1070,7 @@ __all__ = [
     "STATE_PROPOSED",
     "CallBudget",
     "CallCaps",
+    "CatalogHashtags",
     "ClaudeCapReached",
     "HashtagCatalog",
     "HashtagChoice",

@@ -10,9 +10,10 @@ from uuid import UUID
 import pytest
 from qualify_api.creative import brand_prefill
 from qualify_api.hashtags import MemoryHashtagRepository
+from qualify_api.hashtags import catalog as hashtag_catalog
 
 from . import creative_wizard_pages as wiz
-from . import creator_discovery, hashtag_catalog
+from . import creator_discovery
 from .auth_state import AuthState
 from .creative_wizard_pages import BrandConnectState
 

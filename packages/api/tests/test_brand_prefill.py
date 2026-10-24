@@ -33,7 +33,9 @@ from qualify_api.creative.brand_prefill import (
     PrefillPorts,
     prefill_brand_kit,
 )
-from qualify_api.hashtags import from_profile
+from qualify_api.hashtags import MemoryHashtagRepository, from_profile
+from qualify_api.hashtags import ai as hashtag_ai
+from qualify_api.hashtags import catalog as hashtag_catalog
 
 FIXTURES = Path(__file__).parent / "fixtures" / "scrapecreators"
 TENANT = UUID("c0000000-0000-4000-8000-0000000000b3")
@@ -45,6 +47,10 @@ STATS = CallStats("claude-sonnet-5", "claude-sonnet-5-20261001", 1200, 300, 0, 1
 @pytest.fixture(autouse=True)
 def _keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCRAPECREATORS_API_KEY", "sk_test_prefill")
+    # the catalog's own Claude key and its process memory: never the developer's
+    monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(hashtag_catalog, "_seeded", False)
+    monkeypatch.setattr(hashtag_catalog, "_choices", {})
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -175,6 +181,8 @@ class World:
         self.store = Store()
         self.claude = Claude()
         self.api_key: Callable[[], str] = lambda: "sk-ant-test"
+        #: None skips the catalog step; tests of that step set a `CatalogHashtags`.
+        self.catalog: Any = None
 
     def ports(self, **overrides: Any) -> PrefillPorts:
         values: dict[str, Any] = {
@@ -184,6 +192,7 @@ class World:
             "generate": self.claude,
             "api_key": lambda: self.api_key(),
             "transport": httpx.MockTransport(self.vendor.handler),
+            "catalog": self.catalog,
         }
         return PrefillPorts(**(values | overrides))
 
@@ -323,6 +332,108 @@ def test_a_wizard_save_keeps_the_proposal(world: World) -> None:
     )
     connect = world.store.rows[(TENANT, BRAND)].connect
     assert connect["city"] == "Cali" and connect[brand_prefill.PREFILL_KEY]["status"] == "ok"
+
+
+# --------------------------------------------------------------------------------------
+# the shared hashtag catalog (case 1) — the wizard's path, with its tokens
+# --------------------------------------------------------------------------------------
+
+CATALOG_STATS = CallStats("claude-sonnet-5", "claude-sonnet-5-20261001", 4000, 500, 100, 3, 2)
+
+
+class Selector:
+    """`hashtag_ai.select_hashtags`' signature: Claude choosing from the catalog."""
+
+    def __init__(self, fails: bool = False) -> None:
+        self.calls = 0
+        self.fails = fails
+
+    def __call__(self, profile: Any, tools: Any, niches: Any, **kw: Any) -> Any:
+        self.calls += 1
+        if self.fails:
+            raise RuntimeError("overloaded")
+        picks = [hashtag_ai.HashtagPick("helados", "alta", "Es lo que vende.")]
+        return picks, CATALOG_STATS
+
+
+def _catalog(selector: Selector | None = None) -> brand_prefill.CatalogHashtags:
+    return brand_prefill.CatalogHashtags(
+        repository=MemoryHashtagRepository(),
+        selector=selector,
+        api_key="sk-ant-test" if selector else None,
+    )
+
+
+def test_the_default_ports_use_the_shared_catalog() -> None:
+    ports = PrefillPorts()
+    assert isinstance(ports.catalog, brand_prefill.CatalogHashtags)
+    assert brand_prefill.HashtagChoice is hashtag_catalog.HashtagChoice
+
+
+def test_the_catalogs_claude_choice_comes_first_and_its_tokens_are_counted(
+    world: World,
+) -> None:
+    selector = Selector()
+    world.catalog = _catalog(selector)
+    result = world.run()
+
+    hashtags = world.prefill()["proposal"]["connect"]["hashtags"]
+    assert [(p["tag"], p["origin"]) for p in hashtags] == [("helados", "ai")]
+    assert hashtags[0]["model"] == "claude-sonnet-5-20261001"
+    assert selector.calls == 1
+    usage = result.usage
+    assert usage.claude_calls == 2  # the rubro, then the catalog choice
+    assert usage.claude_input_tokens == 1200 + 4000
+    assert usage.claude_output_tokens == 300 + 500
+    assert usage.claude_cache_read_tokens == 100
+    assert usage.claude_cost_usd == pytest.approx(STATS.cost_usd + CATALOG_STATS.cost_usd)
+    assert usage.claude_tokens_complete is True
+    runs = world.prefill()["provenance"]["claude"]
+    assert [r["step"] for r in runs] == ["rubro", "hashtags_catalog"]
+    assert runs[1]["prompt_version"] == brand_prefill.catalog_prompt_version()
+    assert (runs[1]["input_tokens"], runs[1]["turns"]) == (4000, 3)
+
+
+def test_the_catalogs_rule_path_makes_no_claude_call(world: World) -> None:
+    world.catalog = _catalog()  # no key: the rule path over the seeded taxonomy
+    result = world.run()
+    hashtags = world.prefill()["proposal"]["connect"]["hashtags"]
+    assert hashtags and {p["origin"] for p in hashtags} == {"catalog"}
+    assert result.usage.claude_calls == 1  # only the rubro
+    assert result.usage.claude_tokens_complete is True
+    assert [r["step"] for r in world.prefill()["provenance"]["claude"]] == ["rubro"]
+
+
+def test_a_choice_served_from_memory_costs_no_call(world: World) -> None:
+    selector = Selector()
+    world.catalog = _catalog(selector)
+    world.run()
+    world.cache.entries.clear()
+    result = world.run()
+    assert selector.calls == 1
+    assert result.usage.claude_calls == 1 and result.usage.claude_tokens_complete is True
+
+
+def test_a_catalog_run_that_fails_is_counted_with_its_tokens_unknown(world: World) -> None:
+    world.catalog = _catalog(Selector(fails=True))
+    result = world.run()
+    assert result.ok  # the rule path answered instead
+    assert result.usage.claude_calls == 2
+    assert result.usage.claude_tokens_complete is False
+
+
+def test_the_catalog_is_never_taught_by_a_proposal(world: World) -> None:
+    for item in world.vendor.posts["items"]:
+        item["caption"] = {"text": "Sin etiquetas"}
+    world.claude.tags = ("heladeriadeyogur",)
+    catalog = _catalog()
+    catalog.repository = MemoryHashtagRepository()
+    world.catalog = catalog
+    world.vendor.profile["data"]["user"]["category_name"] = None
+    world.vendor.profile["data"]["user"]["biography"] = "Xilófonos hechos a mano"
+    world.claude.rubro = "xilófonos artesanales"
+    world.run()
+    assert catalog.repository.get(TENANT, "heladeriadeyogur") is None
 
 
 # --------------------------------------------------------------------------------------
