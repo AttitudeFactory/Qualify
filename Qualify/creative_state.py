@@ -6242,7 +6242,10 @@ class CreativeState(rx.State):
                     else not_enough_creations_text(exc.missing)
                     if exc.missing
                     else videos_short_text(
-                        exc.videos, exc.videos_left, load_weights().monthly_video_quota
+                        exc.videos,
+                        exc.videos_left,
+                        load_weights().monthly_video_quota,
+                        renews=self.creations_renews,
                     )
                 )
             return

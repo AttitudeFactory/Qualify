@@ -297,12 +297,12 @@ su lugar en vez de crear una v3). Es la opción D de §5.6.
 | Dónde | Texto |
 |---|---|
 | Panel lateral de Crear | «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.» |
-| Resumen, antes de un video | «Este video usa 1 de tus 4 videos del mes. Te quedarían {v}.» |
-| Resumen, carrusel con diapositivas animadas | «Esta publicación usa 1 de tus creaciones y 2 de tus 4 videos del mes. Te quedarían 17 de 30 creaciones y 1 video.» |
+| Resumen, antes de un video | «Este video usa 1 de tus 4 videos del mes. Te quedarían {v}.» (con {v} = 1, «Te quedaría 1.») |
+| Resumen, carrusel con diapositivas animadas | «Esta publicación usa 1 creación y 2 videos. Te quedarían 17 de 30 creaciones y 1 de 4 videos.» |
 | Sin videos este mes (Crear queda desactivado) | «Ya usaste tus 4 videos de este mes. Vuelven el {fecha}.» |
-| Carrusel con más diapositivas animadas que videos | «Esta publicación usa 3 videos y te quedan 2 este mes. Usa menos videos animados o espera al {fecha}, cuando vuelven tus 4.» |
+| Carrusel con más diapositivas animadas que videos | «Esta publicación usa 3 videos y este mes te quedan 2. Quita 1 video animado o espera al {fecha}, cuando vuelven tus 4.» |
 | «Pedir otra versión» de un video | «La nueva versión usa 1 de tus 4 videos del mes. Te quedarían {v}.» |
-| Un video de más de 10 s | «Este video puede durar 5 o 10 segundos. Elige uno de los dos.» |
+| Un video de más de 10 s | «Este video puede durar 5 o 10 segundos. Cámbialo en Duración.» |
 
 {fecha} es el mismo día que ya usan las creaciones: el primero del mes siguiente en la zona
 horaria del negocio («1 de noviembre»); si no se conoce, «el próximo mes».

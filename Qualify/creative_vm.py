@@ -1710,7 +1710,7 @@ PRESENTER_TOO_LONG = (
     "Tu guion es muy largo para un video con presentador: acórtalo a unos 30 segundos."
 )
 #: A generated video longer than the table offers (founder, 2026-10-24: up to 10 s).
-VIDEO_TOO_LONG = "Este video puede durar 5 o 10 segundos. Elige uno de los dos."
+VIDEO_TOO_LONG = "Este video puede durar 5 o 10 segundos. Cámbialo en Duración."
 
 
 def creations_left_label(left: int, quota: int, videos_left: int = 0, video_quota: int = 0) -> str:
@@ -1733,9 +1733,11 @@ def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews
     if videos_left <= 0:
         return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
     left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
+    drop = videos - videos_left
+    remove = "Quita 1 video animado" if drop == 1 else f"Quita {drop} videos animados"
     return (
-        f"Esta publicación usa {videos} videos y {left} este mes. "
-        f"Usa menos videos animados o espera al {day}, cuando vuelven tus {video_quota}."
+        f"Esta publicación usa {videos} videos y este mes {left}. "
+        f"{remove} o espera al {day}, cuando vuelven tus {video_quota}."
     )
 
 
@@ -1805,15 +1807,17 @@ def creations_use_notice(
         videos_after = max(videos_left - videos, 0)
         if weight <= 0:
             what = subject or ("Este video" if videos == 1 else "Esta publicación")
+            remain = "Te quedaría" if videos_after == 1 else "Te quedarían"
             return (
-                f"{what} usa {videos} de tus {video_quota} videos del mes. "
-                f"Te quedarían {videos_after}."
+                f"{what} usa {videos} de tus {video_quota} videos del mes. {remain} {videos_after}."
             )
         what = subject or "Esta publicación"
-        some = "1 video" if videos_after == 1 else f"{videos_after} videos"
+        uses = "1 creación" if weight == 1 else f"{weight} creaciones"
+        clips = "1 video" if videos == 1 else f"{videos} videos"
+        remain = "Te quedaría" if after == 1 else "Te quedarían"
         return (
-            f"{what} usa {weight} de tus creaciones y {videos} de tus {video_quota} videos "
-            f"del mes. Te quedarían {after} de {quota} creaciones y {some}."
+            f"{what} usa {uses} y {clips}. {remain} {after} de {quota} creaciones y "
+            f"{videos_after} de {video_quota} videos."
         )
     if presenter:
         return (

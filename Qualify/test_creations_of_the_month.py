@@ -178,16 +178,21 @@ def test_the_video_texts_the_owner_reads() -> None:
     )
     # a carousel with more animated slides than videos left
     assert videos_short_text(3, 2, 4, renews="1 de noviembre") == (
-        "Esta publicación usa 3 videos y te quedan 2 este mes. Usa menos videos animados o "
+        "Esta publicación usa 3 videos y este mes te quedan 2. Quita 1 video animado o "
+        "espera al 1 de noviembre, cuando vuelven tus 4."
+    )
+    assert videos_short_text(3, 1, 4, renews="1 de noviembre") == (
+        "Esta publicación usa 3 videos y este mes te queda 1. Quita 2 videos animados o "
         "espera al 1 de noviembre, cuando vuelven tus 4."
     )
     assert creations_use_notice(1, 18, 30, videos=2, videos_left=3, video_quota=4) == (
-        "Esta publicación usa 1 de tus creaciones y 2 de tus 4 videos del mes. "
-        "Te quedarían 17 de 30 creaciones y 1 video."
+        "Esta publicación usa 1 creación y 2 videos. Te quedarían 17 de 30 creaciones y "
+        "1 de 4 videos."
     )
+    # «Te quedaría 1» in the singular (UX review 2026-10-24)
     assert creations_use_notice(
         0, 30, 30, subject="La nueva versión", videos=1, videos_left=2, video_quota=4
-    ) == ("La nueva versión usa 1 de tus 4 videos del mes. Te quedarían 1.")
+    ) == ("La nueva versión usa 1 de tus 4 videos del mes. Te quedaría 1.")
 
 
 @pytest.mark.usefixtures("on_summary")
@@ -263,12 +268,12 @@ def test_a_carousel_uses_one_video_per_animated_slide() -> None:
     assert price is not None and (price.weight, price.videos) == (1, 2)
     assert state._creations_problem() == ""
     assert state.gen_creations_notice == (
-        "Esta publicación usa 1 de tus creaciones y 2 de tus 4 videos del mes. "
-        "Te quedarían 17 de 30 creaciones y 0 videos."
+        "Esta publicación usa 1 creación y 2 videos. Te quedarían 17 de 30 creaciones y "
+        "0 de 4 videos."
     )
     state.carousel_slides = [*state.carousel_slides, {"source": "animated", "seconds": "5"}]
     assert state._creations_problem() == (
-        "Esta publicación usa 3 videos y te quedan 2 este mes. Usa menos videos animados o "
+        "Esta publicación usa 3 videos y este mes te quedan 2. Quita 1 video animado o "
         "espera al 1 de noviembre, cuando vuelven tus 4."
     )
 
