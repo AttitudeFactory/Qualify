@@ -13,17 +13,19 @@ from pathlib import Path
 
 import pytest
 
-from .ui.layout import NAV_ITEMS, RESPOND_ROUTE, RESULTS_ROUTE
+from .ui.layout import NAV_ITEMS, RESULTS_ROUTE
 
 _HERE = Path(__file__).parent
 
 # Route → the module whose `page_header` (or `creative_pages._screen`) names the page.
 _PAGE_SOURCE: dict[str, str] = {
-    "/": "components.py",
+    "/": "home_page.py",
+    "/menciones": "components.py",
     "/connections": "connections_page.py",
     "/whatsapp": "whatsapp_page.py",
     "/inbox": "inbox_page.py",
     "/conversations": "conversations_page.py",
+    "/responder": "responder_page.py",
     "/create": "content_generator.py",
     "/drafts": "creative_pages.py",
     "/planner": "planner_page.py",
@@ -42,9 +44,8 @@ _PAGE_SOURCE: dict[str, str] = {
 # one. label → (the route it points at today, the hub's own route, the ticket).
 # `test_a_pending_hub_is_switched_the_day_it_lands` fails as soon as the hub exists, so
 # this table only shrinks.
+# Inicio (m-24842962) and «Por responder» (m-24842990) have landed and left the table.
 _PENDING_HUBS: dict[str, tuple[str, str, str]] = {
-    "Inicio": ("/", "/", "m-24842962"),
-    "Por responder": (RESPOND_ROUTE, "/responder", "m-24842990"),
     "Resultados": (RESULTS_ROUTE, "/resultados", "m-24843003"),
 }
 

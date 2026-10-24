@@ -223,15 +223,19 @@ def read_document(filename: str, data: bytes) -> DocumentInput:
 # the tool
 # --------------------------------------------------------------------------------------
 
-#: (field, label, kind) in the order the wizard walks them.
+#: (field, label, kind) in the order the wizard walks them. The label is what the owner
+#: reads in «Completamos desde tu documento: …» (`Qualify/brand_documents.py`), so it is
+#: the field's name on the brand screens (`_KIT_LISTS` and «¿Todo correcto?» in
+#: `Qualify/creative_wizard_pages.py`; MARCA-2, m-24842966; NAV-11, m-24849129) — never
+#: sent to the model, which reads `_current_lines` instead.
 FIELDS: tuple[tuple[str, str, str], ...] = (
-    ("positioning", "Posicionamiento", "text"),
-    ("audience", "Audiencia", "text"),
-    ("do_examples", "Así sí habla la marca", "list"),
-    ("dont_examples", "Así no habla la marca", "list"),
-    ("cta_patterns", "Llamados a la acción", "list"),
-    ("banned_words", "Palabras prohibidas", "list"),
-    ("forbidden_claims", "Afirmaciones prohibidas", "list"),
+    ("positioning", "Qué te hace distinto", "text"),
+    ("audience", "Quién te compra", "text"),
+    ("do_examples", "Ejemplos que SÍ suenan a la marca", "list"),
+    ("dont_examples", "Ejemplos que NO suenan a la marca", "list"),
+    ("cta_patterns", "Cómo invitas a comprar", "list"),
+    ("banned_words", "Palabras vetadas", "list"),
+    ("forbidden_claims", "Promesas que no puedes hacer", "list"),
 )
 
 SYSTEM = """\

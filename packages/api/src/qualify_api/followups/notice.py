@@ -69,7 +69,8 @@ from qualify_api.replies.client import CommentReplyClient, CommentReplyError
 logger = logging.getLogger("qualify_api.followups.notice")
 
 #: What the card proposes; the person may edit it before approving.
-DEFAULT_NOTICE_TEXT: Final = "Te enviamos la información por DM 💬"
+# m-24842991 (ATENDER-6): the owner's words, no «DM».
+DEFAULT_NOTICE_TEXT: Final = "Te escribimos al privado 💬"
 #: A notice is one line under a comment, not a second message.
 MAX_NOTICE_CHARS: Final = 300
 

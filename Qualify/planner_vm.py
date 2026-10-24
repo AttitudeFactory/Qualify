@@ -36,10 +36,77 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import OUTPUT_WORDS, PORT_LABELS
+from .creative_vm import FINAL_PREPARING_LABEL, REVIEW_PORT_LABELS
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
+
+# m-24842987 (PUBLICAR-6, N7): the week and the view travel in the address, so every
+# ficha opened from Tu semana can say «‹ Tu semana» and bring the owner back to the same
+# week, in the same view — after a reload or from another screen too.
+# `/planner?semana=2026-10-19&vista=lista`; a ficha gets `?desde=semana&semana=…&vista=…`.
+URL_WEEK = "semana"
+URL_VIEW = "vista"
+URL_FROM = "desde"
+FROM_WEEK = "semana"
+PLANNER_PATH = "/planner"
+BACK_TO_WEEK = "Tu semana"  # shown after a «‹» glyph — «‹ Tu semana» (N7)
+_VIEW_TO_URL = {VIEW_LIST: "lista", VIEW_CALENDAR: "calendario"}
+_URL_TO_VIEW = {v: k for k, v in _VIEW_TO_URL.items()}
+
+
+def parse_week_param(value: object) -> str:
+    """`?semana=` → the Monday (ISO) of the week that date falls in; "" for junk."""
+    try:
+        day = date.fromisoformat(str(value or "").strip())
+    except ValueError:
+        return ""
+    return (day - timedelta(days=day.weekday())).isoformat()
+
+
+def parse_view_param(value: object) -> str:
+    """`?vista=` → VIEW_LIST / VIEW_CALENDAR; "" when absent or unknown."""
+    return _URL_TO_VIEW.get(str(value or "").strip().lower(), "")
+
+
+def _week_query(monday_iso: str, view_mode: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    monday = parse_week_param(monday_iso)
+    if monday:
+        parts.append((URL_WEEK, monday))
+    if view_mode in _VIEW_TO_URL:
+        parts.append((URL_VIEW, _VIEW_TO_URL[view_mode]))
+    return parts
+
+
+def week_href(monday_iso: str, view_mode: str) -> str:
+    """The address of Tu semana on that week and view («‹ Tu semana»'s target)."""
+    query = "&".join(f"{k}={v}" for k, v in _week_query(monday_iso, view_mode))
+    return f"{PLANNER_PATH}?{query}" if query else PLANNER_PATH
+
+
+def week_return_query(monday_iso: str, view_mode: str) -> str:
+    """`?desde=semana&semana=…&vista=…` — appended to a ficha's address by Tu semana."""
+    parts = [(URL_FROM, FROM_WEEK), *_week_query(monday_iso, view_mode)]
+    return "?" + "&".join(f"{k}={v}" for k, v in parts)
+
+
+def from_week_href(href: str, monday_iso: str, view_mode: str) -> str:
+    """A ficha's address when opened from Tu semana: it carries where to come back to."""
+    if not href:
+        return ""
+    query = week_return_query(monday_iso, view_mode)
+    return href + ("&" + query[1:] if "?" in href else query)
+
+
+def back_to_week_href(params: Mapping[str, object]) -> str:
+    """On a ficha: «‹ Tu semana»'s target when it was opened from Tu semana, else ""."""
+    if str(params.get(URL_FROM, "") or "") != FROM_WEEK:
+        return ""
+    return week_href(
+        parse_week_param(params.get(URL_WEEK, "")), parse_view_param(params.get(URL_VIEW, ""))
+    )
+
 
 # QUA-118 v2 (founder review, 2026-10-06): the assign flow plans SEVERAL POSTs at once —
 # a story at 2 a. m., a carousel at 10 a. m. and a reel at 11 a. m. are one plan. Three
@@ -47,7 +114,9 @@ VIEW_LIST = "list"
 # set each piece's date, time, accounts and tags, then confirm over a phone-shaped
 # preview of every piece (edit or drop any of them there) with the plan's goals. The
 # reschedule flow walks the same steps with one piece, already chosen.
-ASSIGN_STEPS: tuple[str, ...] = ("Contenido", "Programación", "Confirmar")
+# m-24842985 (PUBLICAR-3, N6): the second step asks one question — «¿Cuándo sale?» — with
+# only the day and the hour (or «Ahora»); everything else sits behind «Más opciones».
+ASSIGN_STEPS: tuple[str, ...] = ("Contenido", "Cuándo sale", "Confirmar")
 ASSIGN_STEP_ICONS: tuple[str, ...] = ("layout-grid", "calendar-clock", "circle-check")
 STEP_POST, STEP_WHEN, STEP_PREVIEW = range(3)
 STEP_LAST = STEP_PREVIEW
@@ -109,6 +178,9 @@ _OUTPUT_STATE: dict[str, tuple[str, str]] = {
     "publishing": ("publicando", "info"),
     "published": ("publicada", "ok"),
 }
+#: m-24842983: the chip's short word for a template output — the owner's words, never
+#: «Feed» (the long name, «Reel (video corto) 9:16», is `REVIEW_PORT_LABELS`).
+_OUTPUT_WORDS: dict[str, str] = {"reel": "Reel", "feed": "Publicación", "story": "Historia"}
 
 
 def output_label(port: str | None) -> str:
@@ -116,12 +188,12 @@ def output_label(port: str | None) -> str:
     "Historia"); "" for a whole-POST event."""
     if not port:
         return ""
-    return OUTPUT_WORDS.get(port, port.title())
+    return _OUTPUT_WORDS.get(port, port.title())
 
 
 def output_long_label(port: str) -> str:
     """The output's full name for the «Salida» control ("Reel 9:16")."""
-    return PORT_LABELS.get(port, port.title())
+    return REVIEW_PORT_LABELS.get(port, port.title())
 
 
 # (long label, short label for the compact calendar card, tone). This is the POST's
@@ -133,7 +205,7 @@ _APPROVAL_LABEL: dict[str, tuple[str, str, str]] = {
     "rejected": ("Rechazado", "Rechazado", "error"),
     "not_ready": ("En producción", "En producción", "neutral"),
 }
-_MISSING_POST = ("POST no disponible", "No disponible", "error")
+_MISSING_POST = ("Publicación no disponible", "No disponible", "error")
 
 # QUA-118 A1 — the five visible states of a calendar event, and the only five words the
 # UI ever prints for one: Programado · Pendiente · Publicado · Vencido · Fallido. They are
@@ -163,7 +235,7 @@ _CATEGORY_LABEL: dict[str, str] = {
     "gallery": "Galería",
     "galeria": "Galería",  # `PostCategory.GALERIA` (QUA-109)
     "carousel": "Galería",
-    "story": "Story",
+    "story": "Historia",
     "reel": "Reel",
     "tiktok_video": "Video TikTok",
 }
@@ -462,6 +534,13 @@ def zone_countries() -> dict[str, str]:
     return zones
 
 
+#: m-24842984: the first sentence of a publication in review, always true on its own.
+REVIEW_NOTHING_WITHOUT_YOU = "Nada sale sin tu aprobación."
+#: m-24842984: left on the panel when «Aprobar» finds no version that passes the brand
+#: rules (or a price the catalog does not have) — where to fix it, with a link there.
+REVIEW_EDIT_NOTE = "Ninguna versión cumple las reglas de tu marca. Edítala en Por aprobar."
+REVIEW_EDIT_LINK = "Ir a Por aprobar ›"
+
 # What the Planificador tells the operator about automatic publication (QUA-111).
 AUTO_PUBLISH_ACTIVE = "active"  # the worker runs for this tenant and it has an account
 AUTO_PUBLISH_NO_CONNECTION = "no_connection"  # worker fine; the tenant has no active account
@@ -579,17 +658,140 @@ class ConnectionChoiceVM:
 
 # QUA-118: the POST's five gallery states (`planner.gallery.GalleryState`) as the card
 # prints them — a different entity from the five event states, deliberately other words.
+# m-24842981 (CREAR-3): the owner's words. «needs_action» covers two different jobs for
+# the owner — a publication waiting for their review («Por revisar», `CARD_STATES`) and
+# an approved one that cannot go out yet («Le falta algo») — so the card splits it.
 GALLERY_LABELS: dict[str, tuple[str, str]] = {
-    "draft": ("Borrador", "neutral"),
-    "needs_action": ("Por completar", "warn"),
-    "schedulable": ("Listo", "ok"),
-    "used": ("Usado", "info"),
-    "discarded": ("Desechado", "error"),
+    "draft": ("Creándose", "neutral"),
+    "needs_action": ("Le falta algo", "warn"),
+    "schedulable": ("Lista para programar", "ok"),
+    "used": ("Ya salió", "info"),
+    "discarded": ("Descartada", "error"),
 }
 GALLERY_FILTER_ALL = "all"
+
+
+@dataclass(frozen=True)
+class CardStateVM:
+    """What a «Por aprobar» card says about a publication (m-24842981): its state in
+    words and tone, and its ONE main button — what the owner has to do with it."""
+
+    key: str
+    label: str
+    tone: str
+    action: str  # CARD_ACTION_*: what the main button does
+    action_label: str
+
+
+CARD_ACTION_REVIEW = "review"  # opens the publication's page
+CARD_ACTION_SCHEDULE = "schedule"  # hands it to Tu semana to choose day and time
+CARD_ACTION_VIEW = "view"  # opens the publication's page, nothing to do
+CARD_ACTION_PLANNER = "planner"  # opens Tu semana on it: it is already on the calendar
+CARD_ACTION_WAIT = "wait"  # nothing to do yet: the button is disabled and says why
+
+#: The ready card's button keeps the name CREAR-1 (m-24842978) gave this same step —
+#: it opens Tu semana, where «Programar» is the final, confirming verb (navigation map
+#: §3); the ticket's table said «Programar», flagged to the founder in the PR.
+SCHEDULE_ACTION_LABEL = "Elegir día y hora"
+
+# In the order the filters show them: what needs the owner first, history last.
+CARD_STATES: dict[str, CardStateVM] = {
+    s.key: s
+    for s in (
+        CardStateVM("review", "Por revisar", "warn", CARD_ACTION_REVIEW, "Revisar"),
+        CardStateVM("missing", "Le falta algo", "warn", CARD_ACTION_REVIEW, "Ver qué falta"),
+        # review 2026-10-24 (finding 8): approved, its video final still being made —
+        # the owner waits; the button stays disabled with the same words until it lands
+        CardStateVM(
+            "preparing",
+            FINAL_PREPARING_LABEL,
+            "info",
+            CARD_ACTION_WAIT,
+            FINAL_PREPARING_LABEL,
+        ),
+        CardStateVM(
+            "ready", "Lista para programar", "ok", CARD_ACTION_SCHEDULE, SCHEDULE_ACTION_LABEL
+        ),
+        CardStateVM("scheduled", "Programada", "info", CARD_ACTION_PLANNER, "Ver en Tu semana"),
+        CardStateVM("used", "Ya salió", "info", CARD_ACTION_VIEW, "Ver"),
+        CardStateVM("discarded", "Descartada", "error", CARD_ACTION_VIEW, "Ver"),
+        CardStateVM("drafting", "Creándose", "neutral", CARD_ACTION_VIEW, "Ver"),
+    )
+}
+_CARD_STATE_BY_GALLERY: dict[str, str] = {
+    "draft": "drafting",
+    "needs_action": "missing",
+    "schedulable": "ready",
+    "used": "used",
+    "discarded": "discarded",
+}
 GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
-    (value, label) for value, (label, _tone) in GALLERY_LABELS.items()
+    (key, state.label) for key, state in CARD_STATES.items()
 )
+
+# m-24842962 (N11): Inicio's «publicaciones listas para que las apruebes» opens the
+# gallery already filtered — `/drafts?estado=por-completar`. Slugs = the chips' words.
+GALLERY_FILTER_PARAM = "estado"
+GALLERY_FILTER_SLUGS: dict[str, str] = {
+    "todas": GALLERY_FILTER_ALL,
+    "borrador": "draft",
+    "por-completar": "needs_action",
+    "listo": "schedulable",
+    "usado": "used",
+    "desechado": "discarded",
+}
+
+
+def gallery_filter_from_param(slug: str) -> str | None:
+    """`?estado=por-completar` → `"needs_action"`; absent or unknown → None (keep the
+    filter the owner already had)."""
+    return GALLERY_FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+
+
+def card_state(
+    gallery_state: str,
+    *,
+    waiting_review: bool,
+    times_published: int = 0,
+    final_rendering: bool = False,
+) -> CardStateVM | None:
+    """The card's state (m-24842981): a publication generated and waiting for the
+    owner is «Por revisar» whatever else it lacks — reviewing comes first. An approved
+    one held back only because its video final is being made (`final_rendering`) is
+    «Preparando el video final»: nothing for the owner to fix. A «used» one that has
+    never gone out is only on the calendar: «Programada», not «Ya salió»."""
+    key = _CARD_STATE_BY_GALLERY.get(gallery_state)
+    if key is None:
+        return None
+    if gallery_state == "needs_action" and waiting_review:
+        key = "review"
+    elif gallery_state == "needs_action" and final_rendering:
+        key = "preparing"
+    if gallery_state == "used" and times_published <= 0:
+        key = "scheduled"
+    return CARD_STATES[key]
+
+
+#: The card states where «Ya probada» / «Por probar» helps a decision — whether to
+#: repeat it. Everywhere else the line is noise on a phone (UX review, m-24842981).
+HISTORY_CARD_STATES: frozenset[str] = frozenset({"ready", "used"})
+
+
+def history_help(times_published: int) -> str:
+    """The visible help under «Ya probada» / «Por probar» (m-24842981): how many times
+    the publication already went out — on the card and on its own page, never only in
+    a tooltip (N12). The threshold is the temperature's (`COLD_MIN_USES`)."""
+    n = max(times_published, 0)
+    if n >= COLD_MIN_USES:
+        return f"Ya salió {n} veces en tus redes: se puede repetir sin problema."
+    if n == 1:
+        return "Salió 1 vez en tus redes: todavía no sabemos si funciona."
+    return "Todavía no ha salido en tus redes."
+
+
+def history_word(times_published: int) -> str:
+    """«Ya probada» / «Por probar» (m-24842981, the words approved in wave 1)."""
+    return "Ya probada" if max(times_published, 0) >= COLD_MIN_USES else "Por probar"
 
 
 @dataclass(frozen=True)
@@ -765,7 +967,7 @@ class PostOptionVM:
     # card offers «Aprobar» / «Rechazar» right there, without opening the POST.
     can_review: bool = False
     temperature: str = "hot"
-    temperature_label: str = "Hot"
+    temperature_label: str = "Por probar"
     temperature_hint: str = ""
     # QUA-143: the POST's campaign ("" when independent) — the gallery card's badge and
     # the drawer's piece header — and how many publications the POST already has (the
@@ -778,6 +980,15 @@ class PostOptionVM:
     # 15-day window, «Contenido eliminado» (neutral) once the files are gone; "" otherwise.
     retention_label: str = ""
     retention_tone: str = "neutral"
+    # m-24842981 (CREAR-3): the «Por aprobar» card — its state in words (`CARD_STATES`),
+    # its one main button, and the visible help under «Ya probada» / «Por probar».
+    card_state: str = ""
+    card_label: str = ""
+    card_tone: str = "neutral"
+    card_action: str = CARD_ACTION_VIEW
+    card_action_label: str = "Ver"
+    history_word: str = ""
+    history_help: str = ""
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -843,9 +1054,22 @@ class EventDetailVM:
     # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
     # — derived from local_date/local_time, so every builder gets it without passing it.
     approved_line: str = field(init=False, default="")
+    # m-24842984: what a publication in review says above «Aprobar» / «No la quiero» —
+    # «Nada sale sin tu aprobación. Si la apruebas, sale el lunes 28 … a las 3:00 p. m.»
+    review_line: str = field(init=False, default=REVIEW_NOTHING_WITHOUT_YOU)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "approved_line", approved_line(self.local_date, self.local_time))
+        object.__setattr__(
+            self,
+            "review_line",
+            review_line(
+                self.local_date,
+                self.local_time,
+                expired=self.expired,
+                publish_note=self.publish_note,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -912,7 +1136,7 @@ def build_card(
         event_id=item.event_id,
         post_id=item.post_id,
         time_label=time_label_12h(local),
-        title=item.post_title if item.post_title is not None else "POST no disponible",
+        title=item.post_title if item.post_title is not None else "Publicación no disponible",
         caption_excerpt=item.caption_excerpt,
         thumbnail_url=item.thumbnail_url or "",
         platform=platform,
@@ -1054,11 +1278,21 @@ def build_post_option(
     event_count: int = 0,
     retention_state: str = "",
     purge_days_left: int | None = None,
+    final_rendering: bool = False,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
     chips = list(outputs)
     g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
+    card = card_state(
+        gallery_state,
+        waiting_review=lifecycle_status == "generated",
+        times_published=times_published,
+        final_rendering=final_rendering,
+    )
+    shows_history = card is not None and card.key in HISTORY_CARD_STATES
+    if card is not None:  # the same words on every surface that prints the state
+        g_label, g_tone = card.label, card.tone
     kind, aspect = frame_shape(category or "", "")
     ratio = aspect.replace(" / ", ":")
     medium = "Video" if video_url else "Imagen"
@@ -1098,16 +1332,23 @@ def build_post_option(
         event_count=event_count,
         retention_label=r_label,
         retention_tone=r_tone,
+        card_state=card.key if card is not None else "",
+        card_label=card.label if card is not None else "",
+        card_tone=card.tone if card is not None else "neutral",
+        card_action=card.action if card is not None else CARD_ACTION_VIEW,
+        card_action_label=card.action_label if card is not None else "Ver",
+        history_word=history_word(times_published) if shows_history else "",
+        history_help=history_help(times_published) if shows_history else "",
     )
 
 
 def filter_posts(posts: Iterable[PostOptionVM], *, state: str, category: str) -> list[PostOptionVM]:
-    """The gallery's filters: by derived state and by raw category; `GALLERY_FILTER_ALL`
-    (or "") means no filter on that axis."""
+    """The gallery's filters: by the card's state (`CARD_STATES`, m-24842981) and by raw
+    category; `GALLERY_FILTER_ALL` (or "") means no filter on that axis."""
     return [
         post
         for post in posts
-        if (state in ("", GALLERY_FILTER_ALL) or post.gallery_state == state)
+        if (state in ("", GALLERY_FILTER_ALL) or post.card_state == state)
         and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
     ]
 
@@ -1203,7 +1444,7 @@ def frame_shape(category: str, output_port: str) -> tuple[str, str]:
     if output_port == "story":
         return "Historia", "9 / 16"
     if output_port == "feed":
-        return "Feed 4:5", "4 / 5"
+        return "Publicación (vertical)", "4 / 5"
     if category in ("reel", "tiktok_video"):
         return "Reel", "9 / 16"
     if category == "story":
@@ -1314,7 +1555,11 @@ def _kind_fields(
 
 # Where an event goes out (QUA-118 v2, `publishable.DESTINATIONS`): the word the operator
 # reads everywhere — never «Feed» — and its glyph.
-DESTINATION_LABELS: dict[str, str] = {"post": "Publicación", "reel": "Reel", "story": "Historia"}
+DESTINATION_LABELS: dict[str, str] = {
+    "post": "Publicación",
+    "reel": "Reel (video corto)",
+    "story": "Historia",
+}
 DESTINATION_ICONS: dict[str, str] = {
     "post": "grid-3x3",
     "reel": "clapperboard",
@@ -1388,12 +1633,12 @@ def temperature(times_published: int) -> tuple[str, str, str]:
     if n >= COLD_MIN_USES:
         return (
             TEMPERATURE_COLD,
-            "Cold",
-            f"Cold · probado: salió {n} veces. Contenido evergreen, seguro para repetir.",
+            "Ya probada",
+            f"Ya probada: salió {n} veces y funcionó. Puedes repetirla.",
         )
     if n == 1:
-        return TEMPERATURE_HOT, "Hot", "Hot · en prueba: salió 1 vez, aún sin historial."
-    return TEMPERATURE_HOT, "Hot", "Hot · nuevo: todavía no ha salido en tus redes."
+        return TEMPERATURE_HOT, "Por probar", "Por probar: salió 1 vez, aún sin historial."
+    return TEMPERATURE_HOT, "Por probar", "Por probar: todavía no ha salido en tus redes."
 
 
 def _temperature_fields(times_published: int) -> dict[str, str]:
@@ -1413,10 +1658,10 @@ class PlanGoalVM:
 
 
 PLAN_GOALS: tuple[PlanGoalVM, ...] = (
-    PlanGoalVM("likes", "Likes", "heart", "pink", "Que guste: reacciones"),
-    PlanGoalVM("views", "Vistas", "eye", "blue", "Alcance: que lo vea más gente"),
+    PlanGoalVM("likes", "Me gusta", "heart", "pink", "Que guste: reacciones"),
+    PlanGoalVM("views", "Vistas", "eye", "blue", "Que la vea más gente"),
     PlanGoalVM("comments", "Comentarios", "message-circle", "violet", "Abrir conversación"),
-    PlanGoalVM("ads", "Ads", "megaphone", "amber", "Candidato a pauta pagada"),
+    PlanGoalVM("ads", "Para anunciar pagando", "megaphone", "amber", "Buena para un anuncio"),
     PlanGoalVM("followers", "Seguidores", "user-plus", "green", "Crecer la comunidad"),
     PlanGoalVM("engagement", "Interacción", "sparkles", "teal", "Guardados y compartidos"),
 )
@@ -1429,7 +1674,16 @@ def goal_labels(keys) -> list[str]:
     return [g.label for g in PLAN_GOALS if g.key in chosen]
 
 
-PLAN_OUTPUT_REQUIRED = "Elige qué salida programar (Reel, feed o historia)."
+def join_es(items: list[str]) -> str:
+    """Spanish list join: ['a'] → 'a', ['a', 'b'] → 'a y b', ['a', 'b', 'c'] → 'a, b y c'."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " y " + items[-1]
+
+
+PLAN_OUTPUT_REQUIRED = "Elige qué formato programar (reel, publicación o historia)."
 PLAN_ACCOUNT_REQUIRED = "Elige al menos una cuenta compatible."
 PLAN_DATE_REQUIRED = "Elige la fecha y la hora."
 PLAN_DATE_PAST = "Esa fecha ya pasó. Elige una de hoy en adelante."
@@ -1486,6 +1740,9 @@ class PlanItem:
     campaign: str = ""
     new_campaign_name: str = ""
     new_campaign_color: str = ""
+    # m-24842985: «Ahora» — it goes out at the time «Programar» is tapped (`now_slot`),
+    # not at `date`/`time`. Nothing is created before that tap.
+    now: bool = False
 
     # A plan kept in a session from before a field existed (Reflex keeps dev state across
     # reloads) reads the field's default instead of failing.
@@ -1495,11 +1752,13 @@ class PlanItem:
         "campaign": "",
         "new_campaign_name": "",
         "new_campaign_color": "",
+        "now": False,
     }
 
     def __getattr__(self, name: str):
         if name in PlanItem._LATER_DEFAULTS:
-            return list(PlanItem._LATER_DEFAULTS[name]) if name == "repeat_days" else ""
+            default = PlanItem._LATER_DEFAULTS[name]
+            return list(default) if isinstance(default, tuple) else default
         raise AttributeError(name)
 
 
@@ -1562,6 +1821,14 @@ class PlanRowVM:
     creating_campaign: bool = False
     new_campaign_name: str = ""
     new_campaign_color: str = ""
+    # m-24842985 (PUBLICAR-3): «Ahora», the one sentence of where it goes out («Sale en
+    # @cuenta (Instagram)»), the confirmation sentence («Sale el jueves 30 a las 7:00
+    # p. m. en Instagram @cuenta») and whether what is missing sits behind «Más opciones»
+    # (then that fold opens on its own).
+    now: bool = False
+    accounts_line: str = ""
+    sale_line: str = ""
+    needs_more: bool = False
 
 
 CAMPAIGN_NONE = "none"  # the selector's «Sin campaña» (same value as the POST detail)
@@ -1581,9 +1848,10 @@ def campaign_warning(existing: int) -> str:
     if existing <= 0:
         return ""
     if existing == 1:
-        return "La campaña pertenece al POST y también se aplicará a su otra publicación."
+        return "La campaña es de la publicación y también se aplicará a su otra fecha programada."
     return (
-        f"La campaña pertenece al POST y también se aplicará a sus otras {existing} publicaciones."
+        f"La campaña es de la publicación y también se aplicará a sus otras {existing} "
+        "fechas programadas."
     )
 
 
@@ -1615,17 +1883,96 @@ def plan_item_error(
             return DESTINATION_REQUIRED
         if not chosen.available:
             return chosen.reason
-    if not item.date or not item.time:
-        return PLAN_DATE_REQUIRED
-    if today_iso and item.date < today_iso:
-        return PLAN_DATE_PAST
-    if today_iso and now_hhmm and item.date == today_iso and item.time <= now_hhmm:
-        return PLAN_TIME_PAST
+    if not item.now:
+        if not item.date or not item.time:
+            return PLAN_DATE_REQUIRED
+        if today_iso and item.date < today_iso:
+            return PLAN_DATE_PAST
+        if today_iso and now_hhmm and item.date == today_iso and item.time <= now_hhmm:
+            return PLAN_TIME_PAST
     if series.error:
         return series.error
     if not accounts:
         return PLAN_ACCOUNT_REQUIRED
     return ""
+
+
+NOW_LABEL = "Ahora"
+#: m-24842985: what «Ahora» means, said where it is chosen — the owner still taps
+#: «Programar»; it goes out in the next few minutes after that, never before. The drawer
+#: names the button actually shown («Guardar cambios» on a move) with `now_hint`.
+NOW_HINT = "Sale unos minutos después de que toques «Programar»."
+SUBMIT_ASSIGN = "Programar"
+SUBMIT_RESCHEDULE = "Guardar cambios"
+#: The minutes «Ahora» leaves between the tap and the instant it is planned for, so the
+#: service (which refuses an instant already gone) never sees it in the past.
+NOW_LEAD_MINUTES = 1
+PLATFORM_NAMES: dict[str, str] = {
+    "instagram": "Instagram",
+    "facebook": "Facebook",
+    "tiktok": "TikTok",
+}
+# The errors the «¿Cuándo sale?» fields fix themselves; any other sits behind «Más opciones».
+_WHEN_ERRORS = frozenset({"", PLAN_DATE_REQUIRED, PLAN_DATE_PAST, PLAN_TIME_PAST})
+
+
+def _platform_name(platform: str) -> str:
+    return PLATFORM_NAMES.get(platform, platform.capitalize())
+
+
+def accounts_line(accounts: Iterable[ConnectionChoiceVM]) -> str:
+    """ "Sale en Instagram @cuenta" — the accounts already chosen, said before «Más
+    opciones» so the owner knows where it goes without opening it; the same words as
+    the confirmation sentence (`sale_line`). "" with none."""
+    names = [f"{_platform_name(a.platform)} {a.label}" for a in accounts]
+    return f"Sale en {join_es(names)}" if names else ""
+
+
+def now_slot(tz_name: str, now: datetime) -> tuple[str, str]:
+    """«Ahora» as a wall-clock date and time in `tz_name`: the next whole minute after
+    `now` plus `NOW_LEAD_MINUTES` — always in the future, so the calendar worker takes
+    it on its next pass. Rolls over midnight (and the year) like a clock does."""
+    try:
+        zone = ZoneInfo(tz_name or CALENDAR_DEFAULT_TZ)
+    except Exception:  # noqa: BLE001 — an unknown zone plans in the calendar's default
+        zone = ZoneInfo(CALENDAR_DEFAULT_TZ)
+    local = now.astimezone(zone).replace(second=0, microsecond=0)
+    slot = local + timedelta(minutes=1 + NOW_LEAD_MINUTES)
+    return slot.date().isoformat(), slot.strftime("%H:%M")
+
+
+def sale_line(
+    day_iso: str,
+    at: str,
+    accounts: Iterable[ConnectionChoiceVM],
+    *,
+    today_iso: str = "",
+    now: bool = False,
+    button: str = SUBMIT_ASSIGN,
+) -> str:
+    """m-24842985 (N13): the confirmation in one sentence — «Sale el jueves 30 a las
+    7:00 p. m. en Instagram @cuenta». The month is said only when it is not this month's
+    («el martes 3 de noviembre»); «Ahora» → «Sale en Instagram @cuenta unos minutos
+    después de que toques «Programar»» — it goes out because the owner taps `button`.
+    No final period: «p. m.» already ends it. "" without a valid date (and not «Ahora»)."""
+    where = join_es([f"{_platform_name(a.platform)} {a.label}" for a in accounts])
+    tail = f" en {where}" if where else ""
+    if now:
+        return f"Sale{tail} unos minutos después de que toques «{button}»"
+    try:
+        day = date.fromisoformat(day_iso)
+    except ValueError:
+        return ""
+    try:
+        today: date | None = date.fromisoformat(today_iso)
+    except ValueError:
+        today = None
+    hour, _minute = split_time(at)
+    article = "a la" if hour % 12 == 1 else "a las"
+    weekday = _WEEKDAYS_LONG[day.weekday()].lower()
+    same_month = today is not None and (day.year, day.month) == (today.year, today.month)
+    month = "" if same_month else f" de {_MONTHS_LONG[day.month - 1]}"
+    return f"Sale el {weekday} {day.day}{month} {article} {time_label(at)}{tail}"
 
 
 def build_plan_row(
@@ -1644,7 +1991,7 @@ def build_plan_row(
     if post is None:
         post = PostOptionVM(
             post_id=item.post_id,
-            title="POST no disponible",
+            title="Publicación no disponible",
             caption_excerpt="",
             thumbnail_url="",
             category_label="",
@@ -1655,9 +2002,10 @@ def build_plan_row(
     chosen = set(item.connection_ids)
     accounts = [c for c in connections if c.id in chosen and c.compatible]
     tag_set = set(item.tag_ids)
+    repeats = item.repeat and not reschedule and not item.now
     series = series_preview(
         item.date,
-        repeat=item.repeat and not reschedule,
+        repeat=repeats,
         mode=REPEAT_BY_COUNT,
         count_text=item.repeat_count,
         until_iso="",
@@ -1691,6 +2039,16 @@ def build_plan_row(
     else:
         chosen_name, chosen_color = "", ""
     changed = not reschedule and value != current
+    error = plan_item_error(
+        item,
+        post=post,
+        accounts=accounts,
+        series=series,
+        today_iso=today_iso,
+        now_hhmm=now_hhmm,
+        reschedule=reschedule,
+        destinations=None if reschedule else destinations,
+    )
     campaign_fields = {
         "current_campaign_name": post.campaign_name,
         "current_campaign_color": post.campaign_color,
@@ -1721,7 +2079,7 @@ def build_plan_row(
         hour12=str(hour % 12 or 12),
         minute=f"{minute:02d}",
         meridiem="am" if hour < 12 else "pm",
-        when_label=when_label(item.date, item.time),
+        when_label=NOW_LABEL if item.now else when_label(item.date, item.time),
         day_label=when_label(item.date, item.time).split(" · ")[0],
         time_label=time_label(item.time),
         connection_ids=list(item.connection_ids),
@@ -1733,36 +2091,35 @@ def build_plan_row(
         output_label=output_label,
         outputs=[] if reschedule else list(post.outputs),
         has_outputs=post.has_outputs and not reschedule,
-        repeat=item.repeat and not reschedule,
+        repeat=repeats,
         repeat_count=item.repeat_count,
         series=series,
         event_count=max(series.count, 1) * len(accounts),
         note=chip.note if chip else post.readiness_note,
-        error=plan_item_error(
-            item,
-            post=post,
-            accounts=accounts,
-            series=series,
-            today_iso=today_iso,
-            now_hhmm=now_hhmm,
-            reschedule=reschedule,
-            destinations=None if reschedule else destinations,
-        ),
+        error=error,
         destination=dest,
         destination_label=DESTINATION_LABELS.get(dest, ""),
         destinations=[] if reschedule else list(destinations),
         destination_warning=chosen.warning if chosen is not None else "",
         mock=mock,
         repeat_days=list(item.repeat_days),
+        now=item.now,
+        accounts_line=accounts_line(accounts),
+        sale_line=sale_line(
+            item.date,
+            item.time,
+            accounts,
+            today_iso=today_iso,
+            now=item.now,
+            button=SUBMIT_RESCHEDULE if reschedule else SUBMIT_ASSIGN,
+        ),
+        needs_more=error not in _WHEN_ERRORS,
         **campaign_fields,
     )
 
 
-def approved_line(day_iso: str, at: str) -> str:
-    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
-    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
-    "" without a valid date; no final period, «p. m.» already ends the sentence. The
-    owner approved it; Qualify never publishes on its own."""
+def _day_and_hour(day_iso: str, at: str) -> str:
+    """ "el jueves 29 de octubre a las 7:00 p. m." («a la 1:…»); "" without a valid date."""
     try:
         day = date.fromisoformat(day_iso)
     except ValueError:
@@ -1771,4 +2128,84 @@ def approved_line(day_iso: str, at: str) -> str:
     article = "a la" if hour % 12 == 1 else "a las"
     weekday = _WEEKDAYS_LONG[day.weekday()].lower()
     month = _MONTHS_LONG[day.month - 1]
-    return f"Aprobada por ti: sale el {weekday} {day.day} de {month} {article} {time_label(at)}"
+    return f"el {weekday} {day.day} de {month} {article} {time_label(at)}"
+
+
+def scheduled_message(
+    *, created: int, day_iso: str, at: str, reschedule: bool, now: bool = False
+) -> str:
+    """m-24842983 (N3): the confirmation after «Programar» says the day and the hour —
+    «Publicación programada para el jueves 29 de octubre a las 7:00 p. m.». With several
+    pieces it names the first one out. No final period: «p. m.» already ends it.
+    m-24842985: a plan made only of «Ahora» says when that is — in the next minutes."""
+    when = _day_and_hour(day_iso, at)
+    if now:
+        if reschedule:
+            return "Publicación reprogramada: sale en unos minutos"
+        if created == 1:
+            return "Publicación programada: sale en unos minutos"
+        return f"{created} publicaciones programadas: salen en unos minutos"
+    if reschedule:
+        head = "Publicación reprogramada"
+    elif created == 1:
+        head = "Publicación programada"
+    else:
+        return f"{created} publicaciones programadas" + (
+            f". La primera sale {when}" if when else ""
+        )
+    return head + (f" para {when}" if when else "")
+
+
+#: m-24842984: the toast after «Aprobar» when the publication cannot go out as planned —
+#: the panel's own note says what is missing (an account, the media, an expired hour).
+APPROVED_CHECK_TOAST = "Publicación aprobada. Aquí arriba te decimos qué falta para que salga."
+
+
+def _when_phrase(day_iso: str, at: str) -> str:
+    """«el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»); "" without a valid date."""
+    try:
+        day = date.fromisoformat(day_iso)
+    except ValueError:
+        return ""
+    hour, _minute = split_time(at)
+    article = "a la" if hour % 12 == 1 else "a las"
+    weekday = _WEEKDAYS_LONG[day.weekday()].lower()
+    month = _MONTHS_LONG[day.month - 1]
+    return f"el {weekday} {day.day} de {month} {article} {time_label(at)}"
+
+
+def review_line(day_iso: str, at: str, *, expired: bool = False, publish_note: str = "") -> str:
+    """m-24842984: the event panel of a publication still in review — «Nada sale sin tu
+    aprobación. Si la apruebas, sale el lunes 28 de septiembre a las 3:00 p. m.». Only
+    the first sentence when the hour is gone (expired: approving alone does not bring it
+    back), unknown, or something else is missing (`publish_note`: the media, the text) —
+    N13, never an hour approving alone will not keep. The panel also drops the second
+    sentence when no account can publish. No final period after «p. m.»."""
+    when = "" if expired or publish_note else _when_phrase(day_iso, at)
+    if not when:
+        return REVIEW_NOTHING_WITHOUT_YOU
+    return f"{REVIEW_NOTHING_WITHOUT_YOU} Si la apruebas, sale {when}"
+
+
+def approved_toast(detail: EventDetailVM, auto_publish: str) -> str:
+    """m-24842984: what «Aprobar» says once the panel is read again. The day and hour
+    only when the publication will really go out then — approved and ready, still
+    scheduled, not expired, and the worker able to publish (N13: the same conditions as
+    the panel's «Aprobada por ti: sale …» line); otherwise, look at what is missing."""
+    goes_out = (
+        detail.approval_tone == "ok"
+        and detail.status_tone == "info"
+        and not detail.expired
+        and auto_publish == AUTO_PUBLISH_ACTIVE
+        and detail.approved_line != ""
+    )
+    return detail.approved_line if goes_out else APPROVED_CHECK_TOAST
+
+
+def approved_line(day_iso: str, at: str) -> str:
+    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
+    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
+    "" without a valid date; no final period, «p. m.» already ends the sentence. The
+    owner approved it; Qualify never publishes on its own."""
+    when = _when_phrase(day_iso, at)
+    return f"Aprobada por ti: sale {when}" if when else ""

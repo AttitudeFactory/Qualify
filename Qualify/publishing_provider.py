@@ -30,9 +30,11 @@ from qualify_api.publishing import (
     stage_and_start_many_publish,
     stage_and_start_publish,
 )
+from qualify_api.publishing.failure_text import failure_text
 from qualify_api.publishing.service import PublishState as ServicePublishState
 
 from .connections_provider import connections_for
+from .publish_wizard_vm import connection_label
 from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PublishAttemptVM
 
 
@@ -47,6 +49,7 @@ def active_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
             id=connection.id,
             external_username=connection.external_username,
             platform=connection.platform,
+            label=connection_label(connection.external_username, connection.platform),
         )
         for connection in connections_for(tenant_id)
         if connection.status == "active"
@@ -59,7 +62,9 @@ def _to_vm(state: ServicePublishState) -> PublishAttemptVM:
         status=state.status,
         settled=state.settled,
         published_media_id=state.published_media_id or "",
-        reason=state.reason or "",
+        # NAV-11 (m-24849129): the owner reads why in plain Spanish; the diagnostic code
+        # (`platform_error_code`) stays in the database and the logs.
+        reason=failure_text(state.reason) if state.settled and state.status != "published" else "",
         awaiting_confirmation=state.awaiting_confirmation,
         poll_interval_seconds=state.poll_interval_seconds,
     )

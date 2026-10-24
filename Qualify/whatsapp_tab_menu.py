@@ -19,6 +19,12 @@ sits under the long editor there), and, after publishing, «listo» plus the nex
 the QR for the counter (guide N3). Older versions live behind «Ver versiones
 anteriores»; opening one puts it in the editor, and the same main button publishes it.
 
+The menu in four steps (m-24848536) is what an owner sees first: ① ¿Cómo saludas?
+② ¿Qué botones ve al escribirte? ③ Tus productos ④ Pruébalo y publícalo — «Paso N de 4»,
+«Atrás» and «Siguiente», «Guardar y seguir después», and the full editor behind «Más
+opciones (avanzado)». No step id, button id or field key is shown anywhere: steps are
+listed and chosen by name.
+
 Talks to `WhatsAppMenuState` only — never to the provider, Graph or Postgres.
 """
 
@@ -42,7 +48,18 @@ from .ui import (
 from .ui import tokens as T
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
+    ACTION_MORE,
+    ACTION_MORE_LABEL,
+    ACTION_TEXT,
+    ADDRESS_ASK,
+    ADDRESS_SKIP,
+    BUTTON_LABEL_MAX,
+    CATALOG_FIX_FIRST,
+    CATALOG_SAVED_HINT,
+    COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
+    GUIDED_ACTIONS,
+    HANDOFF_REASONS,
     KIND_BUTTONS,
     KIND_COLLECT,
     KIND_HANDOFF,
@@ -58,14 +75,19 @@ from .whatsapp_menu_vm import (
     PUBLISH_CONFIRM_BUTTON,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
+    SAVE_NEEDS_FIX,
+    SAVE_NOTHING_NEW,
     SAVE_ONLY_BUTTON,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    CatalogRowVM,
     CommandForm,
+    GuidedButtonVM,
     IceBreakerForm,
     KeywordForm,
     MenuSummaryVM,
     MenuVersionVM,
+    NodeChoiceVM,
     NodeForm,
     OptionForm,
     PreviewChoiceVM,
@@ -77,6 +99,8 @@ from .whatsapp_vm import TAB_QR
 _TONES = ("ok", "warn", "error", "info", "neutral")
 PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
 TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
+# Guide N12: touch targets of at least 44 px on the phone.
+TARGET_MIN = "44px"
 
 
 # ======================================================================================
@@ -160,13 +184,18 @@ def _node_select(
     none_label: str | None = None,
     handoffs_only: bool = False,
 ) -> rx.Component:
-    """A select over the menu's step ids. `none_label` adds the «ninguno» choice."""
-    items = S.handoff_node_ids if handoffs_only else S.node_ids
+    """A select over the menu's steps, by name (the value is the id, never shown).
+    `none_label` adds the «ninguno» choice."""
+    items = S.handoff_choices if handoffs_only else S.node_choices
+
+    def item(choice: NodeChoiceVM) -> rx.Component:
+        return rx.select.item(choice.label, value=choice.node_id)
+
     return rx.select.root(
         rx.select.trigger(placeholder="Elige un paso", width="100%"),
         rx.select.content(
             *([rx.select.item(none_label, value=NONE_VALUE)] if none_label else []),
-            rx.foreach(items, lambda node_id: rx.select.item(node_id, value=node_id)),
+            rx.foreach(items, item),
         ),
         value=value,
         on_change=on_change,
@@ -483,6 +512,16 @@ def _published_but_paused() -> rx.Component:
     )
 
 
+def _publish_area() -> rx.Component:
+    """«Publicar en mi WhatsApp» and friends, or — right after publishing — «listo» and
+    the next step. Lives in step 4, or in the toolbar of «Más opciones (avanzado)»."""
+    return rx.cond(
+        S.just_published,
+        rx.cond(S.menu.is_paused, _published_but_paused(), _next_step()),
+        _actions(),
+    )
+
+
 def _toolbar() -> rx.Component:
     return card(
         rx.vstack(
@@ -499,36 +538,9 @@ def _toolbar() -> rx.Component:
                 spacing="1",
                 align_items="start",
             ),
-            rx.cond(
-                S.just_published,
-                rx.cond(S.menu.is_paused, _published_but_paused(), _next_step()),
-                _actions(),
-            ),
-            rx.hstack(
-                rx.switch(
-                    checked=S.menu.is_paused,
-                    on_change=S.toggle_pause,
-                    disabled=S.pausing | ~S.menu.is_published,
-                    size="2",
-                ),
-                rx.vstack(
-                    rx.text("Pausar el menú en tu WhatsApp", size="2", weight="medium"),
-                    rx.text(
-                        rx.cond(
-                            S.menu.is_published,
-                            "En pausa, tu WhatsApp no responde con el menú; los mensajes "
-                            "llegan a Chats como siempre.",
-                            "Se puede pausar una vez publicado.",
-                        ),
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="0",
-                    align_items="start",
-                ),
-                spacing="3",
-                align="center",
-            ),
+            rx.cond(S.advanced_open, _publish_area(), rx.fragment()),
+            # One decision per step: pausing only matters once the menu is live.
+            rx.cond(S.menu.is_published | S.advanced_open, _pause_row(), rx.fragment()),
             rx.cond(
                 S.error_count > 0,
                 callout(S.issues_text, "warn"),
@@ -542,6 +554,34 @@ def _toolbar() -> rx.Component:
         padding="1rem 1.25rem",
         id=TOOLBAR_ELEMENT_ID,
         scroll_margin_top="1rem",
+    )
+
+
+def _pause_row() -> rx.Component:
+    return rx.hstack(
+        rx.switch(
+            checked=S.menu.is_paused,
+            on_change=S.toggle_pause,
+            disabled=S.pausing | ~S.menu.is_published,
+            size="2",
+        ),
+        rx.vstack(
+            rx.text("Pausar el menú en tu WhatsApp", size="2", weight="medium"),
+            rx.text(
+                rx.cond(
+                    S.menu.is_published,
+                    "En pausa, tu WhatsApp no responde con el menú; los mensajes "
+                    "llegan a Chats como siempre.",
+                    "Se puede pausar una vez publicado.",
+                ),
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="0",
+            align_items="start",
+        ),
+        spacing="3",
+        align="center",
     )
 
 
@@ -751,11 +791,11 @@ def _entry_card() -> rx.Component:
 
 def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
     selected = index == S.selected_node
-    return rx.hstack(
+    row = rx.hstack(
         choice_card(
             rx.vstack(
                 rx.hstack(
-                    mono(rx.cond(node.node_id != "", node.node_id, "(sin identificador)")),
+                    rx.text(node.label, size="2", weight="medium"),
                     rx.cond(
                         node.node_id == S.start_node,
                         tag("Inicio"),
@@ -768,8 +808,10 @@ def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
                 rx.hstack(
                     rx.text(node.kind_label, size="1", color=T.TEXT_MUTED),
                     rx.cond(node.has_issue, signal_pill("Revisar", "warn"), rx.fragment()),
+                    rx.cond(node.unused, tag("Sin usar"), rx.fragment()),
                     spacing="2",
                     align="center",
+                    wrap="wrap",
                 ),
                 spacing="1",
                 align_items="start",
@@ -784,6 +826,34 @@ def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
         _icon_button("trash-2", "Quitar paso", S.remove_node(index)),
         spacing="1",
         align="center",
+        width="100%",
+    )
+    return rx.vstack(
+        row,
+        rx.cond(
+            node.unused,
+            rx.hstack(
+                rx.text(
+                    "Nadie llega a este paso. Puedes quitarlo.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.button(
+                    "Quitar",
+                    on_click=S.remove_node(index),
+                    variant="ghost",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+                padding_left="0.75rem",
+            ),
+            rx.fragment(),
+        ),
+        spacing="0",
         width="100%",
     )
 
@@ -873,16 +943,6 @@ def _option_row(option: OptionForm, index: rx.Var[int]) -> rx.Component:
                     _node_select(option.next, lambda v: S.set_option_field(index, "next", v)),
                     _err(option.errors, "next"),
                 ),
-                _field(
-                    "Identificador",
-                    rx.input(
-                        value=option.option_id,
-                        on_change=lambda v: S.set_option_field(index, "option_id", v),
-                        width="100%",
-                        class_name="q-mono",
-                    ),
-                    _err(option.errors, "option_id"),
-                ),
                 columns=rx.breakpoints(initial="1", md="2"),
                 spacing="2",
                 width="100%",
@@ -930,6 +990,11 @@ def _options_editor() -> rx.Component:
         ),
         _err(node.errors, "options"),
         rx.foreach(node.options, _option_row),
+        # Button ids are generated; a clash (only from an old hand-made menu) shows here.
+        rx.foreach(
+            node.options,
+            lambda option: _err(option.errors, "option_id"),
+        ),
         spacing="2",
         width="100%",
     )
@@ -1026,7 +1091,18 @@ def _kind_fields() -> rx.Component:
             KIND_COLLECT,
             rx.vstack(
                 rx.grid(
-                    _node_input("Se guarda como", "field_name", node.field_name, "direccion"),
+                    _field(
+                        "Qué dato pide",
+                        rx.select.root(
+                            rx.select.trigger(width="100%"),
+                            rx.select.content(
+                                *[rx.select.item(lbl, value=key) for key, lbl in COLLECT_FIELDS]
+                            ),
+                            value=node.field_name,
+                            on_change=lambda v: S.set_node_field("field_name", v),
+                        ),
+                        _err(node.errors, "field_name"),
+                    ),
                     _field(
                         "Qué se acepta",
                         rx.select.root(
@@ -1065,11 +1141,17 @@ def _kind_fields() -> rx.Component:
         ),
         (
             KIND_HANDOFF,
-            _node_input(
-                "Motivo (para la bandeja)",
-                "reason",
-                node.reason,
-                "customer_request",
+            _field(
+                "Por qué te pasa el chat (lo ves en Chats)",
+                rx.select.root(
+                    rx.select.trigger(width="100%"),
+                    rx.select.content(
+                        *[rx.select.item(lbl, value=key) for key, lbl in HANDOFF_REASONS]
+                    ),
+                    value=node.reason,
+                    on_change=lambda v: S.set_node_field("reason", v),
+                ),
+                _err(node.errors, "reason"),
             ),
         ),
         rx.fragment(),
@@ -1081,7 +1163,7 @@ def _step_detail() -> rx.Component:
     return card(
         rx.vstack(
             rx.grid(
-                _node_input("Identificador del paso", "node_id", node.node_id),
+                _node_input("Nombre del paso", "title", node.title),
                 _field(
                     "Tipo",
                     rx.select.root(
@@ -1097,6 +1179,8 @@ def _step_detail() -> rx.Component:
                 spacing="3",
                 width="100%",
             ),
+            _hint("Solo lo ves tú. Cambiarlo no cambia nada en tu WhatsApp."),
+            _err(node.errors, "node_id"),
             _err(node.errors, "_node"),
             _field(
                 rx.match(
@@ -1513,17 +1597,556 @@ def _preview_card() -> rx.Component:
 
 
 # ======================================================================================
+# The menu in four steps (m-24848536)
+# ======================================================================================
+
+
+def _guided_err(message: rx.Var[str]) -> rx.Component:
+    return rx.cond(
+        message != "",
+        rx.text(message, size="1", color=T.tone_color("error", 11)),
+        rx.fragment(),
+    )
+
+
+def _guided_greeting() -> rx.Component:
+    g = S.guided
+    return _field(
+        "Tu saludo",
+        rx.text_area(
+            value=g.greeting,
+            on_change=S.set_guided_greeting,
+            placeholder="Ej.: ¡Hola! Gracias por escribirnos. Te ayudo con tu pedido.",
+            width="100%",
+            rows="4",
+            size="3",
+        ),
+        _guided_err(g.greeting_error),
+        _hint("Llega una sola vez, la primera vez que cada cliente te escribe."),
+    )
+
+
+def _guided_action_select(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
+    return rx.select.root(
+        rx.select.trigger(placeholder="Elige qué pasa", width="100%"),
+        rx.select.content(
+            *[rx.select.item(label, value=key) for key, label in GUIDED_ACTIONS],
+            rx.cond(
+                button.action == ACTION_MORE,
+                rx.select.item(ACTION_MORE_LABEL, value=ACTION_MORE),
+                rx.fragment(),
+            ),
+        ),
+        value=button.action,
+        on_change=lambda v: S.set_guided_button_action(index, v),
+        size="3",
+    )
+
+
+def _guided_button(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.text("Botón ", index + 1, size="2", weight="medium"),
+                rx.spacer(),
+                rx.cond(
+                    S.guided.can_remove_button,
+                    rx.button(
+                        rx.icon("trash-2", size=T.ICON_SM),
+                        "Quitar",
+                        on_click=S.remove_guided_button(index),
+                        variant="ghost",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                    rx.fragment(),
+                ),
+                width="100%",
+                align="center",
+            ),
+            _field(
+                "Lo que dice el botón",
+                rx.input(
+                    value=button.label,
+                    on_change=lambda v: S.set_guided_button_label(index, v),
+                    placeholder="Ej.: Ver menú",
+                    width="100%",
+                    size="3",
+                ),
+                rx.text(
+                    button.label.length(),
+                    f" de {BUTTON_LABEL_MAX}",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-nums",
+                ),
+                _guided_err(button.label_error),
+            ),
+            _field("Al tocarlo", _guided_action_select(button, index)),
+            rx.cond(
+                button.action == ACTION_TEXT,
+                _field(
+                    "Lo que respondes",
+                    rx.text_area(
+                        value=button.text,
+                        on_change=lambda v: S.set_guided_button_text(index, v),
+                        placeholder="Ej.: Abrimos de lunes a domingo de 12:00 a 22:00.",
+                        width="100%",
+                        rows="3",
+                        size="3",
+                    ),
+                    _guided_err(button.text_error),
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                button.action == ACTION_MORE,
+                rx.text(
+                    "Muestra otros botones: ",
+                    button.more_summary,
+                    ". Los cambias en «Más opciones (avanzado)».",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.fragment(),
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+        padding="0.75rem 1rem",
+    )
+
+
+def _guided_buttons() -> rx.Component:
+    g = S.guided
+    return rx.cond(
+        g.uses_buttons,
+        rx.vstack(
+            _field(
+                "Lo que preguntas sobre los botones",
+                rx.input(
+                    value=g.question,
+                    on_change=S.set_guided_question,
+                    placeholder="Ej.: ¿Qué quieres hacer?",
+                    width="100%",
+                    size="3",
+                ),
+                _guided_err(g.question_error),
+            ),
+            rx.foreach(g.buttons, _guided_button),
+            rx.button(
+                rx.icon("plus", size=T.ICON_SM),
+                "Agregar un botón",
+                on_click=S.add_guided_button,
+                disabled=g.buttons_full,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            _hint(
+                "Hasta 3 botones. Cada uno, máximo 20 letras y espacios (ej.: Ver menú y pedir)."
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+        rx.vstack(
+            rx.text(
+                "Tu saludo todavía no tiene botones. Con botones, tu cliente elige sin "
+                "tener que escribir.",
+                size="2",
+            ),
+            rx.button(
+                rx.icon("plus", size=T.ICON_SM),
+                "Agregar botones al saludo",
+                on_click=S.use_guided_buttons,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _catalog_row(row: CatalogRowVM) -> rx.Component:
+    return rx.hstack(
+        rx.text(row.name, size="2", min_width="0"),
+        rx.spacer(),
+        rx.text(row.price, size="2", color=T.TEXT_MUTED, class_name="q-nums", flex_shrink="0"),
+        width="100%",
+        align="center",
+        padding_y="0.35rem",
+        border_top=T.BORDER,
+    )
+
+
+def _address_choice(value: str, title: str, description: str) -> rx.Component:
+    selected = S.guided.address_choice == value
+    return choice_card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(title, size="2", weight="medium"),
+                rx.spacer(),
+                rx.cond(selected, choice_card_check(), rx.fragment()),
+                width="100%",
+            ),
+            rx.text(description, size="1", color=T.TEXT_MUTED),
+            spacing="1",
+            align_items="start",
+            width="100%",
+        ),
+        selected=selected,
+        on_select=S.set_guided_address(value),
+        padding="0.75rem 1rem",
+        min_height=TARGET_MIN,
+    )
+
+
+def _guided_products() -> rx.Component:
+    g = S.guided
+    # Going to Catálogo saves first (N6); with something to fix it cannot, and says so.
+    leave_blocked = S.dirty & (S.error_count > 0)
+
+    def leave_hint() -> rx.Component:
+        return rx.cond(
+            leave_blocked,
+            rx.text(CATALOG_FIX_FIRST, size="1", color=T.tone_color("warn", 11)),
+            _hint(CATALOG_SAVED_HINT),
+        )
+
+    catalog = rx.cond(
+        S.catalog_count > 0,
+        rx.vstack(
+            rx.text("Así aparecen, con su precio:", size="2", weight="medium"),
+            rx.vstack(
+                rx.foreach(S.catalog, _catalog_row),
+                spacing="0",
+                width="100%",
+                max_height="16rem",
+                overflow_y="auto",
+            ),
+            rx.button(
+                "Guardar y cambiar mis productos",
+                on_click=S.save_and_open_catalog,
+                disabled=leave_blocked | S.saving | S.publishing,
+                loading=S.saving & ~S.publishing,
+                variant="ghost",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            leave_hint(),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        empty_state(
+            "package",
+            "Aún no tienes productos",
+            "Agrega tus productos con su precio y vuelve aquí: tu cliente podrá elegirlos "
+            "desde WhatsApp.",
+            rx.vstack(
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Guardar y agregar mis productos",
+                    on_click=S.save_and_open_catalog,
+                    disabled=leave_blocked | S.saving | S.publishing,
+                    loading=S.saving & ~S.publishing,
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                leave_hint(),
+                spacing="2",
+                align_items="center",
+            ),
+        ),
+    )
+    return rx.vstack(
+        catalog,
+        rx.cond(
+            g.has_products,
+            _field(
+                "Lo que dices antes de la lista",
+                rx.input(
+                    value=g.products_intro,
+                    on_change=S.set_guided_products_intro,
+                    placeholder="Ej.: Elige un producto para agregarlo a tu pedido.",
+                    width="100%",
+                    size="3",
+                ),
+                _guided_err(g.products_intro_error),
+            ),
+            rx.vstack(
+                rx.text(
+                    "Para que tu cliente vea tus productos, elige «Mostrar mis productos» "
+                    "en uno de los botones.",
+                    size="2",
+                ),
+                rx.button(
+                    rx.icon("arrow-left", size=T.ICON_SM),
+                    "Ir a los botones",
+                    on_click=S.guided_go(2),
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            g.has_order,
+            rx.vstack(
+                rx.text("Cuando tu cliente confirma el pedido", size="2", weight="medium"),
+                rx.grid(
+                    _address_choice(
+                        ADDRESS_ASK,
+                        "Pedir dirección",
+                        "Le pregunta a dónde lo llevas y luego te pasa el chat.",
+                    ),
+                    _address_choice(
+                        ADDRESS_SKIP,
+                        "No pedir nada",
+                        "Te pasa el chat enseguida, para que lo cierres tú.",
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2"),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.cond(
+                    g.address_choice == ADDRESS_ASK,
+                    _field(
+                        "Cómo pides la dirección",
+                        rx.input(
+                            value=g.address_prompt,
+                            on_change=S.set_guided_address_prompt,
+                            width="100%",
+                            size="3",
+                        ),
+                        _guided_err(g.address_error),
+                    ),
+                    rx.fragment(),
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _step_issue(show: rx.Var[bool], text: str, step: int) -> rx.Component:
+    return rx.cond(
+        show,
+        rx.vstack(
+            callout(text, "warn"),
+            rx.button(
+                f"Corregir en el paso {step}",
+                on_click=S.guided_go(step),
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
+
+
+def _guided_publish() -> rx.Component:
+    g = S.guided
+    return rx.vstack(
+        rx.text("Así va a responder tu WhatsApp:", size="2", weight="medium"),
+        rx.vstack(
+            rx.foreach(
+                S.guided_review,
+                lambda line: rx.hstack(
+                    rx.icon("check", size=T.ICON_SM, color=T.tone_color("ok", 11), flex_shrink="0"),
+                    rx.text(line, size="2"),
+                    spacing="2",
+                    align="start",
+                ),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        # Each step with something to fix, and the way back to it (N6/N10).
+        _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
+        _step_issue(g.buttons_issue, "Un botón no tiene texto o no hace nada.", 2),
+        _step_issue(
+            g.products_issue,
+            "Falta lo que dices antes de tus productos o cómo pides la dirección.",
+            3,
+        ),
+        rx.cond(
+            g.hidden_issues > 0,
+            rx.vstack(
+                callout(
+                    "Hay algo por corregir en partes del menú que no están en estos 4 pasos.",
+                    "warn",
+                ),
+                rx.button(
+                    "Revisar en «Más opciones»",
+                    on_click=S.set_advanced(True),
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        _publish_area(),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _guided_nav() -> rx.Component:
+    nav = rx.flex(
+        rx.cond(
+            S.guided_step > 1,
+            rx.button(
+                rx.icon("arrow-left", size=T.ICON_SM),
+                "Atrás",
+                on_click=S.guided_back,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            rx.fragment(),
+        ),
+        rx.spacer(),
+        rx.cond(
+            S.guided_step < 4,
+            rx.flex(
+                rx.button(
+                    "Guardar y seguir después",
+                    on_click=S.save_current_version,
+                    disabled=~S.can_save | S.publishing,
+                    loading=S.saving & ~S.publishing,
+                    variant="ghost",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.button(
+                    "Siguiente",
+                    rx.icon("arrow-right", size=T.ICON_SM),
+                    on_click=S.guided_next,
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                spacing="2",
+                wrap="wrap",
+                justify="end",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        wrap="wrap",
+        align="center",
+        width="100%",
+    )
+    # Why «Guardar y seguir después» is off, so the owner between customers knows.
+    why_no_save = rx.cond(
+        S.guided_step < 4,
+        rx.cond(
+            S.error_count > 0,
+            _hint(SAVE_NEEDS_FIX),
+            rx.cond(S.has_menu & ~S.dirty, _hint(SAVE_NOTHING_NEW), rx.fragment()),
+        ),
+        rx.fragment(),
+    )
+    return rx.vstack(nav, why_no_save, spacing="2", width="100%", align_items="end")
+
+
+def _guided_card() -> rx.Component:
+    """The default view: one decision per step (guide N6), the same form underneath."""
+    return card(
+        rx.vstack(
+            rx.text(
+                S.guided_step_text,
+                size="1",
+                weight="medium",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+            ),
+            rx.heading(S.guided_title, size="4", as_="h2"),
+            rx.text(S.guided_help, size="2", color=T.TEXT_MUTED),
+            rx.match(
+                S.guided_step,
+                (1, _guided_greeting()),
+                (2, _guided_buttons()),
+                (3, _guided_products()),
+                _guided_publish(),
+            ),
+            _guided_nav(),
+            rx.divider(),
+            rx.button(
+                rx.icon("settings-2", size=T.ICON_SM),
+                "Más opciones (avanzado)",
+                on_click=S.set_advanced(True),
+                variant="ghost",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="4",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1.25rem 1.5rem",
+    )
+
+
+# ======================================================================================
 # The tab
 # ======================================================================================
+
+
+def _advanced() -> rx.Component:
+    return rx.vstack(
+        rx.button(
+            rx.icon("arrow-left", size=T.ICON_SM),
+            "Volver a los 4 pasos",
+            on_click=S.set_advanced(False),
+            variant="ghost",
+            size="3",
+            min_height=TARGET_MIN,
+            **T.tone_scheme("neutral"),
+        ),
+        _entry_card(),
+        _steps_card(),
+        _versions_section(),
+        spacing="4",
+        width="100%",
+        min_width="0",
+    )
 
 
 def _editor() -> rx.Component:
     return rx.grid(
         rx.vstack(
             _toolbar(),
-            _entry_card(),
-            _steps_card(),
-            _versions_section(),
+            rx.cond(S.advanced_open, _advanced(), _guided_card()),
             spacing="4",
             width="100%",
             min_width="0",
@@ -1531,6 +2154,12 @@ def _editor() -> rx.Component:
         rx.box(
             _preview_card(),
             id=PREVIEW_ELEMENT_ID,
+            # On the phone the preview waits for step 4 «Pruébalo y publícalo» (or the
+            # advanced editor), so steps 1-3 are one decision with nothing below.
+            display=rx.breakpoints(
+                initial=rx.cond(S.advanced_open | (S.guided_step == 4), "block", "none"),
+                lg="block",
+            ),
             position=rx.breakpoints(initial="static", lg="sticky"),
             top="1rem",
             scroll_margin_top="1rem",

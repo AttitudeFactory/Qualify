@@ -33,6 +33,13 @@ What the page says that the service decides elsewhere:
   box with its text for this person (`{nombre}`, `{marca}`), a line says what is still to
   complete («[precio]»), and it leaves only through «Responder». «Administrar plantillas»
   opens a drawer to create, edit, delete (confirmed in place) and reorder them;
+- **«Respuestas rápidas»** (m-24789472) adds up to 13 short options under the message
+  being written, sent with it once approved; a template **with buttons** shows them
+  read-only under the box and goes out as one message with buttons. Either one says
+  plainly when this deployment cannot send it yet (a notice, never the state badge);
+- **«Preguntas iniciales»** (m-24789472), in the header next to the account, opens the
+  account's Instagram Ice Breakers drawer (`ice_breakers_panel.py`): edit, save, and —
+  after a confirmation — publish to or remove from Instagram;
 - every real bubble has **«Eliminar para mí»** on hover: Instagram's API offers a
   business neither unsend nor edit, so «para todos» and «editar» do not exist here;
 - the conversation shows its **newest 50 messages** (`MESSAGES_PAGE`); older history is a
@@ -48,13 +55,21 @@ import reflex as rx
 
 from .conversations_state import ConversationsState
 from .conversations_vm import (
+    BUTTON_KINDS,
+    BUTTON_LINK,
+    BUTTON_REPLY,
+    BUTTONS_HINT,
+    BUTTONS_OFF_FORM_NOTICE,
+    BUTTONS_OFF_NOTICE,
     DOCUMENT_ACCEPT,
     FILTER_ALL,
     FILTER_ANSWERED,
     FILTER_PENDING,
     FILTER_READ,
+    MAX_BUTTON_TITLE_CHARS,
     MAX_DOCUMENT_BYTES,
     MAX_MEDIA_BYTES,
+    MAX_QUICK_REPLY_TITLE_CHARS,
     MAX_TEMPLATE_BODY_CHARS,
     MAX_TEMPLATE_TITLE_CHARS,
     MAX_TEMPLATES_PER_ACCOUNT,
@@ -64,14 +79,20 @@ from .conversations_vm import (
     MEDIA_STICKER,
     MEDIA_VIDEO,
     MESSAGES_PAGE,
+    QUICK_REPLIES_HINT,
+    QUICK_REPLIES_WITH_BUTTONS,
+    TAP_ICON,
     TEMPLATE_HELP,
     AccountVM,
+    ButtonVM,
     MessageVM,
     TemplateVM,
     ThreadRowVM,
 )
 from .followups_page import followups_panel, followups_toggle
 from .followups_state import FollowupsState
+from .ice_breakers_panel import ice_breakers_panel
+from .ice_breakers_panel import open_button as ice_breakers_button
 from .next_steps_vm import ALL_CLEAR_BODY, ALL_CLEAR_TITLE, CREATE_LABEL, CREATE_ROUTE
 from .ui import (
     app_shell,
@@ -84,6 +105,7 @@ from .ui import (
     page_body,
     page_header,
     platform_badge,
+    removable_pill,
     signal_pill,
     skeleton_rows,
     tone_badge,
@@ -227,11 +249,18 @@ def _pending_badge() -> rx.Component:
     )
 
 
+def _ice_breakers_door() -> rx.Component:
+    """«Preguntas iniciales» (m-24789472) of the selected account: here, because their
+    taps arrive in this inbox and the account is already chosen in this header."""
+    return rx.cond(S.has_accounts, ice_breakers_button(S.selected_connection_id), rx.fragment())
+
+
 def conversations_header() -> rx.Component:
     return page_header(
         "Conversaciones",
         "Los mensajes privados que llegan a tus cuentas conectadas, en una sola bandeja.",
         account_selector(),
+        _ice_breakers_door(),
         badge=_pending_badge(),
     )
 
@@ -785,7 +814,7 @@ def _bubble_body(m: MessageVM) -> rx.Component:
         rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
         rx.fragment(),
     )
-    return rx.cond(
+    body = rx.cond(
         m.media_control != "",
         rx.vstack(
             _media_view(m),
@@ -795,6 +824,20 @@ def _bubble_body(m: MessageVM) -> rx.Component:
         ),
         text,
     )
+    # m-24789472: a message with buttons keeps its text; this line says what it was.
+    note = rx.cond(
+        m.kind_note != "",
+        rx.hstack(
+            rx.icon("mouse-pointer-click", size=T.ICON_SM),
+            rx.text(m.kind_note, size="1"),
+            spacing="1",
+            align="center",
+            class_name="q-conv-meta",
+            padding_top="0.25rem",
+        ),
+        rx.fragment(),
+    )
+    return rx.fragment(body, note)
 
 
 def _day_chip(label: rx.Var[str]) -> rx.Component:
@@ -836,6 +879,19 @@ def _story_reply(m: MessageVM) -> rx.Component:
     return rx.cond(m.story_reply_label != "", label, rx.fragment())
 
 
+def _choice_origin(m: MessageVM) -> rx.Component:
+    """«Pregunta inicial: Precio» above an inbound bubble the person tapped instead of
+    typing (m-24789472) — the same quiet line as `_story_reply`."""
+    label = rx.hstack(
+        rx.icon(TAP_ICON, size=T.ICON_SM, color=T.TEXT_FAINT),
+        rx.text(m.choice_label, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        align="center",
+        class_name="q-conv-choice",
+    )
+    return rx.cond(m.choice_label != "", label, rx.fragment())
+
+
 def _message(m: MessageVM) -> rx.Component:
     """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail);
     `.q-conv-msg` is the entrance — keyed by message id, so only a new bubble plays it.
@@ -854,9 +910,11 @@ def _message(m: MessageVM) -> rx.Component:
             ),
             rx.box(
                 _story_reply(m),
+                _choice_origin(m),
                 chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
+                # `--story` stacks a context line above the bubble (story reply or tap).
                 class_name=rx.cond(
-                    m.story_reply_label != "",
+                    (m.story_reply_label != "") | (m.choice_label != ""),
                     "q-wa-msg q-wa-msg--in q-conv-msg q-conv-msg--story",
                     "q-wa-msg q-wa-msg--in q-conv-msg",
                 ),
@@ -1241,6 +1299,112 @@ def _field(label: str, control: rx.Component, counter: rx.Var[str]) -> rx.Compon
     )
 
 
+def _form_button_row(b: ButtonVM, i: rx.Var[int]) -> rx.Component:
+    """One button of the template being written: what it does, its text (≤ 20) and,
+    for «Abrir una página», the https page it opens."""
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.vstack(
+                    rx.text("Qué hace el botón", size="2", weight="medium"),
+                    rx.select.root(
+                        rx.select.trigger(aria_label="Qué hace el botón", min_width="12rem"),
+                        rx.select.content(
+                            rx.select.item(BUTTON_KINDS[BUTTON_REPLY][0], value=BUTTON_REPLY),
+                            rx.select.item(BUTTON_KINDS[BUTTON_LINK][0], value=BUTTON_LINK),
+                        ),
+                        value=b.kind,
+                        on_change=lambda value: S.set_template_button_kind(i, value),
+                        size="2",
+                    ),
+                    spacing="1",
+                    min_width="0",
+                ),
+                rx.spacer(),
+                _template_tool("trash-2", "Quitar el botón", on_click=S.remove_template_button(i)),
+                width="100%",
+                align="end",
+            ),
+            _field(
+                "Texto del botón",
+                rx.input(
+                    value=b.title,
+                    on_change=lambda value: S.set_template_button_title(i, value),
+                    placeholder="Ej.: Ver catálogo",
+                    max_length=MAX_BUTTON_TITLE_CHARS,
+                    width="100%",
+                    aria_label="Texto del botón",
+                ),
+                b.title.length().to(str) + f"/{MAX_BUTTON_TITLE_CHARS}",
+            ),
+            rx.cond(
+                b.kind == BUTTON_LINK,
+                rx.vstack(
+                    rx.text("Enlace", size="2", weight="medium"),
+                    rx.input(
+                        value=b.url,
+                        on_change=lambda value: S.set_template_button_url(i, value),
+                        placeholder="https://tu-tienda.com/catalogo",
+                        type="url",
+                        width="100%",
+                        aria_label="Enlace que abre el botón",
+                    ),
+                    spacing="1",
+                    width="100%",
+                ),
+                rx.fragment(),
+            ),
+            rx.text(
+                rx.cond(
+                    b.kind == BUTTON_LINK,
+                    "Abre esa página dentro de Instagram.",
+                    "Cuando la persona lo toca, su respuesta te llega en la conversación.",
+                ),
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        padding="0.75rem",
+    )
+
+
+def _template_buttons_editor() -> rx.Component:
+    """«Botones (opcional)»: 0–3 per template. With any, the message is one Instagram
+    message of at most 640 characters (the counter and the inline error say so)."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Botones (opcional)", size="2", weight="medium"),
+            rx.spacer(),
+            rx.text(
+                S.template_form_buttons_counter, size="1", color=T.TEXT_MUTED, class_name="q-nums"
+            ),
+            width="100%",
+            align="center",
+        ),
+        rx.text(BUTTONS_HINT, size="1", color=T.TEXT_MUTED),
+        rx.cond(
+            S.buttons_feature.enabled,
+            rx.fragment(),
+            callout(BUTTONS_OFF_FORM_NOTICE, "info"),
+        ),
+        rx.foreach(S.template_form_buttons, _form_button_row),
+        rx.button(
+            rx.icon("plus", size=T.ICON_SM),
+            "Agregar botón",
+            on_click=S.add_template_button,
+            disabled=S.template_form_buttons_full,
+            variant="soft",
+            size="2",
+            type="button",
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
 def _template_form() -> rx.Component:
     return rx.cond(
         S.template_form_open,
@@ -1273,7 +1437,18 @@ def _template_form() -> rx.Component:
                     ),
                     S.template_body_counter,
                 ),
+                rx.cond(
+                    S.template_form_body_error != "",
+                    rx.text(
+                        S.template_form_body_error,
+                        size="1",
+                        color=T.tone_color("error", 11),
+                        role="alert",
+                    ),
+                    rx.fragment(),
+                ),
                 rx.text(TEMPLATE_HELP, size="1", color=T.TEXT_MUTED),
+                _template_buttons_editor(),
                 rx.cond(
                     S.template_form_error != "",
                     callout(S.template_form_error, "error"),
@@ -1359,6 +1534,16 @@ def _template_row(t: TemplateVM) -> rx.Component:
         rx.vstack(
             rx.text(t.title, size="2", weight="medium", class_name="q-wa-ellipsis", width="100%"),
             rx.text(t.body, size="1", color=T.TEXT_MUTED, white_space="pre-wrap", width="100%"),
+            rx.cond(
+                t.buttons_label != "",
+                rx.hstack(
+                    rx.icon("mouse-pointer-click", size=T.ICON_SM, color=T.TEXT_MUTED),
+                    rx.text(t.buttons_label, size="1", color=T.TEXT_MUTED),
+                    spacing="1",
+                    align="center",
+                ),
+                rx.fragment(),
+            ),
             spacing="1",
             min_width="0",
             flex="1",
@@ -1486,6 +1671,188 @@ def templates_manager() -> rx.Component:
     )
 
 
+def _button_chip(b: ButtonVM) -> rx.Component:
+    return rx.cond(
+        b.kind == BUTTON_LINK,
+        tone_badge(b.title, "neutral", icon="external-link", size="2"),
+        tone_badge(b.title, "neutral", icon="reply", size="2"),
+    )
+
+
+def _applied_buttons() -> rx.Component:
+    """The picked template's buttons, read-only under the box. While messages with
+    buttons cannot be sent yet, a warning says the text goes out alone — before the
+    person presses «Responder», never after."""
+    drop = rx.button(
+        "Enviar sin botones",
+        on_click=S.drop_applied_buttons,
+        variant="ghost",
+        size="1",
+        type="button",
+        **T.tone_scheme("neutral"),
+    )
+    return rx.cond(
+        S.has_applied_buttons,
+        rx.cond(
+            S.buttons_will_send,
+            rx.vstack(
+                rx.hstack(
+                    rx.text("Botones que van con este mensaje", size="1", weight="medium"),
+                    rx.spacer(),
+                    drop,
+                    width="100%",
+                    align="center",
+                ),
+                rx.flex(
+                    rx.foreach(S.applied_buttons, _button_chip),
+                    wrap="wrap",
+                    gap="0.4rem",
+                ),
+                rx.text(
+                    "Solo se ven en la aplicación de Instagram del celular.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="2",
+                width="100%",
+                class_name="q-conv-suggest",
+            ),
+            callout(BUTTONS_OFF_NOTICE, "warn"),
+        ),
+        rx.fragment(),
+    )
+
+
+def _quick_replies_toggle() -> rx.Component:
+    """«Respuestas rápidas» among the tools, with how many are set."""
+    return rx.button(
+        rx.icon("list-plus", size=T.ICON_SM),
+        "Respuestas rápidas",
+        rx.cond(
+            S.quick_replies.length() > 0,
+            rx.text(S.quick_replies_count_label, size="1", class_name="q-nums"),
+            rx.fragment(),
+        ),
+        on_click=S.toggle_quick_replies,
+        disabled=~S.can_compose | S.busy | S.recording,
+        variant="soft",
+        size="2",
+        type="button",
+        aria_expanded=S.quick_replies_open,
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _quick_reply_chip(title: rx.Var[str], i: rx.Var[int]) -> rx.Component:
+    return removable_pill(
+        title, S.remove_quick_reply(i), remove_label="Quitar esta respuesta rápida"
+    )
+
+
+def _quick_replies_editor() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            S.quick_replies.length() > 0,
+            rx.flex(
+                rx.foreach(S.quick_replies, _quick_reply_chip),
+                wrap="wrap",
+                gap="0.4rem",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        rx.form(
+            rx.hstack(
+                rx.input(
+                    value=S.quick_reply_input,
+                    on_change=S.set_quick_reply_input,
+                    placeholder="Ej.: Quiero pedir",
+                    max_length=MAX_QUICK_REPLY_TITLE_CHARS,
+                    aria_label="Nueva respuesta rápida",
+                    flex="1",
+                    min_width="0",
+                ),
+                rx.text(
+                    S.quick_reply_input_counter,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-nums",
+                ),
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Agregar",
+                    type="submit",
+                    disabled=S.quick_replies_at_limit,
+                    variant="soft",
+                    size="2",
+                ),
+                spacing="2",
+                align="center",
+                width="100%",
+            ),
+            on_submit=S.add_quick_reply,
+            reset_on_submit=False,
+            width="100%",
+        ),
+        rx.cond(
+            S.quick_reply_error != "",
+            rx.text(S.quick_reply_error, size="1", color=T.tone_color("error", 11), role="alert"),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _quick_replies_panel() -> rx.Component:
+    """Up to 13 short options under the message being written. When this deployment
+    cannot send them yet, the panel says so (the button stays reachable on a phone,
+    where a disabled button explains nothing)."""
+    return rx.cond(
+        S.quick_replies_open,
+        card(
+            rx.vstack(
+                rx.hstack(
+                    rx.text("Respuestas rápidas", size="2", weight="bold"),
+                    rx.text(
+                        S.quick_replies_count_label,
+                        size="1",
+                        color=T.TEXT_MUTED,
+                        class_name="q-nums",
+                    ),
+                    rx.spacer(),
+                    rx.icon_button(
+                        rx.icon("x", size=T.ICON_SM),
+                        on_click=S.toggle_quick_replies,
+                        variant="ghost",
+                        size="1",
+                        type="button",
+                        aria_label="Cerrar las respuestas rápidas",
+                        **T.tone_scheme("neutral"),
+                    ),
+                    width="100%",
+                    align="center",
+                    spacing="2",
+                ),
+                rx.text(QUICK_REPLIES_HINT, size="1", color=T.TEXT_MUTED),
+                rx.cond(
+                    S.quick_replies_feature.enabled,
+                    rx.cond(
+                        S.buttons_will_send,
+                        callout(QUICK_REPLIES_WITH_BUTTONS, "info"),
+                        _quick_replies_editor(),
+                    ),
+                    callout(S.quick_replies_feature.notice, "info"),
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            padding="0.75rem",
+        ),
+        rx.fragment(),
+    )
+
+
 def _composer() -> rx.Component:
     return rx.vstack(
         rx.cond(S.account_blocked_notice != "", callout(S.account_blocked_notice, "warn")),
@@ -1517,6 +1884,8 @@ def _composer() -> rx.Component:
             width="100%",
             class_name="q-conv-input",
         ),
+        _applied_buttons(),
+        _quick_replies_panel(),
         rx.hstack(
             rx.flex(
                 _attach_button(
@@ -1535,6 +1904,7 @@ def _composer() -> rx.Component:
                 ),
                 _voice_controls(),
                 _heart_button(),
+                _quick_replies_toggle(),
                 rx.cond(
                     S.attaching,
                     rx.text("Guardando el adjunto…", size="1", color=T.TEXT_MUTED),
@@ -1688,24 +2058,55 @@ def _inbox() -> rx.Component:
     )
 
 
+def _guarded(content: rx.Component) -> rx.Component:
+    """Load error → retry; accounts loading → skeleton; no account → how to connect one;
+    else `content`."""
+    return rx.cond(
+        S.load_error != "",
+        rx.vstack(
+            callout(S.load_error, "error"),
+            _retry_button("Reintentar", S.load_accounts),
+            width="100%",
+            spacing="3",
+        ),
+        rx.cond(
+            ~S.accounts_loaded,
+            rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
+            rx.cond(S.show_no_accounts, _no_accounts_state(), content),
+        ),
+    )
+
+
 def _body() -> rx.Component:
     return page_body(
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
-        rx.cond(
-            S.load_error != "",
-            rx.vstack(
-                callout(S.load_error, "error"),
-                _retry_button("Reintentar", S.load_accounts),
-                width="100%",
-                spacing="3",
-            ),
-            rx.cond(
-                ~S.accounts_loaded,
-                rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
-                rx.cond(S.show_no_accounts, _no_accounts_state(), _inbox()),
-            ),
+        ice_breakers_panel(),
+        _guarded(_inbox()),
+    )
+
+
+def messages_tab() -> rx.Component:
+    """m-24842990: the «Mensajes» tab of «Por responder» — the private inbox without the
+    Mensajes / Consultas toggle (the queries are the «Quieren comprar» tab there). The
+    account selector, the «Preguntas iniciales» door and the pending badge move from the
+    page header into the tab."""
+    return rx.vstack(
+        _heartbeat(),
+        rx.script(src="/qualify-voice.js"),
+        ice_breakers_panel(),
+        rx.hstack(
+            account_selector(),
+            _ice_breakers_door(),
+            _pending_badge(),
+            spacing="3",
+            align="center",
+            wrap="wrap",
+            width="100%",
         ),
+        _guarded(_chats()),
+        spacing="4",
+        width="100%",
     )
 
 

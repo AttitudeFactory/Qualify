@@ -42,6 +42,7 @@ from uuid import UUID, uuid4
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import bindparam, text
 
+from qualify_api.conversations.choices import choice_label
 from qualify_api.conversations.contracts import AccessVerdict, RemoteMessage, RemoteProfile
 
 THREAD_OPEN = "open"
@@ -101,6 +102,15 @@ class MessageRecord:
     # 0075 (m-24789646): the story an inbound DM replies to, if it does.
     story_reply_id: str | None = None
     story_reply_url: str | None = None
+    # 0082 (m-24789472): the option an inbound DM was tapped from, if it was.
+    choice_kind: str | None = None
+    choice_payload: str | None = None
+
+    @property
+    def choice_label(self) -> str | None:
+        """Where a tapped message came from, for the thread («Pregunta inicial: Precio»,
+        «Respuesta rápida: Sí», «Botón: Ver catálogo»); `None` for a typed one."""
+        return choice_label(self.choice_kind, self.choice_payload, self.text)
 
 
 @dataclass(frozen=True)
@@ -234,25 +244,39 @@ _UPSERT_THREAD = text(
     """
 )
 
-# A replay is a no-op, with one exception (m-24789646): the story a DM replies to is
-# filled in when a later reading carries it and the stored row does not (the poll may
-# reach a `mid` before the webhook, or without asking for `story`). Nothing else is ever
-# rewritten; `created` is only true for a real insert.
+# A replay is a no-op, with two exceptions, both FILL-only on an inbound row:
+# - the story a DM replies to (m-24789646) is filled in when a later reading carries it and
+#   the stored row does not (the poll may reach a `mid` before the webhook, or without
+#   asking for `story`);
+# - the option a DM was tapped from (m-24789472, 0082): the poll never carries it (the
+#   Message node has no postback/quick-reply field), so a webhook — first delivery or a
+#   replay — that reaches a `mid` the poll stored adds kind and payload, together.
+# A pair already stored is never replaced, nothing else is ever rewritten, and `created`
+# is only true for a real insert.
 _INSERT_MESSAGE = text(
     """
     INSERT INTO messages (id, tenant_id, thread_id, connection_id, external_message_id,
                           direction, author_external_id, author_username, text, posted_at,
                           shape_version, media_type, media_url, story_reply_id,
-                          story_reply_url)
+                          story_reply_url, choice_kind, choice_payload)
     VALUES (:id, :tenant_id, :thread_id, :connection_id, :external_message_id, :direction,
             :author_external_id, :author_username, :text, :posted_at, :shape_version,
-            :media_type, :media_url, :story_reply_id, :story_reply_url)
+            :media_type, :media_url, :story_reply_id, :story_reply_url, :choice_kind,
+            :choice_payload)
     ON CONFLICT (connection_id, external_message_id) DO UPDATE
-       SET story_reply_id = EXCLUDED.story_reply_id,
-           story_reply_url = EXCLUDED.story_reply_url
-     WHERE messages.story_reply_id IS NULL
-       AND EXCLUDED.story_reply_id IS NOT NULL
-       AND messages.direction = 'inbound'
+       SET story_reply_id = CASE WHEN messages.story_reply_id IS NULL
+                                 THEN EXCLUDED.story_reply_id
+                                 ELSE messages.story_reply_id END,
+           story_reply_url = CASE WHEN messages.story_reply_id IS NULL
+                                  THEN EXCLUDED.story_reply_url
+                                  ELSE messages.story_reply_url END,
+           choice_kind = COALESCE(messages.choice_kind, EXCLUDED.choice_kind),
+           choice_payload = CASE WHEN messages.choice_kind IS NULL
+                                 THEN EXCLUDED.choice_payload
+                                 ELSE messages.choice_payload END
+     WHERE messages.direction = 'inbound'
+       AND ((messages.story_reply_id IS NULL AND EXCLUDED.story_reply_id IS NOT NULL)
+            OR (messages.choice_kind IS NULL AND EXCLUDED.choice_kind IS NOT NULL))
     RETURNING (xmax = 0) AS created
     """
 )
@@ -333,7 +357,8 @@ _LIST_MESSAGES = text(
     """
     SELECT id, thread_id, connection_id, external_message_id, direction, author_external_id,
            author_username, text, posted_at, ingested_at, delivery_status, media_type,
-           media_url, media_object_key, story_reply_id, story_reply_url
+           media_url, media_object_key, story_reply_id, story_reply_url, choice_kind,
+           choice_payload
       FROM messages
      WHERE thread_id = :thread_id AND deleted_at IS NULL
      ORDER BY COALESCE(posted_at, ingested_at) DESC, id DESC
@@ -493,6 +518,8 @@ class PostgresConversationRepository:
                     "media_url": message.media_url,
                     "story_reply_id": message.story_reply_id,
                     "story_reply_url": message.story_reply_url,
+                    "choice_kind": message.choice_kind,
+                    "choice_payload": message.choice_payload,
                 },
             ).first()
             return bool(result is not None and result.created)
@@ -582,6 +609,8 @@ class PostgresConversationRepository:
                 media_object_key=r.media_object_key,
                 story_reply_id=r.story_reply_id,
                 story_reply_url=r.story_reply_url,
+                choice_kind=r.choice_kind,
+                choice_payload=r.choice_payload,
             )
             for r in rows
         ]
@@ -785,6 +814,7 @@ class MemoryConversationRepository:
         key = (connection_id, message.external_message_id)
         if key in self._message_keys:
             self._fill_story_reply(entry, message)
+            self._fill_choice(entry, message)
             return False
         self._message_keys.add(key)
         entry.messages.append(
@@ -804,6 +834,8 @@ class MemoryConversationRepository:
                 media_url=message.media_url,
                 story_reply_id=message.story_reply_id,
                 story_reply_url=message.story_reply_url,
+                choice_kind=message.choice_kind,
+                choice_payload=message.choice_payload,
             )
         )
         return True
@@ -823,6 +855,23 @@ class MemoryConversationRepository:
                     stored,
                     story_reply_id=message.story_reply_id,
                     story_reply_url=message.story_reply_url,
+                )
+
+    @staticmethod
+    def _fill_choice(entry: _MemoryThread, message: RemoteMessage) -> None:
+        """The Postgres `ON CONFLICT` exception: a later webhook may add the tapped option."""
+        if message.choice_kind is None:
+            return
+        for index, stored in enumerate(entry.messages):
+            if (
+                stored.external_message_id == message.external_message_id
+                and stored.choice_kind is None
+                and stored.direction == "inbound"
+            ):
+                entry.messages[index] = replace(
+                    stored,
+                    choice_kind=message.choice_kind,
+                    choice_payload=message.choice_payload,
                 )
 
     def bump_thread_activity(

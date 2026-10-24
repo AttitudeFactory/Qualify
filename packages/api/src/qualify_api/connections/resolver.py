@@ -48,7 +48,9 @@ class AuthenticatedClient(Protocol):
     async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
         """Added for WA-06 (`DELETE /{PHONE_NUMBER_ID}/message_qrdls/{code}`) — the first
         Graph call in this codebase that is a real DELETE. Same discipline as the other two
-        verbs: the credential rides as a header, never as a return value."""
+        verbs: the credential rides as a header, never as a return value. Accepts a `json=`
+        body (m-24789472: `DELETE /me/messenger_profile` names the fields to delete in its
+        body), which `httpx.AsyncClient.delete` alone cannot send."""
         ...
 
 
@@ -92,7 +94,8 @@ class _InjectedAuthClient:
         return await self._client.post(url, **kwargs)
 
     async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
-        return await self._client.delete(url, **kwargs)
+        # `request` rather than `delete`: the same verb, and it also carries a `json=` body.
+        return await self._client.request("DELETE", url, **kwargs)
 
     async def aclose(self) -> None:
         await self._client.aclose()
