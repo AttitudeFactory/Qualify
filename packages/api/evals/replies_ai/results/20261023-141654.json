@@ -1,0 +1,182 @@
+{
+  "golden": "synthetic_smoke.jsonl",
+  "golden_sha256": "72015740d21f775858a0cd1904d7af6d7d048c657064dba3dd15e89859b535f3",
+  "split": "dev",
+  "comments": 40,
+  "synthetic": true,
+  "agreement": {
+    "double_labeled": 0,
+    "min_double_labeled": 50,
+    "min_kappa": 0.7,
+    "kappa": {
+      "sentiment": null,
+      "kind": null,
+      "needs_reply": null
+    },
+    "status": "pending"
+  },
+  "baseline": {
+    "model_id": "claude-haiku-5-5",
+    "prompt_version": "intent-claude-v2",
+    "comments": 40,
+    "unanswered": 0,
+    "cost_usd": 0.00085,
+    "cost_usd_per_comment": 0.0,
+    "thresholds": {
+      "min_precision": 0.8,
+      "min_recall": 0.7,
+      "min_support": 8,
+      "recall_bars": {
+        "sentiment:neg": 0.9,
+        "needs_reply": 0.95
+      }
+    },
+    "per_class": {
+      "needs_reply": {
+        "support": 20,
+        "true_positives": 11,
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 0.55,
+        "min_recall": 0.95,
+        "reliable": false
+      }
+    },
+    "unreliable": [
+      "needs_reply"
+    ],
+    "status": "failed",
+    "missed_needs_reply": [
+      "Pedí a las 7 y llegó a las 9, todo frío. Muy mal",
+      "Les escribí por WhatsApp tres veces y nadie responde",
+      "La arepa venía cruda por dentro, qué decepción",
+      "Carísimo para lo que es, no vuelvo",
+      "Encargué una torta y me la entregaron con otro nombre escrito 😡",
+      "Excelente servicio, dos horas esperando el pedido 🙃",
+      "La pizza llegó aplastada y sin la fainá que pedí",
+      "El delivery fue re grosero con mi madre",
+      "Nunca contestan los mensajes, así no se puede"
+    ]
+  },
+  "classifier": {
+    "model_id": "claude-haiku-5-5",
+    "prompt_version": "atender4a.1",
+    "comments": 40,
+    "unanswered": 0,
+    "cost_usd": 0.000771,
+    "cost_usd_per_comment": 1.928e-05,
+    "thresholds": {
+      "min_precision": 0.8,
+      "min_recall": 0.7,
+      "min_support": 8,
+      "recall_bars": {
+        "sentiment:neg": 0.9,
+        "needs_reply": 0.95
+      }
+    },
+    "per_class": {
+      "sentiment:pos": {
+        "support": 13,
+        "true_positives": 12,
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 0.9230769230769231,
+        "min_recall": 0.7,
+        "reliable": true
+      },
+      "sentiment:neu": {
+        "support": 15,
+        "true_positives": 15,
+        "false_positives": 1,
+        "precision": 0.9375,
+        "recall": 1.0,
+        "min_recall": 0.7,
+        "reliable": true
+      },
+      "sentiment:neg": {
+        "support": 12,
+        "true_positives": 12,
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "min_recall": 0.9,
+        "reliable": true
+      },
+      "kind:praise": {
+        "support": 10,
+        "true_positives": 10,
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "min_recall": 0.7,
+        "reliable": true
+      },
+      "kind:question": {
+        "support": 10,
+        "true_positives": 10,
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "min_recall": 0.7,
+        "reliable": true
+      },
+      "kind:complaint": {
+        "support": 10,
+        "true_positives": 10,
+        "false_positives": 1,
+        "precision": 0.9090909090909091,
+        "recall": 1.0,
+        "min_recall": 0.7,
+        "reliable": true
+      },
+      "kind:other": {
+        "support": 10,
+        "true_positives": 9,
+        "false_positives": 0,
+        "precision": 1.0,
+        "recall": 0.9,
+        "min_recall": 0.7,
+        "reliable": true
+      },
+      "needs_reply": {
+        "support": 20,
+        "true_positives": 20,
+        "false_positives": 1,
+        "precision": 0.9523809523809523,
+        "recall": 1.0,
+        "min_recall": 0.95,
+        "reliable": true
+      }
+    },
+    "unreliable": [],
+    "status": "passed",
+    "errors": [
+      {
+        "text": "jajaja @pedrito el que se comió 5",
+        "golden": [
+          "pos",
+          "other",
+          false
+        ],
+        "predicted": [
+          "neu",
+          "other",
+          false
+        ]
+      },
+      {
+        "text": "Ese lugar ya no es lo que era @carlos",
+        "golden": [
+          "neg",
+          "other",
+          false
+        ],
+        "predicted": [
+          "neg",
+          "complaint",
+          true
+        ]
+      }
+    ]
+  }
+}

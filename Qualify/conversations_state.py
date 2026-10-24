@@ -111,6 +111,7 @@ from .conversations_vm import (
     FILTER_ALL,
     FILTER_ANSWERED,
     FILTER_KEYS,
+    FILTER_PARAM,
     FILTER_PENDING,
     FILTER_READ,
     HEART_TEXT,
@@ -149,6 +150,7 @@ from .conversations_vm import (
     composer_enabled,
     composer_interactive_error,
     filter_counts,
+    filter_from_param,
     filter_label,
     filter_threads,
     moved_order,
@@ -727,7 +729,13 @@ class ConversationsState(rx.State):
 
     @rx.event
     def enter_page(self) -> rx.event.EventSpec | None:
-        """The route's `on_load`, after `AuthState.require_login`."""
+        """The route's `on_load`, after `AuthState.require_login`. A `?filtro=` in the
+        address (Inicio's cards, m-24842962) opens the list with that filter."""
+        requested = filter_from_param(
+            str(self.router.url.query_parameters.get(FILTER_PARAM, "") or "")
+        )
+        if requested is not None:
+            self.filter_key = requested
         if self.accounts_loading:
             return None
         return ConversationsState.load_accounts

@@ -74,8 +74,12 @@ class CapabilitySpec:
     capability: Capability
     env_var: str
     state: CapabilityState
-    # Spanish, shown to the operator next to «no disponible todavía».
+    # Spanish, for the team: the evidence behind the state (dates, test ids, Meta's own
+    # error text). Logged and documented, never shown to the owner.
     reason: str
+    # What the owner reads when it is off (NAV-11, m-24849129): plain Spanish, no switch
+    # names, dates or Meta quotes (qualify-copy-es).
+    owner_reason: str
 
 
 REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
@@ -87,6 +91,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             CapabilityState.VERIFIED,
             "La respuesta privada a un comentario (un solo mensaje, dentro de 7 días) se "
             "verificó con Meta el 2026-10-22 (R1).",
+            "Responder en privado a un comentario todavía no está disponible. Mientras tanto, "
+            "contéstale desde Instagram.",
         ),
         CapabilitySpec(
             Capability.STORY_COMMENTS,
@@ -94,6 +100,7 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             CapabilityState.META_LIMITATION,
             "Meta no entrega por la API los comentarios de las historias («Comments cannot "
             "be made on story media», prueba real del 2026-10-21).",
+            "Instagram no deja leer los comentarios de las historias.",
         ),
         CapabilitySpec(
             Capability.STORY_REPLY_CONTEXT,
@@ -101,6 +108,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             CapabilityState.VERIFIED,
             "Qualify lee a qué historia responde un mensaje directo y le contesta por DM; "
             "verificado con Meta el 2026-10-22 (R3).",
+            "Contestar a quien respondió una historia todavía no está disponible. Mientras tanto, "
+            "contéstale desde Instagram.",
         ),
         CapabilitySpec(
             Capability.PUBLIC_NOTICE,
@@ -109,6 +118,7 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             "El aviso público «Te enviamos la información por DM 💬» (una respuesta pública "
             "al comentario, solo tras confirmar el mensaje privado) se verificó con Meta el "
             "2026-10-22 (R4).",
+            "El aviso en el comentario todavía no está disponible.",
         ),
         CapabilitySpec(
             Capability.ICE_BREAKERS,
@@ -116,6 +126,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             CapabilityState.TO_VERIFY,
             "Publicar o quitar las preguntas iniciales en Instagram está hecho según la "
             "documentación de Meta, pero falta probarlo con una cuenta real (R6).",
+            "Ya puedes preparar y guardar tus preguntas iniciales. Estamos terminando de "
+            "probar la publicación con Instagram.",
         ),
         CapabilitySpec(
             Capability.QUICK_REPLIES,
@@ -124,6 +136,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             "Las respuestas rápidas (opciones para tocar debajo de un mensaje, solo en el "
             "teléfono) están hechas según la documentación de Meta, pero falta probarlas "
             "con una cuenta real (R7).",
+            "Las respuestas rápidas todavía no están disponibles: estamos terminando de "
+            "probarlas con Instagram.",
         ),
         CapabilitySpec(
             Capability.STRUCTURED_TEMPLATES,
@@ -132,6 +146,8 @@ REGISTRY: Final[Mapping[Capability, CapabilitySpec]] = {
             "Los mensajes con botones (hasta 3, para abrir un enlace o responder con un "
             "toque) están hechos según la documentación de Meta, pero falta probarlos con "
             "una cuenta real (R8).",
+            "Los mensajes con botones todavía no están disponibles: estamos terminando de "
+            "probarlos con Instagram.",
         ),
     )
 }
@@ -144,8 +160,10 @@ class Availability:
     capability: Capability
     enabled: bool
     state: CapabilityState
-    # Empty when enabled; otherwise why it is not available (Spanish).
+    # Empty when enabled; otherwise why it is not available (Spanish, for the team).
     reason: str
+    # Empty when enabled; otherwise what the owner reads (NAV-11, m-24849129).
+    owner_reason: str = ""
 
     @property
     def state_label(self) -> str:
@@ -173,12 +191,12 @@ class Capabilities:
     def availability(self, capability: Capability) -> Availability:
         spec = REGISTRY[capability]
         if spec.state is CapabilityState.NOT_IMPLEMENTED:
-            return Availability(capability, False, spec.state, spec.reason)
+            return Availability(capability, False, spec.state, spec.reason, spec.owner_reason)
         if capability not in self.switched_on:
             reason = spec.reason
             if spec.state is not CapabilityState.META_LIMITATION:
                 reason = _SWITCHED_OFF_REASON.format(reason=spec.reason, env_var=spec.env_var)
-            return Availability(capability, False, spec.state, reason)
+            return Availability(capability, False, spec.state, reason, spec.owner_reason)
         return Availability(capability, True, spec.state, "")
 
     def enabled(self, capability: Capability) -> bool:

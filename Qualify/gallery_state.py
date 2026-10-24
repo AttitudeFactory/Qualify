@@ -32,10 +32,12 @@ from .creative_vm import (  # noqa: F401
 from .planner_provider import load_gallery
 from .planner_vm import (
     GALLERY_FILTER_ALL,
+    GALLERY_FILTER_PARAM,
     GALLERY_STATE_FILTERS,
     CategoryOptionVM,
     PostOptionVM,
     filter_posts,
+    gallery_filter_from_param,
 )
 from .tenant import tenant_uuid
 
@@ -136,6 +138,12 @@ class GalleryState(rx.State):
         async with self:
             self.loading = True
             self.error = ""
+            # m-24842962: a `?estado=` in the address (Inicio's card) opens filtered.
+            requested = gallery_filter_from_param(
+                str(self.router.url.query_parameters.get(GALLERY_FILTER_PARAM, "") or "")
+            )
+            if requested is not None:
+                self.state_filter = requested
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id)
         if tenant_id is None:
