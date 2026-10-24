@@ -1088,3 +1088,40 @@ def test_the_tile_actions_are_words_at_44_px_and_quitar_opens_the_dialog() -> No
     for words in ("Principal", "Quitar", "Volver", "Sí, quitar"):
         assert json.dumps(words)[1:-1] in rendered
     assert "×" not in tile and "px" not in "".join(_visible_strings(tile))
+
+
+# ---------------------------------------------------------------------------
+# m-24842972 (PRODUCTOS-1): «Crear publicación con este producto»
+
+
+def test_the_editor_links_to_create_with_the_open_product() -> None:
+    state = CatalogState()
+    assert state.selected_create_href == ""
+    state.products = [_product(photo_count=1, primary_photo_key="k.jpg")]
+    state.selected_id = str(_PRODUCT_ID)
+    assert state.selected_create_href == f"/create?producto={_PRODUCT_ID}"
+
+
+def test_the_create_with_product_button_says_why_it_is_off() -> None:
+    """Without a photo the button is off and says «Primero súbele una foto» (or
+    «Guardando sus fotos…») in plain text under it — never only on hover (N12). It
+    lives in the editor's footer, above «Guardar cambios»."""
+    from . import catalog_page
+
+    source = Path(catalog_page.__file__).read_text(encoding="utf-8")
+    button = source[
+        source.index("def _create_with_product_button") : source.index("def _editor_body")
+    ]
+    assert "Crear publicación con este producto" in button
+    assert "NEEDS_PHOTO_REASON" in button and "SAVING_PHOTOS_REASON" in button
+    assert "disabled=True" in button and "tooltip" not in button
+    assert "CatalogState.selected_create_href" in button
+    assert "min_height" in button  # a 44 px target on a phone
+    footer = source[source.index("def _editor_footer") : source.index("def _editor_drawer")]
+    assert "_create_with_product_button(CatalogState.selected)" in footer
+
+
+def test_the_saving_photos_reason_copy() -> None:
+    from .catalog_vm import SAVING_PHOTOS_REASON
+
+    assert SAVING_PHOTOS_REASON == "Guardando sus fotos…"

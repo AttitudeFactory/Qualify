@@ -51,6 +51,7 @@ from .catalog_vm import (
     ProductMediaVM,
     ProductVM,
     business_default_currency,
+    create_with_product_href,
     currency_from_choice,
     editor_is_dirty,
     leave_description,
@@ -293,7 +294,15 @@ class CatalogState(rx.State):
     @rx.var
     def created_href(self) -> str:
         """Where «Crear publicación» goes: Crear with this product already chosen."""
-        return f"/create?producto={self.created_product_id}" if self.created_product_id else ""
+        if not self.created_product_id:
+            return ""
+        return create_with_product_href(self.created_product_id)
+
+    @rx.var
+    def selected_create_href(self) -> str:
+        """The editor's «Crear publicación con este producto» (m-24842972):
+        `/create?producto=<id>`."""
+        return create_with_product_href(self.selected_id) if self.selected_id else ""
 
     @rx.var
     def created_ready(self) -> bool:

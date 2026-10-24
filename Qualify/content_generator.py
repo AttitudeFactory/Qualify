@@ -4592,7 +4592,7 @@ def _script_result() -> rx.Component:
         _copy_block("Descripción de la publicación", variant.description, "Descripción copiada"),
         rx.cond(
             variant.hashtags_text != "",
-            _copy_block("Hashtags", variant.hashtags_text, "Hashtags copiados"),
+            _copy_block("Etiquetas", variant.hashtags_text, "Etiquetas copiadas"),
         ),
         title="Guion",
         icon="clapperboard",

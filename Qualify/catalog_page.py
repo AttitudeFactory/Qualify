@@ -36,6 +36,7 @@ from .catalog_vm import (
     MAKE_PRIMARY,
     MEDIA_ACCEPT,
     MISSING_PHOTO,
+    NEEDS_PHOTO_REASON,
     NEW_PRODUCT_STEP_ICONS,
     NEW_PRODUCT_STEPS,
     NO_CURRENCY,
@@ -44,6 +45,7 @@ from .catalog_vm import (
     REMOVE_CONFIRM,
     REMOVE_MEDIA,
     REMOVE_STAY,
+    SAVING_PHOTOS_REASON,
     STEP_DONE,
     STEP_NAME,
     STEP_PHOTO,
@@ -767,6 +769,52 @@ def _media_block() -> rx.Component:
     )
 
 
+def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
+    """The editor's «Crear publicación con este producto» (m-24842972): soft, in the
+    editor's footer above «Guardar cambios», a real link to `/create?producto=<id>` so
+    the generator opens with this product chosen. Off with its reason said under it
+    («Primero súbele una foto», never hover-only, N12) while the product has no photo."""
+    label = "Crear publicación con este producto"
+    big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
+    return rx.vstack(
+        rx.cond(
+            product.photo_count > 0,
+            rx.link(
+                rx.button(
+                    rx.icon("sparkles", size=T.ICON_SM),
+                    label,
+                    variant="soft",
+                    type="button",
+                    **big,
+                ),
+                href=CatalogState.selected_create_href,
+                width="100%",
+            ),
+            rx.button(
+                rx.icon("sparkles", size=T.ICON_SM),
+                label,
+                variant="soft",
+                type="button",
+                disabled=True,
+                **big,
+            ),
+        ),
+        rx.cond(
+            product.photo_count == 0,
+            rx.text(
+                rx.cond(CatalogState.uploading, SAVING_PHOTOS_REASON, NEEDS_PHOTO_REASON),
+                size="1",
+                color=T.TEXT_MUTED,
+                width="100%",
+                text_align="center",
+            ),
+        ),
+        spacing="1",
+        width="100%",
+        grid_column="1 / -1",
+    )
+
+
 def _editor_body() -> rx.Component:
     """The selected product in its drawer: what it carries (price, photos), then the
     fields, then its media — one column, so it reads the same at 360 px and on a
@@ -837,9 +885,14 @@ def _editor_body() -> rx.Component:
 
 
 def _editor_footer() -> rx.Component:
-    """«Eliminar» first, the verb last (§7); one full-width column on a phone (N12)."""
+    """«Crear publicación con este producto» across the top (m-24842972), then
+    «Eliminar» first and the verb last (§7); one full-width column on a phone (N12)."""
     big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
     return rx.box(
+        rx.cond(
+            CatalogState.editor_open,
+            _create_with_product_button(CatalogState.selected),
+        ),
         # request 2026-10-22: a product can be deleted from here (a dialog first: it
         # leaves every list; the pieces already made keep their provenance)
         rx.button(
