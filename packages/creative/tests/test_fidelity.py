@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from qualify_creative.brand import check_hard_rules, check_route_allowed
+from qualify_creative.brand import check_hard_rules, check_route_allowed, fit_caption
 from qualify_creative.brand.fidelity import (
     RULE_BANNED_WORD,
     RULE_CAPTION_LENGTH,
@@ -213,3 +213,91 @@ def test_blocked_route_without_explicit_reason_uses_the_default() -> None:
 
 def test_allowed_route_returns_none() -> None:
     assert check_route_allowed(route=ImageRoute.FROM_UPLOAD, policy=ImagePolicy()) is None
+
+
+# --- caption fit (2026-10-22: 601 against 600 threw a whole clip away) --------------
+
+
+def _sentences(n: int) -> str:
+    return " ".join(f"Frase numero {i} de la torta de chocolate." for i in range(1, n + 1))
+
+
+def test_a_caption_within_the_maximum_is_returned_untouched() -> None:
+    copy = make_copy()
+    fitted, note = fit_caption(copy, make_kit())
+    assert fitted is copy and note is None
+
+
+def test_a_caption_one_character_over_is_cut_at_the_last_sentence_that_fits() -> None:
+    # The measured case: one character past the cap. The last whole sentence goes —
+    # its end sits within the last fifth of the maximum.
+    caption = _sentences(4) + " Y una frase final corta aqui."
+    limit = len(caption) - 1
+    assert len(_sentences(4)) >= limit * 0.8
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=20, caption_max_chars=limit))
+    copy = make_copy(caption=caption)
+    fitted, note = fit_caption(copy, kit)
+    assert fitted.caption == _sentences(4)
+    assert fitted.hook == copy.hook and fitted.cta == copy.cta and fitted.hashtags == copy.hashtags
+    assert note == (
+        f"caption trimmed from {len(caption)} to {len(_sentences(4))} characters to fit the"
+        f" brand maximum of {limit}"
+    )
+    assert check_hard_rules(fitted, kit) == ()
+
+
+def test_a_sentence_end_far_below_the_maximum_is_not_taken() -> None:
+    # Review 2026-10-23: 605 characters against 600 whose only sentence end is at 95
+    # were cut to 95. Now the cut is at the last whole word within the maximum.
+    head = "Primera frase de la torta de chocolate que sale hoy del horno con cacao de origen."
+    head = head + " " * (95 - len(head) - 1) + "." if len(head) < 94 else head[:94] + "."
+    words = " ".join(["palabra"] * 80)
+    caption = (head + " " + words)[:605].rstrip()
+    caption = caption + "x" * (605 - len(caption))
+    assert len(caption) == 605 and caption.rfind(".", 0, 600) == 94
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=50, caption_max_chars=600))
+    fitted, note = fit_caption(make_copy(caption=caption), kit)
+    assert note is not None
+    assert 480 <= len(fitted.caption) <= 600
+    assert fitted.caption.endswith("palabra")
+    assert caption.startswith(fitted.caption)
+    assert check_hard_rules(fitted, kit) == ()
+
+
+def test_a_cut_at_the_maximum_keeps_a_last_word_that_ends_there() -> None:
+    caption = "Una frase sin puntos que termina justo en el limite ya"
+    limit = len("Una frase sin puntos que termina justo en el limite")
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=20, caption_max_chars=limit))
+    fitted, _ = fit_caption(make_copy(caption=caption), kit)
+    assert fitted.caption == "Una frase sin puntos que termina justo en el limite"
+
+
+def test_a_single_sentence_a_little_over_is_cut_at_a_word_boundary() -> None:
+    caption = "Una sola frase larga sin puntos intermedios que se pasa un poquito del limite"
+    limit = len(caption) - 1
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=20, caption_max_chars=limit))
+    fitted, note = fit_caption(make_copy(caption=caption), kit)
+    assert fitted.caption == (
+        "Una sola frase larga sin puntos intermedios que se pasa un poquito del"
+    )
+    assert note is not None and len(fitted.caption) <= limit
+    assert check_hard_rules(fitted, kit) == ()
+
+
+def test_a_caption_far_over_the_maximum_is_left_for_the_hard_rule() -> None:
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=20, caption_max_chars=60))
+    copy = make_copy(caption=_sentences(3))  # 125 chars, way past 60 × 1.10
+    fitted, note = fit_caption(copy, kit)
+    assert fitted is copy and note is None
+    assert RULE_CAPTION_LENGTH in rules_of(check_hard_rules(copy, kit))
+
+
+def test_the_fit_never_cuts_below_the_brand_minimum_on_a_sentence() -> None:
+    # The only sentence end that fits sits below the minimum: the cut falls back to the
+    # last word boundary, which keeps the caption above it.
+    caption = "Corta. " + "palabra " * 10 + "fin de la frase que se pasa"
+    limit = len(caption) - 1
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=50, caption_max_chars=limit))
+    fitted, _ = fit_caption(make_copy(caption=caption), kit)
+    assert 50 <= len(fitted.caption) <= limit
+    assert fitted.caption.startswith("Corta. palabra") and fitted.caption.endswith("que se")

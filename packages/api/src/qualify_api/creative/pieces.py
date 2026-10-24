@@ -16,12 +16,23 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
+from sqlalchemy import func, not_, or_, select
 
+from qualify_api.creative.draft_mode import DRAFT_FINAL
 from qualify_api.creative.models import ContentBrief, ContentDraft, CopyVariant, ImageAsset
 
 #: How many files the picker offers — the most recent first.
 DEFAULT_PIECE_LIMIT = 60
+
+#: m-24820142: a Seedance 2.5 video still at its 480p draft (`draft_mode.draft_pending`)
+#: is not offered: a carousel reusing it would carry a 480p video with no draft block
+#: of its own, and so be publishable. Its final (same row, `status` "final") is.
+_NOT_A_PENDING_DRAFT = or_(
+    ImageAsset.params.is_(None),
+    not_(ImageAsset.params.has_key("draft")),
+    func.jsonb_typeof(ImageAsset.params["draft"]) != "object",
+    ImageAsset.params[("draft", "status")].astext == DRAFT_FINAL,
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +97,7 @@ class DbPieceFiles:
                     ImageAsset.object_key == object_key,
                     # m-24828907: a purged piece's files are gone from R2
                     ContentDraft.media_purged_at.is_(None),
+                    _NOT_A_PENDING_DRAFT,
                 )
                 .limit(1)
             ).first()
@@ -106,6 +118,7 @@ class DbPieceFiles:
                     ImageAsset.object_key.is_not(None),
                     ImageAsset.media_type.in_(("image", "video")),
                     ContentDraft.media_purged_at.is_(None),  # m-24828907
+                    _NOT_A_PENDING_DRAFT,
                 )
                 .order_by(ContentDraft.created_at.desc(), ImageAsset.position)
                 .limit(limit)
