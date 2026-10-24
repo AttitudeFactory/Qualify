@@ -16,6 +16,7 @@ see `connections_routes.start_connect` for the precedent this mirrors.
 from __future__ import annotations
 
 import importlib.util
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -47,6 +48,16 @@ if TYPE_CHECKING:
 _LOCAL_MODEL_RUNTIME_MODULES = ("transformers", "torch")
 
 
+logger = logging.getLogger(__name__)
+
+# Raised by the model call when the model itself cannot run here (missing runtime or
+# weights): an environment failure, never charged to one comment — it propagates, as
+# before. Same split `mentions.sentiment` uses.
+_ENVIRONMENT_ERRORS = (ImportError, OSError)
+# ...except these OSError subclasses, which are about THIS call: isolated per comment.
+_CALL_ERRORS = (ConnectionError, TimeoutError)
+
+
 class SentimentModelUnavailable(Exception):
     """The local sentiment model cannot run here: its runtime (`transformers`/`torch`,
     the `ml` dependency group) is not installed. The production image deliberately ships
@@ -67,6 +78,10 @@ class AnalysisSummary:
     # Same restriction `analyze_comments` already enforces (QUA-21 AC5): a
     # whitespace-only comment is never classified, only counted.
     skipped_empty: int
+    # m-24852236: comments whose classification raised this pass. Nothing is recorded
+    # for them, so they stay pending and the next pass retries them; the rest of the
+    # batch is analyzed regardless.
+    failed: int = 0
 
 
 class SentimentService:
@@ -105,6 +120,7 @@ class SentimentService:
         checked = 0
         new_results = 0
         skipped = 0
+        failed = 0
 
         for comment in pending:
             checked += 1
@@ -115,12 +131,23 @@ class SentimentService:
                 skipped += 1
                 continue
 
-            result = analyze_text(
-                comment.text,
-                source_id=comment.source_id,
-                pipeline_version=self._version.pipeline_version,
-                provider=self._provider,
-            )
+            try:
+                result = analyze_text(
+                    comment.text,
+                    source_id=comment.source_id,
+                    pipeline_version=self._version.pipeline_version,
+                    provider=self._provider,
+                )
+            except _CALL_ERRORS as exc:
+                failed += 1
+                self._log_failure(comment.message_id, exc)
+                continue
+            except _ENVIRONMENT_ERRORS:
+                raise
+            except Exception as exc:  # noqa: BLE001 — one comment's failure, isolated
+                failed += 1
+                self._log_failure(comment.message_id, exc)
+                continue
             inserted = self._repository.record_sentiment_result(
                 tenant_id=tenant_id,
                 connection_id=connection_id,
@@ -134,7 +161,17 @@ class SentimentService:
                 new_results += 1
 
         return AnalysisSummary(
-            comments_checked=checked, new_results=new_results, skipped_empty=skipped
+            comments_checked=checked,
+            new_results=new_results,
+            skipped_empty=skipped,
+            failed=failed,
+        )
+
+    @staticmethod
+    def _log_failure(message_id: UUID, exc: Exception) -> None:
+        # Class name only: an exception message could echo the comment's text.
+        logger.warning(
+            "comment sentiment failed: message=%s error=%s", message_id, type(exc).__name__
         )
 
     def list_reel_summaries(

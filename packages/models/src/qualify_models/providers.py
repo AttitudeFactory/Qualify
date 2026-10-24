@@ -288,6 +288,13 @@ def label_vision_backend(provider: VisionProvider | None) -> VisionBackendLabel 
     return "injected"
 
 
+#: robertuito's input limit (`model_max_length` of its tokenizer, measured 2026-10-24 on
+#: the cached checkpoint) — the fallback when a tokenizer declares no usable limit.
+ROBERTUITO_MAX_INPUT_TOKENS = 128
+#: Anything above this is transformers' "no limit declared" sentinel, not a real limit.
+_MAX_SANE_INPUT_TOKENS = 100_000
+
+
 class LocalRobertuitoSentimentProvider:
     """Runs robertuito locally via transformers (CPU-friendly, ~109M params).
 
@@ -310,8 +317,22 @@ class LocalRobertuitoSentimentProvider:
             self._pipeline = pipeline(task="text-classification", model=self.model_id)
         return self._pipeline
 
+    def max_input_tokens(self) -> int:
+        """The checkpoint's real input limit, read from its tokenizer (robertuito: 128
+        tokens, 130 position embeddings). Falls back to `ROBERTUITO_MAX_INPUT_TOKENS` when
+        the tokenizer declares none — transformers then reports a huge sentinel
+        (`int(1e30)`), which would disable truncation in practice."""
+        tokenizer = getattr(self._get_pipeline(), "tokenizer", None)
+        declared = getattr(tokenizer, "model_max_length", None)
+        if isinstance(declared, int) and 0 < declared <= _MAX_SANE_INPUT_TOKENS:
+            return declared
+        return ROBERTUITO_MAX_INPUT_TOKENS
+
     def classify(self, text: str) -> tuple[str, float]:
-        output = self._get_pipeline()(text)[0]
+        # m-24852236: without truncation a comment over the model's limit raises
+        # (IndexError on CPU) instead of being classified. Truncation keeps the first
+        # `max_input_tokens()` tokens; texts within the limit are untouched.
+        output = self._get_pipeline()(text, truncation=True, max_length=self.max_input_tokens())[0]
         return str(output["label"]), float(output["score"])
 
 
