@@ -54,6 +54,7 @@ from qualify_api.creative.media import (
     AVATAR_NO_PUBLIC_URL,
     AVATAR_SCRIPT_TOO_LONG,
     FILTERED_TEXT,
+    MEDIA_PROMPT_BUDGET,
     MediaProducer,
     ai_generated_media,
     ark_failure_text,
@@ -409,8 +410,9 @@ def test_a_seedance_video_starts_on_a_seedream_frame_and_records_both_costs() ->
 
 def test_a_generated_script_over_the_cap_is_shortened_before_seedance_speaks_it() -> None:
     """PR #100 review: a generated script has no stored cap, and motion prompt + spoken
-    line must stay under the vendor's 3,000 characters. A 60-s script five times the
-    cap is cut at a sentence, like `own_script` would have been refused."""
+    line must stay within `MEDIA_PROMPT_BUDGET` (2,500 of the vendor's 3,000). A 60-s
+    script five times the cap is cut at a sentence, like `own_script` would have been
+    refused."""
     store, seedream, seedance = _store(), FakeSeedream(), FakeSeedance()
     long_copy = CopyPayload(
         hook=COPY.hook,
@@ -431,13 +433,15 @@ def test_a_generated_script_over_the_cap_is_shortened_before_seedance_speaks_it(
     (video_request,) = seedance.requests
     spoken = str(video_request.params["dialogue"])
     assert len(spoken) <= SCRIPT_MAX and spoken.endswith("largo.")
-    # the adapter's own pre-flight: motion + spoken line under the vendor's cap
+    # what the adapter sends: motion + its spoken line, within the budget
     motion = str(video_request.params["prompt"])
-    assert len(motion) + len(spoken) + len('\nDice a cámara: ""') < MAX_PROMPT_CHARS
+    assert len(motion) + len(spoken) + len('\nDice a cámara: ""') <= MEDIA_PROMPT_BUDGET
+    assert MEDIA_PROMPT_BUDGET < MAX_PROMPT_CHARS
 
 
 def test_the_image_prompts_stay_under_the_vendor_cap_with_a_very_long_topic() -> None:
-    """PR #100 review: the topic has no stored cap (TEXT), so the prompt takes its gist."""
+    """PR #100 review: the topic has no stored cap (TEXT), so the prompt takes what the
+    budget leaves it (2026-10-23: no longer a fixed 600)."""
     from qualify_api.creative.media import (
         ad_scene_prompt,
         carousel_scene_prompt,
@@ -478,9 +482,7 @@ def test_the_image_prompts_stay_under_the_vendor_cap_with_a_very_long_topic() ->
             brief=brief, kit=_kit(), has_character_image=True, products=10, has_background=True
         ),
     ]
-    assert all(len(prompt) <= MAX_PROMPT_CHARS - 500 for prompt in prompts), [
-        len(p) for p in prompts
-    ]
+    assert all(len(prompt) <= MEDIA_PROMPT_BUDGET for prompt in prompts), [len(p) for p in prompts]
     assert all("Detalle 0 que" in prompt and "Detalle 299" not in prompt for prompt in prompts)
 
 

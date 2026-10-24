@@ -205,7 +205,16 @@ def test_inputs_are_bounded() -> None:
     with pytest.raises(ValidationError):
         MediaInputs(duration_seconds=90)
     with pytest.raises(ValidationError):
+        MediaInputs(duration_seconds=4)
+    with pytest.raises(ValidationError):
         MediaInputs(product_keys=tuple(f"k{i}" for i in range(11)))
+
+
+def test_a_piece_can_be_five_or_ten_seconds_long() -> None:
+    """§ request 2026-10-23: clips and scripts start at 5 s."""
+    assert MediaInputs(duration_seconds=5).duration_seconds == 5
+    assert _brief(ContentKind.CLIP, duration_seconds=10).media.duration_seconds == 10
+    assert _brief(ContentKind.CREATOR_SCRIPT, duration_seconds=5).media.duration_seconds == 5
 
 
 # --------------------------------------------------------------------------------------

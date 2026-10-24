@@ -280,17 +280,18 @@ def test_sync_comments_has_no_recurring_loop_of_its_own() -> None:
     assert "asyncio.sleep" not in source
 
 
-def test_background_event_handler_count_is_thirteen_after_m_24789646() -> None:
+def test_background_event_handler_count_is_fourteen_after_m_24842961() -> None:
     """QUA-89 added automatic polling without adding any new server-side background
     handler (stayed at 4 through that ticket). QUA-92 added `analyze_sentiment` (5).
     QUA-93 adds five more real handlers — `select_reel`, `set_sentiment_filter`,
     `set_search_query`, `load_more_reels`, `load_more_thread_comments` — for 10 total.
     m-24789644 adds `set_intent_filter` and `analyze_intent` — 12. m-24789646 adds
     `reply_by_dm` («Responder por DM», which opens the query in Conversaciones) — 13.
+    m-24842961 adds `clear_thread_filters` («Quitar filtros», N8) — 14.
     `back_to_reel_list` is deliberately a plain (non-background) `@rx.event`: it does no
     I/O, so it does not count here — see its own docstring for why."""
     source = inspect.getsource(inbox_state)
-    assert source.count("@rx.event(background=True)") == 13
+    assert source.count("@rx.event(background=True)") == 14
 
 
 def test_reel_summaries_state_never_holds_a_comment_list() -> None:
@@ -716,7 +717,12 @@ def test_select_reel_resets_detail_state_before_loading() -> None:
     `sync_comments` — it needs a live EventContext and cannot run end to end here; the
     reset it performs is pinned structurally instead, same technique the rest of this
     file already uses."""
-    source = inspect.getsource(InboxState.select_reel.fn)
+    # m-24842960: the reset lives in `_open_detail`, shared with the address-driven
+    # entry (`enter_screen`); `select_reel` calls it.
+    assert "self._open_detail(thread_id)" in inspect.getsource(InboxState.select_reel.fn)
+    source = inspect.getsource(InboxState._open_detail) + inspect.getsource(
+        InboxState.select_reel.fn
+    )
     assert "self.selected_thread_id = thread_id" in source
     assert "r.thread_id == thread_id" in source  # selected_reel_summary lookup
     assert "self.thread_comments = []" in source

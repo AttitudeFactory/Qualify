@@ -36,7 +36,7 @@ COLOR_LABELS: dict[str, str] = {
 }
 assert tuple(COLOR_LABELS) == CAMPAIGN_COLORS  # one list, never two that drift
 
-POST_GONE = "Este POST ya no existe. Vuelve a la bandeja."
+POST_GONE = "Esta publicación ya no existe. Actualiza la página."
 CAMPAIGN_GONE = "Esa campaña ya no está disponible. Elige otra."
 
 

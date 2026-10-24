@@ -68,6 +68,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Final
 from uuid import UUID, uuid4
 
@@ -105,6 +106,7 @@ from .inbox_provider import (
 )
 from .inbox_sync_policy import claim_is_stale, normalize_trigger, skip_for_cooldown
 from .inbox_vm import (
+    POST_PARAM,
     AnalysisSummaryVM,
     CandidateMediaVM,
     CommentPageCursorVM,
@@ -114,7 +116,9 @@ from .inbox_vm import (
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
+    inbox_url,
 )
+from .nav_url import push_url_script, replace_url_script
 from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
 
@@ -122,6 +126,9 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
+_MISSING_POST = (
+    "No encontramos esa publicación en esta cuenta. Aquí están tus publicaciones recientes."
+)
 _LOAD_FAILED = (
     "No pudimos cargar tus publicaciones recientes. Revisa que tu Instagram siga "
     "conectado en «Tus redes»."
@@ -141,9 +148,11 @@ _UNSUPPORTED_SURFACE = (
 
 
 def is_inbox_path(path: str) -> bool:
-    """Whether the tab is on the inbox screen (`/inbox`, with or without the trailing
-    slash the production build adds). Used to keep a late sync toast off other pages."""
-    return path.rstrip("/") == "/inbox"
+    """Whether the tab is on the comments screen (`/responder` since m-24842990, whose
+    «Comentarios» tab holds it; `/inbox` only redirects there), with or without the
+    trailing slash the production build adds. Used to keep a late sync toast off other
+    pages."""
+    return path.rstrip("/") in ("/responder", "/inbox")
 
 
 # `MediaNotEligible.reason` -> message; any other reason keeps `_NOT_ELIGIBLE`.
@@ -299,6 +308,9 @@ class InboxState(rx.State):
     # setters reset pagination to a fresh first page.
     selected_thread_id: str = ""
     selected_reel_summary: ReelSummaryVM | None = None
+    # N5 (m-24842960): set when an address names a publication this account's list
+    # does not hold, so the screen falls back to the list and says why.
+    missing_post_notice: str = ""
     thread_comments: list[CommentVM] = []
     is_loading_thread_comments: bool = False
     thread_comments_error: str = ""
@@ -580,6 +592,39 @@ class InboxState(rx.State):
         else:
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
 
+    @rx.event
+    def enter_screen(self) -> rx.event.EventSpec | None:
+        """The route's `on_load` (N5, m-24842960): `?publicacion=<id>` opens that
+        publication's comments; no parameter is the list. Runs on the first visit, on a
+        reload and on the browser's «atrás», so each lands where the address says."""
+        wanted = str(self.router.url.query_parameters.get(POST_PARAM, "") or "")
+        thread_id = wanted if _try_uuid(wanted) is not None else ""
+        self.missing_post_notice = ""
+        if not thread_id and self.selected_thread_id and self.reel_summaries:
+            # «atrás» from a publication to the list: behave like «‹ Comentarios» —
+            # close the detail and keep the list (and the scroll) already loaded.
+            self.selected_thread_id = ""
+            self.selected_reel_summary = None
+            return None
+        if thread_id != self.selected_thread_id:
+            self._open_detail(thread_id)
+        return InboxState.load_screen
+
+    def _open_detail(self, thread_id: str) -> None:
+        """Show one publication's comments (or the list, with `""`) from a clean first
+        page — filter «Todos», no search, no cursor."""
+        self.selected_thread_id = thread_id
+        self.selected_reel_summary = next(
+            (r for r in self.reel_summaries if r.thread_id == thread_id), None
+        )
+        self.thread_comments = []
+        self.thread_comments_error = ""
+        self.thread_comments_cursor = None
+        self.has_more_thread_comments = False
+        self.sentiment_filter = FILTER_ALL
+        self.intent_filter = FILTER_ALL
+        self.search_query = ""
+
     @rx.event(background=True)
     async def load_screen(self):
         """Load the operator's eligible Instagram connections, then the last-2-weeks
@@ -620,6 +665,26 @@ class InboxState(rx.State):
             await self._load_candidates(tenant_id, connection_id)
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
             await self._load_global_summary(tenant_id, connection_id)
+            # N5: an address that names a publication opens its comments — unless this
+            # account's list does not hold it (older than the first page, or another
+            # account's): then the list, with a notice, never comments without their
+            # publication.
+            missing = False
+            async with self:
+                thread_id = self.selected_thread_id
+                if thread_id:
+                    self.selected_reel_summary = next(
+                        (r for r in self.reel_summaries if r.thread_id == thread_id), None
+                    )
+                    if self.selected_reel_summary is None:
+                        missing = True
+                        self._open_detail("")
+                        self.missing_post_notice = _MISSING_POST
+                        thread_id = ""
+            if missing:
+                yield rx.call_script(replace_url_script(inbox_url()))
+            if thread_id:
+                await self._load_thread_comments_first_page(tenant_id)
             # QUA-22: the reply-drafts panel is a separate `RepliesState` (own module,
             # own lifecycle — see its docstring), triggered here via `yield` rather
             # than a second `on_load` list entry, same reason `AuthState.handle_login`
@@ -649,6 +714,7 @@ class InboxState(rx.State):
             # previous connection's data while the new one loads" reasoning
             # `candidates`/`action_error` above already follow. Also closes any open
             # Reel detail: a Reel from a different connection cannot stay open.
+            had_detail = bool(self.selected_thread_id)
             self.reel_summaries = []
             self.reel_summaries_error = ""
             self.reel_summaries_cursor = None
@@ -662,6 +728,8 @@ class InboxState(rx.State):
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
 
+        if had_detail:
+            yield rx.call_script(replace_url_script(inbox_url()))
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
             return
@@ -1081,39 +1149,38 @@ class InboxState(rx.State):
             except Exception as exc:  # noqa: BLE001
                 logger.error("reply_by_dm failed: %s", type(exc).__name__)
                 return rx.toast.error(_REPLY_BY_DM_FAILED, duration=_RESULT_TOAST_DURATION_MS)
-            return rx.redirect(f"/conversations?consulta={followup_id}")
+            # m-24842990: the query card lives in «Por responder» › Quieren comprar.
+            return rx.redirect(f"/responder?tab=comprar&consulta={followup_id}")
         finally:
             async with self:
                 self.replying_dm_id = ""
 
     @rx.event(background=True)
-    async def select_reel(self, thread_id: str) -> None:
+    async def select_reel(self, thread_id: str) -> AsyncIterator[rx.event.EventSpec]:
         """QUA-93: enter the Reel detail view. Always resets to a clean first page —
         filter "Todos", no search, no cursor — a detail view never opens mid-scroll of
-        a previous Reel's state."""
+        a previous Reel's state. N5: the detail gets its address (`?publicacion=`) as a
+        new history step, so the phone's «atrás» returns to the list."""
+        if _try_uuid(thread_id) is None:
+            return
         async with self:
-            self.selected_thread_id = thread_id
-            self.selected_reel_summary = next(
-                (r for r in self.reel_summaries if r.thread_id == thread_id), None
-            )
-            self.thread_comments = []
-            self.thread_comments_error = ""
-            self.thread_comments_cursor = None
-            self.has_more_thread_comments = False
-            self.sentiment_filter = FILTER_ALL
-            self.intent_filter = FILTER_ALL
-            self.search_query = ""
+            self._open_detail(thread_id)
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+        yield rx.call_script(push_url_script(inbox_url(thread_id)))
 
         await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
 
     @rx.event
-    def back_to_reel_list(self) -> None:
-        """QUA-93: "← Volver" — synchronous, no reload. The AC's explicit requirement:
-        the Reel list already in state stays exactly as it was, no wasted round-trip."""
+    def back_to_reel_list(self) -> rx.event.EventSpec:
+        """QUA-93: «‹ Comentarios» — synchronous, no reload. The AC's explicit
+        requirement: the Reel list already in state stays exactly as it was, no wasted
+        round-trip. N5: the address goes back to the list (the «Comentarios» tab)."""
         self.selected_thread_id = ""
         self.selected_reel_summary = None
+        # replaceState, not pushState: «‹ Comentarios» closes the detail, so the next
+        # «atrás» must not reopen the publication just left.
+        return rx.call_script(replace_url_script(inbox_url()))
 
     @rx.event(background=True)
     async def set_sentiment_filter(self, value: str) -> None:
@@ -1151,6 +1218,18 @@ class InboxState(rx.State):
             if value == self.search_query:
                 return
             self.search_query = value
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event(background=True)
+    async def clear_thread_filters(self) -> None:
+        """m-24842961 (N8): «Quitar filtros» on «Sin comentarios para este filtro» — the
+        sentiment, intent and search back to everything, then a fresh first page."""
+        async with self:
+            self.sentiment_filter = FILTER_ALL
+            self.intent_filter = FILTER_ALL
+            self.search_query = ""
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
         await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))

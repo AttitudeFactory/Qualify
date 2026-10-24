@@ -211,31 +211,31 @@ El Lab es dark-only: el oscuro es su material «liquid» al pie de la letra (bla
   │  ◎ Qualify │ │                                                │
   └────────────┘ │ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
   ┌────────────┐ │ │stat_card │ │stat_card │ │stat_card │  ← page_body (gutter PAGE_X)
-  │ Tus redes  │ │ └──────────┘ └──────────┘ └──────────┘         │
+  │ Inicio     │ │ └──────────┘ └──────────┘ └──────────┘         │
   └────────────┘ │ callout (si hay error de acción)               │
   ┌────────────┐ │ ┌────────────────────────────────────────────┐ │
-  │ ESCUCHAS   │ │ │ card / tabla / lista …                     │ │
-  │ Menciones  │ │ └────────────────────────────────────────────┘ │
-  │ Comentarios│ │                                                │
-  │ Creadores ·│ │                                                │
-  │ Señales   ·│ │                                                │
+  │ ATIENDE    │ │ │ card / tabla / lista …                     │ │
+  │ Por respond│ │ └────────────────────────────────────────────┘ │
+  │ WhatsApp   │ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ PUBLICAS   │ │                                                │
+  │ PUBLICA    │ │                                                │
   │ Crear publ.│ │                                                │
   │ Por aprobar│ │                                                │
   │ Tu semana  │ │                                                │
   │ Publ. ahora│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ Interesados│ │                                                │
+  │ Resultados │ │                                                │
+  │ Creadores ·│ │  (· = «Pronto», en texto)                      │
+  │ Oportunid.·│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ NEGOCIO    │ │                                                │
-  │ Tu pág. web│ │                                                │
+  │ TU NEGOCIO │ │                                                │
   │ Tu marca   │ │                                                │
   │ Tus product│ │                                                │
-  │ Config.   ·│ │                                                │
+  │ Tus redes  │ │                                                │
+  │ Config.    │ │                                                │
   │ ───────────│ │                                                │
   │ ⇥ Salir    │ │                                                │
   └────────────┘ └────────────────────────────────────────────────┘
@@ -258,16 +258,18 @@ def leads_index() -> rx.Component:
 
 ### 4.2 El sidebar: vidrio líquido, zonas y modo zen
 
-El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son los dos ejes del producto (`docs/index.md`): lo que dice el mercado y lo que dice el negocio.
+El menú sigue el mapa de `docs/ux-guia-navegacion.md` §3 (NAV-1, m-24842957): está ordenado por los **trabajos del dueño** —qué me toca hoy, atender, publicar, cómo me va— y al pie lo que se toca poco. Las dos zonas teñidas son las mismas dos de antes, con nombre nuevo y el mismo tinte («Escuchas» → **Atiende**, «Publicas» → **Publica**).
 
 | Isla | Contiene | Tinte (lavado bajo el vidrio) |
 |---|---|---|
 | Negocio (arriba) | nombre del tenant, «Supported by ◎ Qualify» → `LANDING_URL`, control de zen | neutra |
-| Base | Tus redes — habilita las dos zonas, así que no pertenece a ninguna | neutra |
-| **Escuchas** (inbound) | Menciones · Comentarios · Conversaciones · Creadores · Señales | `accent` alfa 3, línea alfa 6 |
-| **Publicas** (outbound) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
-| Suelta | Interesados (página «Clientes interesados») | neutra |
-| **Negocio** (pie) | Tu página web · Tu marca · Tus productos · Configuración · Salir | neutra |
+| Inicio | Inicio (`/`) | neutra |
+| **Atiende** (`listen`) | Por responder · WhatsApp | `accent` alfa 3, línea alfa 6 |
+| **Publica** (`publish`) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
+| Resultados | Resultados · Creadores «Pronto» · Oportunidades «Pronto» | neutra |
+| **Tu negocio** (pie) | Tu marca · Tus productos · Tus redes · Configuración · Salir | neutra |
+
+**Entradas «Pronto» (N10):** llevan la palabra «Pronto» en texto (`tone_badge("Pronto", "neutral")`, que el modo zen oculta junto con la etiqueta) y **siempre son un enlace**: abren su propia pantalla, que dice qué viene y ofrece un botón a algo que funciona hoy (`empty_state(action=)`). Nunca una fila muerta ni una pantalla vacía. Ninguna demo ni herramienta del equipo (`/design`) entra al menú del cliente.
 
 **El menú es vidrio líquido** (`assets/qualify.css` «Liquid glass menu» + `assets/glass-nav.js`; adaptado de `real-liquid-glass-os-effect.html`, un dock horizontal, a nuestras islas verticales):
 
@@ -281,21 +283,104 @@ El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son lo
 Tres reglas que sostienen esto:
 
 1. **El tinte es superficie, no señal.** Se queda en alfa 3 (lavado) y alfa 6 (línea): agrupa, pero no puede confundirse con un estado (P1/P2). Subirlo es una decisión consciente, no un ajuste.
-2. **Tu página web, Tu marca y Tus productos viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, o son lo que la marca *es*, no conversación.
+2. **Resultados y Tu negocio viven fuera de las zonas de color**: miden cómo le va al negocio o son lo que el negocio *es*, no conversación ni publicación.
 3. **Salir es el único control de sesión** (`1 login = 1 negocio`, sin switch). Sin sesión (`/design`) el nombre cae a «Qualify».
 
 **Zen** (`NavState.zen`, botón en la isla del negocio o `⌘ .`): el rail se contrae a 72 px con muelle, las etiquetas se **revelan con máscara** (`clip-path`) en vez de fundirse, y el nombre aparece en la etiqueta de vidrio de arriba. Todo el colapso es **una clase** (`q-zen`) en el `nav`: las reglas viven en `assets/qualify.css`, no en condicionales de Python — así el navegador puede animarlo y no hay dos árboles que mantener. El estado vive en la sesión del servidor, nunca en el navegador: persistir en el cliente exigiría clave namespaced por tenant y purga en logout (regla firmada), y para un modo de vista no compensa.
 
-**Móvil (< 640 px):** el sidebar es un overlay fijo cerrado por defecto, abierto por el botón hamburguesa (`_mobile_nav_toggle`, fuera del sidebar porque el drawer empieza cerrado) con un fondo que lo cierra al tocar fuera; elegir una página también lo cierra.
+**Móvil (< 640 px):** el sidebar es un overlay fijo cerrado por defecto, abierto por el botón hamburguesa (`_mobile_nav_toggle`, fuera del sidebar porque el drawer empieza cerrado) con un fondo que lo cierra al tocar fuera; elegir una página también lo cierra. **Decidido (decisión 5, 2026-10-23):** el botón ☰ se sustituye por la barra inferior de §4.4, cuyo «Más» abre este mismo cajón; hasta que su PR de código entre, el ☰ sigue.
 
 ### 4.3 Reglas de página
 
 1. Toda página de negocio lleva el sidebar completo y el toggle de modo en el header. Solo `/login`, `/registro` y el wizard del Brand Kit (`rail=False`) no llevan sidebar.
 2. El header no scrollea con contenido pesado — y ahora literalmente: es sticky. Lo que "vive" arriba son controles de página (selector de cuenta, botón de actualizar), no contenido.
 3. Densidad: tablas para listas homogéneas y comparables (leads, menciones); tarjetas para entidades con estados y acciones propias (conexiones, reels). No mezclar en la misma lista.
-4. Responsive: el gutter baja a 1rem y el aire entre islas a 6px por debajo de 900px; grids usan `rx.breakpoints(…)`; tablas envuelven en `overflow_x="auto"`; por debajo de 640px el sidebar es drawer (§4.2).
+4. Responsive: el gutter baja a 1rem y el aire entre islas a 6px por debajo de 900px; grids usan `rx.breakpoints(…)`; tablas envuelven en `overflow_x="auto"`; por debajo de 640px el sidebar es drawer (§4.2) y, con NAV-7, aparece la barra inferior (§4.4).
 5. **Toda fila del sidebar usa la misma geometría** (`_nav_row`): el envoltorio — link o botón — no lleva padding ni fondo propio (el fondo es la cápsula). Es lo que garantiza que en zen todos los iconos caigan en la misma columna y que la cápsula mida lo mismo en todas las filas.
 6. **Presupuesto de vidrio:** ≤ 8 superficies con `backdrop-filter` por pantalla (el shell gasta: islas del sidebar + header sticky; un overlay abierto, una más). Nada de vidrio dentro de grids.
+
+### 4.4 Barra inferior del celular (patrón nuevo · NAV-7, m-24842964)
+
+> **Estado:** patrón **documentado, aún no construido**. Decisión 5 del fundador (2026-10-23, `docs/ux-guia-navegacion.md` §6 y §7): «Sí, barra inferior de 4 accesos (Inicio · Por responder · Crear · Tu semana) + «Más». Se documenta primero en `docs/design-system.md` como patrón nuevo y luego se construye.» Es el **único componente nuevo** que admite la épica de UX (`docs/epica-ux-navegacion-experiencia.md`); no abre la puerta a otros (§9.1-8). El PR de código de NAV-7 se abre **después** de que el fundador apruebe esta sección, y la implementa tal cual o la corrige aquí primero.
+
+**Para qué.** El dueño usa Qualify con una mano, entre cliente y cliente. Hoy, en el celular, todo el menú está detrás de ☰: llegar a lo de todos los días cuesta dos toques y estirar el pulgar hasta la esquina de arriba. La barra deja **lo que más usa a un toque y al alcance del pulgar**; lo demás sigue en el cajón de siempre, detrás de «Más».
+
+```
+  ┌──────────────────────────────────────┐  360 px
+  │ Título de página           [acción]  │ ← page_header (sin ☰ encima)
+  │                                      │
+  │  … cuerpo de la página …             │
+  │                                      │
+  │  (relleno inferior = alto de barra)  │
+  │ ╭──────────────────────────────────╮ │
+  │ │ [casa] [chat]3 [vara] [cal]1 [≡]2│ │ ← barra: isla opaca, radio 32 px
+  │ │Inicio  Por   Crear  Tu     Más   │ │
+  │ │      responder      semana       │ │
+  │ ╰──────────────────────────────────╯ │
+  │          ▔▔▔ (zona segura) ▔▔▔        │
+  └──────────────────────────────────────┘
+```
+
+**Cuándo aparece.** Exactamente donde el sidebar deja de verse y pasa a cajón: **≤ 640 px** (el mismo `@media (max-width: 640px)` de §4.2). Por encima de 640 px **no existe** (`display: none`, fuera del orden de tabulación): el sidebar ya da esos accesos y una segunda navegación los duplicaría. Un solo punto de corte para «modo celular»: si algún día sube (la ficha del ticket habla de «< 768 px»), suben juntos el cajón y la barra, nunca uno solo — ver «Pendiente de confirmar» abajo. Solo con sesión y `rail=True`: no hay barra en `/login`, `/registro` ni en el asistente de la marca, igual que no hay sidebar.
+
+**Los cinco accesos** (en este orden, de izquierda a derecha; nada más, nunca configurable):
+
+| # | Texto | Icono (lucide, `ICON_MD`) | Destino | Contador (N11) |
+|---|---|---|---|---|
+| 1 | Inicio | `house` | `HOME_ROUTE` | — |
+| 2 | Por responder | `messages-square` | `RESPOND_ROUTE` | el de «Por responder», tono `warn` |
+| 3 | Crear | `wand-sparkles` | `/create` | — |
+| 4 | Tu semana | `calendar-days` | `/planner` | el de «Tu semana», tono `neutral` |
+| 5 | Más | `menu` | abre el cajón (`NavState.toggle_mobile_nav`) | suma de lo que espera **solo dentro del cajón** (WhatsApp + Por aprobar); `warn` si hay chats de WhatsApp, si no `neutral` |
+
+- **Mismos nombres, mismos iconos, mismas rutas que el sidebar (N1).** La barra no define rutas propias: lee las constantes de `layout.py` (`HOME_ROUTE`, `RESPOND_ROUTE`, …), así cuando Inicio, «Por responder» o «Resultados» cambien de ruta (NAV-4, ATENDER-1, RESULTADOS-5), la barra los sigue sola. «Crear» es la **forma corta aprobada** de «Crear publicación» (la decisión 5 la nombra así); es la única forma corta de la barra.
+- **Los contadores son los del menú** (`NAV_COUNTERS` y `PendingState`, NAV-6 · m-24842963): mismo `tone_badge`, mismo `badge_text` (nada en 0, «99+» pasado el tope), mismo latido. La barra no consulta nada por su cuenta. «Más» cuenta solo lo que **no** está ya a la vista en la barra, para que ningún pendiente se cuente dos veces.
+- **«Más» reemplaza al botón ☰ flotante** (`_mobile_nav_toggle`), que hoy tapa la esquina del título. El cajón, su fondo y su comportamiento no cambian (fuera de alcance de NAV-7); solo cambia el botón que lo abre. Al abrirse, el cajón queda **por encima** de la barra.
+
+**Anatomía y tokens** (todo existente; ningún token, color ni sombra nuevos):
+
+| Parte | Regla |
+|---|---|
+| Contenedor | `<nav>` fijo abajo: `left`/`right` = `T.GAP` (6 px en celular), `bottom` = `calc(T.GAP + env(safe-area-inset-bottom))`. Es una **isla**: radio `T.RADIUS_ISLAND` (32 px), sombra `T.ELEV_ISLAND`, borde `T.BORDER` |
+| Material | **opaco**, `--color-panel-solid` — el mismo del botón ☰ de hoy y del panel de página (§10.12). Sin `backdrop-filter`: el contenido pasa por debajo al desplazarse y el texto de la barra tiene que leerse igual sobre cualquier foto; además no gasta presupuesto de vidrio (§4.3-6) |
+| Celdas | cinco del **mismo ancho** (`flex: 1`), icono arriba y texto debajo, centrados. A 360 px: (360 − 2 × 6) / 5 ≈ **69 px de ancho**; alto mínimo **56 px** (60 px si algún texto parte en dos líneas). Toda la celda es el objetivo, nunca solo el icono: **≥ 44 × 44 px siempre** (N12) |
+| Texto | `rx.text` size 1, peso 500, `gray-11`; **puede partir en dos líneas** («Por / responder», «Tu / semana»), interlineado 1.1, **nunca** puntos suspensivos ni recorte |
+| Icono | `ICON_MD` (18 px), `gray-11` |
+| Activo | la celda de la página actual: icono y texto `accent-11`, peso 600, y una cápsula `accent-a4` detrás del icono, radio `T.RADIUS_CONTROL` (el mismo resalte plano del menú sin script, §4.2). Tres señales a la vez — color, peso y forma — nunca solo el color (P1). Se deriva de la ruta igual que en el sidebar: `/planner/…` marca «Tu semana». Si la página actual no es ninguna de las cuatro (Tu marca, WhatsApp, Por aprobar…), el resalte va a **«Más»**: siempre hay una celda que dice «estás por aquí» |
+| Contador | `tone_badge(texto, tono)` en la esquina superior derecha del icono (`position: absolute`, como `.q-menu-count` de hoy): no agranda la celda ni empuja el texto. Nada se dibuja en 0 |
+| Capas | `z-index: 50`: por encima del panel; por debajo del fondo del cajón (55), del cajón (60), de los diálogos, `drawer` y toasts de Radix. Un diálogo o un `drawer` abierto tapa la barra; la barra nunca tapa un diálogo |
+| Movimiento | solo cambio de color/peso con `T.DUR_FAST` y `T.EASE`; la cápsula de vidrio del sidebar **no** se porta a la barra. Nada se mueve con `prefers-reduced-motion` |
+
+**No tapa contenido ni botones principales.** El panel de página reserva abajo el alto de la barra: en ≤ 640 px, `page_body` lleva un relleno inferior de `alto de la barra + 2 × T.GAP + env(safe-area-inset-bottom)` (una variable CSS del shell, p. ej. `--q-bottom-bar-h`, en `assets/qualify.css`; ninguna página la escribe a mano). Lo que hoy se pega al pie de una pantalla (barras de acción de un asistente, pie de un formulario largo) se pega **encima** de la barra, no detrás. El pie del `drawer` no cambia: el `drawer` es pantalla completa en el celular y queda por encima de la barra.
+
+**Zona segura.** En teléfonos con barra de gestos el borde inferior lo ocupa el sistema; `env(safe-area-inset-bottom)` solo vale algo si la página declara `viewport-fit=cover` en su `<meta name="viewport">`. El PR de código lo añade (hoy la app no lo declara) y comprueba que el header y los bordes no se metan bajo la muesca.
+
+**Teclado del celular.** Mientras un campo de texto tiene el foco, la barra se oculta (el teclado ya ocupa media pantalla y la barra quedaría flotando sobre él); vuelve al soltar el foco. Si en el PR de código esto no se logra solo con CSS (`:has(:focus)` sobre el shell), se mide y se documenta aquí antes de añadir script.
+
+**Accesibilidad.**
+
+- Es un `<nav aria-label="Accesos rápidos">`, distinto del `<nav aria-label="Secciones">` del sidebar, y va en el documento **después** del `<main>` (el lector de pantalla y el teclado llegan primero al contenido).
+- Las cuatro primeras celdas son **enlaces** reales (`<a href>`), con `aria-current="page"` en la activa; «Más» es un **`<button>`** con `aria-expanded` (abierto/cerrado) y `aria-controls` apuntando al sidebar — no navega, abre.
+- El texto se ve siempre: ninguna celda es solo un icono. Con contador, el nombre hablado es el del menú (`entry_aria_label`: «Por responder: 3 personas esperan tu respuesta»); «Más» usa el de hoy del botón ☰ (`menu_button_aria_label`) ajustado a lo que cuenta.
+- Foco visible: el `:focus-visible` de siempre (outline 2 px `accent-8`), dibujado **dentro** de la celda para que el borde redondo de la isla no lo recorte.
+- Nada solo al pasar el mouse (N12): cualquier estilo de `:hover` va dentro de `@media (hover: hover)`.
+- Contraste: texto `gray-11`/`accent-11` sobre `--color-panel-solid` = pasos 11 sobre fondo opaco, dentro de lo que Radix garantiza (§8), en claro y en oscuro.
+
+**Textos** (cliente, `qualify-copy-es`): «Inicio» · «Por responder» · «Crear» · «Tu semana» · «Más» y «Accesos rápidos» (solo lectores de pantalla). Ninguno insinúa que Qualify actúa solo (N13): son lugares, no acciones automáticas.
+
+**Dónde vive en el código** (para el PR de código; carril NAV):
+
+- `Qualify/ui/layout.py`: una lista `NAV_BOTTOM` con los cuatro accesos tomados de las mismas tuplas `Item` del sidebar, y `_bottom_bar()` renderizada por `app_shell` en lugar de `_mobile_nav_toggle()`. El estado sigue en `NavState` (servidor, sin `LocalStorage`: la barra no guarda nada en el navegador).
+- `assets/qualify.css`, bloque del shell (es pieza compartida, no de un dominio, §9.1-9): la barra, el relleno inferior del panel y el `@media (max-width: 640px)`.
+- `/design` (`styleguide_page.py`): un ejemplo a 360 px con un contador en «Por responder» y el resalte en «Tu semana».
+- Un test offline (junto a `test_nav_one_name.py`) que falle si la barra usa un texto, icono o ruta distintos del sidebar (salvo «Crear»), si tiene más o menos de cinco celdas, o si un contador no sale de `NAV_COUNTERS`.
+
+**Hecho cuando** (criterios del ticket m-24842964): a 360 px se ven los 4 accesos + «Más», cada objetivo ≥ 44 px, y la barra no tapa contenido ni botones principales; por encima de 640 px no aparece; revisión local `ux-designer` (`qualify-ux` §6) antes de abrir el PR; prueba a 360 px de cada ruta tocada (N12); `just ci-lint` y `just ci-test` en verde; capturas claro / oscuro / 360 px en el PR.
+
+**Pendiente de confirmar por el fundador** (no bloquea esta documentación; se resuelve al aprobarla):
+
+1. **Punto de corte: 640 px o 768 px.** La ficha del ticket dice «< 768 px»; la app pasa a cajón a 640 px. Este patrón elige **640 px** para que nunca convivan sidebar y barra (entre 641 y 767 px se verían las dos). Si se prefiere 768 px, el cajón sube con ella en el mismo PR.
+2. **«Por responder» en dos líneas.** Cabe en dos líneas a 360 px sin recorte. La alternativa sería una forma corta («Responder»), que rompería N1 con el sidebar; por eso no se propone.
 
 ---
 
@@ -464,7 +549,7 @@ Si el tenant no configuró (Clarity sin proyecto), la configuración sube arriba
 | earned mention | **mención** | post, publicación ajena |
 | own media a monitorear | **contenido** / **Reel** | inbox, media |
 | DM/comentario recibido | **mensaje** / **comentario** | thread |
-| lead | **cliente interesado** (menú: «Interesados») | lead, prospecto, contacto |
+| lead | **cliente interesado** (pestaña «Interesados» de Por responder) | lead, prospecto, contacto |
 | creator | **creador** | influencer (salvo copy de marketing) |
 | señal derivada | **señal** | evento, alerta (alerta = una señal que exige acción) |
 | Fecha de verificación | "Verificada: …" | "Last verified" |
@@ -490,6 +575,7 @@ Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca
 - **Tamaño de toque:** controles ≥ 32px de alto (Radix size 2); size 1 solo en contextos densos y secundarios. El kit pide 46 px (`--lq-control-height`); se registra pero **no** se adopta: la escala de Radix se queda.
 - **Movimiento:** `prefers-reduced-motion` cubre, pieza a pieza, lo que el vidrio añadió: la **cápsula** no viaja ni se deforma (el script la coloca en seco), la **luz del puntero** se apaga, el **brillo** de cápsula y etiqueta zen (`::after`) no barre, el **shimmer** del skeleton y el **sweep** de la barra de progreso se detienen, el drawer no desliza y el panel de progreso no funde. No hay un apagado global: la entrada `.q-settle`, el ascenso `.q-lift` y el pop del toast siguen (pendiente en §9.3).
 - **Táctil:** la etiqueta zen y la luz del puntero no existen con puntero grueso — bajo un dedo no dicen nada.
+- **Celular (N12):** en ≤ 640 px todo objetivo mide ≥ 44 × 44 px (filas del menú, botón del cajón, celdas de la barra inferior) y nada depende de `:hover`. La barra inferior (§4.4) es un segundo `<nav>` («Accesos rápidos») con texto siempre visible, `aria-current` en la celda activa y «Más» como botón con `aria-expanded`.
 - **Idioma:** `rx.App(html_lang="es")` — verificado en el `<html>` emitido.
 
 ---
@@ -610,3 +696,9 @@ Se prototiparon tres menús — dos planos con tinte, un ciclo numerado en tres 
 ### 10.17 Los diales del Glass Lab son el contrato (D14)
 - Un design system con un «builder» pero sin registro de qué se eligió no es reproducible. Cada dial del Lab es un token `--q-lab-*` (y dos constantes en `layout.py` para el filtro SVG); las fórmulas son las del Lab (`builderCss`), no una aproximación. Para cambiar el material: mover los diales en el Lab, copiar los números. Los diales son el contrato entre UX y código.
 - Y una decisión de alcance que vino con el kit (D13): **el calendario del planificador se conserva** (semanal por horas); el del kit es un selector de mes de un solo día. Lo que migra es la piel — cuadrícula, celdas y chips sobre el material *card* (lote C).
+
+### 10.18 Barra inferior en el celular: un patrón nuevo, opaco y con los mismos nombres (decisión 5, 2026-10-23)
+- **Por qué existe:** el dueño usa Qualify con una mano entre clientes (`perfil-cliente-pyme.md` §5); detrás de ☰, lo de todos los días cuesta dos toques y un estirón del pulgar. El fundador decidió la barra (decisión 5) y que se documentara aquí antes de construirla (§4.4). Es la excepción explícita a «no inventes un componente» (§9.1-8): la abre una decisión del fundador, no la repetición en pantallas, y no sienta precedente.
+- **Por qué opaca y no de vidrio:** el contenido se desplaza por debajo y los textos de la barra tienen que leerse igual sobre cualquier foto; el presupuesto de `backdrop-filter` ya está casi lleno en el shell (§9.3-2). Misma razón que el panel opaco (§10.12).
+- **Por qué los mismos nombres, iconos, rutas y contadores que el sidebar:** N1 (un nombre por lugar) y N11 (lo pendiente se cuenta donde se resuelve). Una segunda fuente de rutas o de cifras se desincronizaría con la primera; la barra solo lee las de `layout.py` y `PendingState`.
+- **Por qué 640 px:** es el punto donde el sidebar ya es cajón; con otro corte convivirían dos navegaciones.

@@ -168,6 +168,8 @@ class UnpublishableReason(StrEnum):
     STOCK_NOT_PUBLISHABLE = "stock_not_publishable"
     # m-24828907: the retention rule deleted the POST's files from R2 (`media_purged_at`).
     MEDIA_PURGED = "media_purged"
+    # m-24820142: a video is still its 480p Seedance draft — its final is not in place.
+    MEDIA_DRAFT_PENDING = "media_draft_pending"
 
 
 @dataclass(frozen=True)

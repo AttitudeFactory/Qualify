@@ -19,8 +19,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
+from typing import NamedTuple
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
 from qualify_creative.schemas import CopyPayload, ImagePolicy
@@ -959,6 +960,234 @@ class DraftVM:
     #: eliminado» instead of the media, and offers no download.
     media_purged: bool = False
     purged_label: str = ""
+    #: m-24820142: the piece's Seedance 2.5 videos as one draft state — "" (no draft
+    #: video), `draft`, `rendering`, `final`, `failed` or `expired` — and what the
+    #: screen says about it.
+    video_draft: VideoDraftVM = field(default_factory=lambda: NO_VIDEO_DRAFT)
+
+
+# -- Seedance 2.5 draft mode (m-24820142) --------------------------------------------------
+
+#: `draft_mode` states (strings, so the view-model never imports the backend; a test
+#: that may import both keeps them equal: `test_creative_vm`).
+VIDEO_DRAFT = "draft"
+VIDEO_RENDERING = "rendering"
+VIDEO_FINAL = "final"
+VIDEO_FAILED = "failed"
+VIDEO_EXPIRED = "expired"
+APPROVE_VERSION_LABEL = "Aprobar esta versión"
+
+
+@dataclass(frozen=True)
+class VideoDraftVM:
+    state: str
+    #: «Vista previa» — the badge over the video. Never money (founder decision 8,
+    #: m-24851824): the owner counts creations; the dollar cost is the team's.
+    badge: str
+    #: `signal_pill` tone of the badge.
+    tone: str
+    #: What happens or happened, in the operator's words.
+    note: str
+    #: The final failed (or was left half-made), its draft still lives and the piece is
+    #: approved — `ContentService.retry_final` orders finals of an approved piece only.
+    can_retry: bool = False
+    #: A final is being made (this one, or another video of the piece while this
+    #: state shows one that failed): the screen polls until none is left.
+    rendering: bool = False
+
+
+#: A piece without Seedance 2.5 draft videos.
+NO_VIDEO_DRAFT = VideoDraftVM("", "", "neutral", "")
+
+#: `final_poll_step` verdicts: keep polling; the finals landed; a final failed and
+#: nothing is left rendering; stop without a word (the piece was regenerated).
+FINAL_POLL_CONTINUE = "continue"
+FINAL_POLL_DONE = "done"
+FINAL_POLL_FAILED = "failed"
+FINAL_POLL_STOP = "stop"
+
+
+def final_poll_step(video: VideoDraftVM) -> str:
+    """What the 1080p final poll does after one refresh of the piece (m-24820142): it
+    keeps going while ANY video still renders, reports a failure only once nothing is
+    left rendering, and goes quiet when the piece no longer waits for a final (it was
+    regenerated: back to a draft, or no draft video at all)."""
+    if video.rendering:
+        return FINAL_POLL_CONTINUE
+    if video.state == VIDEO_FINAL:
+        return FINAL_POLL_DONE
+    if video.state in (VIDEO_FAILED, VIDEO_EXPIRED):
+        return FINAL_POLL_FAILED
+    return FINAL_POLL_STOP
+
+
+#: m-24842978: what approving a publication with no final to wait for says — it is not
+#: out yet — on the publication's own page and in the gallery alike: the way to choose
+#: when it goes out when it can go out, or that something is missing first.
+APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
+APPROVED_NOT_READY_TOAST = "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale."
+APPROVED_TOAST_ACTION = "Elegir día y hora"
+#: m-24842981 (review 2026-10-24, finding 8): a screen that is not the publication's own
+#: page, after approving one whose final is being made or could not be ordered, offers
+#: the way there (`/drafts/<id>`) — the toast alone left the owner nowhere to tap (N3).
+APPROVED_OPEN_ACTION = "Ver publicación"
+#: The default `approved` text of `approval_notice` (kept under its earlier name).
+POST_APPROVED_TEXT = APPROVED_TOAST
+
+
+class ApprovalNotice(NamedTuple):
+    """The toast after approving, as `rx.toast` kind and text, and whether to offer
+    «Elegir día y hora» with it (`offer_schedule`) or, on a screen that is not the
+    publication's own page, «Ver publicación» (`offer_open`: its final is being made or
+    could not be ordered, m-24842981)."""
+
+    kind: str
+    text: str
+    offer_schedule: bool
+    offer_open: bool = False
+
+
+def approval_notice(
+    video: VideoDraftVM,
+    *,
+    ready: bool = True,
+    approved: str = APPROVED_TOAST,
+    not_ready: str = APPROVED_NOT_READY_TOAST,
+    elsewhere: str = "",
+) -> ApprovalNotice:
+    """The notice after approving a piece (m-24820142, m-24842978), from the piece
+    itself — not from whether a final poll had to start, since one may already run for
+    it. A 1080p final being made, or one that could not be ordered (the piece offers
+    «Reintentar»), comes first: the publication cannot be given a day and time until
+    its final exists (the Planificador refuses a draft, `MEDIA_DRAFT_PENDING`), so no
+    way to schedule is offered then. Otherwise it is approved but not out yet: `ready`
+    (the gallery's `schedule_readiness`) says whether it can be scheduled now
+    (`approved`, with «Elegir día y hora») or something is missing first (`not_ready`).
+    Every screen that approves uses it — the piece's page, the gallery's quick approval,
+    Variaciones. A screen that is not the piece's own page says where to open it
+    (`elsewhere`: «Ábrela», «Ábrela en Por aprobar»)."""
+    if video.rendering:
+        tail = f" {elsewhere} para ver cuándo está listo." if elsewhere else ""
+        return ApprovalNotice(
+            "info",
+            f"Aprobada. Estamos preparando el video en alta calidad.{tail}",
+            False,
+            bool(elsewhere),
+        )
+    if video.can_retry:
+        tail = f" {elsewhere} para reintentarlo." if elsewhere else " Puedes reintentarlo."
+        return ApprovalNotice(
+            "error",
+            f"Versión aprobada, pero no pudimos pedir el video final.{tail}",
+            False,
+            bool(elsewhere),
+        )
+    if ready:
+        return ApprovalNotice("success", approved, True)
+    return ApprovalNotice("success", not_ready, False)
+
+
+#: A final being made, in words: the piece's badge and the «Por aprobar» card's state
+#: and (disabled) main button say the same (m-24842981, review 2026-10-24 finding 8).
+FINAL_PREPARING_LABEL = "Preparando el video final"
+
+
+#: The final's own note while it is not there yet, in the «Aprobada. Todavía no se
+#: publica.» card: why no day and time can be chosen yet.
+FINAL_RENDERING_NOTE = (
+    "Estamos preparando el video en alta calidad. Cuando esté listo podrás elegir cuándo sale."
+)
+FINAL_FAILED_NOTE = (
+    "No pudimos generar el video final. Reinténtalo y después podrás elegir cuándo sale."
+)
+
+
+#: The toast when the final lands while the piece is on screen: it is still not out —
+#: choose when it goes out, or first see what is missing (m-24842978).
+FINAL_READY_TEXT = "Tu video ya está listo. Ahora elige cuándo sale."
+FINAL_READY_NOT_READY = "Tu video ya está listo. Revisa lo que falta antes de elegir cuándo sale."
+
+
+def final_pending_note(video: VideoDraftVM) -> str:
+    """Why an approved publication cannot be given a day and time because of its own
+    video (m-24820142): its 1080p final is being made, or could not be ordered. Empty
+    when its video does not hold it back."""
+    if video.rendering:
+        return FINAL_RENDERING_NOTE
+    if video.can_retry:
+        return FINAL_FAILED_NOTE
+    return ""
+
+
+#: A failed final on a piece no longer approved (edited after its approval): approving
+#: it again orders the final, so that is what the screen says instead of «Reintentar».
+FINAL_NEEDS_APPROVAL_TEXT = (
+    "El video final no está listo. Cuando vuelvas a aprobar la publicación, lo preparamos "
+    "en alta calidad."
+)
+
+
+def video_draft_vm(
+    state: str,
+    cost_usd: str | None,
+    error: str = "",
+    *,
+    still_rendering: bool = False,
+    approved: bool = False,
+) -> VideoDraftVM:
+    """The draft facts `draft_mode.draft_summary` returned, as the screen shows them.
+    `still_rendering` (`draft_mode.draft_rendering`): some video of the piece has its
+    final being made right now, whatever state the summary shows first. `approved`: the
+    piece is approved — only then can a failed final be ordered again (`can_retry`);
+    otherwise approving it again is what orders it. `cost_usd` is never shown: the
+    owner never sees money (founder decision 8, m-24851824) — the spend stays recorded
+    for the team, not on this screen."""
+    del cost_usd
+    if not state:
+        return NO_VIDEO_DRAFT
+    if state == VIDEO_DRAFT:
+        return VideoDraftVM(
+            state,
+            "Vista previa",
+            "info",
+            "Es una vista previa en calidad baja, para que decidas rápido. Al aprobarla "
+            "preparamos el mismo video en alta calidad.",
+        )
+    if state == VIDEO_RENDERING:
+        return VideoDraftVM(
+            state,
+            FINAL_PREPARING_LABEL,
+            "info",
+            "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
+            "y lo verás aquí cuando esté listo.",
+            rendering=True,
+        )
+    if state == VIDEO_FAILED and not approved:
+        return VideoDraftVM(
+            state,
+            "Falta el video final",
+            "warn",
+            FINAL_NEEDS_APPROVAL_TEXT,
+            rendering=still_rendering,
+        )
+    if state == VIDEO_FAILED:
+        return VideoDraftVM(
+            state,
+            "Falta el video final",
+            "error",
+            error or "No pudimos generar el video final.",
+            can_retry=True,
+            rendering=still_rendering,
+        )
+    if state == VIDEO_EXPIRED:
+        return VideoDraftVM(
+            state,
+            "La vista previa venció",
+            "warn",
+            "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva.",
+            rendering=still_rendering,
+        )
+    return VideoDraftVM(state, "Video final", "ok", "")
 
 
 # -- piece retention (m-24828907) ----------------------------------------------------------

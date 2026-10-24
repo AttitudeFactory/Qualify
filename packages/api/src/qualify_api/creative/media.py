@@ -61,14 +61,16 @@ import logging
 import math
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from qualify_creative.adapters.byteplus_ark import (
+    DEFAULT_SEEDANCE_MODEL,
+    DRAFT_RESOLUTION,
     output_dimensions,
     seedance_family,
     video_cost_usd,
@@ -105,6 +107,7 @@ from qualify_creative.photo.normalize import to_meta_jpeg, to_reference_jpeg
 from qualify_creative.providers import (
     CredentialResolver,
     GenerationRequest,
+    GenerationResult,
     PricingTable,
     RenderedPrompt,
 )
@@ -134,12 +137,21 @@ from qualify_creative.schemas import (
 from qualify_creative.subtitles import chunk_script, timed_cues
 from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
+from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
 
 from qualify_api.stock.guard import stock_problems
 from qualify_api.stock.keys import is_stock_key
 
 from . import trace
+from .draft_mode import (
+    DRAFT_EXPIRED_TEXT,
+    DRAFT_FINAL,
+    DRAFT_READY,
+    draft_expired,
+    draft_state,
+    kept_raw_final,
+)
 from .pieces import PieceFile, PieceFiles
 from .voice_access import ResolvedVoice, VoiceRefused, default_public_voice
 
@@ -254,6 +266,9 @@ class MediaUsage:
     unit: str  # "second" | "piece"
     quantity: int
     cost_usd: Decimal
+    #: The vendor's own billed count where it bills by token beside the unit (Seedance:
+    #: `usage.completion_tokens`), so the usage row carries what the cost came from.
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -313,6 +328,90 @@ class MediaOutcome:
     @property
     def spent_usd(self) -> Decimal:
         return sum((u.cost_usd for u in self.usage), Decimal(0))
+
+
+# ---------------------------------------------------------------------------
+# Seedance 2.5 draft mode (m-24820142) — the state lives in `draft_mode`
+
+#: How a final is finished the way its draft was: the clip at its own size with the
+#: brand's logo over it and its sound; a talking video at its own size, untouched; a
+#: carousel slide cover-cropped to the feed with the slide's words over it, silent.
+FINISH_CLIP = "clip"
+FINISH_VIDEO = "video"
+FINISH_SLIDE = "slide"
+PNG = "image/png"
+#: Called with the paid raw 1080p's record (`raw_final`) the moment it is kept in the
+#: store, before the fitter runs: the service writes it into the draft block right away,
+#: so a final whose last write never lands is still finished by the next try.
+RawFinalKept = Callable[[Mapping[str, Any]], None]
+
+
+@dataclass(frozen=True)
+class FinalOutcome:
+    """One video's final: the row that replaces its draft, or why it did not come."""
+
+    media: MediaWrite | None = None
+    usage: tuple[MediaUsage, ...] = ()
+    failure: str | None = None
+    detail: str = ""
+    #: What a failed final leaves in its draft block for the next try — the paid raw
+    #: 1080p file (`raw_final`), so a retry finishes it instead of paying again.
+    draft_changes: Mapping[str, Any] | None = None
+
+    @property
+    def spent_usd(self) -> Decimal:
+        return sum((u.cost_usd for u in self.usage), Decimal(0))
+
+
+def _attempt_tag(block: Mapping[str, Any]) -> str:
+    """A short tag unique to this order of a final (the draft block's `attempt`, new
+    on every order — `ContentService._order_finals`), for the keys its files go under."""
+    attempt = block.get("attempt")
+    return (str(attempt) if attempt else uuid4().hex)[:12]
+
+
+def _reference_task(model: str) -> dict[str, str]:
+    """The generator only CREATES videos from references (never edits or extends one):
+    on a model that takes the hint (2.5) it is said, so a reference video is not taken
+    for a video to edit and the task's constraints are checked at creation."""
+    if seedance_family(model).omni_task_types:
+        return {"omni_reference_task_type": "reference"}
+    return {}
+
+
+def _with_draft(
+    params: dict[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    model_id: str,
+    ratio: str,
+    seconds: int,
+    cost_usd: Decimal,
+    finish: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    """`params` plus the seed the vendor used and, for a draft, what its final needs."""
+    params = {**params, "seed": payload.get("seed")}
+    if payload.get("draft"):
+        params["draft"] = {
+            "status": DRAFT_READY,
+            "task_id": payload.get("task_id"),
+            "created_at": payload.get("created_at"),
+            "model": model_id,
+            # for the final's cost estimate; ModelArk reuses the draft's own
+            "ratio": ratio,
+            "duration_seconds": seconds,
+            "cost_usd": str(cost_usd),
+            "finish": finish,
+            # whether the draft was made with sound: its final keeps it (never re-sent)
+            "audio": bool(payload.get("generate_audio")),
+            # whether the draft had video input: its final is billed at the with-video
+            # rate then (model-pricing, read 2026-10-23); the length, for its estimate
+            "video_input": bool(payload.get("video_input")),
+            "reference_video_seconds": payload.get("reference_video_seconds"),
+            **extra,
+        }
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +576,14 @@ class R2ReadingMediaStore:
         (`_KEEP_ATTEMPTS`, a short wait between): the file is the output of a generation
         already paid for (m-24828909). A refusal that cannot change — no R2 configured,
         the size ceiling, a foreign prefix — is not. False — logged with the error's own
-        message, never raised — when it still fails; the caller fails the piece."""
+        message, never raised — when it still fails; the caller fails the piece.
+
+        IDEMPOTENT PER KEY (m-24820142): a generated key is fixed per revision
+        (`video.mp4`, `clip.mp4`, `slide-N.mp4`, `first-frame.jpg`…) and the bucket's
+        object lock refuses overwriting one (`ObjectLockedByBucketPolicy`), so a retry
+        that writes the same file again would fail on its own earlier success. A
+        refused write whose key already holds THESE bytes is a success; a different
+        file there is never taken for this one (`_already_kept`)."""
         from qualify_shared.objects.config import R2ConfigurationError  # noqa: PLC0415
         from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream  # noqa: PLC0415
         from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
@@ -498,6 +604,9 @@ class R2ReadingMediaStore:
                 )
                 return False
             except Exception as exc:  # R2 down or the connection dropped: try again
+                if self._already_kept(tenant_id, key, data):
+                    logger.info("generated media already kept in R2 (%s): reused", key)
+                    return True
                 if attempt == _KEEP_ATTEMPTS:
                     logger.error(
                         "generated media not kept in R2 after %d attempts (%s): %s: %s",
@@ -519,6 +628,24 @@ class R2ReadingMediaStore:
             else:
                 return True
         return False
+
+    def _already_kept(self, tenant_id: UUID, key: str, data: bytes) -> bool:
+        """Whether `key` already holds exactly `data` — asked only after a write was
+        refused. The size first (one HEAD); only an object of the same size is read
+        back and compared, so different bytes are never "reused". False whenever R2
+        cannot say: the write's own retries and failure stand."""
+        from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+        try:
+            if int(self._r2().object_size(tenant_id, key)) != len(data):
+                return False
+            with self._r2().open_object(tenant_id, key) as stream:
+                return bool(stream.read() == data)
+        except ObjectNotFound:
+            return False
+        except Exception as exc:  # noqa: BLE001 — unknown: the write's outcome stands
+            logger.warning("R2 copy of %s unknown: %s: %s", key, type(exc).__name__, exc)
+            return False
 
 
 # -- what the operator reads when a piece fails ------------------------------------------
@@ -642,8 +769,9 @@ def props_failure_text(problems: list[PropsProblem]) -> str:
     return " ".join(texts)
 
 
-def _audio_seconds(data: bytes) -> float | None:
-    """A voice track's length, read with PyAV (header only); None when it cannot tell."""
+def _media_seconds(data: bytes) -> float | None:
+    """An audio or video file's length (a voice track, a reference video), read with PyAV
+    (header only); None when it cannot tell."""
     try:
         import av  # noqa: PLC0415 — the `media` extra, already used by the video fitter
 
@@ -701,9 +829,14 @@ def _decode_frame(data: bytes, *, last: bool, seek: bool) -> Any:
 
 def _data_url(image: bytes) -> str:
     """A reference image as the `data:` URL ModelArk takes (normalized, <=2048 px)."""
+    return _jpeg_url(to_reference_jpeg(image))
+
+
+def _jpeg_url(jpeg: bytes) -> str:
+    """A JPEG already made for a model (`to_reference_jpeg`) as its `data:` URL, as is."""
     import base64
 
-    encoded = base64.b64encode(to_reference_jpeg(image)).decode("ascii")
+    encoded = base64.b64encode(jpeg).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
 
 
@@ -782,6 +915,19 @@ class _Saver:
                 "%s not kept for draft %s: the piece goes on without it", name, self._draft_id
             )
             return None
+
+    def optional_or_beside(
+        self, name: str, data: bytes, content_type: str, *, otherwise: str
+    ) -> str | None:
+        """Like `optional`, for a file a retry may find already in R2 under `name`
+        (m-24820142: a final's raw 1080p kept by a run whose last write never landed).
+        The same bytes there are reused by `R2ReadingMediaStore.keep` itself; when
+        `name` cannot take them (a DIFFERENT file holds it — another download — and the
+        object lock refuses the overwrite), they go to `otherwise` instead."""
+        key = self.optional(name, data, content_type)
+        if key is None and getattr(self._store, "keep", None) is not None:
+            key = self.optional(otherwise, data, content_type)
+        return key
 
 
 class VoiceResolver(Protocol):
@@ -954,6 +1100,7 @@ class MediaProducer:
         fitter: VideoFitter | None = None,
         seedance_reference_model: str | None = None,
         reference_links: ReferenceLinks | None = None,
+        seedance_model: str = DEFAULT_SEEDANCE_MODEL,
     ) -> None:
         self._store = store
         self._router = router
@@ -991,6 +1138,21 @@ class MediaProducer:
         #: video/audio references a public URL. None = a clip takes frames only.
         self._seedance_reference_model = seedance_reference_model
         self._reference_links = reference_links
+        #: The Seedance adapter's own model (`QUALIFY_SEEDANCE_MODEL`): what a video with
+        #: no `model` param is made with — whether it has a draft mode depends on it.
+        self._seedance_model = seedance_model
+
+    def _seedance_output(self, model: str | None) -> tuple[str, bool]:
+        """The resolution a Seedance task on `model` (None: the adapter's) is asked for,
+        and whether it is a draft (m-24820142): a model with a draft mode always makes a
+        480p draft first; any other takes the configured resolution when it renders it,
+        720p otherwise."""
+        family = seedance_family(model or self._seedance_model)
+        if family.draft:
+            return DRAFT_RESOLUTION, True
+        if self._seedance_resolution in family.resolutions:
+            return self._seedance_resolution, False
+        return "720p", False
 
     def produce(
         self,
@@ -1108,6 +1270,335 @@ class MediaProducer:
                 warnings=tuple(warnings),
             )
         return MediaOutcome(media=tuple(media), usage=tuple(usage), warnings=tuple(warnings))
+
+    def finalize(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        asset: Any,
+        budget: BudgetContext,
+        revision: int,
+        on_raw_kept: RawFinalKept | None = None,
+    ) -> FinalOutcome:
+        """The 1080p final of one draft video (m-24820142), finished the way the draft
+        was, as the row that replaces it. `asset` is the draft's `image_assets` row
+        (`ImageRecord`). Never raises for a vendor or file problem — like `produce`, the
+        outcome carries the failure and whatever was already paid for. `on_raw_kept`
+        hears of the paid raw 1080p as soon as it is kept (`RawFinalKept`); the outcome
+        carries it too (`draft_changes`), on success as well as on failure."""
+        usage: list[MediaUsage] = []
+        block = draft_state(asset.params)
+        if block is None or not block.get("task_id") or not block.get("model"):
+            return FinalOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value,
+                detail="Este video no es un borrador: no tiene versión final que generar.",
+            )
+        if draft_expired(block):
+            # before any call: the vendor no longer knows the draft (a raw final already
+            # paid for and kept never expires: `draft_expired`)
+            return FinalOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value, detail=DRAFT_EXPIRED_TEXT
+            )
+        kept: dict[str, Any] = {}
+        try:
+            media = self._final_video(
+                tenant_id,
+                draft_id,
+                brief,
+                kit,
+                asset,
+                block,
+                budget,
+                usage,
+                revision,
+                kept,
+                on_raw_kept,
+            )
+        except _MediaFailed as exc:
+            logger.warning("final of draft %s failed: %s", draft_id, exc.raw or exc.detail)
+            return FinalOutcome(
+                usage=tuple(usage),
+                failure=exc.failure,
+                detail=exc.detail,
+                draft_changes=kept or None,
+            )
+        except Exception as exc:  # a vendor error, a file that would not encode
+            logger.warning("final of draft %s failed: %s", draft_id, exc)
+            return FinalOutcome(
+                usage=tuple(usage),
+                failure=FailureReason.PROVIDER_ERROR.value,
+                detail=ark_failure_text(f"{type(exc).__name__}: {exc}"),
+                draft_changes=kept or None,
+            )
+        # the raw file rides along on success too: when writing the final in place fails,
+        # the failure the service writes instead still keeps it for the retry
+        return FinalOutcome(media=media, usage=tuple(usage), draft_changes=kept or None)
+
+    def _final_video(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        asset: Any,
+        block: Mapping[str, Any],
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        revision: int,
+        kept: dict[str, Any],
+        on_raw_kept: RawFinalKept | None,
+    ) -> MediaWrite:
+        """The final's file, fitted. Everything the fitter lays is read BEFORE the 1080p
+        is paid for, and the raw 1080p is saved as soon as it is downloaded, recorded in
+        `kept["raw_final"]` and handed to `on_raw_kept` (the service writes it into the
+        draft block there and then): a fitter that fails, or a last write that never
+        lands, then costs a retry nothing — the next try finishes the saved file
+        (`raw_final` in the draft block) instead of paying the vendor again.
+
+        Every file is written so a retry never collides with what an earlier try left
+        (the bucket's object lock refuses overwriting a key): the raw file is reused
+        when it is already there, and the fitted final and its poster go under a key of
+        their own per order (the draft block's `attempt`)."""
+        fitter = self._require_fitter()
+        model = str(block["model"])
+        ratio = str(block.get("ratio") or SEEDANCE_RATIOS[brief.format])
+        finish = block.get("finish")
+        overlay: bytes | None = None
+        logo: bytes | None = None
+        if finish == FINISH_SLIDE and block.get("words"):
+            key = block.get("overlay_key")
+            if not isinstance(key, str) or not key:
+                raise _MediaFailed(
+                    FailureReason.PROVIDER_ERROR.value,
+                    "No encontramos el texto de la diapositiva para ponerlo sobre el "
+                    "video final. Vuelve a generar la pieza.",
+                )
+            overlay = self._store.read(key)
+        elif finish == FINISH_CLIP and brief.media.brand_logo_key:
+            logo = self._logo(kit, brief.media.brand_logo_key)
+
+        save = _Saver(self._store, tenant_id, draft_id, revision)
+        stem = Path(str(asset.object_key or "video.mp4")).stem
+        raw = kept_raw_final(block)
+        video: bytes | None = None
+        if raw is not None:
+            try:
+                video = self._store.read(str(raw["key"]))
+            except Exception as exc:  # noqa: BLE001 — gone from the store: paid again
+                logger.warning("final of %s: raw final unreadable: %s", draft_id, exc)
+                raw = None
+        if raw is None or video is None:
+            raw, video = self._paid_final(
+                tenant_id, draft_id, brief, block, model, ratio, budget, usage, save, stem
+            )
+            if raw.get("key") and on_raw_kept is not None:
+                try:
+                    on_raw_kept(raw)
+                except Exception as exc:  # noqa: BLE001 — the outcome still carries it
+                    logger.warning(
+                        "final of %s: raw final not recorded yet: %s", draft_id, type(exc).__name__
+                    )
+        if raw.get("key"):
+            kept["raw_final"] = raw
+        resolution = str(raw.get("resolution") or seedance_family(model).draft_final_resolution)
+
+        # 2.5's 1080p is 10-bit H.265, which browsers and Instagram may not play: the
+        # fitter re-encodes it to H.264 yuv420p — and lays what the draft had over it
+        if finish == FINISH_SLIDE:
+            size = brief.format.dimensions
+            # a slide is silent unless its draft was made with sound (§ 2026-10-23)
+            keep_audio = bool(block.get("audio"))
+        else:
+            size = output_dimensions(model, resolution, ratio)
+            keep_audio = True
+            if logo is not None:
+                overlay = text_layer(size=size, palette=kit.palette_rgb, logo=logo)
+        try:
+            fitted = fitter.fit(
+                # the piece the operator approved and paid 1080p for keeps its detail
+                # through the H.265 → H.264 re-encode (the subtitled video's settings)
+                video,
+                size=size,
+                overlay=overlay,
+                keep_audio=keep_audio,
+                x264=DETAIL_X264,
+            )
+        except Exception as exc:  # noqa: BLE001 — the final is paid for: never lose it
+            if finish != FINISH_CLIP or overlay is None:
+                raise
+            # like the draft: a logo that cannot be laid leaves the clip without it
+            logger.warning("final of %s: logo not laid: %s", draft_id, type(exc).__name__)
+            overlay = None
+            fitted = fitter.fit(
+                video, size=size, overlay=None, keep_audio=keep_audio, x264=DETAIL_X264
+            )
+
+        # one key per order: a try whose final was saved but never put in place left
+        # its file under its own key, and this one never collides with it
+        tag = _attempt_tag(block)
+        key = save(f"{stem}-final-{tag}.mp4", fitted.data, MP4)
+        poster = (
+            save.optional(f"{stem}-final-{tag}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG)
+            if fitted.poster
+            else None
+        )
+        params = dict(asset.params or {})
+        params.update(
+            task_id=raw.get("task_id"),
+            duration_seconds=raw.get("duration_seconds"),
+            resolution=resolution,
+            tokens=raw.get("tokens"),
+            thumbnail_key=poster or params.get("thumbnail_key"),
+            model_revision=raw.get("model_revision"),
+            draft={
+                **block,
+                **({"raw_final": raw} if raw.get("key") else {}),
+                "status": DRAFT_FINAL,
+                "error": None,
+                # the draft's own file and spend stay on record (provenance)
+                "draft_object_key": asset.object_key,
+                "draft_tokens": (asset.params or {}).get("tokens"),
+                "final_task_id": raw.get("task_id"),
+                "final_cost_usd": raw.get("cost_usd"),
+            },
+        )
+        if finish == FINISH_CLIP:
+            params["logo"] = overlay is not None
+        return MediaWrite(
+            position=asset.position,
+            media_type="video",
+            media_url=key,
+            object_key=key,
+            width=fitted.width,
+            height=fitted.height,
+            aspect_ratio=asset.aspect_ratio,
+            model_id=str(raw.get("model_id") or model),
+            provider=str(raw.get("provider") or "seedance"),
+            content_type=MP4,
+            ai_generated=True,
+            params=params,
+        )
+
+    def _paid_final(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        block: Mapping[str, Any],
+        model: str,
+        ratio: str,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+        stem: str,
+    ) -> tuple[dict[str, Any], bytes]:
+        """The vendor's 1080p from the draft's task id, downloaded and saved as it came
+        (`key` None when the store refused it: the final goes on, just not reusable)."""
+        seconds = block.get("duration_seconds")
+        request = GenerationRequest(
+            task=GenerationTask.SCENE_VIDEO,
+            rendered_prompt=RenderedPrompt("", "", ""),
+            params={
+                "model": model,
+                "draft_task_id": str(block["task_id"]),
+                # for the estimate only: the final reuses the draft's own
+                "ratio": ratio,
+                "duration_seconds": seconds if isinstance(seconds, int) else 5,
+                # for the payload's provenance only: the final keeps the draft's sound
+                **(
+                    {"generate_audio": bool(block["audio"])}
+                    if isinstance(block.get("audio"), bool)
+                    else {}
+                ),
+                # priced by whether the DRAFT had video input (a draft made before this
+                # was recorded did not say: priced without, the higher rate)
+                "video_input": block.get("video_input") is True,
+                **(
+                    {"reference_video_seconds": block["reference_video_seconds"]}
+                    if isinstance(block.get("reference_video_seconds"), int | float)
+                    and not isinstance(block.get("reference_video_seconds"), bool)
+                    else {}
+                ),
+            },
+        )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="Seedance",
+            what="video final desde el borrador",
+            fields={"borrador": str(block["task_id"]), "modelo": model},
+        )
+        result = self._run(
+            tenant_id=tenant_id,
+            brand_id=brief.brand_id,
+            link=SEEDANCE,
+            request=request,
+            budget=budget,
+            usage=usage,
+        )
+        payload = dict(result.payload) if isinstance(result.payload, dict) else {}
+        resolution = str(payload.get("resolution") or seedance_family(model).draft_final_resolution)
+        cost = self._seedance_usage(result, resolution, usage)
+        video = self._download(str(result.media_url))
+        raw = {
+            # an earlier try may have kept it already (its last write never landed)
+            "key": save.optional_or_beside(
+                f"{stem}-final-raw.mp4",
+                video,
+                MP4,
+                otherwise=f"{stem}-final-raw-{_attempt_tag(block)}.mp4",
+            ),
+            "task_id": payload.get("task_id"),
+            "duration_seconds": payload.get("duration_seconds"),
+            "resolution": resolution,
+            "tokens": int(result.usage.output_tokens),
+            "cost_usd": str(cost),
+            "model_id": result.model_id,
+            "provider": result.provider,
+            "model_revision": result.model_revision,
+        }
+        return raw, video
+
+    def _seedance_usage(
+        self, result: GenerationResult, resolution: str, usage: list[MediaUsage]
+    ) -> Decimal:
+        """A Seedance task's cost from its billed tokens at `resolution` — at the with-video
+        rate when the task (a final: its draft) had video input — recorded in `usage`
+        with the seconds of video made and the tokens."""
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        tokens = int(result.usage.output_tokens)
+        cost = video_cost_usd(
+            self._pricing,
+            result.model_id,
+            resolution,
+            tokens,
+            video_input=payload.get("video_input") is True,
+        )
+        usage.append(
+            MediaUsage(
+                provider=result.provider,
+                model_id=result.model_id,
+                unit="second",
+                quantity=math.ceil(result.usage.media_seconds),
+                cost_usd=cost,
+                output_tokens=tokens,
+            )
+        )
+        return cost
+
+    def _opening_frame(self, image: bytes, ratio: str, model: str | None) -> bytes:
+        """The opening (or closing) frame a Seedance task on `model` (None: the
+        adapter's) is sent, as the reference JPEG itself (`_jpeg_url`): one decode, one
+        encode. 2.5 keeps the frame's own aspect (`ratio: adaptive`), so on such a model
+        it is cover-cropped to the piece's named ratio first, at the frame's own
+        resolution (never upscaled) — the video then has the ratio and size recorded
+        for it; any other model takes the named ratio itself."""
+        if not seedance_family(model or self._seedance_model).adaptive_frames:
+            return to_reference_jpeg(image)
+        width, _, height = SCENE_SIZES[ratio].partition("x")
+        return to_reference_jpeg(image, aspect=(int(width), int(height)))
 
     # -- inputs ------------------------------------------------------------------------
 
@@ -1552,11 +2043,6 @@ class MediaProducer:
         script = (
             media.own_script.strip() or copy.script or f"{copy.hook} {copy.caption} {copy.cta}"
         ).strip()
-        if len(script) > SCRIPT_MAX:
-            # a generated script has no stored cap (founder, 2026-10-06); the line Seedance
-            # speaks is bounded like `own_script`, so motion prompt + line stay well under
-            # the vendor's `MAX_PROMPT_CHARS` (PR #100 review)
-            script = fit_text(script, SCRIPT_MAX)
         ratio = SEEDANCE_RATIOS[brief.format]
         products = self._products(brief)
         background = self._read(media.background_key)
@@ -1570,6 +2056,11 @@ class MediaProducer:
             *products,
             *([background] if background is not None else []),
         ]
+        # the motion prompt leaves room for the line Seedance speaks (`_SPOKEN_MIN`), and
+        # the line is bounded like `own_script` and by that room, so what the adapter
+        # sends stays within `MEDIA_PROMPT_BUDGET` — both settled BEFORE anything is paid
+        motion = motion_prompt(brief=brief, products=len(products), budget=_TALKING_MOTION_BUDGET)
+        script = _spoken_line(script, motion)
         frame = self._scene_image(
             tenant_id=tenant_id,
             draft_id=draft_id,
@@ -1587,19 +2078,23 @@ class MediaProducer:
             usage=usage,
             what="primer fotograma del video",
         )
+        # on a model that keeps the frame's own aspect (2.5) the frame goes cropped to the
+        # named ratio, so the video has the ratio and size recorded for it
+        frame = self._opening_frame(frame, ratio, None)
         frame_key = save("first-frame.jpg", to_meta_jpeg(frame), JPEG)
 
-        motion = motion_prompt(brief=brief, products=len(products))
+        requested, draft = self._seedance_output(None)
         request = GenerationRequest(
             task=GenerationTask.SCENE_VIDEO,
             rendered_prompt=RenderedPrompt("", "", ""),
             params={
                 "prompt": motion,
-                "first_frame": _data_url(frame),
+                "first_frame": _jpeg_url(frame),
                 "ratio": ratio,
-                "resolution": self._seedance_resolution,
+                "resolution": requested,
                 "duration_seconds": media.duration_seconds,
                 "dialogue": script,
+                **({"draft": True} if draft else {}),
             },
         )
         trace.media_request(
@@ -1609,7 +2104,7 @@ class MediaProducer:
             fields={
                 "prompt de movimiento": motion,
                 "guion (solo lo dicen los modelos 2.x)": script,
-                "formato": f"{ratio} · {self._seedance_resolution}",
+                "formato": f"{ratio} · {requested}{' · borrador' if draft else ''}",
                 "duración pedida": f"{media.duration_seconds} s",
             },
         )
@@ -1622,17 +2117,9 @@ class MediaProducer:
             usage=usage,
         )
         payload = dict(result.payload) if isinstance(result.payload, dict) else {}
-        resolution = str(payload.get("resolution") or self._seedance_resolution)
+        resolution = str(payload.get("resolution") or requested)
         tokens = int(result.usage.output_tokens)
-        usage.append(
-            MediaUsage(
-                provider=result.provider,
-                model_id=result.model_id,
-                unit="second",
-                quantity=math.ceil(result.usage.media_seconds),
-                cost_usd=video_cost_usd(self._pricing, result.model_id, resolution, tokens),
-            )
-        )
+        cost = self._seedance_usage(result, resolution, usage)
         video_key = save("video.mp4", self._download(str(result.media_url)), MP4)
         width, height = output_dimensions(result.model_id, resolution, ratio)
         return [
@@ -1648,16 +2135,24 @@ class MediaProducer:
                 provider=result.provider,
                 content_type=MP4,
                 ai_generated=True,
-                params={
-                    "task_id": payload.get("task_id"),
-                    "duration_seconds": payload.get("duration_seconds"),
-                    "resolution": resolution,
-                    "tokens": tokens,
-                    "spoken": bool(payload.get("generate_audio")),
-                    "avatar_source": media.avatar_source.value if media.avatar_source else None,
-                    "thumbnail_key": frame_key,
-                    "model_revision": result.model_revision,
-                },
+                params=_with_draft(
+                    {
+                        "task_id": payload.get("task_id"),
+                        "duration_seconds": payload.get("duration_seconds"),
+                        "resolution": resolution,
+                        "tokens": tokens,
+                        "spoken": bool(payload.get("generate_audio")),
+                        "avatar_source": media.avatar_source.value if media.avatar_source else None,
+                        "thumbnail_key": frame_key,
+                        "model_revision": result.model_revision,
+                    },
+                    payload,
+                    model_id=result.model_id,
+                    ratio=ratio,
+                    seconds=media.duration_seconds,
+                    cost_usd=cost,
+                    finish=FINISH_VIDEO,
+                ),
             )
         ]
 
@@ -1695,8 +2190,11 @@ class MediaProducer:
             params: dict[str, object] = {
                 "ratio": ratio,
                 "duration_seconds": media.duration_seconds,
+                # § request 2026-10-23: «Con audio» — the adapter ANDs it with the family's
+                # audio, so a silent model (1.0) stays silent whatever is asked
+                "generate_audio": media.clip_audio,
             }
-            resolution = self._seedance_resolution
+            model: str | None = None
             if references:
                 model = self._seedance_reference_model
                 if not model:
@@ -1709,16 +2207,24 @@ class MediaProducer:
                 params["model"] = model
                 params["reference_images"] = [_data_url(image) for image in (*frames, *images)]
                 params["reference_videos"] = self._reference_urls(tenant_id, media.clip_video_keys)
+                if media.clip_video_keys:
+                    # the input video is billed too: its length goes into the estimate
+                    params["reference_video_seconds"] = self._reference_seconds(
+                        media.clip_video_keys
+                    )
                 params["reference_audios"] = self._reference_urls(tenant_id, media.clip_audio_keys)
-                family = seedance_family(model)
-                if resolution not in family.resolutions:
-                    resolution = "720p"
+                params.update(_reference_task(model))
             else:
+                # 2.5 keeps the opening frame's own aspect (`ratio: adaptive`): an
+                # operator's frame is cropped to the piece's ratio, so the clip is too
                 if first is not None:
-                    params["first_frame"] = _data_url(first)
+                    params["first_frame"] = _jpeg_url(self._opening_frame(first, ratio, None))
                 if last is not None:
-                    params["last_frame"] = _data_url(last)
+                    params["last_frame"] = _jpeg_url(self._opening_frame(last, ratio, None))
+            resolution, draft = self._seedance_output(model)
             params["resolution"] = resolution
+            if draft:
+                params["draft"] = True
             prompt = clip_prompt(
                 brief=brief,
                 kit=kit,
@@ -1747,8 +2253,9 @@ class MediaProducer:
                         if references
                         else "ninguna"
                     ),
-                    "formato": f"{ratio} · {resolution}",
+                    "formato": f"{ratio} · {resolution}{' · borrador' if draft else ''}",
                     "duración pedida": f"{media.duration_seconds} s",
+                    "audio": "sí" if media.clip_audio else "no",
                 },
             )
             request = GenerationRequest(
@@ -1776,7 +2283,12 @@ class MediaProducer:
             # video. When the frames suffice (middle images, or videos that are only its
             # first/last file) the clip is made from them on the default model; audio, or
             # a video that is only a reference, has no such fallback.
-            unavailable = "ModelNotOpen" in (exc.raw or "") or exc.detail == CLIP_NO_PUBLIC_URL
+            # (2.5 answers `AccessDenied` where 2.0 answers `ModelNotOpen`, measured
+            # 2026-10-22 on an account with neither activated)
+            unavailable = (
+                any(code in (exc.raw or "") for code in ("ModelNotOpen", "AccessDenied"))
+                or exc.detail == CLIP_NO_PUBLIC_URL
+            )
             if not (references and unavailable and _clip_frames_suffice(brief)):
                 raise
             logger.warning(
@@ -1800,15 +2312,7 @@ class MediaProducer:
         payload = dict(result.payload) if isinstance(result.payload, dict) else {}
         out_resolution = str(payload.get("resolution") or resolution)
         tokens = int(result.usage.output_tokens)
-        usage.append(
-            MediaUsage(
-                provider=result.provider,
-                model_id=result.model_id,
-                unit="second",
-                quantity=math.ceil(result.usage.media_seconds),
-                cost_usd=video_cost_usd(self._pricing, result.model_id, out_resolution, tokens),
-            )
-        )
+        cost = self._seedance_usage(result, out_resolution, usage)
         video = self._download(str(result.media_url))
         width, height = output_dimensions(result.model_id, out_resolution, ratio)
         thumbnail = first
@@ -1842,25 +2346,52 @@ class MediaProducer:
                 provider=result.provider,
                 content_type=MP4,
                 ai_generated=True,
-                params={
-                    "task_id": payload.get("task_id"),
-                    "duration_seconds": payload.get("duration_seconds"),
-                    "resolution": out_resolution,
-                    "tokens": tokens,
-                    "spoken": bool(payload.get("generate_audio")),
-                    # the middle images left out on an account without 2.x (§ 2026-10-20)
-                    "references_dropped": {"images": dropped_images, "videos": dropped_videos},
-                    "references": {
-                        "images": len(images) if references else 0,
-                        "videos": len(media.clip_video_keys) if references else 0,
-                        "audios": len(media.clip_audio_keys),
+                params=_with_draft(
+                    {
+                        "task_id": payload.get("task_id"),
+                        "duration_seconds": payload.get("duration_seconds"),
+                        "resolution": out_resolution,
+                        "tokens": tokens,
+                        "spoken": bool(payload.get("generate_audio")),
+                        # the middle images left out on an account without 2.x (§ 2026-10-20)
+                        "references_dropped": {
+                            "images": dropped_images,
+                            "videos": dropped_videos,
+                        },
+                        "references": {
+                            "images": len(images) if references else 0,
+                            "videos": len(media.clip_video_keys) if references else 0,
+                            "audios": len(media.clip_audio_keys),
+                        },
+                        "thumbnail_key": thumbnail_key,
+                        "logo": logo_laid,
+                        "model_revision": result.model_revision,
                     },
-                    "thumbnail_key": thumbnail_key,
-                    "logo": logo_laid,
-                    "model_revision": result.model_revision,
-                },
+                    payload,
+                    model_id=result.model_id,
+                    ratio=ratio,
+                    seconds=media.duration_seconds,
+                    cost_usd=cost,
+                    finish=FINISH_CLIP,
+                ),
             )
         ]
+
+    def _reference_seconds(self, keys: tuple[str, ...]) -> float | None:
+        """The reference videos' total length, for the price guard: ModelArk bills the
+        input video too (measured 2026-10-23). None when one cannot be read or measured —
+        the adapter then prices the most a task takes, never less."""
+        total = 0.0
+        for key in keys:
+            try:
+                data = self._read(key)
+            except Exception:  # noqa: BLE001 — only the estimate needs it: price the cap
+                return None
+            seconds = _media_seconds(data) if data is not None else None
+            if seconds is None:
+                return None
+            total += seconds
+        return round(total, 2)
 
     def _reference_urls(self, tenant_id: UUID, keys: tuple[str, ...]) -> list[str]:
         """Each reference video/audio as the public URL ModelArk fetches."""
@@ -2022,6 +2553,7 @@ class MediaProducer:
                     overlay=overlay,
                     seconds=slide.seconds,
                     reference_video_key=slide.reference_video_key,
+                    audio=slide.audio,
                     position=position,
                     total=total,
                     params=params,
@@ -2082,22 +2614,24 @@ class MediaProducer:
         usage: list[MediaUsage],
         save: _Saver,
         reference_video_key: str | None = None,
+        audio: bool = False,
     ) -> MediaWrite:
-        """Seedance animates the slide's scene (silent, nobody talking), then the clip is
-        fitted to the feed with the slide's words over every frame. With a reference
-        video (§ request 2026-10-19) a Seedance 2.x model follows its camera and rhythm —
-        the scene goes as reference image 1, since ModelArk does not mix a first frame
-        with references."""
+        """Seedance animates the slide's scene (silent unless the operator asked for its
+        sound, § request 2026-10-23), then the clip is fitted to the feed with the slide's
+        words over every frame — the soundtrack, when there is one, carried through. With
+        a reference video (§ request 2026-10-19) a Seedance 2.x model follows its camera
+        and rhythm — the scene goes as reference image 1, since ModelArk does not mix a
+        first frame with references."""
         fitter = self._require_fitter()
         number = position + 1
         ratio = SEEDANCE_RATIOS[brief.format]
         motion = carousel_motion_prompt(brief)
-        resolution = self._seedance_resolution
         request_params: dict[str, Any] = {
             "ratio": ratio,
             "duration_seconds": seconds,
-            "generate_audio": False,
+            "generate_audio": audio,
         }
+        model: str | None = None
         if reference_video_key:
             model = self._seedance_reference_model
             if not model:
@@ -2106,21 +2640,29 @@ class MediaProducer:
                     "El video de referencia necesita un modelo de video que lo acepte, y no "
                     "hay uno configurado.",
                 )
-            if resolution not in seedance_family(model).resolutions:
-                resolution = "720p"
-            motion = (
-                f"{motion} Image 1 is the scene: keep its content, product and look. Follow "
-                "the camera movement, pacing and rhythm of the reference video, not its "
-                "content."
+            motion = _budgeted(
+                [
+                    motion,
+                    "Image 1 is the scene: keep its content, product and look. Follow the "
+                    "camera movement, pacing and rhythm of the reference video, not its "
+                    "content.",
+                ]
             )
             request_params.update(
                 model=model,
                 reference_images=[_data_url(scene)],
                 reference_videos=self._reference_urls(tenant_id, (reference_video_key,)),
+                # the input video is billed too: its length goes into the estimate
+                reference_video_seconds=self._reference_seconds((reference_video_key,)),
+                **_reference_task(model),
             )
         else:
-            request_params["first_frame"] = _data_url(scene)
+            # cropped to the named ratio on a model that keeps the frame's aspect (2.5)
+            request_params["first_frame"] = _jpeg_url(self._opening_frame(scene, ratio, None))
+        resolution, draft = self._seedance_output(model)
         request_params.update(prompt=motion, resolution=resolution)
+        if draft:
+            request_params["draft"] = True
         request = GenerationRequest(
             task=GenerationTask.SCENE_VIDEO,
             rendered_prompt=RenderedPrompt("", "", ""),
@@ -2133,9 +2675,10 @@ class MediaProducer:
             fields={
                 "prompt de movimiento": motion,
                 "video de referencia": "sí" if reference_video_key else "no",
-                "formato": f"{ratio} · {resolution}",
+                "formato": f"{ratio} · {resolution}{' · borrador' if draft else ''}",
                 "duración pedida": f"{seconds} s",
                 "texto encima": "sí" if overlay else "no",
+                "audio": "sí" if audio else "no",
             },
         )
         result = self._run(
@@ -2149,21 +2692,27 @@ class MediaProducer:
         payload = dict(result.payload) if isinstance(result.payload, dict) else {}
         resolution = str(payload.get("resolution") or resolution)
         tokens = int(result.usage.output_tokens)
-        usage.append(
-            MediaUsage(
-                provider=result.provider,
-                model_id=result.model_id,
-                unit="second",
-                quantity=math.ceil(result.usage.media_seconds),
-                cost_usd=video_cost_usd(self._pricing, result.model_id, resolution, tokens),
-            )
-        )
+        cost = self._seedance_usage(result, resolution, usage)
+        # what the vendor actually made: a silent family (1.0) answers False whatever was
+        # asked, and the fitter then has no soundtrack to keep
+        spoken = bool(payload.get("generate_audio"))
         fitted = fitter.fit(
-            self._download(str(result.media_url)), size=brief.format.dimensions, overlay=overlay
+            self._download(str(result.media_url)),
+            size=brief.format.dimensions,
+            overlay=overlay,
+            keep_audio=spoken,
         )
         video_key = save(f"slide-{number}.mp4", fitted.data, MP4)
         poster_key = save.optional(
             f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster or still), JPEG
+        )
+        # a draft's final lays the same words again: the layer is kept beside it — a
+        # REQUIRED file (like the video): a draft that prints words but lost its layer
+        # could never be finished, every final of it would fail
+        overlay_key = (
+            save(f"slide-{number}-words.png", overlay, PNG)
+            if overlay is not None and payload.get("draft")
+            else None
         )
         return MediaWrite(
             position=position,
@@ -2177,15 +2726,28 @@ class MediaProducer:
             provider=result.provider,
             content_type=MP4,
             ai_generated=True,
-            params={
-                **params,
-                "task_id": payload.get("task_id"),
-                "duration_seconds": round(fitted.duration_sec, 2),
-                "resolution": resolution,
-                "tokens": tokens,
-                "thumbnail_key": poster_key,
-                "model_revision": result.model_revision,
-            },
+            params=_with_draft(
+                {
+                    **params,
+                    "task_id": payload.get("task_id"),
+                    "duration_seconds": round(fitted.duration_sec, 2),
+                    "resolution": resolution,
+                    "tokens": tokens,
+                    "thumbnail_key": poster_key,
+                    "model_revision": result.model_revision,
+                    "spoken": spoken,
+                },
+                payload,
+                model_id=result.model_id,
+                ratio=ratio,
+                seconds=seconds,
+                cost_usd=cost,
+                finish=FINISH_SLIDE,
+                words=overlay is not None,
+                overlay_key=overlay_key,
+                # the final reuses the draft's sound (never re-sent): it keeps it if any
+                audio=spoken,
+            ),
         )
 
     def _existing_pieces(self, tenant_id: UUID, brief: ContentBrief) -> dict[int, PieceFile]:
@@ -2829,7 +3391,7 @@ class MediaProducer:
             except Exception as exc:  # the stamp is bookkeeping; the video goes on
                 logger.warning("brand voice activation not stamped: %s", type(exc).__name__)
         voice_key = save("voice.mp3", audio, MP3)
-        seconds = _audio_seconds(audio) or len(script) / _CHARS_PER_SECOND
+        seconds = _media_seconds(audio) or len(script) / _CHARS_PER_SECOND
         if seconds > self._omnihuman_max_seconds:
             raise _MediaFailed(
                 FailureReason.INVALID_PARAMETERS.value,
@@ -3025,10 +3587,31 @@ def _typography_line(kit: BrandKit) -> str:
     )
 
 
-#: How much of the operator's topic (no stored cap: `content_briefs.topic` is TEXT) goes
-#: into an image prompt — the gist is enough, and with the scene at its own cap of 600
-#: the prompt stays near 2,100 of the vendor's 3,000 characters.
-_PROMPT_TOPIC_MAX = 600
+#: Every media prompt's ceiling, in characters — what is finally sent, not only what a
+#: builder returns (founder, 2026-10-23: «si el proveedor admite más aumenta el límite a
+#: unos 2500 y ajusta los prompts para que nunca pasen estos caracteres»). ModelArk refuses
+#: over 3,000 (`MAX_PROMPT_CHARS`, Seedream and Seedance); the margin is headroom for what
+#: is added after a builder — the spoken line the adapter appends to a Seedance 2.x video
+#: (`_DIALOGUE_WRAPPER`, fitted to the room left by `_spoken_line`) and the reference-video
+#: instruction of an animated slide — and for a vendor that counts differently.
+MEDIA_PROMPT_BUDGET = 2500
+#: What a flexible text (the topic, a scene, a presenter) keeps before the next one in
+#: line is trimmed: the beginning of the operator's words always reaches the model.
+_FLEX_FLOOR = 200
+#: The same floor for each shot of a clip's story.
+_SHOT_FLOOR = 80
+#: What `byteplus_ark` wraps the script in when a Seedance 2.x model speaks it.
+_DIALOGUE_WRAPPER = '\nDice a cámara: ""'
+
+#: The room a talking video's prompt always keeps for the line Seedance speaks (~25 s
+#: of Spanish): its motion prompt is built within what is left (`_TALKING_MOTION_BUDGET`),
+#: so the line is never cut to nothing by the motion prompt.
+_SPOKEN_MIN = 400
+_TALKING_MOTION_BUDGET = MEDIA_PROMPT_BUDGET - _SPOKEN_MIN - len(_DIALOGUE_WRAPPER)
+#: When the line still cannot be said (an empty room): the piece fails before paying.
+SPOKEN_LINE_NO_ROOM_TEXT = (
+    "No quedó espacio para el guion en el video. Acorta los datos clave e inténtalo de nuevo."
+)
 
 
 def _quoted(text: str, limit: int | None = None) -> str:
@@ -3036,6 +3619,94 @@ def _quoted(text: str, limit: int | None = None) -> str:
     if limit is not None and len(text) > limit:
         text = fit_text(text, limit)
     return text.replace('"', "'")
+
+
+#: A prompt text cut to fit keeps at least this share of its room: a pause (comma, end
+#: of sentence) is taken only near the limit, else the cut is at the last whole word —
+#: a topic 10 characters over its room is not cut back to its first comma.
+_CUT_KEEP = 0.8
+
+
+def _cut(text: str, limit: int) -> str:
+    """`text` within `limit` characters, keeping as much as fits: cut at the last pause
+    within the last fifth of `limit` (`fit_text`), else at the last whole word, or at
+    the limit itself when there is no such place."""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    cut = fit_text(text, limit, min_keep=int(limit * _CUT_KEEP))
+    return cut if len(cut) <= limit else cut[:limit].rstrip()
+
+
+@dataclass(frozen=True)
+class _Flex:
+    """A prompt line around a text with no fixed cap (the operator's topic, a scene, a
+    shot): `before` + the text + `after`, the text getting the room the rest leaves.
+    `rank` 0 is trimmed first."""
+
+    before: str
+    text: str
+    after: str = '".'
+    rank: int = 0
+    floor: int = _FLEX_FLOOR
+
+
+def _budgeted(lines: list[str | _Flex], budget: int = MEDIA_PROMPT_BUDGET) -> str:
+    """The prompt's lines joined, never longer than `budget`. Fixed lines go whole (empty
+    ones are dropped); every `_Flex` text gets what the rest leaves. Over the budget the
+    flexible texts are trimmed by rank — the topic first, then a scene or the presenter,
+    then the shots — each down to its floor, the texts of one rank evenly; still over,
+    they go below their floors in the opposite order (the topic last), and a text cut to
+    nothing drops its line. A prompt still over after that (fixed lines alone over the
+    budget: not possible with today's caps) is cut at its last fitting word."""
+    texts = [_quoted(line.text) if isinstance(line, _Flex) else line for line in lines]
+
+    def render() -> str:
+        parts: list[str] = []
+        for line, text in zip(lines, texts, strict=True):
+            if isinstance(line, _Flex):
+                if text:
+                    parts.append(f"{line.before}{text}{line.after}")
+            elif text:
+                parts.append(text)
+        return " ".join(parts)
+
+    prompt = render()
+    flexible = {i: line for i, line in enumerate(lines) if isinstance(line, _Flex)}
+    ranks = sorted({line.rank for line in flexible.values()})
+    for to_floor, order in ((True, ranks), (False, ranks[::-1])):
+        for rank in order:
+            group = [i for i, line in flexible.items() if line.rank == rank]
+            while len(prompt) > budget:
+                low = {i: flexible[i].floor if to_floor else 0 for i in group}
+                open_ = [i for i in group if len(texts[i]) > low[i]]
+                if not open_:
+                    break
+                share = -(-(len(prompt) - budget) // len(open_))
+                for i in open_:
+                    texts[i] = _cut(texts[i], max(low[i], len(texts[i]) - share))
+                prompt = render()
+    return prompt if len(prompt) <= budget else _cut(prompt, budget)
+
+
+def _spoken_line(script: str, motion: str) -> str:
+    """The script a Seedance 2.x model speaks, fitted so the motion prompt plus the line
+    the adapter appends (`_DIALOGUE_WRAPPER`) stay within `MEDIA_PROMPT_BUDGET` — and
+    never over `SCRIPT_MAX`, like `own_script`. A generated script has no stored cap
+    (founder, 2026-10-06). A script that would be cut to nothing fails the piece here,
+    before anything is paid for (`_MediaFailed`), instead of making a talking video with
+    no line; a motion prompt built within `_TALKING_MOTION_BUDGET` always leaves it
+    `_SPOKEN_MIN` characters."""
+    room = min(SCRIPT_MAX, MEDIA_PROMPT_BUDGET - len(motion.strip()) - len(_DIALOGUE_WRAPPER))
+    line = _cut(script, room)
+    if script.strip() and not line.strip():
+        raise _MediaFailed(
+            FailureReason.INVALID_PARAMETERS.value,
+            SPOKEN_LINE_NO_ROOM_TEXT,
+            raw=f"motion prompt of {len(motion)} chars leaves {room} for the line",
+        )
+    return line
 
 
 def ad_scene_prompt(
@@ -3051,7 +3722,7 @@ def ad_scene_prompt(
     order: the product photos first, the background (the operator's place) last. With
     no photo at all (`AdImageMode.SCENE`) the scene is invented from the words."""
     ratio = brief.format.aspect_ratio
-    lines = [
+    lines: list[str | _Flex] = [
         f"Professional advertising photograph for a social media ad"
         f"{f' of the brand {brand}' if brand else ''}, {_ORIENTATION.get(ratio, ratio)} "
         "composition, photorealistic, appetizing and premium, natural light, sharp focus.",
@@ -3080,9 +3751,10 @@ def ad_scene_prompt(
             "scene described below, plausible for this brand."
         )
     if brief.media.scene_prompt.strip():
-        scene = _quoted(brief.media.scene_prompt)
-        lines.append(f'Scene the client asked for (in Spanish): "{scene}".')
-    lines.append(f'The post is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
+        lines.append(
+            _Flex('Scene the client asked for (in Spanish): "', brief.media.scene_prompt, rank=1)
+        )
+    lines.append(_Flex('The post is about (in Spanish): "', brief.topic))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(
         "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: the "
@@ -3091,7 +3763,7 @@ def ad_scene_prompt(
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
-    return " ".join(line for line in lines if line)
+    return _budgeted(lines)
 
 
 def carousel_scene_prompt(
@@ -3107,7 +3779,7 @@ def carousel_scene_prompt(
 ) -> str:
     """One carousel slide's photograph (§ 2026-10-09). References in this order: the
     product photo first, the background (the operator's place) last."""
-    lines = [
+    lines: list[str | _Flex] = [
         f"Professional advertising photograph for a social media carousel"
         f"{f' of the brand {brand}' if brand else ''}, {_ORIENTATION.get(ratio, ratio)} "
         "composition, photorealistic, appetizing and premium, natural light, sharp focus.",
@@ -3128,9 +3800,8 @@ def carousel_scene_prompt(
             "The reference image is the client's real place: keep it recognisable as the setting."
         )
     if scene.strip():
-        lines.append(f'This slide shows (in Spanish): "{_quoted(scene)}".')
-    topic = _quoted(brief.topic, _PROMPT_TOPIC_MAX)
-    lines.append(f'The carousel is about (in Spanish): "{topic}".')
+        lines.append(_Flex('This slide shows (in Spanish): "', scene, rank=1))
+    lines.append(_Flex('The carousel is about (in Spanish): "', brief.topic))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     if has_text:
         lines.append(
@@ -3140,20 +3811,20 @@ def carousel_scene_prompt(
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
-    return " ".join(line for line in lines if line)
+    return _budgeted(lines)
 
 
 def carousel_motion_prompt(brief: ContentBrief | None = None) -> str:
     """What Seedance does with a carousel slide's scene: a short, silent, product-led
     shot — nobody talks, nothing is written. The «Datos clave» ride along (2026-10-14)."""
-    lines = [
+    lines: list[str | _Flex] = [
         "Bring this photograph to life as a short cinematic product shot: a slow, smooth "
         "camera move (gentle push-in or slight orbit), subtle natural motion in the scene "
         "(steam, light, a hand, the background), the product keeps its exact look and "
         "label. Nobody talks to the camera. No text on screen.",
         _facts_line(brief, _FACTS_IN_CLIP) if brief is not None else "",
     ]
-    return " ".join(line for line in lines if line)
+    return _budgeted(lines)
 
 
 def _cover_png(data: bytes, size: tuple[int, int]) -> bytes:
@@ -3166,19 +3837,23 @@ def _cover_png(data: bytes, size: tuple[int, int]) -> bytes:
     return out.getvalue()
 
 
-def _presenter(brief: ContentBrief, *, has_character_image: bool) -> str:
+def _presenter(brief: ContentBrief, *, has_character_image: bool) -> str | _Flex:
     media = brief.media
     if has_character_image:
         return "The character is the one in image 1: keep its exact design, colors and proportions."
-    description = _quoted(media.avatar_prompt) or "a friendly presenter"
+    description = media.avatar_prompt.strip() or "a friendly presenter"
     if brief.kind is ContentKind.ANIMATED_AVATAR_VIDEO:
-        return (
+        return _Flex(
             "An expressive 3D animated character in the style of an animated feature film, "
-            f'described by the client (in Spanish) as: "{description}".'
+            'described by the client (in Spanish) as: "',
+            description,
+            rank=1,
         )
-    return (
+    return _Flex(
         "A photorealistic, natural-looking person (a synthetic presenter, nobody real), "
-        f'described by the client (in Spanish) as: "{description}".'
+        'described by the client (in Spanish) as: "',
+        description,
+        rank=1,
     )
 
 
@@ -3194,7 +3869,7 @@ def first_frame_prompt(
     the operator uploaded one), then the products, then the background."""
     ratio = SEEDANCE_RATIOS[brief.format]
     first_product = 2 if has_character_image else 1
-    lines = [
+    lines: list[str | _Flex] = [
         f"Opening frame of a {_ORIENTATION.get(ratio, ratio)} social media video, "
         "cinematic and well lit.",
         _presenter(brief, has_character_image=has_character_image),
@@ -3210,12 +3885,12 @@ def first_frame_prompt(
         )
     if has_background:
         lines.append("The scene takes place in the client's real place (the last image).")
-    lines.append(f'The video is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
+    lines.append(_Flex('The video is about (in Spanish): "', brief.topic))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
-    return " ".join(line for line in lines if line)
+    return _budgeted(lines)
 
 
 #: What each clip reference image is told to be (§ request 2026-10-14), by its role.
@@ -3234,13 +3909,13 @@ def _numbered(numbers: list[int]) -> str:
     return "Images " + ", ".join(str(n) for n in numbers[:-1]) + f" and {numbers[-1]}"
 
 
-def _story_lines(copy: CopyPayload | None, seconds: int) -> list[str]:
+def _story_lines(copy: CopyPayload | None, seconds: int) -> list[str | _Flex]:
     """The clip's story (§ request 2026-10-14: «el clip cuenta una historia» and «los
     ganchos ya se tienen, quiero usarlos»): the copy's own three shots — hook,
     development, payoff — timed to the clip; without them, the same three beats built
     on the copy's hook and CTA."""
     shots = [shot for shot in (copy.shots if copy else ()) if shot.visual.strip()][:4]
-    lines: list[str] = []
+    lines: list[str | _Flex] = []
     if copy and copy.hook.strip():
         lines.append(
             "It opens on this hook, shown — never written (in Spanish): "
@@ -3252,7 +3927,14 @@ def _story_lines(copy: CopyPayload | None, seconds: int) -> list[str]:
         start = 0
         for number, shot in enumerate(shots, 1):
             end = seconds if number == len(shots) else round(start + shot.seconds * seconds / total)
-            lines.append(f'Shot {number} ({start}-{end} s): "{_quoted(shot.visual, _SHOT_MAX)}".')
+            lines.append(
+                _Flex(
+                    f'Shot {number} ({start}-{end} s): "',
+                    _quoted(shot.visual, _SHOT_MAX),
+                    rank=2,
+                    floor=_SHOT_FLOOR,
+                )
+            )
             start = end
         return lines
     hook_end = max(2, round(seconds * 0.2))
@@ -3293,11 +3975,10 @@ def clip_prompt(
     says so (ModelArk's documented way: «the opening frame is Image 1»)."""
     ratio = SEEDANCE_RATIOS[brief.format]
     seconds = brief.media.duration_seconds
-    topic_max = 300 if copy and copy.shots else _PROMPT_TOPIC_MAX
-    lines = [
+    lines: list[str | _Flex] = [
         f"A {_ORIENTATION.get(ratio, ratio)} advertising video for social media that tells a "
         "short story, cinematic and well lit, with no presenter talking to the camera.",
-        f'It is about (in Spanish): "{_quoted(brief.topic, topic_max)}".',
+        _Flex('It is about (in Spanish): "', brief.topic),
     ]
     if brief.product_ref:
         lines.append(
@@ -3342,18 +4023,19 @@ def clip_prompt(
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append("No text on screen.")
-    return " ".join(line for line in lines if line)
+    return _budgeted(lines)
 
 
-def motion_prompt(*, brief: ContentBrief, products: int) -> str:
+def motion_prompt(*, brief: ContentBrief, products: int, budget: int = MEDIA_PROMPT_BUDGET) -> str:
     """What Seedance animates from the first frame. The script is passed apart
-    (`dialogue`): the 2.x models speak it, 1.0 ignores it."""
+    (`dialogue`): the 2.x models speak it, 1.0 ignores it — a talking video builds this
+    within `_TALKING_MOTION_BUDGET`, the room the line needs set aside."""
     who = (
         "The animated character"
         if brief.kind is ContentKind.ANIMATED_AVATAR_VIDEO
         else "The presenter"
     )
-    lines = [
+    lines: list[str | _Flex] = [
         f"{who} talks to the camera with natural lip movement, gestures and facial "
         "expressions, enthusiastic and warm.",
     ]
@@ -3363,7 +4045,7 @@ def motion_prompt(*, brief: ContentBrief, products: int) -> str:
         )
     lines.append("Smooth, slight handheld camera movement, natural light. No text on screen.")
     lines.append(_facts_line(brief, _FACTS_IN_MOTION))
-    return " ".join(line for line in lines if line)
+    return _budgeted(lines, budget)
 
 
 # ---------------------------------------------------------------------------

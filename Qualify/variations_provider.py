@@ -27,10 +27,12 @@ from qualify_api.creative.composition import (
     RENDER_URL_ENV,
     production_angle_set_service,
 )
+from qualify_api.creative.draft_mode import draft_rendering, draft_summary
 from qualify_creative.angles import DEFAULT_ANGLE_COUNT, AnglePreset
 from qualify_creative.render.client import RemotionRenderClient
 from qualify_creative.render.registry import TemplateRegistry
 
+from .creative_vm import VideoDraftVM, video_draft_vm
 from .r2_media import is_r2_key, issue_view_path
 from .variations_vm import (
     OutcomeVM,
@@ -343,8 +345,19 @@ def retry_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> str:
     return str(draft_id)
 
 
-def approve_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> None:
-    _service().approve_angle(tenant_id=tenant_id, angle_id=UUID(angle_id), user_id=user_id)
+def approve_variation_angle(tenant_id: UUID, angle_id: str, user_id: UUID) -> VideoDraftVM:
+    """Approve the angle's piece; returns its draft videos' state (m-24820142) — a
+    1080p final being made, one that could not be ordered (`can_retry`), or none — so
+    the screen picks its notice with `creative_vm.approval_notice`, like every other
+    screen that approves."""
+    detail = _service().approve_angle(tenant_id=tenant_id, angle_id=UUID(angle_id), user_id=user_id)
+    params = [item.params for item in getattr(detail, "media", None) or ()]
+    approved = getattr(detail, "status", "") == "approved"
+    return video_draft_vm(
+        *draft_summary(params, approved=approved),
+        still_rendering=draft_rendering(params),
+        approved=approved,
+    )
 
 
 __all__ = [
