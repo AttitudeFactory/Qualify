@@ -10,6 +10,10 @@ tabla de precios **`v5`** (`packages/creative/src/qualify_creative/pricing_data/
 > **Videos del mes (decisión del fundador, 2026-10-24, §6):** el video generado ya no usa
 > creaciones. Cada mes trae **30 creaciones y 4 videos** aparte; cada video cuenta 1, dure 5 o
 > 10 s. Lo que §5.5 y §5.6 dicen del video generado en creaciones quedó reemplazado por §6.
+>
+> **Vigente (segunda decisión del mismo día, §7):** el video se cuenta **al aprobar**, no al
+> crear, y cada mes trae además **20 vistas previas**. Donde §6 diga «al crear» para el video,
+> manda §7.
 
 El dueño ve «creaciones del mes» («Te quedan 18 de 30 este mes»), nunca dinero. El equipo ve
 los dólares. Esta página fija cuánto vale cada pedido en creaciones, con qué datos se midió y
@@ -349,6 +353,9 @@ no promedios.
 promete: tendría que quedar por encima del techo de arriba (por ejemplo, USD 75). Y la opción B
 de §5.6 (final a 720p) bajaría el costo de cada video unas 2,4 veces sin tocar el cupo.
 
+> **Reemplazado en parte por §7:** el video ya no se cobra al crear sino al aprobar, y las
+> vistas previas tienen su propio cupo. Los techos de §6.4 se recalculan en §7.4.
+
 ### 6.5 Pruebas
 
 - `packages/creative/tests/test_creations.py`: el cupo de 4 y las duraciones 5/10; un clip, un
@@ -362,3 +369,101 @@ de §5.6 (final a 720p) bajaría el costo de cada video unas 2,4 veces sin tocar
   `app.tenant_id` vacío).
 - `Qualify/test_creations_of_the_month.py`: los textos de §6.2, el control del clip y del
   avatar de Seedance (5 y 10 s), Crear desactivado sin videos y ningún texto con dinero.
+
+## 7. El video se cuenta al aprobar, y 20 vistas previas al mes (fundador, 2026-10-24)
+
+Fecha: 2026-10-24 (segunda decisión del día, tras revisar el modo borrador) · Pesos:
+**`pesos-creaciones-v2`** sobre la tabla **`v7`** (mismo archivo; se agrega
+`videos.monthly_preview_quota`). Migración `0088`, editada en su lugar (sin publicar todavía).
+
+### 7.1 Por qué
+
+- La vista previa cuesta cerca del **17 %** de un video de Seedance (5 s: USD 0,60; 10 s:
+  USD 1,12–1,19 según la tabla `v7`). El video final, que se pide al aprobar, es el **83 %**.
+- Una vista previa **vence a los 7 días** si no se aprueba (`DRAFT_TTL_SECONDS`).
+- Cobrar el video al crear hacía pagar al dueño videos que nunca aprobó.
+
+### 7.2 Qué se decidió
+
+1. **El video se cuenta al APROBAR**, es decir, cuando se pide el video final. Una vista previa
+   descartada, rechazada o vencida **no cuesta ningún video**. Si el video final falla, el video
+   vuelve (una vez por video) y reintentarlo no vuelve a cobrar.
+   - Si al aprobar no quedan videos, la aprobación se rechaza y no se guarda nada: «Ya usaste
+     tus 4 videos de este mes. Vuelven el {fecha}.»
+   - Antes de aprobar se lee: «Al aprobar usas 1 de tus 4 videos del mes. Te quedarían {v}.»
+     («Te quedaría 1.» en singular). Reemplaza la línea «Este video usa 1 de tus 4 videos…»
+     que salía al crear.
+   - **Carrusel con N diapositivas animadas: N videos al aprobar, todo o nada.** Si quedan
+     menos de N, no se aprueba y se dice: «Al aprobarla, esta publicación usa 3 videos y este
+     mes te quedan 2. Tus 4 videos vuelven el {fecha}.» El botón «Aprobar» queda desactivado
+     con esa frase encima. (No se aprueba a medias: un carrusel con diapositivas sin video
+     final no se puede publicar.)
+2. **Cupo de 20 vistas previas al mes por negocio.** Cuenta 1 cada vista previa de Seedance
+   que se crea, cada diapositiva animada y cada «Pedir otra versión» de un video.
+   - Se cobra **al crear** y no se devuelve al descartar ni al vencer. Excepción: si la
+     generación falla y no hubo vista previa, vuelve (con las creaciones, en el mismo
+     reembolso de siempre).
+   - El dueño solo la ve cuando quedan pocas (5 o menos): «Te quedan {p} vistas previas este
+     mes.» («Te queda 1 vista previa este mes.»).
+   - En 0: «Ya usaste tus 20 vistas previas de este mes. Vuelven el {fecha}.» y no se puede
+     crear un video; las imágenes siguen funcionando. Un carrusel con más diapositivas animadas
+     que vistas previas: «Esta publicación usa 3 vistas previas y este mes te quedan 2. Quita 1
+     video animado o espera al {fecha}, cuando vuelven tus 20.»
+3. **El vencimiento se ve:**
+   - Cada tarjeta de «Por aprobar» y la página de la publicación dicen «Apruébala antes del
+     {día} {fecha} para tener el video final.» (zona horaria del negocio).
+   - Desde 2 días antes del vencimiento, Inicio («Hoy tienes») dice «{n} video vence pronto» /
+     «{n} videos vencen pronto» y lleva a «Por aprobar» filtrado.
+   - Vencida: no se cobra nada, y la tarjeta (y la página) ofrecen **«Crearla otra vez»**, que
+     crea una publicación nueva con el mismo pedido (usa 1 vista previa por video).
+4. Sin cambios: 30 creaciones para lo que no es video; el presentador sigue en creaciones; el
+   mismo cupo para todos los negocios; `QUALIFY_CREATIONS_QUOTA=off` como único interruptor.
+
+### 7.3 Cómo se guarda (código)
+
+- `creation_charges` (0088) suma `previews` y `monthly_preview_quota` (al crear), y
+  `videos_period_month` y `videos_charged_at` (al aprobar). `videos` queda en 0 hasta la
+  aprobación; el saldo de videos se cuenta por el **mes de la aprobación**
+  (`videos_period_month`), el de creaciones y vistas previas por el mes en que se pidieron.
+  CHECKs nuevos: `previews >= 0`, `monthly_preview_quota >= 0`, `videos > 0` si y solo si hay
+  `videos_charged_at` y `videos_period_month`, y ese mes es primer día de mes. RLS igual.
+- `PostgresCreationsLedger.charge` (al crear) revisa creaciones y vistas previas;
+  `charge_videos` (al aprobar) revisa y cobra los videos, todo o nada, con el mismo candado por
+  marca e idempotente; `uncharge_videos` lo deshace si la aprobación no se pudo guardar;
+  `refund_final` devuelve un video por cada video final que falla.
+- **El cupo vive en una sola función** (`quota_for`, pedido de principal-architect): devuelve
+  (creaciones, videos, vistas previas) de una marca y un mes, hoy desde los pesos. El PR de
+  bonificaciones (`0089_creation_grants`) solo tendrá que sumar ahí.
+- `ContentService.approve` cobra los videos antes de guardar la aprobación;
+  `approval_videos` da la frase previa; `recreate` hace «Crearla otra vez».
+- Inicio: `HomeCounts.videos_expiring_soon` (una subconsulta más, con RLS como el resto).
+
+### 7.4 Lo que cuesta al equipo (techo, tabla `v7`, p95)
+
+| Parte | 5 s | 10 s | 10 s con referencia de duración desconocida |
+|---|---:|---:|---:|
+| Vista previa (fijo + 480p) | 0,60 | 1,12 | 2,59 |
+| Video final (1080p) | 2,85 | 5,69 | 13,63 |
+
+Techo por negocio y mes, todo a 10 s: 20 vistas previas × 1,12 + 4 finales × 5,69 + 30
+creaciones × 0,15 ≈ **USD 49,7**; en el peor caso (todo con referencia de duración desconocida)
+≈ **USD 110,8**. Antes de §7 el techo era USD 31,77 / 69,39, pero entonces una vista previa
+sin aprobar costaba un video entero. **La red en dólares por marca sigue sin fijarse** y, si se
+fija, tiene que quedar por encima de este techo (decisión del fundador).
+
+### 7.5 Pruebas
+
+- `packages/api/tests/test_creations_ledger.py`: crear un clip usa 1 vista previa y ningún
+  video; tope de 20 vistas previas (las imágenes siguen); la vista previa vuelve solo si la
+  generación falla; carrusel por diapositiva, todo o nada, al crear y al aprobar; **descartar
+  no cuesta video**; **aprobar cobra 1**; **aprobar con 0 se rechaza** sin guardar ni pedir el
+  final; un final que falla devuelve el video y el reintento es gratis; «Crearla otra vez»;
+  el cupo en una sola función.
+- `packages/api/tests/test_creation_charges_db.py` (`-m db`): lo mismo contra Postgres
+  (vistas previas, videos al aprobar, tope de 20, `uncharge_videos`, CHECKs, RLS).
+- `packages/api/tests/test_home_summary_db.py` (`-m db`): Inicio cuenta solo las vistas
+  previas que vencen en 2 días o menos (ni las vencidas ni las que ya tienen video final).
+- `Qualify/test_creations_of_the_month.py` y `Qualify/test_home_vm.py`: los textos de §7.2,
+  la frase antes de aprobar y el botón desactivado en 0, la fecha de vencimiento en la zona
+  del negocio, la tarjeta con «Crearla otra vez», el aviso de Inicio, y ningún texto con
+  dinero ni palabras técnicas.
