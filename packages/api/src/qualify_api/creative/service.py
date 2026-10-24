@@ -79,7 +79,11 @@ from qualify_api.creative.creations import (
     CreationsLedger,
     NotEnoughCreations,
 )
-from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
+from qualify_api.creative.dispatch import (
+    TaskDispatcher,
+    claim_waiting_drafts,
+    reap_stale_drafts,
+)
 from qualify_api.creative.draft_mode import (
     DRAFT_EXPIRED_TEXT,
     DRAFT_FAILED,
@@ -102,6 +106,7 @@ from qualify_api.creative.fsm import (
     apply_transition,
 )
 from qualify_api.creative.media import (
+    RESUMED_VIDEO_FAILED_TEXT,
     FinalOutcome,
     MediaProducer,
     MediaUsage,
@@ -109,6 +114,18 @@ from qualify_api.creative.media import (
     MediaWrite,
     TemplateRunWrite,
     ai_generated_media,
+)
+from qualify_api.creative.vendor_tasks import (
+    PENDING as TASK_PENDING,
+)
+from qualify_api.creative.vendor_tasks import (
+    DraftVendorTasks,
+    FinalVendorTasks,
+    VendorTaskRecord,
+    VendorTaskStore,
+    context_of,
+    resumable,
+    snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,6 +299,9 @@ class DraftDetail:
     revision: int = 1
     approved_revision: int | None = None
     failure_detail: str | None = None
+    #: m-24852154: still `drafting` because its video waits in the vendor's queue past
+    #: the usual time — the screen says so (it will land in Por aprobar on its own).
+    waiting_vendor: bool = False
 
     @property
     def warnings(self) -> tuple[DraftWarning, ...]:
@@ -1347,8 +1367,12 @@ class ContentService:
         approval_guard: ApprovalGuard | None = None,
         creations: CreationsLedger | None = None,
         progress: Callable[[UUID, UUID], None] | None = None,
+        vendor_tasks: VendorTaskStore | None = None,
     ) -> None:
         self._media = media
+        #: The vendor tasks a generation created, kept by id (m-24852154): None = a
+        #: task that outlives the wait cannot be resumed (tests, scripts).
+        self._vendor_tasks = vendor_tasks
         #: The run's heartbeat (m-24852156, `dispatch.record_progress`): called with
         #: (tenant_id, draft_id) each time the media run keeps a file. None = no stamp.
         self._progress = progress
@@ -1603,6 +1627,115 @@ class ContentService:
             tenant_id=tenant_id, draft_id=draft_id, revision=draft.revision
         )
 
+    def _tasks_of(self, tenant_id: UUID, draft: DraftRecord) -> tuple[VendorTaskRecord, ...]:
+        """The vendor tasks of this draft's current revision (m-24852154); none without
+        a store, or when they cannot be read (the run then starts afresh)."""
+        if self._vendor_tasks is None:
+            return ()
+        try:
+            return self._vendor_tasks.tasks(
+                tenant_id=tenant_id, draft_id=draft.id, revision=draft.revision
+            )
+        except Exception:
+            logger.exception("draft %s: vendor tasks unreadable", draft.id)
+            return ()
+
+    def _binding(
+        self,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        tasks: Sequence[VendorTaskRecord],
+        context: Mapping[str, Any],
+    ) -> DraftVendorTasks | None:
+        if self._vendor_tasks is None:
+            return None
+        return DraftVendorTasks(
+            self._vendor_tasks,
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            revision=draft.revision,
+            pipeline_version=draft.pipeline_version,
+            context=context,
+            heartbeat=self._heartbeat(tenant_id, draft.id),
+            existing=tasks,
+        )
+
+    def _settle_task(self, tenant_id: UUID, draft: DraftRecord, slot: str, verdict: str) -> None:
+        if self._vendor_tasks is None:
+            return
+        try:
+            self._vendor_tasks.settle(
+                tenant_id=tenant_id,
+                draft_id=draft.id,
+                revision=draft.revision,
+                slot=slot,
+                status=verdict,
+            )
+        except Exception:
+            logger.exception("draft %s: task %s not settled", draft.id, slot)
+
+    @staticmethod
+    def _resumed_copy(
+        context: Mapping[str, Any],
+    ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
+        """The copy an earlier run of this revision made, as it was recorded with its
+        first vendor task — and the copy's spend, recorded now, once."""
+        variants = [
+            VariantWrite(
+                ordinal=int(v["ordinal"]),
+                copy=dict(v["copy"]),
+                fidelity=dict(v["fidelity"]),
+                model_id=str(v["model_id"]),
+                model_revision=v.get("model_revision"),
+            )
+            for v in context.get("variants") or ()
+        ]
+        usage = [
+            UsageWrite(
+                provider=str(u["provider"]),
+                model_id=str(u["model_id"]),
+                unit=str(u["unit"]),
+                input_tokens=int(u["input_tokens"]),
+                output_tokens=int(u["output_tokens"]),
+                cache_read_tokens=int(u["cache_read_tokens"]),
+                cache_creation_tokens=int(u["cache_creation_tokens"]),
+                cost_usd=Decimal(str(u["cost_usd"])),
+                paid_by=str(u["paid_by"]),
+                pricing_table_version=str(u["pricing_table_version"]),
+                pieces=int(u.get("pieces") or 0),
+            )
+            for u in context.get("copy_usage") or ()
+        ]
+        spent = Decimal(str(context.get("copy_spent_usd") or "0"))
+        any_passed = any(v.fidelity.get("passed") for v in variants)
+        return variants, usage, spent, any_passed
+
+    def _sweep(self, tenant_id: UUID) -> None:
+        """What every read of the drafts runs first (§7.4): the reaper, then the drafts
+        whose vendor task outlived its thread are handed to a run that resumes them
+        (m-24852154, `claim_waiting_drafts`). Never a reason to fail the read."""
+        reap_stale_drafts(tenant_id=tenant_id)
+        if self._vendor_tasks is None or self.dispatcher is None:
+            return
+        try:
+            claimed = claim_waiting_drafts(tenant_id=tenant_id)
+        except Exception:
+            logger.exception("tenant %s: waiting drafts not claimed", tenant_id)
+            return
+        for draft_id in claimed:
+            logger.info("draft %s: resuming its vendor task", draft_id)
+            self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
+
+    def _waiting(self, tenant_id: UUID, details: Sequence[DraftDetail]) -> frozenset[UUID]:
+        drafting = [d.id for d in details if d.status == DRAFTING]
+        if self._vendor_tasks is None or not drafting:
+            return frozenset()
+        try:
+            return self._vendor_tasks.waiting(tenant_id=tenant_id, draft_ids=drafting)
+        except Exception:
+            logger.exception("tenant %s: waiting drafts unreadable", tenant_id)
+            return frozenset()
+
     def _heartbeat(self, tenant_id: UUID, draft_id: UUID) -> Callable[[], None] | None:
         """The draft's progress stamp as a no-argument callable, or None when this
         service was wired without one."""
@@ -1690,7 +1823,78 @@ class ContentService:
                     if not present
                 )
             )
+        budget = (
+            self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
+            or _UNLIMITED_BUDGET
+        )
+        media_failure: str | None = None
+        media_detail = ""
+        tasks = self._tasks_of(tenant_id, draft)
+        waiting = self._binding(tenant_id, draft, tasks, {})
+        if resumable(tasks) and self._media is not None and waiting is not None:
+            # m-24852154: an earlier run of this revision left a vendor task pending —
+            # its copy is reused (the video was made from it) and the task is waited for
+            # before anything is paid again; never submitted a second time
+            stage = self._resumed_copy(context_of(tasks))
+            state, verdicts = self._media.await_vendor_tasks(
+                tenant_id=tenant_id,
+                brand_id=draft.brand_id,
+                tasks=[
+                    (t.slot, t.vendor_task_id, t.model_id)
+                    for t in tasks
+                    if t.status == TASK_PENDING
+                ],
+                budget=BudgetContext(
+                    remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop
+                ),
+                on_task=waiting.observer_for_wait,
+            )
+            for slot, verdict in verdicts.items():
+                self._settle_task(tenant_id, draft, slot, verdict)
+            if state == TASK_PENDING:
+                logger.info("draft %s: its video still waits for the vendor", draft.id)
+                return
+            if "failed" in verdicts.values():
+                # BytePlus failed or expired it: not billed, nothing to rebuild — the
+                # piece fails (and its creations come back) without paying anything new
+                media_failure = FailureReason.PROVIDER_ERROR.value
+                media_detail = RESUMED_VIDEO_FAILED_TEXT
+            tasks = self._tasks_of(tenant_id, draft)
+        else:
+            stage = self._copy_stage(
+                tenant_id=tenant_id, draft=draft, brief=brief, kit=kit, voice=voice, budget=budget
+            )
+        if stage is None:
+            return
+        variant_writes, usage_writes, spent, any_passed = stage
+        copy_snapshot = snapshot(variant_writes, usage_writes, spent)
+        self._finish_brief(
+            tenant_id=tenant_id,
+            draft=draft,
+            brief=brief,
+            kit=kit,
+            budget=budget,
+            variant_writes=variant_writes,
+            usage_writes=usage_writes,
+            spent=spent,
+            any_passed=any_passed,
+            media_failure=media_failure,
+            media_detail=media_detail,
+            vendor_tasks=self._binding(tenant_id, draft, tasks, copy_snapshot),
+        )
 
+    def _copy_stage(
+        self,
+        *,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        brief: ContentBrief,
+        kit: BrandKit,
+        voice: Any,
+        budget: BudgetState,
+    ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool] | None:
+        """The copy variants and their spend; None when the copy itself failed (the
+        draft is already settled then)."""
         prompts = self._variant_prompts(
             tenant_id=tenant_id,
             brand_id=draft.brand_id,
@@ -1721,10 +1925,6 @@ class ContentService:
             variants=brief.variants_requested,
             system=prompts[0].stable_prefix,
             user=tuple(prompt.volatile_suffix for prompt in prompts),
-        )
-        budget = (
-            self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
-            or _UNLIMITED_BUDGET
         )
 
         # The adapter returns ONE payload per call, so one router walk per variant,
@@ -1774,7 +1974,7 @@ class ContentService:
                 self._keep_previous_version(
                     tenant_id=tenant_id, draft=draft, usage=usage_writes, spent=spent
                 )
-                return
+                return None
             new_status = apply_transition(
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure
             )
@@ -1788,7 +1988,7 @@ class ContentService:
                 usage=tuple(usage_writes),
                 spent_usd=spent,
             )
-            return
+            return None
 
         variant_writes: list[VariantWrite] = []
         any_passed = False
@@ -1815,12 +2015,33 @@ class ContentService:
                     model_revision=result.model_revision,
                 )
             )
+        return variant_writes, usage_writes, spent, any_passed
 
+    def _finish_brief(
+        self,
+        *,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        brief: ContentBrief,
+        kit: BrandKit,
+        budget: BudgetState,
+        variant_writes: list[VariantWrite],
+        usage_writes: list[UsageWrite],
+        spent: Decimal,
+        any_passed: bool,
+        media_failure: str | None,
+        media_detail: str,
+        vendor_tasks: DraftVendorTasks | None,
+    ) -> None:
+        """The media from the winning copy, then the draft settled in one write."""
         media_writes: tuple[MediaWrite, ...] = ()
-        media_failure: str | None = None
-        media_detail = ""
         template_run: TemplateRunWrite | None = None
-        if any_passed and self._media is not None and brief.kind is not ContentKind.CREATOR_SCRIPT:
+        if (
+            any_passed
+            and media_failure is None
+            and self._media is not None
+            and brief.kind is not ContentKind.CREATOR_SCRIPT
+        ):
             # The artifact is built from the FIRST variant that passed layer 1: the
             # flyer prints its hook/CTA, the avatar reads its script.
             winner = next(
@@ -1841,7 +2062,25 @@ class ContentService:
                 revision=draft.revision,
                 # every kept file is a sign of life for the reaper (m-24852156)
                 heartbeat=self._heartbeat(tenant_id, draft.id),
+                # every Seedance task kept by id, resumed when it already exists
+                vendor_tasks=vendor_tasks,
             )
+            if outcome.pending:
+                # m-24852154: the video is still in BytePlus's hands. The draft stays
+                # `drafting` (no refund), what this run paid is recorded, and a later
+                # run resumes the task by id; the copy rides in the task's record.
+                self._repo.finish_generation(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    brand_id=draft.brand_id,
+                    new_status=DRAFTING,
+                    failure_reason=None,
+                    variants=(),
+                    usage=tuple(self._media_usage(outcome.usage)),
+                    spent_usd=outcome.spent_usd,
+                )
+                logger.warning("draft %s: its video outlived the wait; resumed later", draft.id)
+                return
             spent += outcome.spent_usd
             usage_writes.extend(self._media_usage(outcome.usage))
             media_writes = with_composition_warnings(outcome.media, outcome.warnings)
@@ -2070,7 +2309,7 @@ class ContentService:
         record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
             return None
-        return _detail(
+        detail = _detail(
             DraftBundle(
                 record=record,
                 variants=self._repo.variants_for(tenant_id=tenant_id, draft_id=draft_id),
@@ -2079,6 +2318,11 @@ class ContentService:
                 kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
             )
         )
+        if detail.status != DRAFTING or self._vendor_tasks is None:
+            return detail
+        # m-24852154: the screen waiting on this piece is what resumes its vendor task
+        self._sweep(tenant_id)
+        return replace(detail, waiting_vendor=detail.id in self._waiting(tenant_id, [detail]))
 
     def video_drafts_state(
         self, *, tenant_id: UUID, draft_id: UUID
@@ -2099,9 +2343,14 @@ class ContentService:
         orphaned by a dead process shows as failed, never as an eternal spinner."""
         if not draft_ids:
             return {}
-        reap_stale_drafts(tenant_id=tenant_id)
+        self._sweep(tenant_id)
         bundles = self._repo.details_for(tenant_id=tenant_id, draft_ids=draft_ids)
-        return {draft_id: _detail(bundle) for draft_id, bundle in bundles.items()}
+        details = {draft_id: _detail(bundle) for draft_id, bundle in bundles.items()}
+        waiting = self._waiting(tenant_id, list(details.values()))
+        return {
+            draft_id: replace(detail, waiting_vendor=True) if draft_id in waiting else detail
+            for draft_id, detail in details.items()
+        }
 
     def list_drafts(
         self,
@@ -2117,7 +2366,7 @@ class ContentService:
         eternal spinner."""
         if status is not None and status not in DRAFT_STATUSES:
             raise ValueError(f"unknown draft status {status!r}")
-        reap_stale_drafts(tenant_id=tenant_id)
+        self._sweep(tenant_id)
         return self._repo.list_drafts(
             tenant_id=tenant_id, brand_id=brand_id, status=status, limit=limit, offset=offset
         )
@@ -2436,13 +2685,42 @@ class ContentService:
                     ),
                     revision=draft.revision,
                     on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
+                    # m-24852154: the final's task kept by id — a retry resumes it
+                    vendor_tasks=self._final_binding(tenant_id, draft, asset.id),
                 )
             except Exception:
                 logger.exception("final of draft %s failed unexpectedly", draft_id)
                 self._fail_final(tenant_id, asset.id, claim, _FINAL_FAILED_TEXT)
                 self._refund_final_part(tenant_id, draft_id, "final_failed", (asset.id,))
                 continue
+            if outcome.pending:
+                # still in BytePlus's queue: the final stays `rendering` (never failed,
+                # never refunded); once this thread stops stamping it goes stale and
+                # «Reintentar» resumes the same task instead of paying another
+                logger.warning("final of asset %s outlived the wait", asset.id)
+                continue
             self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, claim, outcome)
+
+    def _final_binding(
+        self, tenant_id: UUID, draft: DraftRecord, asset_id: UUID
+    ) -> FinalVendorTasks | None:
+        if self._vendor_tasks is None:
+            return None
+
+        def keep_fresh() -> None:
+            self._repo.set_video_draft(
+                tenant_id=tenant_id, asset_id=asset_id, changes={"rendering_at": time.time()}
+            )
+
+        return FinalVendorTasks(
+            self._vendor_tasks,
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            revision=draft.revision,
+            asset_id=asset_id,
+            heartbeat=keep_fresh,
+            existing=self._tasks_of(tenant_id, draft),
+        )
 
     def _raw_final_recorder(
         self, tenant_id: UUID, asset_id: UUID

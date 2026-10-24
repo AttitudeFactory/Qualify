@@ -797,6 +797,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         media=media,
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),
+        waiting_vendor=bool(getattr(detail, "waiting_vendor", False)),
     )
     # m-24820142: the Seedance 2.5 draft videos' state (badge, final, retry)
     video_params = [item.params for item in detail.media]

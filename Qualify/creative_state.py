@@ -1921,6 +1921,12 @@ class CreativeState(rx.State):
         return False
 
     @rx.var
+    def gen_waiting_vendor(self) -> bool:
+        """m-24852154: the piece's video waits in line longer than usual — it lands in
+        Por aprobar on its own, so the screen says the owner need not wait here."""
+        return self.gen_draft is not None and self.gen_draft.waiting_vendor
+
+    @rx.var
     def gen_is_drafting(self) -> bool:
         return self.gen_draft is None or self.gen_draft.is_drafting
 

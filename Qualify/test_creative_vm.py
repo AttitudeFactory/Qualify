@@ -973,3 +973,32 @@ def test_a_failed_final_on_a_piece_edited_after_approval_offers_no_retry() -> No
     assert edited.note == FINAL_NEEDS_APPROVAL_TEXT and "aprobar" in edited.note
     assert approval_notice(edited)[0] == "success"  # nothing to retry from a toast
     assert video_draft_vm("failed", None, "ModelArk falló.", approved=True).can_retry
+
+
+def test_a_video_waiting_in_line_says_it_will_land_in_por_aprobar() -> None:
+    """m-24852154: a piece whose video outlived the usual wait stays in progress (its
+    task is resumed by id), and the screen says so in plain words — no vendor name, no
+    English, the place it will appear by its name."""
+    from .creative_vm import WAITING_VENDOR_TEXT
+
+    def vm(status: str, waiting: bool) -> object:
+        return build_draft_vm(
+            draft_id="d-3",
+            status=status,
+            failure_reason=None,
+            variants=[],
+            image_url=None,
+            total_cost_usd=None,
+            voice_profile_version=None,
+            model_ids=[],
+            requires_ai_disclosure=False,
+            created_label="",
+            waiting_vendor=waiting,
+        )
+
+    assert vm("drafting", True).waiting_vendor is True  # type: ignore[attr-defined]
+    assert vm("drafting", False).waiting_vendor is False  # type: ignore[attr-defined]
+    assert vm("generated", True).waiting_vendor is False  # type: ignore[attr-defined]
+    assert "Por aprobar" in WAITING_VENDOR_TEXT
+    for word in ("BytePlus", "Seedance", "proveedor", "Borradores", "post", "render"):
+        assert word not in WAITING_VENDOR_TEXT

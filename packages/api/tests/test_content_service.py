@@ -792,6 +792,11 @@ class FakeCopyAdapter:
 def db_seeded() -> tuple[UUID, UUID, UUID]:
     """Tenant + brand + user + a ready brand substrate (kit row and ACTIVE voice row),
     insert-if-absent so local re-runs stay green. Returns (tenant, brand, user)."""
+    return seed_db_tenant()
+
+
+def seed_db_tenant() -> tuple[UUID, UUID, UUID]:
+    """`db_seeded`'s body, callable from other suites' fixtures."""
     from qualify_shared.db.admin import admin_session
     from qualify_shared.db.session import tenant_session
     from sqlalchemy import select
@@ -992,7 +997,7 @@ class FakeMedia:
         self.outcome = outcome
         self.calls: list[tuple[ContentBrief, CopyPayload]] = []
 
-    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget, revision=1, heartbeat=None):  # noqa: ANN001, ANN201, E501
+    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget, revision=1, **_):  # noqa: ANN001, ANN003, ANN201, E501
         self.calls.append((brief, copy))
         return self.outcome
 
