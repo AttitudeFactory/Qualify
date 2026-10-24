@@ -138,6 +138,7 @@ class Store:
         self.rows: dict[tuple[UUID, UUID], BrandKitDetails] = {}
         self.tenants: list[UUID] = []
         self.saved: list[dict[str, Any]] = []
+        self.before_write: Callable[[], None] | None = None
 
     def load_details(self, *, tenant_id: UUID, brand_id: UUID) -> BrandKitDetails:
         self.tenants.append(tenant_id)
@@ -153,6 +154,19 @@ class Store:
             name: carry_reserved(name, getattr(row, name), documents.get(name, getattr(row, name)))
             for name in ("logo_brief", "connect", "profile")
         }
+        self.rows[(tenant_id, brand_id)] = BrandKitDetails(**values)
+
+    def set_document_key(
+        self, *, tenant_id: UUID, brand_id: UUID, document: str, key: str, value: Any
+    ) -> None:
+        """One key, over what the row holds NOW (the real one locks the row)."""
+        self.tenants.append(tenant_id)
+        self.saved.append({document: {key: value}})
+        if self.before_write is not None:
+            self.before_write()  # e.g. the owner saving while the run was working
+        row = self.rows.get((tenant_id, brand_id), BrandKitDetails())
+        values = {name: dict(getattr(row, name)) for name in ("logo_brief", "connect", "profile")}
+        values[document][key] = value
         self.rows[(tenant_id, brand_id)] = BrandKitDetails(**values)
 
 
@@ -227,7 +241,10 @@ def test_a_public_account_becomes_a_proposal_in_connect_prefill_only(world: Worl
     assert details.connect["rubro_text"] == "lo que el dueño escribió"
     assert details.connect["voice_configured"] is True
     assert details.profile == {"username": "anterior"}
-    assert [set(d) for d in world.store.saved] == [{"connect"}]  # never `profile`
+    # one key of one document, never `profile`
+    assert [(set(d), set(next(iter(d.values())))) for d in world.store.saved] == [
+        ({"connect"}, {brand_prefill.PREFILL_KEY})
+    ]
 
     prefill = world.prefill()
     assert prefill["status"] == "ok" and prefill["state"] == brand_prefill.STATE_PROPOSED
@@ -434,6 +451,149 @@ def test_the_catalog_is_never_taught_by_a_proposal(world: World) -> None:
     world.claude.rubro = "xilófonos artesanales"
     world.run()
     assert catalog.repository.get(TENANT, "heladeriadeyogur") is None
+
+
+class _BreaksAfterTheRun(MemoryHashtagRepository):
+    """The catalog's database fails once Claude has run (the rule path's fallback)."""
+
+    broken = False
+
+    def resolve(self, *a: Any, **kw: Any) -> Any:
+        if self.broken:
+            from sqlalchemy.exc import OperationalError
+
+            raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+        return super().resolve(*a, **kw)
+
+
+def test_a_catalog_run_followed_by_a_database_failure_stays_spent(world: World) -> None:
+    """Review of PB-3: the run was made, so its call is not given back — a cap of 2 then
+    stops the third (the creation) instead of letting it through."""
+    repository = _BreaksAfterTheRun()
+
+    class Breaking(Selector):
+        def __call__(self, *a: Any, **kw: Any) -> Any:
+            self.calls += 1
+            repository.broken = True
+            raise RuntimeError("overloaded")
+
+    selector = Breaking()
+    world.catalog = brand_prefill.CatalogHashtags(
+        repository=repository, selector=selector, api_key="sk-ant-test"
+    )
+    for item in world.vendor.posts["items"]:
+        item["caption"] = {"text": "Sin etiquetas"}  # no own tags: case 3 would run
+    result = world.run(caps=CallCaps(claude_calls=2))
+
+    assert selector.calls == 1
+    assert result.outcome is PrefillOutcome.CAP_REACHED
+    assert result.usage.claude_calls == 2  # the rubro + the catalog run, nothing given back
+    assert result.usage.claude_tokens_complete is False
+    assert len(world.claude.calls) == 1  # the creation never ran
+
+
+def test_a_catalog_that_fails_before_any_run_gives_the_call_back(world: World) -> None:
+    repository = _BreaksAfterTheRun()
+    repository.broken = True  # unreadable from the start: no Claude run at all
+    world.catalog = brand_prefill.CatalogHashtags(
+        repository=repository, selector=Selector(), api_key="sk-ant-test"
+    )
+    result = world.run()
+    assert result.ok and result.usage.claude_calls == 1
+    assert result.usage.claude_tokens_complete is True
+
+
+def test_an_owners_save_during_the_run_is_kept(world: World) -> None:
+    """Review of PB-3: the proposal is written as ONE key over what the row holds at the
+    write — an owner's rubro, hashtags and city saved meanwhile are not reverted."""
+    world.store.rows[(TENANT, BRAND)] = BrandKitDetails(connect={"city": "Bogotá"})
+
+    def owner_saves() -> None:
+        world.store.save_details(
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            user_id=None,
+            documents={
+                "connect": {"city": "Cali", "rubro_text": "heladería", "hashtags": [{"tag": "x"}]}
+            },
+        )
+
+    world.store.before_write = owner_saves
+    world.run()
+    connect = world.store.rows[(TENANT, BRAND)].connect
+    assert connect["city"] == "Cali" and connect["rubro_text"] == "heladería"
+    assert connect["hashtags"] == [{"tag": "x"}]
+    assert connect[brand_prefill.PREFILL_KEY]["status"] == "ok"
+
+
+# --------------------------------------------------------------------------------------
+# the profile picture: only the CDN, at most 3 MB
+# --------------------------------------------------------------------------------------
+
+CDN = "https://scontent.cdninstagram.com/v/pic.jpg"
+
+
+def _picture(handler: Callable[[httpx.Request], httpx.Response]) -> tuple[bytes | None, list]:
+    seen: list[str] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return handler(request)
+
+    with httpx.Client(transport=httpx.MockTransport(record)) as client:
+        return brand_prefill.fetch_picture(CDN, client), seen
+
+
+def test_a_redirect_off_the_cdn_is_never_followed() -> None:
+    data, seen = _picture(
+        lambda r: httpx.Response(302, headers={"location": "https://evil.example/x.png"})
+    )
+    assert data is None and seen == [CDN]
+
+
+def test_a_redirect_inside_the_cdn_is_followed() -> None:
+    other = "https://scontent-lga3-2.cdninstagram.com/v/pic.jpg"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == CDN:
+            return httpx.Response(302, headers={"location": other})
+        return httpx.Response(200, content=b"img", headers={"content-type": "image/jpeg"})
+
+    data, seen = _picture(handler)
+    assert data == b"img" and seen == [CDN, other]
+
+
+def test_redirects_stop_after_a_few_hops() -> None:
+    data, seen = _picture(lambda r: httpx.Response(302, headers={"location": CDN}))
+    assert data is None and len(seen) == 4
+
+
+def test_a_picture_over_the_limit_is_dropped_while_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(brand_prefill, "_PICTURE_MAX_BYTES", 10)
+    pulled: list[int] = []
+
+    def chunks() -> Any:
+        for i in range(100):
+            pulled.append(i)
+            yield b"123456"
+
+    data, _ = _picture(
+        lambda r: httpx.Response(200, content=chunks(), headers={"content-type": "image/png"})
+    )
+    assert data is None and len(pulled) < 100  # stopped reading, not read then measured
+    declared, _ = _picture(
+        lambda r: httpx.Response(200, content=b"x" * 11, headers={"content-type": "image/png"})
+    )
+    assert declared is None
+
+
+def test_a_body_that_is_not_an_image_is_refused() -> None:
+    data, _ = _picture(
+        lambda r: httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"})
+    )
+    assert data is None
 
 
 # --------------------------------------------------------------------------------------
@@ -667,3 +827,58 @@ def test_a_run_writes_only_its_own_tenants_brand_kit(seeded_ab: tuple[UUID, UUID
     # RLS: tenant B's session sees no row of tenant A's brand
     with tenant_session(tenant_b) as session:
         assert session.get(DetailsRow, brands[tenant_a]) is None
+
+
+@pytest.mark.db
+def test_an_owners_save_during_the_run_survives_in_postgres(
+    seeded_ab: tuple[UUID, UUID],
+) -> None:
+    """Review of PB-3, against the real store: the owner saves `connect` (their own
+    session, committed) while the run is working; the run's write adds `prefill` over
+    THAT row, and the owner's next save keeps the proposal."""
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.tenancy.models import Brand
+
+    tenant_a, _tenant_b = seeded_ab
+    with tenant_session(tenant_a) as session:
+        brand = session.scalar(select(Brand.id).where(Brand.tenant_id == tenant_a))
+    store = BrandKitStore()
+    store.save_details(
+        tenant_id=tenant_a, brand_id=brand, user_id=None, documents={"connect": {"city": "Bogotá"}}
+    )
+
+    class OwnerSavesMeanwhile(BrandKitStore):
+        def set_document_key(self, **kw: Any) -> None:
+            BrandKitStore().save_details(
+                tenant_id=tenant_a,
+                brand_id=brand,
+                user_id=None,
+                documents={"connect": {"city": "Cali", "rubro_text": "heladería"}},
+            )
+            super().set_document_key(**kw)
+
+    vendor = Vendor()
+    handle = f"heladeria.{uuid4().hex[:8]}"
+    vendor.profile["data"]["user"]["username"] = handle
+    ports = PrefillPorts(
+        store=OwnerSavesMeanwhile(),
+        generate=Claude(),
+        api_key=lambda: "sk-ant-test",
+        transport=httpx.MockTransport(vendor.handler),
+        catalog=None,
+    )
+    result = prefill_brand_kit(tenant_a, brand, "instagram", handle, ports=ports)
+
+    assert result.written
+    connect = store.load_details(tenant_id=tenant_a, brand_id=brand).connect
+    assert connect["city"] == "Cali" and connect["rubro_text"] == "heladería"
+    assert connect[brand_prefill.PREFILL_KEY]["status"] == "ok"
+    # the owner saving again (a wizard writing `connect` whole) keeps the proposal
+    store.save_details(
+        tenant_id=tenant_a, brand_id=brand, user_id=None, documents={"connect": {"city": "Lima"}}
+    )
+    again = store.load_details(tenant_id=tenant_a, brand_id=brand).connect
+    assert again["city"] == "Lima" and again[brand_prefill.PREFILL_KEY]["status"] == "ok"

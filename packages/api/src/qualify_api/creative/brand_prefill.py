@@ -27,7 +27,10 @@ proposal there). No logo or avatar is generated, and no website is read.
 Other rows a run writes, both tenant-scoped and both what the wizard already writes:
 the account claim (`creative.account_claims`, so one email never reads another's
 account) and the tenant's profile cache (`referentes.profile_cache`, so a second run
-costs no credit). The hashtag catalog is never written by `prefill_brand_kit`.
+costs no credit). The shared hashtag catalog gets no tag or link from a proposal
+(`remember=False`); its one write on this path is the catalog's own idempotent taxonomy
+seed (`hashtags.catalog.ensure_seeded`: the hand-written niches as data, once per
+process, the same any first catalog read in the wizard does).
 
 **Costs are capped per run** (`CallCaps`): every Scrape Creators request and every
 Claude run spends from it, and the one that would exceed it is not made — the run stops
@@ -65,7 +68,7 @@ from qualify_api.claude_tools import (
     api_key_from_env,
 )
 from qualify_api.creative import account_claims, logo_palette
-from qualify_api.creative.brand_kit_store import PREFILL_KEY, BrandKitStore
+from qualify_api.creative.brand_kit_store import PREFILL_DOCUMENT, PREFILL_KEY, BrandKitStore
 from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
@@ -101,6 +104,7 @@ _PICTURE_HOST_SUFFIXES = (
 )
 _PICTURE_MAX_BYTES = 3_000_000
 _PICTURE_TIMEOUT_SECONDS = 8.0
+_PICTURE_MAX_REDIRECTS = 3
 _PICTURE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -416,19 +420,48 @@ def picture_allowed(url: str) -> bool:
 
 def fetch_picture(url: str, client: httpx.Client) -> bytes | None:
     """The profile picture's bytes from the network's CDN, or None (not allowed, not
-    an image, too large, or not reachable). Never a Scrape Creators credit."""
-    if not picture_allowed(url):
-        return None
-    try:
-        response = client.get(url, headers=_PICTURE_HEADERS, timeout=_PICTURE_TIMEOUT_SECONDS)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        logger.info("brand prefill: profile picture not fetched: %s", type(exc).__name__)
-        return None
+    an image, too large, or not reachable). Never a Scrape Creators credit.
+
+    Redirects are followed by hand, at most `_PICTURE_MAX_REDIRECTS`, and every hop must
+    be on the CDN allow-list too; the body is streamed and dropped as soon as it passes
+    `_PICTURE_MAX_BYTES` (a declared larger `content-length` is not read at all)."""
+    for _hop in range(_PICTURE_MAX_REDIRECTS + 1):
+        if not picture_allowed(url):
+            return None
+        try:
+            with client.stream(
+                "GET",
+                url,
+                headers=_PICTURE_HEADERS,
+                timeout=_PICTURE_TIMEOUT_SECONDS,
+                follow_redirects=False,
+            ) as response:
+                if response.is_redirect:
+                    url = str(response.url.join(response.headers.get("location", "")))
+                    continue
+                response.raise_for_status()
+                return _picture_body(response)
+        except httpx.HTTPError as exc:
+            logger.info("brand prefill: profile picture not fetched: %s", type(exc).__name__)
+            return None
+    return None
+
+
+def _picture_body(response: httpx.Response) -> bytes | None:
     kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
-    if not kind.startswith("image/") or len(response.content) > _PICTURE_MAX_BYTES:
+    if not kind.startswith("image/"):
         return None
-    return response.content
+    declared = response.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > _PICTURE_MAX_BYTES:
+        return None
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_bytes():
+        size += len(chunk)
+        if size > _PICTURE_MAX_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @dataclass(frozen=True)
@@ -643,7 +676,12 @@ def hashtags_db_first(
         except (SQLAlchemyError, OSError, ValueError) as exc:
             logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)
             if budget is not None:
-                budget.claude_calls -= 1  # the catalog failed before any Claude run
+                if getattr(exc, "claude_attempted", False):
+                    # a run was made, then the rule path's database failed: the call
+                    # stays spent and its tokens are unknown here
+                    budget.claude_tokens_complete = False
+                else:
+                    budget.claude_calls -= 1  # failed before any Claude run
         else:
             _account_catalog_run(found, budget, trail)
             if found.tags:
@@ -808,7 +846,7 @@ def prefill_brand_kit(
        posts), remembered for the next run.
     3. What it says: rubro category, country and city (`seed_from_profile`), metrics.
     4. With `propose`: Tu rubro named by Claude, its hashtags (`hashtags_db_first`,
-       the shared catalog first, as the wizard — but never written to from here),
+       the shared catalog first, as the wizard — it learns no tag from a proposal),
        the profile picture's colours as the palette; then the proposal, written.
 
     `propose=False` is the wizard's read: steps 1-3, no Claude, nothing written beyond
@@ -988,7 +1026,7 @@ def _palette(network: str, profile: Mapping[str, Any], ports: PrefillPorts) -> d
     if not url or logo_palette.is_default_avatar_url(url):
         return None
     try:
-        with httpx.Client(transport=ports.transport, follow_redirects=True) as client:
+        with httpx.Client(transport=ports.transport) as client:  # redirects: by hand
             data = ports.fetch_picture(url, client)
     except Exception as exc:  # noqa: BLE001 - an optional proposal never fails the run
         logger.info("brand prefill: profile picture unavailable: %s", type(exc).__name__)
@@ -1051,10 +1089,14 @@ def _write_status(
         },
     }
     try:
-        details = ports.store.load_details(tenant_id=tenant_id, brand_id=brand_id)
-        connect = {**details.connect, PREFILL_KEY: document}
-        ports.store.save_details(
-            tenant_id=tenant_id, brand_id=brand_id, user_id=None, documents={"connect": connect}
+        # only the `prefill` key, atomically: the owner's own answers in `connect` are
+        # whatever the database holds at the write, never a copy read earlier
+        ports.store.set_document_key(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            document=PREFILL_DOCUMENT,
+            key=PREFILL_KEY,
+            value=document,
         )
     except (SQLAlchemyError, ValueError) as exc:
         logger.warning("brand prefill: proposal not written: %s", exc)

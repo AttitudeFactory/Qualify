@@ -399,7 +399,14 @@ def ai_hashtags_for(
         )
     except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
         logger.warning("hashtags: AI selection failed, using the rule path: %s", exc)
-        return replace(fallback(), attempted=True)
+        try:
+            rule = fallback()
+        except Exception as unreadable:
+            # the rule path's database error still propagates as before; it carries
+            # that a Claude run WAS made, so a caller counting runs does not give it back
+            unreadable.claude_attempted = True  # type: ignore[attr-defined]
+            raise
+        return replace(rule, attempted=True)
     logger.info(
         "hashtags: %s chose %s for @%s in %d turns / %d tool calls ($%.4f)",
         stats.model_revision or stats.model_id,

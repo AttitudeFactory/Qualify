@@ -198,7 +198,9 @@ class BrandKitStore:
         if unknown:
             raise ValueError(f"unknown brand kit documents {sorted(unknown)}")
         with tenant_session(tenant_id) as session:
-            row = session.get(DetailsRow, brand_id)
+            # locked: a background write of one reserved key (`set_document_key`) must not
+            # land between this read and this write and be carried away
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
             if row is None:
                 row = DetailsRow(
                     brand_id=brand_id,
@@ -211,6 +213,36 @@ class BrandKitStore:
             for name, document in documents.items():
                 setattr(row, name, carry_reserved(name, getattr(row, name), document))
             row.updated_by = user_id
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+
+    def set_document_key(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        document: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Write ONE key of one document (e.g. `connect.prefill`), the rest of it exactly
+        as it is in the database at this moment: read under `FOR UPDATE` and written in
+        the same transaction, so an owner's save in between is never overwritten with
+        what a background job read earlier (m-24852197)."""
+        if document not in DETAIL_DOCUMENTS:
+            raise ValueError(f"unknown brand kit document {document!r}")
+        with tenant_session(tenant_id) as session:
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
+            if row is None:
+                row = DetailsRow(
+                    brand_id=brand_id,
+                    tenant_id=tenant_id,
+                    logo_brief={},
+                    connect={},
+                    profile={},
+                )
+                session.add(row)
+            setattr(row, document, {**(getattr(row, document) or {}), key: value})
             row.updated_at = datetime.now(UTC)
             session.flush()
 
