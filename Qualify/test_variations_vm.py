@@ -315,7 +315,7 @@ def test_the_outcome_of_a_generation_in_one_line() -> None:
         (UnknownAngleSet("x"), "grupo de variaciones"),
         (UnknownAngle("x"), "propuesta"),
         (BrandNotReady(missing=("voice_profile",)), "Brand Kit"),
-        (DraftExpired(), "vuelve a generar la publicación"),  # m-24820142
+        (DraftExpired(), "Crea la publicación otra vez"),  # m-24820142
         (ValueError("badly formed hexadecimal UUID string"), "no son válidos"),
         (RuntimeError("connection reset by peer"), "Inténtalo de nuevo"),
     ],
