@@ -136,8 +136,8 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.IMAGE_RATIO_NOT_ALLOWED: "Instagram solo acepta en una publicación imágenes entre 4:5 "
     "(vertical) y 1.91:1 (horizontal).",
     R.STOCK_NOT_PUBLISHABLE: "Una imagen de stock no se publica sola: úsala dentro de una pieza.",
-    R.MEDIA_DRAFT_PENDING: "El video es todavía un borrador a 480p: espera a que termine el "
-    "video final (o reinténtalo desde la publicación).",
+    R.MEDIA_DRAFT_PENDING: "Este video todavía es una vista previa. Espera a que esté listo el "
+    "video final o inténtalo de nuevo desde la publicación.",
     R.MEDIA_PURGED: "Los archivos de esta pieza se eliminaron a los 3 meses: ya no se puede "
     "publicar. Vuelve a generarla.",
 }

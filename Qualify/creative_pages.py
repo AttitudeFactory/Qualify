@@ -1409,7 +1409,7 @@ def _video_draft_notice() -> rx.Component:
                 video.can_retry,
                 rx.button(
                     rx.icon("refresh-cw", size=15),
-                    "Reintentar video final",
+                    "Intentar de nuevo",
                     variant="soft",
                     size="2",
                     on_click=CreativeState.retry_final_render,
@@ -2314,9 +2314,9 @@ def _decision_bar_or_nothing() -> rx.Component:
                     title=CreativeState.approve_label,
                     text=rx.cond(
                         draft.video_draft.state == VIDEO_DRAFT,
-                        "Te quedas con esta versión y generamos el video final a 1080p "
-                        "desde este borrador. Consume créditos. Cuando esté listo eliges "
-                        "el día y la hora en que sale.",
+                        "Te quedas con esta versión y preparamos el video en alta "
+                        "calidad. Tarda unos minutos. Cuando esté listo eliges el día y la "
+                        "hora en que sale.",
                         "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
                     ),
                     button=rx.button(

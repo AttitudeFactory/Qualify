@@ -518,7 +518,7 @@ async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
     events = [event async for event in CreativeState.approve_selected.fn(state)]
 
     toast = str(events[0])
-    assert "estamos generando el video final a 1080p" in toast
+    assert "Estamos preparando el video en alta calidad" in toast
     assert "Ahora elige" not in toast and "Revisa lo que falta" not in toast
     assert events[-1] is CreativeState.poll_final
     assert state._final_polling_id == str(_DRAFT_UUID)

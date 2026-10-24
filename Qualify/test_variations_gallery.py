@@ -464,7 +464,7 @@ async def test_an_approval_whose_final_is_rendering_says_so(
         lambda *_: _set_vm(_angle(status="approved", draft_status="approved")),
     )
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
-    assert len(yielded) == 1 and "video final a 1080p" in str(yielded[0])
+    assert len(yielded) == 1 and "preparando el video en alta calidad" in str(yielded[0])
 
 
 async def test_an_approval_whose_final_could_not_be_ordered_never_says_approved(
