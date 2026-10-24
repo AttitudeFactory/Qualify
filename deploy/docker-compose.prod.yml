@@ -75,6 +75,11 @@ x-app-env: &app-env
   QUALIFY_MAIL_FAKE: ""
   # Signup is invite-only (`just invite`); this dev hatch must never open it in production.
   QUALIFY_SIGNUP_OPEN: ""
+  # m-24852203: the inbox's Meta read simulator is dev-only. Forced off here, and the
+  # production marker below makes `qualify_api.inbox.simulator` refuse it outright.
+  QUALIFY_META_READS: ""
+  QUALIFY_META_READS_FIXTURE: ""
+  QUALIFY_DEPLOY_ENV: production
   # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
   # passwords there. Serving processes only need the per-role DSNs above — and the owner
   # password in particular is a superuser that bypasses RLS, which none of them may hold.

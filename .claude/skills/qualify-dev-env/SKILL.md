@@ -35,6 +35,9 @@ just whatsapp-worker --tenant <uuid>   # WA-08: a pass every 5 s until Ctrl+C (l
 just conversations-tick --tenant <uuid> [--sync]    # QUA-226: one pass of the DM outbox sender (+ Instagram poll) — SENDS FOR REAL unless QUALIFY_CONVERSATIONS_DM_CHANNEL=memory
 just conversations-worker --tenant <uuid> [--sync]  # QUA-226: a pass every 5 s until Ctrl+C
 just conversations-seed --tenant <uuid>             # QUA-226: sample DMs through the in-memory channel (needs QUALIFY_CONVERSATIONS_DM_CHANNEL=memory)
+QUALIFY_META_READS=fixture <run the app>            # m-24852203: Interacciones' Meta READS (media list, media, comments) from dev/meta-fixtures/inbox.json, no token; refused where QUALIFY_DEPLOY_ENV=production; replies stay real
+just inbox-fixture-export --tenant <uuid> --connection <uuid> --out <path>  # m-24852203: LOCAL fixture from a connection's own rows (real data, never commit) for QUALIFY_META_READS_FIXTURE=<path>
+just inbox-thumbs-backfill --tenant <uuid> --connection <uuid>  # m-24852202: optional; keeps in R2 the pictures of publications monitored before 0089 (real Meta reads)
 ```
 
 The calendar executor (QUA-111, `packages/api/src/qualify_api/planner/worker.py`) publishes due, approved `calendar_events` through `PublishService`. **Locally always pass `--tenant`:** `--all-tenants` is the production discovery, and this dev database holds dozens of test tenants it would act on. Decision, guarantees and UML: `docs/automatizacion-calendario-qua111.md`.

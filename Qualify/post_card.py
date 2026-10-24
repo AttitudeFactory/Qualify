@@ -68,7 +68,8 @@ def viewable_src(url: rx.Var[str]) -> rx.Var[str]:
     decided: `thumbnail` and `media_fill` both go through it (PR #100 review — the fill
     used to send an `/r2media/` path through `rx.get_upload_url`, a URL that 404s)."""
     return rx.cond(
-        url.startswith("http"),
+        # m-24852203: a `data:` picture (the dev Meta read simulator's) is used as is too.
+        url.startswith("http") | url.startswith("data:"),
         url,
         rx.cond(url.startswith("/r2media"), BACKEND_BASE + url, rx.get_upload_url(url)),
     )

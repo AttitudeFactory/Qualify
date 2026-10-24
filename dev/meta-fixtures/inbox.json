@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "_note": "Synthetic fixture for QUALIFY_META_READS=fixture (m-24852203). No real people, accounts or media.",
+  "media": [
+    {
+      "id": "17900000000000001",
+      "posted_hours_ago": 5,
+      "media_product_type": "REELS",
+      "media_type": "VIDEO",
+      "caption": "Nuevo sabor de la semana: maracuyá con coco. ¿Ya lo probaste?",
+      "permalink": "https://www.instagram.com/reel/DEMO0001/",
+      "thumbnail_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%230d9488%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EReel%201%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000002",
+      "posted_hours_ago": 30,
+      "media_product_type": "FEED",
+      "media_type": "IMAGE",
+      "caption": "Horario de fin de semana: sábado y domingo de 10 a. m. a 8 p. m.",
+      "permalink": "https://www.instagram.com/p/DEMO0002/",
+      "media_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%237c3aed%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EFoto%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000003",
+      "posted_hours_ago": 72,
+      "media_product_type": "FEED",
+      "media_type": "CAROUSEL_ALBUM",
+      "caption": "Tres combos para compartir. Desliza para verlos todos.",
+      "permalink": "https://www.instagram.com/p/DEMO0003/",
+      "media_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%23ea580c%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3ECarrusel%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000004",
+      "posted_hours_ago": 240,
+      "media_product_type": "REELS",
+      "media_type": "VIDEO",
+      "caption": "Así preparamos cada pedido.",
+      "permalink": "https://www.instagram.com/reel/DEMO0004/",
+      "thumbnail_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%232563eb%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EReel%202%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000005",
+      "posted_hours_ago": 48,
+      "media_product_type": "FEED",
+      "media_type": "VIDEO",
+      "caption": "Detrás de cámaras en la cocina.",
+      "permalink": "https://www.instagram.com/p/DEMO0005/",
+      "thumbnail_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%23be123c%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EVideo%3C/text%3E%3C/svg%3E"
+    }
+  ],
+  "comments": {
+    "17900000000000001": [
+      {
+        "id": "17800000000000001",
+        "text": "¿Cuánto cuesta el de maracuyá?",
+        "username": "cliente.demo1",
+        "minutes_ago": 40,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000002",
+        "text": "¡Qué rico se ve! 😍",
+        "username": "cliente.demo2",
+        "minutes_ago": 35,
+        "like_count": 3
+      },
+      {
+        "id": "17800000000000003",
+        "text": "¿Hacen domicilios al norte?",
+        "username": "cliente.demo3",
+        "minutes_ago": 20,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000004",
+        "text": "Me encantó, vuelvo el sábado",
+        "username": "cliente.demo4",
+        "minutes_ago": 10,
+        "like_count": 1
+      }
+    ],
+    "17900000000000002": [
+      {
+        "id": "17800000000000010",
+        "text": "¿Abren el lunes festivo?",
+        "username": "cliente.demo5",
+        "minutes_ago": 300,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000011",
+        "text": "La última vez tardaron mucho en atenderme",
+        "username": "cliente.demo6",
+        "minutes_ago": 200,
+        "like_count": 0
+      }
+    ],
+    "17900000000000003": [
+      {
+        "id": "17800000000000020",
+        "text": "Quiero el combo 2 para 4 personas, ¿cómo pido?",
+        "username": "cliente.demo7",
+        "minutes_ago": 900,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000021",
+        "text": "¿Tienen opción vegetariana?",
+        "username": "cliente.demo8",
+        "minutes_ago": 600,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000022",
+        "text": "Excelente servicio",
+        "username": "cliente.demo9",
+        "minutes_ago": 500,
+        "like_count": 2
+      }
+    ],
+    "17900000000000004": [
+      {
+        "id": "17800000000000030",
+        "text": "¿Dónde quedan?",
+        "username": "cliente.demo10",
+        "minutes_ago": 5000,
+        "like_count": 0
+      }
+    ],
+    "17900000000000005": [
+      {
+        "id": "17800000000000100",
+        "text": "¿Tienen para llevar?",
+        "username": "cliente.demo11",
+        "minutes_ago": 60,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000101",
+        "text": "¿Aceptan transferencia?",
+        "username": "cliente.demo12",
+        "minutes_ago": 67,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000102",
+        "text": "Lo mejor del barrio",
+        "username": "cliente.demo13",
+        "minutes_ago": 74,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000103",
+        "text": "¿A qué hora cierran hoy?",
+        "username": "cliente.demo14",
+        "minutes_ago": 81,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000104",
+        "text": "Me lo recomendaron, voy mañana",
+        "username": "cliente.demo15",
+        "minutes_ago": 88,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000105",
+        "text": "¿Cuánto vale el envío?",
+        "username": "cliente.demo16",
+        "minutes_ago": 95,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000106",
+        "text": "¿El combo 2 sigue a 45.000?",
+        "username": "cliente.demo17",
+        "minutes_ago": 102,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000107",
+        "text": "Qué limpia se ve la cocina",
+        "username": "cliente.demo18",
+        "minutes_ago": 109,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000108",
+        "text": "¿Tienen sin azúcar?",
+        "username": "cliente.demo19",
+        "minutes_ago": 116,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000109",
+        "text": "Ayer pedí y llegó frío",
+        "username": "cliente.demo11",
+        "minutes_ago": 123,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000110",
+        "text": "¿Hacen pedidos para eventos?",
+        "username": "cliente.demo12",
+        "minutes_ago": 130,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000111",
+        "text": "Delicioso todo 👏",
+        "username": "cliente.demo13",
+        "minutes_ago": 137,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000112",
+        "text": "¿Dónde queda la sede nueva?",
+        "username": "cliente.demo14",
+        "minutes_ago": 144,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000113",
+        "text": "¿Puedo pagar con tarjeta?",
+        "username": "cliente.demo15",
+        "minutes_ago": 151,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000114",
+        "text": "Siempre atienden muy bien",
+        "username": "cliente.demo16",
+        "minutes_ago": 158,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000115",
+        "text": "¿Tienen para llevar?",
+        "username": "cliente.demo17",
+        "minutes_ago": 165,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000116",
+        "text": "¿Aceptan transferencia?",
+        "username": "cliente.demo18",
+        "minutes_ago": 172,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000117",
+        "text": "Lo mejor del barrio",
+        "username": "cliente.demo19",
+        "minutes_ago": 179,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000118",
+        "text": "¿A qué hora cierran hoy?",
+        "username": "cliente.demo11",
+        "minutes_ago": 186,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000119",
+        "text": "Me lo recomendaron, voy mañana",
+        "username": "cliente.demo12",
+        "minutes_ago": 193,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000120",
+        "text": "¿Cuánto vale el envío?",
+        "username": "cliente.demo13",
+        "minutes_ago": 200,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000121",
+        "text": "¿El combo 2 sigue a 45.000?",
+        "username": "cliente.demo14",
+        "minutes_ago": 207,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000122",
+        "text": "Qué limpia se ve la cocina",
+        "username": "cliente.demo15",
+        "minutes_ago": 214,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000123",
+        "text": "¿Tienen sin azúcar?",
+        "username": "cliente.demo16",
+        "minutes_ago": 221,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000124",
+        "text": "Ayer pedí y llegó frío",
+        "username": "cliente.demo17",
+        "minutes_ago": 228,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000125",
+        "text": "¿Hacen pedidos para eventos?",
+        "username": "cliente.demo18",
+        "minutes_ago": 235,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000126",
+        "text": "Delicioso todo 👏",
+        "username": "cliente.demo19",
+        "minutes_ago": 242,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000127",
+        "text": "¿Dónde queda la sede nueva?",
+        "username": "cliente.demo11",
+        "minutes_ago": 249,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000128",
+        "text": "¿Puedo pagar con tarjeta?",
+        "username": "cliente.demo12",
+        "minutes_ago": 256,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000129",
+        "text": "Siempre atienden muy bien",
+        "username": "cliente.demo13",
+        "minutes_ago": 263,
+        "like_count": 0
+      }
+    ]
+  }
+}
