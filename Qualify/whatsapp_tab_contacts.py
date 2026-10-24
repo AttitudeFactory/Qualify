@@ -10,35 +10,40 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .ui import callout, drawer, empty_state, mono, skeleton_rows, tag
+from .ui import callout, card, drawer, empty_state, mono, skeleton_rows, tag
 from .ui import tokens as T
 from .whatsapp_contacts_state import WhatsAppContactsState as S
 from .whatsapp_contacts_vm import FILTERS, IMPORT_CONDITION, OptInVM
 from .whatsapp_marketing_ui import (
+    card_line,
     confirm_action,
     field,
     ghost_refresh,
     retry_button,
     section_head,
+    table_or_cards,
     tone_banner,
     tone_pill,
 )
 
 
-def _revoke_action(o: OptInVM) -> rx.Component:
+def _revoke_action(o: OptInVM, *, tap: bool = False) -> rx.Component:
+    """`tap=True` on a phone card: a full-width, 44 px target (N12)."""
+    sizing = {"size": "2", "width": "100%", "min_height": "44px"} if tap else {"size": "1"}
     return confirm_action(
         rx.button(
             rx.icon("user-x", size=T.ICON_SM),
             "Quitar de la lista",
             loading=S.revoking_phone == o.phone,
             variant="soft",
-            size="1",
+            **sizing,
             **T.tone_scheme("neutral"),
         ),
         title="Quitar de la lista",
         description=rx.text(
             rx.text.strong(o.phone),
-            " deja de recibir campañas. Solo vuelve a estar activo si da un consentimiento nuevo.",
+            " deja de recibir tus promociones. Solo vuelve a estar activo si da un "
+            "consentimiento nuevo.",
         ),
         verb="Quitar de la lista",
         on_confirm=S.revoke_phone(o.phone),
@@ -72,21 +77,54 @@ def _row(o: OptInVM) -> rx.Component:
             )
         ),
         rx.table.cell(
-            rx.tooltip(
-                rx.text(
-                    o.consent_text,
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    max_width="18rem",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                ),
-                content=o.consent_text,
+            # In full, wrapped: nothing only on hover (qualify-ux §5), tablets included.
+            rx.text(
+                "Aceptó: «" + o.consent_text + "»",
+                size="1",
+                color=T.TEXT_MUTED,
+                white_space="normal",
+                max_width="28rem",
             )
         ),
         rx.table.cell(rx.cond(o.is_active, _revoke_action(o), rx.fragment())),
         align="center",
+    )
+
+
+def _contact_card(o: OptInVM) -> rx.Component:
+    """Phone (m-24842998): the number, where it came from, its state and the text the
+    person accepted, in full (no tooltip: nothing only on hover, N12)."""
+    return card(
+        rx.vstack(
+            card_line(mono(o.phone, weight="medium"), tone_pill(o.status_label, o.status_tone)),
+            rx.cond(o.brand != "", rx.text(o.brand, size="1", color=T.TEXT_MUTED), rx.fragment()),
+            card_line(
+                tag(o.source_label),
+                rx.text(o.captured_at, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            ),
+            rx.cond(
+                o.revoked_detail != "",
+                rx.text(o.revoked_detail, size="1", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            rx.cond(
+                o.consent_text != "",
+                rx.text("Aceptó: «" + o.consent_text + "»", size="1", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            rx.cond(o.is_active, _revoke_action(o, tap=True), rx.fragment()),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1rem",
+    )
+
+
+def _contacts_list() -> rx.Component:
+    return table_or_cards(
+        _table(),
+        rx.vstack(rx.foreach(S.opt_ins, _contact_card), spacing="3", width="100%"),
     )
 
 
@@ -117,18 +155,18 @@ def _list() -> rx.Component:
         S.ready,
         rx.cond(
             S.has_opt_ins,
-            _table(),
+            _contacts_list(),
             empty_state(
                 "users",
-                "Aún no hay contactos con consentimiento",
-                "Solo puedes enviar campañas a quien aceptó recibir mensajes de WhatsApp de "
-                "tu negocio. Impórtalos del formulario de clientes interesados o agrégalos a "
-                "mano.",
+                "Aún no tienes clientes que aceptaron recibir tus promociones",
+                "Solo puedes enviar promociones a quien aceptó recibir mensajes de WhatsApp "
+                "de tu negocio. Impórtalos del formulario de clientes interesados o agrégalos "
+                "a mano.",
             ),
         ),
         rx.cond(
             S.failed,
-            retry_button("Volver a leer los contactos", S.reload),
+            retry_button("Volver a leer la lista", S.reload),
             skeleton_rows(4, height="3rem"),
         ),
     )
@@ -143,6 +181,8 @@ def _import_action() -> rx.Component:
             on_click=S.prepare_import,
             variant="soft",
             size="2",
+            min_height="44px",
+            white_space="normal",
             **T.tone_scheme("neutral"),
         ),
         title="Importar del formulario de clientes interesados",
@@ -213,16 +253,17 @@ def _add_drawer() -> rx.Component:
         ),
         open=S.add_open,
         on_open_change=S.set_add_open,
-        title="Agregar contacto",
+        title="Agregar cliente",
         description="Un número que te dio su consentimiento fuera de Qualify.",
         footer=rx.hstack(
             rx.spacer(),
             rx.button(
                 rx.icon("user-plus", size=16),
-                "Agregar contacto",
+                "Agregar cliente",
                 on_click=S.submit_add,
                 loading=S.adding,
-                size="2",
+                size="3",
+                min_height="44px",
             ),
             width="100%",
         ),
@@ -234,11 +275,15 @@ def contacts_tab() -> rx.Component:
     return rx.vstack(
         tone_banner(S.banner, S.banner_tone),
         section_head(
-            "Contactos con consentimiento",
+            "Clientes que aceptaron",
             ghost_refresh("Actualizar", S.reload, loading=S.loading),
             _import_action(),
             rx.button(
-                rx.icon("user-plus", size=16), "Agregar contacto", on_click=S.open_add, size="2"
+                rx.icon("user-plus", size=16),
+                "Agregar cliente",
+                on_click=S.open_add,
+                size="3",
+                min_height="44px",
             ),
         ),
         rx.text(
@@ -251,7 +296,7 @@ def contacts_tab() -> rx.Component:
             *[rx.segmented_control.item(label, value=key) for key, label in FILTERS],
             value=S.view_filter,
             on_change=S.set_filter,
-            size="1",
+            size="2",
         ),
         _list(),
         _add_drawer(),

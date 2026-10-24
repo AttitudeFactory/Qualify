@@ -103,6 +103,31 @@ def test_row_counts_are_cumulative() -> None:
     )
     assert (row.sent, row.delivered, row.read, row.queued) == ("12", "9", "5", "3")
     assert row.cost_label == "USD 1,50" and row.status_label == "En curso"
+    # m-24842998: the phone card's line.
+    assert row.reach_label == "5 la leyeron de 12"
+
+
+def test_reach_label_waits_for_the_first_send() -> None:
+    row = build_campaign_row(
+        campaign_id="c",
+        name="Promo",
+        template_label="promo · es",
+        status="draft",
+        counts={"pending": 4},
+        costs=[],
+        created_at=NOW,
+    )
+    assert row.reach_label == ""
+    big = build_campaign_row(
+        campaign_id="c",
+        name="Promo de octubre",
+        template_label="promo · es",
+        status="done",
+        counts={"read": 1200, "delivered": 80},
+        costs=[],
+        created_at=NOW,
+    )
+    assert big.reach_label == "1.200 la leyeron de 1.280"
 
 
 def test_meta_codes_are_explained_without_the_code() -> None:
@@ -403,3 +428,18 @@ def test_ux_review_copy() -> None:
     assert '"Cancelar"' not in source and "Con la fecha de hoy" not in source
     assert "sin tu toque" not in source
     assert "S.review_name" in source
+
+
+def test_ux_review_names_and_jumps() -> None:
+    """UX review (m-24842998): one name per place, «Ver resultados» says of which
+    promotion, and the wizard without approved messages jumps to «Mensajes aprobados»."""
+    import pathlib
+
+    here = pathlib.Path(__file__).parent
+    tab = (here / "whatsapp_tab_campaigns.py").read_text()
+    assert '"Promociones enviadas"' in tab and '"Campañas"' not in tab
+    assert "«Plantillas»" not in tab and "on_click=S.create_approved_message" in tab
+    assert tab.count('"aria-label": "Ver resultados de " + c.name') == 2
+    state = (here / "whatsapp_campaigns_state.py").read_text()
+    start = state.index("def create_approved_message(")
+    assert "WhatsAppState.select_tab(TAB_TEMPLATES)" in state[start : start + 800]
