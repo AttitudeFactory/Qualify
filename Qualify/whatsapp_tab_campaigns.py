@@ -221,7 +221,7 @@ def _template_choice(t: TemplateVM) -> rx.Component:
         rx.hstack(
             rx.vstack(
                 rx.text(
-                    t.body_text,
+                    t.body_preview,
                     size="2",
                     overflow="hidden",
                     text_overflow="ellipsis",
@@ -232,7 +232,7 @@ def _template_choice(t: TemplateVM) -> rx.Component:
                     },
                 ),
                 rx.hstack(
-                    rx.text(t.name, size="1", color=T.TEXT_MUTED),
+                    rx.text(t.display_name, size="1", color=T.TEXT_MUTED),
                     rx.text(t.language_label, size="1", color=T.TEXT_FAINT),
                     spacing="2",
                     align="center",
