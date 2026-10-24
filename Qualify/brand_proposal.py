@@ -325,7 +325,7 @@ def _account() -> rx.Component:
     return rx.hstack(
         media_thumb(
             _AVATAR_BASE + BrandProposalState.avatar_src,
-            has=BrandProposalState.avatar_src != "",
+            has=(BrandProposalState.pic != "") & (BrandProposalState.avatar_src != ""),
             size="3.5rem",
             round=True,
             icon="user",
@@ -356,14 +356,13 @@ def _account() -> rx.Component:
 
 
 def _button(label: str, on_click: Any, busy: str, **props: Any) -> rx.Component:
-    """A decision button: full width, at least 44 px (N12); off while another saves."""
+    """A decision button, at least 44 px tall (N12); off while another one saves."""
     return rx.button(
         label,
         type="button",
         size="3",
         radius=_CONTROL_RADIUS,
         min_height="44px",
-        width="100%",
         on_click=on_click,
         loading=BrandProposalState.busy == busy,
         disabled=BrandProposalState.busy != "",
@@ -384,13 +383,15 @@ def proposal_review() -> rx.Component:
             _colours(),
             _tags(),
             rx.vstack(
-                _button(vm.APPROVE_LABEL, BrandProposalState.approve, _APPROVE),
+                _button(vm.APPROVE_LABEL, BrandProposalState.approve, _APPROVE, width="100%"),
                 rx.flex(
                     _button(
                         vm.CHANGE_LABEL,
                         BrandProposalState.change,
                         _CHANGE,
                         variant="soft",
+                        flex="1",
+                        min_width="0",
                     ),
                     _button(
                         vm.DISCARD_LABEL,
@@ -398,6 +399,8 @@ def proposal_review() -> rx.Component:
                         _DISCARD,
                         variant="ghost",
                         color_scheme="gray",
+                        flex="1",
+                        min_width="0",
                     ),
                     direction=rx.breakpoints(initial="column", sm="row"),
                     gap="0.5rem",
