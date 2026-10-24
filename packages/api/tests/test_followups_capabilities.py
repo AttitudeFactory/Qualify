@@ -44,7 +44,31 @@ def test_current_states_are_pinned() -> None:
         Capability.STORY_COMMENTS: CapabilityState.META_LIMITATION,
         Capability.STORY_REPLY_CONTEXT: CapabilityState.VERIFIED,
         Capability.PUBLIC_NOTICE: CapabilityState.VERIFIED,
+        # m-24789472: built from the corpus, no live test yet (R6).
+        Capability.ICE_BREAKERS: CapabilityState.TO_VERIFY,
+        # m-24789472, phase 3: quick replies (R7) and button templates (R8), corpus only.
+        Capability.QUICK_REPLIES: CapabilityState.TO_VERIFY,
+        Capability.STRUCTURED_TEMPLATES: CapabilityState.TO_VERIFY,
     }
+
+
+@pytest.mark.parametrize(
+    ("capability", "env_var", "test_id"),
+    [
+        (Capability.QUICK_REPLIES, "QUALIFY_QUICK_REPLIES", "R7"),
+        (Capability.STRUCTURED_TEMPLATES, "QUALIFY_STRUCTURED_TEMPLATES", "R8"),
+    ],
+)
+def test_phase_3_capabilities_are_off_by_default_and_follow_their_switch(
+    capability: Capability, env_var: str, test_id: str
+) -> None:
+    assert REGISTRY[capability].env_var == env_var
+    off = Capabilities.from_env({}).availability(capability)
+    assert off.enabled is False
+    assert off.state_label == "Por verificar"
+    assert test_id in off.reason and env_var in off.reason
+    on = Capabilities.from_env({env_var: "on"}).availability(capability)
+    assert on.enabled is True and on.reason == ""
 
 
 @pytest.mark.parametrize("capability", list(Capability))
@@ -124,3 +148,14 @@ def test_from_env_reads_the_process_environment(monkeypatch: pytest.MonkeyPatch)
     assert Capabilities.from_env().switched_on == frozenset()
     monkeypatch.setenv(STORY_COMMENTS_ENV, "on")
     assert Capabilities.from_env().switched_on == frozenset({Capability.STORY_COMMENTS})
+
+
+def test_ice_breakers_has_its_own_switch_and_a_spanish_reason() -> None:
+    spec = REGISTRY[Capability.ICE_BREAKERS]
+    assert spec.env_var == "QUALIFY_ICE_BREAKERS"
+    off = Capabilities.from_env({}).availability(Capability.ICE_BREAKERS)
+    assert off.enabled is False
+    assert off.state_label == "Por verificar"
+    assert "preguntas iniciales" in off.reason and "QUALIFY_ICE_BREAKERS" in off.reason
+    on = Capabilities.from_env({"QUALIFY_ICE_BREAKERS": "on"})
+    assert on.enabled(Capability.ICE_BREAKERS) is True
