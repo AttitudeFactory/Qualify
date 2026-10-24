@@ -158,6 +158,14 @@
   opacity: 1;
   transform: scale(1);
 }
+/* m-24842987 (N12): on a screen with no mouse (a tablet showing the calendar) the "+"
+   is always there — nothing in Tu semana may depend on hovering. */
+@media (hover: none) {
+  .q-planner-slot .q-planner-slot-plus { opacity: 0.8; transform: scale(1); }
+}
+/* m-24842987: «‹ ›», «Hoy», «Por programar (n)» stay on one line, even at 360 px. */
+.q-planner-bar { flex-wrap: nowrap; min-width: 0; max-width: 100%; }
+.q-planner-bar .rt-Button { white-space: nowrap; }
 /* …and in a slot that already has posts: in the flow, under the last chip. */
 .q-planner-slot-plus--below {
   position: static;
