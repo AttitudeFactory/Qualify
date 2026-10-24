@@ -52,11 +52,6 @@ def test_from_dict_parses_the_agreed_request_shape_and_resolves_aliases() -> Non
     assert FILTERS.limit == 50
 
 
-def test_unknown_niche_is_rejected_loudly() -> None:
-    with pytest.raises(ValueError, match="unknown niche"):
-        cd.resolve_niche("crypto")
-
-
 def test_hashtags_nest_the_city_into_the_niche_most_specific_first() -> None:
     tags = cd.hashtags_for("food_drink", "Cúcuta")
     assert tags[:3] == ["cucutafood", "foodcucuta", "food"]
@@ -86,15 +81,6 @@ def test_build_queries_respects_network_selection() -> None:
 # --------------------------------------------------------------------------------------
 # text classification (the experiment's regex steps)
 # --------------------------------------------------------------------------------------
-
-
-def test_detect_niches_folds_accents_and_matches_emoji() -> None:
-    assert cd.detect_niches("Amante de la buena comida 🍽️") == ["food_drink"]
-    assert cd.detect_niches("Diseñadora de modas. Gastronomía local") == [
-        "food_drink",
-        "fashion_beauty",
-    ]
-    assert cd.detect_niches("hola") == []
 
 
 def test_is_local_accepts_city_variants_and_metro_names() -> None:

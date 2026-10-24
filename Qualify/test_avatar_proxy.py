@@ -356,7 +356,7 @@ async def test_without_refresh_a_dead_url_stays_a_miss(tmp_path: Path) -> None:
 def test_the_profile_read_runs_once_per_account_and_within_the_hourly_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from . import scrapecreators_client as sc
+    from qualify_api.referentes import scrapecreators_client as sc
 
     reads: list[tuple[str, str]] = []
 
@@ -385,7 +385,7 @@ def test_the_profile_read_runs_once_per_account_and_within_the_hourly_budget(
 
 
 def test_a_zero_budget_turns_the_refresh_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    from . import scrapecreators_client as sc
+    from qualify_api.referentes import scrapecreators_client as sc
 
     monkeypatch.setattr(sc, "fetch_profile", lambda *_a: pytest.fail("must not spend"))
     monkeypatch.setattr(ap, "_REFRESH_PER_HOUR", 0)

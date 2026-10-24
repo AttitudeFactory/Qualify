@@ -55,7 +55,9 @@ from uuid import UUID, uuid4
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+from qualify_api.creative import logo_palette
 from qualify_api.hashtags import fold, from_profile, normalize_tag
+from qualify_api.referentes import discovery_seed, scrapecreators_client
 from qualify_creative.brand import fonts as brand_fonts
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
@@ -71,10 +73,8 @@ from . import (
     creator_pool_provider,
     growth_provider,
     hashtag_catalog,
-    logo_palette,
     referentes_provider,
     referentes_review,
-    scrapecreators_client,
 )
 from .auth_state import BRAND_READY_QUERY, AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
@@ -3762,7 +3762,7 @@ class BrandConnectState(rx.State):
 
     #: Tu rubro y ubicación — a `creator_discovery.NICHE_TAXONOMY` key, an ISO country
     #: code and a free-text city. PREFILLED by `analyze()` from what the profile read
-    #: lets `creator_discovery.seed_from_profile` detect (bio, Instagram category, the
+    #: lets `discovery_seed.seed_from_profile` detect (bio, Instagram category, the
     #: account's own hashtags), editable on the step. Not persisted, like `account_kind`.
     sector: str = ""
     #: The rubro in the operator's own words ("peluquería canina") — what the discovery
@@ -4248,7 +4248,7 @@ class BrandConnectState(rx.State):
                 "country_code": self.country_code,
                 "city": self.city.strip(),
             }
-        seed = creator_discovery.seed_from_profile(snapshot or fallback_profile, **answers)
+        seed = discovery_seed.seed_from_profile(snapshot or fallback_profile, **answers)
         choice, note = await asyncio.to_thread(
             _hashtags_db_first,
             ids[0] if ids is not None else None,
@@ -4878,7 +4878,7 @@ class BrandConnectState(rx.State):
                 if ids is not None
                 else None
             )
-            seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
+            seed = discovery_seed.seed_from_profile(profile or fallback, **answers)
             if pills:
                 seed, _ = seed_with_pills(seed, pills)
             brief = referentes_review.brand_brief(
@@ -5316,7 +5316,7 @@ class BrandConnectState(rx.State):
             # Prefill Tu rubro y ubicación with what the read lets us detect (bio,
             # Instagram category, the account's own hashtags) — the step then only
             # shows for an existing account when something is still missing.
-            detected = creator_discovery.seed_from_profile(profile)
+            detected = discovery_seed.seed_from_profile(profile)
             self.sector = detected.niches[0] if detected.niches else ""
             self.country_code = detected.country_code
             self.city = detected.city
@@ -5472,7 +5472,7 @@ class BrandConnectState(rx.State):
                 if ids is not None
                 else None
             )
-            seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
+            seed = discovery_seed.seed_from_profile(profile or fallback, **answers)
             if pills:
                 # The operator's pills ARE the hashtags: no AI call of the search's own.
                 seed, hashtag_picks = seed_with_pills(seed, pills)

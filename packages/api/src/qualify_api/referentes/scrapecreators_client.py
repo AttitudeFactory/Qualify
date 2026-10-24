@@ -428,7 +428,7 @@ def fetch_recent_posts(
     page read — not only the windowed ones: a page is ~12-30 posts either way, the
     credits are already spent, and an account that did not publish this week still
     says what it is about in last month's captions. It is what the creator discovery
-    reads as the account's own vocabulary (`creator_discovery.seed_from_profile`).
+    reads as the account's own vocabulary (`discovery_seed.seed_from_profile`).
     """
     handle = _normalize_handle(handle)
     if not handle:

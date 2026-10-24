@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from . import logo_palette as lp
+from qualify_api.creative import logo_palette as lp
 
 
 def _bytes(image: Image.Image, fmt: str = "PNG") -> bytes:

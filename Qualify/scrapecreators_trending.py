@@ -37,8 +37,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-
-from .scrapecreators_client import _TIMEOUT_SECONDS, ScrapeCreatorsError, _get
+from qualify_api.referentes.scrapecreators_client import _TIMEOUT_SECONDS, ScrapeCreatorsError, _get
 
 #: Presentation cap, applied inside this module so the contract is explicit and
 #: testable without going through Reflex state — QUA-107 decision, not a vendor limit.

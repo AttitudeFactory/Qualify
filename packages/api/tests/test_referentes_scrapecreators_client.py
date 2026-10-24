@@ -7,7 +7,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from . import scrapecreators_client as sc
+from qualify_api.referentes import scrapecreators_client as sc
 
 API_KEY = "sk_test_123"
 

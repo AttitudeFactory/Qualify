@@ -16,10 +16,10 @@ import inspect
 from uuid import UUID
 
 import pytest
+from qualify_api.referentes.scrapecreators_client import ScrapeCreatorsError
 
 from . import scrapecreators_trending
 from . import trending_state as trending_state_module
-from .scrapecreators_client import ScrapeCreatorsError
 from .trending_state import TrendingState
 
 _TENANT = UUID("00000000-0000-0000-0000-00000000aaaa")

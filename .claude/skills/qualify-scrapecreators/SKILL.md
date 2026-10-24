@@ -7,7 +7,7 @@ description: How Qualify queries and tests ScrapeCreators — always through the
 
 **Rule (founder, 2026-10-24):** every discovery, doubt, question or ticket about ScrapeCreators is
 answered by running the official CLI against a real handle/URL. Do not answer from memory, from the
-web docs alone, or from `Qualify/scrapecreators_client.py`'s assumptions: run the command, read the
+web docs alone, or from `qualify_api/referentes/scrapecreators_client.py`'s assumptions: run the command, read the
 real response, then answer. The command you ran is the evidence — paste it (never the key) in the
 ticket, doc or PR.
 

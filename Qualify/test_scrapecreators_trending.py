@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from qualify_api.referentes.scrapecreators_client import ScrapeCreatorsError
 
 from . import scrapecreators_trending as trending
-from .scrapecreators_client import ScrapeCreatorsError
 
 API_KEY = "sk_test_123"
 

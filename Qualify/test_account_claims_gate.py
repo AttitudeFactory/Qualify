@@ -65,9 +65,9 @@ class _World:
         monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", fetch)
         monkeypatch.setattr(wiz.growth_provider, "record_profile_read", lambda *a: 0)
         monkeypatch.setattr(
-            wiz.creator_discovery,
+            wiz.discovery_seed,
             "seed_from_profile",
-            lambda _p: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+            lambda _p: wiz.discovery_seed.DiscoverySeed(handle="marca.demo", niches=()),
         )
 
     def names(self) -> list[str]:
