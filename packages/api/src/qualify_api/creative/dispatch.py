@@ -33,14 +33,14 @@ import logging
 import math
 import threading
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.adapters.byteplus_omnihuman import (
     DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_POLL_TIMEOUT_SECONDS,
 )
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, update
+from sqlalchemy import and_, exists, select, update
 
 from qualify_api.creative.creations import refund_in_session
 from qualify_api.creative.fsm import (
@@ -49,7 +49,9 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
-from qualify_api.creative.models import ContentBrief, ContentDraft
+from qualify_api.creative.models import ContentBrief, ContentDraft, CreativeVendorTask
+from qualify_api.creative.vendor_tasks import FAILED as TASK_FAILED
+from qualify_api.creative.vendor_tasks import GIVE_UP_AFTER, PENDING
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,29 @@ DEFAULT_REAP_AFTER_MINUTES = 20
 #: poll window. Its draft is reaped only after that window plus the presenter frame and
 #: the voice (a margin of 10 min) — before, the reaper failed a render still being paid.
 OMNIHUMAN_REAP_AFTER_MINUTES = math.ceil(OMNIHUMAN_POLL_TIMEOUT_SECONDS / 60) + 10
+#: m-24852154: a draft whose vendor task is still pending and whose thread has been
+#: silent this long (no poll stamps the heartbeat — the wait ran out, or the process
+#: died) is handed to a new run that resumes the task by id. Its live thread stamps every
+#: minute while polling, so it is never doubled.
+RECOVER_AFTER_QUIET_MINUTES = 3
+
+
+def _pending_task(now: datetime) -> Any:
+    """A vendor task of the draft's current revision still pending and not given up
+    (BytePlus expires a task after 48 h): such a draft is waiting, not dead."""
+    return (
+        exists()
+        .where(
+            and_(
+                CreativeVendorTask.draft_id == ContentDraft.id,
+                CreativeVendorTask.revision == ContentDraft.revision,
+                CreativeVendorTask.status == PENDING,
+                CreativeVendorTask.created_at >= now - GIVE_UP_AFTER,
+            )
+        )
+        # correlated to the draft row of the outer SELECT / UPDATE, never a second FROM
+        .correlate(ContentDraft)
+    )
 
 
 class GenerationRunner(Protocol):
@@ -140,6 +165,11 @@ def reap_stale_drafts(
     caller-supplied. Safe to run repeatedly and concurrently with ``run_generation``:
     a draft the reaper already failed makes the runner's idempotency check a no-op, and
     a draft the runner already finished is no longer ``DRAFTING`` so the reaper skips it.
+
+    m-24852154: a draft waiting on a vendor task (pending, under 49 h) is NOT reaped —
+    its video may still come, and BytePlus bills it if it does; `claim_waiting_drafts`
+    resumes it instead. Past that the task is given up: reaped, refunded, and its tasks
+    marked failed.
     """
     now = datetime.now(UTC)
     cutoff = now - timedelta(minutes=older_than_minutes)
@@ -153,6 +183,7 @@ def reap_stale_drafts(
             .where(
                 ContentDraft.status == DRAFTING,
                 ContentDraft.updated_at < cutoff,
+                ~_pending_task(now),
             )
         ).all()
         stale = [
@@ -172,4 +203,36 @@ def reap_stale_drafts(
             refund_in_session(
                 session, ((draft.id, draft.revision) for draft in stale), REAP_FAILURE_REASON, now
             )
+            # a task given up with its piece is never resumed
+            session.execute(
+                update(CreativeVendorTask)
+                .where(
+                    CreativeVendorTask.draft_id.in_([draft.id for draft in stale]),
+                    CreativeVendorTask.status == PENDING,
+                )
+                .values(status=TASK_FAILED, settled_at=now, updated_at=now)
+            )
         return len(stale)
+
+
+def claim_waiting_drafts(
+    *, tenant_id: UUID, quiet_minutes: int = RECOVER_AFTER_QUIET_MINUTES
+) -> list[UUID]:
+    """The drafts to resume (m-24852154): ``DRAFTING``, a vendor task of their revision
+    still pending, and no sign of life for ``quiet_minutes``. Claimed atomically by
+    stamping ``updated_at`` (one ``UPDATE … RETURNING`` in the owning tenant's session),
+    so two concurrent reads never resume the same draft twice and the next claim waits
+    another quiet window. The caller dispatches ``run_generation`` for each."""
+    now = datetime.now(UTC)
+    with tenant_session(tenant_id) as session:
+        claimed = session.scalars(
+            update(ContentDraft)
+            .where(
+                ContentDraft.status == DRAFTING,
+                ContentDraft.updated_at < now - timedelta(minutes=quiet_minutes),
+                _pending_task(now),
+            )
+            .values(updated_at=now)
+            .returning(ContentDraft.id)
+        ).all()
+        return list(claimed)

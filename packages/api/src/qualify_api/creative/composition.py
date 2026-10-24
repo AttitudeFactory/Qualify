@@ -84,6 +84,7 @@ from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2Reading
 from qualify_api.creative.observed import traced_providers
 from qualify_api.creative.pieces import DbPieceFiles
 from qualify_api.creative.service import ContentService
+from qualify_api.creative.vendor_tasks import PostgresVendorTaskStore
 from qualify_api.creative.voice_access import BrandVoiceResolver
 from qualify_api.creative.voice_clone import VoiceCloneService
 from qualify_api.creative.voice_service import VoiceProfileService
@@ -365,6 +366,9 @@ def production_content_service() -> ContentService:
         # m-24852156: every file a run keeps stamps the draft, so the reaper measures
         # from the last progress (a long carousel is alive, a dead thread is not)
         progress=_record_progress,
+        # m-24852154: every Seedance task kept by id the moment BytePlus accepts it, so
+        # one that outlives the wait (its queue, a deploy) is resumed, never lost or redone
+        vendor_tasks=PostgresVendorTaskStore(),
         media=MediaProducer(
             store=store,
             router=router,

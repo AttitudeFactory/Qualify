@@ -32,6 +32,7 @@ Both adapters poll/answer inside ``generate`` so they fit the synchronous Protoc
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -45,7 +46,10 @@ from qualify_creative.providers import (
     GenerationResult,
     PricingTable,
     Usage,
+    VendorTaskObserver,
 )
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 #: The founder's test pair (§ request 2026-10-07): Seedance 1.0 pro for video, Seedream
@@ -67,8 +71,20 @@ AUTO_DURATION = -1
 OMNI_TASK_TYPES = frozenset({"auto", "reference", "edit", "extend"})
 #: The video URL is valid for 24 h (Retrieve a video generation task API).
 MEDIA_URL_TTL_SECONDS = 24 * 3600
-#: Under the dispatcher's 10-minute reaper, like HeyGen's.
+#: The render window (m-24852154): counted from the first `running` answer, never from
+#: the task's creation — time in BytePlus's own queue (past 10 tasks at once a task waits
+#: there, without an error) does not use it up. Measured renders: 38-115 s.
 DEFAULT_POLL_TIMEOUT_SECONDS = 480.0
+#: How long this thread keeps waiting while the task is still `queued`. Past it the
+#: adapter raises `ArkTaskTimeout` and the caller resumes the task by id later (it kept
+#: the id when the task was created) — up to BytePlus's own expiry (48 h by default).
+DEFAULT_QUEUE_TIMEOUT_SECONDS = 3600.0
+#: `params[RESUME_TASK_PARAM]`: the id of a task this generation already created — the
+#: adapter waits for it instead of creating another (never submit a task twice).
+RESUME_TASK_PARAM = "resume_task_id"
+#: BytePlus keeps an unfinished task this long before it ends `expired` (not billed):
+#: `execution_expires_after` defaults to 172800 s (create-video-generation-task-api).
+VENDOR_TASK_EXPIRY_SECONDS = 48 * 3600
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 MAX_CONSECUTIVE_POLL_ERRORS = 3
 #: A creating POST (an image, a video task) is sent again only when the vendor most
@@ -95,6 +111,7 @@ MAX_PROMPT_CHARS = 3000
 
 _TERMINAL_OK = "succeeded"
 _TERMINAL_FAILED = frozenset({"failed", "cancelled", "expired"})
+_RUNNING = "running"
 
 
 @dataclass(frozen=True)
@@ -352,15 +369,18 @@ class ArkTaskFailed(ArkError):
 
 
 class ArkTaskTimeout(ArkError):
-    """The poll window closed before the task finished. The task keeps running (and is
-    billed if it succeeds): its id is kept for the support ticket."""
+    """This thread stopped waiting before the task finished — still queued past
+    `queue_timeout_seconds`, or running past the render window. The task keeps going
+    (and is billed if it succeeds): the caller, which heard its id at creation
+    (`VendorTaskObserver.created`), resumes it by id (`RESUME_TASK_PARAM`)."""
 
-    def __init__(self, task_id: str, waited_seconds: float) -> None:
+    def __init__(self, task_id: str, waited_seconds: float, status: str = "") -> None:
         super().__init__(
-            f"Seedance task {task_id} still running after {waited_seconds:.0f}s; "
+            f"Seedance task {task_id} still {status or 'running'} after {waited_seconds:.0f}s; "
             "it will keep generating — recover it by task id"
         )
         self.task_id = task_id
+        self.status = status
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +833,12 @@ class SeedanceVideoAdapter(_ArkClient):
       the draft's — for the payload; none of them is sent). ``video_input`` — whether
       the draft had reference videos — prices the final at the with-video rate;
     - ``reference_video_seconds`` — the reference videos' total length, for the price
-      estimate only (ModelArk bills the input video too); unmeasured = the 30 s cap.
+      estimate only (ModelArk bills the input video too); unmeasured = the 30 s cap;
+    - ``resume_task_id`` (m-24852154) — a task this generation already created: waited
+      for, never created again. The other params still price the estimate.
+
+    ``request.observer`` hears the new task's id as soon as ModelArk accepts it, and
+    every poll answer (`VendorTaskObserver`).
     """
 
     name = "seedance"
@@ -830,6 +855,7 @@ class SeedanceVideoAdapter(_ArkClient):
         request_timeout_seconds: float = 60.0,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        queue_timeout_seconds: float = DEFAULT_QUEUE_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__(
             base_url=base_url,
@@ -841,6 +867,7 @@ class SeedanceVideoAdapter(_ArkClient):
         self.model = model
         self._poll_interval = poll_interval_seconds
         self._poll_timeout = poll_timeout_seconds
+        self._queue_timeout = queue_timeout_seconds
         self._monotonic = monotonic
 
     def spec(self, params: Mapping[str, object]) -> _VideoSpec | _FinalSpec:
@@ -852,9 +879,17 @@ class SeedanceVideoAdapter(_ArkClient):
 
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
         spec = self.spec(request.params)
+        observer = request.observer
+        resume = request.params.get(RESUME_TASK_PARAM)
         with self._client(api_key) as client:
-            task_id = self._create(client, spec)
-            data = self._wait(client, task_id)
+            if isinstance(resume, str) and resume.strip():
+                # m-24852154: a task this generation already paid for — waited for,
+                # never created again
+                task_id = resume.strip()
+            else:
+                task_id = self._create(client, spec)
+                _tell(observer, "created", task_id)
+            data = self._wait(client, task_id, observer)
         content = data.get("content") if isinstance(data.get("content"), dict) else {}
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         tokens = int(usage.get("completion_tokens") or 0)
@@ -928,15 +963,24 @@ class SeedanceVideoAdapter(_ArkClient):
             raise ArkError(f"create response carried no task id: {body!r}")
         return str(task_id)
 
-    def _wait(self, client: Any, task_id: str) -> Mapping[str, Any]:
+    def _wait(
+        self, client: Any, task_id: str, observer: VendorTaskObserver | None = None
+    ) -> Mapping[str, Any]:
+        """Poll until the task ends. Two windows (m-24852154): while it is `queued` (or
+        unknown) up to `queue_timeout_seconds` since the wait began; once it answers
+        `running`, the render window (`poll_timeout_seconds`) counts from THAT answer —
+        BytePlus's own queue never uses the render window up."""
         import httpx  # lazy, already loaded by _client
 
         started = self._monotonic()
+        running_since: float | None = None
+        status = ""
         consecutive_errors = 0
+        path = f"/contents/generations/tasks/{quote(task_id, safe='')}"
         while True:
             data: Mapping[str, Any] | None
             try:
-                data = _body_or_raise(client.get(f"/contents/generations/tasks/{task_id}"))
+                data = _body_or_raise(client.get(path))
                 consecutive_errors = 0
             except ArkAPIError as exc:
                 if exc.status_code < 500 and exc.status_code != 429:
@@ -953,6 +997,9 @@ class SeedanceVideoAdapter(_ArkClient):
 
             if data is not None:
                 status = str(data.get("status") or "")
+                _tell(observer, "polled", task_id, status)
+                if status == _RUNNING and running_since is None:
+                    running_since = self._monotonic()
                 if status == _TERMINAL_OK:
                     content = data.get("content")
                     if not isinstance(content, dict) or not content.get("video_url"):
@@ -962,10 +1009,24 @@ class SeedanceVideoAdapter(_ArkClient):
                     error = data.get("error") if isinstance(data.get("error"), dict) else {}
                     raise ArkTaskFailed(task_id, status, error.get("code"), error.get("message"))
 
-            waited = self._monotonic() - started
-            if waited + self._poll_interval > self._poll_timeout:
-                raise ArkTaskTimeout(task_id, waited)
+            now = self._monotonic()
+            if running_since is not None:
+                if now - running_since + self._poll_interval > self._poll_timeout:
+                    raise ArkTaskTimeout(task_id, now - started, status)
+            elif now - started + self._poll_interval > self._queue_timeout:
+                raise ArkTaskTimeout(task_id, now - started, status or "queued")
             self._sleep(self._poll_interval)
+
+
+def _tell(observer: VendorTaskObserver | None, event: str, *args: str) -> None:
+    """Tell the observer, never letting it break the task (it is a sign of life and a
+    bookmark — the wait goes on without them)."""
+    if observer is None:
+        return
+    try:
+        getattr(observer, event)(*args)
+    except Exception:  # noqa: BLE001
+        logger.warning("vendor task observer failed on %s", event, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

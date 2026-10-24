@@ -257,7 +257,7 @@ def test_a_brief_stored_with_heygen_is_refused_without_spending() -> None:
             "no está disponible",
         ),
         ("SeedSpeechError: code 45000000: speaker permission denied", "no está disponible"),
-        ("OmniHumanTimeout: task 7392 still rendering after 2400s", "tardando más de lo normal"),
+        ("OmniHumanTimeout: task 7392 still rendering after 2400s", "tardó demasiado"),
         ("quota exceeded for types: concurrency", "muchas generaciones en curso"),
         ("something else entirely", "No se pudo generar la pieza. Inténtalo de nuevo."),
     ],

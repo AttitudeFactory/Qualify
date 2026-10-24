@@ -553,7 +553,8 @@ def test_a_seedance_brief_needs_no_voice_but_a_described_presenter() -> None:
         ("HTTP 400 OutputVideoSensitiveContentDetected", "filtro de contenido"),
         ("HTTP 403 AccountOverdueError", "no está disponible ahora mismo"),
         ("MissingPlatformKey: QUALIFY_BYTEPLUS_ARK_API_KEY", "no está disponible ahora mismo"),
-        ("ArkTaskTimeout: task cgt-1 still running", "tardando más de lo normal"),
+        # m-24852154: a timeout is no failure any more (the task is resumed by id)
+        ("ArkTaskTimeout: task cgt-1 still running", "No se pudo generar la pieza."),
         ("HTTP 429 RateLimitExceeded", "muchas generaciones en curso"),
         ("something else", "No se pudo generar la pieza. Inténtalo de nuevo."),
     ],
@@ -1300,7 +1301,7 @@ def test_an_omnihuman_timeout_still_records_the_render_it_will_bill() -> None:
         uuid4(),
     )
     assert outcome.failure == FailureReason.PROVIDER_ERROR.value
-    assert "tardando" in outcome.detail
+    assert "tardó demasiado" in outcome.detail
     render = outcome.usage[-1]
     assert (render.provider, render.model_id, render.unit) == (
         "omnihuman",

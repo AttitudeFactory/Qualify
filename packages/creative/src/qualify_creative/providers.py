@@ -57,6 +57,21 @@ class Usage:
     media_seconds: Decimal = Decimal(0)
 
 
+class VendorTaskObserver(Protocol):
+    """Hears of an asynchronous vendor task while an adapter waits for it (m-24852154).
+
+    `created` is called as soon as the vendor accepted the task (2xx, before any wait):
+    the caller persists the id there, so a task that outlives the wait — the vendor's
+    queue, the process dying on a deploy — is resumed by id later, never submitted again
+    nor lost while it is billed. `polled` is called on every answer while waiting (the
+    caller's sign of life). Neither may break the generation: an adapter swallows what
+    they raise."""
+
+    def created(self, task_id: str) -> None: ...
+
+    def polled(self, task_id: str, status: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class GenerationRequest:
     task: GenerationTask
@@ -64,6 +79,8 @@ class GenerationRequest:
     params: Mapping[str, object] = field(default_factory=dict)
     output_schema: Mapping[str, object] | None = None
     source_media_url: str | None = None
+    #: Only asynchronous adapters use it (Seedance); never part of the request's identity.
+    observer: VendorTaskObserver | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

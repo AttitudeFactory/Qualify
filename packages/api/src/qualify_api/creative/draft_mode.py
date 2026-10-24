@@ -92,7 +92,9 @@ def draft_expires_at(params: list[Mapping[str, object] | None]) -> float | None:
 #: window plus the download and the re-encode.
 FINAL_STALE_SECONDS = 20 * 60
 #: What a final left half-made by a dead process says on the screen.
-FINAL_STALE_TEXT = "El video final se quedó a medias. Inténtalo de nuevo."
+FINAL_STALE_TEXT = (
+    "El video final se quedó a medias. Toca Reintentar: sigue donde quedó, sin cobrarte otra vez."
+)
 
 
 def final_stale(block: Mapping[str, Any] | None, now: float | None = None) -> bool:

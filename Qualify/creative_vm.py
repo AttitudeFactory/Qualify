@@ -917,6 +917,14 @@ VIDEO_TYPE_LABELS: dict[str, str] = {
 }
 
 
+#: m-24852154: what the owner reads while a piece's video waits in line longer than
+#: usual. True since the video is resumed by id and lands in Por aprobar on its own.
+WAITING_VENDOR_TEXT = (
+    "Tu video está en fila porque hay muchos preparándose. No tienes que esperar aquí: "
+    "cuando esté listo, aparecerá en Por aprobar."
+)
+
+
 @dataclass(frozen=True)
 class DraftVM:
     """The §6.6 contract, plus the display facts the detail screen renders."""
@@ -951,6 +959,9 @@ class DraftVM:
     has_script: bool = False
     #: Why it failed, in the operator's words — never a vendor, model or cost.
     failure_detail: str = ""
+    #: m-24852154: still generating because its video waits in line longer than usual;
+    #: it lands in Por aprobar on its own (the screen says so, `WAITING_VENDOR_TEXT`).
+    waiting_vendor: bool = False
     #: What the composition had to leave out (ticket 24803289: a catalog price that
     #: could not be printed whole), in the operator's words.
     warnings: tuple[str, ...] = ()
@@ -1280,6 +1291,7 @@ def build_draft_vm(
     media: Sequence[MediaVM] = (),
     failure_detail: str | None = None,
     warnings: Sequence[str] = (),
+    waiting_vendor: bool = False,
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
@@ -1328,6 +1340,7 @@ def build_draft_vm(
         failure_detail=failure_detail or "",
         warnings=tuple(warnings),
         can_edit=status in EDITABLE_DRAFT_STATUSES,
+        waiting_vendor=waiting_vendor and status == DraftStatus.DRAFTING.value,
     )
 
 
