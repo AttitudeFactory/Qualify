@@ -301,6 +301,12 @@ render-logs:
 render-smoke base="http://127.0.0.1:3200":
     packages/render/scripts/smoke.sh {{base}}
 
+# --- ScrapeCreators CLI (.claude/skills/qualify-scrapecreators) --------------------
+# Runs the official CLI with the project's key. Live calls spend credits.
+[positional-arguments]
+sc *args:
+    @if [ -z "${SCRAPECREATORS_API_KEY:-}" ] && [ -f .env ]; then export SCRAPECREATORS_API_KEY="$(grep -m1 '^SCRAPECREATORS_API_KEY=' .env | cut -d= -f2- | tr -d "\"' ")"; fi; [ -n "${SCRAPECREATORS_API_KEY:-}" ] || { echo "Falta SCRAPECREATORS_API_KEY (.env o shell)" >&2; exit 1; }; command -v scrapecreators >/dev/null || { echo "Instala la CLI: npm install -g @scrapecreators/cli" >&2; exit 1; }; scrapecreators "$@"
+
 # --- Langfuse autoalojado (docs/plan-observabilidad-langfuse.md §3, etapa A) ----------
 # Its own compose project: `just down` never touches the traces. UI on http://localhost:3100.
 langfuse := "docker compose -f infra/langfuse/docker-compose.yml"

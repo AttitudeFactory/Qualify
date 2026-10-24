@@ -108,6 +108,7 @@ module by module, the signed decisions and the house rules.
 | `qualify-lark-admin` | Meegle work items and space config, Lark admin — via MCP, `meegle`/`lark-cli` or Chrome |
 | `qualify-backlog` | Writing stories / planning an epic |
 | `qualify-history` | Earned-media pipeline, roadmap phases, why a past decision was made |
+| `qualify-scrapecreators` | Any ScrapeCreators discovery, question, ticket or code — query and test with the CLI (`just sc`) |
 | `qualify-team-dev` / `-po` / `-research` | The founder asks for a squad |
 
 ## Repo map
