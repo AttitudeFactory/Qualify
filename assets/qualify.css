@@ -620,6 +620,14 @@ body {
     z-index: 70;
     cursor: pointer;
   }
+  /* m-24842963: the total of what waits rides on the button's corner, so the button
+     keeps its 44 px and never grows over the page title. */
+  .q-mobile-nav-toggle .q-menu-count {
+    position: absolute;
+    top: -6px;
+    right: -8px;
+    pointer-events: none;
+  }
 
   /* N12: menu rows are thumb targets on a phone — at least 44 px tall. */
   .q-sidebar .q-nav-item { min-height: 44px; }

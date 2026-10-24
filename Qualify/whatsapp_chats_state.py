@@ -63,6 +63,7 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .pending_state import PendingState
 from .tenant import tenant_uuid
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
@@ -880,6 +881,7 @@ class WhatsAppChatsState(rx.State):
             self._mark_paused(thread_id, True)
         yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
         yield WhatsAppChatsState.refresh
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     # ==================================================================================
     # Approved message from an expired chat (m-24848535)
