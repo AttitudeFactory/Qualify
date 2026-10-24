@@ -91,7 +91,7 @@ def test_filter_posts_by_state_and_category() -> None:
     assert category_options(posts) == [
         CategoryOptionVM(value="reel", label="Reel"),
         CategoryOptionVM(value="galeria", label="Galería"),
-        CategoryOptionVM(value="story", label="Story"),
+        CategoryOptionVM(value="story", label="Historia"),
     ]
 
 

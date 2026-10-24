@@ -75,6 +75,8 @@ from .planner_vm import (
     assign_steps_done,
     build_plan_row,
     campaign_value,
+    join_es,
+    scheduled_message,
     split_time,
     timezone_options,
     tz_option,
@@ -553,7 +555,7 @@ class PlannerState(rx.State):
                 return ""
             if len(pending) == 1:
                 return f"«{pending[0].title}»: {pending[0].error}"
-            return f"Revisa {len(pending)} piezas: falta completar su programación."
+            return f"Revisa {len(pending)} publicaciones: falta completar su programación."
         return ""
 
     @rx.var
@@ -580,17 +582,17 @@ class PlannerState(rx.State):
         n = len(self.plan_items)
         if n == 0:
             return "Nada seleccionado"
-        return "1 pieza seleccionada" if n == 1 else f"{n} piezas seleccionadas"
+        return "1 publicación seleccionada" if n == 1 else f"{n} publicaciones seleccionadas"
 
     @rx.var
     def form_plan_summary(self) -> str:
-        """ "3 piezas · 4 publicaciones · lun 12 oct → mié 14 oct" for the confirm head."""
+        """ "3 publicaciones · 4 fechas · lun 12 oct → mié 14 oct" for the confirm head."""
         rows = self.plan_rows_by_time
         if not rows:
             return ""
-        pieces = "1 pieza" if len(rows) == 1 else f"{len(rows)} piezas"
+        pieces = "1 publicación" if len(rows) == 1 else f"{len(rows)} publicaciones"
         n = self.form_event_count
-        events = "1 publicación" if n == 1 else f"{n} publicaciones"
+        events = "1 fecha" if n == 1 else f"{n} fechas"
         first, last = rows[0].when_label.split(" · ")[0], rows[-1].when_label.split(" · ")[0]
         span = first if first == last else f"{first} → {last}"
         return f"{pieces} · {events} · {span}"
@@ -1409,7 +1411,7 @@ class PlannerState(rx.State):
                 self.saving = False
                 self.plan_items = [i for i in self.plan_items if i.post_id not in planned]
                 self.form_error = failure + (
-                    " Las piezas anteriores ya quedaron programadas." if planned else ""
+                    " Las publicaciones anteriores ya quedaron programadas." if planned else ""
                 )
             if planned:
                 yield PlannerState.load
@@ -1421,14 +1423,19 @@ class PlannerState(rx.State):
             goals = [g.label for g in PLAN_GOALS if g.key in self.form_goals]
             # Jump to the week the first piece lands in, so the operator sees it appear.
             self.monday_iso = rows[0].date
-        if mode == MODE_RESCHEDULE:
-            message = "Publicación reprogramada"
-        elif created == 1:
-            message = "Publicación programada"
-        else:
-            message = f"{created} publicaciones programadas"
+        message = scheduled_message(
+            created=created,
+            day_iso=rows[0].date,
+            at=rows[0].time,
+            reschedule=mode == MODE_RESCHEDULE,
+        )
         if goals:
-            message += " · Objetivo: " + ", ".join(goals)
+            message += (
+                ("" if message.endswith(".") else ".")
+                + " Buscas: "
+                + join_es([g.lower() for g in goals])
+                + "."
+            )
         yield rx.toast.success(message)
         yield PlannerState.load
 
