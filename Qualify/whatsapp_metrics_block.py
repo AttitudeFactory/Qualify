@@ -13,7 +13,7 @@ import reflex as rx
 
 from .ui import callout, card, skeleton_rows, stat_card, tag
 from .ui import tokens as T
-from .whatsapp_marketing_ui import ghost_refresh, tone_banner
+from .whatsapp_marketing_ui import ghost_refresh, table_or_cards, tone_banner
 from .whatsapp_metrics_state import WhatsAppMetricsState as S
 from .whatsapp_metrics_vm import PERIODS, BarVM, CostLineVM, EntryVM
 
@@ -38,10 +38,9 @@ def _kpis() -> rx.Component:
             ),
             stat_card("Traspasos a persona", m.handoffs, tone="neutral", hint=m.awaiting_human),
             stat_card(
-                "Primera respuesta humana",
+                "Cuánto tardas en responder (la mitad de las veces)",
                 m.median_first_response,
                 tone="neutral",
-                hint="Mediana · p90 " + m.p90_first_response,
             ),
             stat_card("Mensajes recibidos", m.messages_in, tone="neutral"),
             stat_card(
@@ -133,6 +132,30 @@ def _cost_row(c: CostLineVM) -> rx.Component:
     )
 
 
+def _cost_card(c: CostLineVM) -> rx.Component:
+    """Phone (m-24842998): one category per card instead of a four-column table."""
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(c.category, size="2", weight="medium"),
+                rx.spacer(),
+                rx.text(c.cost, size="2", class_name="q-nums"),
+                width="100%",
+                align="center",
+            ),
+            rx.text(
+                c.volume + " entregados · " + c.billable + " cobrables",
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+            ),
+            spacing="1",
+            width="100%",
+        ),
+        padding="0.75rem 1rem",
+    )
+
+
 def _analytics() -> rx.Component:
     a = S.analytics
     return rx.vstack(
@@ -186,23 +209,26 @@ def _analytics() -> rx.Component:
             a.cost_available,
             rx.vstack(
                 rx.text("Costo por categoría (aproximado, según Meta)", size="2", weight="medium"),
-                rx.box(
-                    rx.table.root(
-                        rx.table.header(
-                            rx.table.row(
-                                rx.table.column_header_cell("Categoría"),
-                                rx.table.column_header_cell("Entregados", text_align="right"),
-                                rx.table.column_header_cell("Cobrables", text_align="right"),
-                                rx.table.column_header_cell("Costo", text_align="right"),
-                            )
+                table_or_cards(
+                    rx.box(
+                        rx.table.root(
+                            rx.table.header(
+                                rx.table.row(
+                                    rx.table.column_header_cell("Categoría"),
+                                    rx.table.column_header_cell("Entregados", text_align="right"),
+                                    rx.table.column_header_cell("Cobrables", text_align="right"),
+                                    rx.table.column_header_cell("Costo", text_align="right"),
+                                )
+                            ),
+                            rx.table.body(rx.foreach(a.costs, _cost_row)),
+                            variant="surface",
+                            size="1",
+                            width="100%",
                         ),
-                        rx.table.body(rx.foreach(a.costs, _cost_row)),
-                        variant="surface",
-                        size="1",
+                        overflow_x="auto",
                         width="100%",
                     ),
-                    overflow_x="auto",
-                    width="100%",
+                    rx.vstack(rx.foreach(a.costs, _cost_card), spacing="2", width="100%"),
                 ),
                 rx.text(
                     "Total: " + a.cost_total, size="1", color=T.TEXT_MUTED, class_name="q-nums"

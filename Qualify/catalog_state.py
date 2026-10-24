@@ -23,6 +23,8 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -32,6 +34,7 @@ from .auth_state import AuthState
 from .catalog_provider import (
     CatalogError,
     add_media,
+    business_currency,
     create_product,
     deactivate_product,
     list_products,
@@ -39,7 +42,34 @@ from .catalog_provider import (
     reorder_media,
     update_product,
 )
-from .catalog_vm import ProductVM, currency_from_choice, parse_price_input
+from .catalog_vm import (
+    NEW_PRODUCT_STEP_TITLES,
+    NEW_PRODUCT_STEPS,
+    PRODUCT_QUERY,
+    RETURN_PARAM,
+    STEP_DONE,
+    STEP_NAME,
+    STEP_PHOTO,
+    ProductMediaVM,
+    ProductVM,
+    business_default_currency,
+    create_with_product_href,
+    currency_from_choice,
+    editor_is_dirty,
+    leave_description,
+    missing_photo_filter_label,
+    opens_new_product_form,
+    parse_price_input,
+    product_count_label,
+    products_to_show,
+    rejection_message,
+    remove_media_description,
+    remove_media_title,
+    return_path_from_query,
+    return_with_product_href,
+    step_counter,
+    steps_done,
+)
 from .creative_provider import acting_user_id, default_brand_id
 from .tenant import tenant_uuid
 
@@ -50,21 +80,27 @@ _NO_BRAND = "Primero completa tu marca (logo y colores) y vuelve a subir tus pro
 _DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
-_PRODUCT_GONE = "Ese producto ya no está en tu catálogo. Actualiza la página."
-_CREATED = "Producto creado. Tócalo para editarlo o subirle fotos."
-_CREATED_WITH_FILES = "Producto creado. Guardando sus fotos…"
+_PRODUCT_GONE = "Ese producto ya no está en tus productos. Vuelve a la lista."
+_LINK_GONE = "Ese producto ya no está en tus productos. Aquí tienes los que sí están."
 _SAVED = "Cambios guardados."
 _ORDER_SAVED = "Orden guardado: la primera foto es la principal."
 _DELETED = "Producto eliminado."
 #: How long a confirmation stays in the corner.
 _TOAST_MS = 4000
+#: The list's own address: where closing an editor opened from a link goes (N5).
+_CATALOG_PATH = "/catalog"
+#: Closing an editor the owner opened from the list steps back in the browser's history
+#: instead of adding a new entry: the list comes back where it was (React Router's
+#: scroll restoration answers a «back», never a fresh visit) and «atrás» stays honest.
+_HISTORY_BACK = "window.history.back()"
 
 #: Where a dropped file waits between the foreground upload handler and the background
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
 _STAGING = "catalog_staging"
 #: A parked file older than this was orphaned (a closed tab, a crashed ingest): the next
-#: `load_catalog` deletes it.
-_STAGING_TTL_S = 6 * 60 * 60
+#: `load_catalog` deletes it. A day, not hours: closing «Agregar producto» halfway keeps
+#: the photos already chosen (N6), so a reload must not sweep them from under the form.
+_STAGING_TTL_S = 24 * 60 * 60
 
 
 class CatalogState(rx.State):
@@ -97,6 +133,20 @@ class CatalogState(rx.State):
     #: like, which a browser cannot draw before the ingest converts them).
     new_previews: list[dict[str, str]] = []
     _new_pending: list[list[str]] = []
+    #: m-24842974 — «Agregar producto» is three steps in a drawer: the photo
+    #: (`STEP_PHOTO`), the name and price (`STEP_NAME`), and «Listo» (`STEP_DONE`).
+    #: Going back never clears what was typed: the fields live here, not in the step.
+    new_step: int = STEP_PHOTO
+    #: «Más detalles» (category and description) unfolded in the name step.
+    new_details_open: bool = False
+    #: A file the photo step refused, in the owner's words (formats only appear here).
+    new_media_error: str = ""
+    #: The product the «Listo» step talks about.
+    created_product_id: str = ""
+    created_name: str = ""
+    created_has_media: bool = False
+    #: The business's own currency (`tenants.currency`): what a new product starts with.
+    _business_currency: str = ""
 
     # -- the selected product's editor -------------------------------------------------
     selected_id: str = ""
@@ -109,6 +159,19 @@ class CatalogState(rx.State):
     edit_saving: bool = False
     #: «Eliminar producto» (request 2026-10-22): the dialog is open while this names it.
     delete_product_name: str = ""
+    #: m-24842976 — «¿Salir sin guardar?»: open while the owner decides what happens to
+    #: the changes; `_leave_target` is where they were going ("" = back to the list, a
+    #: product id = that product's editor).
+    leave_open: bool = False
+    _leave_target: str = ""
+    #: The editor was opened from the list in this tab (a history entry of the bare list
+    #: sits behind it), so closing it can step back instead of navigating forward.
+    _opened_in_app: bool = False
+
+    # -- «Volver a tu publicación» (m-24842973, N4) -------------------------------------
+    #: The app route the owner came from to add a product (`?volver=`, made safe by
+    #: `catalog_vm.safe_return_path`); "" when they came from the menu.
+    return_to: str = ""
 
     # -- media uploads ----------------------------------------------------------------
     uploading: bool = False
@@ -125,12 +188,45 @@ class CatalogState(rx.State):
     media_dragging: str = ""
     #: The order a drop (or «Hacer principal») asked for, waiting for `sync_media_order`.
     _media_order: list[str] = []
+    #: m-24842977 — «Quitar» asks first: the photo or clip waiting for «Sí, quitar»
+    #: ("" = no dialog open).
+    remove_media_id: str = ""
+    #: m-24842977 — the list narrowed to the products with no photo yet.
+    only_missing_photo: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
     @rx.var
     def selected(self) -> ProductVM | None:
         return next((p for p in self.products if p.product_id == self.selected_id), None)
+
+    @rx.var
+    def editor_open(self) -> bool:
+        return self.selected is not None
+
+    @rx.var
+    def edit_dirty(self) -> bool:
+        """The editor holds a change the product does not have yet (m-24842976)."""
+        return editor_is_dirty(
+            self.selected,
+            name=self.edit_name,
+            description=self.edit_description,
+            category=self.edit_category,
+            price=self.edit_price,
+            currency=self.edit_currency,
+        )
+
+    @rx.var
+    def edit_title(self) -> str:
+        """The editor drawer's title: the product's stored name, so it does not change
+        under the owner's fingers while they retype it."""
+        product = self.selected
+        return product.name if product is not None else "Editar producto"
+
+    @rx.var
+    def leave_text(self) -> str:
+        product = self.selected
+        return leave_description(product.name if product is not None else self.edit_name)
 
     @rx.var
     def has_products(self) -> bool:
@@ -143,9 +239,110 @@ class CatalogState(rx.State):
         return self.error == _NO_BRAND
 
     @rx.var
+    def missing_photo_count(self) -> int:
+        return sum(1 for p in self.products if p.photo_count == 0)
+
+    @rx.var
     def product_count_label(self) -> str:
-        n = len(self.products)
-        return "1 producto" if n == 1 else f"{n} productos"
+        """«3 productos · 1 sin foto» (m-24842977)."""
+        return product_count_label(len(self.products), self.missing_photo_count)
+
+    @rx.var
+    def missing_filter_on(self) -> bool:
+        """The filter only narrows while some product still lacks a photo: once the last
+        one gets it, the whole list comes back on its own."""
+        return self.only_missing_photo and self.missing_photo_count > 0
+
+    @rx.var
+    def visible_products(self) -> list[ProductVM]:
+        return products_to_show(self.products, only_missing_photo=self.missing_filter_on)
+
+    @rx.var
+    def missing_filter_label(self) -> str:
+        return missing_photo_filter_label(self.missing_photo_count, active=self.missing_filter_on)
+
+    @rx.var
+    def show_missing_filter(self) -> bool:
+        """While it is on, or while some products lack a photo and others have one
+        (narrowing everything to everything would mean nothing)."""
+        n = self.missing_photo_count
+        return self.missing_filter_on or 0 < n < len(self.products)
+
+    @rx.var
+    def remove_media_open(self) -> bool:
+        return _media_in(self.selected, self.remove_media_id) is not None
+
+    @rx.var
+    def remove_media_title_text(self) -> str:
+        item = _media_in(self.selected, self.remove_media_id)
+        return remove_media_title(item.media_type if item is not None else "image")
+
+    @rx.var
+    def remove_media_text(self) -> str:
+        item = _media_in(self.selected, self.remove_media_id)
+        if item is None:
+            return remove_media_description("image", is_primary=False)
+        has_other_photo = self.selected is not None and any(
+            m.media_type == "image" and m.media_id != item.media_id for m in self.selected.media
+        )
+        return remove_media_description(
+            item.media_type, is_primary=item.is_primary, has_other_photo=has_other_photo
+        )
+
+    @rx.var
+    def new_step_counter(self) -> str:
+        return step_counter(self.new_step)
+
+    @rx.var
+    def new_step_title(self) -> str:
+        return NEW_PRODUCT_STEP_TITLES[min(max(self.new_step, 0), len(NEW_PRODUCT_STEPS) - 1)]
+
+    @rx.var
+    def new_steps_done(self) -> list[bool]:
+        return steps_done(self.new_step)
+
+    @rx.var
+    def created_href(self) -> str:
+        """Where «Crear publicación» goes: Crear with this product already chosen — or,
+        when the owner came from a publication, back there with it (m-24842973, N4)."""
+        return self._with_product_href(self.created_product_id)
+
+    @rx.var
+    def selected_create_href(self) -> str:
+        """The editor's «Crear publicación con este producto» (m-24842972):
+        `/create?producto=<id>` — or back to the publication the owner came from, with
+        this product (m-24842973, N4)."""
+        return self._with_product_href(self.selected_id)
+
+    @rx.var
+    def returning(self) -> bool:
+        """The owner came here from a publication to add a product (`?volver=`)."""
+        return self.return_to != ""
+
+    def _with_product_href(self, product_id: str) -> str:
+        if not product_id:
+            return ""
+        if self.return_to:
+            back = return_with_product_href(self.return_to, product_id)
+            if back:
+                return back
+        return create_with_product_href(product_id)
+
+    @rx.var
+    def created_ready(self) -> bool:
+        """«Crear publicación» is live only once the new product's photos are in: saved
+        with files, nothing still uploading or queued, and no upload failure."""
+        return (
+            self.created_has_media
+            and not self.uploading
+            and self.upload_total == 0
+            and self.upload_error == ""
+        )
+
+    @rx.var
+    def created_preparing(self) -> bool:
+        """The new product's photos are still on their way: «Preparando tu foto…»."""
+        return self.created_has_media and (self.uploading or self.upload_total > 0)
 
     @rx.var
     def upload_progress(self) -> int:
@@ -190,10 +387,19 @@ class CatalogState(rx.State):
     # -- load -----------------------------------------------------------------------------
 
     @rx.event(background=True)
-    async def load_catalog(self) -> None:
+    async def load_catalog(self) -> AsyncIterator[rx.event.EventSpec]:
+        """on_load — also on every change of `?producto=` (N5): a link opens that
+        product's editor, the phone's «atrás» closes it. Only the very first load shows
+        the skeleton: swapping a filled grid for it would collapse the page under the
+        scroll position «atrás» is restoring."""
         async with self:
-            self.loading = True
+            self.loading = not self.products
             self.error = ""
+            arrival = self._read_return_query()
+            if self.products:
+                self._sync_url(final=False)
+        for event in arrival:  # the address loses `?nuevo=1`
+            yield event
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -203,6 +409,7 @@ class CatalogState(rx.State):
         await asyncio.to_thread(_sweep_staging, tenant_id)
         try:
             products = await asyncio.to_thread(list_products, tenant_id, brand_id)
+            currency = await asyncio.to_thread(business_currency, tenant_id)
         except SQLAlchemyError as exc:
             logger.error("catalog load failed: %s", type(exc).__name__)
             async with self:
@@ -212,8 +419,37 @@ class CatalogState(rx.State):
         async with self:
             self.products = list(products)
             self.loading = False
+            self._business_currency = business_default_currency(currency)
+            if not self.form_open and not self.new_price:
+                self.new_currency = self._business_currency
             if self.selected_id and self.selected is None:
                 self.selected_id = ""
+            follow = self._sync_url(final=True)
+        for event in follow:
+            yield event
+
+    def _read_return_query(self) -> list[rx.event.EventSpec]:
+        """«Agregar producto» from Crear or Variaciones (m-24842973, N4) lands here as
+        `/catalog?nuevo=1&volver=<ruta>`: the form opens and «Listo» offers «Volver a
+        tu publicación». Only one of the app's own routes is kept as the way back
+        (`safe_return_path`). Moving to a product's editor (`?producto=`, N5) keeps it;
+        a visit from the menu (neither) forgets it. `?nuevo=1` comes off the address
+        once the form is open, so «atrás» from an editor does not reopen it."""
+        try:
+            params = self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router outside a request (tests)
+            params = {}
+        back = return_path_from_query(params)
+        if back:
+            self.return_to = back
+        elif not self._url_product():
+            self.return_to = ""
+        if not (back and opens_new_product_form(params)):
+            return []
+        if not self.form_open:
+            self.selected_id = ""
+            self.open_form()
+        return [rx.redirect(f"{_CATALOG_PATH}?{urlencode({RETURN_PARAM: back})}", replace=True)]
 
     async def _refresh(self, tenant_id: UUID, brand_id: UUID) -> None:
         """Re-read the list after a write (the service is the source of truth for
@@ -226,8 +462,11 @@ class CatalogState(rx.State):
                 self.error = _DB_ERROR
             return
         async with self:
+            # A photo change refreshes the list too: never overwrite a name or price the
+            # owner is still correcting (m-24842976 UX review).
+            keep = self.edit_dirty
             self.products = list(products)
-            if self.selected_id and self.selected is not None:
+            if self.selected_id and self.selected is not None and not keep:
                 self._fill_editor(self.selected)
 
     # -- the new-product form ---------------------------------------------------------------
@@ -236,12 +475,99 @@ class CatalogState(rx.State):
     def open_form(self) -> None:
         self.form_open = True
         self.form_error = ""
+        self.new_media_error = ""
+        if self.new_step == STEP_DONE:
+            self._reset_new_form()
+        if not self.new_price and not self.new_currency:
+            self.new_currency = self._business_currency
 
     @rx.event
     def close_form(self) -> None:
         self.form_open = False
         self.form_error = ""
+        self.new_media_error = ""
+        if self.new_step == STEP_DONE:
+            self._drop_new_files()
+            self._reset_new_form()
+        else:
+            # N6: what was typed AND the photos already chosen stay for the next time
+            # the form opens (the photos are the hardest part to repeat); the step does not
+            self.new_step = STEP_PHOTO
+
+    @rx.event
+    def upload_photo_for_created(self) -> list[rx.event.EventSpec] | None:
+        """«Subirle una foto» from «Listo»: close the drawer and open the new product's
+        editor, where its photos go (on a phone the list is hidden behind the drawer)."""
+        product = self._find(self.created_product_id)
+        self.close_form()
+        if product is None:
+            return None
+        return self._go_to(product)
+
+    @rx.event
+    def set_form_open(self, value: bool) -> None:
+        """The drawer's own close (Esc, the ×, the backdrop)."""
+        if value:
+            self.open_form()
+        else:
+            self.close_form()
+
+    def _reset_new_form(self) -> None:
+        self.new_step = STEP_PHOTO
+        self.new_details_open = False
+        self.new_name = ""
+        self.new_description = ""
+        self.new_category = ""
+        self.new_price = ""
+        self.new_currency = self._business_currency
+        self.form_error = ""
+        self.new_media_error = ""
+        self.created_product_id = ""
+        self.created_name = ""
+        self.created_has_media = False
+
+    @rx.event
+    def add_another_product(self) -> None:
+        """«Agregar otro producto» from the «Listo» step: a clean first step."""
         self._drop_new_files()
+        self._reset_new_form()
+        self.form_open = True
+
+    @rx.event
+    def go_to_new_step(self, index: int) -> None:
+        """The stepper: back to the photo or forward to the name — never away from
+        «Listo» once the product exists, and never to «Listo» before it does."""
+        index = int(index)
+        if self.new_step == STEP_DONE or index not in (STEP_PHOTO, STEP_NAME):
+            return
+        self.new_step = index
+        self.form_error = ""
+
+    @rx.event
+    def next_new_step(self) -> None:
+        """«Siguiente» and «Sin foto por ahora»: the photo step is never a gate."""
+        if self.new_step == STEP_PHOTO:
+            self.new_step = STEP_NAME
+            self.new_media_error = ""
+
+    @rx.event
+    def back_new_step(self) -> None:
+        """«Atrás» (N6): back to the photo with every typed field kept."""
+        if self.new_step == STEP_NAME:
+            self.new_step = STEP_PHOTO
+            self.form_error = ""
+
+    @rx.event
+    def toggle_new_details(self) -> None:
+        self.new_details_open = not self.new_details_open
+
+    @rx.event
+    def new_media_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        self.new_media_error = rejection_message(rejected)
+
+    @rx.event
+    def media_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        self.upload_error = rejection_message(rejected)
 
     def _drop_new_files(self) -> None:
         for path_str, _ in self._new_pending:
@@ -261,6 +587,7 @@ class CatalogState(rx.State):
     async def handle_new_media(self, files: list[rx.UploadFile]) -> None:
         """The form's own drop zone: the files wait (FOREGROUND, parked like the
         editor's) until «Crear producto», then go through the same ingest."""
+        self.new_media_error = ""
         parked = await self._park(files)
         if parked:
             self._new_pending = [*self._new_pending, *parked]
@@ -353,19 +680,24 @@ class CatalogState(rx.State):
         await self._refresh(tenant_id, brand_id)
         async with self:
             self.saving = False
-            self.form_open = False
+            # m-24842974: the drawer stays open on «Listo», which says what happened and
+            # offers the two next moves; the typed fields are spent.
+            self.new_step = STEP_DONE
+            self.created_product_id = str(product_id)
+            self.created_name = name.strip()
+            self.new_details_open = False
             self.new_name = ""
             self.new_description = ""
             self.new_category = ""
             self.new_price = ""
-            self.new_currency = ""
+            self.new_currency = self._business_currency
             files = self._new_pending
+            self.created_has_media = bool(files)
             self.new_previews = []
             # The editor does NOT open on the new product (request 2026-10-22): only its
             # card shows, and a tap on the card opens the editor. The files dropped in
-            # the form still follow it — their progress shows at page level.
+            # the form still follow it — their progress shows in «Listo».
             self.selected_id = ""
-            created = _CREATED_WITH_FILES if files else _CREATED
             self._new_pending = []
             self.new_files = []
             if files:
@@ -376,8 +708,6 @@ class CatalogState(rx.State):
                 self.upload_done = 0
                 self.upload_total = len(self._pending)
                 self.upload_error = ""
-        # a transient confirmation, bottom right (request 2026-10-22: not a band up top)
-        yield rx.toast.success(created, duration=_TOAST_MS)
         if files:
             yield CatalogState.ingest_pending
 
@@ -390,18 +720,153 @@ class CatalogState(rx.State):
         self.edit_price = product.price_amount
         self.edit_currency = product.price_currency
 
-    @rx.event
-    def select_product(self, product_id: str) -> None:
-        """Open one product's editor (fields + media). Selecting the open one closes it."""
+    def _find(self, product_id: str) -> ProductVM | None:
+        return next((p for p in self.products if p.product_id == product_id), None)
+
+    def _url_product(self) -> str:
+        """The product the address names (`/catalog?producto=<id>`), "" for the list."""
+        try:
+            return str(self.router.url.query_parameters.get(PRODUCT_QUERY, "") or "")
+        except Exception:  # noqa: BLE001 — no router outside a page (tests)
+            return ""
+
+    @staticmethod
+    def _product_href(product_id: str) -> str:
+        return f"{_CATALOG_PATH}?{PRODUCT_QUERY}={product_id}"
+
+    def _open(self, product: ProductVM) -> None:
+        self.selected_id = product.product_id
         self.edit_error = ""
         self.upload_error = ""
-        if self.selected_id == product_id:
-            self.selected_id = ""
-            return
-        self.selected_id = product_id
-        product = self.selected
+        self._fill_editor(product)
+
+    def _go_to(self, product: ProductVM) -> list[rx.event.EventSpec]:
+        """Open `product`'s editor and give it its address: a new history entry when
+        coming from the list (so «atrás» closes it), the same entry when the address
+        already names a product."""
+        self._open(product)
+        href = self._product_href(product.product_id)
+        if self._url_product():
+            return [rx.redirect(href, replace=True)]
+        self._opened_in_app = True
+        return [rx.redirect(href)]
+
+    def _close_nav(self) -> list[rx.event.EventSpec]:
+        """Take `?producto=` off the address once the editor is closed."""
+        if not self._url_product():
+            return []  # «atrás» already did
+        if self._opened_in_app:
+            self._opened_in_app = False
+            return [rx.call_script(_HISTORY_BACK)]
+        return [rx.redirect(_CATALOG_PATH, replace=True)]
+
+    def _restore_url(self) -> list[rx.event.EventSpec]:
+        """The owner chose to stay after «atrás» had already dropped the product from
+        the address: put it back, so the next «atrás» works again."""
+        if self.selected_id and not self._url_product():
+            self._opened_in_app = True
+            return [rx.redirect(self._product_href(self.selected_id))]
+        return []
+
+    def _leave(self, target: str) -> list[rx.event.EventSpec]:
+        """Close the editor (target "") or move to another product's, changes dropped."""
+        self.leave_open = False
+        self._leave_target = ""
+        product = self._find(target) if target else None
         if product is not None:
-            self._fill_editor(product)
+            return self._go_to(product)
+        self.selected_id = ""
+        self.edit_error = ""
+        self.upload_error = ""
+        return self._close_nav()
+
+    def _ask_leave(self, target: str) -> None:
+        self._leave_target = target
+        self.leave_open = True
+
+    def _sync_url(self, *, final: bool) -> list[rx.event.EventSpec]:
+        """Make the editor follow the address after a navigation (N5). Unsaved changes
+        are never dropped by it: the owner is asked first."""
+        wanted = self._url_product()
+        if wanted == self.selected_id:
+            return []
+        if not wanted:  # the phone's «atrás», or a link to the bare list
+            if self.selected_id:
+                if self.edit_dirty:
+                    if not self.leave_open:
+                        self._ask_leave("")
+                else:
+                    self.selected_id = ""
+                    self.edit_error = ""
+                    self.upload_error = ""
+                    self._opened_in_app = False
+            return []
+        product = self._find(wanted)
+        if product is None:
+            # another business's product, a deleted one, a typo: the list, with a word why
+            if final and not self.selected_id:
+                return [
+                    rx.redirect(_CATALOG_PATH, replace=True),
+                    rx.toast.info(_LINK_GONE, duration=_TOAST_MS),
+                ]
+            return []
+        if self.selected_id and self.edit_dirty:
+            if not self.leave_open:
+                self._ask_leave(wanted)
+            return []
+        self._open(product)
+        return []
+
+    @rx.event
+    def select_product(self, product_id: str) -> list[rx.event.EventSpec] | None:
+        """A card's «Editar»: open that product's editor (m-24842976: never a toggle —
+        tapping the open product keeps it open). With unsaved changes in another
+        product, «¿Salir sin guardar?» comes first."""
+        product = self._find(str(product_id))
+        if product is None or product.product_id == self.selected_id:
+            return None
+        if self.selected_id and self.edit_dirty:
+            self._ask_leave(product.product_id)
+            return None
+        return self._go_to(product)
+
+    @rx.event
+    def request_close(self) -> list[rx.event.EventSpec] | None:
+        """«Cerrar», the drawer's ×, Esc or the backdrop."""
+        if not self.selected_id or self.leave_open or self.delete_product_name:
+            return None  # a dialog on top already owns the answer
+        if self.edit_dirty:
+            self._ask_leave("")
+            return None
+        return self._leave("")
+
+    @rx.event
+    def set_editor_open(self, value: bool) -> list[rx.event.EventSpec] | None:
+        return None if value else self.request_close()
+
+    @rx.event
+    def stay_in_editor(self) -> list[rx.event.EventSpec]:
+        """«Volver»: back to the editor, every change still there."""
+        self.leave_open = False
+        self._leave_target = ""
+        return self._restore_url()
+
+    @rx.event
+    def set_leave_open(self, value: bool) -> list[rx.event.EventSpec] | None:
+        """The dialog's own close (Esc) is «Volver»: the safe answer."""
+        return None if value else self.stay_in_editor()
+
+    @rx.event
+    def discard_and_leave(self) -> list[rx.event.EventSpec]:
+        """«Salir sin guardar»: the changes go, the owner goes where they were going."""
+        return self._leave(self._leave_target)
+
+    @rx.event
+    def save_and_leave(self) -> rx.event.EventSpec:
+        """«Guardar y salir»: the save leaves to `_leave_target` once it lands; a refused
+        save keeps the editor open with its reason."""
+        self.leave_open = False
+        return CatalogState.save_product
 
     @rx.event
     def ask_delete_product(self) -> None:
@@ -445,16 +910,15 @@ class CatalogState(rx.State):
         async with self:
             self.selected_id = ""
             self.edit_error = ""
+            self.leave_open = False
+            self._leave_target = ""
+            follow = self._close_nav()
         await self._refresh(tenant_id, brand_id)
         async with self:
             self.edit_saving = False
         yield rx.toast.success(_DELETED, duration=_TOAST_MS)
-
-    @rx.event
-    def close_editor(self) -> None:
-        self.selected_id = ""
-        self.edit_error = ""
-        self.upload_error = ""
+        for event in follow:
+            yield event
 
     @rx.event
     def set_edit_name(self, value: str) -> None:
@@ -479,26 +943,35 @@ class CatalogState(rx.State):
 
     @rx.event(background=True)
     async def save_product(self) -> AsyncIterator[rx.event.EventSpec]:
+        stay: list[rx.event.EventSpec] | None = None
         async with self:
             if self.edit_saving or not self.selected_id:
                 return
+            price = None
             if not self.edit_name.strip():
                 self.edit_error = _NAME_REQUIRED
-                return
-            try:
-                price = parse_price_input(self.edit_price)
-            except ValueError as exc:
-                self.edit_error = str(exc)
-                return
-            self.edit_saving = True
-            self.edit_error = ""
-            product_id = UUID(self.selected_id)
-            form = (self.edit_name, self.edit_description, self.edit_category)
-            currency = self.edit_currency
+                stay = self._stay_after_refusal()
+            else:
+                try:
+                    price = parse_price_input(self.edit_price)
+                except ValueError as exc:
+                    self.edit_error = str(exc)
+                    stay = self._stay_after_refusal()
+            if stay is None:
+                self.edit_saving = True
+                self.edit_error = ""
+                product_id = UUID(self.selected_id)
+                form = (self.edit_name, self.edit_description, self.edit_category)
+                currency = self.edit_currency
+        if stay is not None:
+            for event in stay:
+                yield event
+            return
         ids = await self._session_ids()
         if ids is None:
             async with self:
                 self.edit_saving = False
+                self._leave_target = ""
             return
         tenant_id, brand_id, _ = ids
         name, description, category = form
@@ -518,26 +991,45 @@ class CatalogState(rx.State):
             async with self:
                 self.edit_saving = False
                 self.edit_error = str(exc.args[0]) if exc.args else _NAME_REQUIRED
+                stay = self._stay_after_refusal()
+            for event in stay:
+                yield event
             return
         except KeyError:  # UnknownProduct: the row vanished under us
             async with self:
                 self.edit_saving = False
                 self.edit_error = _PRODUCT_GONE
+                stay = self._stay_after_refusal()
+            for event in stay:
+                yield event
             return
         except SQLAlchemyError as exc:
             logger.error("product update failed: %s", type(exc).__name__)
             async with self:
                 self.edit_saving = False
                 self.edit_error = _DB_ERROR
+                stay = self._stay_after_refusal()
+            for event in stay:
+                yield event
             return
         await self._refresh(tenant_id, brand_id)
         async with self:
             # Saving closes the editor (request 2026-10-22): the card is what is left,
-            # with the saved name and price on it.
+            # with the saved name and price on it — or, from «Guardar y salir» on the way
+            # to another product, that product's editor (m-24842976).
             self.edit_saving = False
             self.edit_error = ""
-            self.selected_id = ""
+            follow = self._leave(self._leave_target)
         yield rx.toast.success(_SAVED, duration=_TOAST_MS)
+        for event in follow:
+            yield event
+
+    def _stay_after_refusal(self) -> list[rx.event.EventSpec]:
+        """A save that did not land keeps the editor open, and forgets where
+        «Guardar y salir» was going. On the phone the reason under the fields may be
+        out of view, so it is said as a toast too."""
+        self._leave_target = ""
+        return [*self._restore_url(), rx.toast.error(self.edit_error, duration=_TOAST_MS)]
 
     # -- media --------------------------------------------------------------------------
 
@@ -710,6 +1202,31 @@ class CatalogState(rx.State):
         if not failed:
             yield rx.toast.success(_ORDER_SAVED, duration=_TOAST_MS)
 
+    @rx.event
+    def toggle_missing_photo(self) -> None:
+        """«Ver los 2 sin foto» / «Ver todos los productos» (m-24842977)."""
+        self.only_missing_photo = not self.only_missing_photo
+
+    @rx.event
+    def ask_remove_media(self, media_id: str) -> None:
+        """«Quitar» opens «¿Quitar esta foto?» first (m-24842977): nothing is removed
+        until «Sí, quitar»."""
+        if self.media_busy:
+            return
+        self.remove_media_id = media_id
+
+    @rx.event
+    def set_remove_media_open(self, value: bool) -> None:
+        if not value:
+            self.remove_media_id = ""
+
+    @rx.event
+    def confirm_remove_media(self) -> rx.event.EventSpec | None:
+        media_id, self.remove_media_id = self.remove_media_id, ""
+        if not media_id:
+            return None
+        return CatalogState.delete_media(media_id)
+
     @rx.event(background=True)
     async def delete_media(self, media_id: str) -> None:
         await self._media_action(media_id, remove_media)
@@ -743,6 +1260,13 @@ class CatalogState(rx.State):
 
 _BROWSER_IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEOS = {".mp4", ".mov", ".m4v", ".webm"}
+
+
+def _media_in(product: ProductVM | None, media_id: str) -> ProductMediaVM | None:
+    """The photo or clip `media_id` of the open product, if it is still there."""
+    if product is None or not media_id:
+        return None
+    return next((m for m in product.media if m.media_id == media_id), None)
 
 
 def _preview_row(path_str: str, name: str) -> dict[str, str]:

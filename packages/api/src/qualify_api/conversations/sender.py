@@ -15,6 +15,11 @@ row written by `mark_sent` under the channel's own message id). What this module
   Private replies go out only while this sender was built with them enabled (the
   `comment_private_reply` capability, read by the composition): switching it off stops
   rows already queued too — they are `failed` with `private_reply_disabled`.
+- **Quick replies and button templates** (m-24789472) go out only while this sender was
+  built with `quick_replies` / `structured_templates` on; a stored body that carries one
+  while its switch is off is `failed` with `quick_replies_disabled` /
+  `structured_templates_disabled`, before the window and before Meta. The body itself is
+  sent unchanged.
   The `recipient_id` Meta answers is recorded on the row; when it is not the thread's
   counterpart (the thread was chosen up front from the comment's `from.id`) the send is
   kept and `conversations.sender.recipient_mismatch` is logged — R1's evidence.
@@ -46,6 +51,7 @@ from qualify_api.conversations.contracts import (
     SourceConnection,
     UnknownChannel,
 )
+from qualify_api.conversations.interactive import has_quick_replies, is_structured_template
 from qualify_api.conversations.outbox import (
     DEFAULT_BATCH,
     KIND_PRIVATE_REPLY,
@@ -62,6 +68,10 @@ logger = logging.getLogger("qualify_api.conversations.sender")
 ERROR_WINDOW_CLOSED: Final = "window_closed"
 ERROR_PRIVATE_REPLY_EXPIRED: Final = "private_reply_expired"
 ERROR_PRIVATE_REPLY_DISABLED: Final = "private_reply_disabled"
+#: m-24789472: a queued body with quick replies / a button template while its capability
+#: (`quick_replies` / `structured_templates`) is off in this deployment.
+ERROR_QUICK_REPLIES_DISABLED: Final = "quick_replies_disabled"
+ERROR_STRUCTURED_TEMPLATES_DISABLED: Final = "structured_templates_disabled"
 ERROR_NO_SENDER: Final = "no_sender"
 ERROR_THREAD_MISSING: Final = "thread_missing"
 ERROR_CONNECTION_MISSING: Final = "connection_missing"
@@ -139,6 +149,8 @@ class ConversationOutboxSender:
         degrade: ConnectionDegrader | None = None,
         media_linker: MediaLinker | None = None,
         private_replies: bool = False,
+        quick_replies: bool = False,
+        structured_templates: bool = False,
         worker_id: str,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
@@ -149,6 +161,8 @@ class ConversationOutboxSender:
         self._degrade = degrade
         self._media_linker = media_linker
         self._private_replies = private_replies
+        self._quick_replies = quick_replies
+        self._structured_templates = structured_templates
         self._worker_id = worker_id
         self._clock = clock
 
@@ -194,6 +208,14 @@ class ConversationOutboxSender:
         thread = self._repo.get_thread(tenant_id=tenant_id, thread_id=item.thread_id)
         if thread is None:
             self._fail(item, ERROR_THREAD_MISSING, report)
+            return
+        # m-24789472: the capability is re-read from the stored body itself, so a switch
+        # turned off after the row was queued still stops it before Meta is called.
+        if has_quick_replies(item.payload) and not self._quick_replies:
+            self._fail(item, ERROR_QUICK_REPLIES_DISABLED, report)
+            return
+        if is_structured_template(item.payload) and not self._structured_templates:
+            self._fail(item, ERROR_STRUCTURED_TEMPLATES_DISABLED, report)
             return
         if item.kind == KIND_PRIVATE_REPLY:
             if not self._private_replies:
@@ -318,6 +340,8 @@ __all__ = [
     "ERROR_NO_SENDER",
     "ERROR_PRIVATE_REPLY_DISABLED",
     "ERROR_PRIVATE_REPLY_EXPIRED",
+    "ERROR_QUICK_REPLIES_DISABLED",
+    "ERROR_STRUCTURED_TEMPLATES_DISABLED",
     "ERROR_SEND_AMBIGUOUS",
     "ERROR_THREAD_MISSING",
     "ERROR_WINDOW_CLOSED",

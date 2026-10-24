@@ -195,7 +195,7 @@ def test_a_kit_left_halfway_is_not_a_kit_yet(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch, form=True, connect={"progress": {"flow": "connect", "completed": False}}
     )
     assert status.completed is False
-    assert status.resume_route == "/brand/connect"
+    assert status.resume_route == "/brand"  # m-24848529: the five steps take it on
 
 
 def test_a_finished_kit_and_an_old_kit_without_progress_are_kits(
@@ -213,7 +213,7 @@ def test_no_kit_row_is_never_finished(monkeypatch: pytest.MonkeyPatch) -> None:
     status = _status(
         monkeypatch, form=False, connect={"progress": {"flow": "manual", "completed": False}}
     )
-    assert status.completed is False and status.resume_route == "/brand/manual"
+    assert status.completed is False and status.resume_route == "/brand"
     assert _status(monkeypatch, form=False, connect={}).resume_route is None
 
 

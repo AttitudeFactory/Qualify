@@ -1,6 +1,6 @@
 """m-24842958 (N1, docs/ux-guia-navegacion.md §4): one name per place.
 
-For every enabled menu entry, the label in `ui/layout.py`, the `h1` of the page's
+For every menu entry («Pronto» ones included), the label in `ui/layout.py`, the `h1` of the page's
 `page_header` and the browser tab title `Qualify · <nombre>` in `Qualify.py` are the same
 words — the owner's, never the team's («Brand Kit», «Leads», «Piezas»…).
 """
@@ -13,27 +13,39 @@ from pathlib import Path
 
 import pytest
 
-from .ui.layout import NAV_ITEMS
+from .ui.layout import NAV_ITEMS, RESULTS_ROUTE
 
 _HERE = Path(__file__).parent
 
 # Route → the module whose `page_header` (or `creative_pages._screen`) names the page.
 _PAGE_SOURCE: dict[str, str] = {
-    "/": "components.py",
+    "/": "home_page.py",
+    "/resultados": "results_page.py",
     "/connections": "connections_page.py",
     "/whatsapp": "whatsapp_page.py",
     "/inbox": "inbox_page.py",
     "/conversations": "conversations_page.py",
+    "/responder": "responder_page.py",
     "/create": "content_generator.py",
     "/drafts": "creative_pages.py",
     "/planner": "planner_page.py",
     "/publish": "publishing_page.py",
     "/leads": "leads_page.py",
-    "/clarity": "clarity_page.py",
     "/brand/kit": "brand_kit_editor.py",
     "/catalog": "catalog_page.py",
     "/settings": "settings_page.py",
+    "/creadores": "creators_page.py",
+    "/signals": "signals_page.py",
 }
+
+# NAV-1 (m-24842957): three hubs of the menu map are built by other stories. Until each
+# lands, its entry points at today's closest screen, whose own name is still the old
+# one. label → (the route it points at today, the hub's own route, the ticket).
+# `test_a_pending_hub_is_switched_the_day_it_lands` fails as soon as the hub exists, so
+# this table only shrinks.
+# Inicio (m-24842962), «Por responder» (m-24842990) and «Resultados» (m-24843003) have
+# landed and left the table.
+_PENDING_HUBS: dict[str, tuple[str, str, str]] = {}
 
 # The one sanctioned short form (ticket m-24842958): the page is «Clientes interesados»,
 # the rail has room for «Interesados».
@@ -75,15 +87,40 @@ def _tab_titles() -> dict[str, str]:
     return titles
 
 
-def _enabled_items() -> list[tuple[str, str]]:
-    return [(label, route) for label, _icon, route, enabled in NAV_ITEMS if enabled]
+def _menu_items() -> list[tuple[str, str]]:
+    """Every menu entry — «Pronto» ones too: they open a screen of their own (N10)."""
+    return [(label, route) for label, _icon, route, _enabled in NAV_ITEMS]
 
 
-def test_every_enabled_menu_entry_has_a_known_page() -> None:
-    assert {route for _label, route in _enabled_items()} <= set(_PAGE_SOURCE)
+def _hub_has_landed(label: str) -> bool:
+    _today, hub_route, _ticket = _PENDING_HUBS[label]
+    return _tab_titles().get(hub_route) == f"Qualify · {label}"
 
 
-@pytest.mark.parametrize(("label", "route"), _enabled_items())
+def test_every_menu_entry_has_a_known_page() -> None:
+    assert {route for _label, route in _menu_items()} <= set(_PAGE_SOURCE)
+
+
+def test_resultados_opens_its_own_screen() -> None:
+    """RESULTADOS-5 (m-24843003): the menu entry points at the real hub, not Tu página web."""
+    assert RESULTS_ROUTE == "/resultados"
+    assert _tab_titles()[RESULTS_ROUTE] == "Qualify · Resultados"
+
+
+@pytest.mark.parametrize("label", sorted(_PENDING_HUBS))
+def test_a_pending_hub_is_switched_the_day_it_lands(label: str) -> None:
+    today, hub_route, ticket = _PENDING_HUBS[label]
+    route = next(r for name, r in _menu_items() if name == label)
+    assert route == today
+    assert not _hub_has_landed(label), (
+        f"«{label}» ({ticket}) now has its own screen at {hub_route}: point the menu entry "
+        f"there (ui/layout.py) and drop it from _PENDING_HUBS."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "route"), [item for item in _menu_items() if item[0] not in _PENDING_HUBS]
+)
 def test_menu_label_header_and_tab_title_are_the_same_name(label: str, route: str) -> None:
     title = _tab_titles()[route]
     assert title.startswith("Qualify · ")

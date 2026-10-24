@@ -42,6 +42,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.layout import RESPOND_ROUTE
 
 #: N12: every tap target on this screen is at least this tall.
 _TARGET = "44px"
@@ -181,7 +182,16 @@ def _empty_state() -> rx.Component:
     return rx.cond(
         LeadsState.has_form_link,
         empty_state("user-plus", EMPTY_TITLE, EMPTY_WITH_LINK, action=_form_link_action()),
-        empty_state("user-plus", EMPTY_TITLE, EMPTY_NO_LINK),
+        empty_state(
+            "user-plus",
+            EMPTY_TITLE,
+            EMPTY_NO_LINK,
+            # N8 (m-24842961): meanwhile, the people already writing to the business.
+            action=rx.link(
+                rx.button("Ir a Por responder", variant="soft", size="3", min_height=_TARGET),
+                href=RESPOND_ROUTE,
+            ),
+        ),
     )
 
 

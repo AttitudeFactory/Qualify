@@ -339,3 +339,12 @@ def test_the_uploaded_pdf_is_deleted_even_when_the_model_fails() -> None:
 def test_an_unknown_source_is_refused() -> None:
     with pytest.raises(ValueError):
         propose_kit_changes(TEXT_DOC, CURRENT, source="otro", api_key="k")
+
+
+def test_the_labels_the_owner_reads_are_the_brand_screens_names() -> None:
+    """NAV-11 (m-24849129): «Completamos desde tu documento: …» names each field as the
+    brand screens do (MARCA-2, m-24842966)."""
+    labels = {field: label for field, label, _kind in FIELDS}
+    assert labels["positioning"] == "Qué te hace distinto"
+    assert labels["audience"] == "Quién te compra"
+    assert not {"Posicionamiento", "Audiencia"} & set(labels.values())

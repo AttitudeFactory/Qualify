@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from uuid import UUID
 
 #: What the upload zone accepts: photos of any type the normalizer reads, and the two
 #: phone video containers (`qualify_creative.video.normalize` transcodes both to H.264).
@@ -33,10 +35,43 @@ NO_CURRENCY = "Sin moneda"
 CURRENCY_CODES: tuple[str, ...] = ("USD", "UYU", "COP", "VES", "EUR", "CLP", "ARS", "MXN", "PEN")
 CURRENCY_OPTIONS: tuple[str, ...] = (NO_CURRENCY, *CURRENCY_CODES)
 
+#: m-24842974: a currency reads by its name, the code only in brackets. The four of the
+#: markets Qualify serves come first; the rest wait under «Otra moneda».
+MAIN_CURRENCIES: tuple[tuple[str, str], ...] = (
+    ("COP", "Pesos colombianos (COP)"),
+    ("VES", "Bolívares (VES)"),
+    ("USD", "Dólares (USD)"),
+    ("UYU", "Pesos uruguayos (UYU)"),
+)
+OTHER_CURRENCIES: tuple[tuple[str, str], ...] = (
+    ("EUR", "Euros (EUR)"),
+    ("CLP", "Pesos chilenos (CLP)"),
+    ("ARS", "Pesos argentinos (ARS)"),
+    ("MXN", "Pesos mexicanos (MXN)"),
+    ("PEN", "Soles (PEN)"),
+)
+OTHER_CURRENCY_GROUP = "Otra moneda"
+_CURRENCY_NAMES: dict[str, str] = dict(MAIN_CURRENCIES + OTHER_CURRENCIES)
+
 
 def currency_choice(code: str) -> str:
     """The stored code as the select shows it."""
     return code or NO_CURRENCY
+
+
+def currency_name(code: str) -> str:
+    """«Pesos colombianos (COP)» for "COP"; «Sin moneda» for none; an unknown code as-is."""
+    clean = (code or "").strip().upper()
+    if not clean:
+        return NO_CURRENCY
+    return _CURRENCY_NAMES.get(clean, clean)
+
+
+def business_default_currency(code: str | None) -> str:
+    """The business's own currency (`tenants.currency`, set at signup) as the form's
+    starting choice — "" when it is one the catalog does not offer."""
+    clean = (code or "").strip().upper()
+    return clean if clean in CURRENCY_CODES else ""
 
 
 def currency_from_choice(choice: str) -> str:
@@ -110,6 +145,52 @@ def parse_price_input(text: str) -> Decimal | None:
     return amount.quantize(Decimal("0.01"))
 
 
+# -- «Agregar producto» in three steps (m-24842974) --------------------------------------
+#: The photo first, then the name, then what to do with it. Indexes of `NEW_PRODUCT_STEPS`.
+STEP_PHOTO, STEP_NAME, STEP_DONE = 0, 1, 2
+NEW_PRODUCT_STEPS: tuple[str, ...] = ("La foto", "El nombre", "Listo")
+NEW_PRODUCT_STEP_ICONS: tuple[str, ...] = ("camera", "pencil-line", "check")
+NEW_PRODUCT_STEP_TITLES: tuple[str, ...] = (
+    "Muestra cómo se ve tu producto",
+    "¿Cómo se llama?",
+    "Listo",
+)
+MISSING_PHOTO = "Falta la foto"
+
+
+def step_counter(step: int) -> str:
+    """«Paso 2 de 3» — the step clamped into range."""
+    total = len(NEW_PRODUCT_STEPS)
+    return f"Paso {min(max(int(step), 0), total - 1) + 1} de {total}"
+
+
+def steps_done(step: int) -> list[bool]:
+    """What the stepper draws as checked: every step before the current one."""
+    return [index < int(step) for index in range(len(NEW_PRODUCT_STEPS))]
+
+
+#: The formats only show up when a file is refused (m-24842974: never on the main path).
+MEDIA_NOT_ACCEPTED = "Ese archivo no es una foto ni un video. Prueba con otra foto de tu galería."
+MEDIA_TOO_MANY = "Puedes subir hasta 12 fotos o videos por producto. Elige menos."
+MEDIA_TOO_BIG = "Ese archivo es demasiado pesado. Prueba con otra foto o un video más corto."
+
+
+def rejection_message(rejected: Sequence[object]) -> str:
+    """The owner's sentence for files the upload zone refused (react-dropzone's
+    `fileRejections`: `{"file": …, "errors": [{"code": …}]}` each)."""
+    codes: set[str] = set()
+    for row in rejected or ():
+        errors = row.get("errors", []) if isinstance(row, dict) else []
+        for error in errors or ():
+            if isinstance(error, dict):
+                codes.add(str(error.get("code", "")))
+    if "too-many-files" in codes:
+        return MEDIA_TOO_MANY
+    if "file-too-large" in codes:
+        return MEDIA_TOO_BIG
+    return MEDIA_NOT_ACCEPTED
+
+
 class _MediaLike(Protocol):
     id: object
     media_type: str
@@ -181,13 +262,14 @@ class ProductVM:
 
 
 def counts_label(photo_count: int, video_count: int) -> str:
-    """ "3 fotos · 1 video"; the zero side is dropped; "Sin fotos" when both are zero."""
+    """ "3 fotos · 1 video"; the zero side is dropped; «Falta la foto» when both are zero
+    (m-24842974: the product exists, and the words say what it still needs)."""
     parts: list[str] = []
     if photo_count:
         parts.append("1 foto" if photo_count == 1 else f"{photo_count} fotos")
     if video_count:
         parts.append("1 video" if video_count == 1 else f"{video_count} videos")
-    return " · ".join(parts) if parts else "Sin fotos"
+    return " · ".join(parts) if parts else MISSING_PHOTO
 
 
 def media_meta_label(
@@ -232,3 +314,231 @@ def build_product_vm(product: _ProductLike) -> ProductVM:
         counts_label=counts_label(product.photo_count, product.video_count),
         media=tuple(build_media_vm(m) for m in sorted(product.media, key=lambda m: m.position)),
     )
+
+
+# -- leaving the editor (m-24842976) ----------------------------------------------------
+
+#: The query parameter that gives an open product its own address (N5):
+#: `/catalog?producto=<id>`. The phone's «atrás» drops it and closes the editor.
+PRODUCT_QUERY = "producto"
+LEAVE_TITLE = "¿Salir sin guardar?"
+LEAVE_STAY = "Volver"
+LEAVE_SAVE = "Guardar y salir"
+LEAVE_DISCARD = "Salir sin guardar"
+
+
+def leave_description(product_name: str) -> str:
+    """«Los cambios de «Shawarma mixto» se van a perder.»"""
+    return f"Los cambios de «{product_name.strip()}» se van a perder."
+
+
+def _same_price(typed: str, stored: str) -> bool:
+    """«12,5» and «12.50» are the same price: compare the parsed amounts when both
+    parse, the trimmed text otherwise (a half-typed price IS a change)."""
+    typed, stored = (typed or "").strip(), (stored or "").strip()
+    if typed == stored:
+        return True
+    try:
+        return parse_price_input(typed) == parse_price_input(stored)
+    except ValueError:
+        return False
+
+
+def editor_is_dirty(
+    product: ProductVM | None,
+    *,
+    name: str,
+    description: str,
+    category: str,
+    price: str,
+    currency: str,
+) -> bool:
+    """True when the editor holds something the stored product does not: closing it
+    now would lose it. Whitespace at the ends never counts (the save strips it)."""
+    if product is None:
+        return False
+    return (
+        name.strip() != product.name.strip()
+        or description.strip() != product.description.strip()
+        or category.strip() != product.category.strip()
+        or not _same_price(price, product.price_amount)
+        or (currency or "") != (product.price_currency or "")
+    )
+
+
+# -- the main photo and removing media (m-24842977) -----------------------------------
+
+#: The two tile actions, as words on the button (never only an icon).
+MAKE_PRIMARY = "Hacer principal"
+REMOVE_MEDIA = "Quitar"
+REMOVE_CONFIRM = "Sí, quitar"
+REMOVE_STAY = "Volver"
+
+
+def remove_media_title(media_type: str) -> str:
+    """«¿Quitar esta foto?» / «¿Quitar este video?»."""
+    return "¿Quitar este video?" if media_type == "video" else "¿Quitar esta foto?"
+
+
+def remove_media_description(
+    media_type: str, *, is_primary: bool, has_other_photo: bool = False
+) -> str:
+    """What happens after «Sí, quitar», in the owner's words. When the main photo goes,
+    the next photo takes its place (`CatalogService.remove_media` promotes it); when it
+    was the only photo, the product is left without one, and we say so plainly."""
+    what = "Este video" if media_type == "video" else "Esta foto"
+    text = f"{what} ya no se usará para crear publicaciones. Las que ya hiciste no cambian."
+    if is_primary and media_type != "video":
+        if has_other_photo:
+            text += " La siguiente foto pasa a ser la principal."
+        else:
+            text += " Tu producto quedará sin foto hasta que subas otra."
+    return text
+
+
+def product_count_label(total: int, missing_photo: int) -> str:
+    """«3 productos · 1 sin foto»; the second half only when some product has no photo."""
+    label = "1 producto" if total == 1 else f"{total} productos"
+    if missing_photo > 0:
+        label += f" · {missing_photo} sin foto"
+    return label
+
+
+def missing_photo_filter_label(missing_photo: int, *, active: bool) -> str:
+    """The button that narrows the list to the products still without a photo."""
+    if active:
+        return "Ver todos los productos"
+    return "Ver el que no tiene foto" if missing_photo == 1 else f"Ver los {missing_photo} sin foto"
+
+
+def products_to_show(products: Sequence[ProductVM], *, only_missing_photo: bool) -> list[ProductVM]:
+    """The grid's rows: all of them, or only those with no photo yet."""
+    if not only_missing_photo:
+        return list(products)
+    return [p for p in products if p.photo_count == 0]
+
+
+# -- «Crear publicación con este producto» (m-24842972, PRODUCTOS-1) --------------------
+#: The query parameter `/create` reads to open with a catalog product already chosen.
+CREATE_PRODUCT_PARAM = "producto"
+#: Why the button is off on a product with no photo: said under it, never hover-only.
+NEEDS_PHOTO_REASON = "Primero súbele una foto"
+#: What the editor says under the button while the product's photos are still saving.
+SAVING_PHOTOS_REASON = "Guardando sus fotos…"
+
+
+def create_with_product_href(product_id: str) -> str:
+    """`/create?producto=<id>` — the generator opens with this product chosen (N3)."""
+    return f"/create?{CREATE_PRODUCT_PARAM}={product_id}"
+
+
+def product_id_from_query(params: object) -> str:
+    """The product `?producto=` names, as a canonical UUID string — or "" when it is
+    missing or not a UUID. Whether it is THIS business's product is not decided here:
+    the generator only picks it if the tenant's own catalog (read under RLS) lists it,
+    so another tenant's id or a deleted one is ignored without an error."""
+    getter = getattr(params, "get", None)
+    raw = getter(CREATE_PRODUCT_PARAM, "") if callable(getter) else ""
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else ""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(UUID(text))
+    except ValueError:
+        return ""
+
+
+# -- «Agregar producto» from Crear / Variaciones, and back (m-24842973, PRODUCTOS-2, N4) --
+#: `/catalog?nuevo=1` opens with the «Agregar producto» form already open.
+NEW_PRODUCT_PARAM = "nuevo"
+#: `/catalog?volver=<ruta>`: where the owner came from, to go back with the product.
+RETURN_PARAM = "volver"
+#: Where the generator's «Agregar producto» comes back to.
+CREATE_RETURN_PATH = "/create"
+#: The query parameter `/create` reads to reopen on one of its modes.
+CREATE_MODE_PARAM = "modo"
+#: `?modo=` value that reopens Variaciones (a mode of the generator, not a route).
+VARIATIONS_MODE = "variaciones"
+#: Where Variaciones' «Agregar producto» comes back to.
+VARIATIONS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={VARIATIONS_MODE}"
+#: What «Agregar producto» says from Crear and Variaciones.
+ADD_PRODUCT_LABEL = "Agregar producto"
+#: The «Listo» button (and the editor's) when the owner came from a publication.
+RETURN_LABEL = "Volver a tu publicación"
+#: Said above the form while the owner is adding a product for a publication.
+RETURN_HINT = "Guárdalo con su foto y vuelve a tu publicación con él ya elegido."
+#: The form's only way out while returning (it replaces «Cancelar»): names where it
+#: leads (N7) and that nothing is added.
+RETURN_WITHOUT_LABEL = "Volver a tu publicación sin agregar"
+#: `/catalog` itself is never a way back: the round trip would never end.
+_NO_RETURN_TO = "/catalog"
+_MAX_RETURN_LENGTH = 300
+
+
+def _first_param(params: object, name: str) -> str:
+    getter = getattr(params, "get", None)
+    raw = getter(name, "") if callable(getter) else ""
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else ""
+    return str(raw or "").strip()
+
+
+def safe_return_path(raw: object) -> str:
+    """The `?volver=` route when it is one of the app's own — a path that starts with
+    ONE «/», with no scheme, no host, no backslash and no control character — else "".
+    That keeps «Volver a tu publicación» from ever leading off Qualify (an open
+    redirect): `https://…`, `//otro.sitio`, `/\\otro.sitio` and `javascript:` are all
+    refused, and so is `/catalog` itself."""
+    text = str(raw or "").strip()
+    if not text or len(text) > _MAX_RETURN_LENGTH:
+        return ""
+    if not text.startswith("/") or text.startswith("//") or "\\" in text:
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return ""
+    parts = urlsplit(text)
+    if parts.scheme or parts.netloc or parts.fragment:
+        return ""
+    path = parts.path.rstrip("/")
+    if path == _NO_RETURN_TO or path.startswith(f"{_NO_RETURN_TO}/"):
+        return ""
+    return text
+
+
+def return_path_from_query(params: object) -> str:
+    """`?volver=` read from the router's query parameters, already made safe."""
+    return safe_return_path(_first_param(params, RETURN_PARAM))
+
+
+def opens_new_product_form(params: object) -> bool:
+    """`?nuevo=1`: the catalog opens with the «Agregar producto» form open."""
+    return _first_param(params, NEW_PRODUCT_PARAM) == "1"
+
+
+def new_product_href(return_to: str) -> str:
+    """`/catalog?nuevo=1&volver=<ruta>` — «Agregar producto» from another screen (N4)."""
+    query = {NEW_PRODUCT_PARAM: "1"}
+    safe = safe_return_path(return_to)
+    if safe:
+        query[RETURN_PARAM] = safe
+    return f"/catalog?{urlencode(query)}"
+
+
+def return_with_product_href(return_to: str, product_id: str) -> str:
+    """The way back with the new product chosen: `<ruta>` plus `producto=<id>`, any
+    query the route already had (`modo=variaciones`) kept. "" when the route is not
+    one of the app's own."""
+    safe = safe_return_path(return_to)
+    if not safe or not product_id:
+        return safe
+    parts = urlsplit(safe)
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k != CREATE_PRODUCT_PARAM]
+    query.append((CREATE_PRODUCT_PARAM, product_id))
+    return urlunsplit(("", "", parts.path, urlencode(query), ""))
+
+
+def create_mode_from_query(params: object) -> str:
+    """`?modo=` on `/create`: VARIATIONS_MODE or "" (anything else is ignored)."""
+    return VARIATIONS_MODE if _first_param(params, CREATE_MODE_PARAM) == VARIATIONS_MODE else ""

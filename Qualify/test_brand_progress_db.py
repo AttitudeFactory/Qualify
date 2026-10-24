@@ -61,7 +61,10 @@ def test_the_email_lands_where_the_draft_stands(tmp_path: Path) -> None:
     _save(ids, step=9, completed=False, upload_dir=tmp_path)
     status = brand_finish.tenant_kit_status(ids[0])
     assert status.completed is False and status.progress["step"] == 9
-    assert _draft_destination_blocking(ids[0]) == "/brand/connect"  # back where it was
+    # m-24848529: a draft left halfway in the old connect flow resumes on the five steps
+    # (/brand), which map step 9 to the step holding the same data — not /brand/connect.
+    assert status.resume_route == "/brand"
+    assert _draft_destination_blocking(ids[0]) == "/brand"  # back where it was
 
     assert _kit_complete_blocking(ids[0]) is False  # a login here is sent to the Brand Kit
 

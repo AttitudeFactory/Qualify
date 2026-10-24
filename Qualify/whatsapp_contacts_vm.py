@@ -23,7 +23,7 @@ from datetime import datetime
 from .whatsapp_vm import format_timestamp
 
 SOURCES: tuple[tuple[str, str], ...] = (
-    ("lead_form", "Formulario de leads"),
+    ("lead_form", "Formulario de clientes interesados"),
     ("menu", "Menú de WhatsApp"),
     ("import", "Importación"),
     ("manual", "Agregado a mano"),
@@ -33,7 +33,7 @@ _SOURCE_LABEL: dict[str, str] = dict(SOURCES)
 
 _REVOKE_REASON: dict[str, str] = {
     "stop_keyword": "Escribió STOP",
-    "manual": "Revocado a mano",
+    "manual": "Quitado de la lista a mano",
 }
 
 FILTER_ACTIVE = "activos"
@@ -78,14 +78,14 @@ def build_opt_in_vm(
     active = revoked_at is None
     detail = ""
     if not active:
-        reason = _REVOKE_REASON.get(revoke_reason or "", revoke_reason or "Revocado")
+        reason = _REVOKE_REASON.get(revoke_reason or "", revoke_reason or "Fuera de la lista")
         detail = f"{reason} · {format_timestamp(revoked_at, '')}"
     return OptInVM(
         phone=phone_e164,
         source_label=source_label(source),
         captured_at=format_timestamp(captured_at, "Sin fecha"),
         is_active=active,
-        status_label="Activo" if active else "Revocado",
+        status_label="Activo" if active else "Fuera de la lista",
         status_tone="ok" if active else "neutral",
         revoked_detail=detail,
         consent_text=consent_text,
@@ -141,7 +141,11 @@ def import_report_message(
 ) -> tuple[str, str]:
     """(message, tone) for `OptInService.import_from_leads`'s `ImportReport`."""
     if leads == 0:
-        return "El formulario de leads aún no tiene contactos con consentimiento.", "info"
+        return (
+            "El formulario de clientes interesados aún no tiene contactos que aceptaran "
+            "recibir tus mensajes.",
+            "info",
+        )
     parts = [f"{created} nuevos", f"{unchanged} ya estaban"]
     if reconsented:
         parts.append(f"{reconsented} reactivados")
@@ -150,4 +154,6 @@ def import_report_message(
     if skipped:
         parts.append(f"{skipped} sin texto de consentimiento o con un número inválido")
     tone = "ok" if created or reconsented else "info"
-    return f"Importados {leads} leads del formulario: " + ", ".join(parts) + ".", tone
+    plural = "s" if leads != 1 else ""
+    head = f"Importamos {leads} cliente{plural} interesado{plural}"
+    return f"{head} del formulario: " + ", ".join(parts) + ".", tone

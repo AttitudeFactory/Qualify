@@ -1,8 +1,8 @@
 """/brand/kit — the Brand Kit inside a session, from the sidebar's "Negocio" block.
 Since 2026-10-02 it is the ONLY Brand Kit inside a session ("Marca" is the pre-login
-entry). Since 2026-10-05: what is still to configure (Tu voz y tono) first, else
-Resultados e insights with "Editar Brand Kit", and editing as ONE view of sections, each
-saved on its own."""
+entry). Since m-24842970 it opens on the summary of the brand by sections, each with
+«Cambiar» and saved on its own; the referentes are one more section («Negocios parecidos
+al tuyo») and a pending voice is an optional row, not a notice over the page."""
 
 from __future__ import annotations
 
@@ -51,10 +51,105 @@ def test_the_page_is_one_view_of_sections_not_steps() -> None:
     assert "Paso" not in rendered and "Continuar" not in rendered
     for _key, title, _icon, _blurb in SECTIONS:
         assert json.dumps(title)[1:-1] in rendered
-    assert "Editar mi marca" in rendered and "Ver resultados" in rendered
-    assert "Guardar voz" in rendered and "Ahora no" in rendered
+    assert "Editar mi marca" in rendered and "Ver resultados" not in rendered
+    assert "Preparar mi voz" in rendered and "Ahora no" in rendered
+    assert "Guardar voz" not in rendered
     # the stale "not saved yet" notice of the brandboard is gone: it IS saved since 10-01
     assert "todav\\u00eda no se guardan" not in rendered
+
+
+def test_the_page_opens_on_the_summary_not_on_the_ranking() -> None:
+    """m-24842970: /brand/kit opens on the brand by sections; the ranking of referentes is
+    one folded section named «Negocios parecidos al tuyo», after the kit's own."""
+    from . import brand_kit_editor as editor
+
+    assert not hasattr(editor, "_results_view") and not hasattr(editor, "_voice_first_view")
+    assert "editing" not in BrandEditState.__fields__
+    rendered = str(editor._summary_view())
+    titles = [json.dumps(title)[1:-1] for _key, title, _icon, _blurb in SECTIONS]
+    referentes = json.dumps("Negocios parecidos al tuyo")[1:-1]
+    assert all(rendered.index(t) < rendered.index(referentes) for t in titles)
+    assert "referentes_open" in str(editor._referentes_section())
+    closed = str(editor._section(*SECTIONS[1]))  # Logo, the one the owner came to change
+    assert "Cambiar" in closed and '"Editar"' not in closed
+
+
+def test_the_kit_sections_use_the_owner_words() -> None:
+    titles = {key: title for key, title, _icon, _blurb in SECTIONS}
+    assert titles["brandboard"] == "Logo" and titles["paleta"] == "Colores"
+    # one voice: the owner is «tú» everywhere, no designer or rulebook words
+    assert titles["tipografia"] == "Tu letra"
+    assert titles["habla"] == "Cómo hablas" and titles["nunca"] == "Lo que nunca dices"
+    assert "vetadas" not in " ".join(blurb for *_rest, blurb in SECTIONS)
+    blurbs = " ".join(blurb for *_rest, blurb in SECTIONS)
+    assert "promesas que no puedes hacer" in blurbs
+
+
+def test_a_pending_voice_is_an_optional_row_not_a_notice_over_the_page() -> None:
+    """m-24842970: without a voice the page works the same — every section is there —
+    and «Mejora tu marca (opcional)» is one row above them."""
+    from . import brand_kit_editor as editor
+
+    rendered = str(editor._summary_view())
+    row = str(editor._voice_row())
+    assert json.dumps("Mejora tu marca (opcional)")[1:-1] in row
+    assert "open_voice" in row and "skip_voice" in row
+    for _key, title, _icon, _blurb in SECTIONS:
+        assert json.dumps(title)[1:-1] in rendered
+    assert "Te falta preparar tu voz" not in str(brand_edit_index())
+
+
+def test_preparar_mi_voz_opens_voz_y_tono_and_scrolls_to_it(monkeypatch) -> None:
+    states = _states()
+    editor = _bind(states, monkeypatch)
+
+    async def run() -> list[Any]:
+        return [spec async for spec in BrandEditState.open_voice.fn(editor)]
+
+    fired = asyncio.run(run())
+    assert editor.open_section == "voz"
+    assert "seccion-voz" in str(fired)
+
+
+def test_the_referentes_section_folds_and_unfolds() -> None:
+    editor = BrandEditState()
+    assert editor.referentes_open is False
+    assert BrandEditState.toggle_referentes.fn(editor) is None
+    assert editor.referentes_open is True
+    folded = BrandEditState.toggle_referentes.fn(editor)
+    assert editor.referentes_open is False
+    # closing brings the section's title back into view (a long list on a phone)
+    assert "seccion-referentes" in str(folded)
+
+
+def test_editar_mi_marca_opens_marca_and_scrolls_to_it(monkeypatch) -> None:
+    """UX review: on a phone «Marca» sits below the voice row and the avatar, so the
+    header button must bring the opened section into view."""
+    states = _states()
+    editor = _bind(states, monkeypatch)
+
+    async def run() -> list[Any]:
+        return [spec async for spec in BrandEditState.open_and_show.fn(editor, "marca")]
+
+    fired = asyncio.run(run())
+    assert editor.open_section == "marca"
+    assert "seccion-marca" in str(fired)
+    assert "open_and_show" in str(brand_edit_index())
+
+
+def test_the_header_says_what_the_owner_gains() -> None:
+    rendered = str(brand_edit_index())
+    assert "para que todo lo que crees salga con tu" in rendered
+    assert "Tu marca por partes" not in rendered
+
+
+def test_the_folded_referentes_count_follows_the_same_rule_as_the_body() -> None:
+    """UX review: sorted accounts with an empty discovered list must not read «Todavía no
+    hay negocios guardados» over a list — the summary uses the body's condition."""
+    from . import brand_kit_editor as editor
+
+    summary = str(editor._referentes_summary())
+    assert "has_sorted" in summary and "account_buckets" in summary
 
 
 def test_the_voice_comes_first_until_it_is_saved_or_cloned() -> None:
@@ -66,10 +161,14 @@ def test_the_voice_comes_first_until_it_is_saved_or_cloned() -> None:
 def test_a_visit_starts_on_the_first_screen_and_waits_for_the_details(monkeypatch) -> None:
     states = _states()
     editor = _bind(states, monkeypatch)
-    editor.editing, editor.open_section, editor.voice_skipped = True, "marca", True
+    editor.referentes_open, editor.open_section, editor.voice_skipped = True, "marca", True
     states[wiz.BrandConnectState].details_loaded = True
     asyncio.run(BrandEditState.restart.fn(editor))
-    assert (editor.editing, editor.open_section, editor.voice_skipped) == (False, "", False)
+    assert (editor.referentes_open, editor.open_section, editor.voice_skipped) == (
+        False,
+        "",
+        False,
+    )
     assert states[wiz.BrandConnectState].details_loaded is False
 
 
@@ -102,17 +201,6 @@ def test_opening_another_section_drops_the_unsaved_changes_of_the_first(monkeypa
     assert editor.open_section == "tipografia"
 
 
-def test_leaving_the_editing_view_puts_back_an_open_section(monkeypatch) -> None:
-    states = _states()
-    editor = _bind(states, monkeypatch)
-    BrandEditState.start_editing.fn(editor)
-    states[CreativeState].kit_audience = "Antes"
-    asyncio.run(BrandEditState.open.fn(editor, "marca"))
-    states[CreativeState].kit_audience = "Después"
-    asyncio.run(BrandEditState.show_results.fn(editor))
-    assert states[CreativeState].kit_audience == "Antes" and editor.editing is False
-
-
 def test_the_voice_mark_is_saved_with_the_connect_answers() -> None:
     connect = wiz.BrandConnectState()
     connect.voice_configured = True
@@ -132,13 +220,13 @@ def test_skipping_the_voice_lasts_this_visit_only(monkeypatch) -> None:
 
 def test_no_side_index_and_the_results_take_accounts_by_hand() -> None:
     """§ request 2026-10-05: "quita los botones laterales" and a way to add referentes,
-    competencia y detractores by hand on Resultados e insights."""
+    competencia y detractores by hand on «Negocios parecidos al tuyo»."""
     from . import brand_kit_editor as editor
 
     assert not hasattr(editor, "_section_index")
-    rendered = str(editor._results_view())
+    rendered = str(editor._referentes_body())
     assert json.dumps("¿Falta alguien? Agrégalo a mano")[1:-1] in rendered
-    assert 'href:"#seccion-' not in str(editor._edit_view())
+    assert 'href:"#seccion-' not in str(editor._summary_view())
 
 
 def test_a_tone_moved_off_its_defaults_counts_as_configured() -> None:

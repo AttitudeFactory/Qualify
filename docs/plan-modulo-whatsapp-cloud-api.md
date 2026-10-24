@@ -149,6 +149,8 @@ Recomendación: **crear la WABA bajo el portafolio ya verificado (Qualify.co / A
 
 ## 4. El número de Bianki — la decisión más cara de equivocar
 
+> **Nota 2026-10-24 (m-24849204):** esta sección queda como registro histórico. El fundador aclaró que la integración con Baileys nunca existió; D1 no aplica y el número del negocio (+58 424-8837639) está en la Cloud API desde el 2026-10-16. Estado vigente: [backlog-modulo-whatsapp.md](backlog-modulo-whatsapp.md), WA-13.
+
 | Opción | Qué pasa con el bot Baileys y el historial | Qué pasa con la WhatsApp Business app | Esfuerzo | Riesgo |
 |---|---|---|---|---|
 | **A. Número nuevo para la API** (línea nueva o virtual) | Baileys sigue vivo hasta la migración de clientes; historial se queda en el teléfono | El número actual sigue en la app | Bajo | Hay que mover a los clientes al número nuevo (anuncio, QR, link `wa.me`) |

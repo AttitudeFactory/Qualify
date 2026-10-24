@@ -16,8 +16,9 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.config import redis_url
+from qualify_api.leads.interest import AccessInterestService
 from qualify_api.leads.models import LeadFormSettings
-from qualify_api.leads.rate_limit import RedisFixedWindowLimiter
+from qualify_api.leads.rate_limit import InProcessFixedWindowLimiter, RedisFixedWindowLimiter
 from qualify_api.leads.repository import PostgresLeadRepository, normalize_phone
 from qualify_api.leads.service import LeadIntakeService
 
@@ -25,6 +26,10 @@ from qualify_api.leads.service import LeadIntakeService
 # the number only needs to be generous for a human and stingy for a loop.
 _INTAKE_LIMIT = 8
 _INTAKE_WINDOW_SECONDS = 60
+# MARCA-5: the access screen's «Quiero que me contacten». A person sends it once or twice;
+# per client per ten minutes keeps a loop from filling the house tenant's /leads.
+_INTEREST_LIMIT = 5
+_INTEREST_WINDOW_SECONDS = 600
 
 
 @cache
@@ -40,6 +45,34 @@ def production_leads_service() -> LeadIntakeService:
             redis.Redis.from_url(redis_url(), decode_responses=True),
             limit=_INTAKE_LIMIT,
             window_seconds=_INTAKE_WINDOW_SECONDS,
+        ),
+    )
+
+
+@cache
+def in_process_interest_service() -> AccessInterestService:
+    """What the Reflex access screens call, in-process: the window lives in this
+    process (`InProcessFixedWindowLimiter`), so the screen never depends on Redis."""
+    return AccessInterestService(
+        repository=PostgresLeadRepository(),
+        limiter=InProcessFixedWindowLimiter(
+            limit=_INTEREST_LIMIT, window_seconds=_INTEREST_WINDOW_SECONDS
+        ),
+    )
+
+
+@cache
+def production_interest_service() -> AccessInterestService:
+    """What the public `POST /api/leads/interest` binds to: the Redis window, shared by
+    every API worker, like the intake form's."""
+    import redis
+
+    return AccessInterestService(
+        repository=PostgresLeadRepository(),
+        limiter=RedisFixedWindowLimiter(
+            redis.Redis.from_url(redis_url(), decode_responses=True),
+            limit=_INTEREST_LIMIT,
+            window_seconds=_INTEREST_WINDOW_SECONDS,
         ),
     )
 
