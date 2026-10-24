@@ -856,15 +856,18 @@ def test_every_screen_words_the_approval_notice_from_the_same_choice() -> None:
     from .creative_vm import NO_VIDEO_DRAFT, POST_APPROVED_TEXT, approval_notice, video_draft_vm
 
     failed = video_draft_vm("failed", None, "x", approved=True)
-    kind, text, offer = approval_notice(failed, elsewhere="Ábrela")
+    kind, text, offer, offer_open = approval_notice(failed, elsewhere="Ábrela")
     assert kind == "error" and text.endswith("Ábrela para reintentarlo.")
     assert "programarlo" not in text and offer is False
-    kind, text, offer = approval_notice(
+    assert offer_open is True  # m-24842981: «Ver publicación» goes with «Ábrela»
+    kind, text, offer, offer_open = approval_notice(
         video_draft_vm("rendering", None), elsewhere="Ábrela en Por aprobar"
     )
     assert kind == "info" and text.endswith("Ábrela en Por aprobar para ver cuándo está listo.")
-    assert offer is False
-    assert approval_notice(NO_VIDEO_DRAFT) == ("success", POST_APPROVED_TEXT, True)
+    assert offer is False and offer_open is True
+    # on the publication's own page there is nowhere else to go
+    assert approval_notice(video_draft_vm("rendering", None)).offer_open is False
+    assert approval_notice(NO_VIDEO_DRAFT) == ("success", POST_APPROVED_TEXT, True, False)
     assert approval_notice(NO_VIDEO_DRAFT, approved="Pieza aprobada.")[1] == "Pieza aprobada."
 
 
@@ -883,10 +886,16 @@ def test_the_approval_notice_offers_a_day_and_time_only_when_nothing_holds_it_ba
         video_draft_vm,
     )
 
-    assert approval_notice(NO_VIDEO_DRAFT, ready=True) == ("success", APPROVED_TOAST, True)
+    assert approval_notice(NO_VIDEO_DRAFT, ready=True) == (
+        "success",
+        APPROVED_TOAST,
+        True,
+        False,
+    )
     assert approval_notice(NO_VIDEO_DRAFT, ready=False) == (
         "success",
         APPROVED_NOT_READY_TOAST,
+        False,
         False,
     )
     rendering = video_draft_vm("rendering", None)

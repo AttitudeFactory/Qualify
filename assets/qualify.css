@@ -589,38 +589,16 @@ body {
 /* ── Mobile drawer ────────────────────────────────────────────────────────────
    Below the breakpoint, the sidebar and the page panel no longer fit side by side
    (reported 2026-09-23: both rendered squeezed into slivers on a phone). The
-   sidebar becomes a fixed overlay, closed by default and opened by the hamburger
-   button (`_mobile_nav_toggle`, outside the sidebar since the drawer starts
-   closed). `.q-panel` needs no override: once `.q-sidebar` leaves flex flow
+   sidebar becomes a fixed overlay, closed by default and opened by «Más» on the
+   bottom bar (m-24842964, "Bottom bar" below; it replaced the ☰ button).
+   `.q-panel` needs no override: once `.q-sidebar` leaves flex flow
    (`position: fixed`), the panel — already `flex: 1` — fills the freed width on
    its own. */
-.q-mobile-nav-toggle {
-  display: none;
-}
 .q-nav-backdrop {
   display: none;
 }
 
 @media (max-width: 640px) {
-  .q-mobile-nav-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: fixed;
-    top: 14px;
-    left: 14px;
-    /* N12 (ux-guia-navegacion §4): every target on a phone is at least 44 px. */
-    width: 44px;
-    height: 44px;
-    border: none;
-    border-radius: var(--q-radius-control);
-    background: var(--color-panel-solid);
-    color: var(--gray-12);
-    box-shadow: var(--q-elev-lift);
-    z-index: 70;
-    cursor: pointer;
-  }
-
   /* N12: menu rows are thumb targets on a phone — at least 44 px tall. */
   .q-sidebar .q-nav-item { min-height: 44px; }
 
@@ -650,6 +628,148 @@ body {
   .q-sidebar.q-mobile-open {
     transform: translateX(0);
   }
+}
+
+/* ── Bottom bar (m-24842964, NAV-7, docs/design-system.md §4.4) ──────────────────
+   The phone's four everyday accesses + «Más» (which opens the drawer above), at
+   thumb's reach. Exactly where the sidebar becomes a drawer (≤ 640 px) and nowhere
+   else: above it, `display: none` keeps it out of sight and off the tab order.
+   An opaque island (no backdrop-filter: the page scrolls under it and its words must
+   read the same over any photo; it spends nothing of the glass budget). */
+.q-bottom-bar {
+  display: none;
+}
+.q-bottom-bar--demo {
+  /* The `/design` sample: the same bar, in the flow, at a phone's width. */
+  display: flex;
+  position: relative;
+  width: 100%;
+  max-width: 348px; /* 360 px minus the 6 px gap on each side */
+}
+.q-bottom-bar,
+.q-bottom-bar--demo {
+  align-items: stretch;
+  padding: 4px;
+  gap: 0;
+  border: 1px solid var(--gray-5);
+  border-radius: var(--q-radius-island);
+  background: var(--color-panel-solid);
+  box-shadow: var(--q-elev-island);
+}
+.q-bottom-link {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  /* N12: the whole cell is the target, never only the icon — ≥ 44 × 44 px. */
+  min-height: 56px;
+  padding: 0;
+  border: none;
+  border-radius: calc(var(--q-radius-island) - 4px);
+  background: transparent;
+  color: var(--gray-11);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* The focus ring is drawn inside the cell, so the island's round edge never cuts it. */
+.q-bottom-link:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: -2px;
+}
+.q-bottom-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 0;
+  color: var(--gray-11);
+  transition: color var(--q-dur-fast) var(--q-ease);
+}
+.q-bottom-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 26px;
+  border-radius: var(--q-radius-control);
+  transition: background-color var(--q-dur-fast) var(--q-ease);
+}
+/* The count rides on the icon's corner: the cell keeps its size, the text never moves. */
+.q-bottom-icon .q-menu-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  pointer-events: none;
+}
+.q-bottom-label {
+  font-size: var(--font-size-1);
+  font-weight: 500;
+  line-height: 1.1;
+  text-align: center;
+  /* «Por / responder», «Tu / semana»: two lines are fine, an ellipsis or a word cut
+     in half never is. */
+  overflow-wrap: normal;
+  word-break: keep-all;
+  hyphens: none;
+  max-width: 100%;
+}
+/* Active: colour, weight and shape at once — never colour alone (P1). */
+.q-bottom-cell[data-active="true"] { color: var(--accent-11); }
+.q-bottom-cell[data-active="true"] .q-bottom-label { font-weight: 600; }
+.q-bottom-cell[data-active="true"] .q-bottom-icon { background: var(--accent-a4); }
+@media (hover: hover) {
+  .q-bottom-link:hover .q-bottom-cell[data-active="false"] { color: var(--gray-12); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-bottom-cell, .q-bottom-icon { transition: none; }
+}
+
+@media (max-width: 640px) {
+  :root {
+    /* Height of the bar's island (56 px cell + 2 × 4 px padding + 2 × 1 px border). */
+    --q-bottom-bar-h: 66px;
+  }
+  .q-bottom-bar:not(.q-bottom-bar--demo) {
+    display: flex;
+    position: fixed;
+    left: var(--q-gap);
+    right: var(--q-gap);
+    bottom: calc(var(--q-gap) + env(safe-area-inset-bottom, 0px));
+    /* Above the panel; under the drawer's backdrop (55), the drawer (60) and every
+       Radix dialog, drawer and toast. */
+    z-index: 50;
+  }
+  /* The panel reserves the bar's height at its foot, so the bar never covers the
+     last block or a page's main button. Only under the rail (a page without the
+     sidebar has no bar either). */
+  .q-sidebar ~ .q-panel .q-page-body {
+    padding-bottom: calc(
+      var(--q-bottom-bar-h) + 2 * var(--q-gap) + env(safe-area-inset-bottom, 0px)
+    );
+  }
+  /* The phone's keyboard already takes half the screen: while a text field has the
+     focus the bar steps aside, and comes back when the focus leaves. */
+  .q-ground:has(
+      input:not([type="checkbox"], [type="radio"], [type="button"], [type="submit"],
+        [type="reset"], [type="range"], [type="file"], [type="color"]):focus,
+      textarea:focus,
+      [contenteditable="true"]:focus
+    )
+    .q-bottom-bar {
+    display: none;
+  }
+}
+
+/* `viewport-fit=cover` (Qualify.py) lets the page reach under a notch; in landscape
+   the side insets keep the shell clear of it. 0 everywhere else. */
+.q-ground {
+  box-sizing: border-box;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 
 /* ── Entrance ─────────────────────────────────────────────────────────────────
@@ -968,6 +1088,8 @@ body {
   padding: 1.25rem 1.5rem 0.75rem;
   border-bottom: 1px solid var(--gray-5);
 }
+/* m-24842987 (N12): the panel's «Cerrar» is a thumb-sized target (≥ 44 px). */
+.q-drawer-head .rt-IconButton { min-width: 44px; min-height: 44px; }
 .q-drawer-body {
   padding: 1rem 1.5rem 1.25rem;
   container-type: inline-size;
@@ -1591,17 +1713,6 @@ body {
   box-shadow: inset 0 -1px 0 var(--q-card-edge);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   backdrop-filter: blur(18px) saturate(140%);
-}
-
-/* On a phone the fixed hamburger (`.q-mobile-nav-toggle`, 44px at 14px/14px) sits over
-   the header's top-left corner: give the title room so the sticky sheet never hides
-   its first letters under the button. Scoped through the toggle (a sibling of the
-   panel, only rendered with the rail) so the selector outranks the header's own
-   `padding` prop, which Reflex emits as a single-class Emotion rule injected after this
-   sheet — a bare `.q-page-header` lost that tie and the button covered the «C» of
-   «Crear pieza» at 375 px (m-24820845). */
-@media (max-width: 640px) {
-  .q-mobile-nav-toggle ~ .q-panel .q-page-header { padding-left: 66px; }
 }
 
 /* The stepper and the capsule take the accent gradient too. */

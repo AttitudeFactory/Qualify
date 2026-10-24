@@ -46,6 +46,7 @@ from qualify_creative.enums import (
     ContentFormat,
     ContentKind,
     ContentType,
+    DraftStatus,
 )
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
@@ -119,6 +120,7 @@ from .creative_vm import (
     ReadinessVM,
     RouteOptionVM,
     VoiceProposalVM,
+    add_phrase,
     approval_notice,
     caption_hashtag_suggestions,
     caption_keywords,
@@ -129,10 +131,14 @@ from .creative_vm import (
     format_ctas,
     format_hashtags,
     hashtag_list,
+    phrase_list,
+    remove_phrase,
     seen_label,
 )
 from .gallery_state import schedule_readiness
-from .planner_provider import load_gallery
+from .pending_state import PendingState
+from .planner_provider import load_gallery, times_published
+from .planner_vm import history_help, history_word
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -149,7 +155,28 @@ from .upload_names import safe_upload_name
 logger = logging.getLogger(__name__)
 
 #: What a handler that may chain others returns: one event, several, or none.
-_Events = list[rx.event.EventHandler] | rx.event.EventSpec | None
+_Events = list[rx.event.EventHandler | rx.event.EventSpec] | rx.event.EventSpec | None
+
+
+def _scroll_to_view() -> rx.event.EventSpec:
+    """CREAR-6 (UX review): on a phone the options are one column taller than the
+    screen, so what opens when one is chosen is below it — bring the centre
+    (`#q-cr-view`) into sight. On a wide screen the centre is beside the panel: no-op."""
+    return rx.call_script(
+        "if (window.matchMedia('(max-width: 899px)').matches) {"
+        " setTimeout(() => document.getElementById('q-cr-view')"
+        "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 120); }"
+    )
+
+
+def _with_scroll(events: _Events) -> _Events:
+    """`events` followed by `_scroll_to_view`."""
+    if events is None:
+        return [_scroll_to_view()]
+    if isinstance(events, list):
+        return [*events, _scroll_to_view()]
+    return [events, _scroll_to_view()]
+
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
@@ -399,6 +426,26 @@ def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.
 #: 2026-10-08: one view with sections replaced the step-by-step wizard). `presenter`
 #: only applies to the two avatar kinds; «Reglas» is a folded, unnumbered extra.
 GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
+
+
+#: The publication's page shows «Ya probada» / «Por probar» only once it is approved —
+#: that is when the owner decides whether to repeat it (UX review, m-24842981).
+_HISTORY_STATUSES: frozenset[str] = frozenset(
+    {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
+)
+
+
+async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
+    """(«Ya probada» / «Por probar», its help) for the publication's page (m-24842981).
+    A failed read hides the line — it never blocks the review."""
+    try:
+        count = await asyncio.to_thread(times_published, tenant_id, draft_id)
+    except Exception as exc:  # noqa: BLE001 — an extra line, not the page
+        logger.warning("draft history read failed: %s", type(exc).__name__)
+        return "", ""
+    if count is None:
+        return "", ""
+    return history_word(count), history_help(count)
 
 
 def _is_carousel(draft: DraftVM | None) -> bool:
@@ -768,6 +815,10 @@ class CreativeState(rx.State):
     brief_intent: str = "organic"
     brief_must_mention: str = ""
     brief_must_avoid: str = ""
+    #: CREAR-6: what is being typed into «Debe mencionar» / «Debe evitar» before
+    #: «Agregar» turns it into a chip (the brief keeps the joined text above).
+    brief_must_mention_draft: str = ""
+    brief_must_avoid_draft: str = ""
     route_options: list[RouteOptionVM] = []
     selected_route: str = "from_upload"
     staged_media_key: str = ""
@@ -1009,6 +1060,10 @@ class CreativeState(rx.State):
     draft: DraftVM | None = None
     detail_loading: bool = False
     detail_error: str = ""
+    # m-24842981: «Ya probada» / «Por probar» and its help on the publication's page
+    # ("" while unknown — the page then shows nothing rather than a guess).
+    draft_history_word: str = ""
+    draft_history_help: str = ""
     selected_variant_id: str = ""
     edit_hook: str = ""
     edit_caption: str = ""
@@ -2308,6 +2363,67 @@ class CreativeState(rx.State):
     def set_brief_must_avoid(self, value: str) -> None:
         self.brief_must_avoid = value
 
+    @rx.var
+    def brief_must_mention_items(self) -> list[str]:
+        """CREAR-6: «Debe mencionar» as chips."""
+        return phrase_list(self.brief_must_mention)
+
+    @rx.var
+    def brief_must_avoid_items(self) -> list[str]:
+        """CREAR-6: «Debe evitar» as chips."""
+        return phrase_list(self.brief_must_avoid)
+
+    @rx.event
+    def set_brief_must_mention_draft(self, value: str) -> None:
+        self.brief_must_mention_draft = value
+
+    @rx.event
+    def set_brief_must_avoid_draft(self, value: str) -> None:
+        self.brief_must_avoid_draft = value
+
+    def _flush_phrase_drafts(self) -> None:
+        """CREAR-6 (UX review): a phrase typed but never «Agregar»-ed still counts —
+        flushed before anything reads «Debe mencionar» / «Debe evitar» (the summary,
+        «Potenciar con IA», Generar), so it is never lost without a word."""
+        self.brief_must_mention = add_phrase(self.brief_must_mention, self.brief_must_mention_draft)
+        self.brief_must_mention_draft = ""
+        self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+        self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def add_must_mention_on_key(self, key: str) -> None:
+        """The keyboard's Intro / «Listo» in «Debe mencionar» adds the phrase."""
+        if key == "Enter":
+            self.brief_must_mention = add_phrase(
+                self.brief_must_mention, self.brief_must_mention_draft
+            )
+            self.brief_must_mention_draft = ""
+
+    @rx.event
+    def add_must_avoid_on_key(self, key: str) -> None:
+        """The keyboard's Intro / «Listo» in «Debe evitar» adds the phrase."""
+        if key == "Enter":
+            self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+            self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def add_must_mention(self) -> None:
+        self.brief_must_mention = add_phrase(self.brief_must_mention, self.brief_must_mention_draft)
+        self.brief_must_mention_draft = ""
+
+    @rx.event
+    def add_must_avoid(self) -> None:
+        self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+        self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def remove_must_mention(self, phrase: str) -> None:
+        self.brief_must_mention = remove_phrase(self.brief_must_mention, phrase)
+
+    @rx.event
+    def remove_must_avoid(self, phrase: str) -> None:
+        self.brief_must_avoid = remove_phrase(self.brief_must_avoid, phrase)
+
     @rx.event
     def set_edit_hook(self, value: str) -> None:
         self.edit_hook = value
@@ -2640,12 +2756,12 @@ class CreativeState(rx.State):
         if category == self.gen_category and (
             category != "video" or self.video_type in VIDEO_TYPES
         ):
-            return None
+            return _with_scroll(None)
         if not self.gen_generating:
             self._back_to_form()
         self.gen_category = category
         self.gen_step = 0
-        return self._set_kind(_CATEGORY_KIND[category])
+        return _with_scroll(self._set_kind(_CATEGORY_KIND[category]))
 
     @rx.event
     def choose_video_type(self, video_type: str) -> _Events:
@@ -2659,16 +2775,18 @@ class CreativeState(rx.State):
         return self._set_kind(video_type)
 
     @rx.event
-    def open_discover(self) -> None:
-        """The panel's «Descubrir reels»."""
+    def open_discover(self) -> rx.event.EventSpec:
+        """The panel's «Descubrir ideas de videos» (ex «Descubrir reels»)."""
         self.gen_mode = "discover"
+        return _scroll_to_view()
 
     @rx.event
-    def open_variations(self) -> None:
+    def open_variations(self) -> rx.event.EventSpec:
         """The panel's «Variaciones» (m-24803289): ten visual angles of one catalog
         product. Its own state (`VariationsState`) owns the flow; this only puts the
         centre in that mode."""
         self.gen_mode = "variations"
+        return _scroll_to_view()
 
     # -- a stock video as the product: where it fits (§ request 2026-10-16) -------------
 
@@ -3294,6 +3412,7 @@ class CreativeState(rx.State):
         """«Siguiente»: the next step. Nothing is checked here — only the summary says
         what is missing — so with the same kind and format as last time, writing the
         topic and «Siguiente» reach «Crear» (CREAR-2)."""
+        self._flush_phrase_drafts()
         self.gen_step = self._view_index() + 1
         self.gen_step = self._view_index()
         self.create_error = ""
@@ -3301,6 +3420,7 @@ class CreativeState(rx.State):
     @rx.event
     def prev_view(self) -> None:
         """«Atrás»: the previous step; what was written stays in the state."""
+        self._flush_phrase_drafts()
         self.gen_step = max(self._view_index() - 1, 0)
         self.create_error = ""
 
@@ -3308,6 +3428,7 @@ class CreativeState(rx.State):
     def go_to_view(self, index: str) -> None:
         """A step of the step bar: any step, back or ahead — only the context is
         required, and the summary says what is missing."""
+        self._flush_phrase_drafts()
         try:
             self.gen_step = int(index)
         except ValueError:
@@ -4617,6 +4738,7 @@ class CreativeState(rx.State):
                 return
             self.context_enhancing = True
             self.context_enhance_error = ""
+            self._flush_phrase_drafts()
             form = {
                 "text": text,
                 "piece": self._piece_label(),
@@ -5002,6 +5124,7 @@ class CreativeState(rx.State):
                 return
             self.is_submitting = True
             self.create_error = ""
+            self._flush_phrase_drafts()
             form = {
                 "objective": self.brief_objective,
                 "content_type": self.brief_content_type,
@@ -5035,6 +5158,7 @@ class CreativeState(rx.State):
                 return
             self.is_submitting = True
             self.create_error = ""
+            self._flush_phrase_drafts()
             form = self._generator_form()
             template_form = self._template_form() if self.brief_kind == "template" else None
             campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
@@ -5289,6 +5413,8 @@ class CreativeState(rx.State):
             return
         async with self:
             self.detail_loading = False
+            self.draft_history_word = ""
+            self.draft_history_help = ""
             if vm is None:
                 self.detail_error = _DRAFT_GONE
                 return
@@ -5302,6 +5428,13 @@ class CreativeState(rx.State):
             yield CreativeState.poll_draft
         if final_poll:
             yield CreativeState.poll_final
+        if vm.status not in _HISTORY_STATUSES:  # before approval it helps no decision
+            return
+        word, help_text = await _history_texts(tenant_id, draft_id)
+        async with self:
+            if self.draft is not None and self.draft.draft_id == str(draft_id):
+                self.draft_history_word = word
+                self.draft_history_help = help_text
 
     @rx.event(background=True)
     async def poll_draft(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -5517,6 +5650,7 @@ class CreativeState(rx.State):
         # is offered — the card says why (`approved_hold_note`).
         notice = approval_notice(vm.video_draft, ready=ready)
         yield getattr(rx.toast, notice.kind)(notice.text)
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         if start_poll:
             yield CreativeState.poll_final
 
@@ -5772,6 +5906,7 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != vm.draft_id
             if should_poll:
                 self._polling_draft_id = vm.draft_id
+        yield PendingState.refresh_now  # m-24842963: discarded or regenerated, recount
         if should_poll:
             # the regeneration says "listo" even from another tab (pendientes §5)
             yield rx.call_script(_ASK_NOTIFICATIONS_JS)

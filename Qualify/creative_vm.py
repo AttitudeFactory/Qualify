@@ -859,8 +859,8 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "clip",
         "Clip",
-        "Un video generado sin presentador: desde un fotograma inicial (y uno final) o "
-        "desde tus referencias de imagen, video y audio.",
+        "Un video corto sin presentador, a partir de una foto (o de una foto de inicio y "
+        "otra de final) o de tus fotos, videos y audios de referencia.",
         "film",
     ),
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
@@ -881,7 +881,8 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "template",
         "Plantilla",
-        "Tus fotos reales en una plantilla de tu nicho: una imagen para publicación o historia.",
+        "Tus fotos reales en un diseño listo para tu rubro: una imagen para publicación o "
+        "historia.",
         "layout-template",
     ),
     # «Ad» (the template's video) left the panel on 2026-10-14
@@ -1026,17 +1027,24 @@ def final_poll_step(video: VideoDraftVM) -> str:
 APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
 APPROVED_NOT_READY_TOAST = "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_TOAST_ACTION = "Elegir día y hora"
+#: m-24842981 (review 2026-10-24, finding 8): a screen that is not the publication's own
+#: page, after approving one whose final is being made or could not be ordered, offers
+#: the way there (`/drafts/<id>`) — the toast alone left the owner nowhere to tap (N3).
+APPROVED_OPEN_ACTION = "Ver publicación"
 #: The default `approved` text of `approval_notice` (kept under its earlier name).
 POST_APPROVED_TEXT = APPROVED_TOAST
 
 
 class ApprovalNotice(NamedTuple):
     """The toast after approving, as `rx.toast` kind and text, and whether to offer
-    «Elegir día y hora» with it (`offer_schedule`)."""
+    «Elegir día y hora» with it (`offer_schedule`) or, on a screen that is not the
+    publication's own page, «Ver publicación» (`offer_open`: its final is being made or
+    could not be ordered, m-24842981)."""
 
     kind: str
     text: str
     offer_schedule: bool
+    offer_open: bool = False
 
 
 def approval_notice(
@@ -1061,16 +1069,27 @@ def approval_notice(
     if video.rendering:
         tail = f" {elsewhere} para ver cuándo está listo." if elsewhere else ""
         return ApprovalNotice(
-            "info", f"Aprobada. Estamos preparando el video en alta calidad.{tail}", False
+            "info",
+            f"Aprobada. Estamos preparando el video en alta calidad.{tail}",
+            False,
+            bool(elsewhere),
         )
     if video.can_retry:
         tail = f" {elsewhere} para reintentarlo." if elsewhere else " Puedes reintentarlo."
         return ApprovalNotice(
-            "error", f"Versión aprobada, pero no pudimos pedir el video final.{tail}", False
+            "error",
+            f"Versión aprobada, pero no pudimos pedir el video final.{tail}",
+            False,
+            bool(elsewhere),
         )
     if ready:
         return ApprovalNotice("success", approved, True)
     return ApprovalNotice("success", not_ready, False)
+
+
+#: A final being made, in words: the piece's badge and the «Por aprobar» card's state
+#: and (disabled) main button say the same (m-24842981, review 2026-10-24 finding 8).
+FINAL_PREPARING_LABEL = "Preparando el video final"
 
 
 #: The final's own note while it is not there yet, in the «Aprobada. Todavía no se
@@ -1137,7 +1156,7 @@ def video_draft_vm(
     if state == VIDEO_RENDERING:
         return VideoDraftVM(
             state,
-            "Preparando el video final",
+            FINAL_PREPARING_LABEL,
             "info",
             "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
             "y lo verás aquí cuando esté listo.",
@@ -1598,6 +1617,50 @@ def cta_list(text: str) -> list[str]:
 
 def format_ctas(items: list[str]) -> str:
     return CTA_SEPARATOR.join(items)
+
+
+# CREAR-6 (m-24842980): «Debe mencionar» / «Debe evitar» are typed one phrase at a time
+# and shown as chips; the brief still carries them as one comma-separated text (the
+# contract `context_ai`/the copy pipeline already read), so the owner never types a comma.
+PHRASE_SEPARATOR = ", "
+PHRASE_LIMIT = 12
+#: What the help says once `PHRASE_LIMIT` is reached (UX review).
+PHRASE_LIMIT_HINT = "Ya tienes 12 frases, el máximo. Quita una para agregar otra."
+
+
+def phrase_list(text: str) -> list[str]:
+    """ "envío gratis, reserva por WhatsApp" → both, each once (case-insensitive), in
+    order; empty pieces dropped."""
+    items: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"\s*[,;\n]\s*", text or ""):
+        part = " ".join(part.split())
+        if part and _fold(part) not in seen:
+            seen.add(_fold(part))
+            items.append(part)
+    return items
+
+
+def format_phrases(items: list[str]) -> str:
+    return PHRASE_SEPARATOR.join(items)
+
+
+def add_phrase(current: str, new: str, limit: int = PHRASE_LIMIT) -> str:
+    """`current` with what was typed in `new` appended (a pasted list is split), never a
+    repeat and never past `limit`."""
+    items = phrase_list(current)
+    folded = {_fold(item) for item in items}
+    for item in phrase_list(new):
+        if len(items) >= limit:
+            break
+        if _fold(item) not in folded:
+            folded.add(_fold(item))
+            items.append(item)
+    return format_phrases(items)
+
+
+def remove_phrase(current: str, phrase: str) -> str:
+    return format_phrases([item for item in phrase_list(current) if item != phrase])
 
 
 HASHTAG_KIND_LABELS: dict[str, str] = {

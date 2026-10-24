@@ -348,6 +348,14 @@ def _menus_card() -> rx.Component:
                     "Este número aún no tiene menú",
                     "Crea uno desde el ejemplo de comida rápida y ajústalo a tu negocio, o "
                     "empieza desde cero.",
+                    # N8 (m-24842961): opens the same «Crear menú» dialog.
+                    action=rx.button(
+                        rx.icon("plus", size=16),
+                        "Crear menú",
+                        on_click=S.set_new_open(True),
+                        variant="soft",
+                        size="3",
+                    ),
                 ),
             ),
             spacing="3",

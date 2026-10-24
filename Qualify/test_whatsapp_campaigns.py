@@ -2,9 +2,10 @@
 
 They pin:
 1. The VM boundary (frozen, no credential field, no wamid/payload) and the copy Meta's
-   rules require: the rate-card placeholder notice, `131049` → «reintentar ≥ 24 h»,
-   `131042` → the payment method, always with the Meta code.
-2. The wizard's pure steps: audience filter → `AudienceFilter` JSON, pacing, basics.
+   rules require: the rate-card placeholder notice, `131049` → the per-person limit,
+   `131042` → the payment method — in words, never with the Meta code (m-24842996).
+2. The wizard's pure steps (m-24842996: Mensaje → A quién → Revisar): audience filter →
+   `AudienceFilter` JSON, the pace choice and its explanation, basics.
 3. The provider over the Memory repositories: draft → estimate (placeholder) → launch
    (paced outbox rows, no resend) → detail → cancel; an unknown user cannot create.
 """
@@ -12,6 +13,9 @@ They pin:
 from __future__ import annotations
 
 import dataclasses
+import inspect
+import json
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -34,10 +38,17 @@ from .whatsapp_campaigns_provider import (
     launch,
     wizard_templates,
 )
+from .whatsapp_campaigns_state import draft_key
 from .whatsapp_campaigns_vm import (
     EMPTY_TEMPLATE,
+    PACE_OPTIONS,
     PAYMENT_FAILED,
+    PER_USER_LIMIT_NOTICE,
     RATE_CARD_NOTICE,
+    SCOPE_ALL,
+    SCOPE_SINCE,
+    SEE_REPLIES,
+    STEPS,
     AudienceForm,
     CampaignDetailVM,
     CampaignRowVM,
@@ -46,13 +57,21 @@ from .whatsapp_campaigns_vm import (
     SendVM,
     VariableFieldVM,
     audience_filter_json,
+    audience_form_for,
     build_campaign_row,
     build_send_vm,
+    campaign_name,
+    default_campaign_name,
+    everyone_label,
     format_money,
-    pacing_hint,
+    pace_explanation,
+    pace_value,
+    retry_after_label,
     send_error_note,
+    sending_time,
     validate_basics,
     validate_pacing,
+    validate_scope,
 )
 
 _FORBIDDEN = ("token", "credential", "cipher", "secret", "key_id", "wamid", "payload", "outbox")
@@ -84,15 +103,46 @@ def test_row_counts_are_cumulative() -> None:
     )
     assert (row.sent, row.delivered, row.read, row.queued) == ("12", "9", "5", "3")
     assert row.cost_label == "USD 1,50" and row.status_label == "En curso"
+    # m-24842998: the phone card's line.
+    assert row.reach_label == "5 la leyeron de 12"
 
 
-def test_meta_codes_are_explained_with_the_code() -> None:
-    assert "24 h" in send_error_note("131049") and "131049" in send_error_note("131049")
+def test_reach_label_waits_for_the_first_send() -> None:
+    row = build_campaign_row(
+        campaign_id="c",
+        name="Promo",
+        template_label="promo · es",
+        status="draft",
+        counts={"pending": 4},
+        costs=[],
+        created_at=NOW,
+    )
+    assert row.reach_label == ""
+    big = build_campaign_row(
+        campaign_id="c",
+        name="Promo de octubre",
+        template_label="promo · es",
+        status="done",
+        counts={"read": 1200, "delivered": 80},
+        costs=[],
+        created_at=NOW,
+    )
+    assert big.reach_label == "1.200 la leyeron de 1.280"
+
+
+def test_meta_codes_are_explained_without_the_code() -> None:
+    """m-24842996: no error code on screen — the meaning only."""
+    assert "muchas promociones" in send_error_note("131049")
     assert "método de pago" in send_error_note("131042")
-    assert send_error_note("999999") == "Meta rechazó el envío (código 999999)"
+    assert send_error_note("999999") == "WhatsApp no dejó salir este mensaje"
     note = send_error_note("not_opted_in", "sin opt-in vigente al encolar")
     assert note == "No se envió: esta persona ya no acepta recibir tus mensajes"
-    assert "131042" in PAYMENT_FAILED
+    for text in (
+        PAYMENT_FAILED,
+        retry_after_label(4),
+        *(send_error_note(code) for code in ("131049", "131042", "131026", "132000", "1")),
+    ):
+        assert "código" not in text and not re.search(r"\d{6}", text), text
     assert RATE_CARD_NOTICE == "Tarifas de referencia pendientes: el costo es aproximado."
 
 
@@ -147,14 +197,71 @@ def test_audience_filter_problems(form: AudienceForm, fragment: str) -> None:
     assert data == {} and fragment in problem
 
 
-def test_pacing_and_basics() -> None:
+def test_three_steps_in_the_owners_words() -> None:
+    assert STEPS == ("Mensaje", "A quién", "Revisar")
+
+
+def test_pace_is_a_choice_with_a_default_and_explained() -> None:
     assert validate_pacing("30") == (30, "")
     assert validate_pacing("0")[1] and validate_pacing("x")[1]
-    assert pacing_hint(90, 30) == "≈ 3 min para enviar a 90 contactos."
-    assert "nombre" in validate_basics("", None)
-    assert "plantilla" in validate_basics("Promo", None)
+    assert [key for key, _label in PACE_OPTIONS] == ["10", "30", "60"]
+    assert pace_value("") == 30 and pace_value("999") == 30 and pace_value("60") == 60
+    assert sending_time(90, 30) == "unos 3 minutos"
+    assert sending_time(20, 30) == "un minuto"
+    assert sending_time(3600, 30) == "unas 2 horas"
+    assert sending_time(0, 30) == ""
+    assert pace_explanation(90, 30) == (
+        "Se envían de a poco (30 por minuto) para cuidar tu número: tarda unos 3 minutos."
+    )
+    assert PER_USER_LIMIT_NOTICE == (
+        "Si alguien ya recibió muchas promociones esta semana, WhatsApp no le entrega la tuya "
+        "y no se le cobra."
+    )
+
+
+def test_message_step_needs_an_approved_message_but_no_name() -> None:
+    assert validate_basics("", None) == "Elige uno de tus mensajes aprobados."
+    approved = dataclasses.replace(EMPTY_TEMPLATE, template_id="t", status="APPROVED")
+    assert validate_basics("", approved) == ""  # the name is optional now
     pending = dataclasses.replace(EMPTY_TEMPLATE, template_id="t", status="PENDING")
-    assert "aprobada" in validate_basics("Promo", pending)
+    assert "aprobado" in validate_basics("Promo", pending)
+    day = datetime(2026, 10, 23, tzinfo=UTC).date()
+    assert default_campaign_name(day) == "Promoción del 23 de octubre"
+    assert campaign_name("  ", day) == "Promoción del 23 de octubre"
+    assert campaign_name(" Promo ", day) == "Promo"
+
+
+def test_who_receives_it_defaults_to_everyone() -> None:
+    assert everyone_label(12) == "A todos tus clientes que aceptaron (12)"
+    assert everyone_label(-1) == "A todos tus clientes que aceptaron recibir tus mensajes"
+    everyone = audience_form_for(
+        scope=SCOPE_ALL,
+        since="2026-10-01",
+        brand_id="todas",
+        sources=(),
+        until="",
+        phone_prefixes="",
+    )
+    assert audience_filter_json(everyone) == ({}, "")  # «desde» ignored for everyone
+    since = dataclasses.replace(everyone, captured_from="2026-10-01")
+    since_form = audience_form_for(
+        scope=SCOPE_SINCE,
+        since="2026-10-01",
+        brand_id="todas",
+        sources=(),
+        until="",
+        phone_prefixes="",
+    )
+    assert since_form == since
+    assert "captured_after" in audience_filter_json(since_form)[0]
+    assert validate_scope(SCOPE_SINCE, "") == "Elige desde qué día se sumaron."
+    assert validate_scope(SCOPE_ALL, "") == ""
+
+
+def test_draft_key_reuses_an_unchanged_draft() -> None:
+    first = draft_key("t", [{"type": "body"}], {"sources": ["manual"]}, 30, "")
+    assert first == draft_key("t", [{"type": "body"}], {"sources": ["manual"]}, 30, "")
+    assert first != draft_key("t", [{"type": "body"}], {"sources": ["manual"]}, 60, "")
 
 
 # --- 3. provider ----------------------------------------------------------------------
@@ -242,7 +349,8 @@ def test_draft_estimate_launch_detail_cancel() -> None:
     campaigns.settle_outbox(second.outbox_id, status="failed", error_code="131049")
     detail = campaign_detail(TENANT, campaign_id, service=service, templates=templates)
     assert detail.detail.payment_failed
-    assert "131049" in detail.detail.retry_after_24h
+    assert "muchas promociones" in detail.detail.retry_after_24h
+    assert "131049" not in detail.detail.retry_after_24h
     assert {s.status_label for s in detail.sends} == {"Falló", "Omitido"}
     assert detail.detail.row.status_label == "Terminada"  # finalize_if_complete ran
     assert not detail.detail.can_cancel
@@ -291,5 +399,47 @@ def test_tab_renders() -> None:
     component = whatsapp_tab_campaigns.campaigns_tab()
     assert isinstance(component, rx.Component)
     rendered = str(component.render())
-    for text in ("Nueva campa", "Enviar ahora", "Cancelar campa", "Mensajes por minuto"):
-        assert text in rendered, text
+    for text in (
+        "Enviar una promoción",
+        "Enviar ahora",
+        "¿Qué mensaje envías?",
+        "¿A quién se la envías?",
+        "Revisa y envía",
+        "Más filtros",
+        "Más opciones",
+        "Solo a los que se sumaron desde…",
+        SEE_REPLIES,
+    ):
+        escaped = json.dumps(text)[1:-1]  # the render escapes non-ASCII as \\uXXXX
+        assert text in rendered or escaped in rendered.replace("\\\\", "\\"), text
+    # No pace number to type, no code on screen (m-24842996).
+    source = inspect.getsource(whatsapp_tab_campaigns)
+    assert 'type="number"' not in source
+    assert "código" not in source and "131049" not in source and "131042" not in source
+
+
+def test_ux_review_copy() -> None:
+    """m-24842996 UX review: one name for the action, a stop verb that is not «Cancelar»,
+    and the review shows the name the list will show."""
+    assert "campaña" not in PAYMENT_FAILED and "«Enviar una promoción»" in PAYMENT_FAILED
+    source = inspect.getsource(whatsapp_tab_campaigns)
+    for text in ("Detener promoción", "¿Detener la promoción?", "Sí, detenerla", "Seguir enviando"):
+        assert text in source, text
+    assert '"Cancelar"' not in source and "Con la fecha de hoy" not in source
+    assert "sin tu toque" not in source
+    assert "S.review_name" in source
+
+
+def test_ux_review_names_and_jumps() -> None:
+    """UX review (m-24842998): one name per place, «Ver resultados» says of which
+    promotion, and the wizard without approved messages jumps to «Mensajes aprobados»."""
+    import pathlib
+
+    here = pathlib.Path(__file__).parent
+    tab = (here / "whatsapp_tab_campaigns.py").read_text()
+    assert '"Promociones enviadas"' in tab and '"Campañas"' not in tab
+    assert "«Plantillas»" not in tab and "on_click=S.create_approved_message" in tab
+    assert tab.count('"aria-label": "Ver resultados de " + c.name') == 2
+    state = (here / "whatsapp_campaigns_state.py").read_text()
+    start = state.index("def create_approved_message(")
+    assert "WhatsAppState.select_tab(TAB_TEMPLATES)" in state[start : start + 800]

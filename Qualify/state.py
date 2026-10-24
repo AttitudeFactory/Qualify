@@ -426,6 +426,17 @@ class DashboardState(rx.State):
         await self._restart()
 
     @rx.event
+    async def clear_filters(self) -> None:
+        """m-24842961 (N8): «Quitar filtros» on «Ninguna mención coincide…» — the account,
+        origin, sentiment and search back to everything; the period stays (it is the
+        scope, with its own way out on «No hay menciones en este periodo»)."""
+        self.account_filter = ALL_ACCOUNTS
+        self.origin_filter = ALL_ORIGINS
+        self.sentiment_filter = ALL_SENTIMENTS
+        self.search_query = ""
+        await self._restart()
+
+    @rx.event
     async def go_to_page(self, page: str) -> None:
         """Same snapshot, another page: no row can repeat or be skipped. Page 1 takes a
         new snapshot: what arrived meanwhile shows at once."""

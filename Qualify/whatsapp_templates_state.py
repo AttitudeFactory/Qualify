@@ -9,9 +9,12 @@ the selected number, so it fires on tab entry and on every number switch. Guarde
 `loaded_for`/`loading_for` (React may mount twice in dev). The list is the Postgres
 mirror (no Graph call); «Ver si ya las aprobaron» is the only read that reaches Meta.
 
-**The form** is local and synchronous: every keystroke is a foreground handler and the
-preview/validation are computed vars over plain strings. Nothing reaches Meta until
-«Enviar a revisión», and a duplicate `(name, language)` is refused by the service before
+**The form** (m-24842997) is four steps — ¿Qué quieres avisar? → Escribe el mensaje →
+Botones → Así lo verá tu cliente — local and synchronous: every keystroke is a foreground
+handler and the preview/validation are computed vars over plain strings. The owner never
+types `{{…}}` nor an underscore: the name button inserts «[nombre]», Meta's example and
+internal name are filled in by `whatsapp_templates_vm`. Nothing reaches Meta until
+«Enviar a aprobación», and a duplicate `(name, language)` is refused by the service before
 it spends one of the WABA's 100 creations/hour.
 
 Every Postgres or Graph call runs in a background event (same rule as `WhatsAppState`).
@@ -46,23 +49,30 @@ from .whatsapp_templates_provider import (
 from .whatsapp_templates_vm import (
     BUTTON_KIND_KEYS,
     BUTTONS_NONE,
-    CATEGORY_KEYS,
     CATEGORY_MARKETING,
     DEFAULT_LANGUAGE,
+    GUIDED_CATEGORIES,
+    GUIDED_CATEGORY_KEYS,
     LANGUAGE_KEYS,
-    REVIEW_NOTICE,
-    ExampleFieldVM,
+    MAX_BODY_CHARS,
+    STEP_KIND,
+    STEP_REVIEW,
+    STEPS,
+    SUBMITTED_MESSAGE,
     TemplateForm,
     TemplateVM,
-    body_variables,
-    example_fields,
+    auto_label,
+    display_name,
+    insert_name,
+    language_label,
     preview_body,
     preview_buttons,
-    suggest_name,
     sync_report_message,
+    template_name,
+    validate_step,
     validate_template_form,
 )
-from .whatsapp_vm import graph_error_notice
+from .whatsapp_vm import TAB_CHATS, TAB_CONTACTS, graph_error_notice
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +84,16 @@ _NO_NUMBER = "Este número ya no está conectado. Actualizamos la lista de núme
 _NO_CREDENTIAL = (
     "Falta el acceso de Meta para este número. Pide al equipo de Qualify que vuelva a conectarlo."
 )
-_ALREADY_EXISTS = "Ya hay una plantilla con ese nombre e idioma en este número."
+_ALREADY_EXISTS = (
+    "Ya hay un mensaje con ese nombre en este número. Cámbialo en «Más opciones» del paso 2."
+)
 _GONE = "Esa plantilla ya no está en este número. Actualizamos la lista."
-_CREATED = "Plantilla enviada a revisión. " + REVIEW_NOTICE
+_CREATED = SUBMITTED_MESSAGE
 _DELETED = "Plantilla eliminada en Meta (con todos sus idiomas)."
-_INVALID = "Revisa la plantilla: Meta no la aceptaría así."
+_INVALID = "Revisa el mensaje: Meta no lo aceptaría así. Vuelve al paso 2 y corrígelo."
 
-_TEXT_FIELDS = frozenset({"name", "header", "body", "footer", "url_text", "url"})
+_TEXT_FIELDS = frozenset({"label", "header", "body", "footer", "url_text", "url"})
+_CATEGORY_TITLE: dict[str, str] = {key: label for key, label, _h in GUIDED_CATEGORIES}
 _INFRA_ERRORS = (httpx.HTTPError, SQLAlchemyError)
 
 
@@ -112,10 +125,12 @@ class WhatsAppTemplatesState(rx.State):
     syncing: bool = False
     deleting_id: str = ""
 
-    # -- «Nueva plantilla» -------------------------------------------------------------
+    # -- «Crear un mensaje» (m-24842997: four steps, nothing technical to type) ------
     form_open: bool = False
+    step: int = STEP_KIND
+    form_done: bool = False  # sent to Meta: the drawer shows the notice + next step (N3)
     form_category: str = CATEGORY_MARKETING
-    form_name: str = ""
+    form_label: str = ""  # the owner's own name for the message ("" → `auto_label`)
     form_language: str = DEFAULT_LANGUAGE
     form_header: str = ""
     form_body: str = ""
@@ -126,19 +141,24 @@ class WhatsAppTemplatesState(rx.State):
     form_quick_3: str = ""
     form_url_text: str = ""
     form_url: str = ""
-    form_examples: dict[str, str] = {}
     form_error: str = ""
     form_error_tone: str = "warn"
+    form_resumed: bool = False  # reopened with a saved draft: «Seguimos donde lo dejaste.»
     submitting: bool = False
 
     # ==================================================================================
     # Computed vars
     # ==================================================================================
 
+    def _name(self) -> str:
+        """Meta's internal name, from the owner's words; never one this number used."""
+        taken = {t.name for t in self.templates}
+        return template_name(self.form_label, self.form_category, self.form_body, taken)
+
     def _form(self) -> TemplateForm:
         return TemplateForm(
             category=self.form_category,
-            name=self.form_name,
+            name=self._name(),
             language=self.form_language,
             header=self.form_header,
             body=self.form_body,
@@ -147,7 +167,6 @@ class WhatsAppTemplatesState(rx.State):
             quick_replies=(self.form_quick_1, self.form_quick_2, self.form_quick_3),
             url_text=self.form_url_text,
             url=self.form_url,
-            examples=dict(self.form_examples),
         )
 
     @rx.var
@@ -167,8 +186,29 @@ class WhatsAppTemplatesState(rx.State):
         return validate_template_form(self._form())
 
     @rx.var
-    def form_examples_fields(self) -> list[ExampleFieldVM]:
-        return example_fields(self._form())
+    def step_problem(self) -> str:
+        return validate_step(self._form(), self.step)
+
+    @rx.var
+    def completed_steps(self) -> list[bool]:
+        return [index < self.step for index in range(len(STEPS))]
+
+    @rx.var
+    def label_placeholder(self) -> str:
+        """What the message is called if the owner names nothing in «Más opciones»."""
+        return auto_label(self.form_category, self.form_body)
+
+    @rx.var
+    def form_display_name(self) -> str:
+        return display_name(self._name())
+
+    @rx.var
+    def form_kind_label(self) -> str:
+        return _CATEGORY_TITLE.get(self.form_category, "")
+
+    @rx.var
+    def form_language_label(self) -> str:
+        return language_label(self.form_language)
 
     @rx.var
     def preview_header(self) -> str:
@@ -176,7 +216,7 @@ class WhatsAppTemplatesState(rx.State):
 
     @rx.var
     def preview_text(self) -> str:
-        return preview_body(self.form_body, self.form_examples)
+        return preview_body(self.form_body)
 
     @rx.var
     def preview_footer(self) -> str:
@@ -188,7 +228,7 @@ class WhatsAppTemplatesState(rx.State):
 
     @rx.var
     def body_count(self) -> str:
-        return f"{len(self.form_body.strip())}/1024"
+        return f"{len(self.form_body.strip())}/{MAX_BODY_CHARS}"
 
     # ==================================================================================
     # Loading
@@ -220,7 +260,7 @@ class WhatsAppTemplatesState(rx.State):
                 self.templates = []
                 self.loaded_for = ""
                 self.banner = ""
-                self._close_form()
+                self._reset_form()  # a draft belongs to the number it was written for
             self.loading_for = connection_id
         if tenant_id is None:
             async with self:
@@ -322,10 +362,15 @@ class WhatsAppTemplatesState(rx.State):
     # The form
     # ==================================================================================
 
-    def _close_form(self) -> None:
+    def _reset_form(self) -> None:
+        """Forget every answer. Only after «Enviar a aprobación», «Empezar de nuevo» or a
+        number switch — closing the drawer keeps the draft (N6)."""
         self.form_open = False
+        self.form_resumed = False
+        self.step = STEP_KIND
+        self.form_done = False
         self.form_category = CATEGORY_MARKETING
-        self.form_name = ""
+        self.form_label = ""
         self.form_language = DEFAULT_LANGUAGE
         self.form_header = ""
         self.form_body = ""
@@ -334,25 +379,115 @@ class WhatsAppTemplatesState(rx.State):
         self.form_quick_1 = self.form_quick_2 = self.form_quick_3 = ""
         self.form_url_text = ""
         self.form_url = ""
-        self.form_examples = {}
         self.form_error = ""
+
+    def _has_draft(self) -> bool:
+        """Whether the owner already answered something worth resuming."""
+        texts = (
+            self.form_label,
+            self.form_header,
+            self.form_body,
+            self.form_footer,
+            self.form_quick_1,
+            self.form_quick_2,
+            self.form_quick_3,
+            self.form_url_text,
+            self.form_url,
+        )
+        return (
+            self.step != STEP_KIND
+            or self.form_category != CATEGORY_MARKETING
+            or self.form_language != DEFAULT_LANGUAGE
+            or self.form_button_kind != BUTTONS_NONE
+            or any(value.strip() for value in texts)
+        )
 
     @rx.event
     def open_form(self) -> None:
-        self._close_form()
+        """«Crear un mensaje»: resumes a saved draft on the step it was left, else a
+        blank form."""
+        if self.form_done or not self._has_draft():
+            self._reset_form()
+            self.form_open = True
+            return
+        self.form_resumed = True
+        self.form_error = ""
+        self.form_open = True
+
+    @rx.event
+    def restart_form(self) -> None:
+        """«Empezar de nuevo»: the only way, besides sending, to drop the draft."""
+        if self.submitting:
+            return
+        self._reset_form()
         self.form_open = True
 
     @rx.event
     def set_form_open(self, is_open: bool) -> None:
-        """The drawer's `on_open_change` (Esc, backdrop, ✕). Closing discards the draft."""
-        if not is_open and not self.submitting:
-            self._close_form()
+        """The drawer's `on_open_change` (Esc, backdrop, ✕). Closing keeps the draft
+        (N6: a stray tap outside on a phone must not erase it); once sent, it is done."""
+        if is_open or self.submitting:
+            return
+        if self.form_done:
+            self._reset_form()
+            return
+        self.form_open = False
+        self.form_resumed = False
 
     @rx.event
     def set_category(self, category: str | list[str]) -> None:
-        if isinstance(category, str) and category in CATEGORY_KEYS:
+        if isinstance(category, str) and category in GUIDED_CATEGORY_KEYS:
             self.form_category = category
             self.form_error = ""
+
+    # -- the steps (N6: «Atrás» never loses an answer) ---------------------------------
+
+    def _busy(self) -> bool:
+        return self.submitting or self.form_done
+
+    @rx.event
+    def next_step(self) -> None:
+        if self._busy() or self.step >= STEP_REVIEW:
+            return
+        problem = validate_step(self._form(), self.step)
+        if problem:
+            self.form_error, self.form_error_tone = problem, "warn"
+            return
+        self.form_error = ""
+        self.form_resumed = False
+        self.step += 1
+
+    @rx.event
+    def back(self) -> None:
+        if self.step > STEP_KIND and not self._busy():
+            self.step -= 1
+            self.form_error = ""
+
+    @rx.event
+    def go_to_step(self, index: int) -> None:
+        """The stepper: only back to a step already completed."""
+        if isinstance(index, int) and 0 <= index < self.step and not self._busy():
+            self.step = index
+            self.form_error = ""
+
+    @rx.event
+    def add_name(self) -> None:
+        """«Agregar el nombre del cliente»: the owner never types the variable."""
+        self.form_body = insert_name(self.form_body)
+        self.form_error = ""
+
+    @rx.event
+    def see_contacts(self) -> rx.event.EventSpec:
+        """N3 after a promotion: close the drawer, open «Contactos» (the clients who
+        accepted your promotions)."""
+        self._reset_form()
+        return WhatsAppState.select_tab(TAB_CONTACTS)
+
+    @rx.event
+    def see_chats(self) -> rx.event.EventSpec:
+        """N3 after «Un aviso de pedido»: it is sent from that client's chat."""
+        self._reset_form()
+        return WhatsAppState.select_tab(TAB_CHATS)
 
     @rx.event
     def set_language(self, language: str) -> None:
@@ -367,16 +502,11 @@ class WhatsAppTemplatesState(rx.State):
     @rx.event
     def set_field(self, field: str, value: str) -> None:
         """One setter for the free-text fields; anything outside the whitelist is junk.
-        The name is folded to Meta's alphabet as it is typed («Promo Octubre» →
-        «promo_octubre»), so the rule is shown, not just enforced."""
+        `label` is the owner's own name for the message, in their words: Meta's
+        internal name is derived from it (`template_name`), never typed."""
         if field not in _TEXT_FIELDS or not isinstance(value, str):
             return
-        if field == "name":
-            value = suggest_name(value) if value.strip() else ""
         setattr(self, f"form_{field}", value)
-        if field == "body":
-            names = set(body_variables(value))
-            self.form_examples = {k: v for k, v in self.form_examples.items() if k in names}
         self.form_error = ""
 
     @rx.event
@@ -384,16 +514,12 @@ class WhatsAppTemplatesState(rx.State):
         if index in (1, 2, 3) and isinstance(value, str):
             setattr(self, f"form_quick_{index}", value)
 
-    @rx.event
-    def set_example(self, name: str, value: str) -> None:
-        if name in body_variables(self.form_body) and isinstance(value, str):
-            self.form_examples = {**self.form_examples, name: value}
-
     @rx.event(background=True)
     async def submit(self) -> AsyncIterator[rx.event.EventSpec]:
-        """«Enviar a revisión»: validate, create at Meta, mirror, list."""
+        """«Enviar a aprobación»: validate, create at Meta, mirror, list. The drawer stays
+        open on the exact notice and the next step (N3)."""
         async with self:
-            if self.submitting:
+            if self.submitting or self.form_done or self.step != STEP_REVIEW:
                 return
             form = self._form()
             problem = validate_template_form(form)
@@ -436,7 +562,7 @@ class WhatsAppTemplatesState(rx.State):
             return
         async with self:
             self.submitting = False
-            self._close_form()
+            self.form_done = True
             self.templates = [
                 created,
                 *[t for t in self.templates if t.template_id != created.template_id],

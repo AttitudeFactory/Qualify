@@ -19,7 +19,11 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.creative.service import ApprovalBlocked
-from qualify_api.planner.composition import production_planner_service, tenant_timezone
+from qualify_api.planner.composition import (
+    production_planner_service,
+    production_post_reader,
+    tenant_timezone,
+)
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
 from qualify_api.planner.heartbeat import production_heartbeat_store, worker_covers
@@ -57,7 +61,7 @@ from qualify_api.planner.service import (
 
 from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
-from .creative_provider import default_brand_id
+from .creative_provider import default_brand_id, final_video_state
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
@@ -260,6 +264,7 @@ def _post_option(
     connections: dict[str, tuple[str, str]] | None = None,
     thumbnails: dict[str, str | None] | None = None,
     video_url: str = "",
+    final_rendering: bool = False,
 ) -> PostOptionVM:
     """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
     so each chip can say when and where that output goes out. `video_url` is the
@@ -309,7 +314,35 @@ def _post_option(
         event_count=post.event_count,
         retention_state=post.retention_state,
         purge_days_left=post.purge_days_left,
+        final_rendering=final_rendering,
     )
+
+
+#: What the publishability gate says of a post whose video is still a preview (its final
+#: being made, failed or never ordered) — `publishable.R.MEDIA_DRAFT_PENDING`.
+_DRAFT_PENDING_TEXT = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
+
+
+def _draft_pending(post: PostSummary) -> bool:
+    if post.unpublishable_reason == _DRAFT_PENDING_TEXT:
+        return True
+    return any(o.unpublishable_reason == _DRAFT_PENDING_TEXT for o in post.outputs)
+
+
+def _final_rendering(tenant_id: UUID, post: PostSummary) -> bool:
+    """An approved post held back by a video final being made right now (m-24842981,
+    finding 8: «Preparando el video final» on its card) — not one that failed, which
+    stays «Le falta algo» and opens the page with «Intentar de nuevo». Only posts the
+    gate already holds for a preview are asked (the same light read as the final
+    poll); a failed read leaves the card as it was. Blocking (DB)."""
+    if not _draft_pending(post):
+        return False
+    try:
+        video = final_video_state(tenant_id, post.post_id)
+    except Exception as exc:  # noqa: BLE001 — one card's extra state never breaks the grid
+        logger.warning("gallery final state read failed: %s", type(exc).__name__)
+        return False
+    return video is not None and video.rendering
 
 
 def event_destination(event: EventRecord, post: PostSummary | None) -> str:
@@ -329,6 +362,15 @@ def event_destination(event: EventRecord, post: PostSummary | None) -> str:
 class GalleryData:
     posts: list[PostOptionVM] = field(default_factory=list)
     categories: list[CategoryOptionVM] = field(default_factory=list)
+
+
+def times_published(tenant_id: UUID, post_id: UUID) -> int | None:
+    """How many times this publication already went out (m-24842981: the help under
+    «Ya probada» / «Por probar» on its own page), from the same reader the gallery uses
+    (RLS-scoped). None when it is not a publication of this tenant. Blocking (DB) —
+    run off the event loop."""
+    post = production_post_reader().get(tenant_id=tenant_id, post_id=post_id)
+    return post.times_published if post is not None else None
 
 
 def load_gallery(tenant_id: UUID) -> GalleryData:
@@ -355,6 +397,7 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
             connections=index,
             thumbnails={str(p.post_id): _thumbnail_url(tenant_id, p.thumbnail_url)},
             video_url=videos.get(str(p.post_id), ""),
+            final_rendering=_final_rendering(tenant_id, p),
         )
         for p in posts
     ]

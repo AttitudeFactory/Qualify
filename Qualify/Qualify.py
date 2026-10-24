@@ -45,6 +45,7 @@ from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
 from .piece_download import router as piece_download_router
+from .planner_back import WeekBackState
 from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publish_hub_state import PublishHubState
@@ -140,7 +141,18 @@ app = rx.App(
     # 2026-10-08, PR #101. The sidebar's `assets/glass-nav.js` is loaded by the rail
     # itself (`ui.layout.sidebar`, an async `<script>` React hoists), independent of
     # the Reflex version.
-    head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
+    head_components=[
+        rx.script(src="/deck-drag.js"),
+        rx.script(src="/rank-drag.js"),
+        # m-24842964 (NAV-7): Reflex's own viewport meta plus `viewport-fit=cover`, so
+        # `env(safe-area-inset-*)` reports the gesture bar and the phone's bottom bar
+        # sits above it (docs/design-system.md §4.4). Declaring a viewport meta here is
+        # what makes Reflex skip its default one — never two in the head.
+        rx.el.meta(
+            name="viewport",
+            content="width=device-width, initial-scale=1, viewport-fit=cover",
+        ),
+    ],
 )
 
 
@@ -444,7 +456,12 @@ app.add_page(
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
-    on_load=[AuthState.require_login, CreativeState.load_draft, CampaignState.load],
+    on_load=[
+        AuthState.require_login,
+        WeekBackState.read,  # m-24842987: «‹ Tu semana» when opened from there
+        CreativeState.load_draft,
+        CampaignState.load,
+    ],
     title="Qualify · Revisar publicación",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).

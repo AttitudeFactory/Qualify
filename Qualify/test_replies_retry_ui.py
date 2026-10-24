@@ -198,7 +198,7 @@ async def test_a_passing_failure_is_left_to_its_card_with_a_toast(
     events = await _collect(state._decide_and_send(_DRAFT, decision="accepted", final_text=None))
     assert RepliesState.load_pending_drafts in events  # the card comes with the re-read
     assert state.action_error == ""
-    assert len(events) == 2  # the re-read and the toast
+    assert len(events) == 3  # the re-read, the menu count and the toast
 
 
 @pytest.mark.asyncio
