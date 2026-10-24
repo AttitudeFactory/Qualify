@@ -1,4 +1,5 @@
-"""«Consultas desde comentarios» (m-24789646, PR 3): the second view of `/conversations`.
+"""«Consultas desde comentarios» (m-24789646, PR 3): the «Quieren comprar» tab of
+`/responder` (and the second view of the legacy `/conversations`).
 
 Each card is one commercial query found in Interacciones: who wrote it and on which post,
 the intents detected (in the warning tone and «revísalo» when the class is not backed
@@ -11,6 +12,21 @@ each route, an unverified capability included. Work in progress is the button's 
 With `public_notice` on, a comment's card also shows the public notice (PR 4): a box to
 include it and its text, editable, approved in the same click as the message. Without the
 capability the block is not rendered at all.
+
+**Three steps** (m-24842991, ATENDER-6, guide N3/N6/N12): ① «Qué preguntó» (who, where,
+the comment) ② «Qué le respondes» (the draft, already written, and «Otra idea») ③ «Revisa
+y aprueba» («Le llega a @ana por mensaje privado.», the notice ticked by default) →
+«Aprobar y enviar». «Atrás» keeps what was written. Approving shows «Listo. Le
+escribiste a @ana. ¿Seguimos con la siguiente?» with «Siguiente» and «Volver a
+comentarios». No tooltips: what used to hide behind an info icon is visible text. Every
+button is at least 44 px tall and the rows wrap, so a 360 px phone gets one column.
+
+**Whether it went out** (m-24849131, ATENDER-10): after «Aprobar y enviar» the card stays
+as «Enviando a @ana…» (the kit's spinner, what was asked and what was written) until the
+send ends: «Listo…» with the next step, or «No pudimos enviarle el mensaje a @ana.
+Instagram no lo aceptó.» (error tone) / «No sabemos si salió. Revísalo en Instagram.»
+(warning tone). A card that did not go out stays at the top of the list, with
+«Entendido» to put it away. There is no «Reintentar» here (ATENDER-9 decides it).
 """
 
 from __future__ import annotations
@@ -18,12 +34,28 @@ from __future__ import annotations
 import reflex as rx
 
 from .followups_state import FollowupsState
-from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, FollowupCardVM, FollowupIntentVM
+from .followups_vm import (
+    ANOTHER_IDEA,
+    COMMENTS_HREF,
+    STEP_ASKED,
+    STEP_REPLY,
+    STEP_REVIEW,
+    SUGGEST_ONE,
+    VIEW_MESSAGES,
+    VIEW_QUERIES,
+    FollowupCardVM,
+    FollowupIntentVM,
+    UndeliveredVM,
+    step_label,
+)
 from .inbox_vm import UNSURE_INTENT_NOTE
-from .ui import callout, card, empty_state, skeleton_rows, tone_badge
+from .ui import callout, card, empty_state, loading_spinner, skeleton_rows, tone_badge
 from .ui import tokens as T
 
 F = FollowupsState
+
+#: N12: every target on the card is at least 44 px tall.
+_TAP: dict[str, str] = {"min_height": "44px"}
 
 
 def followups_toggle() -> rx.Component:
@@ -48,6 +80,8 @@ def _intent_chip(chip: FollowupIntentVM) -> rx.Component:
 
 
 def _origin(c: FollowupCardVM) -> rx.Component:
+    """Step 1, «Qué preguntó»: who, when, on which publication (linked back to it) and
+    the comment itself."""
     where = rx.cond(
         c.permalink != "",
         rx.link(c.origin_label, href=c.permalink, is_external=True, size="1"),
@@ -73,6 +107,7 @@ def _origin(c: FollowupCardVM) -> rx.Component:
             width="100%",
             align="center",
             spacing="3",
+            wrap="wrap",
         ),
         rx.cond(
             c.caption != "",
@@ -106,58 +141,75 @@ def _origin(c: FollowupCardVM) -> rx.Component:
     )
 
 
+def _asked_summary(c: FollowupCardVM) -> rx.Component:
+    """Steps 2 and 3 keep the question in sight, in one line."""
+    return rx.text(
+        rx.text.strong(c.author),
+        " preguntó: «" + c.comment_text + "»",
+        size="1",
+        color=T.TEXT_MUTED,
+    )
+
+
+def _blocked(c: FollowupCardVM) -> rx.Component:
+    return rx.callout.root(
+        rx.callout.icon(rx.icon("ban")),
+        rx.vstack(
+            rx.text("No disponible todavía: ahora no hay forma de escribirle.", size="1"),
+            rx.foreach(c.blocked_reasons, lambda r: rx.text("• " + r, size="1")),
+            spacing="1",
+        ),
+        variant="surface",
+        size="1",
+        width="100%",
+        **T.tone_scheme("warn"),
+    )
+
+
 def _route(c: FollowupCardVM) -> rx.Component:
+    """Step 3, in words: who gets it and how, how long it is still possible and the
+    route's rule — visible text, never behind a hover-only icon (N12)."""
     return rx.cond(
         c.route_available,
-        rx.hstack(
-            rx.icon("send", size=T.ICON_SM, color=T.TEXT_MUTED),
-            rx.text("Saldrá como ", rx.text.strong(c.route_label), size="1"),
-            rx.cond(
-                c.route_deadline != "",
-                tone_badge(c.route_deadline, "info", icon="clock"),
-                rx.fragment(),
+        rx.vstack(
+            rx.hstack(
+                rx.icon("send", size=T.ICON_SM, color=T.TEXT_MUTED),
+                rx.text(c.recipient_line, size="2", weight="medium"),
+                rx.cond(
+                    c.route_deadline != "",
+                    tone_badge(c.route_deadline, "info", icon="clock"),
+                    rx.fragment(),
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
             ),
-            rx.tooltip(rx.icon("info", size=T.ICON_SM, color=T.TEXT_FAINT), content=c.route_note),
-            spacing="2",
-            align="center",
-            wrap="wrap",
-        ),
-        rx.callout.root(
-            rx.callout.icon(rx.icon("ban")),
-            rx.vstack(
-                rx.text("No disponible todavía: ahora no hay forma de escribirle.", size="1"),
-                rx.foreach(c.blocked_reasons, lambda r: rx.text("• " + r, size="1")),
-                spacing="1",
-            ),
-            variant="surface",
-            size="1",
+            rx.text(c.route_note, size="1", color=T.TEXT_MUTED),
+            spacing="1",
             width="100%",
-            **T.tone_scheme("warn"),
         ),
+        _blocked(c),
     )
 
 
 def _draft(c: FollowupCardVM) -> rx.Component:
+    """Step 2, «Qué le respondes»: the draft already written, editable."""
     busy = F.busy_id == c.followup_id
     return rx.vstack(
-        rx.hstack(
-            rx.text("Borrador del mensaje privado", size="1", weight="medium"),
-            rx.cond(
-                c.needs_review,
-                tone_badge("Requiere revisión", "warn", icon="triangle-alert"),
-                rx.fragment(),
-            ),
-            spacing="2",
-            align="center",
+        rx.cond(
+            c.needs_review,
+            tone_badge("Requiere revisión", "warn", icon="triangle-alert"),
+            rx.fragment(),
         ),
         rx.text_area(
             value=F.edits[c.followup_id],
             on_change=lambda text: F.set_edit(c.followup_id, text),
-            placeholder=rx.cond(c.has_draft, "", "Sin borrador: escribe el mensaje o genera uno."),
+            placeholder="Escribe tu respuesta o toca «" + SUGGEST_ONE + "».",
             rows="4",
             max_length=1000,
             width="100%",
             disabled=busy,
+            aria_label="Qué le respondes",
         ),
         rx.cond(
             c.unsupported_claims.length() > 0,
@@ -174,37 +226,42 @@ def _draft(c: FollowupCardVM) -> rx.Component:
 
 
 def _notice(c: FollowupCardVM) -> rx.Component:
-    """The public notice under the comment (PR 4) — only when the card offers it."""
+    """The public notice under the comment (PR 4) — only when the card offers it. Ticked
+    by default; what it does is said in the label and the line under it, not a tooltip."""
     busy = F.busy_id == c.followup_id
     on = F.notice_on[c.followup_id]
     return rx.cond(
         c.notice_available,
         rx.vstack(
-            rx.hstack(
-                rx.checkbox(
-                    "Publicar también un aviso en el comentario",
-                    checked=on,
-                    on_change=lambda checked: F.set_notice_on(c.followup_id, checked),
-                    size="2",
-                    disabled=busy,
-                ),
-                rx.tooltip(
-                    rx.icon("info", size=T.ICON_SM, color=T.TEXT_FAINT),
-                    content=(
-                        "Una respuesta pública al comentario. Se publica solo cuando el mensaje "
-                        "privado salga; si no sale, no se publica."
-                    ),
-                ),
-                spacing="2",
-                align="center",
+            rx.checkbox(
+                # Fixed label (UX review): the box below holds the live text.
+                "También dejamos “" + c.notice_default + "” en su comentario.",
+                checked=on,
+                on_change=lambda checked: F.set_notice_on(c.followup_id, checked),
+                size="3",
+                disabled=busy,
             ),
-            rx.input(
-                value=F.notice_edits[c.followup_id],
-                on_change=lambda text: F.set_notice_edit(c.followup_id, text),
-                max_length=300,
-                width="100%",
-                disabled=busy | ~on,
-                aria_label="Texto del aviso público",
+            rx.cond(
+                on,
+                rx.vstack(
+                    rx.input(
+                        value=F.notice_edits[c.followup_id],
+                        on_change=lambda text: F.set_notice_edit(c.followup_id, text),
+                        max_length=300,
+                        width="100%",
+                        size="3",
+                        disabled=busy,
+                        aria_label="Texto del aviso en su comentario",
+                    ),
+                    rx.text(
+                        "Se publica en su comentario solo cuando el mensaje privado salga.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    width="100%",
+                ),
+                rx.fragment(),
             ),
             spacing="2",
             width="100%",
@@ -213,66 +270,353 @@ def _notice(c: FollowupCardVM) -> rx.Component:
     )
 
 
-def _actions(c: FollowupCardVM) -> rx.Component:
+def _row(*children: rx.Component) -> rx.Component:
+    return rx.hstack(*children, width="100%", align="center", wrap="wrap", spacing="2")
+
+
+def _back(c: FollowupCardVM, step: int) -> rx.Component:
+    return rx.button(
+        rx.icon("arrow-left", size=T.ICON_SM),
+        "Atrás",
+        variant="soft",
+        color_scheme="gray",
+        size="2",
+        disabled=F.busy_id != "",
+        on_click=F.go_step(c.followup_id, step),
+        **_TAP,
+    )
+
+
+def _forward(c: FollowupCardVM, step: int, blank: rx.Var | bool = False) -> rx.Component:
+    return rx.button(
+        "Siguiente",
+        rx.icon("arrow-right", size=T.ICON_SM),
+        size="2",
+        disabled=(F.busy_id != "") | blank,
+        on_click=F.go_step(c.followup_id, step),
+        **_TAP,
+    )
+
+
+def _to_comments() -> rx.Component:
+    """Step 1 when nobody can be written to: a way out instead of two dead steps."""
+    return rx.link(
+        rx.button(
+            rx.icon("arrow-left", size=T.ICON_SM),
+            "Volver a comentarios",
+            variant="soft",
+            size="2",
+            **_TAP,
+        ),
+        href=COMMENTS_HREF,
+    )
+
+
+def _step_asked(c: FollowupCardVM) -> rx.Component:
+    busy = F.busy_id == c.followup_id
+    return rx.vstack(
+        _origin(c),
+        # UX review: say it on step 1, not after the whole message is written.
+        rx.cond(c.route_available, rx.fragment(), _blocked(c)),
+        _row(
+            rx.button(
+                rx.icon("x", size=T.ICON_SM),
+                "Descartar",
+                variant="ghost",
+                color_scheme="gray",
+                size="2",
+                loading=busy & (F.busy_action == "discard"),
+                disabled=F.busy_id != "",
+                on_click=F.discard(c.followup_id),
+                **_TAP,
+            ),
+            rx.spacer(),
+            rx.cond(c.route_available, _forward(c, STEP_REPLY), _to_comments()),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _step_reply(c: FollowupCardVM) -> rx.Component:
     busy = F.busy_id == c.followup_id
     acting = F.busy_id != ""
-    return rx.hstack(
-        rx.cond(
-            c.has_draft,
-            rx.button(
-                rx.icon("refresh-cw", size=T.ICON_SM),
-                "Regenerar",
-                variant="soft",
-                size="2",
-                loading=busy & (F.busy_action == "regenerate"),
-                disabled=acting,
-                on_click=F.regenerate(c.followup_id),
-            ),
-            rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                "Generar borrador",
-                variant="soft",
-                size="2",
-                loading=busy & (F.busy_action == "generate"),
-                disabled=acting,
-                on_click=F.generate(c.followup_id),
-            ),
-        ),
+    # go_step still refuses an empty message; this only says so before the tap.
+    empty = F.edits[c.followup_id].strip() == ""
+    idea = rx.cond(
+        c.has_draft,
         rx.button(
-            rx.icon("x", size=T.ICON_SM),
-            "Descartar",
-            variant="ghost",
-            color_scheme="gray",
+            rx.icon("refresh-cw", size=T.ICON_SM),
+            ANOTHER_IDEA,
+            variant="soft",
             size="2",
-            loading=busy & (F.busy_action == "discard"),
+            loading=busy & (F.busy_action == "regenerate"),
             disabled=acting,
-            on_click=F.discard(c.followup_id),
+            on_click=F.regenerate(c.followup_id),
+            **_TAP,
         ),
-        rx.spacer(),
         rx.button(
-            rx.icon("send", size=T.ICON_SM),
-            "Aprobar y enviar",
+            rx.icon("sparkles", size=T.ICON_SM),
+            SUGGEST_ONE,
+            variant="soft",
             size="2",
-            loading=busy & (F.busy_action == "approve"),
-            disabled=acting | ~c.route_available,
-            on_click=F.approve(c.followup_id),
+            loading=busy & (F.busy_action == "generate"),
+            disabled=acting,
+            on_click=F.generate(c.followup_id),
+            **_TAP,
         ),
+    )
+    return rx.vstack(
+        _asked_summary(c),
+        _draft(c),
+        _row(
+            _back(c, STEP_ASKED),
+            idea,
+            rx.spacer(),
+            _forward(c, STEP_REVIEW, blank=empty),
+        ),
+        rx.cond(
+            empty,
+            rx.text(
+                "Escribe tu respuesta o toca «" + SUGGEST_ONE + "» para seguir.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.fragment(),
+        ),
+        spacing="3",
         width="100%",
-        align="center",
-        wrap="wrap",
-        spacing="2",
+    )
+
+
+def _step_review(c: FollowupCardVM) -> rx.Component:
+    busy = F.busy_id == c.followup_id
+    return rx.vstack(
+        _asked_summary(c),
+        _route(c),
+        rx.vstack(
+            rx.text("Tu mensaje:", size="1", weight="medium", color=T.TEXT_MUTED),
+            rx.box(
+                rx.text(F.edits[c.followup_id], size="2", white_space="pre-wrap"),
+                padding="0.6rem 0.8rem",
+                border_radius=T.RADIUS_CONTROL,
+                background=T.SURFACE_BG_RAISED,
+                width="100%",
+            ),
+            rx.button(
+                rx.icon("pencil", size=T.ICON_SM),
+                "Cambiar mensaje",
+                variant="ghost",
+                size="2",
+                disabled=F.busy_id != "",
+                on_click=F.go_step(c.followup_id, STEP_REPLY),
+                **_TAP,
+            ),
+            spacing="1",
+            width="100%",
+        ),
+        _notice(c),
+        _row(
+            _back(c, STEP_REPLY),
+            rx.spacer(),
+            rx.button(
+                rx.icon("send", size=T.ICON_SM),
+                "Aprobar y enviar",
+                size="2",
+                loading=busy & (F.busy_action == "approve"),
+                disabled=(F.busy_id != "") | ~c.route_available,
+                on_click=F.approve(c.followup_id),
+                **_TAP,
+            ),
+        ),
+        spacing="3",
+        width="100%",
     )
 
 
 def _card(c: FollowupCardVM) -> rx.Component:
+    step = F.steps[c.followup_id]
     return card(
         rx.vstack(
-            _origin(c), _route(c), _draft(c), _notice(c), _actions(c), spacing="3", width="100%"
+            rx.text(
+                rx.match(
+                    step,
+                    (STEP_REPLY, step_label(STEP_REPLY)),
+                    (STEP_REVIEW, step_label(STEP_REVIEW)),
+                    step_label(STEP_ASKED),
+                ),
+                size="1",
+                weight="medium",
+                color=T.TEXT_MUTED,
+            ),
+            rx.match(
+                step,
+                (STEP_REPLY, _step_reply(c)),
+                (STEP_REVIEW, _step_review(c)),
+                _step_asked(c),
+            ),
+            spacing="3",
+            width="100%",
         ),
         id="consulta-" + c.followup_id,
         border=rx.cond(
             F.highlight_id == c.followup_id, f"2px solid {T.tone_color('accent', 8)}", "none"
         ),
+    )
+
+
+def _what_was_sent(c: FollowupCardVM) -> rx.Component:
+    """The card itself stays in view while its send is in flight or did not go out."""
+    return rx.vstack(
+        _asked_summary(c),
+        rx.text("Tu mensaje:", size="1", weight="medium", color=T.TEXT_MUTED),
+        rx.box(
+            rx.text(F.delivery_text, size="2", white_space="pre-wrap"),
+            padding="0.6rem 0.8rem",
+            border_radius=T.RADIUS_CONTROL,
+            background=T.SURFACE_BG_RAISED,
+            width="100%",
+        ),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _outcome_line() -> rx.Component:
+    """One line per outcome: sending (spinner), sent (ok), refused (error), unknown
+    (warning). Tones only, through the design system."""
+    return rx.box(
+        rx.cond(
+            F.delivery_pending,
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text(F.done_text, size="3", weight="medium"),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                F.delivery_sent,
+                rx.hstack(
+                    rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                    rx.text(F.done_text, size="3", weight="medium"),
+                    spacing="2",
+                    align="start",
+                ),
+                rx.cond(
+                    F.delivery_failed,
+                    callout(F.done_text, "error"),
+                    callout(F.done_text, "warn"),
+                ),
+            ),
+        ),
+        # UX review (m-24849131): one live region, so all four outcomes are announced.
+        role="status",
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _done() -> rx.Component:
+    """N3: the task ends with «Listo», the next query (solid) and the way back (soft;
+    solid when nobody is left) — but «Siguiente» only once the send's result is
+    known (m-24849131): while it goes out the card stays, with only the way back."""
+    return card(
+        rx.vstack(
+            _outcome_line(),
+            rx.cond(
+                F.done_note != "",
+                rx.text(F.done_note, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            rx.cond(
+                F.delivery_sent,
+                rx.fragment(),
+                rx.foreach(F.delivery_card, _what_was_sent),
+            ),
+            rx.cond(F.delivery_pending, _back_while_sending(), _done_actions()),
+            spacing="3",
+            width="100%",
+        ),
+        id="consulta-listo",
+    )
+
+
+def _back_while_sending() -> rx.Component:
+    """UX review (m-24849131, N3): while it goes out only «Siguiente» is held back —
+    the way out stays, and the result still reaches the list through `undelivered`."""
+    return _row(
+        rx.link(
+            rx.button("Volver a comentarios", variant="soft", size="2", **_TAP),
+            href=COMMENTS_HREF,
+        ),
+    )
+
+
+def _done_actions() -> rx.Component:
+    return _row(
+        rx.cond(
+            F.followups_count > 0,
+            rx.button(
+                "Siguiente",
+                rx.icon("arrow-right", size=T.ICON_SM),
+                size="2",
+                on_click=F.next_query,
+                **_TAP,
+            ),
+            rx.fragment(),
+        ),
+        rx.link(
+            rx.button(
+                "Volver a comentarios",
+                variant=rx.cond(F.followups_count > 0, "soft", "solid"),
+                size="2",
+                **_TAP,
+            ),
+            href=COMMENTS_HREF,
+        ),
+    )
+
+
+def _undelivered(u: UndeliveredVM) -> rx.Component:
+    """A card whose message did not go out stays in the list until the person says
+    «Entendido» — nothing is re-sent from here (N13)."""
+    return card(
+        rx.vstack(
+            rx.cond(u.failed, callout(u.headline, "error"), callout(u.headline, "warn")),
+            rx.text(
+                rx.text.strong(u.author),
+                " preguntó: «" + u.comment_text + "»",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.text("Tu mensaje:", size="1", weight="medium", color=T.TEXT_MUTED),
+            rx.box(
+                rx.text(u.message, size="2", white_space="pre-wrap"),
+                padding="0.6rem 0.8rem",
+                border_radius=T.RADIUS_CONTROL,
+                background=T.SURFACE_BG_RAISED,
+                width="100%",
+            ),
+            rx.cond(
+                u.next_step != "",
+                rx.text(u.next_step, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
+            _row(
+                rx.spacer(),
+                rx.button(
+                    "Entendido",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    on_click=F.dismiss_undelivered(u.followup_id),
+                    **_TAP,
+                ),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        id="consulta-no-salio-" + u.followup_id,
     )
 
 
@@ -283,21 +627,37 @@ def followups_panel() -> rx.Component:
             ~F.loaded,
             skeleton_rows(3, height="12rem"),
             rx.cond(
-                F.followups_count > 0,
-                rx.vstack(rx.foreach(F.cards, _card), spacing="3", width="100%"),
-                empty_state(
-                    "messages-square",
-                    "No hay consultas pendientes",
-                    "Cuando alguien pregunte por precios o pedidos en tus comentarios, o "
-                    "cuando elijas Escribirle en privado en «Comentarios», aparecerá aquí "
-                    "con un mensaje listo para revisar.",
-                    # N8 (m-24842961): where those questions are read.
-                    action=rx.link(
-                        rx.button("Ver comentarios", variant="soft", size="3"), href="/inbox"
-                    ),
+                F.showing_done,
+                _done(),
+                rx.vstack(
+                    rx.foreach(F.undelivered, _undelivered),
+                    _list_or_empty(),
+                    spacing="3",
+                    width="100%",
                 ),
             ),
         ),
         spacing="3",
         width="100%",
+    )
+
+
+def _list_or_empty() -> rx.Component:
+    return rx.cond(
+        F.followups_count > 0,
+        rx.vstack(rx.foreach(F.cards, _card), spacing="3", width="100%"),
+        rx.cond(
+            F.undelivered_count > 0,
+            rx.fragment(),
+            empty_state(
+                "shopping-bag",
+                "Nadie más está esperando para comprar",
+                "Cuando alguien pregunte por precios o pedidos en tus comentarios, "
+                "aparecerá aquí con un mensaje listo para que lo revises y lo envíes.",
+                action=rx.link(
+                    rx.button("Ver comentarios", size="3", min_height="44px"),
+                    href=COMMENTS_HREF,
+                ),
+            ),
+        ),
     )

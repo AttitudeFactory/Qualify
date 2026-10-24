@@ -216,9 +216,10 @@ def test_ayuda_in_the_link_opens_the_help_drawer_on_arrival() -> None:
     assert "ConnectionsState.open_support" in source
 
 
-def test_whatsapp_without_a_number_links_straight_to_the_help_form() -> None:
+def test_whatsapp_without_a_number_is_not_a_dead_end() -> None:
+    """N8 (m-24842961): the no-number state asks the team in one tap, right there."""
     from . import whatsapp_page
 
     source = inspect.getsource(whatsapp_page._no_numbers_state)
-    assert '"Pedir ayuda para conectar tu número"' in source
-    assert 'href="/connections?ayuda=1"' in source
+    assert "action=" in source
+    assert "on_click=WhatsAppState.request_connection" in source

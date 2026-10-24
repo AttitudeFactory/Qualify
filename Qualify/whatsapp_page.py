@@ -1,24 +1,26 @@
-"""`/whatsapp` (WA-12): the WhatsApp module's page shell + the Conexión, Perfil and QR tabs.
+"""`/whatsapp` (WA-12): the WhatsApp module's page shell + the «Tu número» panels
+(Estado, Perfil, Códigos QR, Actividad).
 
 Layout, per docs/design-system.md §9.1: `app_shell(page_header(...), page_body(...))`;
 every state is a TONE (`ok`/`warn`/`error`/`info`/`neutral`) through `signal_pill` /
 `tone_badge` / `callout`, never a raw Radix colour; identity through
 `platform_badge("whatsapp")`.
 
-**The shell.** Header + number selector (only when the tenant has more than one number)
-+ a tab strip (segmented control, the skinned widget the app already uses for flows —
-there is no `rx.tabs` precedent here) + the active tab's body. The body renders ONLY the
-active tab, inside a box keyed by `WhatsAppState.selected_connection_id`, so a tab's root
-`on_mount` fires on tab entry and on every number switch: that is how Perfil and QR load
-their data, and how Chats (WA-11, `whatsapp_tab_chats.py`) and Menú (WA-16,
-`whatsapp_tab_menu.py`) plug in from their own files without touching this one.
+**The shell** (m-24842998). Header + number selector (only when the tenant has more than
+one number) + four task tabs (Chats · Respuesta automática · Promociones · Tu número) +
+a second, smaller strip for the two tabs that group several panels + the active panel's
+body. From `md` up the strips are segmented controls; on a phone they are a grid of
+44 px buttons, so all four fit at 360 px without sliding sideways (N12). The body renders
+ONLY the active panel, inside a box keyed by `WhatsAppState.selected_connection_id`, so a
+panel's root `on_mount` fires on entry and on every number switch: that is how Perfil
+and QR load their data, and how Chats (WA-11, `whatsapp_tab_chats.py`) and the automatic
+reply (WA-16, `whatsapp_tab_menu.py`) plug in from their own files.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui import (
     app_shell,
     callout,
@@ -45,13 +47,25 @@ from .whatsapp_tab_contacts import contacts_tab
 from .whatsapp_tab_menu import menu_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
+    DETAILS_TOGGLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
     MAX_DESCRIPTION_CHARS,
     MAX_EMAIL_CHARS,
     MAX_QR_MESSAGE_CHARS,
     MAX_WEBSITE_CHARS,
+    NO_NUMBER_ACTION,
+    NO_NUMBER_GAINS,
+    NO_NUMBER_NEXT,
+    NO_NUMBER_TITLE,
+    NUMBER_SUBS,
+    PROMOTION_SUBS,
     QR_CHANNELS,
+    REVIEW_ACTION,
+    SECTION_NUMBER,
+    SECTION_PROMOTIONS,
+    SECTIONS,
+    TAB_ACTIVITY,
     TAB_CAMPAIGNS,
     TAB_CHATS,
     TAB_CONNECTION,
@@ -60,13 +74,16 @@ from .whatsapp_vm import (
     TAB_PROFILE,
     TAB_QR,
     TAB_TEMPLATES,
-    TABS,
     VERTICALS,
     QrCodeVM,
     WhatsAppNumberVM,
 )
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
+# N12: every target of the strips and the no-number state is at least 44 px tall.
+_TAP = {"min_height": "44px"}
+_DESKTOP_ONLY = rx.breakpoints(initial="none", md="flex")
+_PHONE_ONLY = rx.breakpoints(initial="grid", md="none")
 _PHOTO_UPLOAD_ID = "whatsapp_profile_photo"
 _PHOTO_ACCEPT = {"image/jpeg": [".jpg", ".jpeg"], "image/png": [".png"]}
 
@@ -136,26 +153,120 @@ def number_selector() -> rx.Component:
 def whatsapp_header() -> rx.Component:
     return page_header(
         "WhatsApp",
-        "Tu número de WhatsApp Business: estado de la conexión, perfil y códigos QR.",
+        "Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones.",
         number_selector(),
     )
 
 
-def tab_strip() -> rx.Component:
-    return rx.box(
-        rx.segmented_control.root(
-            *[rx.segmented_control.item(label, value=key) for key, label in TABS],
-            value=WhatsAppState.active_tab,
-            on_change=WhatsAppState.select_tab,
-            size="2",
-        ),
-        max_width="100%",
-        overflow_x="auto",
+def _phone_choice(
+    key: str, label: str, value: rx.Var[str], on_pick: rx.event.EventHandler, solid: bool
+) -> rx.Component:
+    """One tab as a button, for the phone grid. `aria-pressed` says which one is on."""
+    active = value == key
+    return rx.button(
+        label,
+        on_click=on_pick(key),
+        variant=rx.cond(active, "solid" if solid else "soft", "soft" if solid else "ghost"),
+        size="2",
+        width="100%",
+        height="auto",
+        white_space="normal",
+        padding_y="0.5rem",
+        custom_attrs={"aria-pressed": rx.cond(active, "true", "false")},
+        **_TAP,
+        **({} if solid else T.tone_scheme("neutral")),
     )
 
 
+def _choice_strip(
+    options: tuple[tuple[str, str], ...],
+    value: rx.Var[str],
+    on_pick: rx.event.EventHandler,
+    *,
+    label: str,
+    phone_columns: str,
+    solid: bool,
+    size: str,
+) -> rx.Component:
+    """N12: the same choices as a `segmented_control` from `md` up and, on a phone, as a
+    grid of buttons that all fit at 360 px without sliding sideways."""
+    return rx.fragment(
+        rx.flex(
+            rx.segmented_control.root(
+                *[rx.segmented_control.item(text, value=key) for key, text in options],
+                value=value,
+                on_change=on_pick,
+                size=size,
+            ),
+            display=_DESKTOP_ONLY,
+            width="100%",
+        ),
+        rx.grid(
+            *[_phone_choice(key, text, value, on_pick, solid) for key, text in options],
+            columns=phone_columns,
+            spacing="2",
+            display=_PHONE_ONLY,
+            width="100%",
+            role="group",
+            aria_label=label,
+        ),
+    )
+
+
+def tab_strip() -> rx.Component:
+    """The four tasks (m-24842998): Chats · Respuesta automática · Promociones · Tu
+    número. Two of them open a second, smaller strip (`sub_strip`)."""
+    return _choice_strip(
+        SECTIONS,
+        WhatsAppState.active_section,
+        WhatsAppState.select_section,
+        label="Secciones de WhatsApp",
+        phone_columns="2",
+        solid=True,
+        size="3",
+    )
+
+
+def sub_strip() -> rx.Component:
+    """Promociones › Enviadas · Mensajes aprobados · Clientes que aceptaron; Tu número ›
+    Estado · Perfil · Códigos QR · Actividad."""
+    return rx.match(
+        WhatsAppState.active_section,
+        (
+            SECTION_PROMOTIONS,
+            _choice_strip(
+                PROMOTION_SUBS,
+                WhatsAppState.active_sub,
+                WhatsAppState.select_sub,
+                label="Promociones",
+                phone_columns="3",
+                solid=False,
+                size="2",
+            ),
+        ),
+        (
+            SECTION_NUMBER,
+            _choice_strip(
+                NUMBER_SUBS,
+                WhatsAppState.active_sub,
+                WhatsAppState.select_sub,
+                label="Tu número",
+                phone_columns="2",
+                solid=False,
+                size="2",
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
+def activity_tab() -> rx.Component:
+    """Tu número › Actividad: the number's metrics (WA-14), moved out of «Estado»."""
+    return rx.vstack(metrics_block(), spacing="4", width="100%", align_items="start")
+
+
 def tab_body() -> rx.Component:
-    """Only the active tab is in the tree; the key remounts it on a number switch."""
+    """Only the active panel is in the tree; the key remounts it on a number switch."""
     return rx.box(
         rx.match(
             WhatsAppState.active_tab,
@@ -163,27 +274,59 @@ def tab_body() -> rx.Component:
             (TAB_CONNECTION, connection_tab()),
             (TAB_PROFILE, profile_tab()),
             (TAB_QR, qr_tab()),
+            (TAB_ACTIVITY, activity_tab()),
             (TAB_MENU, menu_tab()),
             (TAB_TEMPLATES, templates_tab()),
             (TAB_CONTACTS, contacts_tab()),
             (TAB_CAMPAIGNS, campaigns_tab()),
-            connection_tab(),
+            chats_tab(),
         ),
         key=WhatsAppState.selected_connection_id,
         width="100%",
     )
 
 
+def _gain(text: str) -> rx.Component:
+    return rx.hstack(
+        rx.icon("check", size=T.ICON_SM, color=T.tone_color("ok", 11), flex_shrink="0"),
+        rx.text(text, size="2", text_align="left"),
+        spacing="2",
+        align="start",
+        width="100%",
+    )
+
+
 def _no_numbers_state() -> rx.Component:
+    """N8: no dead end. What the owner gains, then one button that asks the team."""
     return empty_state(
         "message-circle",
-        "Aún no hay un número de WhatsApp conectado",
-        "Los números de WhatsApp se conectan desde la administración de Qualify. Pide al "
-        "equipo de Qualify que conecte el número de tu negocio y aparecerá aquí.",
-        # N8 (m-24842961): straight to the «Pedir ayuda 1:1» drawer of Tus redes, open.
-        action=rx.link(
-            rx.button("Pedir ayuda para conectar tu número", variant="soft", size="3"),
-            href="/connections?ayuda=1",
+        NO_NUMBER_TITLE,
+        "Con tu número conectado:",
+        action=rx.vstack(
+            rx.vstack(*[_gain(text) for text in NO_NUMBER_GAINS], spacing="2", width="100%"),
+            rx.text(NO_NUMBER_NEXT, size="2", color=T.TEXT_MUTED, text_align="center"),
+            rx.cond(
+                WhatsAppState.connect_request_notice != "",
+                callout(WhatsAppState.connect_request_notice, "ok"),
+                rx.button(
+                    rx.icon("send", size=16),
+                    NO_NUMBER_ACTION,
+                    on_click=WhatsAppState.request_connection,
+                    loading=WhatsAppState.connect_request_sending,
+                    size="3",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                    **_TAP,
+                ),
+            ),
+            rx.cond(
+                WhatsAppState.connect_request_error != "",
+                callout(WhatsAppState.connect_request_error, "error"),
+                rx.fragment(),
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+            max_width="440px",
         ),
     )
 
@@ -199,7 +342,7 @@ def _whatsapp_body() -> rx.Component:
                 rx.cond(
                     WhatsAppState.show_empty_state,
                     _no_numbers_state(),
-                    rx.vstack(tab_strip(), tab_body(), spacing="4", width="100%"),
+                    rx.vstack(tab_strip(), sub_strip(), tab_body(), spacing="3", width="100%"),
                 ),
             ),
         ),
@@ -223,17 +366,8 @@ def verify_button() -> rx.Component:
         loading=WhatsAppState.verifying,
         variant="soft",
         size="2",
+        **_TAP,
         **T.tone_scheme("neutral"),
-    )
-
-
-def _status_banner(number: rx.Var) -> rx.Component:
-    """Degraded/revoked: the administrative hint, never an OAuth «Reconectar» (WA-05)."""
-    return rx.match(
-        number.status,
-        ("degraded", callout(WHATSAPP_RECONNECT_HINT, "warn")),
-        ("revoked", callout(WHATSAPP_RECONNECT_HINT, "error", icon="circle-x")),
-        rx.fragment(),
     )
 
 
@@ -247,67 +381,109 @@ def _kv_pill(label: str, value: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
     )
 
 
+def _details(number: rx.Var) -> rx.Component:
+    """The ten Meta facts, folded behind «Ver detalles» (m-24842998)."""
+    return rx.accordion.root(
+        rx.accordion.item(
+            header=DETAILS_TOGGLE,
+            content=rx.grid(
+                rx.vstack(
+                    kv("Número", number.display_phone_number, mono=True),
+                    kv("Nombre verificado", number.verified_name),
+                    _kv_pill(
+                        "Estado del nombre", number.name_status_label, number.name_status_tone
+                    ),
+                    _kv_pill("Calidad", number.quality_label, number.quality_tone),
+                    kv("Límite de mensajes", number.tier_label),
+                    spacing="3",
+                    width="100%",
+                ),
+                rx.vstack(
+                    _kv_pill(
+                        "Estado en Meta",
+                        number.platform_status_label,
+                        number.platform_status_tone,
+                    ),
+                    kv("Marca", number.brand),
+                    kv("Última verificación", number.last_health_checked_at),
+                    kv("Datos de Meta al día", number.last_synced_at),
+                    kv("Último mensaje recibido", number.last_inbound_at),
+                    spacing="3",
+                    width="100%",
+                ),
+                columns=rx.breakpoints(initial="1", md="2"),
+                spacing="4",
+                width="100%",
+                padding_top="0.5rem",
+            ),
+            value="detalles",
+            style={"& button": {"min_height": "44px", "width": "100%"}},
+        ),
+        collapsible=True,
+        variant="ghost",
+        width="100%",
+    )
+
+
+def _review_request() -> rx.Component:
+    """N8 for a number that fails: the same support request as the no-number state."""
+    return rx.vstack(
+        rx.cond(
+            WhatsAppState.connect_request_notice != "",
+            callout(WhatsAppState.connect_request_notice, "ok"),
+            rx.button(
+                rx.icon("send", size=16),
+                REVIEW_ACTION,
+                on_click=WhatsAppState.request_connection,
+                loading=WhatsAppState.connect_request_sending,
+                size="3",
+                width=rx.breakpoints(initial="100%", sm="auto"),
+                **_TAP,
+            ),
+        ),
+        rx.cond(
+            WhatsAppState.connect_request_error != "",
+            callout(WhatsAppState.connect_request_error, "error"),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def connection_tab() -> rx.Component:
+    """Tu número › Estado: one line first (it works, or what to do), details folded."""
     number = WhatsAppState.selected_number
     return rx.vstack(
         banner(WhatsAppState.connection_banner, WhatsAppState.connection_banner_tone),
-        _status_banner(number),
         card(
             rx.vstack(
                 rx.hstack(
                     platform_badge("whatsapp"),
-                    rx.heading(number.label, size="4", as_="h2"),
+                    rx.heading(number.label, size="4", as_="h2", min_width="0"),
                     rx.spacer(),
                     rx.cond(number.status == "active", verify_button(), rx.fragment()),
-                    tone_pill(number.status_label, number.status_tone),
                     width="100%",
                     align="center",
                     wrap="wrap",
                     spacing="3",
                 ),
-                rx.divider(),
-                rx.grid(
-                    rx.vstack(
-                        kv("Número", number.display_phone_number, mono=True),
-                        kv("Nombre verificado", number.verified_name),
-                        _kv_pill(
-                            "Estado del nombre", number.name_status_label, number.name_status_tone
-                        ),
-                        _kv_pill("Calidad", number.quality_label, number.quality_tone),
-                        kv("Límite de mensajes", number.tier_label),
-                        spacing="3",
-                        width="100%",
-                    ),
-                    rx.vstack(
-                        _kv_pill(
-                            "Estado en Meta",
-                            number.platform_status_label,
-                            number.platform_status_tone,
-                        ),
-                        kv("Marca", number.brand),
-                        kv("Última verificación", number.last_health_checked_at),
-                        kv("Datos de Meta al día", number.last_synced_at),
-                        kv("Último mensaje recibido", number.last_inbound_at),
-                        spacing="3",
-                        width="100%",
-                    ),
-                    columns=rx.breakpoints(initial="1", md="2"),
-                    spacing="4",
-                    width="100%",
-                ),
-                spacing="4",
+                banner(number.health_label, number.health_tone),
+                rx.cond(WhatsAppState.number_needs_help, _review_request(), rx.fragment()),
+                _details(number),
+                spacing="3",
                 width="100%",
                 align_items="start",
             ),
-            padding="1.25rem 1.5rem",
+            padding=rx.breakpoints(initial="1rem", md="1.25rem 1.5rem"),
         ),
         rx.text(
-            "«Verificar ahora» pregunta a Meta por el acceso y por los datos del número. "
-            "Nada lo ejecuta solo.",
+            "«Verificar ahora» le pregunta a Meta si tu número sigue bien conectado. Solo "
+            "se hace cuando tú lo tocas.",
             size="1",
-            color=T.TEXT_FAINT,
+            color=T.TEXT_MUTED,
         ),
-        metrics_block(),
         spacing="4",
         width="100%",
         align_items="start",

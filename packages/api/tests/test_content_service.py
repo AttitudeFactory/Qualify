@@ -39,6 +39,7 @@ from qualify_creative.schemas import (
     BrandVoiceProfile,
     ContentBrief,
     CopyPayload,
+    LengthTargets,
     MediaInputs,
     ToneAxes,
 )
@@ -221,6 +222,9 @@ class InMemoryRepository:
         self.media: dict[UUID, list[ImageRecord]] = {}
         self.template_runs = {}
         self.recent: tuple[str, ...] | Exception = ()
+        #: how many times every media row / only the draft videos were read
+        self.media_reads = 0
+        self.draft_video_reads = 0
 
     def insert_brief_and_draft(
         self, *, tenant_id, user_id, brief, voice_profile_version, pipeline_version
@@ -387,7 +391,16 @@ class InMemoryRepository:
         return items[0] if items else None
 
     def media_for(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
+        self.media_reads += 1
         return tuple(self.media.get(draft_id) or ())
+
+    def draft_videos_for(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
+        self.draft_video_reads += 1
+        return tuple(
+            item
+            for item in self.media.get(draft_id) or ()
+            if isinstance((item.params or {}).get("draft"), dict)
+        )
 
     def brief_kind(self, *, tenant_id, brief_id):  # noqa: ANN001, ANN201
         brief = self.briefs.get(brief_id)
@@ -1838,3 +1851,39 @@ def test_an_unknown_variant_is_refused_before_the_guard_is_asked() -> None:
     with pytest.raises(UnknownVariant):
         service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=uuid4(), user_id=USER_ID)
     assert guard.checks == []
+
+
+def test_a_caption_one_character_over_is_fitted_not_rejected() -> None:
+    """2026-10-22: a clip for a real brand came back at 601 characters against a cap of
+    600 and the whole run failed as `fidelity_rejected`. A small overshoot is now fitted
+    and recorded; the draft generates."""
+    over = GOOD_CAPTION + " Pruebala hoy."
+    kit = make_kit(
+        length_targets=LengthTargets(caption_min_chars=20, caption_max_chars=len(over) - 1)
+    )
+    router = FakeRouter([ok_outcome(copy_dict(caption=over))])
+    service, repo, _ = make_service(router=router, kit=kit, voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert variant.copy["caption"] == GOOD_CAPTION
+    assert variant.fidelity["passed"] is True
+    assert variant.fidelity["adjustments"] == [
+        f"caption trimmed from {len(over)} to {len(GOOD_CAPTION)} characters to fit the"
+        f" brand maximum of {len(over) - 1}"
+    ]
+
+
+def test_a_caption_far_over_the_maximum_still_fails_fidelity() -> None:
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=20, caption_max_chars=60))
+    router = FakeRouter([ok_outcome(copy_dict())])  # GOOD_CAPTION is well past 66
+    service, repo, _ = make_service(router=router, kit=kit, voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == FAILED and draft.failure_reason == "fidelity_rejected"
+    (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert "adjustments" not in variant.fidelity

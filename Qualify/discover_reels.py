@@ -30,6 +30,10 @@ from .tenant import tenant_uuid
 from .ui import callout, card, empty_state, loading_spinner
 from .ui import tokens as T
 
+#: Under «Replicar con mi marca», always visible (m-24842980, hallazgo 6): what the
+#: button will do once it is built.
+REPLICATE_HELP = "Pronto podrás hacer tu versión de este video con tu marca."
+
 logger = logging.getLogger(__name__)
 
 
@@ -691,15 +695,39 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 align_items="start",
             ),
             _details_panel(reel),
-            rx.tooltip(
-                rx.button(
-                    rx.icon("copy", size=14),
-                    "Replicar con mi marca",
-                    size="2",
-                    width="100%",
-                    disabled=True,
+            # Not built yet: it reads as unavailable (neutral, `.q-dr-replicate` in
+            # assets/qualify-creative.css) and says «Pronto» on the button itself, as the
+            # menu does (m-24820845, m-24842980 N10). What it will do is written under it,
+            # always visible — a tooltip never shows on a phone (N12); the tooltip stays
+            # only as an extra for the mouse. A disabled button fires no pointer events,
+            # so the tooltip hangs on a wrapper; it is no tab stop.
+            rx.vstack(
+                rx.tooltip(
+                    rx.el.span(
+                        rx.button(
+                            rx.icon("copy", size=14),
+                            "Replicar con mi marca",
+                            rx.el.span("Pronto", class_name="q-dr-soon"),
+                            size="2",
+                            width="100%",
+                            variant="soft",
+                            color_scheme="gray",
+                            disabled=True,
+                            class_name="q-dr-replicate",
+                        ),
+                        class_name="q-dr-replicate-wrap",
+                    ),
+                    content=REPLICATE_HELP,
                 ),
-                content="Muy pronto: crear tu versión de este reel con tu marca",
+                rx.text(
+                    REPLICATE_HELP,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-dr-replicate-help",
+                ),
+                spacing="1",
+                width="100%",
+                align_items="start",
             ),
             spacing="2",
             width="100%",
@@ -719,6 +747,8 @@ def _toolbar() -> rx.Component:
             on_change=DiscoverReelsState.set_window,
             size="2",
             aria_label="Periodo",
+            # fits a phone's width (`.q-seg-fit`, assets/qualify.css, m-24820845)
+            class_name="q-seg-fit",
         ),
         rx.cond(
             DiscoverReelsState.shown_iso != "",
