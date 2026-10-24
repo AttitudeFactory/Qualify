@@ -45,6 +45,14 @@ class MenuCounts:
         """Every pending thing once (WhatsApp is part of `respond`)."""
         return self.respond + self.approve + self.schedule
 
+    @property
+    def more(self) -> int:
+        """What «Más» counts on the phone's bottom bar (m-24842964, NAV-7): only what
+        waits behind the drawer and is not already on the bar — Por aprobar. WhatsApp
+        chats are already inside «Por responder», and «Tu semana» carries its own
+        count, so nothing is counted twice (docs/design-system.md §4.4)."""
+        return self.approve
+
 
 def clamp(value: object) -> int:
     """A count as a non-negative int; anything unreadable reads as 0."""
@@ -87,14 +95,16 @@ def entry_aria_label(label: str, count: int) -> str:
     return f"{label}: {one if count == 1 else many.format(n=badge_text(count))}"
 
 
-def menu_button_aria_label(total: int) -> str:
-    """The phone's menu button, which carries the total of what waits."""
-    total = clamp(total)
-    if total == 0:
-        return "Abrir el menú"
-    if total == 1:
-        return "Abrir el menú. 1 cosa te espera"
-    return f"Abrir el menú. {badge_text(total)} cosas te esperan"
+def more_button_aria_label(count: int) -> str:
+    """The spoken name of «Más», the bottom bar's button that opens the menu drawer
+    (m-24842964). It starts with the visible word, then says what it does and what
+    waits inside: «Más: abrir el menú. 2 publicaciones por aprobar»."""
+    count = clamp(count)
+    if count == 0:
+        return "Más: abrir el menú"
+    if count == 1:
+        return "Más: abrir el menú. 1 publicación por aprobar"
+    return f"Más: abrir el menú. {badge_text(count)} publicaciones por aprobar"
 
 
 def count_to_approve(posts: Iterable[PostSummary]) -> int:
@@ -165,7 +175,7 @@ __all__ = [
     "clamp",
     "count_to_approve",
     "entry_aria_label",
-    "menu_button_aria_label",
+    "more_button_aria_label",
     "title_prefix",
     "title_script",
     "titled",
