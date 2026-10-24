@@ -70,6 +70,7 @@ def ghost_refresh(label: str, on_click: Any, loading: rx.Var[bool] | bool = Fals
         loading=loading,
         variant="ghost",
         size="1",
+        min_height="44px",  # N12: a thumb target, also in the section heads
         **T.tone_scheme("neutral"),
     )
 
@@ -128,3 +129,22 @@ def section_head(title: str, *actions: rx.Component) -> rx.Component:
         wrap="wrap",
         spacing="2",
     )
+
+
+# m-24842998 (N12): on a phone no table slides sideways. The same rows render twice —
+# a `rx.table` from `md` up and one `card` per row below it — and CSS shows one.
+_DESKTOP_ONLY = rx.breakpoints(initial="none", md="block")
+_PHONE_ONLY = rx.breakpoints(initial="flex", md="none")
+
+
+def table_or_cards(table: rx.Component, cards: rx.Component) -> rx.Component:
+    """`table` on a wide screen, `cards` (a `vstack` of `card`s) on a phone."""
+    return rx.fragment(
+        rx.box(table, display=_DESKTOP_ONLY, width="100%"),
+        rx.flex(cards, display=_PHONE_ONLY, direction="column", width="100%"),
+    )
+
+
+def card_line(*parts: rx.Component) -> rx.Component:
+    """One wrapped line of a phone card: «Enviada · 120 la leyeron de 128 · ≈ USD 3,00»."""
+    return rx.hstack(*parts, spacing="2", align="center", wrap="wrap", width="100%")

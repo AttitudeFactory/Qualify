@@ -47,13 +47,16 @@ from .whatsapp_campaigns_vm import (
     SendVM,
     VariableFieldVM,
 )
+from .whatsapp_chats_vm import CREATE_APPROVED_LABEL
 from .whatsapp_contacts_vm import SOURCES
 from .whatsapp_marketing_ui import (
+    card_line,
     confirm_action,
     field,
     ghost_refresh,
     retry_button,
     section_head,
+    table_or_cards,
     tone_banner,
     tone_pill,
 )
@@ -90,9 +93,10 @@ def _campaign_row(c: CampaignRowVM) -> rx.Component:
         rx.table.cell(rx.text(c.created_at, size="1", color=T.TEXT_MUTED, class_name="q-nums")),
         rx.table.cell(
             rx.button(
-                "Ver",
+                "Ver resultados",
                 rx.icon("chevron-right", size=T.ICON_SM),
                 on_click=S.open_detail(c.campaign_id),
+                custom_attrs={"aria-label": "Ver resultados de " + c.name},
                 variant="ghost",
                 size="1",
                 **T.tone_scheme("neutral"),
@@ -106,12 +110,57 @@ def _num_header(label: str) -> rx.Component:
     return rx.table.column_header_cell(label, text_align="right")
 
 
+def _campaign_card(c: CampaignRowVM) -> rx.Component:
+    """Phone (m-24842998): «Promo de octubre · Enviada · 120 la leyeron de 128 · ≈ USD
+    3,00» and «Ver» — the table's essentials, nothing sliding sideways."""
+    return card(
+        rx.vstack(
+            rx.text(c.name, size="3", weight="medium"),
+            card_line(
+                tone_pill(c.status_label, c.status_tone),
+                rx.cond(
+                    c.reach_label != "",
+                    rx.text(c.reach_label, size="2", class_name="q-nums"),
+                    rx.fragment(),
+                ),
+                rx.cond(
+                    c.cost_label != "—",
+                    rx.text("≈ " + c.cost_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                    rx.fragment(),
+                ),
+            ),
+            rx.button(
+                "Ver resultados",
+                rx.icon("chevron-right", size=T.ICON_SM),
+                on_click=S.open_detail(c.campaign_id),
+                custom_attrs={"aria-label": "Ver resultados de " + c.name},
+                variant="soft",
+                size="2",
+                width="100%",
+                **_TAP,
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1rem",
+    )
+
+
+def _campaigns_list() -> rx.Component:
+    return table_or_cards(
+        _campaigns_table(),
+        rx.vstack(rx.foreach(S.campaigns, _campaign_card), spacing="3", width="100%"),
+    )
+
+
 def _campaigns_table() -> rx.Component:
     return rx.box(
         rx.table.root(
             rx.table.header(
                 rx.table.row(
-                    rx.table.column_header_cell("Campaña"),
+                    rx.table.column_header_cell("Promoción"),
                     rx.table.column_header_cell("Estado"),
                     _num_header("Enviados"),
                     _num_header("Entregados"),
@@ -137,7 +186,7 @@ def _list() -> rx.Component:
         S.ready,
         rx.cond(
             S.has_campaigns,
-            _campaigns_table(),
+            _campaigns_list(),
             empty_state(
                 "megaphone",
                 "Aún no enviaste promociones desde este número",
@@ -154,7 +203,7 @@ def _list() -> rx.Component:
         ),
         rx.cond(
             S.failed,
-            retry_button("Volver a leer las campañas", S.reload),
+            retry_button("Volver a leer las promociones", S.reload),
             skeleton_rows(3, height="3.5rem"),
         ),
     )
@@ -310,10 +359,25 @@ def _step_message() -> rx.Component:
                     width="100%",
                     align_items="start",
                 ),
-                callout(
-                    "Aún no tienes mensajes aprobados en este número. Crea uno en «Plantillas» "
-                    "y espera la aprobación de WhatsApp (puede tardar hasta 24 horas).",
-                    "info",
+                rx.vstack(
+                    callout(
+                        "Aún no tienes mensajes aprobados en este número. Crea uno en "
+                        "«Mensajes aprobados» y espera la aprobación de WhatsApp (puede "
+                        "tardar hasta 24 horas).",
+                        "info",
+                    ),
+                    rx.button(
+                        rx.icon("plus", size=16),
+                        CREATE_APPROVED_LABEL,
+                        on_click=S.create_approved_message,
+                        variant="soft",
+                        size="3",
+                        min_height="44px",
+                        width=rx.breakpoints(initial="100%", sm="auto"),
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
                 ),
             ),
         ),
@@ -753,28 +817,55 @@ def _detail_body() -> rx.Component:
         ),
         rx.cond(
             S.detail_sends.length() > 0,
-            rx.box(
-                rx.table.root(
-                    rx.table.header(
-                        rx.table.row(
-                            rx.table.column_header_cell("Número"),
-                            rx.table.column_header_cell("Estado"),
-                            rx.table.column_header_cell("Nota"),
-                            rx.table.column_header_cell("Costo", text_align="right"),
-                        )
-                    ),
-                    rx.table.body(rx.foreach(S.detail_sends, _send_row)),
-                    variant="surface",
-                    width="100%",
-                ),
-                overflow_x="auto",
-                width="100%",
+            table_or_cards(
+                _sends_table(),
+                rx.vstack(rx.foreach(S.detail_sends, _send_card), spacing="2", width="100%"),
             ),
             rx.fragment(),
         ),
         spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+def _send_card(s: SendVM) -> rx.Component:
+    """Phone: one send per card — number, state, the note and the cost."""
+    return card(
+        rx.vstack(
+            card_line(mono(s.phone, size="2"), tone_pill(s.status_label, s.status_tone)),
+            rx.cond(s.note != "", rx.text(s.note, size="1"), rx.fragment()),
+            rx.cond(
+                s.retry_after != "",
+                rx.text(s.retry_after, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.fragment(),
+            ),
+            rx.text(s.cost_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+        padding="0.75rem 1rem",
+    )
+
+
+def _sends_table() -> rx.Component:
+    return rx.box(
+        rx.table.root(
+            rx.table.header(
+                rx.table.row(
+                    rx.table.column_header_cell("Número"),
+                    rx.table.column_header_cell("Estado"),
+                    rx.table.column_header_cell("Nota"),
+                    rx.table.column_header_cell("Costo", text_align="right"),
+                )
+            ),
+            rx.table.body(rx.foreach(S.detail_sends, _send_row)),
+            variant="surface",
+            width="100%",
+        ),
+        overflow_x="auto",
+        width="100%",
     )
 
 
@@ -854,7 +945,7 @@ def campaigns_tab() -> rx.Component:
     return rx.vstack(
         tone_banner(S.banner, S.banner_tone),
         section_head(
-            "Campañas",
+            "Promociones enviadas",
             ghost_refresh("Actualizar", S.reload),
             rx.button(
                 rx.icon("plus", size=16),

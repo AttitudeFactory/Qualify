@@ -46,6 +46,7 @@ from qualify_creative.enums import (
     ContentFormat,
     ContentKind,
     ContentType,
+    DraftStatus,
 )
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
@@ -136,7 +137,8 @@ from .creative_vm import (
 )
 from .gallery_state import schedule_readiness
 from .pending_state import PendingState
-from .planner_provider import load_gallery
+from .planner_provider import load_gallery, times_published
+from .planner_vm import history_help, history_word
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -424,6 +426,26 @@ def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.
 #: 2026-10-08: one view with sections replaced the step-by-step wizard). `presenter`
 #: only applies to the two avatar kinds; «Reglas» is a folded, unnumbered extra.
 GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
+
+
+#: The publication's page shows «Ya probada» / «Por probar» only once it is approved —
+#: that is when the owner decides whether to repeat it (UX review, m-24842981).
+_HISTORY_STATUSES: frozenset[str] = frozenset(
+    {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
+)
+
+
+async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
+    """(«Ya probada» / «Por probar», its help) for the publication's page (m-24842981).
+    A failed read hides the line — it never blocks the review."""
+    try:
+        count = await asyncio.to_thread(times_published, tenant_id, draft_id)
+    except Exception as exc:  # noqa: BLE001 — an extra line, not the page
+        logger.warning("draft history read failed: %s", type(exc).__name__)
+        return "", ""
+    if count is None:
+        return "", ""
+    return history_word(count), history_help(count)
 
 
 def _is_carousel(draft: DraftVM | None) -> bool:
@@ -1038,6 +1060,10 @@ class CreativeState(rx.State):
     draft: DraftVM | None = None
     detail_loading: bool = False
     detail_error: str = ""
+    # m-24842981: «Ya probada» / «Por probar» and its help on the publication's page
+    # ("" while unknown — the page then shows nothing rather than a guess).
+    draft_history_word: str = ""
+    draft_history_help: str = ""
     selected_variant_id: str = ""
     edit_hook: str = ""
     edit_caption: str = ""
@@ -5387,6 +5413,8 @@ class CreativeState(rx.State):
             return
         async with self:
             self.detail_loading = False
+            self.draft_history_word = ""
+            self.draft_history_help = ""
             if vm is None:
                 self.detail_error = _DRAFT_GONE
                 return
@@ -5400,6 +5428,13 @@ class CreativeState(rx.State):
             yield CreativeState.poll_draft
         if final_poll:
             yield CreativeState.poll_final
+        if vm.status not in _HISTORY_STATUSES:  # before approval it helps no decision
+            return
+        word, help_text = await _history_texts(tenant_id, draft_id)
+        async with self:
+            if self.draft is not None and self.draft.draft_id == str(draft_id):
+                self.draft_history_word = word
+                self.draft_history_help = help_text
 
     @rx.event(background=True)
     async def poll_draft(self) -> AsyncIterator[rx.event.EventSpec]:

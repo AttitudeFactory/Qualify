@@ -120,4 +120,13 @@ def test_tab_renders() -> None:
     assert isinstance(component, rx.Component)
     rendered = str(component.render())
     assert "Importar del formulario de clientes interesados" in rendered
-    assert "Agregar contacto" in rendered
+    assert "Agregar cliente" in rendered
+
+
+def test_consent_text_is_never_hover_only() -> None:
+    """qualify-ux §5: the accepted text is shown in full on every width, no tooltip."""
+    import pathlib
+
+    tab = (pathlib.Path(__file__).parent / "whatsapp_tab_contacts.py").read_text()
+    assert "rx.tooltip" not in tab
+    assert '"Clientes que aceptaron"' in tab and "Contactos con consentimiento" not in tab

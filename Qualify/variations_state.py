@@ -35,7 +35,7 @@ import reflex as rx
 
 from .auth_state import AuthState
 from .creative_provider import acting_user_id, catalog_products, default_brand_id
-from .creative_vm import approval_notice
+from .creative_vm import APPROVED_OPEN_ACTION, approval_notice
 from .tenant import tenant_uuid
 from .variations_provider import (
     approve_variation_angle,
@@ -74,10 +74,14 @@ _NO_PRODUCTS = (
 _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."
 _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."
-_APPROVED = "Pieza aprobada."
 #: m-24820142: where the approved piece is followed when its 1080p final is being made
-#: or could not be ordered (`creative_vm.approval_notice`).
-_APPROVED_ELSEWHERE = "Ábrela en Por aprobar"
+#: or could not be ordered (`creative_vm.approval_notice`). With a draft the toast
+#: carries its own «Ver publicación» button to the publication's page, so the words say
+#: only «Ábrela» (the gallery's) — naming «Por aprobar» there would point to a different
+#: place than the button (UX review, PR #274). Without one, there is no button and the
+#: words keep saying where to look.
+_APPROVED_ELSEWHERE = "Ábrela"
+_APPROVED_ELSEWHERE_NO_DRAFT = "Ábrela en Por aprobar"
 #: `approval_notice` kinds → this screen's toast tones.
 _NOTICE_TONES = {"success": "ok", "error": "error", "info": "info"}
 _RETRYING = "Reintentando esa pieza."
@@ -101,13 +105,16 @@ _POLL_BUDGET_SECONDS = 20 * 60
 _TOAST_MS = 6000
 
 
-def _toast(message: str, tone: str) -> rx.event.EventSpec:
+def _toast(message: str, tone: str, action: dict | None = None) -> rx.event.EventSpec:
     """A transient confirmation, bottom right, in the tone of what happened
     (docs/design-system.md §5.4: «confirmaciones transitorias → rx.toast»). What went
-    wrong, with its details, stays on the page as a callout instead."""
+    wrong, with its details, stays on the page as a callout instead. `action` is the
+    toast's one button, when it has somewhere to take the owner."""
     show = {"ok": rx.toast.success, "error": rx.toast.error, "warn": rx.toast.warning}.get(
         tone, rx.toast.info
     )
+    if action is not None:
+        return show(message, duration=_TOAST_MS, action=action)
     return show(message, duration=_TOAST_MS)
 
 
@@ -734,10 +741,26 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
+            draft_id = next((a.draft_id for a in self.angles if a.id == angle_id), "")
         # the piece's own notice (m-24820142): its final renders, could not be ordered, or
-        # there is none to wait for — the same choice every screen that approves makes
-        notice = approval_notice(video, approved=_APPROVED, elsewhere=_APPROVED_ELSEWHERE)
-        yield _toast(notice.text, _NOTICE_TONES.get(notice.kind, "info"))
+        # there is none to wait for — the same choice every screen that approves makes,
+        # in the gallery's words (`APPROVED_TOAST`, m-24842981)
+        # This screen never checks the publication's readiness, so it never promises
+        # «elige cuándo sale» on its own: with a draft, the toast always opens the
+        # publication's page (which offers «Elegir día y hora» or says what is missing);
+        # without one, the text asks to review what is missing (UX review, PR #274).
+        notice = approval_notice(
+            video,
+            ready=bool(draft_id),
+            elsewhere=_APPROVED_ELSEWHERE if draft_id else _APPROVED_ELSEWHERE_NO_DRAFT,
+        )
+        action = None
+        if draft_id:  # finding 8: somewhere to tap, not only words
+            action = {
+                "label": APPROVED_OPEN_ACTION,
+                "on_click": rx.redirect(f"/drafts/{draft_id}"),
+            }
+        yield _toast(notice.text, _NOTICE_TONES.get(notice.kind, "info"), action)
 
     @rx.event(background=True)
     async def regenerate_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:

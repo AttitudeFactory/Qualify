@@ -196,6 +196,15 @@ class CampaignRowVM:
     queued: str  # pending + queued
     cost_label: str
     created_at: str  # PRE-FORMATTED
+    # m-24842998: the phone card's line, «120 la leyeron de 128» ("" before any send).
+    reach_label: str = ""
+
+
+def reach_label(read: int, sent: int) -> str:
+    """«120 la leyeron de 128» once something went out; "" before (nothing to count)."""
+    if sent <= 0:
+        return ""
+    return f"{format_count(read)} la leyeron de {format_count(sent)}"
 
 
 def _counts(counts: Mapping[str, int]) -> dict[str, int]:
@@ -238,6 +247,7 @@ def build_campaign_row(
         queued=format_count(c["queued"]),
         cost_label=format_costs(costs),
         created_at=format_timestamp(created_at, "Sin fecha"),
+        reach_label=reach_label(c["read"], c["sent"]),
     )
 
 

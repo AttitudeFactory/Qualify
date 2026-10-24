@@ -19,7 +19,7 @@ from .inbox_state import InboxState
 from .inbox_vm import ReelSummaryVM, inbox_url
 from .nav_url import push_url_script, replace_url_script, with_query
 from .whatsapp_state import WhatsAppState
-from .whatsapp_vm import DEFAULT_TAB, TAB_KEYS, TAB_TEMPLATES, resolve_tab, tab_url
+from .whatsapp_vm import DEFAULT_TAB, TAB_KEYS, TAB_TEMPLATES, resolve_panel, tab_url
 
 _HERE = Path(__file__).parent
 
@@ -53,12 +53,14 @@ def test_history_scripts_quote_the_address_as_a_js_string() -> None:
 
 
 def test_every_whatsapp_tab_has_an_address_and_reads_back() -> None:
+    # m-24842998: the address carries the top tab and, when it has one, the sub-tab.
     for key in TAB_KEYS:
         url = tab_url(key)
-        assert url == f"/whatsapp?tab={key}"
-        assert resolve_tab(url.split("tab=", 1)[1]) == key
-    assert tab_url(TAB_TEMPLATES) == "/whatsapp?tab=plantillas"
-    assert tab_url("junk") == f"/whatsapp?tab={DEFAULT_TAB}"
+        assert url.startswith("/whatsapp?tab=")
+        query = dict(part.split("=", 1) for part in url.split("?", 1)[1].split("&"))
+        assert resolve_panel(query["tab"], query.get("sub", "")) == key
+    assert tab_url(TAB_TEMPLATES) == "/whatsapp?tab=promociones&sub=aprobados"
+    assert tab_url("junk") == tab_url(DEFAULT_TAB) == "/whatsapp?tab=chats"
 
 
 def test_conversations_view_round_trips_in_the_owners_words() -> None:
@@ -83,7 +85,7 @@ def test_whatsapp_tab_change_writes_the_address() -> None:
     state = WhatsAppState()
     spec = WhatsAppState.select_tab.fn(state, TAB_TEMPLATES)  # type: ignore[attr-defined]
     assert state.active_tab == TAB_TEMPLATES
-    assert "/whatsapp?tab=plantillas" in _script_of(spec)
+    assert "/whatsapp?tab=promociones&sub=aprobados" in _script_of(spec)
     assert "pushState" in _script_of(spec)
     # Junk over the wire changes nothing and writes nothing.
     assert WhatsAppState.select_tab.fn(state, "nope") is None  # type: ignore[attr-defined]
@@ -167,7 +169,8 @@ def test_select_reel_pushes_the_detail_address() -> None:
 
 
 def test_entry_handlers_read_their_parameter() -> None:
-    assert '"tab"' in inspect.getsource(WhatsAppState.enter_page.fn)
+    whatsapp = inspect.getsource(WhatsAppState.enter_page.fn)
+    assert "TAB_PARAM" in whatsapp and "SUB_PARAM" in whatsapp
     assert "VIEW_PARAM" in inspect.getsource(FollowupsState.enter_page.fn)
     inbox = inspect.getsource(InboxState.enter_screen.fn)
     assert "POST_PARAM" in inbox and "_try_uuid(wanted)" in inbox
