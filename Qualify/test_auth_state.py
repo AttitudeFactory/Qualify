@@ -160,7 +160,7 @@ async def test_bad_email_on_the_first_view_stays_there() -> None:
 
 
 async def test_an_email_with_an_account_is_sent_to_login(monkeypatch) -> None:
-    def _has_account(email: str):
+    def _has_account(email: str, invite_token: str = ""):
         raise auth_state_module.EmailHasAccount()
 
     monkeypatch.setattr(auth_state_module, "_start_draft_blocking", _has_account)
@@ -186,12 +186,44 @@ def _draft(tenant: str = _DRAFT):
 )
 async def test_the_email_lands_where_the_draft_stands(monkeypatch, destination: str) -> None:
     """Finished kit → signup; halfway → back into its wizard; nothing → the start."""
-    monkeypatch.setattr(auth_state_module, "_start_draft_blocking", lambda email: _draft())
+    monkeypatch.setattr(
+        auth_state_module, "_start_draft_blocking", lambda email, invite_token="": _draft()
+    )
     monkeypatch.setattr(auth_state_module, "_draft_destination_blocking", lambda t: destination)
     state = _state()
     events = [e async for e in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"})]
     assert len(events) == 1
     assert state.guest_tenant_id == _DRAFT
+
+
+@pytest.mark.parametrize("token", ["", "tok-del-alta"])
+async def test_the_sessions_invite_opens_the_draft_its_alta_prepared(monkeypatch, token) -> None:
+    """PB-5 (m-24852199): the invite this session redeemed goes with the email, so the
+    reserved draft of its Alta — with the proposed Brand Kit — is the one resumed."""
+    seen: list[tuple[str, str]] = []
+
+    def _start(email: str, invite_token: str = ""):
+        seen.append((email, invite_token))
+        return _draft()
+
+    monkeypatch.setattr(auth_state_module, "_start_draft_blocking", _start)
+    monkeypatch.setattr(auth_state_module, "_draft_destination_blocking", lambda t: "/brand")
+    state = _state()
+    state._invite_token = token
+    _ = [e async for e in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"})]
+    assert seen == [("a@b.co", token)]
+
+
+def test_the_draft_start_hands_the_invite_to_the_backend(monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        auth_state_module,
+        "start_brand_kit_draft",
+        lambda email, **kw: calls.append({"email": email, **kw}),
+    )
+    auth_state_module._start_draft_blocking("a@b.co", "tok")
+    auth_state_module._start_draft_blocking("a@b.co")
+    assert [c["invite_token"] for c in calls] == ["tok", None]
 
 
 def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
@@ -306,6 +338,8 @@ def test_logout_resets_every_business_state() -> None:
         # purpose — only logout (this list) clears it.
         "BrandWizardState",
         "BrandConnectState",
+        # m-24852199: the Alta's proposed Brand Kit under review
+        "BrandProposalState",
         "CatalogState",
         # m-24789472: «Preguntas iniciales» (draft questions per Instagram account)
         "IceBreakersState",

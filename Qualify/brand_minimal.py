@@ -27,11 +27,14 @@ from typing import Any
 from uuid import UUID
 
 import reflex as rx
+from qualify_api.creative.brand_prefill_review import PrefillReview, owner_started, review_of
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import brand_documents
 from . import brand_minimal_vm as vm
+from . import brand_proposal_vm as proposal_vm
 from .auth_state import AuthState, brand_tenant_id
+from .brand_proposal import BrandProposalState, approved_notice, proposal_review, read_notice
 from .creative_state import CreativeState
 from .creative_wizard_pages import (  # the wizards' own controls, shared on purpose
     _BRANDBOARD_COLUMN_MAX,
@@ -169,6 +172,10 @@ class BrandMinimalState(rx.State):
             yield rx.redirect(_EDITOR_ROUTE)
             return
         async with self:
+            # m-24852199: a proposal from the Alta, or why there is none
+            (await self.get_state(BrandProposalState)).show(
+                entry.review if entry is not None else PrefillReview()
+            )
             self.account_country = vm.account_country("", account_country, _KNOWN_COUNTRIES)
             self.more_logo_versions = False
             self.show_place = False
@@ -192,6 +199,9 @@ class BrandMinimalState(rx.State):
             connect.country_code = vm.account_country(
                 connect.country_code, self.account_country, _KNOWN_COUNTRIES
             )
+            proposal = await self.get_state(BrandProposalState)
+            if proposal.approved:  # «Listo…» stands on the step the approval opened
+                proposal.approved_step = self.step
             self.entered = True
         yield None
 
@@ -204,6 +214,7 @@ class BrandMinimalState(rx.State):
         «Mejora tu marca», never waited for here."""
         leaving = self.step
         self.step = vm.next_step(self.step)
+        (await self.get_state(BrandProposalState)).approved = False
         if leaving == vm.STEP_BUSINESS:
             connect = await self.get_state(BrandConnectState)
             if connect.rubro_text.strip() and connect._answers() != connect.discovery_answers:
@@ -225,6 +236,7 @@ class BrandMinimalState(rx.State):
             await self._forget_profile(connect)
         connect.started_without_socials = True
         self.step = vm.STEP_BUSINESS
+        (await self.get_state(BrandProposalState)).approved = False
 
     @rx.event
     async def not_my_profile(self) -> None:
@@ -353,11 +365,14 @@ class _Entry:
         saved_step: str | None,
         facts: vm.KitFacts,
         progress: dict[str, Any],
+        review: PrefillReview | None = None,
     ) -> None:
         self.finished = finished
         self.saved_step = saved_step
         self.facts = facts
         self.progress = progress
+        #: The Alta's proposal (m-24852199): pending, or why the account was not read.
+        self.review = review or PrefillReview()
 
 
 def _read_account_country(tenant_id: UUID) -> str:
@@ -396,7 +411,17 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
         file_kinds=kinds,
         progress=progress,
     )
-    return _Entry(False, vm.step_from_progress(progress), facts, progress)
+    started = owner_started(  # m-24852199: a proposal never goes over the owner's own
+        details.connect,
+        details.profile,
+        details.logo_brief,
+        kit_answers=(
+            [form.positioning, form.audience, form.palette_rgb, form.do_examples] if form else []
+        ),
+        has_files=bool(kinds),
+    )
+    review = review_of(details.connect, has_kit=form is not None, started=started)
+    return _Entry(False, vm.step_from_progress(progress), facts, progress, review)
 
 
 # ---------------------------------------------------------------------------------------
@@ -884,13 +909,20 @@ def brand_minimal_index() -> rx.Component:
     de 5» outside `page_body`, one card with the step in a centred column and the
     controls along its bottom."""
     loading = ~BrandMinimalState.entered | CreativeState.kit_loading
+    # m-24852199: a pending proposal is reviewed before any step is shown (no step is
+    # mounted meanwhile, so the save-as-you-go writes nothing until the owner decides)
+    reviewing = BrandProposalState.pending & ~loading
     return _wizard_shell(
         *_or_ready(
-            page_header(
-                _heading_for(0),
-                _heading_for(1),
-                kicker=_step_counter(BrandMinimalState.step_number, vm.TOTAL_STEPS),
-                title_size="8",
+            rx.cond(
+                reviewing,
+                page_header(proposal_vm.REVIEW_TITLE, title_size="8"),
+                page_header(
+                    _heading_for(0),
+                    _heading_for(1),
+                    kicker=_step_counter(BrandMinimalState.step_number, vm.TOTAL_STEPS),
+                    title_size="8",
+                ),
             ),
             page_body(
                 rx.vstack(
@@ -899,6 +931,8 @@ def brand_minimal_index() -> rx.Component:
                             CreativeState.kit_error != "",
                             callout(CreativeState.kit_error, "error"),
                         ),
+                        approved_notice(BrandMinimalState.step),
+                        read_notice(BrandMinimalState.step == vm.FIRST_STEP),
                         spacing="3",
                         width="100%",
                         max_width="34rem",
@@ -916,25 +950,29 @@ def brand_minimal_index() -> rx.Component:
                             align_items="center",
                             justify_content="center",
                         ),
-                        card(
-                            rx.vstack(
-                                _steps(),
+                        rx.cond(
+                            BrandProposalState.pending,
+                            proposal_review(),
+                            card(
+                                rx.vstack(
+                                    _steps(),
+                                    width="100%",
+                                    max_width=_column_width(),
+                                    align_self="center",
+                                    align_items="center",
+                                    flex="1",
+                                    justify_content="center",
+                                ),
+                                _controls(),
+                                padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
                                 width="100%",
-                                max_width=_column_width(),
-                                align_self="center",
-                                align_items="center",
                                 flex="1",
-                                justify_content="center",
+                                display="flex",
+                                flex_direction="column",
+                                justify_content="space-between",
+                                gap="1.5rem",
+                                key=BrandMinimalState.step,
                             ),
-                            _controls(),
-                            padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            flex_direction="column",
-                            justify_content="space-between",
-                            gap="1.5rem",
-                            key=BrandMinimalState.step,
                         ),
                     ),
                     spacing="4",

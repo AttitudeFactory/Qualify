@@ -172,8 +172,12 @@ def _change_password_blocking(email: str, current: str, new: str, confirm: str) 
     return change_password(default_auth_provider(), email, current, new, confirm)
 
 
-def _start_draft_blocking(email: str):
-    return start_brand_kit_draft(email, **_SIGNUP_DEFAULTS)
+def _start_draft_blocking(email: str, invite_token: str = ""):
+    """The pre-login draft for `email`. With the session's invite (PB-5, m-24852199), the
+    draft an Alta prepared for that invite — its proposed Brand Kit included — is the one
+    resumed (`start_brand_kit_draft` checks the invite is usable, for that email and that
+    Alta); without it, reserved drafts stay invisible."""
+    return start_brand_kit_draft(email, **_SIGNUP_DEFAULTS, invite_token=invite_token or None)
 
 
 def _kit_complete_blocking(tenant_id) -> bool:
@@ -421,8 +425,9 @@ class AuthState(rx.State):
             self.is_authenticating = True
             self.guest_error = ""
             self.guest_has_account = False
+            invite_token = self._invite_token  # backend-only: never leaves the server
         try:
-            draft = await asyncio.to_thread(_start_draft_blocking, email)
+            draft = await asyncio.to_thread(_start_draft_blocking, email, invite_token)
         except DraftEmailInvalid as exc:
             async with self:
                 self.is_authenticating = False
@@ -467,6 +472,7 @@ class AuthState(rx.State):
         files) when the tenant behind it changes without a logout."""
         from .brand_documents import BrandDocumentState
         from .brand_minimal import BrandMinimalState
+        from .brand_proposal import BrandProposalState
         from .creative_state import CreativeState
         from .creative_wizard_pages import BrandConnectState, BrandWizardState
         from .voice_lab import VoiceLabState
@@ -476,6 +482,7 @@ class AuthState(rx.State):
             BrandWizardState,
             BrandConnectState,
             BrandMinimalState,
+            BrandProposalState,
             BrandDocumentState,
             VoiceLabState,
         ):
@@ -855,6 +862,7 @@ class AuthState(rx.State):
             # modules read AuthState, and a top-level import would be circular.
             from .brand_documents import BrandDocumentState
             from .brand_minimal import BrandMinimalState
+            from .brand_proposal import BrandProposalState
             from .campaign_state import CampaignState
             from .canva_state import CanvaState
             from .catalog_state import CatalogState
@@ -915,6 +923,8 @@ class AuthState(rx.State):
                 BrandConnectState,
                 # m-24848529: the five steps' cursor and example phrase
                 BrandMinimalState,
+                # m-24852199: the Alta's proposed Brand Kit under review (tenant data)
+                BrandProposalState,
                 # The wizard's staged brief / brandboard and their pending proposals
                 # (request 2026-09-25) — tenant files and tenant kit values.
                 BrandDocumentState,
