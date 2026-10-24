@@ -1,6 +1,6 @@
 # Offboarding de un desarrollador
 
-`[VIGENTE 2026-10-24 · m-24852085]` · Procedimiento genérico y reutilizable para cuando un
+`[VIGENTE 2026-10-24 · m-24852085 · m-24852090]` · Procedimiento genérico y reutilizable para cuando un
 desarrollador deja Qualify. No se refiere a nadie en concreto. El inventario de accesos sale de
 lo que el repo nombra hoy (`deploy/`, `.github/`, `justfile`, `.env.example`,
 `deploy/.env.prod.example`, `docs/despliegue-hetzner.md`). Si el repo suma un sistema nuevo,
@@ -59,8 +59,8 @@ desarrollo, en el bloque B rotas únicamente las llaves de desarrollo compartida
 | Invitaciones pendientes | `gh api orgs/AttitudeFactory/invitations` → `gh api -X DELETE orgs/AttitudeFactory/invitations/<id>` | QUITAR |
 | Deploy keys del repo | `gh api repos/AttitudeFactory/Qualify/keys --jq '.[]\|"\(.id) \(.title)"'` → borrar las que haya creado: `gh api -X DELETE repos/AttitudeFactory/Qualify/keys/<id>` | QUITAR |
 | Tokens *fine-grained* aprobados por la organización | `gh api orgs/AttitudeFactory/personal-access-tokens --jq '.[]\|select(.owner.login=="<login>")'` (en GitHub Free puede responder 404: entonces revisar *Org Settings → Personal access tokens*) | QUITAR |
-| **Token *classic* `read:packages` con el que el servidor hace `docker login ghcr.io`** (`docs/despliegue-hetzner.md` §7.1, paso 4) | Ver de quién es: `ssh qualify-prod 'jq -r ".auths[\"ghcr.io\"].auth" ~/.docker/config.json \| base64 -d \| cut -d: -f1'` (imprime solo el usuario; sin `jq` en el servidor, pedírselo a la sesión remota `qualify-prod`). Si es de la persona, al sacarla de la org **los deploys dejan de bajar imágenes** | ROTAR antes de quitarla: token nuevo del fundador (§4, paso 2) |
-| Secretos de Actions: `QUALIFY_DEPLOY_SSH_KEY`, `_TARGET`, `_KNOWN_HOSTS`, `DEVOPS_WEBHOOK_URL`, `DEVOPS_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `SONAR_TOKEN`, `SONAR_HOST_URL` | `gh api repos/AttitudeFactory/Qualify/actions/secrets --jq '.secrets[].name'`. Un miembro con escritura no los lee, pero un workflow en una rama sí podría exfiltrarlos | ROTAR los que haya manejado o si tuvo escritura y hay sospecha; si no, QUITAR basta |
+| **Token *classic* `read:packages` con el que el servidor hace `docker login ghcr.io`** (`docs/despliegue-hetzner.md` §7.1, paso 4) | Ver de quién es: el login vive en `/home/deploy/.docker/config.json` (root no tiene). Por `ssh qualify-prod`, decodificar con `python3` el campo `auths["ghcr.io"].auth` y quedarse solo con lo que va antes de `:` (el servidor no tiene `jq`; nunca imprimir el resto). Resultado del 2026-10-24 en el §7. Si es de la persona, al sacarla de la org **los deploys dejan de bajar imágenes** | ROTAR antes de quitarla: token nuevo del fundador (§4, paso 2) |
+| Secretos de Actions: `QUALIFY_DEPLOY_SSH_KEY`, `_TARGET`, `_KNOWN_HOSTS`, `DEVOPS_WEBHOOK_URL`, `DEVOPS_WEBHOOK_SECRET`, `CLAUDE_CODE_OAUTH_TOKEN` (los únicos que existían el 2026-10-24; `ANTHROPIC_API_KEY`, `SONAR_TOKEN` y `SONAR_HOST_URL` los nombran los workflows, pero no están creados) | `gh api repos/AttitudeFactory/Qualify/actions/secrets --jq '.secrets[].name'`. Un miembro con escritura no los lee, pero un workflow en una rama sí podría exfiltrarlos | ROTAR los que haya manejado o si tuvo escritura y hay sospecha; si no, QUITAR basta |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Ligado a la suscripción Claude Max **de quien corrió `claude setup-token`** (`docs/calidad-codigo-revision-automatica.md` §2.1). Si fue la persona, la revisión `claude-review` gasta su cuota y muere con su cuenta | ROTAR con un token del fundador |
 | `CODEOWNERS` | Hoy solo `@hlrd93`; si se agregó a la persona, quitarla en un PR | QUITAR |
 
@@ -92,7 +92,7 @@ desarrollo, en el bloque B rotas únicamente las llaves de desarrollo compartida
 | Supabase **[F]** | supabase.com/dashboard → organización → *Team* | QUITAR (+ ROTAR la secret key si la vio) |
 | Vercel (team `attitude1`: landing y DNS de `attitudefactory.co`) **[F]** | vercel.com → team → *Settings → Members*; *Settings → Tokens* de CI si los creó | QUITAR |
 | Resend, Canva, ScrapeCreators, Zyte, Pixabay, Pexels, Hugging Face **[F]** | *Team/Members* de cada panel; las llaves van en el bloque B | QUITAR |
-| Langfuse (autoalojado en local, `just langfuse-*`) y SonarQube (`infra/sonarqube`) | Viven en la máquina de alguien. Si viven en la suya, se pierden: exportar lo que sirva. `SONAR_TOKEN` se rota si lo creó | QUITAR / ROTAR |
+| Langfuse (autoalojado en local, `just langfuse-*`) y SonarQube (`infra/sonarqube`) | Viven en la máquina de alguien (hoy, la de un desarrollador: §7.2). Si viven en la suya, se pierden: exportar lo que sirva. `SONAR_TOKEN` se rota si lo creó | QUITAR / ROTAR |
 | Restos de Zoho (Mail/Cliq) y Google | Zoho Mail admin → desactivar el buzón; Google Drive/Calendar compartidos → quitarle permisos | QUITAR |
 
 ## 4. Orden de rotación (sin romper producción)
@@ -182,5 +182,76 @@ Se guarda en el ticket de Meegle del offboarding (no en el repo: lleva nombres).
 - [ ] §4.7 Despliegue automático encendido de nuevo; logs revisados
 - [ ] §5.1 Verificación completa
 - [ ] §5.2 Nota administrativa completada
+- [ ] §7 Tabla de dueños de credenciales críticas re-verificada (GHCR, Claude, SSH)
 - [ ] §5.3 Registro pegado en el ticket; ticket en Done
 ```
+
+## 7. Dueños de credenciales críticas
+
+`[VERIFICADO 2026-10-24 · m-24852090]` · Regla del fundador: estas credenciales son **solo de
+Herwin**. Si un día dejan de serlo, el offboarding de esa persona deja de ser rutina (§4.2). La
+verificación se hizo en modo solo lectura, sin imprimir ningún valor: solo usuarios, huellas de
+llaves y metadatos. Se repite en cada offboarding y cuando alguien cambie una de estas piezas.
+
+### 7.1 Tabla
+
+| Credencial | Dueño previsto | Dueño verificado (2026-10-24) | ¿Coincide? |
+|---|---|---|---|
+| Token GHCR *classic* `read:packages` del VPS (§7.1 paso 4 de `despliegue-hetzner.md`) | Herwin | Usuario `hlrd93` en `/home/deploy/.docker/config.json` (archivo del 2026-10-07). Root no tiene login de GHCR (no hace falta: los deploys tiran las imágenes como `deploy`). | **Sí, por el usuario.** Matiz: el usuario de `docker login` lo escribe quien hace el login; GHCR autentica por el token. Comprobar el dueño real del token pide usarlo contra la API de GitHub, y no se hizo en esta revisión. Pendiente para el fundador: en *GitHub → Settings → Developer settings → Tokens (classic)* debe figurar un token `read:packages` con fecha de vencimiento; si no lo ve, el token es de otra persona → rotarlo (§4.2). |
+| `CLAUDE_CODE_OAUTH_TOKEN` (workflow `review`) | Herwin (su suscripción Claude) | El secreto lo creó `hlrd93` el 2026-10-05 18:14 UTC, desde `gh` en una sesión de Claude Code, y nunca se actualizó (registro de auditoría de la organización). **La cuenta de Claude que lo emitió no se puede ver**: los logs del workflow lo enmascaran y la acción no imprime la cuenta. | **Probable, sin verificar.** Lo subió Herwin; si el `claude setup-token` lo corrió él, es suyo. Para cerrarlo: el fundador lo regenera con `claude setup-token` en su Mac y lo sube con `gh secret set CLAUDE_CODE_OAUTH_TOKEN` (pide el valor por la terminal, nunca como argumento). |
+| SSH root del VPS (`just deploy`, `just env-push`, `just edge-install`; llega también a Pedidos) | Herwin | **Una sola llave** en `/root/.ssh/authorized_keys`: la de `~/.ssh/qualify_hetzner` del Mac del fundador (misma huella; en el servidor la línea no lleva comentario). No hay otros usuarios con llaves fuera de `root` y `deploy`. | **Sí.** |
+| SSH `deploy` | Herwin + CI | La misma llave del fundador, sin restricción, y `qualify-ci-deploy` con `command="/opt/qualify/bin/server-deploy.sh",restrict`. La mitad privada de la de CI está en el Mac del fundador y en el secreto `QUALIFY_DEPLOY_SSH_KEY`, que creó `hlrd93` el 2026-10-07. | **Sí.** |
+| `.env.prod` del VPS | Herwin | Solo se lee o escribe por SSH root o `deploy` (filas de arriba), así que hoy solo lo alcanza Herwin. | **Sí, por SSH.** Ver la discrepancia de abajo. |
+| Resto de secretos de Actions (`QUALIFY_DEPLOY_SSH_*`, `DEVOPS_WEBHOOK_*`) | Herwin | Todos creados por `hlrd93` (2026-10-07 y 2026-10-19). | **Sí.** |
+
+**Discrepancias y matices que hay que conocer:**
+
+1. **Producción no es «solo Herwin» por el lado de GitHub.** `main` no tiene protección y
+   `QUALIFY_AUTO_DEPLOY=true`: cualquiera con escritura en el repo puede empujar a `main` y eso se
+   despliega solo, con el código corriendo junto a `.env.prod`. Hoy tienen escritura **seis
+   cuentas además del fundador** (tres de ellas *admin* del repo; dos son también *owners* de la
+   organización, y un *admin* puede sobrescribir los secretos de Actions). Ninguna ve los valores,
+   pero sí puede cambiar lo que corre. Es la condición que ya describe el §7.1 paso 3 de
+   `despliegue-hetzner.md` («publicar en GHCR exige escritura, que ya alcanza para cambiar lo que
+   corre en producción»), ahora con números.
+2. **El repo pasó a público el 2026-10-24** (registro de auditoría). Dos consecuencias: los logs de
+   Actions son visibles para cualquiera (los secretos siguen enmascarados) y, con el repo público,
+   GitHub Free **sí** permite proteger ramas: `just protect-main` (`infra/github/ruleset-main.json`)
+   ya se podría aplicar. Lo decide el fundador.
+3. **GHCR y Claude dependen de cuentas personales por diseño.** GitHub Packages no acepta tokens
+   *fine-grained* para `docker login`, así que el token *classic* siempre es de una persona, y
+   `CLAUDE_CODE_OAUTH_TOKEN` es una suscripción personal. Que sean de Herwin es lo correcto; lo que
+   falta es confirmarlo en sus pantallas (filas de arriba).
+
+### 7.2 Dependencia de una sola persona: Langfuse y SonarQube
+
+Según el fundador, los dos corren autoalojados en la máquina de un desarrollador (Deivid). Lo que
+el repo y el servidor muestran el 2026-10-24:
+
+| Herramienta | Configuración que hay | Qué significa |
+|---|---|---|
+| Langfuse (`infra/langfuse/`, `just langfuse-*`) | `LANGFUSE_BASE_URL=http://localhost:3100` en `.env.example`; el VPS no tiene ninguna clave `LANGFUSE_*` en `.env.prod`. | Cada máquina apunta a **su propio** `localhost`. Producción no envía trazas. Los conjuntos de datos, puntuaciones y colas de anotación de las evaluaciones (`just eval-*`, `just langfuse-setup`) viven en los volúmenes Docker de quien lo levantó. No hay túnel ni host compartido configurado en el repo. |
+| SonarQube (`infra/sonarqube/`, `sonar.yml`) | El README propone `https://sonar.attitudefactory.co`, pero ese nombre responde 404 desde Vercel (el comodín DNS del dominio); los secretos `SONAR_HOST_URL` y `SONAR_TOKEN` no existen y la variable `SONAR_ENABLED` no está puesta, así que `sonar` sale *skipped* en cada push. | El análisis en CI está apagado. Si Sonar corre, corre a mano contra `127.0.0.1:9000` en esa máquina y su historial solo existe ahí. |
+
+**Riesgo:** si esa persona se va o su máquina falla, se pierden el historial de evaluaciones de
+Langfuse (las mediciones que exige `qualify-measure`) y el historial de Sonar, y nadie más puede
+correr `just eval-*` contra los mismos datos. No toca a producción.
+
+**Opciones para sacarlos de una máquina personal** (house rule: nada de infraestructura ni
+proveedor nuevo sin tabla de opciones y decisión del fundador; precios a confirmar al contratar):
+
+| Opción | Qué implica | Costo | Datos y riesgos |
+|---|---|---|---|
+| **A. Dejarlo como está + exportación documentada** | Un `just langfuse-export` (o `pg_dump` del Postgres de Langfuse + copia de ClickHouse/MinIO) a R2 una vez por semana; los *datasets* de evaluación también en `packages/api/evals/` como archivos. Sonar no necesita respaldo: se reanaliza `main` cuando haga falta. | $0 y ~½ día de trabajo. | Sigue siendo de una persona: solo reduce la pérdida. Nadie más ve las trazas en vivo. |
+| **B. En el VPS de Hetzner** | Hoy el VPS es un ARM de 2 vCPU y 4 GB: medido 1,4 GB de RAM disponible y 70 % de disco (11 GB libres de 38). Langfuse v4 (web, worker, Postgres, ClickHouse, Redis, MinIO) recomienda 4 núcleos y 16 GB; SonarQube pide 4 GB libres y `vm.max_map_count` del host. **No cabe sin agrandar el servidor**, y el servidor es compartido con Pedidos: el `sysctl` y la carga de ClickHouse/Elasticsearch le afectan, igual que el corte del Caddy compartido al publicar subdominios (`just edge-install`). | Subir a un plan de 8 vCPU / 16 GB, del orden de 15–30 €/mes más según la línea (ARM o x86; Hetzner cambió precios el 2026-06-15), o un servidor aparte CX43 como propone la Etapa B de `plan-observabilidad-langfuse.md`. | Los datos se quedan en nuestra infraestructura (UE, Núremberg). Suma respaldos, actualizaciones y un punto de falla junto a producción. |
+| **C. Gestionado: Langfuse Cloud y SonarQube Cloud** | Langfuse Cloud: plan *Hobby* gratis (≈50 000 unidades/mes, 30 días de datos, 2 usuarios) o *Core* ≈29 USD/mes (≈100 000 unidades, 90 días, usuarios ilimitados); región UE (Fráncfort) o EE. UU. SonarQube Cloud: **gratis para repos públicos** (este lo es desde hoy), con análisis de PR y ramas que la Community Build no tiene; para repo privado el plan gratuito cubre hasta ≈50 000 líneas y el de equipo empieza en ≈30 USD/mes; datos en la UE. | 0–29 USD/mes en Langfuse; 0 en Sonar mientras el repo sea público. | **Proveedor nuevo con datos de clientes:** las trazas de Langfuse llevan los textos de los tenants (catálogo, Brand Kit, comentarios). Exige región UE, revisar el DPA y decidir si se anonimiza antes de enviar; `plan-observabilidad-langfuse.md` eligió autoalojar justamente para que los datos no salgan. Sonar solo ve código, que ya es público. |
+
+**Recomendación — decisión del fundador:** separar las dos.
+- **SonarQube → opción C (SonarQube Cloud gratis)** mientras el repo siga público: elimina la
+  dependencia, cuesta $0, solo ve código ya público y agrega análisis de PR. Si el repo vuelve a
+  privado, apagarlo: `semgrep` + `bandit` del workflow `security` ya cubren lo esencial. El
+  workflow `sonar` gasta un minuto por push a `main` solo con `SONAR_ENABLED=true`.
+- **Langfuse → opción A ya**, y **C (UE, *Hobby*) o la Etapa B propia** solo cuando haga falta
+  compartir trazas en vivo o enviar trazas de producción, decidiéndolo junto con qué datos de
+  clientes pueden salir. Meterlo en el VPS compartido (B en el mismo servidor) es la opción menos
+  recomendable: no cabe, y el riesgo lo paga también Pedidos.
