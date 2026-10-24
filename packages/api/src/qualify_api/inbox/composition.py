@@ -37,6 +37,7 @@ from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.config import R2Settings
 from qualify_shared.objects.gate import ObjectGate
 from qualify_shared.objects.s3 import R2ObjectStore
+from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings, redis_url
@@ -56,6 +57,7 @@ from qualify_api.inbox.service import (
     SyncSummary,
     ThumbnailBackfill,
 )
+from qualify_api.inbox.simulator import fixture_clients, simulator_enabled
 from qualify_api.inbox.sync_guard import Lease, SyncAlreadyRunning, SyncGuard, wall_clock
 from qualify_api.inbox.thumbnails import R2ThumbnailStore
 
@@ -153,6 +155,19 @@ async def production_inbox_service_for(*, tenant_id: UUID, connection_id: UUID) 
     same condition in every seam caller) degrades to an empty scope set, which
     `InboxService` already treats as fail-closed rather than crashing.
     """
+    if simulator_enabled():
+        # m-24852203: dev-only, READS only — see `inbox.simulator`. No credential is
+        # resolved, so a local connection without a token works; the fixture stands in
+        # for the scopes too. Raises `MetaReadsSimulatorRefused` in production.
+        media_client, comments_client = fixture_clients()
+        return InboxService(
+            repository=PostgresInboxRepository(),
+            comments_client=comments_client,
+            media_client=media_client,
+            granted_scopes=frozenset(COMMENTS_EDGE_PERMISSIONS),
+            story_comments=story_comments_enabled(),
+            thumbnails=R2ThumbnailStore(gate_factory=_object_gate),
+        )
     settings = MetaOAuthSettings.from_env()
     encryptor = DevEncryptor()
     resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), encryptor)

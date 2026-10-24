@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "_note": "Synthetic fixture for QUALIFY_META_READS=fixture (m-24852203). No real people, accounts or media.",
+  "media": [
+    {
+      "id": "17900000000000001",
+      "posted_hours_ago": 5,
+      "media_product_type": "REELS",
+      "media_type": "VIDEO",
+      "caption": "Nuevo sabor de la semana: maracuyá con coco. ¿Ya lo probaste?",
+      "permalink": "https://www.instagram.com/reel/DEMO0001/",
+      "thumbnail_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%230d9488%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EReel%201%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000002",
+      "posted_hours_ago": 30,
+      "media_product_type": "FEED",
+      "media_type": "IMAGE",
+      "caption": "Horario de fin de semana: sábado y domingo de 10 a. m. a 8 p. m.",
+      "permalink": "https://www.instagram.com/p/DEMO0002/",
+      "media_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%237c3aed%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EFoto%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000003",
+      "posted_hours_ago": 72,
+      "media_product_type": "FEED",
+      "media_type": "CAROUSEL_ALBUM",
+      "caption": "Tres combos para compartir. Desliza para verlos todos.",
+      "permalink": "https://www.instagram.com/p/DEMO0003/",
+      "media_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%23ea580c%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3ECarrusel%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000004",
+      "posted_hours_ago": 240,
+      "media_product_type": "REELS",
+      "media_type": "VIDEO",
+      "caption": "Así preparamos cada pedido.",
+      "permalink": "https://www.instagram.com/reel/DEMO0004/",
+      "thumbnail_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%232563eb%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EReel%202%3C/text%3E%3C/svg%3E"
+    },
+    {
+      "id": "17900000000000005",
+      "posted_hours_ago": 48,
+      "media_product_type": "FEED",
+      "media_type": "VIDEO",
+      "caption": "Detrás de cámaras en la cocina.",
+      "permalink": "https://www.instagram.com/p/DEMO0005/",
+      "thumbnail_url": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22320%22%3E%3Crect%20width%3D%22320%22%20height%3D%22320%22%20fill%3D%22%23be123c%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%22172%22%20font-family%3D%22sans-serif%22%20font-size%3D%2228%22%20fill%3D%22%23fff%22%20text-anchor%3D%22middle%22%3EVideo%3C/text%3E%3C/svg%3E"
+    }
+  ],
+  "comments": {
+    "17900000000000001": [
+      {
+        "id": "17800000000000001",
+        "text": "¿Cuánto cuesta el de maracuyá?",
+        "username": "cliente.demo1",
+        "minutes_ago": 40,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000002",
+        "text": "¡Qué rico se ve! 😍",
+        "username": "cliente.demo2",
+        "minutes_ago": 35,
+        "like_count": 3
+      },
+      {
+        "id": "17800000000000003",
+        "text": "¿Hacen domicilios al norte?",
+        "username": "cliente.demo3",
+        "minutes_ago": 20,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000004",
+        "text": "Me encantó, vuelvo el sábado",
+        "username": "cliente.demo4",
+        "minutes_ago": 10,
+        "like_count": 1
+      }
+    ],
+    "17900000000000002": [
+      {
+        "id": "17800000000000010",
+        "text": "¿Abren el lunes festivo?",
+        "username": "cliente.demo5",
+        "minutes_ago": 300,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000011",
+        "text": "La última vez tardaron mucho en atenderme",
+        "username": "cliente.demo6",
+        "minutes_ago": 200,
+        "like_count": 0
+      }
+    ],
+    "17900000000000003": [
+      {
+        "id": "17800000000000020",
+        "text": "Quiero el combo 2 para 4 personas, ¿cómo pido?",
+        "username": "cliente.demo7",
+        "minutes_ago": 900,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000021",
+        "text": "¿Tienen opción vegetariana?",
+        "username": "cliente.demo8",
+        "minutes_ago": 600,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000022",
+        "text": "Excelente servicio",
+        "username": "cliente.demo9",
+        "minutes_ago": 500,
+        "like_count": 2
+      }
+    ],
+    "17900000000000004": [
+      {
+        "id": "17800000000000030",
+        "text": "¿Dónde quedan?",
+        "username": "cliente.demo10",
+        "minutes_ago": 5000,
+        "like_count": 0
+      }
+    ],
+    "17900000000000005": [
+      {
+        "id": "17800000000000100",
+        "text": "Comentario de prueba 1",
+        "username": "cliente.demo11",
+        "minutes_ago": 60,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000101",
+        "text": "Comentario de prueba 2",
+        "username": "cliente.demo12",
+        "minutes_ago": 61,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000102",
+        "text": "Comentario de prueba 3",
+        "username": "cliente.demo13",
+        "minutes_ago": 62,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000103",
+        "text": "Comentario de prueba 4",
+        "username": "cliente.demo14",
+        "minutes_ago": 63,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000104",
+        "text": "Comentario de prueba 5",
+        "username": "cliente.demo15",
+        "minutes_ago": 64,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000105",
+        "text": "Comentario de prueba 6",
+        "username": "cliente.demo11",
+        "minutes_ago": 65,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000106",
+        "text": "Comentario de prueba 7",
+        "username": "cliente.demo12",
+        "minutes_ago": 66,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000107",
+        "text": "Comentario de prueba 8",
+        "username": "cliente.demo13",
+        "minutes_ago": 67,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000108",
+        "text": "Comentario de prueba 9",
+        "username": "cliente.demo14",
+        "minutes_ago": 68,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000109",
+        "text": "Comentario de prueba 10",
+        "username": "cliente.demo15",
+        "minutes_ago": 69,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000110",
+        "text": "Comentario de prueba 11",
+        "username": "cliente.demo11",
+        "minutes_ago": 70,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000111",
+        "text": "Comentario de prueba 12",
+        "username": "cliente.demo12",
+        "minutes_ago": 71,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000112",
+        "text": "Comentario de prueba 13",
+        "username": "cliente.demo13",
+        "minutes_ago": 72,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000113",
+        "text": "Comentario de prueba 14",
+        "username": "cliente.demo14",
+        "minutes_ago": 73,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000114",
+        "text": "Comentario de prueba 15",
+        "username": "cliente.demo15",
+        "minutes_ago": 74,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000115",
+        "text": "Comentario de prueba 16",
+        "username": "cliente.demo11",
+        "minutes_ago": 75,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000116",
+        "text": "Comentario de prueba 17",
+        "username": "cliente.demo12",
+        "minutes_ago": 76,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000117",
+        "text": "Comentario de prueba 18",
+        "username": "cliente.demo13",
+        "minutes_ago": 77,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000118",
+        "text": "Comentario de prueba 19",
+        "username": "cliente.demo14",
+        "minutes_ago": 78,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000119",
+        "text": "Comentario de prueba 20",
+        "username": "cliente.demo15",
+        "minutes_ago": 79,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000120",
+        "text": "Comentario de prueba 21",
+        "username": "cliente.demo11",
+        "minutes_ago": 80,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000121",
+        "text": "Comentario de prueba 22",
+        "username": "cliente.demo12",
+        "minutes_ago": 81,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000122",
+        "text": "Comentario de prueba 23",
+        "username": "cliente.demo13",
+        "minutes_ago": 82,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000123",
+        "text": "Comentario de prueba 24",
+        "username": "cliente.demo14",
+        "minutes_ago": 83,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000124",
+        "text": "Comentario de prueba 25",
+        "username": "cliente.demo15",
+        "minutes_ago": 84,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000125",
+        "text": "Comentario de prueba 26",
+        "username": "cliente.demo11",
+        "minutes_ago": 85,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000126",
+        "text": "Comentario de prueba 27",
+        "username": "cliente.demo12",
+        "minutes_ago": 86,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000127",
+        "text": "Comentario de prueba 28",
+        "username": "cliente.demo13",
+        "minutes_ago": 87,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000128",
+        "text": "Comentario de prueba 29",
+        "username": "cliente.demo14",
+        "minutes_ago": 88,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000129",
+        "text": "Comentario de prueba 30",
+        "username": "cliente.demo15",
+        "minutes_ago": 89,
+        "like_count": 0
+      }
+    ]
+  }
+}
