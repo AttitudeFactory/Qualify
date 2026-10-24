@@ -25,7 +25,13 @@ from qualify_api.inbox.service import CandidateMedia
 
 from . import inbox_page, inbox_provider, inbox_state
 from .inbox_state import InboxState
-from .inbox_vm import FEED_POST_LABEL, REEL_LABEL, candidate_picture_url, media_format_label
+from .inbox_vm import (
+    FEED_POST_LABEL,
+    REEL_LABEL,
+    SyncSummaryVM,
+    candidate_picture_url,
+    media_format_label,
+)
 
 _TENANT = UUID("a0000000-0000-4000-8000-000000000146")
 _CONNECTION = UUID("c0000000-0000-4000-8000-000000000146")
@@ -133,7 +139,8 @@ def test_candidate_media_labels_every_row_and_keeps_a_reel_s_fields(
     assert reel.caption == "caption reel"
     assert reel.permalink == "https://www.instagram.com/p/reel/"
     assert reel.thumbnail_url == "https://cdn/reel.jpg"
-    assert reel.posted_at == datetime(2026, 10, 8, 10, 0, tzinfo=UTC).strftime("%d %b %Y, %H:%M")
+    # m-24842988: Spanish month and 12-hour clock (the offline zone is UTC, conftest).
+    assert reel.posted_at == "8 oct, 10:00 a. m."
 
 
 def test_candidate_media_gives_photos_and_carousels_their_picture(
@@ -192,7 +199,8 @@ def test_a_candidate_without_format_data_shows_no_label(monkeypatch: pytest.Monk
 def test_unsupported_surface_has_its_own_message() -> None:
     message = inbox_state._NOT_ELIGIBLE_BY_REASON["unsupported_surface"]
     assert message == inbox_state._UNSUPPORTED_SURFACE
-    assert "Reels" in message and "feed" in message
+    assert "Reels" in message and "publicaciones de tu perfil" in message
+    assert "feed" not in message and "monitore" not in message
     assert "historias" in message and "anuncios" in message
     assert message != inbox_state._NOT_ELIGIBLE
 
@@ -200,7 +208,7 @@ def test_unsupported_surface_has_its_own_message() -> None:
 def test_too_old_keeps_its_existing_message() -> None:
     assert inbox_state._NOT_ELIGIBLE_BY_REASON["too_old"] == inbox_state._TOO_OLD
     assert inbox_state._TOO_OLD == (
-        "Este contenido ya no está dentro de las últimas 2 semanas y no se puede monitorear."
+        "Esta publicación tiene más de 2 semanas: ya no buscamos sus comentarios."
     )
 
 
@@ -228,18 +236,34 @@ def test_the_candidate_row_renders_the_format_label() -> None:
     assert "candidate.format_label" in source
 
 
-def test_the_sync_toast_uses_the_same_wording_as_the_heading() -> None:
-    """The heading says "Reels y publicaciones"; the sync result toast says the same, so
-    a Reel is never counted as a "publicación" in one place and not the other."""
+def test_the_sync_toast_counts_publications_in_plain_words() -> None:
+    """m-24842988: the sync toast says «publicaciones» for Reels and posts alike (the
+    screen's own word), with no «sincroniz-» and never «1 comentarios»."""
     source = inspect.getsource(InboxState.sync_comments.fn)
-    assert '"Reels y publicaciones revisados: {result.media_checked}' in source
-    assert "Reel(s) o publicación(es) ya no " in source
-    assert "Publicaciones revisadas" not in source
-    assert "Reels revisados" not in source
+    assert "sync_result_message(result)" in source
+    one = inbox_state.sync_result_message(
+        SyncSummaryVM(media_checked=1, new_comments=1, truncated=False)
+    )
+    assert one == "Revisamos 1 publicación: 1 comentario nuevo."
+    many = inbox_state.sync_result_message(
+        SyncSummaryVM(
+            media_checked=3,
+            new_comments=0,
+            truncated=True,
+            skipped_missing_media=("a", "b"),
+            deleted_comments=2,
+        )
+    )
+    assert many.startswith("Revisamos 3 publicaciones: 0 comentarios nuevos.")
+    assert "2 publicaciones ya no están en Instagram" in many
+    assert "2 comentarios se borraron en Instagram" in many
+    assert "sincroniz" not in many.lower() and "monitore" not in many.lower()
 
 
 def test_the_sync_strip_lives_inside_the_body_not_between_header_and_body() -> None:
-    assert "_sync_section()" in inspect.getsource(inbox_page._body)
+    # m-24842989: the strip moved down, into the connected body `_body()` renders.
+    assert "_connected_body()" in inspect.getsource(inbox_page._body)
+    assert "_sync_section()" in inspect.getsource(inbox_page._connected_body)
     assert "_sync_section()" not in inspect.getsource(inbox_page.inbox_index)
 
 
@@ -256,13 +280,13 @@ def test_the_drafts_refresh_control_is_a_labelled_secondary_icon_button() -> Non
     source = inspect.getsource(inbox_page._refresh_drafts_button)
     assert "rx.icon_button(" in source
     assert 'variant="soft"' in source and 'color_scheme="gray"' in source
-    assert 'aria_label="Actualizar borradores"' in source
+    assert 'aria_label="Actualizar respuestas"' in source
     assert 'variant="ghost"' not in source
 
 
 def test_the_picker_copy_no_longer_says_reels_only() -> None:
     source = inspect.getsource(inbox_page)
-    assert "Reels y publicaciones de las últimas 2 semanas" in source
+    assert "tus publicaciones de las últimas 2 semanas" in source
     assert "Sin Reels ni publicaciones en las últimas 2 semanas" in source
     assert '"Reels de las últimas 2 semanas' not in source
 

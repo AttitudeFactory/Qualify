@@ -97,10 +97,10 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     ),
     "fidelity_rejected": (
         "Ningún texto generado cumplió las reglas de tu marca (palabras prohibidas, "
-        "promesas que no se pueden hacer, largo, emojis o hashtags), así que la pieza "
-        "no se guardó. Reintenta: cada intento escribe textos nuevos.",
+        "promesas que no se pueden hacer, largo, emojis o hashtags), así que la "
+        "publicación no se guardó. Reintenta: cada intento escribe textos nuevos.",
         "Reintenta, o revisa las reglas en Tu marca",
-        "/brand",
+        "/brand/kit",
     ),
     "route_blocked_by_policy": (
         "La ruta de imagen elegida está bloqueada para esta marca.",
@@ -124,8 +124,8 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     ),
     # Template render (plan-mvp-plantillas-remotion.md; packages/render/CONTRACT.md §4.2)
     "render_error": (
-        "El motor de plantillas falló al renderizar la pieza.",
-        "Crea un nuevo encargo para reintentar el render",
+        "No pudimos armar la publicación con la plantilla.",
+        "Crea un nuevo encargo para intentarlo otra vez",
         "/create",
     ),
     "invalid_parameters": (
@@ -134,13 +134,13 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "/create",
     ),
     "dependency_failed": (
-        "El motor no pudo leer una foto, un video o una fuente de la marca.",
-        "Revisa los archivos del producto y del kit y reintenta",
-        "/brand",
+        "No pudimos leer una foto, un video o una tipografía de tu marca.",
+        "Revisa los archivos del producto y de tu marca y reintenta",
+        "/brand/kit",
     ),
     "cancelled": (
-        "El render se canceló antes de terminar.",
-        "Crea un nuevo encargo para volver a renderizar",
+        "La publicación se canceló antes de terminar.",
+        "Crea un nuevo encargo para intentarlo otra vez",
         "/create",
     ),
 }
@@ -172,27 +172,28 @@ class GapVM:
     fix_label: str
 
 
-#: Readiness gap name -> Spanish label. Kit gaps route to /brand; the voice gap to
-#: /brand/voice. Order of appearance is the backend's (highest impact first).
+#: Readiness gap name -> Spanish label. Every gap is fixed in the kit inside the
+#: session (/brand/kit, m-24842979). Order of appearance is the backend's (highest
+#: impact first).
 GAP_LABELS: dict[str, tuple[str, str]] = {
-    "positioning": ("Posicionamiento de la marca", "/brand"),
-    "audience": ("Audiencia objetivo", "/brand"),
-    "tone_axes": ("Ejes de tono", "/brand"),
-    "do_examples": ("Ejemplos de copy que SÍ suenan a la marca", "/brand"),
-    "dont_examples": ("Ejemplos de copy que NO suenan a la marca", "/brand"),
-    "cta_patterns": ("Patrones de llamado a la acción", "/brand"),
-    "palette_rgb": ("Paleta de colores", "/brand"),
-    "logo_asset_key": ("Logo de la marca", "/brand"),
-    "active_voice_profile": ("Perfil de voz aprobado", "/brand"),
+    "positioning": ("¿Qué te hace distinto?", "/brand/kit"),
+    "audience": ("¿Quién te compra?", "/brand/kit"),
+    "tone_axes": ("Cómo suena tu marca", "/brand/kit"),
+    "do_examples": ("Ejemplos de cómo sí hablas", "/brand/kit"),
+    "dont_examples": ("Ejemplos de cómo no hablas", "/brand/kit"),
+    "cta_patterns": ("Cómo invitas a comprar", "/brand/kit"),
+    "palette_rgb": ("Colores", "/brand/kit"),
+    "logo_asset_key": ("Logo", "/brand/kit"),
+    "active_voice_profile": ("Tu voz", "/brand/kit"),
 }
 
 _FIX_LABELS: dict[str, str] = {
-    "/brand": "Completar tu marca",
+    "/brand/kit": "Completar mi marca",
 }
 
 
 def gap_vm(key: str) -> GapVM:
-    label, route = GAP_LABELS.get(key, (key, "/brand"))
+    label, route = GAP_LABELS.get(key, (key, "/brand/kit"))
     return GapVM(key=key, label=label, fix_route=route, fix_label=_FIX_LABELS[route])
 
 
@@ -240,8 +241,8 @@ TONE_AXIS_LABELS: dict[str, tuple[str, str]] = {
 }
 
 _SOURCE_KIND_LABELS: dict[str, str] = {
-    "manual_kit": "brand kit",
-    "owned_media": "posts propios",
+    "manual_kit": "tu marca",
+    "owned_media": "tus publicaciones",
     "public_web": "sitio web",
 }
 
@@ -385,7 +386,7 @@ class RouteOptionVM:
 #: The §6.4 warning, verbatim in spirit: shown BEFORE choosing, not after generating.
 GENERATE_WARNING = (
     "⚠ La imagen no será tu producto. En comida y bebida esto destruye confianza "
-    "y Meta obliga a etiquetarlo. Úsalo solo para piezas SIN producto "
+    "y Meta obliga a etiquetarlo. Úsalo solo para publicaciones SIN producto "
     "(horarios, promos, fondos)."
 )
 
@@ -419,7 +420,8 @@ _ROUTE_COPY: dict[ImageRoute, tuple[str, str, str]] = {
 }
 
 _NOT_DEFENSIBLE_FOR_TYPE = (
-    "Esta pieza muestra algo que el cliente va a recibir: inventar su imagen no es defendible."
+    "Esta publicación muestra algo que el cliente va a recibir: inventar su imagen no es "
+    "defendible."
 )
 
 
@@ -478,7 +480,7 @@ def build_route_options(
 #: What «las reglas de tu marca» are, on the pill's hover: the layer-1 checks of
 #: `qualify_creative.brand.fidelity` in the operator's words.
 HARD_RULES_HINT = (
-    "Lo que tu Brand Kit no permite: palabras prohibidas, promesas que no se pueden "
+    "Lo que tu marca no permite: palabras prohibidas, promesas que no se pueden "
     "hacer, largo del texto, emojis y hashtags fuera de tu política."
 )
 #: Why a piece carries the AI mark, on its pill's hover.
@@ -568,7 +570,8 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
         "caption_length",
         re.compile(r"caption is (\d+) characters, below the brand minimum of (\d+)"),
         lambda m: (
-            f"El caption tiene {m[1]} caracteres y tu marca pide al menos {m[2]}: "
+            f"El texto de la publicación tiene {m[1]} caracteres y tu marca pide al menos "
+            f"{m[2]}: "
             f"agrega {int(m[2]) - int(m[1])} más."
         ),
     ),
@@ -576,7 +579,8 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
         "caption_length",
         re.compile(r"caption is (\d+) characters, above the brand maximum of (\d+)"),
         lambda m: (
-            f"El caption tiene {m[1]} caracteres y tu marca permite como máximo {m[2]}: "
+            f"El texto de la publicación tiene {m[1]} caracteres y tu marca permite como "
+            f"máximo {m[2]}: "
             f"quita {int(m[1]) - int(m[2])}."
         ),
     ),
@@ -723,7 +727,7 @@ class MediaVM:
     key: str
     media_type: str  # "image" | "video"
     position: int
-    label: str  # "Imagen", "Slide 2 de 4", "Video"
+    label: str  # "Imagen", "Diapositiva 2 de 4", "Video"
     poster_key: str = ""
     #: One slide of a carousel — images and videos alike (§ 2026-10-09): what makes the
     #: piece show as a carousel instead of its files one under the other.
@@ -735,10 +739,17 @@ class MediaVM:
     poster_url: str = ""
 
 
-#: Output ports of a template run (CONTRACT §1) → what the draft screen calls them.
+#: Output ports of a template run (CONTRACT §1) → what the planner calls them. The
+#: planner's vocabulary is its own ticket's; the review screen says it in the owner's
+#: words (`REVIEW_PORT_LABELS`, m-24842979).
 PORT_LABELS: dict[str, str] = {
     "reel": "Reel 9:16",
     "feed": "Feed 4:5",
+    "story": "Historia 9:16",
+}
+REVIEW_PORT_LABELS: dict[str, str] = {
+    "reel": "Reel (video corto) 9:16",
+    "feed": "Publicación 4:5",
     "story": "Historia 9:16",
 }
 
@@ -756,16 +767,18 @@ def build_media_vms(
         port = str((params or {}).get("port") or "")
         poster = str((params or {}).get("thumbnail_key") or "")
         if (params or {}).get("slide") is not None:
-            label = f"Slide {position + 1} de {len(ordered)}"
+            label = f"Diapositiva {position + 1} de {len(ordered)}"
             out.append(MediaVM(key, media_type, position, label, poster, is_slide=True))
         elif port:
             # A template run's outputs are named by their port (one run → Reel + feed +
             # story), not numbered as slides.
-            out.append(MediaVM(key, media_type, position, PORT_LABELS.get(port, port.title())))
+            out.append(
+                MediaVM(key, media_type, position, REVIEW_PORT_LABELS.get(port, port.title()))
+            )
         elif media_type == "video":
             out.append(MediaVM(key, media_type, position, "Video", poster))
         elif len(images) > 1:
-            label = f"Slide {position + 1} de {len(images)}"
+            label = f"Diapositiva {position + 1} de {len(images)}"
             out.append(MediaVM(key, media_type, position, label, is_slide=True))
         else:
             out.append(MediaVM(key, media_type, position, "Imagen"))
@@ -777,8 +790,8 @@ def build_media_vms(
 KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "creator_script",
-        "Guion para creador real",
-        "Una persona de tu marca lo graba: generamos el guion y el texto del post.",
+        "Guion para grabar",
+        "Te damos lo que hay que decir y cada toma; lo graba alguien de tu equipo o un creador.",
         "clapperboard",
     ),
     (
@@ -802,14 +815,14 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "template",
         "Con plantilla",
-        "Tus fotos reales en una plantilla de tu nicho: Reel, feed e historia en una corrida.",
+        "Tus fotos reales en una plantilla de tu nicho: reel, publicación e historia de una vez.",
         "layout-template",
     ),
     (
         "carousel",
         "Galería",
-        "Tres diapositivas en un solo post: escenas generadas, una animada o piezas que ya "
-        "hiciste.",
+        "Tres fotos o videos en una sola publicación: escenas generadas, una animada o "
+        "publicaciones que ya hiciste.",
         "gallery-horizontal-end",
     ),
     (
@@ -828,8 +841,8 @@ KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
 CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "script",
-        "Generar guion",
-        "Para un creador UGC: generamos el guion, sus tomas y el texto del post, y él lo graba.",
+        "Guion para grabar",
+        "Te damos lo que hay que decir y cada toma; lo graba alguien de tu equipo o un creador.",
         "clapperboard",
     ),
     # § request 2026-10-14: «Avatar» — a presenter, human or animated, tells it (the
@@ -853,13 +866,13 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "carousel",
         "Galería",
-        "Tres diapositivas en un post: escenas generadas, un video animado como máximo o "
-        "piezas que ya hiciste.",
+        "Tres fotos o videos en una sola publicación: escenas generadas, un video animado "
+        "como máximo o publicaciones que ya hiciste.",
         "gallery-horizontal-end",
     ),
     (
         "image",
-        "Flyer",
+        "Imagen",
         "Una escena generada con IA, con tu producto o tu local si subes sus fotos, tu "
         "texto y tu logo. Una imagen o una galería.",
         "image",
@@ -867,7 +880,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "template",
         "Plantilla",
-        "Tus fotos reales en una plantilla de tu nicho: una imagen para el feed o la historia.",
+        "Tus fotos reales en una plantilla de tu nicho: una imagen para publicación o historia.",
         "layout-template",
     ),
     # «Ad» (the template's video) left the panel on 2026-10-14
@@ -956,7 +969,7 @@ RETENTION_PURGED = "purged"
 
 PURGED_TITLE = "Contenido eliminado"
 PURGED_TEXT = (
-    "Los archivos de esta pieza se eliminaron a los 3 meses para ahorrar espacio. "
+    "Los archivos de esta publicación se eliminaron a los 3 meses para ahorrar espacio. "
     "El texto y su historial se conservan."
 )
 
@@ -980,7 +993,7 @@ def retention_notice(state: str, deadline_iso: str | None, days_left: int | None
         countdown = "mañana"
     else:
         countdown = f"en {days_left} días"
-    return f"Descarga esta pieza: se elimina el {when} ({countdown})."
+    return f"Descarga esta publicación: se elimina el {when} ({countdown})."
 
 
 def purged_label(purged_iso: str | None) -> str:
@@ -1148,7 +1161,7 @@ class BriefFormVM:
 ENGINE_BADGES: dict[str, tuple[str, str]] = {
     "remotion": ("Remotion", "accent"),
     "omnihuman": ("Avatar", "info"),
-    "ugc": ("UGC", "neutral"),
+    "ugc": ("Para grabar", "neutral"),
 }
 #: Output port → the word the card prints, same vocabulary as `PORT_LABELS` but short:
 #: "Reel · Feed · Historia" has to fit one line of a card.
@@ -1290,9 +1303,9 @@ HOOK_LIMIT = 60
 
 #: Calls to action people recognise — what the operator can drop in with one click.
 CTA_SUGGESTIONS: tuple[str, ...] = (
-    "Escríbenos por DM",
+    "Escríbenos por mensaje directo",
     "Reserva en el link de la bio",
-    "Guarda este post para después",
+    "Guarda esta publicación para después",
     "Comenta tu favorito",
     "Compártelo con alguien",
     "Visítanos hoy",

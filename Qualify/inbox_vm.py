@@ -14,6 +14,7 @@ test, same convention as `publishing_vm.py`/`connections_vm.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Final
 
 from qualify_api.inbox.media_type import MediaType, known_media_type
@@ -21,10 +22,25 @@ from qualify_api.inbox.media_type import MediaType, known_media_type
 # QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
 # label. Computed server-side (`inbox_provider`) from the shared rule
 # (`qualify_api.inbox.monitoring.effective_state`); the page only matches on them.
-MONITORING_ACTIVE: Final = "active"  # "Monitoreado"
-MONITORING_PENDING: Final = "pending"  # "Monitoreado · fecha por verificar"
-MONITORING_EXPIRED: Final = "expired"  # "No monitoreado · vencido"
-MONITORING_INACTIVE: Final = "inactive"  # "No monitoreado"
+MONITORING_ACTIVE: Final = "active"  # «Buscando comentarios»
+MONITORING_PENDING: Final = "pending"  # «Buscando comentarios · fecha por confirmar»
+MONITORING_EXPIRED: Final = "expired"  # «Ya no buscamos comentarios»
+MONITORING_INACTIVE: Final = "inactive"  # «No buscamos comentarios»
+
+# m-24842988: Spanish short month names for the dates the owner reads («23 oct»).
+_MONTHS: Final = (
+    "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic",
+)  # fmt: skip
+
+
+# m-24842988: said once per card, as visible text under the intent chips (a phone has
+# no hover — N12), whenever one of them is «· revísalo». Comments and «Consultas».
+UNSURE_INTENT_NOTE: Final = "No estamos seguros: lee el comentario antes de responder."
+
+
+def short_day_label(moment: datetime) -> str:
+    """«23 oct» — day and Spanish short month, in whatever zone `moment` carries."""
+    return f"{moment.day} {_MONTHS[moment.month - 1]}"
 
 
 @dataclass(frozen=True)
@@ -45,6 +61,9 @@ class CandidateMediaVM:
     # QUA-146: what the row is — `media_format_label` below, pre-formatted server-side.
     # `""` shows no label (a candidate built without format data, e.g. older tests).
     format_label: str = ""
+    # m-24842988: the day it was published («21 oct»), for «En tu publicación del 21 oct»
+    # on the reply cards. `""` when unknown.
+    posted_day: str = ""
 
 
 # QUA-146: the label each candidate row shows, by surface and Meta's `media_type`. A
@@ -100,7 +119,7 @@ class IntentChipVM:
     (m-24789644, B3). `label` is the Spanish name (`INTENT_CLASS_LABELS`); `commercial`
     picks the chip's tone (a commercial class vs «Comentario general»); `reliable` is
     `False` when the committed golden-set measurement for the current version does not
-    back the class — the page then marks it «no fiable» instead of hiding it."""
+    back the class — the page then marks it «revísalo» instead of hiding it."""
 
     label: str
     commercial: bool
@@ -117,7 +136,7 @@ class CommentVM:
     `comment_sentiment_results` row exists yet for the model version this deployment
     runs today, pre-coerced here (never a raw `None` reaching the client) so
     `ui.sentiment_badge` can match on the four states directly. The page renders `""`
-    as "Sin analizar" — it must NEVER be shown as NEU (QUA-92's explicit requirement).
+    as «Sin revisar» — it must NEVER be shown as NEU (QUA-92's explicit requirement).
     `score_display` is pre-formatted (`"0.87"`) and empty exactly when
     `sentiment_label` is empty — same "no raw nullable reaching a `str` field"
     convention every other VM in this module follows.
@@ -131,10 +150,13 @@ class CommentVM:
     sentiment_label: str
     score_display: str
     # m-24789644 (B3): `False` = no intent signal under the current version yet (the
-    # page says «Intención sin analizar»). The chips are the signal's classes, highest
+    # page says «Aún no sabemos si quiere comprar»). The chips are the signal's classes, highest
     # confidence first; empty exactly when `intent_analyzed` is `False`.
     intent_analyzed: bool = False
     intent_chips: list[IntentChipVM] = field(default_factory=list)
+    # m-24842988: at least one chip is not backed by the measurement — the card shows
+    # the «No estamos seguros…» line once, not once per chip.
+    intent_unsure: bool = False
 
 
 @dataclass(frozen=True)

@@ -222,7 +222,7 @@ def test_the_intent_filter_narrows_the_same_paginated_read(
 
 
 def test_the_page_offers_the_commercial_filter() -> None:
-    assert (FILTER_COMMERCIAL, "Requiere atención comercial") in inbox_page._INTENT_FILTER_OPTIONS
+    assert (FILTER_COMMERCIAL, "Quieren comprar") in inbox_page._INTENT_FILTER_OPTIONS
     assert "InboxState.set_intent_filter" in inspect.getsource(inbox_page._intent_filter_select)
 
 
@@ -342,20 +342,20 @@ def test_the_intent_filter_is_part_of_every_comment_read_and_its_race_guard() ->
             IntentAnalysisSummaryVM(
                 comments_checked=0, new_results=0, skipped_empty=0, unclassified=0
             ),
-            "No hay comentarios pendientes de clasificar.",
+            "No hay comentarios nuevos para ordenar.",
         ),
         (
             IntentAnalysisSummaryVM(
                 comments_checked=5, new_results=5, skipped_empty=0, unclassified=0
             ),
-            "Comentarios revisados: 5 · Clasificados: 5 · Vacíos omitidos: 0",
+            "Listo: ordenamos 5 comentarios.",
         ),
         (
             IntentAnalysisSummaryVM(
                 comments_checked=5, new_results=3, skipped_empty=1, unclassified=1
             ),
-            "Comentarios revisados: 5 · Clasificados: 3 · Vacíos omitidos: 1"
-            " · Sin respuesta del modelo: 1 (se reintentan en el próximo análisis)",
+            "Listo: ordenamos 3 comentarios. 1 quedó sin revisar: lo intentamos de nuevo"
+            " la próxima vez.",
         ),
     ],
 )

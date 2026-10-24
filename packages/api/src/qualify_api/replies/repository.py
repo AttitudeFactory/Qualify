@@ -46,7 +46,7 @@ from sqlalchemy import Text, and_, column, false, func, or_, select, table, upda
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
 
-from qualify_api.inbox.models import Message, Thread
+from qualify_api.inbox.models import Message, MonitoredMedia, Thread
 from qualify_api.intent.models import CommentIntentResult
 from qualify_api.replies.models import DEAD_STATUSES, CommentReplyDraft
 from qualify_api.sentiment.models import CommentSentimentResult
@@ -88,6 +88,11 @@ class CandidateComment:
     intent_version: AnalysisVersion | None = None
     # `interaction_followups.status` of the comment's Fase C followup, None if none.
     followup_status: str | None = None
+    # m-24842989: who wrote the comment (`messages.author_username`) and the publication
+    # it was left on (the comment thread's `external_thread_id` IS the media id). `""`
+    # when unknown; carried onto the draft so the Memory repo can echo them back.
+    author_username: str = ""
+    external_media_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,16 @@ class DraftRecord:
     output_tokens: int | None = None
     cost_usd: Decimal | None = None
     intent_result_id: UUID | None = None
+    # m-24842989 — read-time context for the review card, never stored on
+    # `comment_reply_drafts`: the comment's author (`messages.author_username`), the
+    # publication's media id (the comment thread's `external_thread_id`) and its caption
+    # (`monitored_media.caption`). `""` where a caller did not join for them — only
+    # `list_pending_drafts` (and `create_draft`, from its candidate) populate them. The
+    # thumbnail is NOT here: the inbox has no stored picture (Meta's URLs expire); the
+    # UI cross-references `external_media_id` with the candidates it already loaded.
+    author_username: str = ""
+    external_media_id: str = ""
+    media_caption: str = ""
 
     @property
     def is_settled(self) -> bool:
@@ -277,9 +292,16 @@ class ReplyRepository(Protocol):
         ...
 
 
-def _row_to_record(row: CommentReplyDraft, *, comment_text: str = "") -> DraftRecord:
-    """`comment_text` defaults to `""` — see `DraftRecord.comment_text`'s own docstring
-    for which callers bother to join for it and which do not."""
+def _row_to_record(
+    row: CommentReplyDraft,
+    *,
+    comment_text: str = "",
+    author_username: str = "",
+    external_media_id: str = "",
+    media_caption: str = "",
+) -> DraftRecord:
+    """The read-time context (`comment_text`, author, media) defaults to `""` — see
+    `DraftRecord`'s field comments for which callers bother to join for it."""
     return DraftRecord(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -310,6 +332,9 @@ def _row_to_record(row: CommentReplyDraft, *, comment_text: str = "") -> DraftRe
         output_tokens=row.output_tokens,
         cost_usd=row.cost_usd,
         intent_result_id=row.intent_result_id,
+        author_username=author_username,
+        external_media_id=external_media_id,
+        media_caption=media_caption,
     )
 
 
@@ -380,6 +405,8 @@ def _candidate_select(
             CommentIntentResult.model_id,
             CommentIntentResult.model_revision,
             _FOLLOWUPS.c.status.label("followup_status"),
+            Message.author_username,
+            Thread.external_thread_id,
         )
         .join(Thread, Thread.id == Message.thread_id)
         .outerjoin(
@@ -429,6 +456,8 @@ def _candidate_from_row(row: Any) -> CandidateComment:
         commercial_intent=bool(row.commercial_intent),
         intent_version=intent_version,
         followup_status=row.followup_status,
+        author_username=row.author_username or "",
+        external_media_id=row.external_thread_id or "",
     )
 
 
@@ -553,7 +582,12 @@ class PostgresReplyRepository:
             session.refresh(row)
             # The candidate already carries the comment's text — no extra query needed
             # to populate `DraftRecord.comment_text` here.
-            return _row_to_record(row, comment_text=candidate.text)
+            return _row_to_record(
+                row,
+                comment_text=candidate.text,
+                author_username=candidate.author_username,
+                external_media_id=candidate.external_media_id,
+            )
 
     def supersede_draft(
         self,
@@ -612,7 +646,12 @@ class PostgresReplyRepository:
                 raise
             session.commit()
             session.refresh(row)
-            return _row_to_record(row, comment_text=candidate.text)
+            return _row_to_record(
+                row,
+                comment_text=candidate.text,
+                author_username=candidate.author_username,
+                external_media_id=candidate.external_media_id,
+            )
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
         with tenant_session(tenant_id) as session:
@@ -624,11 +663,23 @@ class PostgresReplyRepository:
     ) -> tuple[DraftRecord, ...]:
         """The review queue — joined to `messages` so `DraftRecord.comment_text` is the
         REAL original comment, not the empty default: a human cannot judge a drafted
-        reply without seeing what it answers."""
+        reply without seeing what it answers. m-24842989: also to `threads` (the
+        comment thread's `external_thread_id` is the publication's media id) and,
+        outer, to `monitored_media` for its caption — a draft whose media row is
+        missing still shows, with an empty caption. All three tables are RLS'd and
+        read through the same `tenant_session`."""
         with tenant_session(tenant_id) as session:
             rows = session.execute(
-                select(CommentReplyDraft, Message)
+                select(
+                    CommentReplyDraft, Message, Thread.external_thread_id, MonitoredMedia.caption
+                )
                 .join(Message, Message.id == CommentReplyDraft.message_id)
+                .join(Thread, Thread.id == Message.thread_id)
+                .outerjoin(
+                    MonitoredMedia,
+                    (MonitoredMedia.connection_id == Thread.connection_id)
+                    & (MonitoredMedia.external_media_id == Thread.external_thread_id),
+                )
                 .where(
                     CommentReplyDraft.connection_id == connection_id,
                     CommentReplyDraft.status == "proposed",
@@ -636,7 +687,14 @@ class PostgresReplyRepository:
                 .order_by(CommentReplyDraft.created_at)
             ).all()
         return tuple(
-            _row_to_record(draft, comment_text=message.text or "") for draft, message in rows
+            _row_to_record(
+                draft,
+                comment_text=message.text or "",
+                author_username=message.author_username or "",
+                external_media_id=media_id or "",
+                media_caption=caption or "",
+            )
+            for draft, message, media_id, caption in rows
         )
 
     def _require(self, session, tenant_id: UUID, draft_id: UUID) -> CommentReplyDraft:
@@ -866,6 +924,8 @@ class MemoryReplyRepository:
             output_tokens=p.output_tokens,
             cost_usd=p.cost_usd,
             intent_result_id=p.intent_result_id,
+            author_username=candidate.author_username,
+            external_media_id=candidate.external_media_id,
         )
         self._drafts[record.id] = record
         self._by_message.setdefault(candidate.message_id, []).append(record.id)

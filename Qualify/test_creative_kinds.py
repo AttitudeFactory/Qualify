@@ -260,8 +260,8 @@ def test_leaving_the_flyer_drops_the_carousel() -> None:
         ("avatar_video", {"voice_id": "vo", "human_avatar_mode": "custom"}, "Describe"),
         ("avatar_video", {}, "Elige la voz"),
         # § 2026-10-20: the character comes from the Brand Kit — nothing to describe
-        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "ai"}, "Brand Kit"),
-        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "image"}, "Brand Kit"),
+        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "ai"}, "Tu marca"),
+        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "image"}, "Tu marca"),
         (
             "animated_avatar_video",
             {"voice_id": "vo", "avatar_source": "image", "avatar_image_key": "uploads/t/a.png"},
@@ -432,9 +432,9 @@ def test_media_is_shown_in_order_with_readable_labels() -> None:
         ]
     )
     assert [(m.key, m.label) for m in carousel] == [
-        ("k/1.png", "Slide 1 de 3"),
-        ("k/2.png", "Slide 2 de 3"),
-        ("k/3.png", "Slide 3 de 3"),
+        ("k/1.png", "Diapositiva 1 de 3"),
+        ("k/2.png", "Diapositiva 2 de 3"),
+        ("k/3.png", "Diapositiva 3 de 3"),
     ]
     (single,) = build_media_vms([("k/1.png", "image", 0, None)])
     assert single.label == "Imagen"
@@ -492,7 +492,7 @@ def test_each_kind_offers_its_formats_and_starts_on_its_default() -> None:
     assert state._generator_form()["content_format"] == "feed_4_5"
     state.choose_kind("avatar_video")
     assert state.effective_format == "reels_9_16"
-    assert ["feed_1_1", "Post cuadrado 1:1"] in state.format_options
+    assert ["feed_1_1", "Publicación cuadrada 1:1"] in state.format_options
     for kind in ("creator_script", "avatar_video", "animated_avatar_video"):
         state.choose_kind(kind)
         assert sorted(_formats(state)) == sorted(ALL_FORMATS), kind
@@ -934,13 +934,13 @@ def test_the_app_says_when_the_piece_lands() -> None:
 
     ready = [str(event) for event in _generation_done_events("ready")]
     failed = [str(event) for event in _generation_done_events("failed")]
-    assert any("Tu pieza est" in event for event in ready)
-    assert any("No se pudo generar" in event for event in failed)
+    assert any("Tu publicación est" in event for event in ready)
+    assert any("No se pudo crear" in event for event in failed)
     # a piece regenerated in Por aprobar (ex-Piezas) says where to look (pendientes §5)
     draft_ready = [str(event) for event in _generation_done_events("ready", source="draft")]
     draft_failed = [str(event) for event in _generation_done_events("failed", source="draft")]
-    assert any("regenerada. Rev" in event and "Por aprobar" in event for event in draft_ready)
-    assert any("No se pudo regenerar" in event for event in draft_failed)
+    assert any("nueva versi" in event and "Por aprobar" in event for event in draft_ready)
+    assert any("No se pudo crear la nueva" in event for event in draft_failed)
     # the browser's own notice only when the tab is in the background, and only if allowed
     script = _notify_js("Qualify", "lista")
     assert "document.hidden" in script and "Notification.permission === 'granted'" in script
@@ -1112,7 +1112,7 @@ def test_a_mixed_carousel_is_shown_as_one_and_holds_on_a_video() -> None:
             ("k/2.mp4", "video", 1, {"slide": 2, "thumbnail_key": "k/2.jpg"}),
         ]
     )
-    assert [item.label for item in media] == ["Slide 1 de 2", "Slide 2 de 2"]
+    assert [item.label for item in media] == ["Diapositiva 1 de 2", "Diapositiva 2 de 2"]
     assert media[1].poster_key == "k/2.jpg" and all(item.is_slide for item in media)
     state = CreativeState()
     state.gen_draft = dataclasses.replace(_draft_with_media("d1", "image"), media=media)
@@ -1151,7 +1151,7 @@ def test_the_gallery_explains_its_options_and_says_titulo_and_boton() -> None:
     for help_title in ("Foto del producto", "Fondo común (opcional)"):
         assert rendered(f"Qué es «{help_title}»") in section
     assert "Diapositiva de cierre" not in section
-    for kind in ("Imagen generada", "Video animado", "De una pieza"):
+    for kind in ("Imagen generada", "Video animado", "De una publicación"):
         assert rendered(f"Qué es «{kind}»") in kinds
     # § 2026-10-19: no «Video de stock» kind — stock comes in as the inspiration
     assert rendered("Video de stock") not in kinds

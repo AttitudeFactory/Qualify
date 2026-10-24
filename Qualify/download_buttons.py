@@ -50,7 +50,7 @@ def piece_download_button(
         "Descargar",
         variant="soft",
         size="2",
-        title="Archivos, título, descripción, hashtags y CTA en un .zip",
+        title="Archivos, título, descripción, hashtags e invitación a comprar en un .zip",
         on_click=download_script((BACKEND_BASE + path).to(str), name),
     )
     if file_url is None:

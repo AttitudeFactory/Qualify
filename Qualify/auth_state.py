@@ -68,10 +68,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
-_BAD_CREDENTIALS = "Email o contraseña incorrectos."  # one message for every cause, on purpose
+_BAD_CREDENTIALS = "Correo o contraseña incorrectos."  # one message for every cause, on purpose
 _INCOMPLETE = (
     "El registro de esta cuenta quedó incompleto. Repite el registro con el mismo "
-    "email y contraseña para completarlo."
+    "correo y contraseña para completarlo."
 )
 _AUTH_DOWN = "No se pudo verificar la sesión. Inténtalo de nuevo en un momento."
 _RATE_LIMITED = "Demasiados intentos seguidos. Espera un minuto y vuelve a intentarlo."
@@ -812,6 +812,7 @@ class AuthState(rx.State):
             from .discover_reels import DiscoverReelsState
             from .followups_state import FollowupsState
             from .gallery_state import GalleryState
+            from .ice_breakers_state import IceBreakersState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .planner_state import PlannerState
@@ -883,6 +884,9 @@ class AuthState(rx.State):
                 ConversationsState,
                 # m-24789646: «Consultas desde comentarios» (cards, drafts being edited)
                 FollowupsState,
+                # m-24789472: «Preguntas iniciales» — the account's draft questions, its
+                # status and the acting user's id
+                IceBreakersState,
                 # WA-16: the number's menus, the open editor draft and the preview chat
                 WhatsAppMenuState,
                 # WA-18: templates, opt-ins, campaigns and the Conexión metrics block

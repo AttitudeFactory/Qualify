@@ -34,10 +34,10 @@ _NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 
 # The label the page shows for each state (`inbox_page._reel_monitoring_badge`).
 _LABELS = {
-    MONITORING_ACTIVE: "Monitoreado",
-    MONITORING_PENDING: "Monitoreado · fecha por verificar",
-    MONITORING_EXPIRED: "No monitoreado · vencido",
-    MONITORING_INACTIVE: "No monitoreado",
+    MONITORING_ACTIVE: "Buscando comentarios",
+    MONITORING_PENDING: "Buscando comentarios · fecha por confirmar",
+    MONITORING_EXPIRED: "Ya no buscamos comentarios",
+    MONITORING_INACTIVE: "No buscamos comentarios",
 }
 
 
@@ -122,7 +122,7 @@ def test_backend_provider_vm_and_label_agree(
     assert vm.monitoring_state == state
 
     # The label: "Monitoreado…" exactly when the backend still syncs it.
-    assert _LABELS[vm.monitoring_state].startswith("Monitoreado") is synced
+    assert _LABELS[vm.monitoring_state].startswith("Buscando") is synced
 
 
 def test_an_expired_reel_keeps_its_persisted_caption_without_any_candidate() -> None:
@@ -194,6 +194,9 @@ def test_the_page_matches_on_the_effective_state_with_the_four_labels() -> None:
     for label in _LABELS.values():
         assert f'"{label}"' in source
     assert "No monitoreado · histórico" not in inspect.getsource(inbox_page)
+    assert (
+        "onitoreado" not in inspect.getsource(inbox_page._reel_monitoring_badge).split('"""')[-1]
+    )  # m-24842988: no «monitoreado» in any visible label
 
 
 def test_the_provider_reuses_the_shared_rule_and_compares_no_dates() -> None:

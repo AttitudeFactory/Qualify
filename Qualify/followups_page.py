@@ -1,7 +1,7 @@
 """«Consultas desde comentarios» (m-24789646, PR 3): the second view of `/conversations`.
 
 Each card is one commercial query found in Interacciones: who wrote it and on which post,
-the intents detected (in the warning tone and «no fiable» when the class is not backed
+the intents detected (in the warning tone and «revísalo» when the class is not backed
 by the golden set — the Interacciones rule), how the message would go out right now and
 for how long, and the draft in an editable box. Nothing leaves without «Aprobar y
 enviar»; when no route can reach the person the button is off and the card says why for
@@ -19,6 +19,7 @@ import reflex as rx
 
 from .followups_state import FollowupsState
 from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, FollowupCardVM, FollowupIntentVM
+from .inbox_vm import UNSURE_INTENT_NOTE
 from .ui import callout, card, empty_state, skeleton_rows, tone_badge
 from .ui import tokens as T
 
@@ -40,13 +41,9 @@ def _intent_chip(chip: FollowupIntentVM) -> rx.Component:
     return rx.cond(
         chip.reliable,
         rx.cond(chip.commercial, tone_badge(chip.label, "info"), tone_badge(chip.label, "neutral")),
-        rx.tooltip(
-            tone_badge(chip.label + " · no fiable", "warn"),
-            content=(
-                "Esta clase todavía no alcanza la precisión mínima medida; "
-                "revísala antes de actuar."
-            ),
-        ),
+        # m-24842988: the explanation is said once per card, as visible text under the
+        # chips (`UNSURE_INTENT_NOTE`) — never a tooltip, a phone has no hover.
+        tone_badge(chip.label + " · revísalo", "warn"),
     )
 
 
@@ -99,6 +96,10 @@ def _origin(c: FollowupCardVM) -> rx.Component:
                 wrap="wrap",
             ),
             rx.fragment(),
+        ),
+        rx.cond(
+            c.intent_unsure,
+            rx.text(UNSURE_INTENT_NOTE, size="1", color=T.TEXT_MUTED),
         ),
         spacing="2",
         width="100%",
@@ -287,9 +288,9 @@ def followups_panel() -> rx.Component:
                 empty_state(
                     "messages-square",
                     "No hay consultas pendientes",
-                    "Cuando «Analizar intención» encuentre una consulta comercial en los "
-                    "comentarios, o pulses «Responder por DM» en Comentarios, aparecerá "
-                    "aquí con un borrador para revisar.",
+                    "Cuando alguien pregunte por precios o pedidos en tus comentarios, o "
+                    "cuando elijas Escribirle en privado en «Comentarios», aparecerá aquí "
+                    "con un mensaje listo para revisar.",
                 ),
             ),
         ),

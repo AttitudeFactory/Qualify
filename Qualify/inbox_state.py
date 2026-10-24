@@ -122,9 +122,12 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
-_LOAD_FAILED = "No se pudo cargar el contenido reciente. Revisa la conexión con Instagram."
-_TOGGLE_FAILED = "No se pudo actualizar el monitoreo. Intenta de nuevo."
-_TOO_OLD = "Este contenido ya no está dentro de las últimas 2 semanas y no se puede monitorear."
+_LOAD_FAILED = (
+    "No pudimos cargar tus publicaciones recientes. Revisa que tu Instagram siga "
+    "conectado en «Tus redes»."
+)
+_TOGGLE_FAILED = "No pudimos guardar tu cambio. Intenta de nuevo."
+_TOO_OLD = "Esta publicación tiene más de 2 semanas: ya no buscamos sus comentarios."
 _NOT_ELIGIBLE = (
     "No se pudo verificar este contenido contra Instagram. Actualiza la lista e intenta de nuevo."
 )
@@ -132,8 +135,8 @@ _NOT_ELIGIBLE = (
 # whose surface Instagram did not report. The picker never offers these, so this is the
 # message for a stale list or a direct call, not for a normal click.
 _UNSUPPORTED_SURFACE = (
-    "Solo se pueden monitorear Reels y publicaciones del feed. "
-    "Las historias y los anuncios no se monitorean."
+    "Solo buscamos comentarios en Reels y publicaciones de tu perfil. "
+    "Las historias y los anuncios no se revisan."
 )
 
 
@@ -149,7 +152,7 @@ _NOT_ELIGIBLE_BY_REASON: Final = {
     "unsupported_surface": _UNSUPPORTED_SURFACE,
 }
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
-_SYNC_FAILED = "No se pudo sincronizar los comentarios. Intenta de nuevo."
+_SYNC_FAILED = "No pudimos buscar comentarios nuevos. Intenta de nuevo."
 # B8: the two halves `_NO_TENANT` used to cover for sync/analysis. No tenant in the
 # session means there is no login (`AuthState.session_tenant_id` is set only by one).
 _SESSION_EXPIRED = "Tu sesión expiró. Vuelve a iniciar sesión."
@@ -157,11 +160,11 @@ _NO_CONNECTION_SELECTED = "Elige primero una cuenta de Instagram."
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
-    "Esta cuenta está desconectada. Reconéctala en Tus redes para sincronizar sus comentarios."
+    "Esta cuenta está desconectada. Reconéctala en «Tus redes» para ver sus comentarios nuevos."
 )
 # A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
 _SYNC_META_FAILED = (
-    "Instagram no respondió al sincronizar los comentarios. Intenta de nuevo en unos minutos."
+    "Instagram no respondió cuando buscamos tus comentarios. Intenta de nuevo en unos minutos."
 )
 # cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
 # shown as if it were a normal zero-comments result.
@@ -169,34 +172,37 @@ _COMMENTS_PERMISSION_MISSING = (
     "Falta un permiso para leer comentarios en esta cuenta. Reconéctala para concederlo."
 )
 _SYNC_BUDGET_EXHAUSTED = (
-    "Se hicieron demasiadas sincronizaciones recientes. Espera unos minutos e intenta de nuevo."
+    "Buscamos comentarios muchas veces seguidas. Espera unos minutos e intenta de nuevo."
 )
 # QUA-90: a real runtime 401/190 — the connection is already `degraded` server-side by
 # the time this reaches the UI (Conexiones already shows "Reconectar"), so this message
 # points there instead of repeating the generic sync-failed copy.
 _CONNECTION_AUTH_EXPIRED = (
-    "Tu conexión con Instagram dejó de funcionar. Reconéctala en Tus redes e intenta de nuevo."
+    "Tu conexión con Instagram dejó de funcionar. Reconéctala en «Tus redes» e intenta de nuevo."
 )
-_SYNC_ALREADY_RUNNING = "Ya hay una sincronización en curso. Los resultados aparecerán al terminar."
-_ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."
+_SYNC_ALREADY_RUNNING = "Ya estamos buscando comentarios nuevos. Te avisamos al terminar."
+_ANALYZE_FAILED = "No pudimos ver si tus comentarios son buenos o malos. Intenta de nuevo."
 # The local model's runtime (`ml` group) is not installed in this deployment — not a
 # transient failure, so "intenta de nuevo" would be a lie.
-_ANALYZE_UNAVAILABLE = "El análisis de sentimiento todavía no está disponible en este entorno."
+_ANALYZE_UNAVAILABLE = (
+    "Ahora no podemos ver si tus comentarios son buenos o malos. "
+    "Puedes leerlos y responderlos igual."
+)
 # m-24789644: same two cases for the intent pass. Unavailable = no Anthropic key here.
 _REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
-_REPLY_BY_DM_FAILED = (
-    "No se pudo abrir la consulta en Conversaciones. Vuelve a intentarlo en un momento."
-)
-_ANALYZE_INTENT_FAILED = "No se pudo analizar la intención. Intenta de nuevo."
+_REPLY_BY_DM_FAILED = "No pudimos preparar el mensaje privado. Vuelve a intentarlo en un momento."
+_ANALYZE_INTENT_FAILED = "No pudimos ver quién quiere comprar. Intenta de nuevo."
 _ANALYZE_INTENT_UNAVAILABLE = (
-    "La clasificación de intención todavía no está disponible en este entorno."
+    "Ahora no podemos ver quién quiere comprar. Lee los comentarios y responde tú."
 )
 # QUA-93 — each of the three new sections has its own load error, same "independent
 # §6.1 lifecycle per section" posture the design doc documents.
-_REEL_SUMMARIES_LOAD_FAILED = "No se pudieron cargar los Reels con comentarios. Intenta de nuevo."
-_GLOBAL_SUMMARY_LOAD_FAILED = "No se pudo cargar el resumen de sentimiento. Intenta de nuevo."
+_REEL_SUMMARIES_LOAD_FAILED = (
+    "No pudimos cargar tus publicaciones con comentarios. Intenta de nuevo."
+)
+_GLOBAL_SUMMARY_LOAD_FAILED = "No pudimos cargar el resumen de tus comentarios. Intenta de nuevo."
 _THREAD_COMMENTS_LOAD_FAILED = (
-    "No se pudieron cargar los comentarios de este Reel. Intenta de nuevo."
+    "No pudimos cargar los comentarios de esta publicación. Intenta de nuevo."
 )
 # Turning monitoring OFF never calls Meta (InboxService.set_media_monitored only
 # re-validates against Meta when monitored=True — see its docstring); a straight Postgres
@@ -319,6 +325,15 @@ class InboxState(rx.State):
     @rx.var
     def can_analyze_intent(self) -> bool:
         return bool(self.selected_connection_id) and not self.is_analyzing_intent
+
+    @rx.var
+    def is_prioritizing(self) -> bool:
+        """m-24842988: «Ordenar por prioridad» runs both passes; busy while either is."""
+        return self.is_analyzing or self.is_analyzing_intent
+
+    @rx.var
+    def can_prioritize(self) -> bool:
+        return bool(self.selected_connection_id) and not self.is_prioritizing
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -910,33 +925,7 @@ class InboxState(rx.State):
         # handler is dispatched exactly like an event chain — no `yield` needed, and this
         # function stays a plain coroutine (load-bearing: `sync_comments.fn` is called
         # directly and awaited in tests — see the double-click guard test above).
-        message = (
-            f"Reels y publicaciones revisados: {result.media_checked} · "
-            f"Comentarios nuevos: {result.new_comments}"
-        )
-        if result.skipped_missing_media:
-            # Bug fix (2026-09-01): a Reel deleted at the source is real, informative
-            # partial-success context — never silent, never the error callout. Still a
-            # `toast.success`: `sync_error` was never set for this case (`sync_now`
-            # returned normally), same "this whole `if` block only runs after a
-            # successful sync" structure this handler already has.
-            message += (
-                f" · {len(result.skipped_missing_media)} Reel(s) o publicación(es) ya no "
-                "disponible(s) en Instagram: se dejaron de monitorear."
-            )
-        if result.deleted_comments:
-            # QUA-101: a comment borrado en Instagram — still a SUCCESS (`sync_error`
-            # was never set for this either), same "informative, never the error
-            # callout" treatment `skipped_missing_media` above already gets.
-            message += (
-                f" · {result.deleted_comments} comentario(s) eliminado(s) en Instagram: "
-                "se dejaron de mostrar como contenido activo."
-            )
-        if result.truncated:
-            message += (
-                " · Sincronización parcial: se alcanzó el límite de llamadas, "
-                "sincroniza de nuevo en unos minutos para completar."
-            )
+        message = sync_result_message(result)
         return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
@@ -1005,14 +994,10 @@ class InboxState(rx.State):
         # Same plain-`return`-of-an-`EventSpec` shape `sync_comments` uses above, and for
         # the same reason (`analyze_sentiment.fn` is called directly and awaited in
         # tests — this must stay a plain coroutine, never an async generator).
-        if result.comments_checked == 0:
-            message = "No hay comentarios pendientes de análisis."
-        else:
-            message = (
-                f"Comentarios revisados: {result.comments_checked} · "
-                f"Analizados: {result.new_results} · Vacíos omitidos: {result.skipped_empty}"
-            )
-        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+        # m-24842988: «Ordenar por prioridad» runs this AND the intent pass on one
+        # click; only the intent result speaks, so success here is silent. Errors still
+        # show (`analyze_error`, above).
+        return None
 
     @rx.event(background=True)
     async def analyze_intent(self) -> rx.event.EventSpec | None:
@@ -1272,22 +1257,47 @@ class InboxState(rx.State):
             self.is_loading_more_thread_comments = False
 
 
+def _count(n: int, one: str, many: str) -> str:
+    """«1 comentario» / «3 comentarios» — the toasts never say «1 comentarios»."""
+    return f"{n} {one if n == 1 else many}"
+
+
 def _intent_result_message(result: IntentAnalysisSummaryVM) -> str:
-    """The "Analizar intención" toast. Unclassified comments stay pending, so the
-    message says the next click retries them rather than counting them as done."""
+    """The «Ordenar por prioridad» toast (intent half). Unclassified comments stay
+    pending, so the message says the next click retries them rather than counting them
+    as done."""
     if result.comments_checked == 0:
-        return "No hay comentarios pendientes de clasificar."
-    message = (
-        f"Comentarios revisados: {result.comments_checked} · "
-        f"Clasificados: {result.new_results} · Vacíos omitidos: {result.skipped_empty}"
-    )
+        return "No hay comentarios nuevos para ordenar."
+    message = f"Listo: ordenamos {_count(result.new_results, 'comentario', 'comentarios')}."
     if result.unclassified:
-        message += (
-            f" · Sin respuesta del modelo: {result.unclassified} "
-            "(se reintentan en el próximo análisis)"
-        )
+        left = _count(result.unclassified, "quedó sin revisar", "quedaron sin revisar")
+        message += f" {left}: lo intentamos de nuevo la próxima vez."
     if result.followups_opened:
-        message += f" · Consultas nuevas en Conversaciones: {result.followups_opened}"
+        buyers = _count(result.followups_opened, "quiere comprar", "quieren comprar")
+        message += f" {buyers}: te esperan en «Conversaciones»."
+    return message
+
+
+def sync_result_message(result: SyncSummaryVM) -> str:
+    """The toast after a successful comment search (QUA-89), in the owner's words."""
+    checked = _count(result.media_checked, "publicación", "publicaciones")
+    new = _count(result.new_comments, "comentario nuevo", "comentarios nuevos")
+    message = f"Revisamos {checked}: {new}."
+    if result.skipped_missing_media:
+        # Bug fix (2026-09-01): a Reel deleted at the source is real, informative
+        # partial-success context — never silent, never the error callout.
+        gone = _count(
+            len(result.skipped_missing_media),
+            "publicación ya no está en Instagram",
+            "publicaciones ya no están en Instagram",
+        )
+        message += f" {gone}: dejamos de buscar sus comentarios."
+    if result.deleted_comments:
+        # QUA-101: comments deleted on Instagram — still a success.
+        deleted = _count(result.deleted_comments, "comentario se borró", "comentarios se borraron")
+        message += f" {deleted} en Instagram y ya no se muestran."
+    if result.truncated:
+        message += " Faltaron algunas: busca de nuevo en unos minutos para completarlas."
     return message
 
 

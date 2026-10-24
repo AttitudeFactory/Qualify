@@ -45,6 +45,7 @@ from .conversations_vm import (
     NO_MESSAGES_YET,
     OUTBOUND_PREFIX,
     QUIET_ACCESS_KINDS,
+    TAP_ICON,
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_SHORT,
     AccessVM,
@@ -269,7 +270,7 @@ def test_never_synced_is_provisional_not_empty() -> None:
     vm = build_access_vm(None, account=_account(), now=NOW, zone=ZONE)
     assert vm.kind == ACCESS_NEVER_SYNCED
     assert vm.provisional and not vm.show_reconnect
-    assert vm.last_sync_label == "Sin sincronizar todavía"
+    assert vm.last_sync_label == "Aún no revisamos los mensajes"
 
 
 @pytest.mark.parametrize(
@@ -289,8 +290,9 @@ def test_sync_access_verdicts_become_banners(
         _sync(access=access, detail="http_403_code_10"), account=_account(), now=NOW, zone=ZONE
     )
     assert (vm.kind, vm.show_reconnect, vm.tone, vm.provisional) == (kind, reconnect, tone, True)
-    if access in ("permission_missing", "auth_expired", "error"):
-        assert "http_403_code_10" in vm.message
+    # m-24842988: Instagram's code is an internal number — never in the banner.
+    assert "http_403_code_10" not in vm.message
+    assert "código" not in vm.message
 
 
 def test_unknown_names_the_owner_toggle() -> None:
@@ -301,7 +303,7 @@ def test_unknown_names_the_owner_toggle() -> None:
 def test_ok_has_no_banner_and_a_failed_sync_has_one() -> None:
     ok = build_access_vm(_sync(), account=_account(), now=NOW, zone=ZONE)
     assert ok.kind == ACCESS_OK and ok.title == ""
-    assert ok.last_sync_label == "Sincronizado hace 3 min"
+    assert ok.last_sync_label == "Mensajes revisados · hace 3 min"
     failed = build_access_vm(
         _sync(sync_status="failed", sync_error="InstagramDirectError"),
         account=_account(),
@@ -312,7 +314,7 @@ def test_ok_has_no_banner_and_a_failed_sync_has_one() -> None:
     # A failed sync is a toast, not a banner: quiet kind, keyed by the failure's instant.
     assert failed.kind in QUIET_ACCESS_KINDS and ACCESS_OK in QUIET_ACCESS_KINDS
     assert failed.failure_key == (NOW - timedelta(minutes=3)).isoformat()
-    assert failed.last_sync_label == "Última sincronización fallida hace 3 min"
+    assert failed.last_sync_label == "No pudimos revisar los mensajes · hace 3 min"
 
 
 def test_the_profile_the_sync_fetched_names_the_row() -> None:
@@ -388,7 +390,8 @@ def test_row_prefixes_our_own_last_message_and_falls_back_without_a_handle() -> 
         zone=ZONE,
     )
     assert row.preview == OUTBOUND_PREFIX + "claro que sí"
-    assert row.title == "Persona ·123456" and row.initials == "6"
+    assert row.title == "Persona sin nombre" and "123456" not in row.title
+    assert row.initials == "6"
     assert row.subtitle == "Instagram Direct"
     assert (row.attention, row.attention_label) == ("answered", "Respondida")
 
@@ -419,7 +422,8 @@ def test_row_states_read_closed_window_media_and_empty() -> None:
 def test_counterpart_title_rules() -> None:
     assert counterpart_title("@a", "x") == "@a"
     assert counterpart_title("a", "x") == "@a"
-    assert counterpart_title("", "") == "Persona"
+    assert counterpart_title("", "") == "Persona sin nombre"
+    assert counterpart_title("", "17841400000123456") == "Persona sin nombre"
 
 
 def test_filters_are_by_attention_and_counted() -> None:
@@ -479,8 +483,11 @@ def test_bubbles_word_direction_receipts_and_media() -> None:
     assert photo.media_src == "https://cdn/x.jpg" and photo.text == ""
     gone = build_message_vm(_message(text=None, media="audio"), now=NOW, zone=ZONE)
     assert gone.media_control == MEDIA_AUDIO and gone.media_src == "" and gone.text == ""
-    quick = build_message_vm(_message(text=None, media="interactive"), now=NOW, zone=ZONE)
-    assert quick.media_control == "" and quick.text == "Respuesta rápida"
+    # m-24789472: `interactive` is a template attachment — a message with buttons, not a
+    # quick reply (a quick-reply tap is text with `choice_kind`).
+    buttons = build_message_vm(_message(text=None, media="interactive"), now=NOW, zone=ZONE)
+    assert buttons.media_control == "" and buttons.text == "Mensaje con botones"
+    assert buttons.kind_note == ""  # the label is already the bubble's text
     # Meta's `is_unsupported` (every audio, verified live): worded, never "[mensaje]".
     voice = build_message_vm(_message(text=None, media="other"), now=NOW, zone=ZONE)
     assert voice.media_control == "" and "nota de voz" in voice.text
@@ -523,7 +530,7 @@ def test_failure_labels_cover_the_sender_codes() -> None:
     assert "adjuntos" in failure_label("no_media_linker")
     assert "varios intentos" in failure_label("max_attempts:http_503_code_2")
     assert "Puede haber salido" in failure_label("send_ambiguous")
-    assert failure_label("http_400_code_10") == "No se envió (código http_400_code_10)."
+    assert failure_label("http_400_code_10") == "No se envió."  # no internal code
     assert failure_label(None) == "No se envió."
 
 
@@ -692,6 +699,70 @@ def test_the_bubble_renders_the_story_context_only_when_there_is_one() -> None:
     assert "story_reply_label" in rendered and "story_reply_href" in rendered
 
 
+# --- taps: ice breakers, quick replies, buttons, menu (m-24789472) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload", "text", "label"),
+    [
+        ("ice_breaker", "QF_PRECIO", "¿Quieres consultar un precio?", "Pregunta inicial: Precio"),
+        ("ice_breaker", "QF_PRECIO", "¿Hacen domicilios?", "Pregunta inicial: ¿Hacen domicilios?"),
+        ("ice_breaker", "QF_OTRA", "¿Hacen envíos?", "Pregunta inicial: ¿Hacen envíos?"),
+        ("quick_reply", "SI", "Sí", "Respuesta rápida: Sí"),
+        ("button", "QFB_VER_CATALOGO", "Ver catálogo", "Botón: Ver catálogo"),
+        ("menu", "QFM_HORARIO", "Horario", "Menú: Horario"),
+        ("menu", "QFM_X", None, "Menú"),
+    ],
+)
+def test_a_tapped_message_says_where_it_came_from(
+    kind: str, payload: str, text: str | None, label: str
+) -> None:
+    tapped = dataclasses.replace(_message(text=text), choice_kind=kind, choice_payload=payload)
+    vm = build_message_vm(tapped, now=NOW, zone=ZONE)
+    assert vm.choice_label == label
+    assert payload not in vm.choice_label  # the payload is an internal key, never shown
+
+
+def test_a_typed_or_outbound_message_has_no_tap_origin() -> None:
+    assert build_message_vm(_message(), now=NOW, zone=ZONE).choice_label == ""
+    ours = dataclasses.replace(
+        _message(direction="outbound"), choice_kind="quick_reply", choice_payload="SI"
+    )
+    assert build_message_vm(ours, now=NOW, zone=ZONE).choice_label == ""
+
+
+def test_a_tapped_last_message_previews_as_its_origin() -> None:
+    view = _view(_thread(inbound=NOW - timedelta(minutes=5)))
+    row = build_thread_row(
+        view,
+        ThreadExtra(
+            preview="¿Quieres consultar un precio?",
+            preview_direction="inbound",
+            preview_choice_kind="ice_breaker",
+            preview_choice_payload="QF_PRECIO",
+        ),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert (row.preview, row.preview_icon) == ("Pregunta inicial: Precio", TAP_ICON)
+    typed = build_thread_row(
+        view, ThreadExtra(preview="hola", preview_direction="inbound"), now=NOW, zone=ZONE
+    )
+    assert (typed.preview, typed.preview_icon) == ("hola", "")
+
+
+def test_the_bubble_renders_the_tap_origin_only_when_there_is_one() -> None:
+    from .conversations_page import _choice_origin, _message
+    from .conversations_state import ConversationsState
+
+    m = ConversationsState.messages[0]
+    rendered = str(_choice_origin(m).render())
+    assert "choice_label" in rendered and "LucidePointer" in rendered  # TAP_ICON
+    # The bubble stacks it above the text, like a story reply.
+    bubble = str(_message(m).render())
+    assert "choice_label" in bubble and "q-conv-msg--story" in bubble
+
+
 # --- message templates (m-24789472) ----------------------------------------------------
 
 
@@ -791,3 +862,146 @@ def test_the_fill_notice_names_what_is_left_and_goes_away_once_filled() -> None:
     )
     assert three == "Rellena [días], [hora de apertura] y [hora de cierre] antes de enviar."
     assert template_notice("", [], []) == ""
+
+
+# --- quick replies and messages with buttons (m-24789472, phase 3) -----------------------
+
+
+def test_the_interactive_limits_mirror_the_backend() -> None:
+    from qualify_api.conversations import interactive
+
+    from . import conversations_vm as vm
+
+    assert vm.MAX_QUICK_REPLIES == interactive.MAX_QUICK_REPLIES
+    assert vm.MAX_QUICK_REPLY_TITLE_CHARS == interactive.MAX_QUICK_REPLY_TITLE_CHARS
+    assert vm.MAX_TEMPLATE_BUTTONS == interactive.MAX_BUTTONS
+    assert vm.MAX_BUTTON_TITLE_CHARS == interactive.MAX_BUTTON_TITLE_CHARS
+    assert vm.MAX_BUTTON_TEXT_CHARS == interactive.MAX_BUTTON_TEMPLATE_TEXT_CHARS
+    assert (vm.BUTTON_REPLY, vm.BUTTON_LINK) == (
+        interactive.BUTTON_POSTBACK,
+        interactive.BUTTON_WEB_URL,
+    )
+
+
+def test_a_button_echo_with_text_says_it_had_buttons() -> None:
+    echo = build_message_vm(
+        _message(text="¿Qué quieres hacer?", media="interactive", direction="outbound"),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert echo.text == "¿Qué quieres hacer?" and echo.kind_note == "Mensaje con botones"
+    plain = build_message_vm(_message(text="hola", media=None), now=NOW, zone=ZONE)
+    assert plain.kind_note == ""
+
+
+def test_a_queued_button_message_reads_its_text_and_kind() -> None:
+    from .conversations_vm import outbox_media_type, outbox_text
+
+    body = {
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {"template_type": "button", "text": "Elige", "buttons": []},
+            }
+        }
+    }
+    assert outbox_text(body) == "Elige"
+    assert outbox_media_type(None, body) == "interactive"
+    assert outbox_media_type("image", body) == "image"
+    assert outbox_media_type(None, {"message": {"text": "hola"}}) is None
+
+
+def test_the_fourteenth_quick_reply_is_refused() -> None:
+    from qualify_api.conversations.interactive import MESSAGES
+
+    from .conversations_vm import add_quick_reply
+
+    thirteen = [f"Opción {i}" for i in range(13)]
+    replies, error = add_quick_reply(thirteen, "Una más")
+    assert replies == thirteen and error == MESSAGES["quick_replies_too_many"]
+
+
+def test_a_quick_reply_over_twenty_characters_is_refused() -> None:
+    from qualify_api.conversations.interactive import MESSAGES
+
+    from .conversations_vm import add_quick_reply
+
+    replies, error = add_quick_reply([], "x" * 21)
+    assert replies == [] and error == MESSAGES["quick_reply_title_too_long"]
+    assert add_quick_reply([], "x" * 20) == (["x" * 20], "")
+
+
+def test_quick_replies_are_trimmed_unique_and_never_empty() -> None:
+    from qualify_api.conversations.interactive import MESSAGES
+
+    from .conversations_vm import add_quick_reply, remove_at
+
+    assert add_quick_reply(["Sí"], "  quiero   pedir ") == (["Sí", "quiero pedir"], "")
+    assert add_quick_reply(["Sí"], "sí")[1] == MESSAGES["quick_reply_title_repeated"]
+    assert add_quick_reply([], "   ")[1] == MESSAGES["quick_reply_title_empty"]
+    assert remove_at(["a", "b", "c"], 1) == ["a", "c"]
+    assert remove_at(["a"], 5) == ["a"]
+
+
+def test_a_feature_that_is_off_is_worded_without_the_deployment_switch() -> None:
+    from qualify_api.followups.capabilities import Capabilities, Capability
+
+    from .conversations_vm import build_feature_vm
+
+    off = build_feature_vm(Capabilities().availability(Capability.QUICK_REPLIES))
+    assert not off.enabled and off.state_label == "Por verificar"
+    assert off.notice.startswith("Las respuestas rápidas todavía no están disponibles")
+    assert "QUALIFY_" not in off.notice and "despliegue" not in off.notice
+    on = build_feature_vm(
+        Capabilities(frozenset({Capability.STRUCTURED_TEMPLATES})).availability(
+            Capability.STRUCTURED_TEMPLATES
+        )
+    )
+    assert on.enabled and on.notice == ""
+
+
+def test_the_640_rule_of_a_message_with_buttons() -> None:
+    from qualify_api.conversations.templates import MESSAGES
+
+    from .conversations_vm import buttons_body_error, composer_interactive_error
+
+    assert buttons_body_error("x" * 641, True) == MESSAGES["body_too_long_for_buttons"]
+    assert buttons_body_error("x" * 640, True) == ""
+    assert buttons_body_error("x" * 900, False) == ""  # no buttons: the 1000 rule applies
+
+    assert "640" in composer_interactive_error("x" * 641, quick_replies=0, buttons_will_send=True)
+    assert composer_interactive_error("x" * 640, quick_replies=0, buttons_will_send=True) == ""
+    assert composer_interactive_error("", quick_replies=2, buttons_will_send=False) != ""
+    assert composer_interactive_error("hola", quick_replies=2, buttons_will_send=False) == ""
+
+
+def test_template_rows_carry_their_buttons() -> None:
+    from qualify_api.conversations.interactive import TemplateButton
+    from qualify_api.conversations.templates import ReplyTemplate
+
+    from .conversations_vm import build_template_rows
+
+    now = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+    record = ReplyTemplate(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        connection_id=uuid4(),
+        title="Pedido",
+        body="¿Cómo pides?",
+        position=0,
+        default_key=None,
+        created_by_user_id=None,
+        updated_by_user_id=None,
+        created_at=now,
+        updated_at=now,
+        buttons=(
+            TemplateButton.postback("Por aquí", "QFB_POR_AQUI"),
+            TemplateButton.web_url("Ver catálogo", "https://bianki.co"),
+        ),
+    )
+    (row,) = build_template_rows([record])
+    assert [(b.kind, b.title, b.url, b.payload) for b in row.buttons] == [
+        ("postback", "Por aquí", "", "QFB_POR_AQUI"),
+        ("web_url", "Ver catálogo", "https://bianki.co", ""),
+    ]
+    assert row.buttons_label == "Con botones: Por aquí · Ver catálogo"

@@ -51,7 +51,7 @@ def test_the_page_is_one_view_of_sections_not_steps() -> None:
     assert "Paso" not in rendered and "Continuar" not in rendered
     for _key, title, _icon, _blurb in SECTIONS:
         assert json.dumps(title)[1:-1] in rendered
-    assert "Editar Brand Kit" in rendered and "Ver resultados" in rendered
+    assert "Editar mi marca" in rendered and "Ver resultados" in rendered
     assert "Guardar voz" in rendered and "Ahora no" in rendered
     # the stale "not saved yet" notice of the brandboard is gone: it IS saved since 10-01
     assert "todav\\u00eda no se guardan" not in rendered

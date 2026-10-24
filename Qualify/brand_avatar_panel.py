@@ -33,8 +33,8 @@ from .ui import tokens as T
 logger = logging.getLogger(__name__)
 
 PLACEHOLDER_OFF = (
-    "Se creará cuando conectemos la generación de imágenes: una mascota para tu marca, "
-    "dibujada a partir de tu logo, tus colores y tu tono."
+    "Todavía no está disponible. Será una mascota para tu marca, dibujada a partir de "
+    "tu logo, tus colores y tu tono."
 )
 PLACEHOLDER_EMPTY = "Aún no tienes avatar. Pulsa «Regenerar» para crearlo."
 FAILED_TEXT = "No pudimos crear tu avatar. Inténtalo de nuevo más tarde."
@@ -184,7 +184,8 @@ def brand_avatar_card() -> rx.Component:
                 rx.vstack(
                     rx.text("Tu avatar animado", size="3", weight="bold"),
                     rx.text(
-                        "La mascota de tu marca, creada a partir de tu Brand Kit.",
+                        "La mascota de tu marca, creada a partir de tu logo, tus colores "
+                        "y tu tono.",
                         size="2",
                         color=T.TEXT_MUTED,
                     ),

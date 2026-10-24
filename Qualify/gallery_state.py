@@ -269,5 +269,5 @@ class GalleryState(rx.State):
             return
         async with self:
             self.busy_post_id = ""
-        yield rx.toast.success("POST rechazado.")
+        yield rx.toast.success("Publicación descartada.")
         yield GalleryState.load

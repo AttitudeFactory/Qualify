@@ -123,8 +123,9 @@ def test_a_card_says_who_where_why_and_how_it_goes_out() -> None:
     assert vm.permalink == "https://instagram.com/reel/x"
     assert len(vm.caption) <= 120 and vm.caption.endswith("…")
     assert vm.posted_label == "21 oct, 07:00"  # 12:00 UTC in Bogotá
-    assert vm.trigger_label == "Intención comercial"
+    assert vm.trigger_label == "Quiere comprar"
     assert [(i.label, i.reliable) for i in vm.intents] == [("Precio", True), ("Variantes", False)]
+    assert vm.intent_unsure is True  # «Variantes» is not backed: the card says so once
     assert vm.route_available is True
     assert vm.route_label == "Respuesta privada al comentario"
     assert vm.route_deadline == "quedan 6 d 4 h"
@@ -185,7 +186,7 @@ def test_the_analysis_toast_names_the_new_queries() -> None:
         comments_checked=3, new_results=3, skipped_empty=0, unclassified=0, followups_opened=2
     )
     assert inbox_state._intent_result_message(summary).endswith(  # noqa: SLF001
-        "Consultas nuevas en Conversaciones: 2"
+        "2 quieren comprar: te esperan en «Conversaciones»."
     )
 
 
@@ -193,7 +194,8 @@ def test_every_comment_offers_reply_by_dm() -> None:
     from .inbox_page import _comment_card
 
     rendered = str(_comment_card(inbox_state.InboxState.thread_comments[0]).render())
-    assert "Responder por DM" in rendered
+    assert "Escribirle en privado" in rendered
+    assert "Responder por DM" not in rendered
 
 
 # --- Conversaciones ------------------------------------------------------------------------

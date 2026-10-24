@@ -62,9 +62,9 @@ _TARGETS: dict[str, str] = {
     "forbidden_claims": "kit_forbidden_claims",
 }
 
-_NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
+_NO_SESSION = "Tu sesión se cerró. Vuelve a entrar para seguir."
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
-_NO_KEY = "La lectura con IA no está disponible: falta configurar la clave de Anthropic."
+_NO_KEY = "Ahora no podemos leer tu documento. Escribe los datos a mano o inténtalo más tarde."
 _AI_FAILED = "No pudimos leer el documento ahora. Inténtalo de nuevo en un momento."
 
 
@@ -169,7 +169,7 @@ def filled_message(labels: list[str]) -> str:
     if not labels:
         return "El documento no trae cambios que podamos verificar en él."
     names = ", ".join(labels)
-    return f"Rellenamos desde tu brief: {names}. Las listas las revisas en ¿Todo correcto?"
+    return f"Completamos desde tu documento: {names}. Las listas las revisas en «¿Todo correcto?»."
 
 
 #: The brief's read, stage by stage, for its progress screen (§ request 2026-10-01: the
@@ -318,7 +318,7 @@ class BrandDocumentState(rx.State):
             current = kit_snapshot(creative)
             self._set_busy(source, True)
             self._set_stage(source, "preparing")
-            self._say(source, "Leyendo tu brief…")
+            self._say(source, "Leyendo tu documento…")
         proposals: list[brief_ai.FieldProposal] = []
         message, tone = "", "neutral"
         try:
@@ -340,7 +340,7 @@ class BrandDocumentState(rx.State):
                 stats.cost_usd,
             )
             if not proposals:
-                message, tone = "El documento no trae cambios para tu Brand Kit.", "info"
+                message, tone = "El documento no trae cambios para tu marca.", "info"
         except MissingAPIKey:
             message, tone = _NO_KEY, "warn"
         except brief_ai.UnsupportedDocument as exc:
@@ -483,7 +483,7 @@ def proposals_panel(source: str) -> rx.Component:
         card(
             rx.vstack(
                 rx.text(
-                    "Cambios que propone tu brief",
+                    "Cambios que propone tu documento",
                     size="2",
                     weight="bold",
                 ),
@@ -528,8 +528,8 @@ def brief_upload_card() -> rx.Component:
     return rx.cond(
         BrandDocumentState.brief_busy,
         progress_panel(
-            "Leyendo tu brief",
-            "Claude lee el documento y rellena tu Brand Kit con lo que puede citar de él.",
+            "Leyendo tu documento",
+            "Leemos tu documento y completamos tu marca con lo que dice.",
             value=BrandDocumentState.brief_percent,
             steps=BrandDocumentState.brief_steps,
         ),
@@ -543,12 +543,12 @@ def _brief_card() -> rx.Component:
             rx.hstack(
                 rx.icon("file-text", size=20, color=T.TEXT_MUTED),
                 rx.vstack(
-                    rx.text("¿Tienes un brief de marca?", size="2", weight="medium"),
+                    rx.text("¿Tienes un documento de tu marca?", size="2", weight="medium"),
                     rx.text(
                         rx.cond(
                             BrandDocumentState.brief_name != "",
                             BrandDocumentState.brief_name,
-                            "Súbelo y rellenamos tu Brand Kit con lo que dice.",
+                            "Súbelo y completamos tu marca con lo que dice.",
                         ),
                         size="1",
                         color=T.TEXT_MUTED,
@@ -560,7 +560,7 @@ def _brief_card() -> rx.Component:
                 dropzone(
                     rx.button(
                         rx.icon("upload", size=T.ICON_SM),
-                        rx.cond(BrandDocumentState.brief_name != "", "Cambiar", "Subir brief"),
+                        rx.cond(BrandDocumentState.brief_name != "", "Cambiar", "Subir documento"),
                         variant="soft",
                         size="2",
                         disabled=BrandDocumentState.brief_busy,

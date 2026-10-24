@@ -820,7 +820,7 @@ def _states() -> rx.Component:
 
 def _sentiment_badges() -> rx.Component:
     """QUA-92: the four states `sentiment_badge` renders for the pipeline vocabulary
-    (`POS`/`NEG`/`NEU`/`""`) — `""` is "Sin analizar", never NEU."""
+    (`POS`/`NEG`/`NEU`/`""`) — `""` is «Sin revisar», never NEU."""
     return rx.hstack(
         sentiment_badge(rx.Var.create("POS")),
         sentiment_badge(rx.Var.create("NEG")),

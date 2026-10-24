@@ -1,4 +1,5 @@
-"""Leads screen — the people this tenant has converted through its capture funnel.
+"""«Clientes interesados» (/leads) — the people who left their details on this tenant's
+capture form.
 
 Read-only for now: capture happens on the public form, analysis grows here later
 (sources, interests, RFM). Reuses the scaffold's sidebar; the active tenant
@@ -18,7 +19,7 @@ from .ui import tokens as T
 def _topbar() -> rx.Component:
     return page_header(
         "Clientes interesados",
-        "Personas que te dejaron sus datos para que las contactes",
+        "Personas que te dejaron sus datos y aceptaron que las contactes.",
         # The count badge of docs/design-system.md §5.3: soft, neutral — a figure
         # about the page, never a state.
         badge=rx.badge(
@@ -62,7 +63,7 @@ def _leads_table() -> rx.Component:
                     rx.table.column_header_cell("WhatsApp"),
                     rx.table.column_header_cell("Interés"),
                     rx.table.column_header_cell("Fuente"),
-                    rx.table.column_header_cell("Datos extra"),
+                    rx.table.column_header_cell("Lo que te contaron"),
                     rx.table.column_header_cell("Registro"),
                 ),
             ),
@@ -79,8 +80,8 @@ def _empty_state() -> rx.Component:
     return empty_state(
         "user-plus",
         "Todavía no tienes clientes interesados",
-        "Comparte el formulario de captura de este negocio: cada registro "
-        "con consentimiento aparecerá aquí.",
+        "Comparte tu formulario: cada persona que deje sus datos y acepte que la "
+        "contactes aparecerá aquí.",
     )
 
 

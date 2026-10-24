@@ -89,9 +89,7 @@ _CLONE_POLL_TIMEOUT_SECONDS = 300.0
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_SAMPLE = "Sube primero una grabación de tu voz."
 _NO_CONSENT = "Confirma que es tu voz, o que tienes permiso de su dueño, antes de clonarla."
-_NO_CLAUDE = (
-    "El análisis no está disponible: falta configurar QUALIFY_ANTHROPIC_API_KEY para leer el tono."
-)
+_NO_CLAUDE = "No podemos escuchar tu tono ahora mismo. Inténtalo más tarde."
 _TOO_SHORT = (
     "Se entendieron muy pocas palabras. Sube una grabación de al menos 30 segundos hablando."
 )
@@ -104,7 +102,7 @@ _CLONE_PROTECTED = "Esa voz se parece demasiado a una voz protegida. Usa tu prop
 _CLONE_REJECTED = "La grabación no pasó la revisión. Prueba con otra, hablando tú."
 #: Seed Speech's clone error codes (voicereplication-v3-error-code-reference), by meaning.
 _CLONE_ERRORS = {45001104: _CLONE_PROTECTED, 45001127: _CLONE_REJECTED}
-_DB_ERROR = "No se pudo leer la base de datos."
+_DB_ERROR = "No pudimos cargar tus datos. Recarga la página en un momento."
 #: The microphone recorder, shipped INSIDE the `rx.call_script` that starts it: the
 #: app's `head_components` scripts go through react-helmet, which on Reflex < 0.9.9
 #: could drop them around hydration (measured 2026-10-01 on a 0.9.7 venv; fixed

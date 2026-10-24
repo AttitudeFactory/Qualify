@@ -55,7 +55,7 @@ Los calcula `review_reasons` (`public_drafts.py:145`) y se guardan en `grounding
 | `model_unsupported` | El modelo dice que usó algo fuera de los hechos (`uses_only_given_facts = false`) o lista alguna afirmación que no pudo respaldar | «El borrador dice algo que no está en tu catálogo; revisa que sea cierto.» Debajo, «Lo que no encontramos en tu catálogo: …» con esas afirmaciones | Sí |
 | `price_token` | El texto tiene algo con forma de precio (`has_price_token`, `grounding.py:51`) | «La respuesta menciona un precio y en público no damos precios: quítalo con «Editar» o toca «Regenerar».» | Sí |
 | `unvalidated:<clase>` | El comentario pregunta por disponibilidad, local, ubicación u horario (D2) | «Preguntan si hay disponible» / «…en qué local comprar» / «…dónde queda tu negocio» / «…el horario», seguido de «Eso no se confirma en público: revisa que la respuesta no lo confirme e invite a la persona a escribirte por privado.» | Sí |
-| `empty_catalog` | La marca no tiene ningún producto activo, o la conexión no tiene marca | «Tu catálogo está vacío, así que la respuesta no habla de ningún producto. Agrega tus productos en Catálogo para que las próximas respuestas sean más completas.» | Sí |
+| `empty_catalog` | La marca no tiene ningún producto activo, o la conexión no tiene marca | «Tu catálogo está vacío, así que la respuesta no habla de ningún producto. Agrégalos en «Tus productos» para que las próximas respuestas sean más completas.» | Sí |
 | `price_unknown` | Preguntan el precio y ningún producto del catálogo tiene precio: hasta «te escribimos por DM con el precio» promete una cifra que nadie validó | «Preguntan el precio y tu catálogo no lo tiene; revisa que el borrador no prometa uno.» | Sí |
 | `unreliable:<clase>` | Una clase preguntada (distinta de `general`) no es fiable para el detector actual (`intent/reliability.py`). Con `intent-claude-v2` son fiables `general`, `price`, `availability` y `location`; las demás no | Nota: «No estamos seguros de que pregunten por «<clase>»: mira que la respuesta conteste lo que pidieron.» | No (nota suave) |
 
@@ -134,7 +134,7 @@ Lo encontramos el 2026-10-23 en la prueba local: la conexión no tenía marca y 
 SELECT tenant_id, count(*) FROM social_connections WHERE brand_id IS NULL GROUP BY tenant_id;
 ```
 
-Y enlazar las que falten antes de generar. El mensaje de la tarjeta («Agrega tus productos en Catálogo…») no ayuda en ese caso: el catálogo puede estar lleno y lo que falta es el enlace.
+Y enlazar las que falten antes de generar. El mensaje de la tarjeta («Agrégalos en «Tus productos»…») no ayuda en ese caso: el catálogo puede estar lleno y lo que falta es el enlace.
 
 ### Observación abierta: «Nuevo producto» en Catálogo
 

@@ -19,7 +19,10 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_LOAD_FAILED = "No se pudieron cargar los leads. Revisa la conexión con la base de datos."
+_LOAD_FAILED = (
+    "No pudimos cargar tus clientes interesados. Actualiza la página o intenta de nuevo "
+    "en unos minutos."
+)
 _NO_TENANTS = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 
 
