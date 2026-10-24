@@ -1005,6 +1005,10 @@ class PostgresContentRepository:
                 raise UnknownDraft(str(draft_id))
             draft.status = new_status
             draft.failure_reason = failure_reason
+            if new_status == DRAFTING:
+                # a run starts (m-24852156): the reaper measures from here, not from the
+                # draft's birth — «Pedir otra versión» on an old piece is not stale
+                draft.updated_at = datetime.now(UTC)
 
     def set_approved(
         self,
@@ -1342,8 +1346,12 @@ class ContentService:
         context_reader: BrandContextReader | None = None,
         approval_guard: ApprovalGuard | None = None,
         creations: CreationsLedger | None = None,
+        progress: Callable[[UUID, UUID], None] | None = None,
     ) -> None:
         self._media = media
+        #: The run's heartbeat (m-24852156, `dispatch.record_progress`): called with
+        #: (tenant_id, draft_id) each time the media run keeps a file. None = no stamp.
+        self._progress = progress
         #: «Creaciones del mes» (CREAR-5): None = no monthly quota (tests, scripts).
         self._creations = creations
         self._approval_guard = approval_guard
@@ -1595,6 +1603,14 @@ class ContentService:
             tenant_id=tenant_id, draft_id=draft_id, revision=draft.revision
         )
 
+    def _heartbeat(self, tenant_id: UUID, draft_id: UUID) -> Callable[[], None] | None:
+        """The draft's progress stamp as a no-argument callable, or None when this
+        service was wired without one."""
+        progress = self._progress
+        if progress is None:
+            return None
+        return lambda: progress(tenant_id, draft_id)
+
     def _refund_if_not_delivered(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> None:
         """CREAR-5: a generation that failed — the vendor, moderation, a refusal — or a
         regeneration that kept the previous version gives its creations back. Never a
@@ -1823,6 +1839,8 @@ class ContentService:
                 ),
                 # each generation keeps its own R2 copy (a regeneration bumps it first)
                 revision=draft.revision,
+                # every kept file is a sign of life for the reaper (m-24852156)
+                heartbeat=self._heartbeat(tenant_id, draft.id),
             )
             spent += outcome.spent_usd
             usage_writes.extend(self._media_usage(outcome.usage))

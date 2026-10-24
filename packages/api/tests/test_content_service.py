@@ -992,7 +992,7 @@ class FakeMedia:
         self.outcome = outcome
         self.calls: list[tuple[ContentBrief, CopyPayload]] = []
 
-    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget, revision=1):  # noqa: ANN001, ANN201, E501
+    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget, revision=1, heartbeat=None):  # noqa: ANN001, ANN201, E501
         self.calls.append((brief, copy))
         return self.outcome
 

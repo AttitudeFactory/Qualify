@@ -79,7 +79,7 @@ from qualify_api.creative.brand_fonts import DbBrandFontFiles
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.creations import PostgresCreationsLedger
-from qualify_api.creative.dispatch import InlineDispatcher
+from qualify_api.creative.dispatch import InlineDispatcher, record_progress
 from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
 from qualify_api.creative.observed import traced_providers
 from qualify_api.creative.pieces import DbPieceFiles
@@ -362,6 +362,9 @@ def production_content_service() -> ContentService:
         approval_guard=_angle_price_guard(),
         # CREAR-5: «creaciones del mes» — the owner's monthly quota, never money
         creations=production_creations_ledger(),
+        # m-24852156: every file a run keeps stamps the draft, so the reaper measures
+        # from the last progress (a long carousel is alive, a dead thread is not)
+        progress=_record_progress,
         media=MediaProducer(
             store=store,
             router=router,
@@ -406,6 +409,10 @@ def production_content_service() -> ContentService:
     )
     service.dispatcher = InlineDispatcher(service.run_generation, service.run_finalize)
     return service
+
+
+def _record_progress(tenant_id: UUID, draft_id: UUID) -> None:
+    record_progress(tenant_id=tenant_id, draft_id=draft_id)
 
 
 # ---------------------------------------------------------------------------
