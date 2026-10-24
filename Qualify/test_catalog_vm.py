@@ -262,3 +262,125 @@ def test_refused_files_are_explained_in_the_owners_words() -> None:
     assert rejection_message([{"errors": [{"code": "file-too-large"}]}]) == MEDIA_TOO_BIG
     assert rejection_message([]) == MEDIA_NOT_ACCEPTED
     assert rejection_message(["garbage"]) == MEDIA_NOT_ACCEPTED
+
+
+# ---------------------------------------------------------------------------
+# m-24842976: what counts as an unsaved change, and the leave dialog's words
+
+
+def _vm(**kw: object) -> object:
+    from .catalog_vm import ProductVM
+
+    base: dict[str, object] = {
+        "product_id": "p1",
+        "name": "Shawarma mixto",
+        "slug": "shawarma-mixto",
+        "description": "Pollo y carne",
+        "price_label": "$12.5",
+        "price_amount": "12.5",
+        "price_currency": "USD",
+        "category": "shawarmas",
+        "primary_photo_key": "",
+        "photo_count": 0,
+        "video_count": 0,
+        "counts_label": "Falta la foto",
+    }
+    base.update(kw)
+    return ProductVM(**base)  # type: ignore[arg-type]
+
+
+def _fields(**kw: str) -> dict[str, str]:
+    base = {
+        "name": "Shawarma mixto",
+        "description": "Pollo y carne",
+        "category": "shawarmas",
+        "price": "12.5",
+        "currency": "USD",
+    }
+    base.update(kw)
+    return base
+
+
+def test_the_editor_is_clean_when_it_shows_what_is_stored() -> None:
+    from .catalog_vm import editor_is_dirty
+
+    product = _vm()
+    assert not editor_is_dirty(product, **_fields())  # type: ignore[arg-type]
+    # ends trimmed by the save, and the same price written another way
+    assert not editor_is_dirty(product, **_fields(name=" Shawarma mixto ", price="12,50"))  # type: ignore[arg-type]
+    assert not editor_is_dirty(None, **_fields(name="x"))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"name": "Shawarma XL"},
+        {"description": ""},
+        {"category": "combos"},
+        {"price": "13"},
+        {"price": ""},
+        {"price": "12,"},  # half-typed: still a change
+        {"currency": "COP"},
+    ],
+)
+def test_any_edited_field_is_a_change(change: dict[str, str]) -> None:
+    from .catalog_vm import editor_is_dirty
+
+    assert editor_is_dirty(_vm(), **_fields(**change))  # type: ignore[arg-type]
+
+
+def test_the_leave_dialog_and_the_card_name_the_product() -> None:
+    from .catalog_vm import (
+        LEAVE_SAVE,
+        LEAVE_STAY,
+        LEAVE_TITLE,
+        PRODUCT_QUERY,
+        leave_description,
+    )
+
+    assert LEAVE_TITLE == "¿Salir sin guardar?"
+    assert (LEAVE_STAY, LEAVE_SAVE) == ("Volver", "Guardar y salir")
+    assert leave_description(" Helado ") == "Los cambios de «Helado» se van a perder."
+    assert PRODUCT_QUERY == "producto"
+
+
+# -- m-24842977 ------------------------------------------------------------------------
+
+
+def test_product_count_label_says_how_many_lack_a_photo() -> None:
+    from .catalog_vm import product_count_label
+
+    assert product_count_label(1, 0) == "1 producto"
+    assert product_count_label(3, 0) == "3 productos"
+    assert product_count_label(3, 1) == "3 productos · 1 sin foto"
+    assert product_count_label(5, 2) == "5 productos · 2 sin foto"
+
+
+def test_missing_photo_filter_label() -> None:
+    from .catalog_vm import missing_photo_filter_label
+
+    assert missing_photo_filter_label(1, active=False) == "Ver el que no tiene foto"
+    assert missing_photo_filter_label(2, active=False) == "Ver los 2 sin foto"
+    assert missing_photo_filter_label(2, active=True) == "Ver todos los productos"
+
+
+def test_remove_media_words() -> None:
+    from .catalog_vm import remove_media_description, remove_media_title
+
+    assert remove_media_title("image") == "¿Quitar esta foto?"
+    assert remove_media_title("video") == "¿Quitar este video?"
+    plain = remove_media_description("image", is_primary=False)
+    assert plain.startswith("Esta foto ya no se usará") and "principal" not in plain
+    with_other = remove_media_description("image", is_primary=True, has_other_photo=True)
+    assert with_other.endswith("La siguiente foto pasa a ser la principal.")
+    only = remove_media_description("image", is_primary=True, has_other_photo=False)
+    assert only.endswith("Tu producto quedará sin foto hasta que subas otra.")
+    assert "Si tienes" not in with_other + only
+    video = remove_media_description("video", is_primary=False)
+    assert video.startswith("Este video") and "principal" not in video
+
+
+def test_no_photo_label_carries_pixel_sizes() -> None:
+    for w, h in ((1080, 1350), (320, 240), (None, None)):
+        assert "×" not in media_meta_label("image", w, h, None)
+        assert "px" not in media_meta_label("image", w, h, None)

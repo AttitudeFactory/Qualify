@@ -7,7 +7,7 @@ docstring for why it has to be the class). Background handlers are driven throug
 
 Pins:
 1. "Tus productos" sits in the Negocio block, next to "Tu marca", before "Configuración".
-2. Selecting a product fills the editor; selecting it again closes the editor.
+2. Selecting a product fills the editor; selecting it again keeps it open (m-24842976).
 3. The new-product form refuses an empty name BEFORE any provider call, never sends a
    price (the screen dropped it, founder 2026-10-19 — stored prices stay untouched), and
    on success closes, clears, re-reads the list and opens the new product. Saving an
@@ -19,10 +19,13 @@ Pins:
    «Atrás» keeps what was typed (N6), «Listo» after saving with the way to Crear, the
    business's own currency as the start, refused files in the owner's words, and no
    «arrastra» / «haz clic» / format siglas on the main path.
+9. m-24842977: «Principal» and «Quitar» in words at 44 px, «Quitar» asks first, no
+   pixel sizes, and «3 productos · 1 sin foto» with a filter to the ones missing it.
 """
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -91,7 +94,7 @@ def test_catalogo_is_in_the_business_block_next_to_the_brand_kit() -> None:
 # 2. selection and the editor
 
 
-def test_selecting_a_product_fills_the_editor_and_selecting_again_closes_it() -> None:
+def test_selecting_a_product_fills_the_editor_and_never_toggles_it() -> None:
     state = CatalogState()
     state.products = [_product(), _product("p2", name="Helado")]
 
@@ -106,8 +109,11 @@ def test_selecting_a_product_fills_the_editor_and_selecting_again_closes_it() ->
     state.select_product("p2")
     assert state.edit_name == "Helado"
 
-    state.select_product("p2")
-    assert state.selected_id == "" and state.selected is None
+    # m-24842976: tapping the open product keeps it open (the drawer closes itself)
+    assert state.select_product("p2") is None
+    assert state.selected_id == "p2"
+    # an id the list does not hold (over the wire) opens nothing
+    assert state.select_product("ajeno") is None and state.selected_id == "p2"
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +210,7 @@ def _media(media_id: str, *, primary: bool = False, position: int = 0) -> Produc
         filename=f"{media_id}.jpg",
         is_primary=primary,
         position=position,
-        meta_label="1080×1350",
+        meta_label="",
     )
 
 
@@ -476,7 +482,7 @@ async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
                 filename="a.jpg",
                 is_primary=True,
                 position=0,
-                meta_label="1080×1350",
+                meta_label="",
             ),
         )
         return (_product(media=media, photo_count=1, counts_label="1 foto"),)
@@ -553,6 +559,8 @@ def test_load_sweeps_orphaned_staging_files(monkeypatch, tmp_path: Path) -> None
 _COPY_SOURCES = ("catalog_page.py", "catalog_state.py", "catalog_vm.py")
 # Words from the team, not the owner (qualify-ux §3, docs/ux-auditoria-2026-10/m2 #5, #10).
 _BANNED = ("plantilla", "feed", "pieza", "gancho", "provisionad", "story", "base de datos")
+#: Literals that are code, not copy: the browser's own API names (m-24842976).
+_CODE_LITERALS = {"window.history.back()"}
 
 
 def _visible_strings(source: str) -> list[str]:
@@ -581,6 +589,8 @@ def test_the_catalog_speaks_the_owners_words() -> None:
     here = Path(catalog_state_module.__file__).parent
     for name in _COPY_SOURCES:
         for text in _visible_strings((here / name).read_text(encoding="utf-8")):
+            if text in _CODE_LITERALS:
+                continue
             lowered = text.lower()
             for word in _BANNED:
                 assert word not in lowered, f"{name}: «{word}» in {text!r}"
@@ -686,7 +696,7 @@ async def test_load_reads_the_business_currency(monkeypatch) -> None:
     monkeypatch.setattr(catalog_state_module, "business_currency", lambda _t: "UYU")
     monkeypatch.setattr(catalog_state_module, "_sweep_staging", lambda _t: None)
     state = _state(monkeypatch)
-    await CatalogState.load_catalog.fn(state)
+    assert await _drain(CatalogState.load_catalog.fn(state)) == []
     assert state._business_currency == "UYU" and state.new_currency == "UYU"
 
 
@@ -706,3 +716,375 @@ def test_the_main_path_has_no_drag_click_or_format_words() -> None:
         assert "arrastra" not in lowered and "haz clic" not in lowered, text
         for sigla in ("JPG", "JPEG", "PNG", "HEIC", "MP4", "MOV"):
             assert sigla not in text, text
+
+
+# ---------------------------------------------------------------------------
+# 8. m-24842976: editing without losing changes, with its own address (N5)
+
+
+def _nav(events: Any) -> list[tuple[str, Any, bool]]:
+    """The navigations a handler asked for: ("redirect", path, replace) or
+    ("script", code, False) — read from the EventSpecs, nothing else."""
+    found: list[tuple[str, Any, bool]] = []
+    for spec in events or []:
+        fn = getattr(getattr(spec, "handler", None), "fn", None)
+        if getattr(fn, "__qualname__", "") not in ("_redirect", "_call_script"):
+            continue  # toasts and the like
+        args = {name._js_expr: value._var_value for name, value in getattr(spec, "args", ())}
+        if getattr(fn, "__qualname__", "") == "_redirect":
+            found.append(("redirect", args["path"], bool(args["replace"])))
+        elif getattr(fn, "__qualname__", "") == "_call_script":
+            found.append(("script", args["javascript_code"], False))
+    return found
+
+
+def _at(monkeypatch, product: str = "") -> dict[str, str]:
+    """Pin the address the state reads (`?producto=`); mutate the dict to «navigate»."""
+    url = {"producto": product}
+    monkeypatch.setattr(CatalogState, "_url_product", lambda self: url["producto"])
+    return url
+
+
+def _two_products() -> list[ProductVM]:
+    return [_product(), _product("p2", name="Helado", category="helados", description="")]
+
+
+def _offline_load(monkeypatch) -> None:
+    monkeypatch.setattr(catalog_state_module, "list_products", lambda *_: tuple(_two_products()))
+    monkeypatch.setattr(catalog_state_module, "business_currency", lambda _t: "COP")
+    monkeypatch.setattr(catalog_state_module, "_sweep_staging", lambda _t: None)
+
+
+def test_opening_from_the_list_gives_the_product_its_address(monkeypatch) -> None:
+    _at(monkeypatch)
+    state = CatalogState()
+    state.products = _two_products()
+    events = state.select_product(str(_PRODUCT_ID))
+    assert _nav(events) == [("redirect", f"/catalog?producto={_PRODUCT_ID}", False)]
+    assert state.editor_open and state._opened_in_app
+
+
+def test_closing_a_clean_editor_steps_back_to_the_list(monkeypatch) -> None:
+    """«atrás» semantics for the ×: the list comes back where it was (history back)."""
+    url = _at(monkeypatch)
+    state = CatalogState()
+    state.products = _two_products()
+    state.select_product(str(_PRODUCT_ID))
+    url["producto"] = str(_PRODUCT_ID)
+    assert not state.edit_dirty
+    events = state.set_editor_open(False)
+    assert _nav(events) == [("script", "window.history.back()", False)]
+    assert not state.editor_open and not state.leave_open
+
+
+def test_closing_an_editor_opened_from_a_link_replaces_the_address(monkeypatch) -> None:
+    url = _at(monkeypatch, str(_PRODUCT_ID))
+    state = CatalogState()
+    state.products = _two_products()
+    state._sync_url(final=True)  # the link opened it: no list entry behind it
+    assert state.selected_id == str(_PRODUCT_ID) and not state._opened_in_app
+    assert _nav(state.request_close()) == [("redirect", "/catalog", True)]
+    url["producto"] = ""
+    assert state.request_close() is None  # nothing open, nothing to do
+
+
+def test_closing_with_changes_asks_first_and_volver_keeps_them(monkeypatch) -> None:
+    url = _at(monkeypatch)
+    state = CatalogState()
+    state.products = _two_products()
+    state.select_product(str(_PRODUCT_ID))
+    url["producto"] = str(_PRODUCT_ID)
+    state.set_edit_price("15000")
+    assert state.edit_dirty
+    assert state.request_close() is None
+    assert state.leave_open and state.editor_open
+    assert state.leave_text == "Los cambios de «Shawarma mixto» se van a perder."
+    assert state.stay_in_editor() == []  # the address still names the product
+    assert not state.leave_open and state.edit_price == "15000"
+    # Esc on the dialog is «Volver» too
+    state.request_close()
+    state.set_leave_open(False)
+    assert not state.leave_open and state.edit_price == "15000"
+
+
+def test_salir_sin_guardar_drops_the_changes(monkeypatch) -> None:
+    url = _at(monkeypatch)
+    state = CatalogState()
+    state.products = _two_products()
+    state.select_product(str(_PRODUCT_ID))
+    url["producto"] = str(_PRODUCT_ID)
+    state.set_edit_name("Otro nombre")
+    state.request_close()
+    events = state.discard_and_leave()
+    assert _nav(events) == [("script", "window.history.back()", False)]
+    assert not state.editor_open and not state.leave_open
+
+
+def test_moving_to_another_product_with_changes_asks_first(monkeypatch) -> None:
+    url = _at(monkeypatch)
+    state = CatalogState()
+    state.products = _two_products()
+    state.select_product(str(_PRODUCT_ID))
+    url["producto"] = str(_PRODUCT_ID)
+    state.set_edit_category("combos")
+    assert state.select_product("p2") is None
+    assert state.leave_open and state.selected_id == str(_PRODUCT_ID)
+    events = state.discard_and_leave()
+    # the address already names a product: the same history entry, the other product
+    assert _nav(events) == [("redirect", "/catalog?producto=p2", True)]
+    assert state.selected_id == "p2" and state.edit_name == "Helado"
+
+
+async def test_guardar_y_salir_saves_then_goes_where_the_owner_was_going(monkeypatch) -> None:
+    updated: list[dict[str, Any]] = []
+    products = _two_products()
+    monkeypatch.setattr(
+        catalog_state_module,
+        "update_product",
+        lambda tenant_id, product_id, **kw: updated.append({"product_id": product_id, **kw}),
+    )
+    monkeypatch.setattr(catalog_state_module, "list_products", lambda *_: tuple(products))
+    url = _at(monkeypatch)
+    state = _state(monkeypatch)
+    state.products = list(products)
+    state.select_product(str(_PRODUCT_ID))
+    url["producto"] = str(_PRODUCT_ID)
+    state.set_edit_price("15000")
+    state.select_product("p2")
+    assert state.save_and_leave() == CatalogState.save_product
+    assert not state.leave_open
+
+    events = await _drain(CatalogState.save_product.fn(state))
+
+    assert updated and updated[0]["price_amount"] == Decimal("15000")
+    assert "guardados" in str(events[0])
+    assert _nav(events[1:]) == [("redirect", "/catalog?producto=p2", True)]
+    assert state.selected_id == "p2" and state._leave_target == ""
+
+
+async def test_a_refused_guardar_y_salir_stays_with_the_reason(monkeypatch) -> None:
+    updated: list[dict[str, Any]] = []
+    url = _at(monkeypatch)
+    state = _editor(monkeypatch, updated, _product())
+    url["producto"] = str(_PRODUCT_ID)
+    state.set_edit_name("  ")
+    state.request_close()
+    state.save_and_leave()
+    events = await _drain(CatalogState.save_product.fn(state))
+    assert updated == [] and _nav(events) == []
+    # the reason is also a toast: on the phone the line under the fields may be out of view
+    assert len(events) == 1 and state.edit_error in str(events[0])
+    assert state.editor_open and "nombre" in state.edit_error.lower()
+    assert state._leave_target == "" and not state.leave_open
+
+
+async def test_the_phones_back_with_changes_asks_and_volver_restores_the_address(
+    monkeypatch,
+) -> None:
+    """N5: «atrás» drops `?producto=` before the app hears it; with changes pending the
+    editor stays and asks, and «Volver» puts the address back for the next «atrás»."""
+    _offline_load(monkeypatch)
+    url = _at(monkeypatch)
+    state = _state(monkeypatch)
+    state.products = _two_products()
+    state.select_product(str(_PRODUCT_ID))
+    state.set_edit_description("Con papas")
+    url["producto"] = ""  # the phone's «atrás»
+
+    assert await _drain(CatalogState.load_catalog.fn(state)) == []
+
+    assert state.editor_open and state.leave_open and state._leave_target == ""
+    assert state.loading is False  # the list never swapped for the skeleton
+    assert _nav(state.stay_in_editor()) == [("redirect", f"/catalog?producto={_PRODUCT_ID}", False)]
+    assert state.edit_description == "Con papas"
+
+
+async def test_the_phones_back_without_changes_closes_the_editor(monkeypatch) -> None:
+    _offline_load(monkeypatch)
+    url = _at(monkeypatch)
+    state = _state(monkeypatch)
+    state.products = _two_products()
+    state.select_product(str(_PRODUCT_ID))
+    url["producto"] = ""
+    assert await _drain(CatalogState.load_catalog.fn(state)) == []
+    assert not state.editor_open and not state.leave_open
+
+
+async def test_a_link_opens_the_product_and_a_stranger_id_falls_back_to_the_list(
+    monkeypatch,
+) -> None:
+    """`/catalog?producto=<id>` opens that product after the first load; an id this
+    business does not have (another tenant's, a deleted one) lands on the bare list."""
+    _offline_load(monkeypatch)
+    url = _at(monkeypatch, "p2")
+    state = _state(monkeypatch)
+    assert await _drain(CatalogState.load_catalog.fn(state)) == []
+    assert state.selected_id == "p2" and state.edit_name == "Helado"
+
+    url["producto"] = "e0000000-0000-4000-8000-00000000dead"
+    fresh = _state(monkeypatch)
+    events = await _drain(CatalogState.load_catalog.fn(fresh))
+    assert _nav(events) == [("redirect", "/catalog", True)]
+    assert "Aquí tienes los que sí están" in str(events[1])  # N3: say what happened
+    assert not fresh.editor_open
+
+
+async def test_a_photo_change_never_overwrites_a_price_being_corrected(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """UX review: correct the price, add a photo — the refresh after the upload keeps
+    the typed price and «¿Salir sin guardar?» still guards it."""
+    monkeypatch.setattr(catalog_state_module, "add_media", lambda *_a, **_k: None)
+    updated: list[dict[str, Any]] = []
+    state = _editor(monkeypatch, updated, _product(price_amount="12000"))
+    state.set_edit_price("15000")
+    photo = tmp_path / "foto.jpg"
+    photo.write_bytes(b"x")
+    state._pending = [(str(photo), "foto.jpg", str(_PRODUCT_ID))]
+
+    await _drain(CatalogState.ingest_pending.fn(state))
+
+    assert state.edit_price == "15000" and state.edit_dirty
+    assert updated == []
+
+
+def test_retyping_the_same_values_is_not_a_change(monkeypatch) -> None:
+    _at(monkeypatch)
+    state = CatalogState()
+    state.products = [_product(price_amount="12.5", price_currency="USD")]
+    state.select_product(str(_PRODUCT_ID))
+    state.set_edit_name(" Shawarma mixto ")
+    state.set_edit_price("12,50")
+    assert not state.edit_dirty
+    state.set_edit_currency("COP")
+    assert state.edit_dirty
+
+
+def test_the_card_is_a_button_that_says_editar() -> None:
+    """m-24842976: a real <button> named «Editar {producto}», the word written on it, and
+    no hover-only chip or tooltip; the leave dialog speaks the agreed words."""
+    from . import catalog_page
+
+    source = Path(catalog_page.__file__).read_text(encoding="utf-8")
+    card = source[source.index("def _product_card") : source.index("def _grid")]
+    assert "rx.el.button(" in card and 'type="button"' in card
+    assert 'aria_label="Editar " + product.name' in card
+    assert '"Editar"' in card and "tooltip" not in card and "q-catalog-edit" not in card
+    assert 'role="button"' not in card  # a real button needs no borrowed role
+    rendered = str(catalog_page.catalog_index())
+    for words in ("¿Salir sin guardar?", "Volver", "Guardar y salir"):
+        # the compiled page escapes non-ASCII the way JSON does («¿» → ¿)
+        assert json.dumps(words)[1:-1] in rendered
+
+
+# ---------------------------------------------------------------------------
+# 9. m-24842977: the main photo and removing media without mistakes
+
+
+def _with_media() -> CatalogState:
+    state = CatalogState()
+    state.products = [
+        _product(
+            media=(
+                _media("m1", primary=True),
+                _media("m2", position=1),
+                ProductMediaVM(
+                    media_id="v1",
+                    media_type="video",
+                    key="uploads/t/catalog/p/v1.mp4",
+                    filename="v1.mp4",
+                    is_primary=False,
+                    position=2,
+                    meta_label="7 s",
+                ),
+            ),
+            photo_count=2,
+            video_count=1,
+        )
+    ]
+    state.selected_id = str(_PRODUCT_ID)
+    return state
+
+
+def test_quitar_asks_first_and_volver_removes_nothing() -> None:
+    state = _with_media()
+    assert not state.remove_media_open
+    state.ask_remove_media("m2")
+    assert state.remove_media_open
+    assert state.remove_media_title_text == "¿Quitar esta foto?"
+    assert "ya no se usará" in state.remove_media_text
+    assert "principal" not in state.remove_media_text  # m2 is not the main one
+    state.set_remove_media_open(False)  # «Volver» / Esc
+    assert not state.remove_media_open and state.remove_media_id == ""
+
+
+def test_quitar_the_main_photo_says_who_takes_its_place_and_a_video_is_a_video() -> None:
+    state = _with_media()
+    state.ask_remove_media("m1")
+    assert "pasa a ser la principal" in state.remove_media_text
+    state.ask_remove_media("v1")
+    assert state.remove_media_title_text == "¿Quitar este video?"
+    assert state.remove_media_text.startswith("Este video")
+
+
+def test_quitar_the_only_photo_says_the_product_is_left_without_one() -> None:
+    """UX review: Qualify knows whether another photo is left, so it says it outright."""
+    state = _with_media()
+    state.ask_remove_media("m1")
+    assert state.remove_media_text.endswith("La siguiente foto pasa a ser la principal.")
+    state.products = [_product(media=(_media("m1", primary=True),), photo_count=1)]
+    state.ask_remove_media("m1")
+    assert state.remove_media_text.endswith("Tu producto quedará sin foto hasta que subas otra.")
+
+
+def test_si_quitar_closes_the_dialog_and_runs_the_removal() -> None:
+    state = _with_media()
+    state.ask_remove_media("m2")
+    spec = state.confirm_remove_media()
+    assert spec is not None and state.remove_media_id == ""
+    assert not state.remove_media_open
+    assert state.confirm_remove_media() is None  # a second tap removes nothing more
+
+
+def test_quitar_waits_while_another_media_change_runs() -> None:
+    state = _with_media()
+    state.media_busy = True
+    state.ask_remove_media("m2")
+    assert not state.remove_media_open
+
+
+def test_the_header_counts_the_products_without_a_photo_and_filters_them() -> None:
+    state = CatalogState()
+    state.products = [
+        _product("p1", photo_count=1, counts_label="1 foto"),
+        _product("p2", photo_count=0),
+        _product("p3", photo_count=3, counts_label="3 fotos"),
+    ]
+    assert state.product_count_label == "3 productos · 1 sin foto"
+    assert state.show_missing_filter
+    assert state.missing_filter_label == "Ver el que no tiene foto"
+    assert [p.product_id for p in state.visible_products] == ["p1", "p2", "p3"]
+    state.toggle_missing_photo()
+    assert [p.product_id for p in state.visible_products] == ["p2"]
+    assert state.missing_filter_label == "Ver todos los productos"
+    # the last one gets its photo: the whole list comes back on its own
+    state.products = [_product("p1", photo_count=1), _product("p2", photo_count=1)]
+    assert state.product_count_label == "2 productos"
+    assert not state.missing_filter_on and not state.show_missing_filter
+    assert len(state.visible_products) == 2
+
+
+def test_the_tile_actions_are_words_at_44_px_and_quitar_opens_the_dialog() -> None:
+    from . import catalog_page
+
+    source = Path(catalog_page.__file__).read_text(encoding="utf-8")
+    tile = source[source.index("def _media_tile") : source.index("def _upload_zone")]
+    assert "MAKE_PRIMARY" in tile and "REMOVE_MEDIA" in tile
+    assert "icon_button" not in tile and "tooltip" not in tile
+    assert tile.count("min_height=_TOUCH_MIN") >= 2
+    assert "CatalogState.ask_remove_media(item.media_id)" in tile
+    assert "CatalogState.delete_media(" not in tile  # never a removal on the first tap
+    rendered = str(catalog_page.catalog_index())
+    for words in ("Principal", "Quitar", "Volver", "Sí, quitar"):
+        assert json.dumps(words)[1:-1] in rendered
+    assert "×" not in tile and "px" not in "".join(_visible_strings(tile))

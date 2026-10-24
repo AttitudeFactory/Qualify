@@ -231,6 +231,14 @@ Espejo de las plantillas de la WABA (`name, language, category, status, quality,
 ### WA-21 · Analítica
 `GET /{WABA_ID}?fields=analytics,conversation_analytics` en Conexión: mensajes por día, costo por categoría, comparado con lo que suma `whatsapp_campaign_sends`.
 
+### WHATSAPP-2 (m-24848535) · Mensaje aprobado desde el chat vencido (`0087_whatsapp_template_reply`)
+Épica UX m-24842956. Con el chat vencido (más de 24 h), la pestaña Chats muestra «Enviar un mensaje aprobado»; el dueño elige, ve la vista previa con los datos rellenados y lo envía con su toque. Nuevo kind de `whatsapp_outbox`, `template_reply` (solo plantilla, la ventana no aplica), con `request_key` único por tenant (un doble toque encola una sola vez), `template_id` (procedencia), `template_category` y `preview_text` (lo que queda como `messages.text`). Código: `qualify_api.whatsapp.template_reply`.
+
+- **Permiso (decisión del fundador 2026-10-23, §2b-4):** quien escribió antes recibe solo plantillas de seguimiento (`utility`); las promociones (`marketing`) exigen opt-in explícito vigente. Se decide con una regla al enviar (no se guarda el origen): «escribió» = el hilo tiene un mensaje entrante; «explícito» = fila activa en `whatsapp_opt_ins`. El servidor rechaza la promoción sin permiso (`PromotionNeedsConsent`) y el sender vuelve a mirar el opt-in de una promoción al enviarla (un BAJA posterior la frena, `opted_out`).
+- **«Pedirle que acepte»:** aparece solo si hay una plantilla de seguimiento aprobada cuyo nombre empieza por `pedir_permiso`. Crearla queda fuera de esta historia; registrar el «sí» como opt-in, también.
+- **Plantillas que el chat no puede rellenar** (encabezado con imagen, video o documento; botón con enlace variable) no se listan.
+- **Sin precio:** `pricing.py` sigue con valores de ejemplo y no tiene tarifa para Venezuela (+58) ni Uruguay (+598); el chat no muestra precio hasta tener la tabla real. Nada de esto se verificó en vivo contra Meta: el cuerpo de envío es el mismo `build_template_body` de las campañas.
+
 ---
 
 ## 6. Entrega 5 — Después (no planificar todavía)

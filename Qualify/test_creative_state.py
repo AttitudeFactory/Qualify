@@ -29,6 +29,7 @@ from uuid import UUID
 from . import creative_state as creative_state_module
 from .creative_state import CreativeState
 from .creative_vm import CopyVariantVM, DraftVM, GapVM, KitFormVM, ReadinessVM
+from .pending_state import PendingState
 
 _TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
 _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
@@ -367,7 +368,9 @@ async def _approve(monkeypatch, state: CreativeState, *, gallery=None) -> list:
     )
     data = gallery if gallery is not None else _gallery_with(schedulable=True)
     monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: data)
-    return [event async for event in CreativeState.approve_selected.fn(state)]
+    events = [event async for event in CreativeState.approve_selected.fn(state)]
+    # m-24842963: the menu's recount rides along; these tests read the toast
+    return [e for e in events if e is not PendingState.refresh_now]
 
 
 async def test_approved_but_not_ready_says_what_is_missing_and_offers_no_dead_end(
@@ -399,6 +402,7 @@ async def test_an_unreadable_readiness_still_offers_the_way_to_tu_semana(monkeyp
     )
     monkeypatch.setattr(creative_state_module, "load_gallery", boom)
     events = [event async for event in CreativeState.approve_selected.fn(state)]
+    events = [e for e in events if e is not PendingState.refresh_now]  # m-24842963
 
     assert state.show_approved_next is True and state.approved_ready is True
     assert "Publicación aprobada. Ahora elige cuándo sale." in str(events[-1])
@@ -426,6 +430,17 @@ async def test_elegir_dia_y_hora_opens_tu_semana_on_this_publication(monkeypatch
     event = state.go_schedule()
 
     assert f"/planner?post={_DRAFT_UUID}" in str(event)
+
+
+async def test_publicar_ahora_opens_tu_semana_on_ahora(monkeypatch) -> None:
+    # m-24842985: the soft «Publicar ahora» opens the same drawer with «Ahora» chosen;
+    # the owner still taps «Programar» there.
+    state = _approvable_state(monkeypatch)
+    await _approve(monkeypatch, state)
+
+    event = state.go_publish_now()
+
+    assert f"/planner?post={_DRAFT_UUID}&cuando=ahora" in str(event)
 
 
 async def test_the_card_goes_away_once_the_draft_is_back_in_review(monkeypatch) -> None:
@@ -484,11 +499,14 @@ def test_the_gallery_card_offers_the_same_name_as_the_approved_card() -> None:
     import json
 
     from . import creative_pages
+    from .planner_vm import CARD_STATES
     from .test_campaigns_ui import _PostVar
 
     rendered = str(creative_pages._gallery_card(_PostVar))
-    assert json.dumps("Elegir día y hora")[1:-1] in rendered
-    assert '"Programar"' not in rendered
+    # m-24842981: the card's one main button comes from its state's view-model
+    assert CARD_STATES["ready"].action_label == creative_pages.APPROVED_SCHEDULE
+    assert "card_action_label" in rendered
+    assert '"Programar"' not in rendered and json.dumps("Programar") not in rendered
 
 
 async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
@@ -518,7 +536,7 @@ async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
     events = [event async for event in CreativeState.approve_selected.fn(state)]
 
     toast = str(events[0])
-    assert "estamos generando el video final a 1080p" in toast
+    assert "Estamos preparando el video en alta calidad" in toast
     assert "Ahora elige" not in toast and "Revisa lo que falta" not in toast
     assert events[-1] is CreativeState.poll_final
     assert state._final_polling_id == str(_DRAFT_UUID)
@@ -559,6 +577,7 @@ async def test_approving_a_draft_whose_final_could_not_be_ordered_says_so(
     ready = _gallery_with(schedulable=True)
     monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: ready)
     events = [event async for event in CreativeState.approve_selected.fn(state)]
+    events = [e for e in events if e is not PendingState.refresh_now]  # m-24842963
 
     assert len(events) == 1 and "Puedes reintentarlo" in str(events[0])
     assert state.approved_ready is True  # the grid alone would offer the way …

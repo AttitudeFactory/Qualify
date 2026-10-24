@@ -104,7 +104,7 @@ def test_audience_and_launch_copy() -> None:
 def test_screens_use_the_proposed_labels() -> None:
     campaigns = inspect.getsource(whatsapp_tab_campaigns)
     assert '"Enviar ahora"' in campaigns
-    assert "«Enviar ahora» empieza a enviar" in campaigns
+    assert "Nada se envía hasta que toques «Enviar ahora»." in campaigns
     assert "rate_card_status" not in campaigns
     metrics = inspect.getsource(whatsapp_metrics_block)
     assert '"Cuánto tardas en responder (la mitad de las veces)"' in metrics

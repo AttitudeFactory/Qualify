@@ -233,6 +233,8 @@ class ConversationOutboxRepository(Protocol):
 
     def list_for_thread(self, *, tenant_id: UUID, thread_id: UUID) -> list[OutboxRecord]: ...
 
+    def status_of(self, *, tenant_id: UUID, item_id: UUID) -> str | None: ...
+
 
 def _validate_enqueue(
     channel: str,
@@ -369,6 +371,10 @@ _LIST_FOR_THREAD = text(
      ORDER BY created_at, id
     """
 )
+
+
+# m-24849131 (ATENDER-10): where one queued send stands, for the screen that approved it.
+_STATUS_OF = text("SELECT status FROM conversation_outbox WHERE id = :item_id")
 
 
 class PostgresConversationOutboxRepository:
@@ -527,6 +533,12 @@ class PostgresConversationOutboxRepository:
                 _MARK_TERMINAL,
                 {"item_id": item_id, "status": status, "error": error_code, "attempts": attempts},
             )
+
+    def status_of(self, *, tenant_id: UUID, item_id: UUID) -> str | None:
+        """The row's status (`pending`/`sending`/`sent`/`failed`/`dead`), or None when this
+        tenant has no such row (RLS scopes the read). Read-only."""
+        with tenant_session(tenant_id) as session:
+            return session.execute(_STATUS_OF, {"item_id": item_id}).scalar_one_or_none()
 
     def list_for_thread(self, *, tenant_id: UUID, thread_id: UUID) -> list[OutboxRecord]:
         with tenant_session(tenant_id) as session:
@@ -791,6 +803,10 @@ class MemoryConversationOutboxRepository:
         if attempts is not None:
             row.attempts = attempts
         row.locked_by = row.locked_at = None
+
+    def status_of(self, *, tenant_id: UUID, item_id: UUID) -> str | None:
+        row = self.rows.get(item_id)
+        return row.status if row is not None and row.tenant_id == tenant_id else None
 
     def list_for_thread(self, *, tenant_id: UUID, thread_id: UUID) -> list[OutboxRecord]:
         return [

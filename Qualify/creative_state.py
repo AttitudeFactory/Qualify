@@ -46,6 +46,7 @@ from qualify_creative.enums import (
     ContentFormat,
     ContentKind,
     ContentType,
+    DraftStatus,
 )
 from qualify_creative.schemas import (
     CLIP_IMAGE_ROLES,
@@ -119,6 +120,7 @@ from .creative_vm import (
     ReadinessVM,
     RouteOptionVM,
     VoiceProposalVM,
+    add_phrase,
     approval_notice,
     caption_hashtag_suggestions,
     caption_keywords,
@@ -129,10 +131,14 @@ from .creative_vm import (
     format_ctas,
     format_hashtags,
     hashtag_list,
+    phrase_list,
+    remove_phrase,
     seen_label,
 )
 from .gallery_state import schedule_readiness
-from .planner_provider import load_gallery
+from .pending_state import PendingState
+from .planner_provider import load_gallery, times_published
+from .planner_vm import history_help, history_word
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -149,7 +155,28 @@ from .upload_names import safe_upload_name
 logger = logging.getLogger(__name__)
 
 #: What a handler that may chain others returns: one event, several, or none.
-_Events = list[rx.event.EventHandler] | rx.event.EventSpec | None
+_Events = list[rx.event.EventHandler | rx.event.EventSpec] | rx.event.EventSpec | None
+
+
+def _scroll_to_view() -> rx.event.EventSpec:
+    """CREAR-6 (UX review): on a phone the options are one column taller than the
+    screen, so what opens when one is chosen is below it — bring the centre
+    (`#q-cr-view`) into sight. On a wide screen the centre is beside the panel: no-op."""
+    return rx.call_script(
+        "if (window.matchMedia('(max-width: 899px)').matches) {"
+        " setTimeout(() => document.getElementById('q-cr-view')"
+        "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 120); }"
+    )
+
+
+def _with_scroll(events: _Events) -> _Events:
+    """`events` followed by `_scroll_to_view`."""
+    if events is None:
+        return [_scroll_to_view()]
+    if isinstance(events, list):
+        return [*events, _scroll_to_view()]
+    return [events, _scroll_to_view()]
+
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
@@ -243,7 +270,7 @@ CLIP_MAX_AUDIOS = 3
 #: The lengths a clip can be asked for (§ request 2026-10-23: «que empiece desde 5 seg»).
 #: Seedance 2.0 takes 4–15 s (2.5 up to 30, 1.0 up to 12 — the adapter clamps it); clips
 #: are capped at 15 s.
-_CLIP_DURATIONS = ("5", "10", "15")
+CLIP_DURATIONS = ("5", "10", "15")
 #: What a photo taken from the catalog product is called in the editor.
 _CATALOG_PHOTO = "Foto del catálogo"
 #: What a file of a stock inspiration is called in the editor (§ 2026-10-19: «stock» is
@@ -315,7 +342,8 @@ _SLIDE_SOURCES = ("generated", "animated")
 #: What a slide may carry printed (§ 2026-10-14): nothing or the title — the hook. The
 #: «Botón de acción» left: the scene already holds the button, and the post its CTA.
 _SLIDE_TEXTS = ("none", "hook")
-_SLIDE_SECONDS = ("5", "10")
+#: An animated slide's length — the editor's choices and what `set_slide_field` keeps.
+SLIDE_SECONDS = ("5", "10")
 _CAROUSEL_MIN = 2
 _CAROUSEL_MAX = 10
 #: The gallery (§ request 2026-10-14): exactly three slides, one video at most, no
@@ -400,6 +428,26 @@ def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.
 GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
 
 
+#: The publication's page shows «Ya probada» / «Por probar» only once it is approved —
+#: that is when the owner decides whether to repeat it (UX review, m-24842981).
+_HISTORY_STATUSES: frozenset[str] = frozenset(
+    {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
+)
+
+
+async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
+    """(«Ya probada» / «Por probar», its help) for the publication's page (m-24842981).
+    A failed read hides the line — it never blocks the review."""
+    try:
+        count = await asyncio.to_thread(times_published, tenant_id, draft_id)
+    except Exception as exc:  # noqa: BLE001 — an extra line, not the page
+        logger.warning("draft history read failed: %s", type(exc).__name__)
+        return "", ""
+    if count is None:
+        return "", ""
+    return history_word(count), history_help(count)
+
+
 def _is_carousel(draft: DraftVM | None) -> bool:
     """A piece whose media is more than one image (an ad image's slides), or a carousel
     kind's slides — images and videos alike (§ 2026-10-09)."""
@@ -468,20 +516,65 @@ _CATEGORY_TITLES = {key: title for key, title, _, _ in CATEGORY_OPTIONS}
 
 
 def generator_views(category: str, kind: str) -> list[str]:
-    """The views the generator steps through for `category`/`kind` (§ request
-    2026-10-14: "estilo view", one screen at a time instead of one long scroll): Avatar
-    opens on its types; Avatar and Clip then take their references, then the kind's own
-    sections. Every option ends the same way (§ request 2026-10-20): «Datos clave», then
-    the context — where «Potenciar con IA» works on what the rest already says — then a
-    «Resumen» of it all, where Generar is. Right before the summary, the optional
-    «Campaña» the piece joins (m-24820838)."""
+    """The views (sections) of `category`/`kind`, in the order of the four steps
+    (`generator_steps`, CREAR-2 m-24848530): what the piece shows (Avatar's types, the
+    references, the presenter, the kind's own section), then what it says («topic», with
+    «Datos clave» behind its «Más opciones»), then how it is published («channel», with
+    «Campaña» behind its own «Más opciones»), and the «Resumen» where Crear is."""
     head = ["avatar_type"] if category == "video" else []
     # § request 2026-10-20: an avatar's reference video is asked in «Guion y fondo»,
     # not in a view of its own; «Ad» and Clip keep theirs
     if category in REFERENCE_CATEGORIES and category != "video":
         head.append("reference")
-    own = [section for section in generator_sections(kind) if section != "topic"]
-    return [*head, *own, "rules", "topic", "campaign", "summary"]
+    own = [s for s in generator_sections(kind) if s not in ("topic", "channel")]
+    return [*head, *own, "topic", "rules", "channel", "campaign", "summary"]
+
+
+#: CREAR-2 (m-24848530): the wizard is four short steps — ① Qué mostrar ② Qué decir
+#: ③ Cómo la quieres ④ Revisa y crea. Each view (section) belongs to one step; what a
+#: kind cannot do without is always in step 1, never behind «Más opciones».
+GENERATOR_STEPS = ("show", "say", "how", "review")
+GENERATOR_STEP_LABELS = {
+    "show": "Qué mostrar",
+    "say": "Qué decir",
+    "how": "Cómo la quieres",
+    "review": "Revisa y crea",
+}
+_STEP_OF_VIEW = {
+    "avatar_type": "show",
+    "reference": "show",
+    "presenter": "show",
+    "details": "show",
+    "topic": "say",
+    # UX review: the price, a discount, what to say or avoid are what the piece says
+    "rules": "say",
+    "channel": "how",
+    "campaign": "how",
+    "summary": "review",
+}
+#: The optional views, each folded under its step's «Más opciones»: «Datos clave» in
+#: step 2, «Campaña» in step 3.
+OPTIONAL_VIEWS = ("rules", "campaign")
+#: A summary row's view with this suffix lives behind step 1's «Más opciones» (an
+#: avatar's reference video and brand resources).
+SHOW_MORE_SUFFIX = ":more"
+
+
+def generator_steps(category: str, kind: str) -> list[tuple[str, list[str]]]:
+    """The steps of `category`/`kind`: `(step, its views)` in order. A step with no
+    view for this kind (the creator's script shows nothing of its own) is skipped, so
+    «Paso N de M» counts only real steps (N6)."""
+    views = generator_views(category, kind)
+    steps = [(step, [v for v in views if _STEP_OF_VIEW.get(v) == step]) for step in GENERATOR_STEPS]
+    return [(step, step_views) for step, step_views in steps if step_views]
+
+
+def generator_step_of(category: str, kind: str, view: str) -> int:
+    """The index of the step that holds `view` (-1 when this kind has no such view)."""
+    for index, (_step, views) in enumerate(generator_steps(category, kind)):
+        if view in views:
+            return index
+    return -1
 
 
 #: The step bar's label of each view; «details» is named after the kind.
@@ -559,7 +652,7 @@ def _pill_items(text: str) -> list[str]:
 
 #: The lengths a script / avatar video can be asked for (§ request 2026-10-23: from 5 s);
 #: the brief validates the same set (`qualify_creative.schemas.DURATIONS_SECONDS`).
-_DURATIONS = ("5", "10", "15", "30", "45", "60")
+DURATIONS = ("5", "10", "15", "30", "45", "60")
 _FORMAT_LABELS = {
     "feed_4_5": "Publicación 4:5",
     "feed_1_1": "Publicación cuadrada 1:1",
@@ -570,10 +663,10 @@ _FORMAT_LABELS = {
 #: no vendor or model (§ request 2026-10-08).
 _GEN_WAITING = {
     "creator_script": "Escribiendo tu guion…",
-    "avatar_video": "Generando tu video. Puede tardar unos minutos…",
-    "animated_avatar_video": "Generando tu video. Puede tardar unos minutos…",
-    "static_flyer": "Generando tu imagen, ya casi está…",
-    "template": "Generando tu publicación, ya casi está…",
+    "avatar_video": "Creando tu video. Puede tardar unos minutos…",
+    "animated_avatar_video": "Creando tu video. Puede tardar unos minutos…",
+    "static_flyer": "Creando tu imagen, ya casi está…",
+    "template": "Creando tu publicación, ya casi está…",
     "carousel": "Armando tu galería. Si lleva un video, puede tardar unos minutos…",
 }
 _TEMPLATE_PHOTO_REQUIRED = (
@@ -722,6 +815,10 @@ class CreativeState(rx.State):
     brief_intent: str = "organic"
     brief_must_mention: str = ""
     brief_must_avoid: str = ""
+    #: CREAR-6: what is being typed into «Debe mencionar» / «Debe evitar» before
+    #: «Agregar» turns it into a chip (the brief keeps the joined text above).
+    brief_must_mention_draft: str = ""
+    brief_must_avoid_draft: str = ""
     route_options: list[RouteOptionVM] = []
     selected_route: str = "from_upload"
     staged_media_key: str = ""
@@ -770,7 +867,7 @@ class CreativeState(rx.State):
     piece_picker_open: bool = False
     pieces_loading: bool = False
     media_duration: str = "30"
-    #: A clip's length, one of `_CLIP_DURATIONS` (§ request 2026-10-23).
+    #: A clip's length, one of `CLIP_DURATIONS` (§ request 2026-10-23).
     clip_duration: str = "5"
     #: «Con audio» (§ request 2026-10-23): the clip comes with the sound the video
     #: model makes — on, as every clip was before the switch.
@@ -909,7 +1006,7 @@ class CreativeState(rx.State):
     #: "create" = the chosen option's views; "discover" = the reels discovery (§ request
     #: 2026-10-14, QUA-223 §2), the panel's own button.
     gen_mode: str = "create"
-    #: The view in front, an index into `gen_views` (§ request 2026-10-14).
+    #: The step in front, an index into `generator_steps` (CREAR-2 m-24848530).
     gen_step: int = 0
     #: The catalog product screen comes first (§ request 2026-10-14: "antes de aparecer
     #: el lateral bar quiero poder seleccionar un producto del catálogo"): False until
@@ -930,8 +1027,13 @@ class CreativeState(rx.State):
     #: "result" once Generar created a piece: it shows below the form, on the same page
     #: (§ request 2026-10-08); "form" = nothing generated yet, or «Crear otro».
     generator_view: str = "form"
-    #: «Reglas (opcional)» is folded until the operator opens it.
+    #: «Más opciones» of step 2 («Datos clave») is folded until the operator opens it
+    #: (CREAR-2).
     rules_open: bool = False
+    #: «Más opciones» of step 3 («Campaña»), folded (CREAR-2).
+    campaign_open: bool = False
+    #: «Más opciones» of an avatar's step 1 (reference video, brand resources), folded.
+    show_more_open: bool = False
     #: The carousel slide in view (§ request 2026-10-08): the generator's result, and
     #: the draft screen's.
     gen_slide: int = 0
@@ -958,6 +1060,10 @@ class CreativeState(rx.State):
     draft: DraftVM | None = None
     detail_loading: bool = False
     detail_error: str = ""
+    # m-24842981: «Ya probada» / «Por probar» and its help on the publication's page
+    # ("" while unknown — the page then shows nothing rather than a guess).
+    draft_history_word: str = ""
+    draft_history_help: str = ""
     selected_variant_id: str = ""
     edit_hook: str = ""
     edit_caption: str = ""
@@ -1445,7 +1551,7 @@ class CreativeState(rx.State):
             "scene": None,
             "background": ("1", ""),
             "text": (*_SLIDE_TEXTS, "cta"),
-            "seconds": _SLIDE_SECONDS,
+            "seconds": SLIDE_SECONDS,
             "audio": ("1", ""),
         }
         index = int(index)
@@ -1690,29 +1796,46 @@ class CreativeState(rx.State):
         """The views of the chosen option, in order (`generator_views`)."""
         return generator_views(self.gen_category, self.brief_kind)
 
+    def _gen_steps(self) -> list[tuple[str, list[str]]]:
+        return generator_steps(self.gen_category, self.brief_kind)
+
     def _view_index(self) -> int:
-        views = generator_views(self.gen_category, self.brief_kind)
-        return min(max(self.gen_step, 0), len(views) - 1)
+        """The step in front (`gen_step` kept within the kind's steps)."""
+        return min(max(self.gen_step, 0), len(self._gen_steps()) - 1)
+
+    @rx.var
+    def gen_step_key(self) -> str:
+        """The step in front: "show", "say", "how" or "review" (`GENERATOR_STEPS`)."""
+        return self._gen_steps()[self._view_index()][0]
+
+    @rx.var
+    def gen_step_views(self) -> list[str]:
+        """The views the step in front stacks, in order."""
+        return self._gen_steps()[self._view_index()][1]
 
     @rx.var
     def gen_view(self) -> str:
-        """The view in front."""
-        return generator_views(self.gen_category, self.brief_kind)[self._view_index()]
+        """The first view of the step in front."""
+        return self._gen_steps()[self._view_index()][1][0]
+
+    @rx.var
+    def gen_step_count(self) -> str:
+        """«Paso N de M» (N6): M counts only this kind's real steps."""
+        return f"Paso {self._view_index() + 1} de {len(self._gen_steps())}"
 
     @rx.var
     def gen_view_steps(self) -> list[dict[str, str]]:
-        """The step bar: each view's index, label and whether it is done or current."""
-        views = generator_views(self.gen_category, self.brief_kind)
+        """The step bar: each step's index, label and whether it is done or current."""
         current = self._view_index()
         return [
             {
                 "index": str(index),
                 "number": str(index + 1),
-                "label": generator_view_label(view, self.brief_kind),
+                "label": GENERATOR_STEP_LABELS[step],
                 "done": "true" if index < current else "",
                 "current": "true" if index == current else "",
             }
-            for index, view in enumerate(views)
+            for index, (step, _views) in enumerate(self._gen_steps())
         ]
 
     @rx.var
@@ -1721,7 +1844,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def gen_is_last_view(self) -> bool:
-        return self._view_index() == len(generator_views(self.gen_category, self.brief_kind)) - 1
+        return self._view_index() == len(self._gen_steps()) - 1
 
     @rx.var
     def gen_sections(self) -> list[str]:
@@ -1838,7 +1961,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def gen_waiting_label(self) -> str:
-        return _GEN_WAITING.get(self.gen_kind, "Generando…")
+        return _GEN_WAITING.get(self.gen_kind, "Creando…")
 
     @rx.var
     def video_on_seedance(self) -> bool:
@@ -2240,6 +2363,67 @@ class CreativeState(rx.State):
     def set_brief_must_avoid(self, value: str) -> None:
         self.brief_must_avoid = value
 
+    @rx.var
+    def brief_must_mention_items(self) -> list[str]:
+        """CREAR-6: «Debe mencionar» as chips."""
+        return phrase_list(self.brief_must_mention)
+
+    @rx.var
+    def brief_must_avoid_items(self) -> list[str]:
+        """CREAR-6: «Debe evitar» as chips."""
+        return phrase_list(self.brief_must_avoid)
+
+    @rx.event
+    def set_brief_must_mention_draft(self, value: str) -> None:
+        self.brief_must_mention_draft = value
+
+    @rx.event
+    def set_brief_must_avoid_draft(self, value: str) -> None:
+        self.brief_must_avoid_draft = value
+
+    def _flush_phrase_drafts(self) -> None:
+        """CREAR-6 (UX review): a phrase typed but never «Agregar»-ed still counts —
+        flushed before anything reads «Debe mencionar» / «Debe evitar» (the summary,
+        «Potenciar con IA», Generar), so it is never lost without a word."""
+        self.brief_must_mention = add_phrase(self.brief_must_mention, self.brief_must_mention_draft)
+        self.brief_must_mention_draft = ""
+        self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+        self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def add_must_mention_on_key(self, key: str) -> None:
+        """The keyboard's Intro / «Listo» in «Debe mencionar» adds the phrase."""
+        if key == "Enter":
+            self.brief_must_mention = add_phrase(
+                self.brief_must_mention, self.brief_must_mention_draft
+            )
+            self.brief_must_mention_draft = ""
+
+    @rx.event
+    def add_must_avoid_on_key(self, key: str) -> None:
+        """The keyboard's Intro / «Listo» in «Debe evitar» adds the phrase."""
+        if key == "Enter":
+            self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+            self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def add_must_mention(self) -> None:
+        self.brief_must_mention = add_phrase(self.brief_must_mention, self.brief_must_mention_draft)
+        self.brief_must_mention_draft = ""
+
+    @rx.event
+    def add_must_avoid(self) -> None:
+        self.brief_must_avoid = add_phrase(self.brief_must_avoid, self.brief_must_avoid_draft)
+        self.brief_must_avoid_draft = ""
+
+    @rx.event
+    def remove_must_mention(self, phrase: str) -> None:
+        self.brief_must_mention = remove_phrase(self.brief_must_mention, phrase)
+
+    @rx.event
+    def remove_must_avoid(self, phrase: str) -> None:
+        self.brief_must_avoid = remove_phrase(self.brief_must_avoid, phrase)
+
     @rx.event
     def set_edit_hook(self, value: str) -> None:
         self.edit_hook = value
@@ -2572,12 +2756,12 @@ class CreativeState(rx.State):
         if category == self.gen_category and (
             category != "video" or self.video_type in VIDEO_TYPES
         ):
-            return None
+            return _with_scroll(None)
         if not self.gen_generating:
             self._back_to_form()
         self.gen_category = category
         self.gen_step = 0
-        return self._set_kind(_CATEGORY_KIND[category])
+        return _with_scroll(self._set_kind(_CATEGORY_KIND[category]))
 
     @rx.event
     def choose_video_type(self, video_type: str) -> _Events:
@@ -2591,16 +2775,18 @@ class CreativeState(rx.State):
         return self._set_kind(video_type)
 
     @rx.event
-    def open_discover(self) -> None:
-        """The panel's «Descubrir reels»."""
+    def open_discover(self) -> rx.event.EventSpec:
+        """The panel's «Descubrir ideas de videos» (ex «Descubrir reels»)."""
         self.gen_mode = "discover"
+        return _scroll_to_view()
 
     @rx.event
-    def open_variations(self) -> None:
+    def open_variations(self) -> rx.event.EventSpec:
         """The panel's «Variaciones» (m-24803289): ten visual angles of one catalog
         product. Its own state (`VariationsState`) owns the flow; this only puts the
         centre in that mode."""
         self.gen_mode = "variations"
+        return _scroll_to_view()
 
     # -- a stock video as the product: where it fits (§ request 2026-10-16) -------------
 
@@ -3223,24 +3409,49 @@ class CreativeState(rx.State):
 
     @rx.event
     def next_view(self) -> None:
+        """«Siguiente»: the next step. Nothing is checked here — only the summary says
+        what is missing — so with the same kind and format as last time, writing the
+        topic and «Siguiente» reach «Crear» (CREAR-2)."""
+        self._flush_phrase_drafts()
         self.gen_step = self._view_index() + 1
         self.gen_step = self._view_index()
         self.create_error = ""
 
     @rx.event
     def prev_view(self) -> None:
+        """«Atrás»: the previous step; what was written stays in the state."""
+        self._flush_phrase_drafts()
         self.gen_step = max(self._view_index() - 1, 0)
         self.create_error = ""
 
     @rx.event
     def go_to_view(self, index: str) -> None:
-        """A step of the step bar: any view, back or ahead — only the context is
-        required, and Generar says what is missing."""
+        """A step of the step bar: any step, back or ahead — only the context is
+        required, and the summary says what is missing."""
+        self._flush_phrase_drafts()
         try:
             self.gen_step = int(index)
         except ValueError:
             return
         self.gen_step = self._view_index()
+        self.create_error = ""
+
+    @rx.event
+    def edit_view(self, view: str) -> None:
+        """A summary row's «Editar»: the step that holds `view`, with that step's «Más
+        opciones» unfolded when the row lives behind it."""
+        base, more, _ = view.partition(SHOW_MORE_SUFFIX)
+        index = generator_step_of(self.gen_category, self.brief_kind, base)
+        if index < 0:
+            return
+        self.gen_step = index
+        if base == "rules":
+            self.rules_open = True
+        elif base == "campaign" or (base == "channel" and more):
+            # step 3's «Más opciones» holds the campaign and a clip's «Con sonido»
+            self.campaign_open = True
+        elif more:
+            self.show_more_open = True
         self.create_error = ""
 
     # -- «Campaña» (m-24820838): the campaign the piece joins, optional ----------------
@@ -4268,13 +4479,13 @@ class CreativeState(rx.State):
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in _DURATIONS:
+        if value in DURATIONS:
             self.media_duration = value
 
     @rx.event
     def set_clip_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in _CLIP_DURATIONS:
+        if value in CLIP_DURATIONS:
             self.clip_duration = value
 
     @rx.event
@@ -4527,6 +4738,7 @@ class CreativeState(rx.State):
                 return
             self.context_enhancing = True
             self.context_enhance_error = ""
+            self._flush_phrase_drafts()
             form = {
                 "text": text,
                 "piece": self._piece_label(),
@@ -4574,8 +4786,7 @@ class CreativeState(rx.State):
     # -- «Resumen» (§ request 2026-10-20): every option's last view, where Generar is ------
 
     def _on_summary(self) -> bool:
-        views = generator_views(self.gen_category, self.brief_kind)
-        return views[self._view_index()] == "summary"
+        return self._gen_steps()[self._view_index()][0] == "review"
 
     @rx.var(cache=False)
     def gen_problem(self) -> str:
@@ -4591,13 +4802,22 @@ class CreativeState(rx.State):
         view, like `gen_problem`."""
         if not self._on_summary():
             return []
-        views = generator_views(self.gen_category, self.brief_kind)
         kind = self.brief_kind
         rows: list[dict[str, str]] = []
 
         def row(label: str, value: str, view: str = "") -> None:
-            index = str(views.index(view)) if view in views else ""
-            rows.append({"label": label, "value": value or "—", "index": index})
+            # CREAR-2: «Editar» goes to the step that holds the view
+            base = view.removesuffix(SHOW_MORE_SUFFIX)
+            step = generator_step_of(self.gen_category, kind, base) if view else -1
+            index = str(step) if step >= 0 else ""
+            rows.append(
+                {
+                    "label": label,
+                    "value": value or "—",
+                    "index": index,
+                    "view": view if index else "",
+                }
+            )
 
         row("Qué creamos", self._piece_label(), "avatar_type")
         if self.product_source == "stock":
@@ -4624,7 +4844,8 @@ class CreativeState(rx.State):
             row("Voz", voice or "La de tu marca", "presenter" if kind == "avatar_video" else "")
         if self.gen_category in ("video", "ad"):
             # an avatar's reference is in «Guion y fondo» since 2026-10-20
-            where = "details" if self.gen_category == "video" else "reference"
+            # behind step 1's «Más opciones» for an avatar (UX review, N6)
+            where = "details" + SHOW_MORE_SUFFIX if self.gen_category == "video" else "reference"
             row("Video de referencia", self.reference_video_name or "Ninguno", where)
         if kind == "clip":
             first, last = self.clip_first_frame_name, self.clip_last_frame_name
@@ -4663,7 +4884,11 @@ class CreativeState(rx.State):
             row(
                 "Recursos de tu marca",
                 f"Logo: {logo}" + (f" · {elements} elementos" if elements else ""),
-                "reference" if kind == "clip" else "details",
+                "reference"
+                if kind == "clip"
+                else "details" + SHOW_MORE_SUFFIX
+                if self.gen_category == "video"
+                else "details",
             )
         content_type = dict((opt.value, opt.label) for opt in content_type_options()).get(
             self.brief_content_type, ""
@@ -4671,7 +4896,7 @@ class CreativeState(rx.State):
         length = (
             f" · {self.media_duration} s"
             if kind == "creator_script"
-            else f" · {self.clip_duration} s · {'con' if self.clip_audio else 'sin'} audio"
+            else f" · {self.clip_duration} s"
             if kind == "clip"
             else ""
         )
@@ -4680,6 +4905,14 @@ class CreativeState(rx.State):
             f"{content_type} · {_FORMAT_LABELS.get(self.effective_format, '')}{length}",
             "channel",
         )
+        if kind == "clip":
+            # its own row: «Editar» opens step 3's «Más opciones», where the switch is
+            # (UX review 2026-10-24, N2/N6)
+            row(
+                "Sonido",
+                "Con sonido" if self.clip_audio else "Sin sonido",
+                "channel" + SHOW_MORE_SUFFIX,
+            )
         facts = " · ".join(f"{name}: {fact}" for name, fact in self._highlight_pairs())
         row("Datos clave", facts or "Ninguno", "rules")
         if self.brief_must_mention.strip():
@@ -4720,6 +4953,14 @@ class CreativeState(rx.State):
     @rx.event
     def toggle_rules(self) -> None:
         self.rules_open = not self.rules_open
+
+    @rx.event
+    def toggle_campaign_open(self) -> None:
+        self.campaign_open = not self.campaign_open
+
+    @rx.event
+    def toggle_show_more(self) -> None:
+        self.show_more_open = not self.show_more_open
 
     def _media_inputs(self) -> dict[str, object]:
         kind = self.brief_kind
@@ -4883,6 +5124,7 @@ class CreativeState(rx.State):
                 return
             self.is_submitting = True
             self.create_error = ""
+            self._flush_phrase_drafts()
             form = {
                 "objective": self.brief_objective,
                 "content_type": self.brief_content_type,
@@ -4916,6 +5158,7 @@ class CreativeState(rx.State):
                 return
             self.is_submitting = True
             self.create_error = ""
+            self._flush_phrase_drafts()
             form = self._generator_form()
             template_form = self._template_form() if self.brief_kind == "template" else None
             campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
@@ -5170,6 +5413,8 @@ class CreativeState(rx.State):
             return
         async with self:
             self.detail_loading = False
+            self.draft_history_word = ""
+            self.draft_history_help = ""
             if vm is None:
                 self.detail_error = _DRAFT_GONE
                 return
@@ -5183,6 +5428,13 @@ class CreativeState(rx.State):
             yield CreativeState.poll_draft
         if final_poll:
             yield CreativeState.poll_final
+        if vm.status not in _HISTORY_STATUSES:  # before approval it helps no decision
+            return
+        word, help_text = await _history_texts(tenant_id, draft_id)
+        async with self:
+            if self.draft is not None and self.draft.draft_id == str(draft_id):
+                self.draft_history_word = word
+                self.draft_history_help = help_text
 
     @rx.event(background=True)
     async def poll_draft(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -5398,6 +5650,7 @@ class CreativeState(rx.State):
         # is offered — the card says why (`approved_hold_note`).
         notice = approval_notice(vm.video_draft, ready=ready)
         yield getattr(rx.toast, notice.kind)(notice.text)
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         if start_poll:
             yield CreativeState.poll_final
 
@@ -5432,6 +5685,14 @@ class CreativeState(rx.State):
         if self.draft is None:
             return None
         return rx.redirect(f"/planner?post={self.draft.draft_id}")
+
+    @rx.event
+    def go_publish_now(self):
+        """«Publicar ahora» (m-24842985): the same drawer with «Ahora» already chosen. It
+        still waits for the owner's «Programar» there — nothing goes out from here."""
+        if self.draft is None:
+            return None
+        return rx.redirect(f"/planner?post={self.draft.draft_id}&cuando=ahora")
 
     @rx.event
     def go_create_another(self):
@@ -5483,7 +5744,9 @@ class CreativeState(rx.State):
             return
         except InvalidTransition:
             async with self:
-                self.action_error = "Aprueba la publicación antes de generar su video final."
+                self.action_error = (
+                    "Primero aprueba la publicación; después preparamos el video final."
+                )
             return
         except DraftExpired as exc:
             async with self:
@@ -5643,6 +5906,7 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != vm.draft_id
             if should_poll:
                 self._polling_draft_id = vm.draft_id
+        yield PendingState.refresh_now  # m-24842963: discarded or regenerated, recount
         if should_poll:
             # the regeneration says "listo" even from another tab (pendientes §5)
             yield rx.call_script(_ASK_NOTIFICATIONS_JS)

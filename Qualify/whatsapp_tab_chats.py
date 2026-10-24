@@ -17,6 +17,14 @@ control inside the bubble and is fetched only on click (`request_media`): an ima
 a thumbnail and opens in the lightbox, an audio gets a player, a video / document opens
 in a new tab. Failures read by tone (`neutral` gone, `warn` retry); a message whose
 bytes were never captured keeps the neutral chip.
+
+**Expired chat (m-24848535).** Once 24 hours have passed, the composer gives way to the
+notice and «Enviar un mensaje aprobado», which opens a `drawer` (full screen on a phone)
+listing only what this person may receive: follow-ups after a chat, promotions only with
+their explicit acceptance — otherwise «Para enviarle promociones, esta persona tiene que
+aceptar recibirlas.» and, only when an approved message to ask exists, «Pedirle que
+acepte». Picking one shows how it arrives and the values it needs; it leaves only with the
+owner's «Enviar» (N13). Every target is at least 2.75 rem (44 px) tall (N12).
 """
 
 from __future__ import annotations
@@ -27,6 +35,9 @@ from .ui import (
     callout,
     card,
     chat_bubble,
+    choice_card,
+    choice_card_check,
+    drawer,
     empty_state,
     media_thumb,
     mono,
@@ -38,9 +49,12 @@ from .ui import (
 from .ui import tokens as T
 from .whatsapp_chats_state import UNASSIGNED, WhatsAppChatsState
 from .whatsapp_chats_vm import (
+    ASK_CONSENT_LABEL,
     COMPOSE_BUTTONS,
     COMPOSE_IMAGE,
     COMPOSE_MODES,
+    CREATE_APPROVED_LABEL,
+    CREATE_APPROVED_ROUTE,
     FILTER_CLOSED,
     FILTER_OPEN,
     FILTER_UNREAD,
@@ -48,18 +62,34 @@ from .whatsapp_chats_vm import (
     MEDIA_AUDIO,
     MEDIA_IMAGE,
     MEDIA_VIDEO,
+    NO_FOLLOWUPS,
+    NO_PERMISSION_NOTICE,
+    PROMOTIONS_NEED_CONSENT,
+    SEND_APPROVED_DESCRIPTION,
+    SEND_APPROVED_LABEL,
+    TEMPLATE_BACK_LABEL,
+    TEMPLATE_FIELDS_LABEL,
+    TEMPLATE_PREVIEW_LABEL,
+    TEMPLATE_STEP_PICK,
+    TEMPLATE_STEP_REVIEW,
     AgentVM,
     MessageVM,
     OrderFieldVM,
     OrderLineVM,
+    TemplateChoiceVM,
+    TemplateFieldVM,
     ThreadRowVM,
 )
+from .whatsapp_state import WhatsAppState
+from .whatsapp_vm import TAB_QR
 
 S = WhatsAppChatsState
 _TONES = ("ok", "warn", "error", "info", "neutral")
 
 #: Live chats refresh faster than /inbox's 45 s: 15 s, client-side, unmounted with the tab.
 _REFRESH_MS = 15_000
+#: N12: every tap target on this tab is at least 44 px tall.
+_TAP_MIN = "2.75rem"
 
 
 # ======================================================================================
@@ -208,6 +238,14 @@ def _list_body() -> rx.Component:
                     "Aún no hay conversaciones en este número",
                     "Cuando un cliente escriba a este número de WhatsApp, su conversación "
                     "aparece aquí y puedes responderla desde esta pantalla.",
+                    # N8 (m-24842961): a QR code is how customers start writing.
+                    action=rx.button(
+                        rx.icon("qr-code", size=16),
+                        "Crear un código QR",
+                        on_click=WhatsAppState.select_tab(TAB_QR),
+                        variant="soft",
+                        size="3",
+                    ),
                 ),
                 rx.cond(
                     S.visible_rows.length() > 0,
@@ -783,9 +821,245 @@ def _compose_fields() -> rx.Component:
     )
 
 
-def _composer() -> rx.Component:
+def _expired_composer() -> rx.Component:
+    """m-24848535: the expired chat's way out, in place of a switched-off composer."""
     return rx.vstack(
-        rx.cond(S.window_closed_notice != "", callout(S.window_closed_notice, "warn")),
+        callout(S.window_closed_notice, "warn"),
+        rx.button(
+            rx.icon("message-square-text", size=T.ICON_SM),
+            SEND_APPROVED_LABEL,
+            on_click=S.open_templates,
+            size="3",
+            min_height=_TAP_MIN,
+            width=rx.breakpoints(initial="100%", sm="auto"),
+        ),
+        spacing="2",
+        width="100%",
+        padding_top="0.5rem",
+        class_name="q-wa-composer",
+    )
+
+
+def _template_choice(choice: TemplateChoiceVM) -> rx.Component:
+    selected = S.tpl_selected == choice.template_id
+    return choice_card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(choice.title, weight="medium", size="2"),
+                rx.spacer(),
+                _tone_pill(choice.kind_label, choice.kind_tone),
+                rx.cond(selected, choice_card_check()),
+                width="100%",
+                align="center",
+                spacing="2",
+            ),
+            rx.text(
+                choice.preview,
+                size="2",
+                color=T.TEXT_MUTED,
+                white_space="pre-wrap",
+                text_align="left",
+            ),
+            spacing="1",
+            width="100%",
+            align="start",
+        ),
+        selected=selected,
+        on_select=S.choose_template(choice.template_id),
+        padding="0.75rem 1rem",
+        width="100%",
+        min_height=_TAP_MIN,
+    )
+
+
+def _template_field(field: TemplateFieldVM) -> rx.Component:
+    return rx.vstack(
+        rx.el.label(
+            rx.text(field.label, size="2", weight="medium"),
+            html_for="tpl-field-" + field.id,
+        ),
+        rx.input(
+            id="tpl-field-" + field.id,
+            aria_label=field.label,
+            value=field.value,
+            on_change=lambda value: S.set_template_value(field.id, value),
+            width="100%",
+            size="3",
+        ),
+        rx.cond(
+            field.example != "",
+            rx.text(field.example, size="1", color=T.TEXT_MUTED),
+        ),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _promotions_notice() -> rx.Component:
+    return rx.cond(
+        S.tpl_promotions_blocked,
+        rx.vstack(
+            callout(PROMOTIONS_NEED_CONSENT, "info"),
+            rx.cond(
+                S.tpl_consent_id != "",
+                rx.button(
+                    rx.icon("hand-heart", size=T.ICON_SM),
+                    ASK_CONSENT_LABEL,
+                    on_click=S.ask_consent,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                ),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+    )
+
+
+def _no_followups() -> rx.Component:
+    return rx.cond(
+        ~S.tpl_has_followups & ~S.tpl_no_permission,
+        rx.vstack(
+            callout(NO_FOLLOWUPS, "neutral"),
+            rx.link(
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    CREATE_APPROVED_LABEL,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    width="100%",
+                ),
+                href=CREATE_APPROVED_ROUTE,
+                width=rx.breakpoints(initial="100%", sm="auto"),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+    )
+
+
+def _step_label(text: str) -> rx.Component:
+    return rx.text(text, size="2", weight="bold", color=T.TEXT_MUTED)
+
+
+def _template_picked() -> rx.Component:
+    """Step 2 of 2: the values and «Así le llega»; «Atrás» and «Enviar» are in the foot."""
+    return rx.vstack(
+        _step_label(TEMPLATE_STEP_REVIEW),
+        rx.vstack(
+            rx.cond(
+                S.tpl_fields.length() > 0,
+                rx.vstack(
+                    rx.text(TEMPLATE_FIELDS_LABEL, size="2", weight="bold"),
+                    rx.foreach(S.tpl_fields, _template_field),
+                    spacing="2",
+                    width="100%",
+                ),
+            ),
+            rx.text(TEMPLATE_PREVIEW_LABEL, size="2", weight="bold"),
+            chat_bubble(
+                rx.text(S.tpl_preview, size="2", white_space="pre-wrap"),
+                direction="out",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _template_list() -> rx.Component:
+    """Step 1 of 2: the notices and the approved messages; picking one moves on."""
+    return rx.vstack(
+        rx.cond(S.tpl_choices.length() > 0, _step_label(TEMPLATE_STEP_PICK)),
+        rx.cond(S.tpl_no_permission, callout(NO_PERMISSION_NOTICE, "warn")),
+        _promotions_notice(),
+        _no_followups(),
+        rx.foreach(S.tpl_choices, _template_choice),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _templates_body() -> rx.Component:
+    return rx.cond(
+        S.tpl_loading & (S.tpl_choices.length() == 0),
+        skeleton_rows(3, height="4rem"),
+        rx.cond(
+            (S.tpl_selected != "") & S.tpl_reviewing,
+            _template_picked(),
+            _template_list(),
+        ),
+    )
+
+
+def _templates_footer() -> rx.Component:
+    return rx.vstack(
+        rx.cond(S.tpl_error != "", callout(S.tpl_error, "error")),
+        rx.cond(S.tpl_hint != "", rx.text(S.tpl_hint, size="1", color=T.TEXT_MUTED)),
+        rx.cond(
+            (S.tpl_selected != "") & S.tpl_reviewing,
+            rx.hstack(
+                rx.button(
+                    rx.icon("arrow-left", size=T.ICON_SM),
+                    TEMPLATE_BACK_LABEL,
+                    on_click=S.back_to_templates,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("send", size=T.ICON_SM),
+                    "Enviar",
+                    on_click=S.send_template,
+                    loading=S.tpl_sending,
+                    disabled=~S.can_send_template,
+                    size="3",
+                    min_height=_TAP_MIN,
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.dialog.close(
+                rx.button(
+                    rx.cond(S.tpl_no_permission, "Cerrar", "Cancelar"),
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    width="100%",
+                    **T.tone_scheme("neutral"),
+                ),
+            ),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _templates_drawer() -> rx.Component:
+    return drawer(
+        _templates_body(),
+        open=S.tpl_open,
+        on_open_change=S.set_templates_open,
+        title=SEND_APPROVED_LABEL,
+        description=SEND_APPROVED_DESCRIPTION,
+        footer=_templates_footer(),
+        icon="message-square-text",
+    )
+
+
+def _composer() -> rx.Component:
+    return rx.cond(S.show_send_approved, _expired_composer(), _live_composer())
+
+
+def _live_composer() -> rx.Component:
+    return rx.vstack(
         rx.segmented_control.root(
             *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
             value=S.compose_mode,
@@ -887,6 +1161,7 @@ def chats_tab() -> rx.Component:
     return rx.box(
         _heartbeat(),
         _lightbox(),
+        _templates_drawer(),
         rx.box(
             _list_pane(),
             _conversation_pane(),

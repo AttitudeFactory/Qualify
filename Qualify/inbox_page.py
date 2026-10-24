@@ -74,8 +74,15 @@ from .inbox_vm import (
     IntentChipVM,
     ReelSummaryVM,
 )
+from .next_steps_vm import (
+    COMMENTS_ALL_CLEAR,
+    CREATE_LABEL,
+    CREATE_ROUTE,
+    DISMISS_LABEL,
+    NEXT_PENDING_LABEL,
+)
 from .publishing_vm import ConnectionOptionVM
-from .replies_state import RepliesState
+from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
     PUBLICATION_ALT_FALLBACK,
@@ -276,6 +283,11 @@ def _empty_candidates_state() -> rx.Component:
         "film",
         "Sin Reels ni publicaciones en las últimas 2 semanas",
         "Esta cuenta no subió Reels ni publicaciones a tu perfil en los últimos 14 días.",
+        # N8 (m-24842961): comments come from publishing.
+        action=rx.link(
+            rx.button(rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3"),
+            href=CREATE_ROUTE,
+        ),
     )
 
 
@@ -357,21 +369,33 @@ def _connected_body() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    return page_body(
+def _body(wrapped: bool = True) -> rx.Component:
+    """`wrapped=False` returns the content without the page gutter, for the «Comentarios»
+    tab of «Por responder» (m-24842990), which already sits inside a `page_body`."""
+    content = rx.cond(
+        InboxState.connections_error != "",
+        _connections_error(),
         rx.cond(
-            InboxState.connections_error != "",
-            _connections_error(),
+            InboxState.is_loading_connections,
+            _card_skeleton(),
             rx.cond(
-                InboxState.is_loading_connections,
-                _card_skeleton(),
-                rx.cond(
-                    ~InboxState.has_connections,
-                    _no_connections_state(),
-                    _connected_body(),
-                ),
+                ~InboxState.has_connections,
+                _no_connections_state(),
+                _connected_body(),
             ),
         ),
+    )
+    return page_body(content) if wrapped else content
+
+
+def comments_tab() -> rx.Component:
+    """m-24842990: the «Comentarios» tab of «Por responder». The account selector moves
+    from the page header to the top of the tab."""
+    return rx.vstack(
+        rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
+        _body(wrapped=False),
+        spacing="4",
+        width="100%",
     )
 
 
@@ -851,6 +875,13 @@ def _thread_comments_empty_state() -> rx.Component:
         "message-circle",
         "Sin comentarios para este filtro",
         "Prueba con otro filtro o borra la búsqueda.",
+        action=rx.button(
+            "Quitar filtros",
+            on_click=InboxState.clear_thread_filters,
+            variant="soft",
+            size="3",
+            class_name="q-inbox-tap",
+        ),
     )
 
 
@@ -1128,6 +1159,74 @@ def _replies_action_error_block() -> rx.Component:
         RepliesState.action_error != "",
         callout(RepliesState.action_error, "error"),
         rx.fragment(),
+    )
+
+
+_REPLIES_LIST_ID = "q-replies-list"
+
+
+def _replies_sent_block() -> rx.Component:
+    """m-24842961 (N3): a reply that went out ends in a confirmation that stays, with the
+    next job — the next reply while people wait, else «¡Al día!» and the next publication
+    — plus a soft «Entendido» that only closes it. Never only a toast."""
+    next_button = rx.cond(
+        RepliesState.has_pending_drafts,
+        rx.button(
+            NEXT_PENDING_LABEL,
+            on_click=[RepliesState.dismiss_sent_notice, rx.scroll_to(_REPLIES_LIST_ID)],
+            size="3",
+            class_name="q-inbox-tap",
+        ),
+        rx.link(
+            rx.button(
+                rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3", class_name="q-inbox-tap"
+            ),
+            href=CREATE_ROUTE,
+        ),
+    )
+    return rx.cond(
+        RepliesState.sent_notice != "",
+        card(
+            rx.vstack(
+                rx.hstack(
+                    rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                    rx.vstack(
+                        rx.text(RepliesState.sent_notice, size="2", weight="medium"),
+                        rx.cond(
+                            RepliesState.has_pending_drafts,
+                            rx.fragment(),
+                            rx.text(
+                                COMMENTS_ALL_CLEAR,
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            ),
+                        ),
+                        spacing="0",
+                        align_items="start",
+                    ),
+                    spacing="3",
+                    align="start",
+                ),
+                rx.flex(
+                    next_button,
+                    rx.button(
+                        DISMISS_LABEL,
+                        on_click=RepliesState.dismiss_sent_notice,
+                        variant="soft",
+                        size="3",
+                        class_name="q-inbox-tap",
+                        **T.tone_scheme("neutral"),
+                    ),
+                    wrap="wrap",
+                    gap="0.5rem",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            padding="0.875rem 1rem",
+            role="status",
+            id=REPLIES_SENT_ID,
+        ),
     )
 
 
@@ -1511,8 +1610,15 @@ def _replies_list() -> rx.Component:
         rx.vstack(_card_skeleton(), spacing="3", width="100%"),
         rx.cond(
             RepliesState.has_pending_drafts,
-            rx.vstack(rx.foreach(RepliesState.drafts, _draft_card), spacing="3", width="100%"),
-            _replies_empty_state(),
+            rx.vstack(
+                rx.foreach(RepliesState.drafts, _draft_card),
+                spacing="3",
+                width="100%",
+                id=_REPLIES_LIST_ID,
+            ),
+            # Right after the last reply the confirmation already says «¡Al día!» with
+            # its button; the empty state below it would repeat it.
+            rx.cond(RepliesState.sent_notice != "", rx.fragment(), _replies_empty_state()),
         ),
     )
 
@@ -1545,6 +1651,7 @@ def _replies_section() -> rx.Component:
         _replies_load_error_block(),
         _replies_generate_error_block(),
         _replies_action_error_block(),
+        _replies_sent_block(),
         _replies_list(),
         description=(
             "Respuestas listas para los comentarios que te felicitan o preguntan por tus "

@@ -859,8 +859,8 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "clip",
         "Clip",
-        "Un video generado sin presentador: desde un fotograma inicial (y uno final) o "
-        "desde tus referencias de imagen, video y audio.",
+        "Un video corto sin presentador, a partir de una foto (o de una foto de inicio y "
+        "otra de final) o de tus fotos, videos y audios de referencia.",
         "film",
     ),
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
@@ -881,7 +881,8 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "template",
         "Plantilla",
-        "Tus fotos reales en una plantilla de tu nicho: una imagen para publicación o historia.",
+        "Tus fotos reales en un diseño listo para tu rubro: una imagen para publicación o "
+        "historia.",
         "layout-template",
     ),
     # «Ad» (the template's video) left the panel on 2026-10-14
@@ -980,7 +981,8 @@ APPROVE_VERSION_LABEL = "Aprobar esta versión"
 @dataclass(frozen=True)
 class VideoDraftVM:
     state: str
-    #: «Borrador · 480p · USD 0,51» — the badge over the video.
+    #: «Vista previa» — the badge over the video. Never money (founder decision 8,
+    #: m-24851824): the owner counts creations; the dollar cost is the team's.
     badge: str
     #: `signal_pill` tone of the badge.
     tone: str
@@ -1025,17 +1027,24 @@ def final_poll_step(video: VideoDraftVM) -> str:
 APPROVED_TOAST = "Publicación aprobada. Ahora elige cuándo sale."
 APPROVED_NOT_READY_TOAST = "Publicación aprobada. Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_TOAST_ACTION = "Elegir día y hora"
+#: m-24842981 (review 2026-10-24, finding 8): a screen that is not the publication's own
+#: page, after approving one whose final is being made or could not be ordered, offers
+#: the way there (`/drafts/<id>`) — the toast alone left the owner nowhere to tap (N3).
+APPROVED_OPEN_ACTION = "Ver publicación"
 #: The default `approved` text of `approval_notice` (kept under its earlier name).
 POST_APPROVED_TEXT = APPROVED_TOAST
 
 
 class ApprovalNotice(NamedTuple):
     """The toast after approving, as `rx.toast` kind and text, and whether to offer
-    «Elegir día y hora» with it (`offer_schedule`)."""
+    «Elegir día y hora» with it (`offer_schedule`) or, on a screen that is not the
+    publication's own page, «Ver publicación» (`offer_open`: its final is being made or
+    could not be ordered, m-24842981)."""
 
     kind: str
     text: str
     offer_schedule: bool
+    offer_open: bool = False
 
 
 def approval_notice(
@@ -1060,22 +1069,33 @@ def approval_notice(
     if video.rendering:
         tail = f" {elsewhere} para ver cuándo está listo." if elsewhere else ""
         return ApprovalNotice(
-            "info", f"Versión aprobada: estamos generando el video final a 1080p.{tail}", False
+            "info",
+            f"Aprobada. Estamos preparando el video en alta calidad.{tail}",
+            False,
+            bool(elsewhere),
         )
     if video.can_retry:
         tail = f" {elsewhere} para reintentarlo." if elsewhere else " Puedes reintentarlo."
         return ApprovalNotice(
-            "error", f"Versión aprobada, pero no pudimos pedir el video final.{tail}", False
+            "error",
+            f"Versión aprobada, pero no pudimos pedir el video final.{tail}",
+            False,
+            bool(elsewhere),
         )
     if ready:
         return ApprovalNotice("success", approved, True)
     return ApprovalNotice("success", not_ready, False)
 
 
+#: A final being made, in words: the piece's badge and the «Por aprobar» card's state
+#: and (disabled) main button say the same (m-24842981, review 2026-10-24 finding 8).
+FINAL_PREPARING_LABEL = "Preparando el video final"
+
+
 #: The final's own note while it is not there yet, in the «Aprobada. Todavía no se
 #: publica.» card: why no day and time can be chosen yet.
 FINAL_RENDERING_NOTE = (
-    "Estamos generando el video final a 1080p. Cuando esté listo podrás elegir cuándo sale."
+    "Estamos preparando el video en alta calidad. Cuando esté listo podrás elegir cuándo sale."
 )
 FINAL_FAILED_NOTE = (
     "No pudimos generar el video final. Reinténtalo y después podrás elegir cuándo sale."
@@ -1084,10 +1104,8 @@ FINAL_FAILED_NOTE = (
 
 #: The toast when the final lands while the piece is on screen: it is still not out —
 #: choose when it goes out, or first see what is missing (m-24842978).
-FINAL_READY_TEXT = "El video final a 1080p está listo. Ahora elige cuándo sale."
-FINAL_READY_NOT_READY = (
-    "El video final a 1080p está listo. Revisa lo que falta antes de elegir cuándo sale."
-)
+FINAL_READY_TEXT = "Tu video ya está listo. Ahora elige cuándo sale."
+FINAL_READY_NOT_READY = "Tu video ya está listo. Revisa lo que falta antes de elegir cuándo sale."
 
 
 def final_pending_note(video: VideoDraftVM) -> str:
@@ -1104,7 +1122,8 @@ def final_pending_note(video: VideoDraftVM) -> str:
 #: A failed final on a piece no longer approved (edited after its approval): approving
 #: it again orders the final, so that is what the screen says instead of «Reintentar».
 FINAL_NEEDS_APPROVAL_TEXT = (
-    "El video final no está listo. Cuando vuelvas a aprobar la publicación, lo generamos a 1080p."
+    "El video final no está listo. Cuando vuelvas a aprobar la publicación, lo preparamos "
+    "en alta calidad."
 )
 
 
@@ -1120,41 +1139,41 @@ def video_draft_vm(
     `still_rendering` (`draft_mode.draft_rendering`): some video of the piece has its
     final being made right now, whatever state the summary shows first. `approved`: the
     piece is approved — only then can a failed final be ordered again (`can_retry`);
-    otherwise approving it again is what orders it."""
+    otherwise approving it again is what orders it. `cost_usd` is never shown: the
+    owner never sees money (founder decision 8, m-24851824) — the spend stays recorded
+    for the team, not on this screen."""
+    del cost_usd
     if not state:
         return NO_VIDEO_DRAFT
-    cost = ""
-    if cost_usd:
-        # qualify-copy-es: the draft's spend is in dollars whatever the tenant's own
-        # currency, so it names it («$» alone reads as pesos in Colombia), with the
-        # Spanish decimal comma — the house `format_money` style («USD 1,50»)
-        cents = Decimal(cost_usd).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        cost = f" · USD {cents}".replace(".", ",")
     if state == VIDEO_DRAFT:
         return VideoDraftVM(
             state,
-            f"Borrador · 480p{cost}",
+            "Vista previa",
             "info",
-            "Es una versión borrador, barata y a 480p. Al aprobarla generamos el video "
-            "final a 1080p desde este mismo borrador.",
+            "Es una vista previa en calidad baja, para que decidas rápido. Al aprobarla "
+            "preparamos el mismo video en alta calidad.",
         )
     if state == VIDEO_RENDERING:
         return VideoDraftVM(
             state,
-            "Generando final · 1080p",
+            FINAL_PREPARING_LABEL,
             "info",
-            "Estamos generando el video final a 1080p. Tarda unos minutos; puedes salir "
-            "de esta pantalla.",
+            "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
+            "y lo verás aquí cuando esté listo.",
             rendering=True,
         )
     if state == VIDEO_FAILED and not approved:
         return VideoDraftVM(
-            state, "Final pendiente", "warn", FINAL_NEEDS_APPROVAL_TEXT, rendering=still_rendering
+            state,
+            "Falta el video final",
+            "warn",
+            FINAL_NEEDS_APPROVAL_TEXT,
+            rendering=still_rendering,
         )
     if state == VIDEO_FAILED:
         return VideoDraftVM(
             state,
-            "Final pendiente",
+            "Falta el video final",
             "error",
             error or "No pudimos generar el video final.",
             can_retry=True,
@@ -1163,13 +1182,12 @@ def video_draft_vm(
     if state == VIDEO_EXPIRED:
         return VideoDraftVM(
             state,
-            "Borrador caducado",
+            "La vista previa venció",
             "warn",
-            "El borrador caducó (se guarda 7 días): vuelve a generar la publicación para tener "
-            "uno nuevo.",
+            "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva.",
             rendering=still_rendering,
         )
-    return VideoDraftVM(state, "Final · 1080p", "ok", "")
+    return VideoDraftVM(state, "Video final", "ok", "")
 
 
 # -- piece retention (m-24828907) ----------------------------------------------------------
@@ -1599,6 +1617,50 @@ def cta_list(text: str) -> list[str]:
 
 def format_ctas(items: list[str]) -> str:
     return CTA_SEPARATOR.join(items)
+
+
+# CREAR-6 (m-24842980): «Debe mencionar» / «Debe evitar» are typed one phrase at a time
+# and shown as chips; the brief still carries them as one comma-separated text (the
+# contract `context_ai`/the copy pipeline already read), so the owner never types a comma.
+PHRASE_SEPARATOR = ", "
+PHRASE_LIMIT = 12
+#: What the help says once `PHRASE_LIMIT` is reached (UX review).
+PHRASE_LIMIT_HINT = "Ya tienes 12 frases, el máximo. Quita una para agregar otra."
+
+
+def phrase_list(text: str) -> list[str]:
+    """ "envío gratis, reserva por WhatsApp" → both, each once (case-insensitive), in
+    order; empty pieces dropped."""
+    items: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"\s*[,;\n]\s*", text or ""):
+        part = " ".join(part.split())
+        if part and _fold(part) not in seen:
+            seen.add(_fold(part))
+            items.append(part)
+    return items
+
+
+def format_phrases(items: list[str]) -> str:
+    return PHRASE_SEPARATOR.join(items)
+
+
+def add_phrase(current: str, new: str, limit: int = PHRASE_LIMIT) -> str:
+    """`current` with what was typed in `new` appended (a pasted list is split), never a
+    repeat and never past `limit`."""
+    items = phrase_list(current)
+    folded = {_fold(item) for item in items}
+    for item in phrase_list(new):
+        if len(items) >= limit:
+            break
+        if _fold(item) not in folded:
+            folded.add(_fold(item))
+            items.append(item)
+    return format_phrases(items)
+
+
+def remove_phrase(current: str, phrase: str) -> str:
+    return format_phrases([item for item in phrase_list(current) if item != phrase])
 
 
 HASHTAG_KIND_LABELS: dict[str, str] = {
