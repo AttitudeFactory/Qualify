@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-23 · **Estado:** `[HISTORIAS · sin implementar · pendiente del ADR de S0]` · **Meegle:** épica [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (mapa de tickets en §4)
 **Decisión del fundador (Herwin, 2026-10-23, explícita):** se **revierte** la regla firmada «1 login = 1 tenant = 1 negocio, sin switch» ([`modelo-negocio-operador-multi-emprendimiento.md`](modelo-negocio-operador-multi-emprendimiento.md) §6.1, 2026-08-16). Objetivo nuevo: un dueño maneja varios negocios (tenants separados) desde **una** sesión, con un selector para cambiar. Primer caso real: un mismo dueño con **Bianki** (shawarma y ensaladas) y **Polette** (helados de yogur), que se manejan por separado.
-**Producción hoy (chequeo de solo lectura, 2026-10-23):** existen 8 tenants, cada uno con 1 marca y 1 dueño. Bianki no existe; POLETTE es su propio tenant con su login `+polette`. Las únicas 2 conexiones de IG están en tenants distintos. No hay datos que separar: S8 se cerró como «no aplica». **Limpieza decidida y pendiente:** el 2026-10-23 el fundador decidió dejar solo «Zapatería» (IG qualifymkt.co) y «Raul Dev Games» y borrar POLETTE y los 5 «Mi marca» con sus logins de Supabase. Todavía **no se ejecutó**: falta el respaldo y la confirmación del fundador.
+**Producción hoy (chequeo de solo lectura, 2026-10-23):** existen 8 tenants, cada uno con 1 marca y 1 dueño. Bianki no existe; POLETTE es su propio tenant con su login `+polette`. Las únicas 2 conexiones de IG están en tenants distintos (y tienen una incoherencia de estado aparte, bug [m-24851941](https://project.larksuite.com/5h2wsx/issue/detail/24851941)). No hay datos que separar: S8 se cerró como «no aplica». **Limpieza decidida y pendiente (fundador, 2026-10-24):** se borra **solo** el tenant POLETTE y su login `+polette`, para volver a crearlo por «Alta de cliente» con el login neutro (S2). Los otros 7 tenants (Zapatería, Raul Dev Games y los 5 «Mi marca») se quedan. Todavía **no se ejecutó**: falta el respaldo y la confirmación del fundador.
 **Restricción — única puerta de entrada (fundador, 2026-10-23):** un cliente entra a Qualify **solo** por el ítem «Alta de cliente» de Lark/Meegle (skill `meegle-altas`). Agregar un negocio a un login existente también se dispara solo desde ese ítem (S7). Nunca autoservicio, nunca una invitación desde la app.
 **Revisión técnica:** principal-architect, 2026-10-23. Las historias de §3 son su corte, revisado contra el código en `main`. Las líneas de código citadas abajo se comprobaron en disco el mismo día.
 
@@ -36,7 +36,7 @@
 - **Supabase:** `app_metadata.tenant_id` pasa a ser solo el negocio **por defecto**.
 - **Selector:** después del login, si hay más de una membresía.
 - **Cambio de negocio:** `switch_tenant` validado en el servidor (el `auth_user_id` sale de la sesión, nunca del cliente). Reutiliza la destrucción de estado del logout (se extrae un helper de `auth_state.py:784-888`) y hace recarga completa.
-- **Revisión de membresía:** en `require_login` con TTL corto, y sin caché antes de publicar o enviar.
+- **Revisión de membresía:** en `require_login` con TTL de 5 minutos (fundador, 2026-10-24), y sin caché antes de publicar o enviar.
 - **Auditoría:** cada cambio queda registrado en el tenant de destino.
 - **No cambia:** RLS, workers, webhooks, una sola Postgres (ADR 31), tenant = frontera de aislamiento (ADR 24).
 - **Fuera:** el superadmin del equipo (staff) es otra épica.
@@ -47,7 +47,7 @@
 |---|---|
 | Al cambiar de negocio queda pintado algo del anterior | S4: test de cobertura ampliado, caches de módulo, Playwright con dos tenants en la misma pestaña |
 | Dos pestañas con negocios distintos: publicar en el equivocado | S3: negocio activo siempre visible arriba · S4: la confirmación de publicar/enviar nombra el negocio |
-| Quitar a alguien de un negocio no surte efecto con la sesión abierta | S5: revisión con TTL corto y antes de publicar/enviar |
+| Quitar a alguien de un negocio no surte efecto con la sesión abierta | S5: revisión cada 5 minutos al cargar páginas y, sin caché, antes de publicar/enviar |
 | La misma cuenta de IG/FB activa en dos tenants: el webhook no sabe a cuál va | S6: chequeo al conectar + índice único global parcial + test de enrutamiento |
 | Alguien se agrega por su cuenta a un negocio ajeno | S7: solo desde un «Alta de cliente» del fundador, con contraseña |
 | Hoy un segundo Alta con un correo ya registrado mete la marca nueva en el negocio anterior (`_resolve_identity_for_signup`, `auth/service.py:96-123`, devuelve el `tenant_id` existente) | S7: con «Inicio de sesión existente» se crea un tenant nuevo; sin él, el Alta falla a la vista |
@@ -114,8 +114,8 @@ Los enlaces «Bloqueado por» de Meegle siguen la columna «Depende de» de §3.
 
 ## 6. Preguntas abiertas para el fundador
 
-1. **TTL de la revisión de membresía (S5):** propuesta 60 s al cargar páginas; publicar y enviar siempre se revisan sin caché. ¿Te sirve?
-2. **¿Qué inicio de sesión usa el dueño de Polette y Bianki? (S2)** Una vez hecha la limpieza (que borra el login `+polette`), se crea desde cero en el primer Alta y el segundo Alta se le vincula. Recomendación: un correo neutro, sin el nombre de ningún negocio, porque va a abrir los dos.
+1. ~~TTL de la revisión de membresía (S5)~~ **Respondida (fundador, 2026-10-24):** 5 minutos al cargar páginas; publicar y enviar se revisan en el momento, sin caché.
+2. ~~¿Qué inicio de sesión usa el dueño de Polette y Bianki? (S2)~~ **Respondida (fundador, 2026-10-24):** un correo neutro, sin nombre de negocio. Candidato: `hlrd1993+negocios@gmail.com`; la dirección exacta la confirma el fundador al crear el Alta. Se crea en el Alta de Polette (después de la limpieza) y el Alta de Bianki se le vincula.
 3. ~~¿Aparcar S7?~~ **Respondida (2026-10-23):** no. El Alta es la única puerta de entrada, así que S7 es el mecanismo del primer caso (S2) y sube a P1.
 4. ~~Cuenta de IG/FB ya activa en dos negocios: ¿cuál se la queda?~~ **Respondida por producción (2026-10-23):** ninguna cuenta está en dos tenants hoy (las 2 conexiones de IG están en tenants distintos), así que el índice único global de S6 se puede crear sin limpiar datos.
 
