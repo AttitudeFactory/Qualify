@@ -114,7 +114,7 @@ _REJECTED = (
 _ACTION_FAILED = "No se pudo completar la acción. Vuelve a intentarlo en un momento."
 _NO_ORDER = "Esta conversación ya no tiene un pedido confirmado."
 _UNKNOWN_AGENT = "Esa persona ya no forma parte del equipo."
-_QUEUED = "Mensaje en cola. Sale en unos segundos."
+_QUEUED = "Tu mensaje sale en unos segundos."
 _TOAST_MS = 4000
 #: The «Sin asignar» item of the «Asignar» select.
 UNASSIGNED = "__none__"

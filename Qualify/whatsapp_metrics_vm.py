@@ -34,12 +34,12 @@ NO_VALUE = "—"
 _MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 
 _PRICING_CATEGORY: dict[str, str] = {
-    "MARKETING": "Marketing",
-    "UTILITY": "Utilidad",
+    "MARKETING": "Promociones",
+    "UTILITY": "Avisos de pedidos",
     "AUTHENTICATION": "Autenticación",
     "AUTHENTICATION_INTERNATIONAL": "Autenticación internacional",
     "SERVICE": "Servicio",
-    "MARKETING_LITE": "Marketing (lite)",
+    "MARKETING_LITE": "Promociones (otra tarifa)",
     "UNKNOWN": "Sin categoría",
 }
 

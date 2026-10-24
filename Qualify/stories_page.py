@@ -101,7 +101,7 @@ def _connection_section() -> rx.Component:
     return section(
         "Cuenta",
         _connection_selector(),
-        description="La cuenta conectada donde se publicará la Story.",
+        description="La cuenta conectada donde se publicará la historia.",
     )
 
 
@@ -171,7 +171,7 @@ def _empty_state_content() -> rx.Component:
     return rx.vstack(
         rx.icon("film", size=32, color=T.TEXT_FAINT),
         rx.text(
-            "Arrastra el video o la imagen de la Story aquí o haz clic para elegirlo",
+            "Arrastra el video o la imagen de la historia aquí o haz clic para elegirlo",
             size="3",
             weight="medium",
         ),
@@ -233,7 +233,7 @@ def _gallery_zone() -> rx.Component:
 
 def _content_section() -> rx.Component:
     return section(
-        "Contenido de la Story",
+        "Contenido de la historia",
         _gallery_zone(),
         description=(
             "Tu propio video o imagen — nunca se genera ni se reutiliza contenido de terceros."
@@ -268,7 +268,7 @@ def _status_block() -> rx.Component:
                     rx.hstack(
                         loading_spinner("sm"),
                         rx.text(
-                            "Publicando, esperando confirmación de Meta...",
+                            "Publicando, esperando que Instagram lo confirme...",
                             size="2",
                             weight="medium",
                         ),
@@ -287,7 +287,7 @@ def _status_block() -> rx.Component:
                         width="100%",
                     ),
                     rx.text(
-                        "Meta está procesando la Story. Esto puede tardar varios minutos.",
+                        "Instagram está preparando tu historia. Puede tardar unos minutos.",
                         size="1",
                         color=T.TEXT_MUTED,
                     ),
@@ -386,14 +386,16 @@ def stories_tips_card() -> rx.Component:
     return tips_card(
         tip_row("film", "Formatos aceptados: MP4, MOV (video) y JPEG (imagen)."),
         tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
-        tip_row("square", "Una pieza por Story: si eliges otra, reemplaza a la anterior."),
-        tip_row("type", "Sin caption: Instagram no muestra texto en una Story publicada así."),
+        tip_row(
+            "square", "Una foto o un video por historia: si eliges otro, reemplaza al anterior."
+        ),
+        tip_row("type", "Sin texto: Instagram no muestra texto en una historia publicada así."),
         tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
-        tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
+        tip_row("clock", "Instagram puede tardar unos minutos en confirmarlo."),
         tip_row(
             "music",
             "¿Música oficial? Usa «Abrir en Instagram» desde tu celular y termina la "
-            "Story en la app.",
+            "historia en la app.",
         ),
     )
 

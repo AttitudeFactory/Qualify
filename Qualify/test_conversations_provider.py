@@ -140,7 +140,11 @@ class StubGenerator:
 
 
 class World:
-    def __init__(self, *, with_sender: bool = True) -> None:
+    def __init__(self, *, with_sender: bool = True, switched_on: frozenset = frozenset()) -> None:
+        """`switched_on`: the deployment's capabilities (m-24789472: quick replies,
+        messages with buttons) — none by default, as in production."""
+        from qualify_api.followups.capabilities import Capabilities
+
         self.clock = Clock(NOW)
         self.repo = MemoryConversationRepository()
         self.generator = StubGenerator()
@@ -153,7 +157,11 @@ class World:
         else:
             registry.register(source=MemoryConversationSource())
         self.service = ConversationService(
-            repository=self.repo, outbox=self.outbox, registry=registry, clock=self.clock
+            repository=self.repo,
+            outbox=self.outbox,
+            registry=registry,
+            clock=self.clock,
+            capabilities=Capabilities(switched_on),
         )
         self.sync = ConversationSyncService(repository=self.repo, clock=self.clock)
         self.store = FakeStore()
@@ -629,3 +637,131 @@ def test_reorder_takes_the_whole_library_or_nothing(world: World) -> None:
 def test_the_template_service_is_wired_lazily_from_composition() -> None:
     source = inspect.getsource(ConversationsGateway.template_service.fget)
     assert "production_template_service" in source
+
+
+# --- quick replies and messages with buttons (m-24789472, phase 3) -----------------------
+
+
+def _switched(*names: str) -> World:
+    from qualify_api.followups.capabilities import Capability
+
+    return World(switched_on=frozenset(Capability(n) for n in names))
+
+
+def test_both_features_are_off_by_default_and_say_why_in_plain_words(world: World) -> None:
+    quick, buttons = world.gateway.features()
+    assert not quick.enabled and not buttons.enabled
+    assert quick.state_label == buttons.state_label == "Por verificar"
+    for feature in (quick, buttons):
+        assert "todavía no" in feature.notice
+        assert "QUALIFY_" not in feature.notice  # a deployment switch is never shown
+
+    on_quick, on_buttons = _switched("quick_replies", "structured_templates").gateway.features()
+    assert on_quick.enabled and on_buttons.enabled and on_quick.notice == ""
+
+
+def test_quick_replies_ride_on_the_last_part_of_an_approved_reply() -> None:
+    from qualify_api.conversations.interactive import has_quick_replies
+
+    world = _switched("quick_replies")
+    thread = world.inbound()
+    ids = world.gateway.reply(
+        TENANT, CONNECTION, thread, USER, "palabra " * 200, quick_replies=["Sí", "No"]
+    )
+    assert len(ids) == 2
+    first, last = (world.outbox.rows[i] for i in ids)
+    assert not has_quick_replies(first.payload) and has_quick_replies(last.payload)
+    titles = [q["title"] for q in last.payload["message"]["quick_replies"]]
+    assert titles == ["Sí", "No"]
+    assert last.approved_by_user_id == USER
+    assert world.sender.sent == []
+
+
+def test_quick_replies_are_refused_while_off_before_anything_is_written(world: World) -> None:
+    from qualify_api.conversations.service import CapabilityUnavailable
+
+    thread = world.inbound()
+    with pytest.raises(CapabilityUnavailable):
+        world.gateway.reply(TENANT, CONNECTION, thread, USER, "hola", quick_replies=["Sí"])
+    assert world.outbox.rows == {}
+
+
+def test_a_message_with_buttons_is_one_approved_row_never_split() -> None:
+    from qualify_api.conversations.interactive import InteractiveMessageError
+    from qualify_api.conversations.interactive import template_payload as inner
+
+    from .conversations_vm import ButtonVM
+
+    world = _switched("structured_templates")
+    thread = world.inbound()
+    buttons = [
+        ButtonVM(kind="postback", title="Hacer pedido"),
+        ButtonVM(kind="web_url", title="Ver catálogo", url="https://bianki.co/catalogo"),
+    ]
+    row_id = world.gateway.reply_buttons(TENANT, CONNECTION, thread, USER, "¿Qué quieres?", buttons)
+    row = world.outbox.rows[row_id]
+    body = inner(row.payload)
+    assert body is not None and body["text"] == "¿Qué quieres?"
+    assert [b["title"] for b in body["buttons"]] == ["Hacer pedido", "Ver catálogo"]
+    assert row.approved_by_user_id == USER
+
+    with pytest.raises(InteractiveMessageError) as too_long:
+        world.gateway.reply_buttons(TENANT, CONNECTION, thread, USER, "x" * 641, buttons)
+    assert too_long.value.code == "button_text_too_long"
+    assert len(world.outbox.rows) == 1
+
+
+def test_a_message_with_buttons_is_refused_while_off(world: World) -> None:
+    from qualify_api.conversations.service import CapabilityUnavailable
+
+    from .conversations_vm import ButtonVM
+
+    thread = world.inbound()
+    with pytest.raises(CapabilityUnavailable):
+        world.gateway.reply_buttons(
+            TENANT, CONNECTION, thread, USER, "Hola", [ButtonVM(kind="postback", title="Sí")]
+        )
+    assert world.outbox.rows == {}
+
+
+def test_a_template_keeps_its_buttons_until_the_form_removes_them(world: World) -> None:
+    from .conversations_vm import ButtonVM
+
+    thread = world.inbound()
+    created = world.gateway.create_template(
+        TENANT,
+        CONNECTION,
+        USER,
+        "Pedido",
+        "¿Cómo quieres pedir?",
+        [ButtonVM(kind="postback", title="Por aquí")],
+    )
+    rendered = world.gateway.render_template(TENANT, CONNECTION, thread, created.id)
+    assert [b.title for b in rendered.buttons] == ["Por aquí"]
+
+    kept = world.gateway.update_template(
+        TENANT, CONNECTION, created.id, USER, "Pedido", "¿Cómo pides?", None
+    )
+    assert [b.title for b in kept.buttons] == ["Por aquí"]
+    removed = world.gateway.update_template(
+        TENANT, CONNECTION, created.id, USER, "Pedido", "¿Cómo pides?", []
+    )
+    assert removed.buttons == ()
+
+    with pytest.raises(ReplyTemplateError) as long_body:
+        world.gateway.create_template(
+            TENANT, CONNECTION, USER, "Largo", "x" * 641, [ButtonVM(kind="postback", title="Sí")]
+        )
+    assert long_body.value.code == "body_too_long_for_buttons"
+
+
+def test_a_queued_message_with_buttons_shows_its_text_and_what_it_is() -> None:
+    from .conversations_vm import ButtonVM
+
+    world = _switched("structured_templates")
+    thread = world.inbound()
+    world.gateway.reply_buttons(
+        TENANT, CONNECTION, thread, USER, "Elige", [ButtonVM(kind="postback", title="Sí")]
+    )
+    (unsent,) = world.gateway.conversation(TENANT, CONNECTION, thread).unsent
+    assert (unsent.text, unsent.media_type) == ("Elige", "interactive")
