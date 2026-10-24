@@ -86,6 +86,10 @@ from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
     PUBLICATION_ALT_FALLBACK,
+    RETRY_BADGE,
+    RETRY_BUSY_LABEL,
+    RETRY_LABEL,
+    RETRY_SECTION_TITLE,
     REVIEW_BADGE,
     REVIEW_CONFIRM_LABEL,
     SOURCES_EMPTY,
@@ -1515,6 +1519,59 @@ def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
     return media_thumb(draft.media_thumbnail_url, size="48px", icon="image", alt=draft.media_alt)
 
 
+def _draft_comment_block(draft: DraftVM) -> rx.Component:
+    """Who commented, on which publication, and what they said — the top of a reply card
+    (m-24842989), shared by the card waiting for approval and the one that did not go out
+    (ATENDER-9)."""
+    return rx.hstack(
+        _draft_publication_thumb(draft),
+        rx.vstack(
+            rx.cond(
+                draft.author_username != "",
+                rx.text(
+                    "@" + draft.author_username,
+                    size="2",
+                    weight="medium",
+                    word_break="break-word",
+                ),
+            ),
+            # Which publication, in words: its day when we know it, else its
+            # caption (the fallback alt «Publicación» says nothing).
+            rx.cond(
+                draft.media_day != "",
+                rx.text(
+                    "En tu publicación del " + draft.media_day,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+            rx.cond(
+                (draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK),
+                rx.text(
+                    "En tu publicación «" + draft.media_alt + "»",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    max_width="100%",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+            ),
+            rx.text(
+                rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="1",
+            align_items="start",
+            min_width="0",
+        ),
+        spacing="3",
+        align="start",
+        width="100%",
+    )
+
+
 def _draft_card(draft: DraftVM) -> rx.Component:
     """One reply waiting for approval: who commented and on which publication, the
     comment, then the prepared reply. No internal id on screen (m5 hallazgo 5). A
@@ -1541,53 +1598,7 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                 width="100%",
                 wrap="wrap",
             ),
-            rx.hstack(
-                _draft_publication_thumb(draft),
-                rx.vstack(
-                    rx.cond(
-                        draft.author_username != "",
-                        rx.text(
-                            "@" + draft.author_username,
-                            size="2",
-                            weight="medium",
-                            word_break="break-word",
-                        ),
-                    ),
-                    # Which publication, in words: its day when we know it, else its
-                    # caption (the fallback alt «Publicación» says nothing).
-                    rx.cond(
-                        draft.media_day != "",
-                        rx.text(
-                            "En tu publicación del " + draft.media_day,
-                            size="1",
-                            color=T.TEXT_MUTED,
-                        ),
-                    ),
-                    rx.cond(
-                        (draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK),
-                        rx.text(
-                            "En tu publicación «" + draft.media_alt + "»",
-                            size="1",
-                            color=T.TEXT_MUTED,
-                            max_width="100%",
-                            overflow="hidden",
-                            text_overflow="ellipsis",
-                            white_space="nowrap",
-                        ),
-                    ),
-                    rx.text(
-                        rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="1",
-                    align_items="start",
-                    min_width="0",
-                ),
-                spacing="3",
-                align="start",
-                width="100%",
-            ),
+            _draft_comment_block(draft),
             _draft_intents(draft),
             rx.box(
                 rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),
@@ -1601,6 +1612,73 @@ def _draft_card(draft: DraftVM) -> rx.Component:
             width="100%",
         ),
         width="100%",
+    )
+
+
+def _retry_card(draft: DraftVM) -> rx.Component:
+    """ATENDER-9 (m-24849130): a reply that did not go out because Instagram did not
+    answer. It stays visible with the reply the owner approved, the plain reason, and
+    «Reintentar» — which sends only on that tap (N13) and is a full-width ≥ 44 px target
+    (`size="3"`, N12). No Meta code on screen; the sentence comes from `replies_vm`."""
+    is_retrying = RepliesState.retrying_draft_id == draft.id
+    return card(
+        rx.vstack(
+            rx.hstack(
+                tone_badge(RETRY_BADGE, "warn", icon="circle-alert"),
+                rx.spacer(),
+                rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
+                align="center",
+                spacing="2",
+                width="100%",
+                wrap="wrap",
+            ),
+            _draft_comment_block(draft),
+            rx.box(
+                rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),
+                display="inline-block",
+                padding_left="0.25rem",
+            ),
+            chat_bubble(
+                rx.text(
+                    rx.cond(draft.final_text != "", draft.final_text, draft.generated_text),
+                    size="2",
+                ),
+                direction="out",
+            ),
+            callout(draft.failure_message, "warn"),
+            rx.cond(
+                draft.can_retry,
+                rx.button(
+                    rx.cond(is_retrying, loading_spinner("sm"), rx.icon("rotate-cw", size=16)),
+                    rx.cond(is_retrying, RETRY_BUSY_LABEL, RETRY_LABEL),
+                    on_click=RepliesState.retry_send(draft.id),
+                    disabled=RepliesState.busy_draft_id != "",
+                    size="3",
+                    variant="soft",
+                    width="100%",
+                    **T.tone_scheme("ok"),
+                ),
+            ),
+            spacing="2",
+            align_items="start",
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def _retry_list() -> rx.Component:
+    """ATENDER-9: the replies that did not go out, above the ones waiting for approval —
+    a person who was already answered once comes first. Nothing shows when there are
+    none."""
+    return rx.cond(
+        RepliesState.has_retry_drafts,
+        rx.vstack(
+            rx.heading(RETRY_SECTION_TITLE, as_="h3", size="3", weight="medium"),
+            rx.foreach(RepliesState.retry_drafts, _retry_card),
+            spacing="3",
+            width="100%",
+        ),
     )
 
 
@@ -1652,6 +1730,7 @@ def _replies_section() -> rx.Component:
         _replies_generate_error_block(),
         _replies_action_error_block(),
         _replies_sent_block(),
+        _retry_list(),
         _replies_list(),
         description=(
             "Respuestas listas para los comentarios que te felicitan o preguntan por tus "

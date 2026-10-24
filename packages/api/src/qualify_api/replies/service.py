@@ -41,6 +41,7 @@ from qualify_api.claude_tools import CallStats
 from qualify_api.intent.contract import IntentClass
 from qualify_api.intent.reliability import class_reliability
 from qualify_api.replies.client import CommentReplyClient, CommentReplyError
+from qualify_api.replies.failures import classify_reply_error, error_code_for, is_retryable
 from qualify_api.replies.gate import (
     ROUTE_COMMERCIAL,
     GateInput,
@@ -118,6 +119,11 @@ class RegenerationRefused(ValueError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class RetryRefused(ValueError):
+    """«Reintentar» has nothing to do: the draft is not a passing failure, or it was
+    already retried (a second tap) or replaced meanwhile. Nothing was written."""
 
 
 @dataclass(frozen=True)
@@ -406,6 +412,36 @@ class ReplyService:
     ) -> tuple[DraftRecord, ...]:
         return self._repo.list_pending_drafts(tenant_id=tenant_id, connection_id=connection_id)
 
+    def list_retryable_drafts(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> tuple[DraftRecord, ...]:
+        """ATENDER-9: the replies that did not go out for a passing reason, still waiting
+        for the owner's «Reintentar»."""
+        return self._repo.list_retryable_drafts(tenant_id=tenant_id, connection_id=connection_id)
+
+    def prepare_retry(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
+        """«Reintentar» (ATENDER-9, m-24849130), step one: a NEW `accepted`/`edited`
+        draft with the failed one's approved text, decided by `user_id` (the person who
+        tapped). Never sends — the caller sends it through `send`, with a
+        `HumanApproval` naming the new draft, so there is still exactly one way out.
+
+        Only a passing failure is retried (`replies.failures.is_retryable`): a deleted
+        comment, another refusal or an unknown outcome never is. A second tap finds the
+        first tap's draft and raises `RetryRefused` — the reply is never doubled. Raises
+        `UnknownDraft` when the id is not visible to this tenant."""
+        old = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if old is None:
+            raise UnknownDraft(str(draft_id))
+        if not is_retryable(old.status, old.send_error_code):
+            raise RetryRefused(f"draft {draft_id} is {old.status!r}; not a passing failure")
+        new = self._repo.clone_for_retry(
+            tenant_id=tenant_id, draft_id=draft_id, decided_by_user_id=user_id
+        )
+        if new is None:
+            raise RetryRefused(f"draft {draft_id} was already retried or replaced")
+        logger.info("replies.retry draft_id=%s new_draft_id=%s by=%s", draft_id, new.id, user_id)
+        return new
+
     def decide(
         self,
         *,
@@ -470,25 +506,23 @@ class ReplyService:
                 message=record.final_text or record.generated_text,
             )
         except CommentReplyError as exc:
+            # ATENDER-9 (m-24849130): one of four kinds, see `replies.failures`. The
+            # stored code is for the team; the screen only ever shows the kind's sentence.
+            kind = classify_reply_error(exc)
+            code = error_code_for(exc, kind)
+            logger.info("replies.send draft_id=%s failed kind=%s code=%s", draft_id, kind, code)
             if exc.http_status == 401 or exc.platform_code == 190:
                 # QUA-90: an auth refusal means the send did NOT go out — not the same
                 # ambiguity as a timeout, so settling failed here is not a lie.
                 self._degrade(tenant_id=tenant_id, connection_id=record.connection_id)
-                return self._repo.mark_send_failed(
-                    tenant_id=tenant_id, draft_id=draft_id, error_code=f"auth:{exc.platform_code}"
-                )
-            if exc.is_ambiguous:
-                # Transport failure — the reply may or may not have posted. Settle
-                # NOTHING; a human resolves this by checking Meta directly.
+            if kind == "unknown":
+                # The reply may or may not have posted. Settle NOTHING; a human resolves
+                # this by checking Meta directly — and it is never offered a retry.
                 return self._repo.mark_send_ambiguous(
-                    tenant_id=tenant_id, draft_id=draft_id, error_code=str(exc)
+                    tenant_id=tenant_id, draft_id=draft_id, error_code=code
                 )
             return self._repo.mark_send_failed(
-                tenant_id=tenant_id,
-                draft_id=draft_id,
-                error_code=(
-                    f"platform:{exc.platform_code}" if exc.platform_code is not None else "unknown"
-                ),
+                tenant_id=tenant_id, draft_id=draft_id, error_code=code
             )
         return self._repo.mark_sent(
             tenant_id=tenant_id, draft_id=draft_id, external_reply_id=external_id

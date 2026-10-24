@@ -23,6 +23,11 @@ The send gate (`send_block_reason`) lives here too, so the state's handler and t
 share one rule: a draft that needs review is not sent until the person ticks «Ya revisé
 estos puntos». It only ever ADDS a condition before the existing approval path; it never
 sends anything by itself.
+
+**A reply that did not go out (ATENDER-9, m-24849130).** `failure` is the kind
+`qualify_api.replies.failures` gives the stored outcome, and `send_failure_message` its one
+sentence (founder decision 2026-10-23, §2b-5 and §2b-7a). Only a passing failure
+(`can_retry`) offers «Reintentar»; no Meta code ever reaches the screen.
 """
 
 from __future__ import annotations
@@ -35,8 +40,9 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.assisted.grounding import Grounding
 from qualify_api.intent import COMMERCIAL_CLASSES, INTENT_CLASS_LABELS, IntentClass, IntentSignal
+from qualify_api.replies.failures import FailureKind, failure_kind
 from qualify_api.replies.public_drafts import is_blocking_reason
-from qualify_api.replies.service import RegenerationRefused, UnknownDraft
+from qualify_api.replies.service import RegenerationRefused, RetryRefused, UnknownDraft
 
 from .inbox_vm import CandidateMediaVM, IntentChipVM, short_day_label
 from .planner_vm import time_label_12h
@@ -112,6 +118,34 @@ _REGENERATE_ANSWERED_BY_DM: Final = (
     "respuesta pública."
 )
 
+# ATENDER-9 (m-24849130) — what the owner reads when a reply did not go out. Exact copy
+# signed by the founder (2026-10-23, §2b-5 and §2b-7a).
+SEND_TRANSIENT: Final = "Tu respuesta no salió: Instagram no respondió."
+# The toast after a passing failure also says where the reply went (UX review): the card
+# leaves the approval queue and reappears above it, often out of view at 360 px.
+SEND_TRANSIENT_TOAST: Final = (
+    "Tu respuesta no salió: Instagram no respondió. "
+    "Puedes reintentarla arriba, en «Respuestas que no salieron»."
+)
+SEND_COMMENT_DELETED: Final = "Borraron ese comentario. Ya no se puede responder."
+SEND_REFUSED: Final = "Tu respuesta no salió. Respóndela en Instagram."
+SEND_UNKNOWN: Final = "No sabemos si salió. Revísalo en Instagram."
+RETRY_LABEL: Final = "Reintentar"
+RETRY_BUSY_LABEL: Final = "Reintentando…"
+RETRY_SECTION_TITLE: Final = "Respuestas que no salieron"
+RETRY_BADGE: Final = "No salió"
+_SEND_MESSAGES: Final[Mapping[str, str]] = {
+    "transient": SEND_TRANSIENT,
+    "comment_deleted": SEND_COMMENT_DELETED,
+    "refused": SEND_REFUSED,
+    "unknown": SEND_UNKNOWN,
+}
+# No _REFRESH_HINT here: «vuelve a intentarlo» would invite a second public reply.
+_RETRY_ALREADY: Final = (
+    "Esta respuesta ya se está volviendo a enviar. "
+    "Toca «Actualizar respuestas» (↻) para ver cómo quedó."
+)
+
 _MONTHS: Final = (
     "ene",
     "feb",
@@ -177,6 +211,11 @@ class DraftVM:
     # m-24842988: the day the publication went up («21 oct»), for «En tu publicación
     # del 21 oct». `""` when the publication is outside the loaded 2-week list.
     media_day: str = ""
+    # ATENDER-9: why it did not go out (`""` | transient | comment_deleted | refused |
+    # unknown), that kind's sentence, and whether «Reintentar» is offered.
+    failure: str = ""
+    failure_message: str = ""
+    can_retry: bool = False
 
 
 class DraftLike(Protocol):
@@ -197,6 +236,7 @@ class DraftLike(Protocol):
     author_username: str
     external_media_id: str
     media_caption: str
+    send_error_code: str | None
 
 
 # -- rules --------------------------------------------------------------------------------
@@ -343,6 +383,7 @@ def build_draft_vm(
     sources = source_products(grounding, zone) if is_commercial else []
     claims = [c.strip() for c in (record.unsupported_claims or ()) if c and c.strip()]
     caption = (record.media_caption or (media.caption if media else "")).strip()
+    kind = failure_kind(record.status, getattr(record, "send_error_code", None))
     return DraftVM(
         id=str(record.id),
         source_id=record.source_id,
@@ -366,6 +407,9 @@ def build_draft_vm(
         media_thumbnail_url=media.thumbnail_url if media else "",
         media_alt=caption or PUBLICATION_ALT_FALLBACK,
         media_day=media.posted_day if media else "",
+        failure=kind or "",
+        failure_message=send_failure_message(kind) if kind else "",
+        can_retry=kind == "transient",
     )
 
 
@@ -412,3 +456,19 @@ def regenerate_error_message(exc: BaseException) -> str:
     if isinstance(exc, ValueError):
         return _REGENERATE_DECIDED
     return _REGENERATE_FAILED
+
+
+def send_failure_message(kind: FailureKind | str | None) -> str:
+    """The one sentence for a reply that did not go out. An unknown kind reads as the
+    unknown outcome — it never claims the reply is out, and never shows a code."""
+    return _SEND_MESSAGES.get(kind or "", SEND_UNKNOWN)
+
+
+def retry_error_message(exc: BaseException) -> str:
+    """What the card says when «Reintentar» itself cannot start: already retried (a
+    second tap, or another person), gone, or a failure to save — never a code."""
+    if isinstance(exc, RetryRefused):
+        return _RETRY_ALREADY
+    if isinstance(exc, UnknownDraft):
+        return _REGENERATE_UNKNOWN
+    return "No pudimos volver a enviarla. Intenta de nuevo en unos minutos."

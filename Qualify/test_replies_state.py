@@ -432,7 +432,7 @@ def test_regenerate_log_detail_includes_the_gate_reason_only() -> None:
 
 async def _send_with_status(monkeypatch: pytest.MonkeyPatch, status: str) -> RepliesState:
     async def fake_send(**_: Any) -> SimpleNamespace:
-        return SimpleNamespace(status=status)
+        return SimpleNamespace(status=status, failure="", can_retry=False)
 
     monkeypatch.setattr(replies_state_module, "decide_draft", lambda **_: None)
     monkeypatch.setattr(replies_state_module, "send_draft", fake_send)
@@ -470,7 +470,7 @@ async def test_the_next_action_clears_the_previous_confirmation(
     state.busy_draft_id = ""
 
     async def refuse(**_: Any) -> SimpleNamespace:
-        return SimpleNamespace(status="send_failed")
+        return SimpleNamespace(status="send_failed", failure="", can_retry=False)
 
     monkeypatch.setattr(replies_state_module, "send_draft", refuse)
     await _collect(state._decide_and_send(_DRAFT, decision="accepted", final_text=None))

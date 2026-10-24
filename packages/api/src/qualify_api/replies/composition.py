@@ -127,3 +127,18 @@ async def send_draft(*, tenant_id: UUID, draft_id: UUID, approval: HumanApproval
     return await production_reply_service().send(
         tenant_id=tenant_id, draft_id=draft_id, approval=approval
     )
+
+
+def list_retryable_drafts(*, tenant_id: UUID, connection_id: UUID) -> tuple[DraftRecord, ...]:
+    """ATENDER-9 (m-24849130): replies that did not go out for a passing reason."""
+    return production_reply_service().list_retryable_drafts(
+        tenant_id=tenant_id, connection_id=connection_id
+    )
+
+
+def prepare_retry(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
+    """«Reintentar», step one: a new approved draft with the same text. Never sends —
+    the caller sends it with `send_draft(..., approval=...)` naming the new draft."""
+    return production_reply_service().prepare_retry(
+        tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
+    )
