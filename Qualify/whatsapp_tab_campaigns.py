@@ -140,8 +140,8 @@ def _list() -> rx.Component:
             empty_state(
                 "megaphone",
                 "Aún no hay campañas en este número",
-                "Una campaña envía una plantilla aprobada a tus contactos con opt-in, al "
-                "ritmo que elijas, y te muestra cuántos la recibieron y leyeron.",
+                "Una campaña envía una plantilla aprobada a tus contactos que aceptaron recibir "
+                "tus mensajes, al ritmo que elijas, y te muestra cuántos la recibieron y leyeron.",
                 action=rx.button(
                     rx.icon("plus", size=16), "Nueva campaña", on_click=S.open_wizard, size="3"
                 ),
@@ -172,7 +172,6 @@ def _estimate_block(e: EstimateVM) -> rx.Component:
                         "valor de abajo es un orden de magnitud, no lo que Meta cobrará.",
                         size="1",
                     ),
-                    mono(e.rate_card_status, size="1"),
                     spacing="1",
                     align_items="start",
                 ),
@@ -352,7 +351,8 @@ def _source_check(key: str, label: str) -> rx.Component:
 def _step_audience() -> rx.Component:
     return rx.vstack(
         rx.text(
-            "Solo contactos con opt-in activo. Deja un filtro vacío para no filtrar por él.",
+            "Solo contactos que aceptaron recibir tus mensajes. Deja un filtro vacío para no "
+            "filtrar por él.",
             size="2",
             color=T.TEXT_MUTED,
         ),
@@ -433,9 +433,8 @@ def _step_pacing() -> rx.Component:
         ),
         rx.cond(S.pacing_label != "", rx.text(S.pacing_label, size="2"), rx.fragment()),
         callout(
-            "Meta además limita cuántas plantillas de marketing recibe cada persona: si "
-            "alguien ya recibió muchas, el envío se omite (código 131049) y no se reintenta "
-            "antes de 24 h.",
+            "Si alguien ya recibió muchas promociones esta semana, WhatsApp no le entrega la "
+            "tuya y no se te cobra.",
             "info",
         ),
         spacing="3",
@@ -461,8 +460,8 @@ def _step_review() -> rx.Component:
         _estimate_block(S.w_estimate),
         callout(PAYMENT_NOTICE, "info", icon="credit-card"),
         rx.text(
-            "Guardada como borrador. «Lanzar» encola los envíos; cerrar este panel la deja en "
-            "la lista para lanzarla después.",
+            "Guardada como borrador. «Enviar ahora» empieza a enviar; cerrar este panel la deja "
+            "en la lista para enviarla después.",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -498,7 +497,7 @@ def _wizard_footer() -> rx.Component:
                 S.step == STEP_REVIEW,
                 rx.button(
                     rx.icon("send", size=16),
-                    "Lanzar",
+                    "Enviar ahora",
                     on_click=S.launch_campaign(S.w_campaign_id),
                     loading=S.launching,
                     size="2",
@@ -546,7 +545,10 @@ def campaign_wizard() -> rx.Component:
         open=S.wizard_open,
         on_open_change=S.set_wizard_open,
         title="Nueva campaña",
-        description="Una plantilla aprobada, a tus contactos con opt-in, al ritmo que elijas.",
+        description=(
+            "Una plantilla aprobada, a tus contactos que aceptaron recibir tus mensajes, al "
+            "ritmo que elijas."
+        ),
         footer=_wizard_footer(),
         width="40rem",
         icon="megaphone",
@@ -600,7 +602,7 @@ def _detail_body() -> rx.Component:
             stat_card("Enviados", row.sent, tone="neutral"),
             stat_card("Entregados", row.delivered, tone="ok"),
             stat_card("Leídos", row.read, tone="ok"),
-            stat_card("En cola", row.queued, tone="info"),
+            stat_card("Por enviar", row.queued, tone="info"),
             stat_card("Fallidos", row.failed, tone="error"),
             stat_card("Omitidos", row.skipped, tone="warn"),
             columns=rx.breakpoints(initial="2", sm="3"),
@@ -612,7 +614,7 @@ def _detail_body() -> rx.Component:
         rx.cond(
             S.detail_has_estimate,
             rx.vstack(
-                rx.heading("Antes de lanzar", size="3", as_="h3"),
+                rx.heading("Antes de enviar", size="3", as_="h3"),
                 _estimate_block(S.detail_estimate),
                 callout(PAYMENT_NOTICE, "info", icon="credit-card"),
                 spacing="3",
@@ -668,7 +670,7 @@ def _detail_footer() -> rx.Component:
                 description="Los envíos que aún no salieron se retiran; los que ya salieron "
                 "no se pueden deshacer. Una campaña cancelada no se puede reanudar.",
                 verb="Cancelar campaña",
-                dismiss="Volver",
+                dismiss="Seguir con la campaña",
                 on_confirm=S.cancel_campaign,
             ),
             rx.fragment(),
@@ -677,7 +679,7 @@ def _detail_footer() -> rx.Component:
             d.can_launch,
             rx.button(
                 rx.icon("send", size=16),
-                "Lanzar",
+                "Enviar ahora",
                 on_click=S.launch_campaign(S.detail_id),
                 loading=S.launching,
                 size="2",
@@ -725,8 +727,8 @@ def campaigns_tab() -> rx.Component:
             rx.button(rx.icon("plus", size=16), "Nueva campaña", on_click=S.open_wizard, size="2"),
         ),
         rx.text(
-            "Envía una plantilla aprobada a tus contactos con opt-in. Los costos son "
-            "estimados; Meta cobra por mensaje entregado.",
+            "Envía una plantilla aprobada a tus contactos que aceptaron recibir tus mensajes. "
+            "Los costos son estimados; Meta cobra por mensaje entregado.",
             size="2",
             color=T.TEXT_MUTED,
         ),

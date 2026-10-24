@@ -299,10 +299,10 @@ def test_the_loading_screen_lists_each_category_as_it_lands() -> None:
         ("En tu ciudad", "pending"),
     ]
     state.sector_title = "Referentes del sector"
-    state.discovery_running = "Referentes en Venezuela"
+    state.discovery_running = "Negocios parecidos al tuyo en Venezuela"
     assert [(r["title"], r["status"]) for r in state.discovery_progress] == [
         ("Referentes del sector", "done"),
-        ("Referentes en Venezuela", "running"),
+        ("Negocios parecidos al tuyo en Venezuela", "running"),
         ("En tu ciudad", "pending"),
     ]
     # a category that failed or found nothing still counts as done

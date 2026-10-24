@@ -46,6 +46,9 @@ MENTION_ICON = "qualify-mention"
 # the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
 # measurement — deliberately outside the colour zones.
 NAV_BASE: list[Item] = [
+    # m-24842962 (NAV-4, N2): Inicio is the centre, so it heads the menu. The final menu
+    # order (Inicio · Atiende · Publica · Resultados · Tu negocio) is NAV-1's.
+    ("Inicio", "house", "/", True),
     ("Tus redes", "link", "/connections", True),
     # WA-12: the WhatsApp module (own number: connection, profile, QR, chats, menu).
     ("WhatsApp", "message-circle", "/whatsapp", True),
@@ -56,7 +59,8 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "listen",
         "Escuchas",
         [
-            ("Menciones", MENTION_ICON, "/", True),
+            # m-24842962: `/` is Inicio now; Menciones keeps a route of its own.
+            ("Menciones", MENTION_ICON, "/menciones", True),
             # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
             ("Comentarios", "film", "/inbox", True),
             # QUA-226: the private inbox of the connected accounts. Founder's placement

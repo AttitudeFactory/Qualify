@@ -110,6 +110,31 @@ def test_a_clip_keeps_its_soundtrack_under_the_logo_only_when_asked() -> None:
     assert kept.duration_sec == pytest.approx(1.0)
 
 
+def test_a_gallery_slide_with_sound_keeps_it_from_draft_to_final() -> None:
+    """§ request 2026-10-23 («Con audio» on the gallery's video): the slide is fitted to
+    the feed's 4:5 under its words with its soundtrack, and the draft's final is fitted
+    again at the final's encoder settings — the sound survives both passes."""
+    size = (216, 270)
+    layer = text_layer(size=size, palette=("#1F2937", "#0EA5A4"))
+    draft = PyAvVideoFitter().fit(
+        _clip_with_sound(360, 480), size=size, overlay=layer, keep_audio=True
+    )
+    final = PyAvVideoFitter().fit(
+        draft.data,
+        size=size,
+        overlay=layer,
+        keep_audio=True,
+        x264={"crf": "18", "preset": "fast"},
+    )
+    for fitted in (draft, final):
+        with av.open(io.BytesIO(fitted.data)) as out:
+            (audio,) = out.streams.audio
+            assert audio.codec_context.name == "aac"
+            assert sum(1 for _ in out.demux(audio)) > 10
+            (video,) = out.streams.video
+            assert (video.width, video.height) == size
+
+
 def test_keeping_the_audio_of_a_silent_clip_changes_nothing() -> None:
     fitted = PyAvVideoFitter().fit(_clip(360, 640), size=(216, 384), keep_audio=True)
     with av.open(io.BytesIO(fitted.data)) as out:

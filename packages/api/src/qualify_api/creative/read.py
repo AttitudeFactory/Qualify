@@ -10,6 +10,11 @@ out is the selected variant's ``edited_copy`` when the human touched it, the mod
 Image fields are optional in this slice: the MVP's no-model routes can legally produce a
 copy-only draft (see ``service.run_generation``), and per §7.6 whatever image exists is
 addressed by the draft, never by a raw ``media_url`` pasted around.
+
+m-24820142: an approved piece whose video is still its 480p Seedance draft (its 1080p
+final being made, failed or never ordered — ``draft_mode.draft_pending``) is not an
+artifact yet either: the Planificador refuses to publish it (``MEDIA_DRAFT_PENDING``),
+and every other consumer reads the same rule here.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from qualify_api.creative import models as orm
+from qualify_api.creative.draft_mode import draft_pending
 
 _ARTIFACT_STATUSES: tuple[str, ...] = tuple(s.value for s in DraftStatus if s.is_artifact)
 
@@ -62,7 +68,9 @@ def _artifact_from_rows(
     """Build the artifact (plus the brief's intent value, for filtering) or None when
     the draft has no readable selected variant — an approved draft without one is
     unrepresentable through the FSM guard, so None here only means RLS or corruption,
-    and handing out half an artifact would be worse than handing out none."""
+    and handing out half an artifact would be worse than handing out none. None as well
+    while any of its videos is still a 480p draft (`draft_pending`): its media is not
+    the piece that will be published."""
     if draft.selected_variant_id is None:
         return None
     variant = session.get(orm.CopyVariant, draft.selected_variant_id)
@@ -71,11 +79,14 @@ def _artifact_from_rows(
     brief = session.get(orm.ContentBrief, draft.brief_id)
     if brief is None:
         return None
-    image = session.scalars(
+    images = session.scalars(
         select(orm.ImageAsset)
         .where(orm.ImageAsset.draft_id == draft.id)
         .order_by(orm.ImageAsset.created_at)
-    ).first()
+    ).all()
+    if any(draft_pending(asset.params) for asset in images):
+        return None
+    image = images[0] if images else None
     copy = CopyPayload.model_validate(variant.edited_copy or variant.copy)
     provenance: Mapping[str, object] = MappingProxyType(
         {
@@ -108,7 +119,8 @@ def _artifact_from_rows(
 
 def approved_creative(*, tenant_id: UUID, draft_id: UUID) -> ApprovedCreative | None:
     """None when the draft does not exist, is not visible to this tenant (RLS makes the
-    two indistinguishable, on purpose), or is not yet an artifact (``is_artifact``)."""
+    two indistinguishable, on purpose), or is not yet an artifact (``is_artifact``, or
+    a video still at its 480p draft)."""
     with tenant_session(tenant_id) as session:
         draft = session.get(orm.ContentDraft, draft_id)
         if draft is None or not DraftStatus(draft.status).is_artifact:
@@ -126,7 +138,8 @@ def list_approved(
 ) -> tuple[ApprovedCreative, ...]:
     """Every artifact of the brand, newest approval first. ``since`` filters on
     ``approved_at``; ``intent`` filters on the brief's declared intent (an Ads consumer
-    asks for ``ADS``/``BOTH`` pieces by calling twice — the enum stays honest)."""
+    asks for ``ADS``/``BOTH`` pieces by calling twice — the enum stays honest). A piece
+    whose video is still a 480p draft is left out until its final is in place."""
     with tenant_session(tenant_id) as session:
         stmt = (
             select(orm.ContentDraft)

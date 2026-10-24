@@ -7,9 +7,9 @@ Done with PyAV, not the `ffmpeg` binary: PyAV's wheels bundle FFmpeg's libraries
 libx264 and the filters), so the same code runs on a developer's Windows machine and in
 the production image, neither of which has `ffmpeg` on PATH. The crop, the scale and the
 overlay run inside an FFmpeg filter graph — per-frame Pillow or numpy took 30 s for a
-5 s slide, the graph ~5 s. The audio is dropped: Instagram plays a carousel muted, and
-Seedance 1.0 makes none — unless the caller keeps it (`keep_audio`, § request 2026-10-20:
-a clip with the brand's logo over it keeps its soundtrack), then it is copied as it is.
+5 s slide, the graph ~5 s. The audio is dropped by default — unless the caller keeps it
+(`keep_audio`, § request 2026-10-20: a clip with the brand's logo over it keeps its
+soundtrack; § 2026-10-23: a gallery slide made «Con audio»), then it is copied as it is.
 
 It also turns ONE still into a short video (`animate_still`, § request 2026-10-13): the
 advertising image offered as a Reel. Instagram publishes only a video as a Reel, so the
@@ -28,7 +28,7 @@ from __future__ import annotations
 import io
 import math
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -44,11 +44,12 @@ FALLBACK_FPS = 24
 STILL_SECONDS = 6.0
 STILL_FPS = 30
 STILL_ZOOM = 1.06
-#: x264 settings: a carousel slide is small and short; a talking video re-encoded only to
-#: carry its subtitles is the piece the operator paid for, so it keeps its detail
-#: (review 2026-10-22: crf 23 / veryfast visibly softened it).
+#: x264 settings: a carousel slide is small and short; a video re-encoded only to carry
+#: what goes over it (a talking video's subtitles, a Seedance 2.5 final's logo or words)
+#: is the piece the operator paid for, so it keeps its detail (review 2026-10-22: crf 23
+#: / veryfast visibly softened it).
 SLIDE_X264 = {"crf": "23", "preset": "veryfast"}
-SUBTITLED_X264 = {"crf": "18", "preset": "fast"}
+DETAIL_X264 = {"crf": "18", "preset": "fast"}
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class VideoFitter(Protocol):
         overlay: bytes | None = None,
         max_seconds: float = MAX_SLIDE_SECONDS,
         keep_audio: bool = False,
+        x264: Mapping[str, str] | None = None,
     ) -> FittedVideo: ...
 
     def animate_still(
@@ -111,7 +113,10 @@ class PyAvVideoFitter:
         overlay: bytes | None = None,
         max_seconds: float = MAX_SLIDE_SECONDS,
         keep_audio: bool = False,
+        x264: Mapping[str, str] | None = None,
     ) -> FittedVideo:
+        """`x264`: the encoder settings, a carousel slide's by default (a Seedance 2.5
+        final, m-24820142, asks for more detail)."""
         width, height = size
         if width % 2 or height % 2:
             raise ValueError(f"an H.264 slide needs even dimensions, not {width}×{height}")
@@ -120,7 +125,13 @@ class PyAvVideoFitter:
         with tempfile.TemporaryDirectory(prefix="qualify-slide-") as tmp:
             out = Path(tmp) / "slide.mp4"
             frames, rate, poster, _ = _encode(
-                data, out, size, overlay, max_seconds, keep_audio=keep_audio
+                data,
+                out,
+                size,
+                overlay,
+                max_seconds,
+                keep_audio=keep_audio,
+                x264=dict(x264) if x264 is not None else SLIDE_X264,
             )
             encoded = out.read_bytes()
         if not frames:
@@ -168,7 +179,7 @@ class PyAvVideoFitter:
                 math.inf,
                 keep_audio=True,
                 layers=layers,
-                x264=SUBTITLED_X264,
+                x264=DETAIL_X264,
             )
             encoded = out.read_bytes()
         if not frames:
