@@ -11,7 +11,11 @@ The evaluators are the deterministic gates of §6.2 — there is no gold copy:
 
 - `esquema_ok` — the payload validates against `CopyPayload`;
 - `reglas_ok` — `check_hard_rules` finds nothing (banned words, forbidden claims,
-  caption length);
+  caption length), judged — like production — AFTER `fit_caption` trims a caption a
+  little over the brand maximum;
+- `caption_ajustada` — the share of variants whose caption `fit_caption` trimmed (the
+  model missed the maximum by a little: production saves them, the eval still counts
+  them apart);
 - `largos_ok` — the hook and the CTA fit what the prompt asked for (the printed limits
   for kinds whose words go on an image, `printed_limits`, the schema's otherwise). Since
   2026-10-13 the adapter holds the copy to them (one repair turn, then a word-boundary
@@ -39,7 +43,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from qualify_creative.adapters import AnthropicCopyAdapter
-from qualify_creative.brand.fidelity import check_hard_rules, normalize
+from qualify_creative.brand.fidelity import check_hard_rules, fit_caption, normalize
 from qualify_creative.brand.render import printed_limits, render_prompt
 from qualify_creative.enums import ContentKind, GenerationTask, ImageRoute
 from qualify_creative.pricing import JsonPricingTable
@@ -213,13 +217,18 @@ def gates(
     if not variants:
         return [Score("puertas_ok", 0.0, "no variants")]
     passed = {"esquema_ok": 0, "reglas_ok": 0, "largos_ok": 0, "restricciones_ok": 0}
-    all_ok = 0
+    all_ok = trimmed = 0
     notes: list[str] = []
     for number, variant in enumerate(variants, start=1):
         copy = _payload(variant)
         if copy is None:
             notes.append(f"v{number}: {variant.get('error') or 'invalid payload'}")
             continue
+        # the same step production runs before the hard rules (`ContentService`)
+        copy, fitted = fit_caption(copy, kit)
+        if fitted is not None:
+            trimmed += 1
+            notes.append(f"v{number}: {fitted}")
         failures = check_hard_rules(copy, kit)
         checks = {
             "esquema_ok": True,
@@ -239,6 +248,7 @@ def gates(
     comment = "; ".join(notes)[:500] or None
     return [
         *(Score(key, count / total) for key, count in passed.items()),
+        Score("caption_ajustada", trimmed / total),
         Score("puertas_ok", all_ok / total, comment),
     ]
 
