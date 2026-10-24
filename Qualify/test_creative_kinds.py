@@ -412,6 +412,81 @@ def test_a_piece_without_images_is_template_only(monkeypatch: pytest.MonkeyPatch
     assert brief.media.duration_seconds == 45
 
 
+def test_a_clip_brief_carries_the_chosen_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§ request 2026-10-23: «un límite de tiempo en los clips … desde 5 seg» — 5 s by
+    default, 10 or 15 when picked, and nothing else."""
+    state = CreativeState()
+    assert state.clip_duration == "5"
+    assert _submit(monkeypatch, "clip", state._clip_media()).media.duration_seconds == 5
+    state.set_clip_duration("10")
+    brief = _submit(monkeypatch, "clip", state._clip_media())
+    assert brief.kind is ContentKind.CLIP and brief.media.duration_seconds == 10
+    for unknown in ("30", "4", "", []):
+        state.set_clip_duration(unknown)
+        assert state.clip_duration == "10"
+    state.set_clip_duration(["15"])
+    assert state.clip_duration == "15"
+
+
+def test_a_clip_comes_with_sound_unless_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§ request 2026-10-23: «Con sonido» — on by default (every clip had sound before);
+    behind step ③'s «Más opciones», never in step ① (UX review 2026-10-24, finding 4)."""
+    from .content_generator import _section_channel, _step_how
+
+    state = CreativeState()
+    assert state.clip_audio is True
+    assert _submit(monkeypatch, "clip", state._clip_media()).media.clip_audio is True
+    state.set_clip_audio(False)
+    assert _submit(monkeypatch, "clip", state._clip_media()).media.clip_audio is False
+    channel = str(_section_channel())
+    assert "set_clip_audio" not in channel and "set_clip_duration" in channel
+    how = str(_step_how())
+    assert "set_clip_audio" in how and "Con sonido" in how
+    assert "Si el modelo de video" not in how
+    assert "El sonido del video y la campa\\u00f1a. Puedes crear sin tocarlos." in how
+    state.set_clip_duration("10")
+    state._reset_media_inputs()
+    assert state.clip_audio is True
+    assert state.clip_duration == "5"  # the whole clip form goes back to its defaults
+
+
+def test_the_gallerys_video_is_silent_unless_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§ request 2026-10-23: «igual la galería» — the animated slide's «Con sonido», off
+    by default; only the animated slide takes it, and it goes on the brief."""
+    from .content_generator import _slide_generated_fields
+
+    state = _carousel_state()
+    assert [slide["audio"] for slide in state.carousel_slides] == ["", "", ""]
+    state.set_slide_field(0, "audio", "1")  # a still has no sound
+    assert state.carousel_slides[0]["audio"] == ""
+    state.toggle_slide_audio(1)
+    assert state.carousel_slides[1]["audio"] == "1"
+    _, slides = state._carousel_slides_payload(False)
+    assert [slide.get("audio") for slide in slides] == [None, True, None]
+    brief = _submit(monkeypatch, "carousel", {"slides": slides})
+    assert [slide.audio for slide in brief.media.slides] == [False, True, False]
+    # back to a still: the sound goes with the video
+    state.select_carousel_slide(1)
+    state.set_slide_source("generated")
+    assert state.carousel_slides[1]["audio"] == ""
+    state.toggle_slide_audio(1)
+    assert state.carousel_slides[1]["audio"] == ""
+    fields = str(_slide_generated_fields())
+    assert "toggle_slide_audio" in fields and "Con sonido" in fields
+
+
+def test_a_script_can_be_as_short_as_five_seconds() -> None:
+    """§ request 2026-10-23: the avatar / script lengths start at 5 s, default 30."""
+    state = CreativeState()
+    assert state.media_duration == "30"
+    for value in ("5", "10", "15", "60"):
+        state.set_media_duration(value)
+        assert state.media_duration == value
+    for unknown in ("20", "90", "", []):
+        state.set_media_duration(unknown)
+        assert state.media_duration == "60"
+
+
 def test_a_video_is_vertical_and_carries_its_avatar(monkeypatch: pytest.MonkeyPatch) -> None:
     brief = _submit(monkeypatch, "avatar_video", {"avatar_look_id": "lk", "voice_id": "vo"})
     assert brief.format.value == "reels_9_16"

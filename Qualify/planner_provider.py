@@ -18,6 +18,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
+from qualify_api.creative.service import ApprovalBlocked
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
@@ -101,6 +102,26 @@ class NoBrand(PlannerError):
     """The tenant has no brand row yet — nothing to plan for."""
 
 
+class NoPassingVariant(PlannerError):
+    """m-24842984: no version of the POST's text passes the brand rules, so there is
+    nothing Tu semana can approve — the owner edits it on its own page first."""
+
+
+class PriceBlocked(PlannerError):
+    """m-24842984: the approval guard refused the text (ticket 24803289: a price that is
+    not the catalog's); `detail` is the guard's own Spanish — what to correct."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+#: m-24842984: the gallery's own words for the same refusal (one wording, both places).
+NO_PASSING_VARIANT_MESSAGE = (
+    "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
+)
+
+
 @dataclass(frozen=True)
 class WeekData:
     monday_iso: str
@@ -127,7 +148,7 @@ def planner_error_message(exc: Exception) -> str:
     """Operator-facing Spanish for every refusal — what happened and what to do."""
     if isinstance(exc, PostNotSchedulable) and exc.reason:
         # QUA-118 D1: the evaluator's exact reason, the same text the card shows.
-        return f"Ese POST no se puede planificar: {exc.reason}"
+        return f"Esa publicación no se puede programar: {exc.reason}"
     if isinstance(exc, InvalidSeries):
         return SERIES_MESSAGES.get(exc.code, SERIES_UNKNOWN_MESSAGE)
     if isinstance(exc, UnsupportedDestination):
@@ -135,37 +156,39 @@ def planner_error_message(exc: Exception) -> str:
         return exc.reason or "Instagram no publica este contenido en el destino elegido."
     messages: list[tuple[type[Exception], str]] = [
         (NoBrand, "Este negocio todavía no tiene una marca configurada."),
-        (UnknownPost, "Ese POST ya no está disponible. Actualiza la página."),
+        (UnknownPost, "Esa publicación ya no está disponible. Actualiza la página."),
         (
             PostNotSchedulable,
-            "Ese POST no se puede planificar: no está aprobado o no está listo para publicar.",
+            "Esa publicación no se puede programar: no está aprobada o no está lista.",
         ),
         (
             InactiveConnection,
             "La cuenta elegida no está activa. Revísala en Tus redes o elige otra.",
         ),
         (InvalidSchedule, "La fecha y hora deben ser futuras y válidas en tu zona horaria."),
-        (UnknownEvent, "Ese evento ya no existe. Actualiza la página."),
+        (UnknownEvent, "Esa publicación ya no está en el calendario. Actualiza la página."),
         (InvalidTag, "La etiqueta debe tener entre 1 y 40 caracteres."),
         (UnknownTag, "Esa etiqueta ya no existe. Actualiza la página."),
-        (EventNotModifiable, "Ese evento ya no se puede modificar (no está programado)."),
+        (EventNotModifiable, "Esa publicación ya no se puede cambiar porque no está programada."),
         (
             PostNotRejected,
-            "Ese POST ya no está rechazado (quizá se aprobó de nuevo): no se quitó nada.",
+            "Esa publicación ya no está rechazada (quizá se aprobó de nuevo): no se quitó nada.",
         ),
         (
             CreativeInvalidTransition,
-            "Ese POST ya no está en revisión, así que no se puede rechazar. Actualiza la página.",
+            "Esa publicación ya no está en revisión, así que no se puede rechazar. "
+            "Actualiza la página.",
         ),
         (
             EventConflict,
-            "Alguien más modificó este evento al mismo tiempo. Actualiza y vuelve a intentarlo.",
+            "Alguien más cambió esta publicación al mismo tiempo. Actualiza y vuelve a intentarlo.",
         ),
         (
             OutputRequired,
-            "Este POST tiene varias salidas (Reel, feed, historia): elige cuál programar.",
+            "Esta publicación sale en varios formatos (reel, publicación o historia): "
+            "elige cuál programar.",
         ),
-        (UnknownOutput, "Ese POST no tiene esa salida. Actualiza la página."),
+        (UnknownOutput, "Esa publicación no tiene ese formato. Actualiza la página."),
         (UnknownGoal, "Una de las metas elegidas no es válida. Actualiza la página."),
         (
             DuplicateEvent,
@@ -708,6 +731,50 @@ def reject_post(tenant_id: UUID, event_id: str) -> None:
     )
 
 
+def approve_post(tenant_id: UUID, event_id: str) -> None:
+    """m-24842984: «Aprobar» on the event panel — the gallery's approval, unchanged: the
+    first version of the text that passes the brand rules becomes the POST's approved
+    text (the creative FSM's guarded `approve` edge, legal only for a POST in review).
+
+    Approving publishes nothing (N13): the event keeps the day and hour the owner chose
+    and the calendar worker takes it only then. `ApprovalBlocked` (a price that is not
+    the catalog's) comes back as `PriceBlocked` with the guard's words;
+    `InvalidTransition` (no longer in review) propagates."""
+    from .creative_provider import approve_draft, draft_detail  # noqa: PLC0415 — import cycle
+
+    planned = production_planner_service().get(
+        tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent)
+    )
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoBrand(str(tenant_id))
+    post_id = planned.event.post_id
+    draft = draft_detail(tenant_id, post_id)
+    if draft is None:
+        raise UnknownPost(str(post_id))
+    variant = next((v for v in draft.variants if v.passed), None)
+    if variant is None:
+        raise NoPassingVariant(str(post_id))
+    try:
+        approve_draft(tenant_id, post_id, UUID(variant.variant_id), user_id)
+    except ApprovalBlocked as exc:
+        raise PriceBlocked(exc.detail) from exc
+
+
+def approve_error_message(exc: Exception) -> str:
+    """The owner's words when «Aprobar» on the event panel is refused."""
+    if isinstance(exc, (PriceBlocked, ApprovalBlocked)):
+        return exc.detail  # the guard's own Spanish: what to correct
+    if isinstance(exc, NoPassingVariant):
+        return NO_PASSING_VARIANT_MESSAGE
+    if isinstance(exc, CreativeInvalidTransition):
+        return (
+            "Esa publicación ya no está en revisión, así que no se puede aprobar. "
+            "Actualiza la página."
+        )
+    return planner_error_message(exc)
+
+
 def remove_rejected_post(tenant_id: UUID, event_id: str) -> int:
     """ "Quitar del calendario" for a rejected POST (`PlannerService.remove_rejected_post`)."""
     return production_planner_service().remove_rejected_post(
@@ -770,7 +837,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
     return EventDetailVM(
         event_id=str(event.id),
         post_id=str(event.post_id),
-        title=post.title if post is not None else "POST no disponible",
+        title=post.title if post is not None else "Publicación no disponible",
         caption_excerpt=post.caption_excerpt if post is not None else "",
         thumbnail_url=(
             (_thumbnail_url(tenant_id, post.thumbnail_url) or "") if post is not None else ""

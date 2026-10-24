@@ -25,6 +25,11 @@ def test_every_option_shows_its_blurb_in_the_panel() -> None:
     for title, blurb, _icon in (_VARIATIONS_HEADING, _DISCOVER_HEADING):
         assert _has(picker, title) and _has(picker, blurb)
     assert _DISCOVER_HEADING[0] == "Descubrir ideas de videos"
+    # the ticket's sentence, keeping #307's precision about what the filter keeps
+    assert _DISCOVER_HEADING[1] == (
+        "Los videos con más vistas de las cuentas que tomas de referencia, solo de tu "
+        "producto o su categoría, para inspirarte o hacer uno parecido."
+    )
     assert "q-cr-option-blurb" in picker
 
 
@@ -131,3 +136,14 @@ def test_choosing_an_option_brings_the_view_into_sight_on_a_phone() -> None:
     for events in (state.open_discover(), state.open_variations()):
         assert "q-cr-view" in str(events) and "max-width: 899px" in str(events)
     assert "q-cr-view" in str(state.choose_category("image"))
+
+
+def test_replicate_says_soon_with_its_help_always_visible() -> None:
+    """m-24842980 hallazgo 6: «Pronto» like the menu, and the help written under the
+    button — not only in a tooltip, which a phone never shows."""
+    from .discover_reels import REPLICATE_HELP, discover_view
+
+    rendered = str(discover_view().render())
+    assert _has(rendered, "Replicar con mi marca") and "Muy pronto" not in rendered
+    assert REPLICATE_HELP == "Pronto podrás hacer tu versión de este video con tu marca."
+    assert "q-dr-replicate-help" in rendered and "Pronto podr" in rendered

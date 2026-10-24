@@ -4,6 +4,7 @@ token. The token is injected into requests but is not exposed by the client's AP
 from __future__ import annotations
 
 import asyncio
+import json
 from uuid import UUID
 
 import httpx
@@ -66,3 +67,31 @@ def test_resolver_decrypts_via_encryptor() -> None:
     resolver = InjectingCredentialResolver(reader, enc)
     client = asyncio.run(resolver.client_for(CONN, scheme="Bearer"))
     assert isinstance(client, _InjectedAuthClient)
+
+
+def test_delete_carries_a_json_body_and_the_token_only_as_a_header() -> None:
+    """m-24789472: `DELETE messenger_profile` names the fields in its body."""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["body"] = request.content
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"result": "success"})
+
+    async def run() -> None:
+        client = _InjectedAuthClient(TOKEN, scheme="Bearer", transport=httpx.MockTransport(handler))
+        resp = await client.delete(
+            "https://graph.facebook.com/v21.0/me/messenger_profile",
+            params={"platform": "instagram"},
+            json={"fields": ["ice_breakers"]},
+        )
+        assert resp.status_code == 200
+        await client.aclose()
+
+    asyncio.run(run())
+    assert captured["method"] == "DELETE"
+    assert json.loads(captured["body"]) == {"fields": ["ice_breakers"]}  # type: ignore[arg-type]
+    assert TOKEN not in str(captured["url"])
+    assert captured["authorization"] == f"Bearer {TOKEN}"

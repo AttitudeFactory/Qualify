@@ -176,7 +176,7 @@ def test_form_validation(overrides: dict[str, Any], fragment: str) -> None:
 
 def test_authentication_is_explained_not_built() -> None:
     problem = validate_template_form(_form(category=CATEGORY_AUTHENTICATION))
-    assert "WhatsApp Manager" in problem
+    assert "cuenta de WhatsApp Business en Meta" in problem
 
 
 def test_named_variables_become_positional_with_examples_in_order() -> None:
@@ -382,5 +382,5 @@ def test_tab_renders() -> None:
     component = whatsapp_tab_templates.templates_tab()
     assert isinstance(component, rx.Component)
     rendered = str(component.render())
-    for text in ("Sincronizar con Meta", "Nueva plantilla", "Enviar a revisi"):
+    for text in ("Ver si ya las aprobaron", "Nueva plantilla", "Enviar a revisi"):
         assert text in rendered, text
