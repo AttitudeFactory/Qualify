@@ -29,6 +29,22 @@ at all, not even a disabled one). A comment passes when ALL of these hold:
   second, public reply from the business would duplicate that answer, so the comment
   gets no public draft. An `open` followup (nobody decided yet) or a `discarded` one does
   not block: the person still chooses between the two routes.
+
+**Any comment (ATENDER-4b, m-24848533; QUA-22 amended by the founder 2026-10-23).**
+With `any_comment` on (a per-tenant setting, OFF by default until ATENDER-4a's
+measurement passes on real comments — `replies.any_comment`), the comment's triage
+(`replies.triage`: kind + tone by Claude Haiku) opens a third route, `any_comment`:
+
+- a **complaint** goes there FIRST, before the commercial and thank-you routes — a
+  sarcastic «excelente servicio, dos horas esperando» must never get a thank-you, and a
+  complaint about a product must not get the sales reply;
+- a **praise** or **question** goes there when neither older route took it;
+- an **other** (spam, tags between friends) gets no draft in the batch (ATENDER-4a's
+  finding); only when the owner asked for this one comment («Responder aquí»,
+  `owner_requested`) does it get one.
+
+The route needs a stored analysis row (`has_analysis_row`): `comment_reply_drafts`
+demands a sentiment or intent result to stand on (`ck_reply_draft_has_signal`).
 """
 
 from __future__ import annotations
@@ -45,6 +61,25 @@ FOLLOWUP_APPROVED: Final = "approved"
 
 ROUTE_SENTIMENT: Final = "sentiment"
 ROUTE_COMMERCIAL: Final = "commercial"
+ROUTE_ANY_COMMENT: Final = "any_comment"
+
+KIND_PRAISE: Final = "praise"
+KIND_QUESTION: Final = "question"
+KIND_COMPLAINT: Final = "complaint"
+KIND_OTHER: Final = "other"
+
+
+@dataclass(frozen=True)
+class TriageEvidence:
+    """The comment's triage (`replies.triage.Triage`) as the gate and the draft's
+    provenance need it. `cost_usd` is this comment's share of its batch call."""
+
+    kind: str
+    sentiment: str
+    needs_reply: bool
+    model_id: str
+    prompt_version: str
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -69,6 +104,14 @@ class GateInput:
     current_intent_version: AnalysisVersion | None = None
     # `interaction_followups.status` of the comment's followup, None if it has none.
     followup_status: str | None = None
+    # ATENDER-4b: the per-tenant setting, the comment's triage (None = not triaged) and
+    # whether the comment has a stored sentiment/intent row a draft can stand on.
+    any_comment: bool = False
+    triage: TriageEvidence | None = None
+    has_analysis_row: bool = False
+    # «Responder aquí»: the owner asked for THIS comment, so an `other` one gets a
+    # draft too. Never set by the batch.
+    owner_requested: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,6 +150,10 @@ def evaluate_gate(gate_input: GateInput) -> GateVerdict:
             ),
         )
 
+    triage = gate_input.triage if gate_input.any_comment else None
+    if triage is not None and triage.kind == KIND_COMPLAINT:
+        return _any_comment_verdict(gate_input, triage)
+
     intent = gate_input.intent
     current = gate_input.current_intent_version
     commercial = intent is not None and intent.commercial_intent and current is not None
@@ -126,6 +173,19 @@ def evaluate_gate(gate_input: GateInput) -> GateVerdict:
             route=ROUTE_SENTIMENT,
         )
 
+    if triage is not None and (
+        triage.kind in (KIND_PRAISE, KIND_QUESTION) or gate_input.owner_requested
+    ):
+        return _any_comment_verdict(gate_input, triage)
+    if triage is not None:
+        return GateVerdict(
+            passed=False,
+            reason=(
+                f"triage {triage.prompt_version} says {triage.kind!r} (not addressed to the "
+                "business) — no draft unless the owner asks for this comment"
+            ),
+        )
+
     sentiment = f"sentiment {gate_input.sentiment_label or 'none'!r} is not 'POS'"
     if commercial and intent is not None and current is not None:
         # Commercial, but recorded by a classifier this deployment no longer runs.
@@ -140,3 +200,25 @@ def evaluate_gate(gate_input: GateInput) -> GateVerdict:
             "commercial (m-24789645) comments get an assisted draft"
         )
     return GateVerdict(passed=False, reason=reason)
+
+
+def _any_comment_verdict(gate_input: GateInput, triage: TriageEvidence) -> GateVerdict:
+    """The `any_comment` route, or its refusal when there is no row to stand on."""
+    if not gate_input.has_analysis_row:
+        return GateVerdict(
+            passed=False,
+            reason=(
+                f"triage says {triage.kind!r} but the comment has no stored sentiment or "
+                "intent row yet — run «Ordenar por prioridad» first"
+            ),
+        )
+    who = "owner asked, " if gate_input.owner_requested else ""
+    return GateVerdict(
+        passed=True,
+        reason=(
+            f"comment channel, {who}triage {triage.prompt_version}/{triage.model_id}: "
+            f"kind {triage.kind!r}, tone {triage.sentiment!r}, non-empty text, no live "
+            "draft, no approved DM followup"
+        ),
+        route=ROUTE_ANY_COMMENT,
+    )

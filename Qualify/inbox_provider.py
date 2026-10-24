@@ -109,6 +109,7 @@ from qualify_api.intent import (
     class_reliability,
 )
 from qualify_api.intent import current_signals as _current_signals
+from qualify_api.replies.any_comment import any_comment_enabled
 from qualify_api.sentiment import analyze_pending_comments
 from qualify_api.sentiment import global_sentiment_summary as _global_sentiment_summary
 from qualify_api.sentiment import list_comments_for_thread as _list_comments_for_thread
@@ -281,19 +282,22 @@ def _to_comment_vm(
     signal: IntentSignal | None = None,
     reliable: dict[IntentClass, bool] | None = None,
     zone: ZoneInfo = _UTC,
+    any_comment: bool = False,
 ) -> CommentVM:
     chips = _intent_chips(signal, reliable or {}) if signal is not None else []
+    label = comment.label or ""
     return CommentVM(
         message_id=str(comment.message_id),
         text=comment.text or "",
         author_username=comment.author_username or "",
         posted_at=moment_label(comment.posted_at, zone) if comment.posted_at else "",
         external_thread_id=comment.external_thread_id,
-        sentiment_label=comment.label or "",
+        sentiment_label=label,
         score_display=f"{comment.score:.2f}" if comment.score is not None else "",
         intent_analyzed=signal is not None,
         intent_chips=chips,
         intent_unsure=any(not chip.reliable for chip in chips),
+        can_reply_here=any_comment or label == "POS" or any(chip.commercial for chip in chips),
     )
 
 
@@ -456,7 +460,10 @@ def thread_comments_page(
     )
     reliable = class_reliability(CURRENT_INTENT_VERSION.detector_version) if signals else {}
     zone = tenant_zone(tenant_id) if page else _UTC
-    items = [_to_comment_vm(c, signals.get(c.message_id), reliable, zone) for c in page]
+    any_comment = any_comment_enabled(tenant_id) if page else False
+    items = [
+        _to_comment_vm(c, signals.get(c.message_id), reliable, zone, any_comment) for c in page
+    ]
     next_cursor = None
     if page:
         last = page[-1]

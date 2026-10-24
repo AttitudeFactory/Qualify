@@ -1,6 +1,7 @@
 """Candidate prompt for a public draft to ANY comment — praise, question or complaint
 (ATENDER-4a, m-24848532). Measured by `packages/api/evals/replies_ai`; wired into the
-gate only by ATENDER-4b (m-24848533), once the measurement passes.
+gate's `any_comment` route by ATENDER-4b (m-24848533), behind the per-tenant setting of
+`replies.any_comment` (OFF by default until the measurement passes on real comments).
 
 It reuses the grounded generator's strict tool contract (`conversations.suggest.
 ClaudeDraftGenerator`: text + «used only the given facts» + unsupported claims + cost)

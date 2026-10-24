@@ -28,6 +28,15 @@ sends anything by itself.
 `qualify_api.replies.failures` gives the stored outcome, and `send_failure_message` its one
 sentence (founder decision 2026-10-23, §2b-5 and §2b-7a). Only a passing failure
 (`can_retry`) offers «Reintentar»; no Meta code ever reaches the screen.
+
+**Any comment (ATENDER-4b, m-24848533).** A draft made for a question, a complaint or a
+praise by the triage route carries `grounding["triage"]`: the card shows what kind of
+comment it answers (`comment_kind`, «Queja» / «Pregunta» / «Te felicita») instead of
+«Quiere comprar». A complaint always carries the blocking `complaint` reason
+(«Revísala antes de aprobar»): it goes out only after the owner ticks «Ya revisé estos
+puntos» or changes its text (`review_by_edit_ok`, `send_block_reason(edited_text=…)`).
+`message_id` lets the comment card show its own draft («Responder aquí»), and
+`reply_here_error_message` turns a refusal into the owner's words.
 """
 
 from __future__ import annotations
@@ -69,7 +78,35 @@ PUBLICATION_ALT_FALLBACK: Final = "Publicación"
 #: How many sources the card shows before folding the rest under «Ver … más».
 SOURCES_VISIBLE: Final = 3
 
+#: ATENDER-4b — the kind of comment a triage-route draft answers, as the card says it.
+COMMENT_KIND_LABELS: Final[Mapping[str, str]] = {
+    "complaint": "Queja",
+    "question": "Pregunta",
+    "praise": "Te felicita",
+    # "other" has no label on purpose: «Comentario» says nothing on a screen of comments,
+    # so the card falls back to the tone badge (UX review, m-24848533).
+}
+COMPLAINT_REVIEW_LABEL: Final = (
+    "Es una queja: revísala antes de aprobar. Te propusimos pedir disculpas e invitarle a "
+    "escribirte por mensaje privado. Fíjate que no prometa nada que no puedas cumplir y "
+    "cámbiala si quieres decirlo a tu manera."
+)
+REPLY_HERE_LABEL: Final = "Responder aquí"
+REPLY_HERE_BUSY_LABEL: Final = "Preparando…"
+REPLY_HERE_READY: Final = "Listo: tu respuesta está lista para revisar en este comentario."
+_REPLY_HERE_NOT_YET: Final = (
+    "Todavía no preparamos respuestas para este tipo de comentario. Escríbele en privado "
+    "con el botón de al lado."
+)
+# Only when «Responder aquí»'s own analysis of the comment failed (UX review, m-24848533):
+# the owner is never sent to «Ordenar por prioridad» first.
+_REPLY_HERE_NOT_SORTED: Final = (
+    "No pudimos preparar la respuesta todavía. Intenta de nuevo en unos minutos."
+)
+_REPLY_HERE_FAILED: Final = "No pudimos preparar la respuesta. Intenta de nuevo en unos minutos."
+
 _REVIEW_REASON_LABELS: Final[Mapping[str, str]] = {
+    "complaint": COMPLAINT_REVIEW_LABEL,
     "model_unsupported": (
         "La respuesta dice algo que no está en tu catálogo; revisa que sea cierto."
     ),
@@ -189,6 +226,14 @@ class DraftVM:
     final_text: str
     status: str
     created_at: str
+    # ATENDER-4b: the comment this draft answers (`messages.id`), so the comment card can
+    # show its own draft, and the triage kind (`""` outside the triage route) with its
+    # label. `review_by_edit_ok`: the only blocking reason is `complaint`, so changing
+    # the text counts as the review too.
+    message_id: str = ""
+    comment_kind: str = ""
+    comment_kind_label: str = ""
+    review_by_edit_ok: bool = False
     # m-24789645 — the commercial path (the draft carries a grounding record).
     is_commercial: bool = False
     needs_review: bool = False
@@ -223,6 +268,7 @@ class DraftLike(Protocol):
     the fields `build_draft_vm` reads (the real record is passed in production)."""
 
     id: object
+    message_id: object
     source_id: str
     sentiment_label: str
     comment_text: str
@@ -367,7 +413,10 @@ def build_draft_vm(
     loaded candidates (m-24842989) — the only source of a picture, since the inbox
     stores none (Meta's URLs expire). Without it the thumbnail is `""`."""
     grounding = record.grounding
-    is_commercial = grounding is not None
+    triage = grounding.get("triage") if isinstance(grounding, Mapping) else None
+    kind = str(triage.get("kind") or "") if isinstance(triage, Mapping) else ""
+    # A triage-route draft is grounded too, but it answers a kind of comment, not a sale.
+    is_commercial = grounding is not None and not kind
     raw = grounding.get("review_reasons") if isinstance(grounding, Mapping) else None
     codes = _codes(raw) if isinstance(raw, list) else []
     reasons = review_reason_labels(codes)
@@ -383,9 +432,15 @@ def build_draft_vm(
     sources = source_products(grounding, zone) if is_commercial else []
     claims = [c.strip() for c in (record.unsupported_claims or ()) if c and c.strip()]
     caption = (record.media_caption or (media.caption if media else "")).strip()
-    kind = failure_kind(record.status, getattr(record, "send_error_code", None))
+    failure = failure_kind(record.status, getattr(record, "send_error_code", None))
+    blocking = [c for c in codes if is_blocking_reason(c)]
+    message_id = getattr(record, "message_id", None)
     return DraftVM(
         id=str(record.id),
+        message_id=str(message_id) if message_id else "",
+        comment_kind=kind,
+        comment_kind_label=COMMENT_KIND_LABELS.get(kind, "") if kind else "",
+        review_by_edit_ok=bool(blocking) and all(c == "complaint" for c in blocking),
         source_id=record.source_id,
         sentiment_label=record.sentiment_label or "",
         comment_text=record.comment_text,
@@ -407,26 +462,59 @@ def build_draft_vm(
         media_thumbnail_url=media.thumbnail_url if media else "",
         media_alt=caption or PUBLICATION_ALT_FALLBACK,
         media_day=media.posted_day if media else "",
-        failure=kind or "",
-        failure_message=send_failure_message(kind) if kind else "",
-        can_retry=kind == "transient",
+        failure=failure or "",
+        failure_message=send_failure_message(failure) if failure else "",
+        can_retry=failure == "transient",
     )
 
 
+def edited_counts_as_review(draft: DraftVM, edited_text: str | None) -> bool:
+    """ATENDER-4b: a complaint is «edited or confirmed» — changing its text (beyond
+    spaces) is the owner's review too, when the complaint is the only blocking reason."""
+    if not draft.review_by_edit_ok or edited_text is None:
+        return False
+    return " ".join(edited_text.split()) != " ".join(draft.generated_text.split())
+
+
 def send_block_reason(
-    drafts: Sequence[DraftVM], draft_id: str, reviewed_ids: Collection[str]
+    drafts: Sequence[DraftVM],
+    draft_id: str,
+    reviewed_ids: Collection[str],
+    edited_text: str | None = None,
 ) -> str:
     """Why «Aprobar y responder» (view or edit mode) must not go ahead yet, or `""`.
 
     A draft that needs review goes only after the person ticked «Ya revisé estos puntos»
-    for THAT draft. A draft the list no longer holds is refused too (fail closed: the
-    review state of what is on screen is unknown)."""
+    for THAT draft — or, for a complaint alone, changed its text (`edited_text`, the
+    edit box at send time). A draft the list no longer holds is refused too (fail
+    closed: the review state of what is on screen is unknown)."""
     for draft in drafts:
         if draft.id == draft_id:
-            if draft.needs_review and draft_id not in reviewed_ids:
+            if (
+                draft.needs_review
+                and draft_id not in reviewed_ids
+                and not edited_counts_as_review(draft, edited_text)
+            ):
                 return REVIEW_CONFIRM_REQUIRED
             return ""
     return STALE_DRAFT
+
+
+def reply_here_error_message(exc: BaseException) -> str:
+    """What the comment card says when «Responder aquí» cannot prepare a reply — the
+    reason in the owner's words and the next step, never the gate's internal text."""
+    if isinstance(exc, RegenerationRefused):
+        reason = exc.reason
+        if "no longer available" in reason:
+            return _REGENERATE_GONE
+        if "private message" in reason:
+            return _REGENERATE_ANSWERED_BY_DM
+        if "Ordenar por prioridad" in reason:
+            return _REPLY_HERE_NOT_SORTED
+        if "answered meanwhile" in reason:
+            return _REGENERATE_DECIDED
+        return _REPLY_HERE_NOT_YET
+    return _REPLY_HERE_FAILED
 
 
 def generation_message(drafts_created: int) -> str:

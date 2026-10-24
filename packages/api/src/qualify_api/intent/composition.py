@@ -79,6 +79,16 @@ def analyze_pending_intents(*, tenant_id: UUID, connection_id: UUID) -> IntentAn
     )
 
 
+def analyze_comment_intent(*, tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
+    """The intent pass of «Ordenar por prioridad», for ONE comment (ATENDER-4b,
+    m-24848533): «Responder aquí» stores the analysis row a draft needs instead of
+    sending the owner to sort first. Raises like `analyze_pending_intents`."""
+    _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
+    production_intent_service().analyze_pending_intents(
+        tenant_id=tenant_id, connection_id=connection_id, message_ids=(message_id,)
+    )
+
+
 def current_signals(*, tenant_id: UUID, message_ids: Iterable[UUID]) -> dict[UUID, IntentSignal]:
     """The signal of each comment under the current version (absent = not analyzed)."""
     return PostgresIntentRepository().get_signals(

@@ -44,6 +44,7 @@ from qualify_api.replies import decide_draft as _decide_draft
 from qualify_api.replies import generate_drafts as _generate_drafts
 from qualify_api.replies import list_pending_drafts as _list_pending_drafts
 from qualify_api.replies import list_retryable_drafts as _list_retryable_drafts
+from qualify_api.replies import prepare_reply_for_comment as _prepare_reply_for_comment
 from qualify_api.replies import prepare_retry as _prepare_retry
 from qualify_api.replies import regenerate_draft as _regenerate_draft
 from qualify_api.replies import send_draft as _send_draft
@@ -67,6 +68,7 @@ __all__ = [
     "decide_draft",
     "generate_drafts",
     "pending_drafts",
+    "prepare_reply_here",
     "regenerate_draft",
     "retry_draft",
     "retryable_drafts",
@@ -158,6 +160,18 @@ def regenerate_draft(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> str:
     the generator) — run it off-thread. Returns the id of the comment's live draft.
     Raises `UnknownDraft`, `ValueError` (not `proposed`) or `RegenerationRefused`."""
     record = _regenerate_draft(tenant_id=tenant_id, draft_id=draft_id, user_id=user_id)
+    return str(record.id)
+
+
+def prepare_reply_here(*, tenant_id: UUID, connection_id: UUID, message_id: UUID) -> str:
+    """«Responder aquí» (ATENDER-4b, m-24848533): the public draft for ONE comment, made
+    now if it has none, through the gate. Never sends. Blocking (it may call the model) —
+    run it off-thread. Returns the id of the comment's live draft. Raises
+    `RegenerationRefused` when the gate says no (`replies_vm.reply_here_error_message`
+    turns it into the owner's words)."""
+    record = _prepare_reply_for_comment(
+        tenant_id=tenant_id, connection_id=connection_id, message_id=message_id
+    )
     return str(record.id)
 
 

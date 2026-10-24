@@ -213,6 +213,11 @@ class CommentVM:
     # m-24842988: at least one chip is not backed by the measurement — the card shows
     # the «No estamos seguros…» line once, not once per chip.
     intent_unsure: bool = False
+    # ATENDER-4b (m-24848533): «Responder aquí» shows only where it can deliver — the
+    # business has drafts for any comment turned on, or the comment is positive or
+    # commercial (what Qualify drafts with the setting off). N3: no button that only
+    # answers «no».
+    can_reply_here: bool = False
 
 
 @dataclass(frozen=True)

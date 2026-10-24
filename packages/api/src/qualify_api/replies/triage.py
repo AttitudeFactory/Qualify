@@ -6,9 +6,10 @@ but the production image ships without torch (`sentiment.service.local_model_ava
 so in production no comment ever gets a sentiment and only commercial ones get a draft.
 robertuito also has no declared license. ATENDER-4b (m-24848533) wants a draft for any
 comment — positive, question or complaint — and needs a classifier that runs where the
-app runs and that was measured first. This module is that classifier; it is NOT wired
-into the gate yet (that is ATENDER-4b's change, after `docs/respuestas-comentarios-
-medicion.md` says which classes are reliable).
+app runs and that was measured first. This module is that classifier. ATENDER-4b wired
+it into the gate (`ReplyService._triage` → `gate.TriageEvidence`) behind a per-tenant
+setting that is OFF by default (`replies.any_comment`) until `docs/respuestas-comentarios-
+medicion.md` says, on real comments, which classes are reliable.
 
 The contract (labeling rules in `docs/respuestas-comentarios-medicion.md` §2):
 
