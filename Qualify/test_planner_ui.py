@@ -1254,7 +1254,7 @@ def test_steps_done_never_shows_a_gap() -> None:
     assert assign_steps_done(post_ok=True, when_ok=True, reached=0) == [True, False, False]
     assert assign_steps_done(post_ok=True, when_ok=True, reached=1)[1] is True
     # Three steps, each named by a glyph and a word — never a number.
-    assert ASSIGN_STEPS == ("Contenido", "Programación", "Confirmar")
+    assert ASSIGN_STEPS == ("Contenido", "Cuándo sale", "Confirmar")
     assert len(ASSIGN_STEP_ICONS) == len(ASSIGN_STEPS)
 
 

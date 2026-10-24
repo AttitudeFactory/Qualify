@@ -262,3 +262,83 @@ def test_refused_files_are_explained_in_the_owners_words() -> None:
     assert rejection_message([{"errors": [{"code": "file-too-large"}]}]) == MEDIA_TOO_BIG
     assert rejection_message([]) == MEDIA_NOT_ACCEPTED
     assert rejection_message(["garbage"]) == MEDIA_NOT_ACCEPTED
+
+
+# ---------------------------------------------------------------------------
+# m-24842976: what counts as an unsaved change, and the leave dialog's words
+
+
+def _vm(**kw: object) -> object:
+    from .catalog_vm import ProductVM
+
+    base: dict[str, object] = {
+        "product_id": "p1",
+        "name": "Shawarma mixto",
+        "slug": "shawarma-mixto",
+        "description": "Pollo y carne",
+        "price_label": "$12.5",
+        "price_amount": "12.5",
+        "price_currency": "USD",
+        "category": "shawarmas",
+        "primary_photo_key": "",
+        "photo_count": 0,
+        "video_count": 0,
+        "counts_label": "Falta la foto",
+    }
+    base.update(kw)
+    return ProductVM(**base)  # type: ignore[arg-type]
+
+
+def _fields(**kw: str) -> dict[str, str]:
+    base = {
+        "name": "Shawarma mixto",
+        "description": "Pollo y carne",
+        "category": "shawarmas",
+        "price": "12.5",
+        "currency": "USD",
+    }
+    base.update(kw)
+    return base
+
+
+def test_the_editor_is_clean_when_it_shows_what_is_stored() -> None:
+    from .catalog_vm import editor_is_dirty
+
+    product = _vm()
+    assert not editor_is_dirty(product, **_fields())  # type: ignore[arg-type]
+    # ends trimmed by the save, and the same price written another way
+    assert not editor_is_dirty(product, **_fields(name=" Shawarma mixto ", price="12,50"))  # type: ignore[arg-type]
+    assert not editor_is_dirty(None, **_fields(name="x"))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"name": "Shawarma XL"},
+        {"description": ""},
+        {"category": "combos"},
+        {"price": "13"},
+        {"price": ""},
+        {"price": "12,"},  # half-typed: still a change
+        {"currency": "COP"},
+    ],
+)
+def test_any_edited_field_is_a_change(change: dict[str, str]) -> None:
+    from .catalog_vm import editor_is_dirty
+
+    assert editor_is_dirty(_vm(), **_fields(**change))  # type: ignore[arg-type]
+
+
+def test_the_leave_dialog_and_the_card_name_the_product() -> None:
+    from .catalog_vm import (
+        LEAVE_SAVE,
+        LEAVE_STAY,
+        LEAVE_TITLE,
+        PRODUCT_QUERY,
+        leave_description,
+    )
+
+    assert LEAVE_TITLE == "¿Salir sin guardar?"
+    assert (LEAVE_STAY, LEAVE_SAVE) == ("Volver", "Guardar y salir")
+    assert leave_description(" Helado ") == "Los cambios de «Helado» se van a perder."
+    assert PRODUCT_QUERY == "producto"

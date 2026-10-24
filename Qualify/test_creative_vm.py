@@ -743,18 +743,30 @@ def test_the_draft_page_shows_each_composition_warning_as_a_warn_callout() -> No
 # -- Seedance 2.5 draft mode (m-24820142) ----------------------------------------------
 
 
-def test_a_draft_video_is_badged_480p_with_its_cost() -> None:
+def test_a_draft_video_is_badged_as_a_preview_without_money() -> None:
+    """m-24851824 (founder decision 8): the owner never sees money — the badge is
+    «Vista previa» whatever the draft cost; m-24851826: no resolutions either."""
     from Qualify.creative_vm import NO_VIDEO_DRAFT, video_draft_vm
 
     draft = video_draft_vm("draft", "0.513600")
-    assert draft.badge == "Borrador · 480p · USD 0,51"
+    assert draft.badge == "Vista previa"
+    for state in ("draft", "rendering", "failed", "expired", "final"):
+        for approved in (False, True):
+            vm = video_draft_vm(state, "0.513600", approved=approved)
+            for text in (vm.badge, vm.note):
+                assert "USD" not in text and "$" not in text and "0,51" not in text
+                assert "480p" not in text and "1080p" not in text
+                assert "Final pendiente" not in text and "Generando final" not in text
     assert draft.tone == "info" and not draft.can_retry and not draft.rendering
     assert video_draft_vm("rendering", None).rendering
     failed = video_draft_vm("failed", None, "ModelArk falló.", approved=True)
     assert failed.can_retry and failed.note == "ModelArk falló." and failed.tone == "error"
     expired = video_draft_vm("expired", "0.5")
-    assert not expired.can_retry and "caducó" in expired.note
-    assert video_draft_vm("final", None).badge == "Final · 1080p"
+    assert not expired.can_retry and expired.badge == "La vista previa venció"
+    assert expired.note == (
+        "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva."
+    )
+    assert video_draft_vm("final", None).badge == "Video final"
     assert video_draft_vm("", None) is NO_VIDEO_DRAFT
 
 
@@ -947,7 +959,7 @@ def test_a_failed_final_on_a_piece_edited_after_approval_offers_no_retry() -> No
     from .creative_vm import FINAL_NEEDS_APPROVAL_TEXT, approval_notice, video_draft_vm
 
     edited = video_draft_vm("failed", None, "ModelArk falló.")
-    assert not edited.can_retry and edited.badge == "Final pendiente"
+    assert not edited.can_retry and edited.badge == "Falta el video final"
     assert edited.note == FINAL_NEEDS_APPROVAL_TEXT and "aprobar" in edited.note
     assert approval_notice(edited)[0] == "success"  # nothing to retry from a toast
     assert video_draft_vm("failed", None, "ModelArk falló.", approved=True).can_retry

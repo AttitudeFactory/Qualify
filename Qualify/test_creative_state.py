@@ -428,6 +428,17 @@ async def test_elegir_dia_y_hora_opens_tu_semana_on_this_publication(monkeypatch
     assert f"/planner?post={_DRAFT_UUID}" in str(event)
 
 
+async def test_publicar_ahora_opens_tu_semana_on_ahora(monkeypatch) -> None:
+    # m-24842985: the soft «Publicar ahora» opens the same drawer with «Ahora» chosen;
+    # the owner still taps «Programar» there.
+    state = _approvable_state(monkeypatch)
+    await _approve(monkeypatch, state)
+
+    event = state.go_publish_now()
+
+    assert f"/planner?post={_DRAFT_UUID}&cuando=ahora" in str(event)
+
+
 async def test_the_card_goes_away_once_the_draft_is_back_in_review(monkeypatch) -> None:
     state = _approvable_state(monkeypatch)
     await _approve(monkeypatch, state)
@@ -518,7 +529,7 @@ async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
     events = [event async for event in CreativeState.approve_selected.fn(state)]
 
     toast = str(events[0])
-    assert "estamos generando el video final a 1080p" in toast
+    assert "Estamos preparando el video en alta calidad" in toast
     assert "Ahora elige" not in toast and "Revisa lo que falta" not in toast
     assert events[-1] is CreativeState.poll_final
     assert state._final_polling_id == str(_DRAFT_UUID)

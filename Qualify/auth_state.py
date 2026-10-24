@@ -820,6 +820,7 @@ class AuthState(rx.State):
             from .discover_reels import DiscoverReelsState
             from .followups_state import FollowupsState
             from .gallery_state import GalleryState
+            from .home_state import HomeState
             from .ice_breakers_state import IceBreakersState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
@@ -827,6 +828,7 @@ class AuthState(rx.State):
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
             from .replies_state import RepliesState
+            from .responder_state import ResponderState
             from .settings_state import SettingsState
             from .state import DashboardState
             from .stories_state import StoriesState
@@ -844,6 +846,8 @@ class AuthState(rx.State):
             for state_cls in (
                 ConnectionsState,
                 LeadsState,
+                # m-24842990 «Por responder»: the open tab and the tenant's pending counts
+                ResponderState,
                 ClarityState,
                 InboxState,
                 PublishState,
@@ -871,6 +875,8 @@ class AuthState(rx.State):
                 PlannerState,
                 # the POST gallery (QUA-118): the tenant's POSTs and the filters
                 GalleryState,
+                # Inicio (m-24842962): the tenant's pending counts and week figures
+                HomeState,
                 # the POST's «Campaña» field (QUA-143): the brand's campaigns
                 CampaignState,
                 # the Canva card: links of a draft and the pending OAuth verifier

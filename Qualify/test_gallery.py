@@ -416,5 +416,5 @@ async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
 
     assert approved
     toast = str(events[0])
-    assert "estamos generando el video final a 1080p" in toast and "Ábrela" in toast
+    assert "Estamos preparando el video en alta calidad" in toast and "Ábrela" in toast
     assert "Elegir d" not in toast and "/planner" not in toast

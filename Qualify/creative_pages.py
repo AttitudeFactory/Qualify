@@ -1409,7 +1409,7 @@ def _video_draft_notice() -> rx.Component:
                 video.can_retry,
                 rx.button(
                     rx.icon("refresh-cw", size=15),
-                    "Reintentar video final",
+                    "Intentar de nuevo",
                     variant="soft",
                     size="2",
                     on_click=CreativeState.retry_final_render,
@@ -2189,6 +2189,7 @@ APPROVED_BODY = "Elige el día y la hora en que sale."
 #: (`approved_note`, the evaluator's words) follows, and no way to a dead end is offered.
 APPROVED_NOT_READY_BODY = "Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_SCHEDULE = "Elegir día y hora"
+APPROVED_PUBLISH_NOW = "Publicar ahora"
 APPROVED_CREATE_ANOTHER = "Crear otra publicación"
 
 # N12: every tap target at least 44 px tall on a phone.
@@ -2225,6 +2226,19 @@ def _approved_next() -> rx.Component:
                     size="3",
                     min_height=_TAP_MIN_HEIGHT,
                     on_click=CreativeState.go_schedule,
+                ),
+            ),
+            # m-24842985: the soft way to «Ahora» — Tu semana opens with it chosen and
+            # still asks for «Programar».
+            rx.cond(
+                ready,
+                rx.button(
+                    rx.icon("zap", size=16),
+                    APPROVED_PUBLISH_NOW,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN_HEIGHT,
+                    on_click=CreativeState.go_publish_now,
                 ),
             ),
             rx.button(
@@ -2314,9 +2328,9 @@ def _decision_bar_or_nothing() -> rx.Component:
                     title=CreativeState.approve_label,
                     text=rx.cond(
                         draft.video_draft.state == VIDEO_DRAFT,
-                        "Te quedas con esta versión y generamos el video final a 1080p "
-                        "desde este borrador. Consume créditos. Cuando esté listo eliges "
-                        "el día y la hora en que sale.",
+                        "Te quedas con esta versión y preparamos el video en alta "
+                        "calidad. Tarda unos minutos. Cuando esté listo eliges el día y la "
+                        "hora en que sale.",
                         "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
                     ),
                     button=rx.button(

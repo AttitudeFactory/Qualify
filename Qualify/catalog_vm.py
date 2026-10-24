@@ -312,3 +312,53 @@ def build_product_vm(product: _ProductLike) -> ProductVM:
         counts_label=counts_label(product.photo_count, product.video_count),
         media=tuple(build_media_vm(m) for m in sorted(product.media, key=lambda m: m.position)),
     )
+
+
+# -- leaving the editor (m-24842976) ----------------------------------------------------
+
+#: The query parameter that gives an open product its own address (N5):
+#: `/catalog?producto=<id>`. The phone's «atrás» drops it and closes the editor.
+PRODUCT_QUERY = "producto"
+LEAVE_TITLE = "¿Salir sin guardar?"
+LEAVE_STAY = "Volver"
+LEAVE_SAVE = "Guardar y salir"
+LEAVE_DISCARD = "Salir sin guardar"
+
+
+def leave_description(product_name: str) -> str:
+    """«Los cambios de «Shawarma mixto» se van a perder.»"""
+    return f"Los cambios de «{product_name.strip()}» se van a perder."
+
+
+def _same_price(typed: str, stored: str) -> bool:
+    """«12,5» and «12.50» are the same price: compare the parsed amounts when both
+    parse, the trimmed text otherwise (a half-typed price IS a change)."""
+    typed, stored = (typed or "").strip(), (stored or "").strip()
+    if typed == stored:
+        return True
+    try:
+        return parse_price_input(typed) == parse_price_input(stored)
+    except ValueError:
+        return False
+
+
+def editor_is_dirty(
+    product: ProductVM | None,
+    *,
+    name: str,
+    description: str,
+    category: str,
+    price: str,
+    currency: str,
+) -> bool:
+    """True when the editor holds something the stored product does not: closing it
+    now would lose it. Whitespace at the ends never counts (the save strips it)."""
+    if product is None:
+        return False
+    return (
+        name.strip() != product.name.strip()
+        or description.strip() != product.description.strip()
+        or category.strip() != product.category.strip()
+        or not _same_price(price, product.price_amount)
+        or (currency or "") != (product.price_currency or "")
+    )
