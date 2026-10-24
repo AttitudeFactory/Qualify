@@ -5,6 +5,16 @@ only by a real login — QUA-66), blocking work off the event loop, only VM whit
 serialized. The one extra rule here: the API-token form field is write-only — it is
 sent to the service on save and immediately cleared; it never round-trips from the
 server.
+
+RESULTADOS-4 (m-24843002): the connection form moved from the reading screen to
+Configuración (`settings_page.py`), which calls `load_config` on mount. The reading
+screen only reads; it never renders a configuration field.
+
+RESULTADOS-3 (m-24843001): the reading screen has no window/breakdown selector, no
+refresh button and no remaining-quota badge. `load` spends at most one live request a
+day (business time zone) on its own (`clarity_vm.needs_daily_refresh`), always 3 days by
+page; the service's daily budget is enforced server-side and never shown. Each urgent problem
+carries «Avisar al equipo», a support ticket like Configuración's «Escribir al equipo».
 """
 
 from __future__ import annotations
@@ -20,18 +30,22 @@ from qualify_api.clarity import (
     ClarityUnauthorized,
     RefreshBudgetExhausted,
 )
+from qualify_api.support import InvalidSupportRequest
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .clarity_provider import (
-    DIMENSION_LABELS,
+    ActionItemVM,
     ClarityConfigVM,
     SnapshotVM,
+    alert_team,
     config_for,
-    latest_snapshot_for,
+    latest_snapshot_and_staleness,
     refresh_snapshot,
+    request_website_connection,
     save_config,
 )
+from .clarity_vm import ANSWER_NO, ANSWER_YES, READ_DAYS, READ_DIMENSION, website_step
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -41,24 +55,35 @@ _NO_TENANTS = "Tu sesión se cerró. Vuelve a entrar para ver tu página web."
 _SAVE_FAILED = "No pudimos guardar la conexión. Inténtalo de nuevo en unos minutos."
 _SAVE_BLANK = "Escribe el código del proyecto y la clave de acceso para poder guardar."
 _TOKEN_REJECTED = (
-    "Clarity no aceptó la clave de acceso. Crea una nueva en Clarity "
-    "(«Settings» → «Data Export») y pégala aquí."
+    "No pudimos leer los datos de tu página web. En Configuración, pídele al equipo de "
+    "Qualify que la vuelva a conectar."
 )
-_QUOTA_MS = "Clarity no permite más consultas por hoy. Vuelve a intentarlo mañana."
-_BUDGET_SPENT = (
-    "Ya usaste las actualizaciones de hoy. Te mostramos los últimos datos guardados; "
-    "mañana puedes actualizar otra vez."
+_SAVED = "Listo, tu página web quedó conectada."
+_TEAM_SENT = (
+    "Listo, le escribimos al equipo (solicitud #{reference}). Te contactarán a {email} "
+    "en menos de un día hábil."
 )
-_NOT_CONFIGURED = "Primero conecta tu página web con Clarity (arriba) y luego actualiza."
-_REFRESH_FAILED = "Clarity no respondió. Inténtalo de nuevo en unos minutos."
-_SAVED = "Conexión guardada. Ahora pulsa «Actualizar desde Clarity»."
-_REFRESHED = "Listo: estos son los datos más recientes de tu página web."
-
-# The select shows the owner's words; the Data Export API wants its own names.
-_DIMENSION_NONE = "Todo junto"
-_DIMENSION_API = {label: api for api, label in DIMENSION_LABELS.items()}
-DIMENSION_CHOICES = [_DIMENSION_NONE, *DIMENSION_LABELS.values()]
-DAYS_CHOICES = ["1", "2", "3"]
+_TEAM_SAVED = (
+    "Tu solicitud #{reference} quedó registrada. Te escribiremos a {email} en cuanto una "
+    "persona del equipo la tome."
+)
+_TEAM_NO_EMAIL = "No encontramos el correo de tu cuenta. Escríbenos a contacto@attitudefactory.co."
+_TEAM_FAILED = (
+    "No pudimos enviar tu solicitud. Vuelve a intentarlo en un momento o escríbenos a "
+    "contacto@attitudefactory.co."
+)
+_ALERT_SENT = (
+    "Listo, le avisamos al equipo (solicitud #{reference}). Te contactarán a {email} "
+    "en menos de un día hábil."
+)
+_ALERT_SAVED = (
+    "Tu aviso #{reference} quedó registrado. Te escribiremos a {email} en cuanto una "
+    "persona del equipo lo tome."
+)
+_ALERT_FAILED = (
+    "No pudimos enviar el aviso. Vuelve a intentarlo en un momento o escríbenos a "
+    "contacto@attitudefactory.co."
+)
 
 
 class ClarityState(rx.State):
@@ -67,13 +92,23 @@ class ClarityState(rx.State):
     config: ClarityConfigVM = ClarityConfigVM(configured=False, project_id="", remaining_budget=0)
     snapshot: SnapshotVM = SnapshotVM(fetched_at="", window="", dimensions="")
     has_snapshot: bool = False
+    # Whether `config` reflects the database yet — the reading screen must not flash
+    # «no está conectada» before the first load lands.
+    config_loaded: bool = False
+
+    # Configuración's «¿Tu negocio tiene página web?» — UI only, never persisted.
+    website_answer: str = ""
+    is_requesting_team: bool = False
+    team_notice: str = ""
+    team_error: str = ""
 
     # Write-only form fields (see module docstring).
     form_project_id: str = ""
     form_api_token: str = ""
 
-    refresh_days: str = "3"
-    refresh_dimension: str = DIMENSION_LABELS["URL"]
+    # «Avisar al equipo»: the title being sent, and the titles already sent this visit.
+    alerting: str = ""
+    alerted: list[str] = []
 
     is_loading: bool = False
     is_refreshing: bool = False
@@ -95,8 +130,22 @@ class ClarityState(rx.State):
         return f"https://clarity.microsoft.com/projects/view/{self.config.project_id}/dashboard"
 
     @rx.var
-    def has_actions(self) -> bool:
-        return len(self.snapshot.actions) > 0
+    def website_view(self) -> str:
+        return website_step(configured=self.config.configured, answer=self.website_answer)
+
+    @rx.var
+    def show_not_connected(self) -> bool:
+        """The reading screen's «no está conectada» panel, once the config is known."""
+        return self.config_loaded and not self.config.configured and not self.load_error
+
+    @rx.var
+    def token_rejected(self) -> bool:
+        """The one error that needs a person: show the way to Configuración."""
+        return self.action_error == _TOKEN_REJECTED
+
+    @rx.var
+    def has_urgent(self) -> bool:
+        return len(self.snapshot.urgent) > 0
 
     @rx.event(background=True)
     async def load(self) -> None:
@@ -120,7 +169,7 @@ class ClarityState(rx.State):
 
         try:
             config = await asyncio.to_thread(config_for, resolved)
-            snapshot = await asyncio.to_thread(latest_snapshot_for, resolved)
+            snapshot, due = await asyncio.to_thread(latest_snapshot_and_staleness, resolved)
         except SQLAlchemyError as exc:
             # Only the exception type is logged — same hygiene rule as leads.
             logger.error("clarity load failed: %s", type(exc).__name__)
@@ -132,12 +181,184 @@ class ClarityState(rx.State):
         async with self:
             # Guard against a logout/login that raced this load.
             auth = await self.get_state(AuthState)
+            if session_tenant_id != auth.session_tenant_id:
+                return
+            self.config = config
+            self.config_loaded = True
+            self.form_project_id = config.project_id
+            self.snapshot = snapshot or SnapshotVM(fetched_at="", window="", dimensions="")
+            self.has_snapshot = snapshot is not None
+            self.is_loading = False
+            if not (config.configured and due):
+                return
+            self.is_refreshing = True
+
+        # Today's one automatic read. Whatever fails, the owner keeps the last saved
+        # data (or the «todavía no hay datos» panel); only a rejected key needs a person.
+        fresh: SnapshotVM | None = None
+        error = ""
+        try:
+            fresh = await asyncio.to_thread(
+                refresh_snapshot, resolved, num_of_days=READ_DAYS, dimension=READ_DIMENSION
+            )
+        except ClarityUnauthorized:
+            error = _TOKEN_REJECTED
+        except (
+            RefreshBudgetExhausted,
+            ClarityNotConfigured,
+            ClarityQuotaExceeded,
+            ClarityAPIError,
+            ValueError,
+            SQLAlchemyError,
+        ) as exc:
+            logger.warning("clarity daily read skipped: %s", type(exc).__name__)
+
+        async with self:
+            auth = await self.get_state(AuthState)
+            if session_tenant_id == auth.session_tenant_id:
+                if fresh is not None:
+                    self.snapshot = fresh
+                    self.has_snapshot = True
+                self.action_error = error
+            self.is_refreshing = False
+
+    @rx.event(background=True)
+    async def alert_team_about(self, title: str) -> None:
+        """«Avisar al equipo» on one urgent problem: one tap files one ticket."""
+        async with self:
+            if self.alerting or title in self.alerted:
+                return  # a double tap, or a second tap after «Listo», must not file two
+            item: ActionItemVM | None = next(
+                (entry for entry in self.snapshot.urgent if entry.title == title), None
+            )
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            email = (auth.user_email or "").strip()
+            self.action_error = ""
+            self.action_notice = ""
+            if item is None:
+                return
+            if "@" not in email:
+                self.action_error = _TEAM_NO_EMAIL
+                return
+            self.alerting = title
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            async with self:
+                self.alerting = ""
+                self.action_error = _NO_TENANTS
+            return
+
+        try:
+            ticket = await asyncio.to_thread(
+                alert_team,
+                resolved,
+                contact_email=email,
+                title=item.title,
+                detail=item.detail,
+                url=item.url,
+            )
+        except InvalidSupportRequest:
+            async with self:
+                self.alerting = ""
+                self.action_error = _TEAM_NO_EMAIL
+            return
+        except SQLAlchemyError as exc:
+            logger.error("website problem alert failed: %s", type(exc).__name__)
+            async with self:
+                self.alerting = ""
+                self.action_error = _ALERT_FAILED
+            return
+
+        template = _ALERT_SENT if ticket.notified else _ALERT_SAVED
+        async with self:
+            self.alerting = ""
+            self.alerted = [*self.alerted, title]
+            self.action_notice = template.format(reference=ticket.reference, email=email)
+
+    @rx.event(background=True)
+    async def load_config(self) -> None:
+        """Configuración's «Tu página web» block: only the connection status, never the
+        snapshot and never an API request."""
+        async with self:
+            self.action_error = ""
+            self.action_notice = ""
+            self.team_error = ""
+            self.team_notice = ""
+            self.form_api_token = ""
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            return
+        try:
+            config = await asyncio.to_thread(config_for, resolved)
+        except SQLAlchemyError as exc:
+            logger.error("clarity config load failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _LOAD_FAILED
+            return
+
+        async with self:
+            auth = await self.get_state(AuthState)
             if session_tenant_id == auth.session_tenant_id:
                 self.config = config
+                self.config_loaded = True
                 self.form_project_id = config.project_id
-                self.snapshot = snapshot or SnapshotVM(fetched_at="", window="", dimensions="")
-                self.has_snapshot = snapshot is not None
-                self.is_loading = False
+
+    @rx.event(background=True)
+    async def request_team(self) -> None:
+        """«Escribir al equipo»: one tap files a ticket with the session's email."""
+        async with self:
+            if self.is_requesting_team or self.team_notice:
+                return  # a double tap, or a second tap after «Listo», must not file two tickets
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            email = (auth.user_email or "").strip()
+            self.team_error = ""
+            self.team_notice = ""
+            if "@" not in email:
+                self.team_error = _TEAM_NO_EMAIL
+                return
+            self.is_requesting_team = True
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            async with self:
+                self.is_requesting_team = False
+                self.team_error = _NO_TENANTS
+            return
+
+        try:
+            ticket = await asyncio.to_thread(
+                request_website_connection, resolved, contact_email=email
+            )
+        except InvalidSupportRequest:
+            async with self:
+                self.is_requesting_team = False
+                self.team_error = _TEAM_NO_EMAIL
+            return
+        except SQLAlchemyError as exc:
+            logger.error("website connection request failed: %s", type(exc).__name__)
+            async with self:
+                self.is_requesting_team = False
+                self.team_error = _TEAM_FAILED
+            return
+
+        template = _TEAM_SENT if ticket.notified else _TEAM_SAVED
+        async with self:
+            self.is_requesting_team = False
+            self.team_notice = template.format(reference=ticket.reference, email=email)
+
+    @rx.event
+    def answer_has_website(self) -> None:
+        self.website_answer = ANSWER_YES
+
+    @rx.event
+    def answer_no_website(self) -> None:
+        self.website_answer = ANSWER_NO
 
     @rx.event(background=True)
     async def save_settings(self) -> None:
@@ -181,56 +402,6 @@ class ClarityState(rx.State):
             self.form_api_token = ""
             self.is_saving = False
 
-    @rx.event(background=True)
-    async def refresh_from_clarity(self) -> None:
-        """Spend ONE live Data Export request and repaint from the fresh snapshot."""
-        async with self:
-            auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
-            days = int(self.refresh_days)
-            dimension = _DIMENSION_API.get(self.refresh_dimension, "")
-            self.action_error = ""
-            self.action_notice = ""
-            self.is_refreshing = True
-
-        resolved = tenant_uuid(session_tenant_id)
-        if resolved is None:
-            async with self:
-                self.is_refreshing = False
-                self.action_error = _NO_TENANTS
-            return
-
-        error = ""
-        snapshot: SnapshotVM | None = None
-        try:
-            snapshot = await asyncio.to_thread(
-                refresh_snapshot, resolved, num_of_days=days, dimension=dimension
-            )
-        except RefreshBudgetExhausted:
-            error = _BUDGET_SPENT
-        except ClarityNotConfigured:
-            error = _NOT_CONFIGURED
-        except ClarityUnauthorized:
-            error = _TOKEN_REJECTED
-        except ClarityQuotaExceeded:
-            error = _QUOTA_MS
-        except (ClarityAPIError, ValueError, SQLAlchemyError) as exc:
-            logger.error("clarity refresh failed: %s", type(exc).__name__)
-            error = _REFRESH_FAILED
-
-        config = await asyncio.to_thread(config_for, resolved)
-
-        async with self:
-            auth = await self.get_state(AuthState)
-            if session_tenant_id == auth.session_tenant_id:
-                self.config = config
-                if snapshot is not None:
-                    self.snapshot = snapshot
-                    self.has_snapshot = True
-                    self.action_notice = _REFRESHED
-                self.action_error = error
-            self.is_refreshing = False
-
     @rx.event
     def set_form_project_id(self, value: str) -> None:
         self.form_project_id = value
@@ -238,11 +409,3 @@ class ClarityState(rx.State):
     @rx.event
     def set_form_api_token(self, value: str) -> None:
         self.form_api_token = value
-
-    @rx.event
-    def set_refresh_days(self, value: str) -> None:
-        self.refresh_days = value
-
-    @rx.event
-    def set_refresh_dimension(self, value: str) -> None:
-        self.refresh_dimension = value

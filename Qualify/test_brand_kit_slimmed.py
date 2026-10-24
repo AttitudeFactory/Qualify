@@ -30,10 +30,12 @@ def test_the_brief_fills_the_fields_without_a_review_panel() -> None:
     filled = docs.apply_directly(
         creative,
         [
-            _proposal("positioning", "Posicionamiento", "Smash burgers de autor en Táchira."),
-            _proposal("audience", "Audiencia", "Jóvenes de 18 a 30.", verified=None),
-            _proposal("do_examples", "Así sí habla la marca", "¡Hola, vecino!\nPídela ya"),
-            _proposal("banned_words", "Palabras prohibidas", "barato", verified=False),
+            _proposal("positioning", "Qué te hace distinto", "Smash burgers de autor en Táchira."),
+            _proposal("audience", "Quién te compra", "Jóvenes de 18 a 30.", verified=None),
+            _proposal(
+                "do_examples", "Ejemplos que SÍ suenan a la marca", "¡Hola, vecino!\nPídela ya"
+            ),
+            _proposal("banned_words", "Palabras vetadas", "barato", verified=False),
         ],
     )
     # texts replaced, lists merged without duplicates, an unverified quote left out
@@ -41,7 +43,11 @@ def test_the_brief_fills_the_fields_without_a_review_panel() -> None:
     assert creative.kit_audience == "Jóvenes de 18 a 30."
     assert creative.kit_do_examples == "¡Hola, vecino!\nPídela ya"
     assert creative.kit_banned_words == ""
-    assert filled == ["Posicionamiento", "Audiencia", "Así sí habla la marca"]
+    assert filled == [
+        "Qué te hace distinto",
+        "Quién te compra",
+        "Ejemplos que SÍ suenan a la marca",
+    ]
     assert "¿Todo correcto?" in docs.filled_message(filled)
 
 
@@ -124,7 +130,7 @@ def test_an_empty_city_category_is_shown_with_its_note() -> None:
     state.national_accounts = [
         {"handle": "@b", "network": "TikTok", "key": "TikTok:@b", "followers": "1"}
     ]
-    state.local_title = "Referentes en Táchira"
+    state.local_title = "Negocios parecidos al tuyo en Táchira"
     state.local_note = "No encontramos cuentas de Táchira para tu rubro todavía."
     state.sort_stage = 1  # national
     assert state.is_last_stage is False  # there IS a city category after it

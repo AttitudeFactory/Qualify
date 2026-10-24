@@ -193,6 +193,12 @@ class ConversationReplyTemplate(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     default_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # m-24789472, 0084: NULL = a text template; else 1–3 buttons in the wire shape
+    # (`interactive.buttons_wire`) and the template is sent as a button template.
+    # `none_as_null`: Python None must be SQL NULL (a text template), not JSON `null`.
+    buttons: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
@@ -228,4 +234,62 @@ class ConversationReplyTemplateSeed(Base):
     defaults_version: Mapped[int] = mapped_column(Integer, nullable=False)
     seeded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+
+
+ICE_BREAKER_STATUSES: tuple[str, ...] = ("draft", "published", "failed", "removed")
+
+
+class ConversationIceBreakers(Base):
+    """An Instagram account's «preguntas iniciales» (m-24789472, 0083): the draft a person
+    edits, what was last published, and the last read-back. One row per account. The
+    CHECKs (≤ 4 items, `QF_` payloads, codes-only errors, status coherence) live in 0083."""
+
+    __tablename__ = "conversation_ice_breakers"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_conv_ice_breakers_conn_tenant",
+            ondelete="CASCADE",
+        ),
+        Index("ix_conv_ice_breakers_tenant", "tenant_id"),
+    )
+
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    items: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, server_default=sql_now("'[]'::jsonb"), nullable=False
+    )
+    defaults_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default=sql_now("'draft'"), nullable=False)
+    # `none_as_null`: Python None must be SQL NULL, not JSON `null` (0083's CHECKs).
+    published_items: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    removed_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    remote_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    remote_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )

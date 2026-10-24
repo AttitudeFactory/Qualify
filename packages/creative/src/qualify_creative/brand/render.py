@@ -46,6 +46,7 @@ from qualify_creative.schemas import (
     BrandKit,
     BrandVoiceProfile,
     ContentBrief,
+    LengthTargets,
     ToneAxes,
 )
 
@@ -66,6 +67,19 @@ VARIANT_ANGLES: tuple[str, ...] = (
     "urgency or the offer: why today, why now",
     "a first reaction, as if someone had just tried it",
 )
+
+#: The caption length the model is ASKED for, as a share of the brand maximum. The
+#: model counts characters loosely (emoji, accents) and, told the exact cap, lands on
+#: it or one past it (measured 2026-10-22: 601 against 600). Aiming at 90 % leaves the
+#: room the miscount needs; `fit_caption` absorbs what still spills over.
+CAPTION_TARGET_SHARE = 0.9
+
+
+def caption_target_chars(lengths: LengthTargets) -> int:
+    """The upper length the prompt asks for: 90 % of the brand maximum, never below the
+    brand minimum."""
+    return max(lengths.caption_min_chars, int(lengths.caption_max_chars * CAPTION_TARGET_SHARE))
+
 
 _EMOJI_GUIDANCE: dict[EmojiPolicy, str] = {
     EmojiPolicy.NONE: "none — do not use any emoji",
@@ -218,7 +232,9 @@ def _stable_prefix(
         " brand's own with ones specific to the piece's topic."
         f" Always include: {_listing(hashtag.always)}. Never use: {_listing(hashtag.never)}\n"
         f"Caption length: between {lengths.caption_min_chars} and"
-        f" {lengths.caption_max_chars} characters.",
+        f" {caption_target_chars(lengths)} characters. Hard limit:"
+        f" {lengths.caption_max_chars} characters, counting every emoji and accented letter;"
+        " a caption over it is rejected, so when in doubt write shorter.",
         "== Calls to action ==\n"
         "Preferred CTA patterns — keep their intent, but word each CTA freshly; never copy a"
         f" pattern verbatim: {_listing(kit.cta_patterns)}",

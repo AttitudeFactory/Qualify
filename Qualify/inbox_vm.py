@@ -19,6 +19,20 @@ from typing import Final
 
 from qualify_api.inbox.media_type import MediaType, known_media_type
 
+from .responder_vm import TAB_COMMENTS, tab_href
+
+# N5 (m-24842960): a publication's comments have their own address. Since m-24842990
+# the comments live in the «Comentarios» tab of «Por responder»:
+# `/responder?tab=comentarios&publicacion=<thread id>`; the list is the plain tab. The old
+# `/inbox` (with its query) only redirects there.
+POST_PARAM: Final = "publicacion"
+
+
+def inbox_url(thread_id: str = "") -> str:
+    """The list (`thread_id` empty) or one publication's comments."""
+    return tab_href(TAB_COMMENTS, **{POST_PARAM: thread_id})
+
+
 # QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
 # label. Computed server-side (`inbox_provider`) from the shared rule
 # (`qualify_api.inbox.monitoring.effective_state`); the page only matches on them.
@@ -36,6 +50,48 @@ _MONTHS: Final = (
 # m-24842988: said once per card, as visible text under the intent chips (a phone has
 # no hover — N12), whenever one of them is «· revísalo». Comments and «Consultas».
 UNSURE_INTENT_NOTE: Final = "No estamos seguros: lee el comentario antes de responder."
+
+
+# m-24849132: «Ordenar por prioridad» runs two passes (sentiment and intent); either one
+# failing, or both, shows ONE notice instead of two near-identical boxes. The text still
+# depends on the cause (UX review): a retry is only suggested when a retry can help.
+# The per-pass reasons below are owned here so `inbox_state` and this mapping share them.
+SESSION_EXPIRED: Final = "Tu sesión expiró. Vuelve a iniciar sesión."
+NO_CONNECTION_SELECTED: Final = "Elige primero una cuenta de Instagram."
+UNKNOWN_CONNECTION: Final = (
+    "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
+)
+# The local model's runtime (`ml` group) is not installed in this deployment — not a
+# transient failure, so "intenta de nuevo" would be a lie.
+ANALYZE_UNAVAILABLE: Final = (
+    "Ahora no podemos ver si tus comentarios son buenos o malos. "
+    "Puedes leerlos y responderlos igual."
+)
+# m-24789644: same case for the intent pass. Unavailable = no Anthropic key here.
+ANALYZE_INTENT_UNAVAILABLE: Final = (
+    "Ahora no podemos ver quién quiere comprar. Lee los comentarios y responde tú."
+)
+PRIORITIZE_UNAVAILABLE: Final = (
+    "Ahora no podemos ordenar tus comentarios. Puedes leerlos y responderlos igual."
+)
+PRIORITIZE_FAILED: Final = "No pudimos ordenar tus comentarios. Intenta de nuevo."
+
+# Causes in priority order: the first one present in EITHER pass wins.
+_PRIORITIZE_CAUSES: Final = (SESSION_EXPIRED, NO_CONNECTION_SELECTED, UNKNOWN_CONNECTION)
+
+
+def prioritize_error_message(sentiment_error: str, intent_error: str) -> str:
+    """The single notice for «Ordenar por prioridad» (m-24849132): empty when neither
+    pass failed; otherwise one sentence chosen by cause — session, account choice,
+    account gone, both passes unavailable here, or the generic retry."""
+    if not (sentiment_error or intent_error):
+        return ""
+    for cause in _PRIORITIZE_CAUSES:
+        if cause in (sentiment_error, intent_error):
+            return cause
+    if sentiment_error == ANALYZE_UNAVAILABLE and intent_error == ANALYZE_INTENT_UNAVAILABLE:
+        return PRIORITIZE_UNAVAILABLE
+    return PRIORITIZE_FAILED
 
 
 def short_day_label(moment: datetime) -> str:

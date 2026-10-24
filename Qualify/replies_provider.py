@@ -13,6 +13,11 @@ Conversaciones does).
 The display rules (sources, «Requiere revisión», intent chips, the review gate) live in
 `replies_vm.py`, pure and tested; `DraftVM` is re-exported from there.
 
+**«Reintentar» (ATENDER-9, m-24849130).** `retryable_drafts` reads the replies that did
+not go out for a passing reason; `retry_draft` makes a NEW approved draft with the same
+text (`prepare_retry`, never sends) and sends THAT through the one `send_draft` path, with
+a `HumanApproval` from the person who tapped and naming the new draft.
+
 **The DM tranche does not exist anywhere in this file.** `qualify_api.replies` only
 ever produces comment-channel drafts (gated by `qualify_api.replies.gate`, comments
 only) — there is no code path here that could show a DM draft even by accident.
@@ -20,6 +25,7 @@ only) — there is no code path here that could show a DM draft even by accident
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,10 +43,12 @@ from qualify_api.intent import current_signals as _current_signals
 from qualify_api.replies import decide_draft as _decide_draft
 from qualify_api.replies import generate_drafts as _generate_drafts
 from qualify_api.replies import list_pending_drafts as _list_pending_drafts
+from qualify_api.replies import list_retryable_drafts as _list_retryable_drafts
+from qualify_api.replies import prepare_retry as _prepare_retry
 from qualify_api.replies import regenerate_draft as _regenerate_draft
 from qualify_api.replies import send_draft as _send_draft
 from qualify_api.replies.repository import DraftRecord
-from qualify_api.replies.service import RegenerationRefused, UnknownDraft
+from qualify_api.replies.service import RegenerationRefused, RetryRefused, UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
 from .inbox_provider import tenant_zone
@@ -52,6 +60,7 @@ __all__ = [
     "GenerationSummaryVM",
     "PUBLICATION_ALT_FALLBACK",
     "RegenerationRefused",
+    "RetryRefused",
     "UnknownDraft",
     "acting_user",
     "approval_for",
@@ -59,6 +68,8 @@ __all__ = [
     "generate_drafts",
     "pending_drafts",
     "regenerate_draft",
+    "retry_draft",
+    "retryable_drafts",
     "send_draft",
 ]
 
@@ -205,3 +216,32 @@ async def send_draft(*, tenant_id: UUID, draft_id: UUID, approval: HumanApproval
     own service. Raises `ApprovalRequired` without an approval naming this draft."""
     record = await _send_draft(tenant_id=tenant_id, draft_id=draft_id, approval=approval)
     return _to_vm(record)
+
+
+def retryable_drafts(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    candidates: Iterable[CandidateMediaVM] = (),
+) -> list[DraftVM]:
+    """ATENDER-9: the replies that did not go out because Instagram did not answer, each
+    with «Reintentar». Blocking DB read — run it off-thread, like `pending_drafts`."""
+    records = _list_retryable_drafts(tenant_id=tenant_id, connection_id=connection_id)
+    if not records:
+        return []
+    return build_queue(records, zone=_tenant_zone(tenant_id), candidates=candidates)
+
+
+async def retry_draft(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftVM:
+    """«Reintentar»: only ever after the owner's tap (N13). A new approved draft with the
+    failed one's text (`prepare_retry`, blocking, off-thread), then the same send as
+    «Aprobar y responder». Raises `RetryRefused` on a second tap (nothing is sent twice)
+    and `UnknownDraft` when the draft is not visible to this tenant."""
+    new = await asyncio.to_thread(
+        _prepare_retry, tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
+    )
+    return await send_draft(
+        tenant_id=tenant_id,
+        draft_id=new.id,
+        approval=approval_for(user_id=user_id, draft_id=new.id),
+    )

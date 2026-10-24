@@ -2049,13 +2049,34 @@ def google_terms(key: str, seed: DiscoverySeed) -> list[str]:
     return [f"{t} {seed.city}" for t in local_terms(seed)[:2]] if seed.city else []
 
 
+#: The owner's words for the two place-scoped phases (NAV-11, m-24849129).
+SIMILAR_PREFIX = "Negocios parecidos al tuyo"
+
+
 def phase_title(key: str, seed: DiscoverySeed) -> str:
+    """The phase's title as the owner reads it on the search screen (NAV-11,
+    m-24849129): the place-scoped phases name the businesses, not «referentes»."""
     if key == "sector":
         return "Referentes del sector"
     if key == "national":
         name = country_name(seed.country_code)
-        return f"Referentes en {name}" if name else "Referentes nacionales"
-    return f"Referentes en {seed.city}" if seed.city else "Referentes locales"
+        return f"{SIMILAR_PREFIX} en {name}" if name else f"{SIMILAR_PREFIX} en tu país"
+    return f"{SIMILAR_PREFIX} en {seed.city}" if seed.city else f"{SIMILAR_PREFIX} cerca de ti"
+
+
+def owner_phase_title(key: str, title: str) -> str:
+    """A stored phase title in today's words: searches saved before NAV-11 (m-24849129)
+    kept «Referentes en …» / «Referentes nacionales» / «Referentes locales» in the
+    database, and a saved search renders its stored title as it is."""
+    if key not in ("national", "local"):
+        return title
+    if title == "Referentes nacionales":
+        return f"{SIMILAR_PREFIX} en tu país"
+    if title == "Referentes locales":
+        return f"{SIMILAR_PREFIX} cerca de ti"
+    if title.startswith("Referentes en "):
+        return f"{SIMILAR_PREFIX} en {title.removeprefix('Referentes en ')}"
+    return title
 
 
 def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None]]:

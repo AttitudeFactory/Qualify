@@ -81,6 +81,16 @@ _NO_ACTING_USER = (
 _HEALTH_CHECK_FAILED = "No pudimos comprobar tu cuenta con Meta. Vuelve a intentarlo en un momento."
 
 
+#: m-24842961: the query parameter another screen uses to land here with the
+#: «Pedir ayuda 1:1» drawer already open.
+SUPPORT_QUERY_PARAM = "ayuda"
+
+
+def wants_support(params: dict[str, object]) -> bool:
+    """True when the link asks for the help drawer open on arrival (`?ayuda=1`)."""
+    return str(params.get(SUPPORT_QUERY_PARAM, "") or "") == "1"
+
+
 class ConnectionsState(rx.State):
     """State for the tenant's connected-accounts screen."""
 
@@ -160,11 +170,17 @@ class ConnectionsState(rx.State):
         return self.checklist_open or not self.connections or self.guidance_code != ""
 
     @rx.event
-    def read_connect_result(self) -> None:
+    def read_connect_result(self) -> rx.event.EventSpec | None:
         """Turn the callback's `?connect=<code>` into a notice above the list — or, for
         the two dead ends, into the guided panel (QUA-202) that replaces the notice.
-        Runs on every load, so arriving without the parameter clears stale state."""
-        self.apply_connect_result(dict(self.router.url.query_parameters))
+        Runs on every load, so arriving without the parameter clears stale state.
+        m-24842961 (N8): `?ayuda=1` (WhatsApp's «Pedir ayuda para conectar tu número»)
+        opens the «Pedir ayuda 1:1» drawer straight away — one tap and one form."""
+        params = dict(self.router.url.query_parameters)
+        self.apply_connect_result(params)
+        if wants_support(params):
+            return ConnectionsState.open_support
+        return None
 
     def apply_connect_result(self, params: dict[str, object]) -> None:
         """The part of `read_connect_result` that does not need a live router — split so

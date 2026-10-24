@@ -34,7 +34,9 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
+from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from_query
 from .creative_provider import acting_user_id, catalog_products, default_brand_id
+from .creative_vm import APPROVED_OPEN_ACTION, approval_notice
 from .tenant import tenant_uuid
 from .variations_provider import (
     approve_variation_angle,
@@ -73,7 +75,16 @@ _NO_PRODUCTS = (
 _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."
 _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."
-_APPROVED = "Pieza aprobada."
+#: m-24820142: where the approved piece is followed when its 1080p final is being made
+#: or could not be ordered (`creative_vm.approval_notice`). With a draft the toast
+#: carries its own «Ver publicación» button to the publication's page, so the words say
+#: only «Ábrela» (the gallery's) — naming «Por aprobar» there would point to a different
+#: place than the button (UX review, PR #274). Without one, there is no button and the
+#: words keep saying where to look.
+_APPROVED_ELSEWHERE = "Ábrela"
+_APPROVED_ELSEWHERE_NO_DRAFT = "Ábrela en Por aprobar"
+#: `approval_notice` kinds → this screen's toast tones.
+_NOTICE_TONES = {"success": "ok", "error": "error", "info": "info"}
 _RETRYING = "Reintentando esa pieza."
 _REGENERATING = "Generando otra toma de ese escenario."
 _EDITED = "Propuesta guardada. La próxima pieza de ese ángulo saldrá del nuevo texto."
@@ -95,13 +106,16 @@ _POLL_BUDGET_SECONDS = 20 * 60
 _TOAST_MS = 6000
 
 
-def _toast(message: str, tone: str) -> rx.event.EventSpec:
+def _toast(message: str, tone: str, action: dict | None = None) -> rx.event.EventSpec:
     """A transient confirmation, bottom right, in the tone of what happened
     (docs/design-system.md §5.4: «confirmaciones transitorias → rx.toast»). What went
-    wrong, with its details, stays on the page as a callout instead."""
+    wrong, with its details, stays on the page as a callout instead. `action` is the
+    toast's one button, when it has somewhere to take the owner."""
     show = {"ok": rx.toast.success, "error": rx.toast.error, "warn": rx.toast.warning}.get(
         tone, rx.toast.info
     )
+    if action is not None:
+        return show(message, duration=_TOAST_MS, action=action)
     return show(message, duration=_TOAST_MS)
 
 
@@ -340,16 +354,44 @@ class VariationsState(rx.State):
     async def load(self) -> None:
         """The catalog products of the picker. Idempotent: re-entering the view does not
         lose the product already chosen."""
+        await self._load_products()
+
+    @rx.event(background=True)
+    async def load_from_query(self) -> None:
+        """`/create`'s on_load. Back from «Agregar producto» (m-24842973, N4) the URL is
+        `/create?modo=variaciones&producto=<id>`: the picker is re-read — so the new
+        product is in it — and, when this business's catalog lists it, that product is
+        chosen. An id it does not list (another tenant's, a deleted one) or a malformed
+        one is ignored without an error; the one already chosen is not chosen again. Any
+        other `/create` visit does nothing here."""
+        async with self:
+            try:
+                params = self.router.url.query_parameters
+            except AttributeError:  # no router outside a request
+                params = {}
+        if create_mode_from_query(params) != VARIATIONS_MODE:
+            return
+        product_id = product_id_from_query(params)
+        if not await self._load_products() or not product_id:
+            return
+        async with self:
+            known = any(row.get("id") == product_id for row in self.products)
+            already = self.product_id == product_id
+        if known and not already:
+            await self._choose(product_id)
+
+    async def _load_products(self) -> bool:
+        """Read the picker's products and the sets; False when nothing was read."""
         async with self:
             if self.products_loading:
-                return
+                return False
             self.products_loading = True
             self.error = ""
         ids = await self._session_ids()
         if ids is None:
             async with self:
                 self.products_loading = False
-            return
+            return False
         tenant_id, brand_id, _ = ids
         try:
             rows = await asyncio.to_thread(catalog_products, tenant_id, brand_id)
@@ -358,7 +400,7 @@ class VariationsState(rx.State):
             async with self:
                 self.products_loading = False
                 self.error = _LOAD_FAILED
-            return
+            return False
         try:
             sets = await asyncio.to_thread(list_variation_sets, tenant_id, brand_id)
         except Exception as exc:  # noqa: BLE001 — the list is not worth failing the view
@@ -370,6 +412,7 @@ class VariationsState(rx.State):
             self.products_loading = False
             if not self.products:
                 self.error = _NO_PRODUCTS
+        return True
 
     @rx.event
     def start_over(self) -> None:
@@ -434,6 +477,9 @@ class VariationsState(rx.State):
     async def choose_product(self, product_id: str) -> None:
         """The product's facts and every preset's availability — read before anything is
         paid. Choosing another product drops the set under review."""
+        await self._choose(product_id)
+
+    async def _choose(self, product_id: str) -> None:
         async with self:
             if self.checking:
                 return
@@ -717,7 +763,7 @@ class VariationsState(rx.State):
                 self.error = _NO_SESSION
             return
         try:
-            await asyncio.to_thread(approve_variation_angle, tenant_id, angle_id, user_id)
+            video = await asyncio.to_thread(approve_variation_angle, tenant_id, angle_id, user_id)
         except Exception as exc:  # noqa: BLE001 — turned into words for the operator
             logger.warning("variations: approval refused: %s", type(exc).__name__)
             async with self:
@@ -728,7 +774,26 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
-        yield _toast(_APPROVED, "ok")
+            draft_id = next((a.draft_id for a in self.angles if a.id == angle_id), "")
+        # the piece's own notice (m-24820142): its final renders, could not be ordered, or
+        # there is none to wait for — the same choice every screen that approves makes,
+        # in the gallery's words (`APPROVED_TOAST`, m-24842981)
+        # This screen never checks the publication's readiness, so it never promises
+        # «elige cuándo sale» on its own: with a draft, the toast always opens the
+        # publication's page (which offers «Elegir día y hora» or says what is missing);
+        # without one, the text asks to review what is missing (UX review, PR #274).
+        notice = approval_notice(
+            video,
+            ready=bool(draft_id),
+            elsewhere=_APPROVED_ELSEWHERE if draft_id else _APPROVED_ELSEWHERE_NO_DRAFT,
+        )
+        action = None
+        if draft_id:  # finding 8: somewhere to tap, not only words
+            action = {
+                "label": APPROVED_OPEN_ACTION,
+                "on_click": rx.redirect(f"/drafts/{draft_id}"),
+            }
+        yield _toast(notice.text, _NOTICE_TONES.get(notice.kind, "info"), action)
 
     @rx.event(background=True)
     async def regenerate_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
