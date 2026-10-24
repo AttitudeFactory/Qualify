@@ -249,7 +249,9 @@ def test_the_picker_offers_its_categories_with_the_ad_image_back() -> None:
         ("animated_avatar_video", "Avatar animado"),
     ]
     rendered = str(_kind_picker())
-    assert "Descubrir reels" in rendered and "Imagen" in rendered and '"Ad"' not in rendered
+    assert (
+        "Descubrir ideas de videos" in rendered and "Imagen" in rendered and '"Ad"' not in rendered
+    )
     assert KIND_LABELS["static_flyer"] == "Imagen publicitaria"
     state = CreativeState()
     assert (state.gen_category, state.brief_kind) == ("script", "creator_script")
@@ -780,7 +782,7 @@ def test_an_avatar_type_is_its_avatar_and_its_name() -> None:
     for _key, title, blurb, _icon in VIDEO_TYPE_OPTIONS:
         assert all(x in rendered or json.dumps(x)[1:-1] in rendered for x in (title, blurb))
     picker = str(_kind_picker())
-    assert picker.index("Plantilla") < picker.index("Descubrir reels")
+    assert picker.index("Plantilla") < picker.index("Descubrir ideas de videos")
     assert '"Ad"' not in picker
     assert '"Crear"' not in picker
 
