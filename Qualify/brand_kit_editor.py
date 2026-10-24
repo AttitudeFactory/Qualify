@@ -1,18 +1,17 @@
-"""/brand/kit — the Brand Kit inside a session (§ request 2026-09-30), from the sidebar's
-"Negocio" block. Reworked on 2026-10-05 ("una vez logueado, que el botón del Brand Kit
-sirva para editar y terminar configuraciones"):
+"""/brand/kit — «Tu marca» inside a session (§ request 2026-09-30), from the sidebar's
+"Negocio" block. Since m-24842970 (UX audit m1, finding 12: «entré a cambiar mi logo y me
+muestra cuentas de otros») it opens on the brand itself:
 
-- **What is still to configure comes first.** Tu voz y tono is the one part the wizards
-  no longer ask (it is configured "después"), so until the operator saves it here — or
-  the brand already has a cloned voice — the page opens on it, with "Ahora no" (asked
-  again on the next visit) and "Guardar voz".
-- **Otherwise it opens on Resultados e insights** — the brand's referentes as last left,
-  read back from Postgres (`BrandConnectState.load_saved_referentes`) — with "Editar
-  Brand Kit" in the header.
-- **Editing is ONE view, not steps:** a card per section with a summary of what is there;
-  "Editar" opens it in place (one at a time) with the wizard's own controls, and each
-  section saves on its own ("Guardar") or puts back what it had ("Cancelar"). Saving
+- **The summary is the page.** A card per section with what is there and «Cambiar»;
+  «Cambiar» opens it in place (one at a time) with the wizard's own controls, and each
+  section saves on its own («Guardar») or puts back what it had («Cancelar»). Saving
   writes the whole kit (`brand_finish.save_brand_kit`), as the wizards do.
+- **The referentes are one more section**, «Negocios parecidos al tuyo», folded by
+  default — the stored ranking (`BrandConnectState.load_saved_referentes`) and the form
+  to add one by hand, which save on their own.
+- **Tu voz y tono still to prepare is an optional row**, «Mejora tu marca (opcional)»,
+  with «Ahora no» (asked again on the next visit) and «Preparar mi voz» (opens Voz y
+  tono) — never a notice that takes over the page.
 
 Every control is the wizard's own renderer on the same `CreativeState` /
 `BrandWizardState`, so the two can never drift; only the page's mode is this module's
@@ -32,7 +31,6 @@ from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
     _KIT_LISTS,
-    _RESULTS_COLUMN_MAX,
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
@@ -56,15 +54,20 @@ from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ("marca", "Marca", "compass", "Qué te hace distinto, quién te compra y tu documento de marca."),
     ("brandboard", "Logo", "image", "Las versiones de tu logo y los otros elementos."),
-    ("tipografia", "Tipografía", "type", "La letra con la que se te reconoce."),
-    ("paleta", "Paleta", "palette", "Los colores con los que se te reconoce."),
+    ("tipografia", "Tu letra", "type", "La letra con la que se te reconoce."),
+    ("paleta", "Colores", "palette", "Los colores con los que se te reconoce."),
     ("voz", "Voz y tono", "mic", "Tu voz grabada y cómo suena tu marca."),
-    ("habla", "Cómo habla", "message-circle", "Ejemplos que sí, que no y cómo invitas a comprar."),
+    (
+        "habla",
+        "Cómo hablas",
+        "message-circle",
+        "Ejemplos de lo que sí dices, lo que no y cómo invitas a comprar.",
+    ),
     (
         "nunca",
-        "Lo que nunca dice",
+        "Lo que nunca dices",
         "shield-alert",
-        "Palabras vetadas y promesas que no puedes hacer.",
+        "Palabras que nunca usas y promesas que no puedes hacer.",
     ),
 )
 SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
@@ -77,39 +80,57 @@ _ASSET_FIELDS = ("logo_versions", "logo_version_context", "brand_extras", "font_
 class BrandEditState(rx.State):
     """The page's mode — the kit itself lives in `CreativeState` / `BrandWizardState`."""
 
-    #: The single editing view is showing (else Resultados e insights, or Tu voz first).
-    editing: bool = False
     #: The section open for editing ("" for none) — one at a time.
     open_section: str = ""
-    #: "Ahora no" on Tu voz y tono: this visit goes to the results; the next one asks again.
+    #: «Negocios parecidos al tuyo» is unfolded (it saves on its own, so it has no
+    #: Cancelar / Guardar and does not count as the open section).
+    referentes_open: bool = False
+    #: "Ahora no" on «Mejora tu marca (opcional)»: hidden this visit; the next one asks again.
     voice_skipped: bool = False
     #: What the open section had when it was opened, for "Cancelar".
     _before: dict[str, Any] = {}
 
     @rx.event
     async def restart(self) -> None:
-        """Every visit opens on what is still to configure, else on the results — and
-        waits for the saved details before deciding (`BrandConnectState.details_loaded`)."""
-        self.editing = False
+        """Every visit opens on the summary of the brand, every section closed — and waits
+        for the saved details before showing it (`BrandConnectState.details_loaded`)."""
         self.open_section = ""
+        self.referentes_open = False
         self.voice_skipped = False
         self._before = {}
         connect = await self.get_state(BrandConnectState)
         connect.details_loaded = False
 
     @rx.event
-    def start_editing(self) -> None:
-        self.editing = True
+    def toggle_referentes(self) -> rx.event.EventSpec | None:
+        """Fold or unfold «Negocios parecidos al tuyo»; folding brings its title back into
+        view, so on a phone the owner is not left at the bottom of a long list."""
+        self.referentes_open = not self.referentes_open
+        if not self.referentes_open:
+            return rx.scroll_to("seccion-referentes")
+        return None
 
     @rx.event
-    async def show_results(self) -> None:
-        """Back to Resultados e insights; a section left open puts back what it had."""
-        await self._put_back()
-        self.editing = False
+    async def open_and_show(self, key: str) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Editar mi marca»: open a section and bring it into view — on a phone it sits
+        below the voice row and the avatar, so the result of the tap must be seen (N12)."""
+        await self._open(key)
+        if self.open_section == key:
+            yield rx.scroll_to(f"seccion-{key}")
+
+    @rx.event
+    async def open_voice(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Preparar mi voz» on the optional row: Voz y tono opens in place and comes into
+        view — the same section «Cambiar» opens."""
+        await self._open(VOICE_SECTION)
+        yield rx.scroll_to(f"seccion-{VOICE_SECTION}")
 
     @rx.event
     async def open(self, key: str) -> None:
         """Open one section; another one left open puts back its unsaved changes first."""
+        await self._open(key)
+
+    async def _open(self, key: str) -> None:
         if key not in SECTION_KEYS or key == self.open_section:
             return
         await self._put_back()
@@ -165,30 +186,6 @@ class BrandEditState(rx.State):
     @rx.event
     def skip_voice(self) -> None:
         self.voice_skipped = True
-
-    @rx.event(background=True)
-    async def save_voice(self) -> AsyncIterator[rx.event.EventSpec | None]:
-        """Tu voz y tono's "Guardar voz" when it opens the page: marks it configured (the
-        page stops opening on it) and saves the kit with its tone; then the results."""
-        from .brand_finish import save_brand_kit
-
-        async with self:
-            connect = await self.get_state(BrandConnectState)
-            was = connect.voice_configured
-            connect.voice_configured = True
-        saved = await save_brand_kit(self)
-        async with self:
-            if not saved:
-                connect = await self.get_state(BrandConnectState)
-                connect.voice_configured = was
-            else:
-                self.open_section = ""
-                self._before = {}
-                creative = await self.get_state(CreativeState)
-                creative.kit_notice = ""
-                creative.tone_saved_custom = creative.tone_is_custom()
-        if saved:
-            yield brand_documents.notify("Voz y tono guardados.", "ok")
 
 
 def _copy(value: Any) -> Any:
@@ -349,9 +346,9 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
                     tone_badge("Editando", "info"),
                     rx.button(
                         rx.icon("pencil", size=T.ICON_SM),
-                        "Editar",
+                        "Cambiar",
                         variant="soft",
-                        size="2",
+                        size="3",  # ≥ 44 px on a phone (N12)
                         on_click=BrandEditState.open(key),
                         flex_shrink="0",
                     ),
@@ -370,14 +367,14 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
                             "Cancelar",
                             variant="soft",
                             color_scheme="gray",
-                            size="2",
+                            size="3",
                             on_click=BrandEditState.cancel,
                             disabled=CreativeState.kit_saving,
                         ),
                         rx.button(
                             rx.icon("save", size=T.ICON_SM),
                             "Guardar",
-                            size="2",
+                            size="3",
                             on_click=BrandEditState.save_section,
                             loading=CreativeState.kit_saving,
                             disabled=_busy(),
@@ -402,92 +399,82 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
     )
 
 
-def _edit_view() -> rx.Component:
-    """The sections, one column, centred (§ request 2026-10-05: no side index), under
-    «Tu avatar animado» (§ request 2026-10-19 — generated, so it has no «Editar»)."""
-    return rx.vstack(
-        brand_avatar_card(),
-        *(_section(*spec) for spec in SECTIONS),
-        spacing="3",
-        width="100%",
-        max_width="46rem",
-        align_self="center",
-        class_name="q-settle",
-    )
-
-
-# --------------------------------------------------------------------------------------
-# Tu voz y tono first, and Resultados e insights
-# --------------------------------------------------------------------------------------
-
-
-def _voice_first_view() -> rx.Component:
-    """What is still to configure, before anything else (§ request 2026-10-05)."""
-    return rx.vstack(
-        callout(
-            "Te falta preparar tu voz y cómo suena tu marca. La usamos en tus vídeos y en "
-            "tus textos.",
-            "warn",
-            icon="mic",
-        ),
-        card(
-            rx.vstack(
-                rx.hstack(
-                    _section_icon("mic"),
-                    rx.vstack(
-                        rx.text("Voz y tono", size="3", weight="bold"),
-                        rx.text(
-                            "Graba o sube tu voz, clónala si quieres y ajusta los cuatro ejes.",
-                            size="2",
-                            color=T.TEXT_MUTED,
-                        ),
-                        spacing="1",
-                        align_items="start",
-                    ),
-                    spacing="3",
-                    align="center",
-                    width="100%",
-                ),
-                *_editor(VOICE_SECTION),
-                rx.hstack(
-                    rx.spacer(),
-                    rx.button(
-                        "Ahora no",
-                        variant="soft",
-                        color_scheme="gray",
+def _voice_row() -> rx.Component:
+    """«Mejora tu marca (opcional)» — Voz y tono still to prepare is one optional row
+    above the summary, never a notice that covers the page (m-24842970)."""
+    return card(
+        rx.flex(
+            rx.hstack(
+                _section_icon("mic"),
+                rx.vstack(
+                    rx.text("Mejora tu marca (opcional)", size="3", weight="bold"),
+                    rx.text(
+                        "Prepara tu voz y cómo suena tu marca. La usamos en tus videos y en "
+                        "tus textos.",
                         size="2",
-                        on_click=BrandEditState.skip_voice,
+                        color=T.TEXT_MUTED,
                     ),
-                    rx.button(
-                        rx.icon("save", size=T.ICON_SM),
-                        "Guardar voz",
-                        size="2",
-                        on_click=BrandEditState.save_voice,
-                        loading=CreativeState.kit_saving,
-                        disabled=_busy(),
-                    ),
-                    spacing="2",
-                    width="100%",
+                    spacing="1",
+                    align_items="start",
+                    min_width="0",
+                    flex="1",
                 ),
-                spacing="4",
-                width="100%",
-                align_items="stretch",
+                spacing="3",
+                align="center",
+                flex="1",
+                min_width="0",
             ),
-            class_name="q-card q-kit-section--open",
+            rx.hstack(
+                rx.button(
+                    "Ahora no",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="3",
+                    on_click=BrandEditState.skip_voice,
+                ),
+                rx.button(
+                    rx.icon("mic", size=T.ICON_SM),
+                    "Preparar mi voz",
+                    variant="soft",
+                    size="3",
+                    on_click=BrandEditState.open_voice,
+                ),
+                spacing="2",
+                justify="end",
+                flex_shrink="0",
+            ),
+            direction={"initial": "column", "sm": "row"},
+            gap="3",
+            align={"initial": "stretch", "sm": "center"},
+            width="100%",
         ),
-        spacing="4",
-        width="100%",
-        max_width="46rem",
-        align_self="center",
-        class_name="q-settle",
+        id="mejora-tu-marca",
     )
 
 
-def _results_view() -> rx.Component:
-    """Resultados e insights, from what is stored — the same screen as the wizard's final
-    one: the profile header while the saved read has it, then the referentes — one card
-    grid, or the influence ranking once something was sorted as referente or
-    competencia."""
+def _referentes_summary() -> rx.Component:
+    """The folded count — the same condition as `_referentes_body`, so the summary never
+    says «Todavía no hay…» over a list: the sorted accounts count when nothing discovered
+    came back."""
+    discovered = BrandConnectState.discovered_accounts.length()
+    count = rx.cond(discovered > 0, discovered, BrandConnectState.account_buckets.length())
+    has_referentes = (discovered > 0) | BrandConnectState.has_sorted
+    return rx.cond(
+        has_referentes,
+        rx.text(
+            count,
+            rx.cond(count == 1, " negocio guardado", " negocios guardados"),
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        _faint("Todavía no hay negocios guardados"),
+    )
+
+
+def _referentes_body() -> rx.Component:
+    """The brand's referentes as last left, read back from Postgres — one card grid, or
+    the influence ranking once something was sorted as referente or competencia — and
+    the form to add one by hand. Every change there saves on its own."""
     has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
         BrandConnectState.has_sorted
     )
@@ -510,53 +497,98 @@ def _results_view() -> rx.Component:
             _manual_section(with_chips=False),
             spacing="5",
             width="100%",
-            max_width=_RESULTS_COLUMN_MAX,
-            align_self="center",
             align_items="stretch",
-            class_name="q-settle",
+            padding_top="0.5rem",
         ),
     )
 
 
-def _header_action() -> rx.Component:
-    return rx.cond(
-        BrandEditState.editing,
-        rx.button(
-            rx.icon("chart-bar", size=T.ICON_SM),
-            "Ver resultados",
-            variant="soft",
-            size="2",
-            on_click=BrandEditState.show_results,
+def _referentes_section() -> rx.Component:
+    """«Negocios parecidos al tuyo»: one more section of the summary, folded by default
+    (m-24842970 — the owner who came to change the logo does not land on other accounts)."""
+    is_open = BrandEditState.referentes_open
+    return card(
+        rx.vstack(
+            rx.hstack(
+                _section_icon("users"),
+                rx.vstack(
+                    rx.text("Negocios parecidos al tuyo", size="3", weight="bold"),
+                    rx.cond(
+                        is_open,
+                        rx.text(
+                            "Los que te inspiran y los que compiten contigo, del que más pesa "
+                            "al que menos.",
+                            size="2",
+                            color=T.TEXT_MUTED,
+                        ),
+                        _referentes_summary(),
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    min_width="0",
+                    flex="1",
+                ),
+                rx.button(
+                    rx.cond(
+                        is_open,
+                        rx.icon("chevron-up", size=T.ICON_SM),
+                        rx.icon("pencil", size=T.ICON_SM),
+                    ),
+                    rx.cond(is_open, "Cerrar", "Ver y cambiar"),
+                    variant="soft",
+                    size="3",
+                    on_click=BrandEditState.toggle_referentes,
+                    flex_shrink="0",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            rx.cond(is_open, _referentes_body()),
+            spacing="3",
+            width="100%",
+            align_items="stretch",
         ),
-        rx.button(
-            rx.icon("pencil", size=T.ICON_SM),
-            "Editar mi marca",
-            # P3, one solid per screen: while Tu voz y tono is what the page shows, its
-            # "Guardar voz" is the primary action and this one steps back to soft
-            variant=rx.cond(needs_voice(), "soft", "solid"),
-            size="2",
-            on_click=BrandEditState.start_editing,
-        ),
+        id="seccion-referentes",
+        class_name=rx.cond(is_open, "q-card q-kit-section--open", "q-card"),
+        scroll_margin_top="1rem",
     )
 
 
-def _subtitle() -> rx.Var[str]:
-    return rx.cond(
-        BrandEditState.editing,
-        "Edita cada sección y guárdala por separado.",
-        rx.cond(
-            needs_voice(),
-            "Antes de nada, termina de preparar tu marca.",
-            "Los negocios que te inspiran y los que compiten contigo, del que más pesa "
-            "al que menos.",
-        ),
+def _summary_view() -> rx.Component:
+    """The page by default (m-24842970): the brand by sections, one column, centred
+    (§ request 2026-10-05: no side index) — the optional voice row first while it is
+    pending, «Tu avatar animado» (§ request 2026-10-19 — generated, so it has no
+    «Cambiar»), the kit's sections and, last, «Negocios parecidos al tuyo»."""
+    return rx.vstack(
+        rx.cond(needs_voice(), _voice_row()),
+        brand_avatar_card(),
+        *(_section(*spec) for spec in SECTIONS),
+        _referentes_section(),
+        spacing="3",
+        width="100%",
+        max_width="46rem",
+        align_self="center",
+        class_name="q-settle",
     )
 
 
 def brand_edit_index() -> rx.Component:
     loading = CreativeState.kit_loading | ~BrandConnectState.details_loaded
     return app_shell(
-        page_header("Tu marca", _subtitle(), _header_action(), title_size="7"),
+        page_header(
+            "Tu marca",
+            "Tus colores, tu logo y tu forma de hablar, para que todo lo que crees salga con tu "
+            "estilo. Toca «Cambiar» en lo que quieras.",
+            rx.button(
+                rx.icon("pencil", size=T.ICON_SM),
+                "Editar mi marca",
+                variant="soft",
+                size="3",
+                on_click=BrandEditState.open_and_show("marca"),
+            ),
+            title_size="7",
+        ),
         page_body(
             rx.vstack(
                 rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
@@ -564,15 +596,7 @@ def brand_edit_index() -> rx.Component:
                     CreativeState.kit_notice != "",
                     callout(CreativeState.kit_notice, "ok", icon="circle-check"),
                 ),
-                rx.cond(
-                    loading,
-                    _loading_view("Cargando tu marca"),
-                    rx.cond(
-                        BrandEditState.editing,
-                        _edit_view(),
-                        rx.cond(needs_voice(), _voice_first_view(), _results_view()),
-                    ),
-                ),
+                rx.cond(loading, _loading_view("Cargando tu marca"), _summary_view()),
                 spacing="4",
                 width="100%",
             ),

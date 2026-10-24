@@ -2682,8 +2682,8 @@ class CreativeState(rx.State):
 
     @rx.event
     def configure_voice(self) -> rx.event.EventSpec:
-        """The flag's "Configurar voz": the Brand Kit editor opens on Tu voz y tono while
-        it is still to configure (`brand_kit_editor.needs_voice`)."""
+        """The flag's "Configurar voz": «Tu marca» shows «Mejora tu marca (opcional)»
+        first while the voice is still to prepare (`brand_kit_editor.needs_voice`)."""
         return rx.redirect("/brand/kit")
 
     def _select_default_route(self) -> None:
