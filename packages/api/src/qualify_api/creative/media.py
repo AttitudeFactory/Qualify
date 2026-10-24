@@ -882,15 +882,39 @@ class _Saver:
     copy (§ request 2026-10-06: "no me sirve tenerlo en local") — under the tenant's
     prefix, unique per generation; if R2 refuses it the piece fails, saying so, rather
     than living somewhere nothing publishes from. A store without R2 (the tests' memory
-    store, a dev `LocalMediaStore`) keeps the local key it always had."""
+    store, a dev `LocalMediaStore`) keeps the local key it always had.
 
-    def __init__(self, store: MediaStore, tenant_id: UUID, draft_id: UUID, revision: int):
+    Every kept file is a sign of life (m-24852156): `heartbeat` is called after it, so
+    a long carousel — slides made one after another — is not reaped while it advances."""
+
+    def __init__(
+        self,
+        store: MediaStore,
+        tenant_id: UUID,
+        draft_id: UUID,
+        revision: int,
+        heartbeat: Callable[[], None] | None = None,
+    ):
         self._store = store
         self._tenant_id = tenant_id
         self._draft_id = draft_id
         self._revision = revision
+        self._heartbeat = heartbeat
 
     def __call__(self, name: str, data: bytes, content_type: str) -> str:
+        key = self._keep(name, data, content_type)
+        self._beat()
+        return key
+
+    def _beat(self) -> None:
+        if self._heartbeat is None:
+            return
+        try:
+            self._heartbeat()
+        except Exception:  # a sign of life never breaks the piece
+            logger.warning("draft %s: heartbeat failed", self._draft_id, exc_info=True)
+
+    def _keep(self, name: str, data: bytes, content_type: str) -> str:
         keep = getattr(self._store, "keep", None)
         if keep is None:
             local = generated_key(self._tenant_id, self._draft_id, name)
@@ -1164,10 +1188,12 @@ class MediaProducer:
         copy: CopyPayload,
         budget: BudgetContext,
         revision: int = 1,
+        heartbeat: Callable[[], None] | None = None,
     ) -> MediaOutcome:
         """Never raises for a vendor or file problem: the outcome carries the failure,
         and the usage of whatever was already paid for. `revision` is the draft's — what
-        keeps each generation's R2 copy apart."""
+        keeps each generation's R2 copy apart. `heartbeat` is called after every file
+        kept (m-24852156: the reaper's sign of life)."""
         usage: list[MediaUsage] = []
         malformed, foreign = _key_problems(tenant_id, brief, kit)
         if malformed:
@@ -1202,7 +1228,7 @@ class MediaProducer:
             return MediaOutcome(
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=CLIP_NO_PUBLIC_URL
             )
-        save = _Saver(self._store, tenant_id, draft_id, revision)
+        save = _Saver(self._store, tenant_id, draft_id, revision, heartbeat)
         warnings: list[MediaWarning] = []
         # the brand's type and colours, only for a piece that prints words (m-24828920):
         # a missing font or palette is a warning, and a piece without words has none
