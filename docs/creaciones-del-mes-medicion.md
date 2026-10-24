@@ -4,6 +4,17 @@
 Autor: data scientist / FDE · Fecha: 2026-10-23 · Pesos: **`pesos-creaciones-v1`** sobre la
 tabla de precios **`v5`** (`packages/creative/src/qualify_creative/pricing_data/v5.json`).
 
+> **Vigentes desde 2026-10-24: `pesos-creaciones-v2` sobre la tabla `v7` (§5, m-24851828).**
+> Las secciones 1 a 4 son la medición de v1 y se conservan como estaban.
+>
+> **Videos del mes (decisión del fundador, 2026-10-24, §6):** el video generado ya no usa
+> creaciones. Cada mes trae **30 creaciones y 4 videos** aparte; cada video cuenta 1, dure 5 o
+> 10 s. Lo que §5.5 y §5.6 dicen del video generado en creaciones quedó reemplazado por §6.
+>
+> **Vigente (segunda decisión del mismo día, §7):** el video se cuenta **al aprobar**, no al
+> crear, y cada mes trae además **20 vistas previas**. Donde §6 diga «al crear» para el video,
+> manda §7.
+
 El dueño ve «creaciones del mes» («Te quedan 18 de 30 este mes»), nunca dinero. El equipo ve
 los dólares. Esta página fija cuánto vale cada pedido en creaciones, con qué datos se midió y
 cuánto queda sin medir.
@@ -111,3 +122,363 @@ genera y se le ofrece el de 15 s (13 creaciones).
 inmobiliaria o viajes), repetir la misma lectura agregada y recalcular p50/p90 de creaciones por
 negocio y mes y el p95 de costo por tipo. Si el p90 real pasa de 30, subir el cupo; si algún
 p95 por tipo supera su peso × 0,15, subir ese peso y versionar `pesos-creaciones-v2`.
+
+## 5. Pesos `pesos-creaciones-v2` (vigentes desde 2026-10-24, m-24851828)
+
+Fecha: 2026-10-24 · Pesos: **`pesos-creaciones-v2`**
+(`packages/creative/src/qualify_creative/creations_data/pesos-creaciones-v2.json`) sobre la
+tabla de precios **`v7`**. `pesos-creaciones-v1` se conserva tal cual (versionado, no se edita)
+y cada cobro sigue guardando su peso, la versión de pesos y la versión de la tabla de precios.
+
+**Por qué hay v2.** v1 se calculó antes de #304 (Seedance 2.5 con modo borrador, m-24820142).
+Sobre `main` dejaba de cuadrar en seis puntos (`docs/ux-revision-equipo-2026-10-24.md` §Pesos
+de #299): duración del clip, presentador de 5 y 10 s, vista previa + final, video de
+referencia, versión de la tabla y sonido.
+
+### 5.1 Decisiones del fundador (2026-10-24)
+
+- **Presentador:** se ofrece a **5, 10, 15 y 30 s**. **45 y 60 s quedan fuera**: no tienen
+  fila, no aparecen en las duraciones del presentador y una prueba lo comprueba.
+- **Modo borrador:** todo se cobra **al crear**: la vista previa a 480p y el final a 1080p que
+  se hace al aprobar. **Aprobar no cobra nada.** Si el final falla, se devuelve solo la parte
+  del final y se registra aparte.
+- **Duración del clip:** un clip se cobra por **su** duración (`clip_duration`), no por la del
+  presentador (`media_duration`). Un clip de 5 s se cobra como de 5 s.
+- **Video de referencia:** se cobran sus segundos de entrada.
+- **Tabla de precios:** `v7`.
+- **Sonido:** lo decide data-scientist-fde (§5.4).
+
+### 5.2 Cómo se calcula el video generado (Seedance 2.5)
+
+El peso ya no es una fila escrita a mano: sale de la tabla `v7` al cargar los pesos, así que no
+puede separarse de la tabla que cita. Modelo `dreamina-seedance-2-5-260628`, el de producción
+para clip, avatar de Seedance y diapositiva animada.
+
+| Parte | Tokens por segundo (proporción más cara, 3:4) | Tarifa `v7` sin / con video de entrada | USD por segundo sin / con video |
+|---|---:|---:|---:|
+| Vista previa 480p (560 × 752) | 9 870 | 10,70 / 6,40 por millón | 0,1056 / 0,0632 |
+| Final 1080p (1248 × 1664) | 48 672 | 11,70 / 7,00 por millón | 0,5695 / 0,3407 |
+
+- Tokens por segundo = ancho × alto × 24 / 1024 (fórmula de ModelArk, la misma de
+  `estimate_video_tokens`). Se toma 3:4, la proporción con más píxeles; 9:16 da 9 607 y 48 600.
+- Más **USD 0,068 fijos** por video (texto p95 0,033 + una imagen 0,035, medidos en producción).
+  El clip no genera imagen propia; se deja el fijo de v1 como techo.
+- Peso = ⌈(fijo + vista previa + final) / 0,15⌉. **Parte del final** = peso − ⌈(fijo + vista
+  previa) / 0,15⌉. Esa parte es la única que se devuelve si el final falla.
+- **Video de referencia:** con video de entrada la tarifa baja, pero se cobran sus segundos al
+  tamaño de salida (medido en `docs/modelos-generativos/seedance-2-5.md`, SD25-001: 115 690 y
+  118 851 tokens frente a ~48 000 sin entrada). v2 supone que el final a 1080p **también**
+  vuelve a cobrar la entrada: no está medido en vivo, y así el peso nunca se queda corto. El
+  brief no guarda cuánto dura el video de referencia, así que se cobra el máximo que acepta una
+  tarea de 2.5: **30 s**.
+- El clip sigue limitado a 15 s (`max_output_seconds`).
+
+### 5.3 Presentador (OmniHuman 1.5, sin vista previa)
+
+Costo = guion 0,033 + OmniHuman 1.5 a USD 0,12 por segundo + voz (Seed Speech, USD 30 por
+millón de caracteres, 15 caracteres por segundo). OmniHuman no tiene vista previa ni final:
+el presentador no tiene parte del final y no se le devuelve nada aparte.
+
+### 5.4 Sonido: no cambia el peso
+
+- `v7` tiene **una sola tarifa** para Seedance 2.5, con o sin sonido (página de precios leída
+  el 2026-10-07 y el 2026-10-23). El 2026-10-24 se intentó releer la página en vivo y no se
+  pudo: la página carga sus precios con JavaScript.
+- En SD25-001 el clip con sonido (`generate_audio` encendido) facturó 115 690 tokens y la
+  diapositiva sin sonido 118 851. Las dos quedan dentro de la fórmula de tokens (118 461 y
+  121 697), así que el sonido **no añadió tokens**.
+- **Decisión:** «Con sonido» no cambia el peso (`audio_usd_per_second = 0`). Una prueba lo
+  comprueba. Si la primera factura de BytePlus cobra el sonido aparte, se pone su precio en
+  `v8` y se versiona `pesos-creaciones-v3`.
+
+### 5.5 Tabla `pesos-creaciones-v2`
+
+| Pedido | Costo estimado (USD) | Creaciones | De ellas, parte del final | Cambio frente a v1 |
+|---|---:|---:|---:|---|
+| Imagen con texto (incluye su juego de ángulos) | 0,07 | **1** | — | igual |
+| Otra versión de la imagen | 0,07 | **1** | — | igual |
+| Otra versión solo del texto / proponer ángulos de nuevo | ≤ 0,03 | **0** | — | igual |
+| Carrusel de 2 a 3 / 4 a 7 / 8 a 10 imágenes | 0,14 / 0,28 / 0,38 | **1 / 2 / 3** | — | igual |
+| Guion para una persona; video con plantilla | 0,03–0,07 | **1** | — | igual |
+| Clip (o avatar de Seedance) de 5 s, sin referencia | 3,44 | **23** | 19 | era 3 |
+| Clip de 10 s | 6,82 | **46** | 38 | era 5 |
+| Clip de 15 s | 10,19 | **68** | 56 | era 6 |
+| Clip de 5 s con 3 s de video de referencia (medidos) | 3,30 | **22** | 18 | nuevo |
+| Clip de 5 s con 7,33 s de referencia (el caso medido en SD25-001) | 5,05 | **34** | 28 | nuevo |
+| Clip de 5 s con video de referencia de duración desconocida (se cobran 30 s) | 14,20 | **95** | 79 | nuevo |
+| Diapositiva animada de 5 s en un carrusel (se suma a las imágenes) | 3,44 | **+23** | 19 | era +3 |
+| Presentador de 5 s | 0,64 | **5** | — | nuevo (en v1 costaba 13) |
+| Presentador de 10 s | 1,24 | **9** | — | nuevo (en v1 costaba 13) |
+| Presentador de 15 s | 1,84 | **13** | — | igual |
+| Presentador de 30 s | 3,65 | **25** | — | igual |
+| Presentador de 45 o 60 s | — | **no se ofrece** | — | decisión del fundador |
+
+Cuando el mes no alcanza para el presentador pedido, la pantalla ofrece **el más largo que
+alcance** (con 20 creaciones, el de 15 s; con 11, el de 10 s; con 6, el de 5 s). Antes ofrecía
+siempre el de 15 s.
+
+### 5.6 Lo que los números contradicen del plan (para decidir)
+
+Con las decisiones de §5.1 y la tabla `v7`, **el video generado no cabe en un mes de 30**:
+
+- Un clip de **5 s usa 23 de 30**. Los de **10 s (46) y 15 s (68) no caben ni con el mes
+  entero**, así que la pantalla ya no los ofrece: el control de duración del clip muestra solo
+  lo que el saldo paga, y al menos el de 5 s (`clip_duration_choices`).
+- Un clip con **video de referencia** pasa de 30 casi siempre: el brief no guarda la duración
+  del video y se cobran 30 s (95). Con la duración medida, solo una referencia de unos 6 s o
+  menos cabe en un mes completo. Hoy la pantalla deja subir el video de referencia y después
+  dice «Te faltan N creaciones».
+- El 84 % del costo es el **final a 1080p** (USD 0,57 por segundo, frente a 0,11 de la vista
+  previa). En v1, Seedance 1.0 pro a 720p costaba 0,054 por segundo: el video generado cuesta
+  ahora **12 veces más** por segundo.
+
+Opciones (precios de `v7`, clip de 5 / 10 / 15 s):
+
+| Opción | Creaciones | Qué cambia |
+|---|---|---|
+| A. Lo de hoy: vista previa 480p + final 1080p | 23 / 46 / 68 | nada |
+| B. Final a **720p** en vez de 1080p | 12 / 23 / 35 | el final cuesta 2,4 veces menos por segundo; necesita una prueba de calidad en `docs/modelos-generativos/` |
+| C. Sin vista previa, directo a 1080p | 20 / 39 / 58 | se pierde la vista previa barata; ahorro pequeño |
+| D. Subir el cupo para quien use video, o un cupo de video aparte | — | fuera del alcance de este ticket (el cupo de 30 y el tope en dólares no se tocan) |
+
+**Recomendación:** B, final a 720p, con una prueba de calidad antes (mismo borrador, final a
+720p y a 1080p, a la vista de una dueña en un teléfono). Con B el clip de 5 s usa 12, cabe
+junto a un mes normal (20 + 12 = 32, cerca de 30) y el de 10 s usa 23. Hasta que se decida,
+v2 cobra lo que de verdad cuesta (A) y la pantalla no ofrece lo que no se puede pagar.
+
+Pendiente de medir: un final a 1080p de un borrador **con** video de entrada (si vuelve a
+cobrar la entrada) y la primera factura de BytePlus (tarifas y sonido). Cualquiera de los dos
+puede bajar los pesos del video con referencia y lleva a `pesos-creaciones-v3`.
+
+### 5.7 Cómo se cobra y se devuelve (código)
+
+- `weight_for(brief)` / `weight_for_request(...)` devuelven el peso y `final_weight`, la parte
+  del final. La pantalla y el servicio leen la misma regla.
+- `creation_charges` (migración `0088`, antes `0084`, ahora sobre la cabeza `0086` de `main`, que encadena `0084 → 0087 → 0086`)
+  guarda `final_weight`, y además `final_refunded_at` y `final_refund_reason` cuando el final
+  falla. La fila sigue en `charged` por su vista previa y el saldo cuenta `weight −
+  final_weight`. La devolución se hace una sola vez.
+- Se devuelve la parte del final cuando el proveedor falla el final, cuando falla nuestro
+  código, cuando no se puede guardar, cuando no se pudo encargar y cuando la vista previa
+  venció. **Reintentar un final que falló no vuelve a cobrar**: el fallo fue nuestro o del
+  proveedor, no del dueño.
+- El informe del equipo (`creations_report`) cuenta la parte devuelta como devuelta.
+- Pruebas: `packages/creative/tests/test_creations.py`,
+  `packages/api/tests/test_creations_ledger.py` y `Qualify/test_creations_of_the_month.py`.
+
+> **Reemplazado por §6** en lo que toca al video generado: ya no hay `final_weight`; lo que
+> se devuelve cuando un final falla es el video.
+
+## 6. Videos del mes: un cupo aparte (decisión del fundador, 2026-10-24)
+
+Fecha: 2026-10-24 · Pesos: **`pesos-creaciones-v2`** sobre la tabla **`v7`** (el mismo archivo
+de §5, con un bloque nuevo `videos`; v2 no se había publicado todavía, así que se completa en
+su lugar en vez de crear una v3). Es la opción D de §5.6.
+
+### 6.1 Qué se decidió
+
+- **Cada mes trae 4 videos, aparte de las 30 creaciones.** Un «video» es todo video generado
+  con Seedance: el clip, el avatar de Seedance, cada diapositiva animada de un carrusel y el
+  clip que sigue un video de referencia.
+- **Cada uno cuenta 1 video**, dure 5 o 10 s, con o sin video de referencia y con o sin sonido.
+  **No usa creaciones.**
+- **No se ofrecen videos de 15 s** (ni más largos): el clip, el avatar de Seedance y la
+  diapositiva animada se piden a 5 o 10 s. Si llega uno más largo (un control viejo o un
+  pedido armado a mano), no se ofrece y no se cobra.
+- **Un carrusel con N diapositivas animadas usa N videos**, más las creaciones del propio
+  carrusel (1, 2 o 3 según sus imágenes, como siempre).
+- **El presentador (OmniHuman) sigue en creaciones**: 5, 9, 13 y 25 para 5, 10, 15 y 30 s.
+- Imágenes, carruseles, plantillas y guiones siguen en creaciones, cupo 30.
+- **Cobro:** se cobra **al crear**. Aprobar no cobra nada. Si el final a 1080p falla, **se
+  devuelve el video**. Reintentar un final que falló no vuelve a cobrar.
+- **El mismo cupo para todos los negocios**, también los que opera el equipo. No hay
+  interruptor por negocio; `QUALIFY_CREATIONS_QUOTA=off` sigue siendo el interruptor de
+  emergencia de toda la instalación.
+- **El dueño nunca ve dinero** (decisión 8).
+
+### 6.2 Lo que lee el dueño
+
+| Dónde | Texto |
+|---|---|
+| Panel lateral de Crear | «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.» |
+| Resumen, antes de un video | «Este video usa 1 de tus 4 videos del mes. Te quedarían {v}.» (con {v} = 1, «Te quedaría 1.») |
+| Resumen, carrusel con diapositivas animadas | «Esta publicación usa 1 creación y 2 videos. Te quedarían 17 de 30 creaciones y 1 de 4 videos.» |
+| Sin videos este mes (Crear queda desactivado) | «Ya usaste tus 4 videos de este mes. Vuelven el {fecha}.» |
+| Carrusel con más diapositivas animadas que videos | «Esta publicación usa 3 videos y este mes te quedan 2. Quita 1 video animado o espera al {fecha}, cuando vuelven tus 4.» |
+| «Pedir otra versión» de un video | «La nueva versión usa 1 de tus 4 videos del mes. Te quedarían {v}.» |
+| Un video de más de 10 s | «Este video puede durar 5 o 10 segundos. Cámbialo en Duración.» |
+
+{fecha} es el mismo día que ya usan las creaciones: el primero del mes siguiente en la zona
+horaria del negocio («1 de noviembre»); si no se conoce, «el próximo mes».
+
+### 6.3 Cómo se guarda (código)
+
+- `pesos-creaciones-v2.json` → `videos`: `monthly_quota` 4 y `offered_seconds` [5, 10].
+  `weight_for_request` / `weight_for(brief)` devuelven `CreationPrice(weight, videos)`:
+  `weight` son las creaciones y `videos` los videos. El bloque `generated_video` (tokens por
+  segundo × tarifas `v7`) ya no da un peso: queda como **techo en dólares por video** para el
+  equipo (`generated_video_usd`).
+- `creation_charges` (migración `0088`, sobre la cabeza `0086` de `main`, RLS por inquilino):
+  cada cobro guarda `weight`, **`videos`**, `monthly_quota`, **`monthly_video_quota`**,
+  `weights_version` (`pesos-creaciones-v2`) y `pricing_table_version` (`v7`). Sigue siendo
+  idempotente por (`draft_id`, `revision`). `final_weight` desapareció.
+- **Devolución de un final que falla:** el id del video que falló se agrega a
+  `final_refunded_assets` (nunca dos veces el mismo, nunca más que `videos`), con
+  `final_refunded_at` y `final_refund_reason`. La fila sigue en `charged` y el saldo de videos
+  cuenta `videos − cardinality(final_refunded_assets)`. En un carrusel, si falla el final de
+  una diapositiva, vuelve ese video; los otros se quedan cobrados.
+- El cobro toma el mismo candado por marca y revisa creaciones y videos juntos: si falta
+  cualquiera de los dos, no se crea nada (`NotEnoughCreations` con `missing` y
+  `missing_videos`).
+- El informe del equipo (`creations_report`) muestra los videos cobrados y devueltos por pieza
+  y «{n} de 4 videos» por mes.
+
+### 6.4 Lo que cuesta al equipo (techo, tabla `v7`)
+
+| Video (vista previa 480p + final 1080p) | USD p95 por video | 4 videos al mes |
+|---|---:|---:|
+| 5 s, sin referencia | 3,44 | 13,77 |
+| 10 s, sin referencia | 6,82 | 27,27 |
+| 5 s con video de referencia de duración desconocida (se cuentan 30 s) | 14,20 | 56,81 |
+| 10 s con video de referencia de duración desconocida | 16,22 | 64,89 |
+
+Con las 30 creaciones (techo USD 4,50), **el techo por negocio y mes pasa de USD 4,50 a unos
+USD 31,77 sin referencias, y a unos USD 69,39 en el peor caso** (4 videos de 10 s con
+referencia de duración desconocida). Son techos (p95 y la entrada contada también en el final),
+no promedios.
+
+**Para decidir (fundador):** la red de seguridad en dólares de cada marca
+(`creative_engine_config.monthly_budget_cap_usd`) **no se toca en este cambio**. Si se fija en
+1,5 × 4,50 = USD 6,75, como proponía el ticket, **bloquearía los videos** que este cupo
+promete: tendría que quedar por encima del techo de arriba (por ejemplo, USD 75). Y la opción B
+de §5.6 (final a 720p) bajaría el costo de cada video unas 2,4 veces sin tocar el cupo.
+
+> **Reemplazado en parte por §7:** el video ya no se cobra al crear sino al aprobar, y las
+> vistas previas tienen su propio cupo. Los techos de §6.4 se recalculan en §7.4.
+
+### 6.5 Pruebas
+
+- `packages/creative/tests/test_creations.py`: el cupo de 4 y las duraciones 5/10; un clip, un
+  clip con referencia y un avatar de Seedance usan 1 video y 0 creaciones; 15 s no se ofrece;
+  un carrusel usa un video por diapositiva animada; el presentador sigue en creaciones.
+- `packages/api/tests/test_creations_ledger.py`: 4 videos y el quinto se rechaza sin crear
+  nada; el carrusel cobra por diapositiva; el presentador sigue en creaciones sin videos
+  disponibles; un final que falla devuelve 1 video, una sola vez, y su reintento no cobra.
+- `packages/api/tests/test_creation_charges_db.py` (`-m db`): lo mismo contra Postgres, el
+  CHECK de `final_refunded_assets` y el aislamiento por inquilino (RLS, también con
+  `app.tenant_id` vacío).
+- `Qualify/test_creations_of_the_month.py`: los textos de §6.2, el control del clip y del
+  avatar de Seedance (5 y 10 s), Crear desactivado sin videos y ningún texto con dinero.
+
+## 7. El video se cuenta al aprobar, y 20 vistas previas al mes (fundador, 2026-10-24)
+
+Fecha: 2026-10-24 (segunda decisión del día, tras revisar el modo borrador) · Pesos:
+**`pesos-creaciones-v2`** sobre la tabla **`v7`** (mismo archivo; se agrega
+`videos.monthly_preview_quota`). Migración `0088`, editada en su lugar (sin publicar todavía).
+
+### 7.1 Por qué
+
+- La vista previa cuesta cerca del **17 %** de un video de Seedance (5 s: USD 0,60; 10 s:
+  USD 1,12–1,19 según la tabla `v7`). El video final, que se pide al aprobar, es el **83 %**.
+- Una vista previa **vence a los 7 días** si no se aprueba (`DRAFT_TTL_SECONDS`).
+- Cobrar el video al crear hacía pagar al dueño videos que nunca aprobó.
+
+### 7.2 Qué se decidió
+
+1. **El video se cuenta al APROBAR**, es decir, cuando se pide el video final. Una vista previa
+   descartada, rechazada o vencida **no cuesta ningún video**. Si el video final falla, el video
+   vuelve (una vez por video) y reintentarlo no vuelve a cobrar.
+   - Si al aprobar no quedan videos, la aprobación se rechaza y no se guarda nada: «Ya usaste
+     tus 4 videos de este mes. Vuelven el {fecha}.»
+   - Antes de aprobar se lee: «Al aprobar usas 1 de tus 4 videos del mes. Te quedarían {v}.»
+     («Te quedaría 1.» en singular). Reemplaza la línea «Este video usa 1 de tus 4 videos…»
+     que salía al crear.
+   - **Carrusel con N diapositivas animadas: N videos al aprobar, todo o nada.** Si quedan
+     menos de N, no se aprueba y se dice: «Esta publicación usa 3 videos y este
+     mes te quedan 2. Tus 4 videos vuelven el {fecha}.» El botón «Aprobar» queda desactivado
+     con esa frase encima. (No se aprueba a medias: un carrusel con diapositivas sin video
+     final no se puede publicar.)
+2. **Cupo de 20 vistas previas al mes por negocio.** Cuenta 1 cada vista previa de Seedance
+   que se crea, cada diapositiva animada y cada «Pedir otra versión» de un video.
+   - Se cobra **al crear** y no se devuelve al descartar ni al vencer. Excepción: si la
+     generación falla y no hubo vista previa, vuelve (con las creaciones, en el mismo
+     reembolso de siempre).
+   - El dueño solo la ve cuando quedan pocas (5 o menos): «Te quedan {p} vistas previas este
+     mes.» («Te queda 1 vista previa este mes.»).
+   - En 0: «Ya usaste tus 20 vistas previas de este mes. Vuelven el {fecha}.» y no se puede
+     crear un video; las imágenes siguen funcionando. Un carrusel con más diapositivas animadas
+     que vistas previas: «Esta publicación usa 3 vistas previas y este mes te quedan 2. Quita 1
+     video animado o espera al {fecha}, cuando vuelven tus 20.»
+3. **El vencimiento se ve:**
+   - Cada tarjeta de «Por aprobar» y la página de la publicación dicen «Apruébala antes del
+     {día} {fecha} para tener el video final.» (zona horaria del negocio).
+   - Desde 2 días antes del vencimiento, Inicio («Hoy tienes») dice «{n} video vence pronto» /
+     «{n} videos vencen pronto» y lleva a «Por aprobar» filtrado.
+   - Vencida: no se cobra nada, y la tarjeta (y la página) ofrecen **«Crearla otra vez»**, que
+     crea una publicación nueva con el mismo pedido (usa 1 vista previa por video).
+4. Sin cambios: 30 creaciones para lo que no es video; el presentador sigue en creaciones; el
+   mismo cupo para todos los negocios; `QUALIFY_CREATIONS_QUOTA=off` como único interruptor.
+
+### 7.3 Cómo se guarda (código)
+
+- `creation_charges` (0088) suma `previews` y `monthly_preview_quota` (al crear), y
+  `videos_period_month` y `videos_charged_at` (al aprobar). `videos` queda en 0 hasta la
+  aprobación; el saldo de videos se cuenta por el **mes de la aprobación**
+  (`videos_period_month`), el de creaciones y vistas previas por el mes en que se pidieron.
+  CHECKs nuevos: `previews >= 0`, `monthly_preview_quota >= 0`, `videos > 0` si y solo si hay
+  `videos_charged_at` y `videos_period_month`, y ese mes es primer día de mes. RLS igual.
+- `PostgresCreationsLedger.charge` (al crear) revisa creaciones y vistas previas;
+  `charge_videos` (al aprobar) revisa y cobra los videos, todo o nada, con el mismo candado por
+  marca e idempotente; `uncharge_videos` lo deshace si la aprobación no se pudo guardar;
+  `refund_final` devuelve un video por cada video final que falla.
+- **El cupo vive en una sola función** (`quota_for`, pedido de principal-architect): devuelve
+  (creaciones, videos, vistas previas) de una marca y un mes, hoy desde los pesos. El PR de
+  bonificaciones (`0089_creation_grants`) solo tendrá que sumar ahí.
+- `ContentService.approve` cobra los videos antes de guardar la aprobación;
+  `approval_videos` da la frase previa; `recreate` hace «Crearla otra vez».
+- Inicio: `HomeCounts.videos_expiring_soon` (una subconsulta más, con RLS como el resto).
+
+### 7.4 Lo que cuesta al equipo (techo, tabla `v7`, p95)
+
+| Parte | 5 s | 10 s | 10 s con referencia de duración desconocida |
+|---|---:|---:|---:|
+| Vista previa (fijo + 480p) | 0,60 | 1,12 | 2,59 |
+| Video final (1080p) | 2,85 | 5,69 | 13,63 |
+
+Techo por negocio y mes, todo a 10 s: 20 vistas previas × 1,12 + 4 finales × 5,69 + 30
+creaciones × 0,15 ≈ **USD 49,7**; en el peor caso (todo con referencia de duración desconocida)
+≈ **USD 110,8**. Antes de §7 el techo era USD 31,77 / 69,39, pero entonces una vista previa
+sin aprobar costaba un video entero. **La red en dólares por marca sigue sin fijarse** y, si se
+fija, tiene que quedar por encima de este techo (decisión del fundador).
+
+### 7.5 Pruebas
+
+- `packages/api/tests/test_creations_ledger.py`: crear un clip usa 1 vista previa y ningún
+  video; tope de 20 vistas previas (las imágenes siguen); la vista previa vuelve solo si la
+  generación falla; carrusel por diapositiva, todo o nada, al crear y al aprobar; **descartar
+  no cuesta video**; **aprobar cobra 1**; **aprobar con 0 se rechaza** sin guardar ni pedir el
+  final; un final que falla devuelve el video y el reintento es gratis; «Crearla otra vez»;
+  el cupo en una sola función.
+- `packages/api/tests/test_creation_charges_db.py` (`-m db`): lo mismo contra Postgres
+  (vistas previas, videos al aprobar, tope de 20, `uncharge_videos`, CHECKs, RLS).
+- `packages/api/tests/test_home_summary_db.py` (`-m db`): Inicio cuenta solo las vistas
+  previas que vencen en 2 días o menos (ni las vencidas ni las que ya tienen video final).
+- `Qualify/test_creations_of_the_month.py` y `Qualify/test_home_vm.py`: los textos de §7.2,
+  la frase antes de aprobar y el botón desactivado en 0, la fecha de vencimiento en la zona
+  del negocio, la tarjeta con «Crearla otra vez», el aviso de Inicio, y ningún texto con
+  dinero ni palabras técnicas.
+
+### 7.6 Decisiones finales del fundador y pedidos de arquitectura (2026-10-24)
+
+- **«Crearla otra vez» dice lo que usa antes de tocarlo**, en una línea debajo del botón, sin
+  diálogo: «Usa 1 de tus vistas previas. Te quedan {p}.» Con varias vistas previas, o con
+  creaciones si la publicación tiene imágenes: «Usa 2 vistas previas y 1 creación. Te quedan
+  10 vistas previas.» (`recreate_use_text`, con el precio de `ContentService.recreate_price`).
+- **El aviso de Inicio «{n} videos vencen pronto»** abre «Por aprobar › Por completar» con
+  **todas** las publicaciones, ordenadas por vencimiento: primero las vistas previas que vencen
+  antes y después el resto en el orden de siempre (`/drafts?estado=por-completar&orden=vence`).
+- **El mismo cupo Básico para todos los negocios**, también Bianki y Polette.
+- **Arquitectura:** `charge` y `charge_videos` devuelven el id de la fila del cobro (None si no
+  se cobró nada nuevo). `quota_for` es el cupo mensual base; los planes lo cambiarán ahí en un
+  PR posterior, y los **paquetes** (extras de 90 días) se calculan aparte, en una función
+  hermana `packs_for` (migración 0089).

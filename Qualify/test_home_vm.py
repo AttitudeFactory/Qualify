@@ -230,3 +230,65 @@ def test_home_copy_has_no_english() -> None:
             continue  # docstrings and comments in English, by convention
         for word in _ENGLISH:
             assert word.lower() not in text.lower().split(), (word, text)
+
+
+def test_videos_about_to_expire_show_on_today_and_open_por_aprobar() -> None:
+    """Founder 2026-10-24: from 2 days before a vista previa expires, Inicio says so and
+    links to «Por aprobar» filtered."""
+    from .home_vm import videos_expiring_label
+
+    assert videos_expiring_label(1) == "1 video vence pronto"
+    assert videos_expiring_label(3) == "3 videos vencen pronto"
+    from urllib.parse import parse_qs, urlparse
+
+    from .home_vm import VIDEOS_EXPIRING_URL
+    from .planner_vm import GALLERY_ORDER_EXPIRY, GALLERY_ORDER_PARAM
+
+    vm = build_home_vm(HomeCounts(videos_expiring_soon=2, **_SET_UP))
+    (card,) = vm.today
+    assert (card.key, card.label, card.href) == (
+        "expiring",
+        "2 videos vencen pronto",
+        VIDEOS_EXPIRING_URL,
+    )
+    # Por aprobar › Por completar, with every piece, sorted by expiry
+    query = parse_qs(urlparse(VIDEOS_EXPIRING_URL).query)
+    assert urlparse(VIDEOS_EXPIRING_URL).path == urlparse(DRAFTS_TO_APPROVE_URL).path
+    assert gallery_filter_from_param(query["estado"][0]) == "needs_action"
+    assert query[GALLERY_ORDER_PARAM] == [GALLERY_ORDER_EXPIRY]
+
+
+def test_por_aprobar_sorted_by_expiry_puts_the_soonest_first_then_the_usual_order() -> None:
+    from .gallery_state import sort_for_gallery
+    from .planner_vm import build_post_option
+
+    def post(pid: str, state: str, expires: float = 0.0):  # noqa: ANN202
+        return build_post_option(
+            post_id=pid,
+            title=pid,
+            caption_excerpt="",
+            thumbnail_url=None,
+            category="reels",
+            approval="pending",
+            detail_href=f"/drafts/{pid}",
+            is_publishable=False,
+            unpublishable_reason="",
+            gallery_state=state,
+            lifecycle_status="generated",
+            expires_at=expires,
+        )
+
+    posts = [
+        post("ready", "schedulable"),
+        post("late", "needs_action", 3000.0),
+        post("plain", "needs_action"),
+        post("soon", "needs_action", 1000.0),
+    ]
+    assert [p.post_id for p in sort_for_gallery(posts)] == ["ready", "late", "plain", "soon"]
+    assert [p.post_id for p in sort_for_gallery(posts, by_expiry=True)] == [
+        "soon",
+        "late",
+        "ready",
+        "plain",
+    ]
+    assert all(c.key != "expiring" for c in build_home_vm(HomeCounts(**_SET_UP)).today)

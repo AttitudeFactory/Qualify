@@ -20,6 +20,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
@@ -81,9 +82,12 @@ class FailureVM:
 #: FailureReason value -> (label, action, route). A FAILED draft is terminal in the FSM,
 #: so "retry" always means a new brief — hence /create, not a regenerate edge.
 FAILURE_INFO: dict[str, tuple[str, str, str]] = {
+    # CREAR-5 (decision 8): the owner never reads money — the team's dollar cap is a
+    # safety net, and a generation it stops gives its creations back
     "budget_exceeded": (
-        "Se alcanzó el tope de gasto mensual de la marca.",
-        "Sube el tope mensual y vuelve a intentarlo",
+        "No pudimos crear esta publicación: tu marca llegó a su límite de este mes. "
+        "Te devolvimos tus creaciones.",
+        "Escríbenos y lo revisamos contigo",
         "",
     ),
     "credential_invalid": (
@@ -391,32 +395,35 @@ GENERATE_WARNING = (
     "(horarios, promos, fondos)."
 )
 
+_ONE_CREATION = "Usa 1 creación"
+
 _ROUTE_COPY: dict[ImageRoute, tuple[str, str, str]] = {
-    # route -> (title, description, cost label)
+    # route -> (title, description, what it uses of the month). CREAR-5 decision 8: never
+    # money — every image route is one image, 1 creation (`pesos-creaciones-v2`).
     ImageRoute.TEMPLATE_ONLY: (
         "Solo tu plantilla",
         "Tarjeta de marca sin fotografía: horarios, menú, promos de texto. Sin IA.",
-        "Gratis",
+        _ONE_CREATION,
     ),
     ImageRoute.FROM_UPLOAD: (
         "Tu foto, con tu marca",
         "Sube la foto y la ponemos en tu marco. Sin retoque de IA.",
-        "Gratis",
+        _ONE_CREATION,
     ),
     ImageRoute.RESTYLE_ENHANCE: (
         "Tu foto, mejorada",
         "Corregimos luz y color sobre TU foto real. No requiere etiqueta de IA en anuncios.",
-        "~$0.03",
+        _ONE_CREATION,
     ),
     ImageRoute.RESTYLE_SCENE: (
         "Tu producto, en otro fondo",
         "Lleva tu producto real a un contexto nuevo. Meta obliga a marcarlo como IA en anuncios.",
-        "~$0.03",
+        _ONE_CREATION,
     ),
     ImageRoute.GENERATE: (
         "Generar desde cero",
         "La imagen se inventa por completo a partir del encargo.",
-        "~$0.03–0.09",
+        _ONE_CREATION,
     ),
 }
 
@@ -994,6 +1001,17 @@ class VideoDraftVM:
     #: A final is being made (this one, or another video of the piece while this
     #: state shows one that failed): the screen polls until none is left.
     rendering: bool = False
+    #: «Apruébala antes del jueves 30 de octubre para tener el video final.» — while
+    #: the vista previa waits for approval (founder, 2026-10-24); "" otherwise.
+    expiry_note: str = ""
+    #: When that vista previa expires (Unix seconds; 0 = none) — «Por aprobar» sorted
+    #: by expiry when opened from Inicio's «videos vencen pronto».
+    expires_at: float = 0.0
+
+    @property
+    def expired(self) -> bool:
+        """The vista previa can no longer give its video final: «Crearla otra vez»."""
+        return self.state == VIDEO_EXPIRED
 
 
 #: A piece without Seedance 2.5 draft videos.
@@ -1504,7 +1522,22 @@ __all__ = [
     "build_voice_proposal_vm",
     "content_type_options",
     "failure_vm",
+    "creations_left_label",
+    "creations_use_notice",
     "format_cost_label",
+    "not_enough_creations_text",
+    "pieces_use_notice",
+    "presenter_fallback_text",
+    "renewal_day_label",
+    "videos_short_text",
+    "previews_short_text",
+    "previews_left_label",
+    "approval_videos_notice",
+    "draft_expiry_text",
+    "RECREATE_LABEL",
+    "recreate_use_text",
+    "PREVIEWS_SHOWN_AT",
+    "VIDEO_TOO_LONG",
     "gap_vm",
     "status_label",
     "status_tone",
@@ -1685,3 +1718,224 @@ def seen_label(count: int) -> str:
         return ""
     shown = f"{count / 1000:.1f}k".replace(".0k", "k") if count >= 1000 else str(count)
     return f"visto {shown} {'vez' if count == 1 else 'veces'} en publicaciones reales"
+
+
+# ---------------------------------------------------------------------------------------
+# «Creaciones del mes» (CREAR-5, m-24848531): what the owner reads instead of money.
+
+#: What a presenter the weights table does not price says (an own script too long).
+PRESENTER_TOO_LONG = (
+    "Tu guion es muy largo para un video con presentador: acórtalo a unos 30 segundos."
+)
+#: A generated video longer than the table offers (founder, 2026-10-24: up to 10 s).
+VIDEO_TOO_LONG = "Este video puede durar 5 o 10 segundos. Cámbialo en Duración."
+
+
+#: The «vistas previas» are only mentioned when this few are left (founder, 2026-10-24).
+PREVIEWS_SHOWN_AT = 5
+
+
+def previews_left_label(previews_left: int, preview_quota: int) -> str:
+    """«Te quedan {p} vistas previas este mes.» — only when few are left ("" otherwise)."""
+    if preview_quota <= 0 or previews_left > PREVIEWS_SHOWN_AT:
+        return ""
+    if previews_left == 1:
+        return "Te queda 1 vista previa este mes."
+    return f"Te quedan {previews_left} vistas previas este mes."
+
+
+def creations_left_label(
+    left: int,
+    quota: int,
+    videos_left: int = 0,
+    video_quota: int = 0,
+    previews_left: int = 0,
+    preview_quota: int = 0,
+) -> str:
+    """The month's balance, never money. With a video quota it is the founder's
+    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»,
+    plus the vistas previas when few are left; without one, «Te quedan 18 de 30 este
+    mes»."""
+    verb = "Te queda" if left == 1 else "Te quedan"
+    if video_quota > 0:
+        text = (
+            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."
+        )
+        previews = previews_left_label(previews_left, preview_quota)
+        return f"{text} {previews}" if previews else text
+    return f"{verb} {left} de {quota} este mes"
+
+
+def previews_short_text(
+    previews: int, previews_left: int, preview_quota: int, *, renews: str = ""
+) -> str:
+    """No vista previa left for this piece (founder, 2026-10-24): «Ya usaste tus 20
+    vistas previas de este mes. Vuelven el 1 de noviembre.» — or, for a carousel with
+    more animated slides than vistas previas left, how many to take out."""
+    day = renews or "próximo mes"
+    if previews_left <= 0:
+        return f"Ya usaste tus {preview_quota} vistas previas de este mes. Vuelven el {day}."
+    left = "te queda 1" if previews_left == 1 else f"te quedan {previews_left}"
+    drop = previews - previews_left
+    remove = "Quita 1 video animado" if drop == 1 else f"Quita {drop} videos animados"
+    return (
+        f"Esta publicación usa {previews} vistas previas y este mes {left}. "
+        f"{remove} o espera al {day}, cuando vuelven tus {preview_quota}."
+    )
+
+
+def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews: str = "") -> str:
+    """Approving cannot pay this piece's videos — all or nothing (founder, 2026-10-24):
+    «Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a
+    carousel with more animated slides than videos left, how many it uses."""
+    day = renews or "próximo mes"
+    if videos_left <= 0:
+        return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
+    left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
+    return (
+        f"Esta publicación usa {videos} videos y este mes {left}. "
+        f"Tus {video_quota} videos vuelven el {day}."
+    )
+
+
+def approval_videos_notice(videos: int, videos_left: int, video_quota: int) -> str:
+    """Before approving (founder, 2026-10-24): «Al aprobar usas 1 de tus 4 videos del
+    mes. Te quedarían {v}.» — «Te quedaría 1.» in the singular."""
+    after = max(videos_left - videos, 0)
+    remain = "Te quedaría" if after == 1 else "Te quedarían"
+    return f"Al aprobar usas {videos} de tus {video_quota} videos del mes. {remain} {after}."
+
+
+_WEEKDAYS_LONG = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+def draft_expiry_text(expires: datetime | None) -> str:
+    """«Apruébala antes del jueves 30 de octubre para tener el video final.» — the day
+    the vista previa stops being able to give the video final, in the business's zone
+    ("" when unknown)."""
+    if expires is None:
+        return ""
+    return (
+        f"Apruébala antes del {_WEEKDAYS_LONG[expires.weekday()]} {expires.day} de "
+        f"{_MONTHS_LONG[expires.month - 1]} para tener el video final."
+    )
+
+
+#: The expired piece's way out (founder, 2026-10-24): a new piece from the same request.
+RECREATE_LABEL = "Crearla otra vez"
+
+
+def recreate_use_text(weight: int, previews: int, previews_left: int, preview_quota: int) -> str:
+    """The line under «Crearla otra vez», before it is pressed (founder, 2026-10-24):
+    «Usa 1 de tus vistas previas. Te quedan {p}.» — or, with several vistas previas or
+    creations too, «Usa 2 vistas previas y 1 creación. Te quedan 10 vistas previas.»
+    "" without a quota."""
+    if preview_quota <= 0 or previews <= 0:
+        return ""
+    if previews == 1 and weight <= 0:
+        left = "Te queda 1." if previews_left == 1 else f"Te quedan {previews_left}."
+        return f"Usa 1 de tus vistas previas. {left}"
+    uses = "1 vista previa" if previews == 1 else f"{previews} vistas previas"
+    if weight > 0:
+        uses += " y 1 creación" if weight == 1 else f" y {weight} creaciones"
+    left = (
+        "Te queda 1 vista previa."
+        if previews_left == 1
+        else f"Te quedan {previews_left} vistas previas."
+    )
+    return f"Usa {uses}. {left}"
+
+
+_MONTHS_LONG = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+#: What the owner can still do when the month is short (UX review 2026-10-23, N8).
+SHORT_ADVICE_SIMPLER = "Elige algo más sencillo, como una imagen, o espera"
+SHORT_ADVICE_FEWER_IDEAS = "Descarta algunas ideas o espera"
+
+
+def renewal_day_label(day: date | None) -> str:
+    """«1 de noviembre» — the day the month's creations renew ("" when unknown)."""
+    if day is None:
+        return ""
+    return f"{day.day} de {_MONTHS_LONG[day.month - 1]}"
+
+
+def not_enough_creations_text(
+    missing: int, *, quota: int = 0, renews: str = "", advice: str = ""
+) -> str:
+    """«Te faltan 2 creaciones este mes.» — nothing is created, never half of it — plus
+    what to do now (UX review 2026-10-23): `advice` (what else the owner can make) and
+    the day the `quota` renews. Without a quota only the first sentence is said."""
+    if missing == 1:
+        short = "Te falta 1 creación este mes."
+    else:
+        short = f"Te faltan {missing} creaciones este mes."
+    if quota <= 0:
+        return short
+    when = renews or "próximo mes"
+    if advice:
+        return f"{short} {advice} al {when}, cuando se renuevan tus {quota}."
+    return f"{short} El {when} se renuevan tus {quota}."
+
+
+def creations_use_notice(
+    weight: int,
+    left: int,
+    quota: int,
+    *,
+    presenter: bool = False,
+    video: bool = False,
+    subject: str = "",
+) -> str:
+    """What one request uses of the creations, said before it is created. The
+    presenter's sentence is the founder's (2026-10-23): «Este video con presentador usa
+    25 de tus creaciones. Te quedarían {n} este mes.» A generated video's videos are
+    said before APPROVING (`approval_videos_notice`), not here."""
+    after = max(left - weight, 0)
+    if presenter:
+        return (
+            f"Este video con presentador usa {weight} de tus creaciones. "
+            f"Te quedarían {after} este mes."
+        )
+    what = subject or ("Este video" if video else "Esta publicación")
+    return f"{what} usa {weight} de tus creaciones. Te quedarían {after} de {quota}."
+
+
+def presenter_fallback_text(seconds: int, weight: int) -> str:
+    """The shorter presenter a short month still pays for (CREAR-5: 15 s, 13)."""
+    return f"Te alcanza para el video de {seconds} segundos, que usa {weight} de tus creaciones."
+
+
+def pieces_use_notice(
+    pieces: int, left: int, quota: int, weight: int = 1, *, renews: str = ""
+) -> str:
+    """«Variaciones»: what generating the kept ideas uses, or what is missing — the batch
+    is all or nothing (CREAR-5)."""
+    needed = pieces * weight
+    if needed > left:
+        return not_enough_creations_text(
+            needed - left,
+            quota=quota,
+            renews=renews,
+            advice=SHORT_ADVICE_FEWER_IDEAS if left > 0 else "",
+        )
+    after = left - needed
+    if pieces == 1:
+        return f"Esta publicación usa {needed} de tus creaciones. Te quedarían {after} de {quota}."
+    return (
+        f"Estas {pieces} publicaciones usan {needed} de tus creaciones. "
+        f"Te quedarían {after} de {quota}."
+    )

@@ -18,6 +18,9 @@ number the owner finds on arrival:
   (`Qualify/home_provider.py`) replaces it with the gallery's «Por completar» count
   (`planner.gallery.gallery_state`), which also includes approved publications that
   cannot go out yet — the list the card opens.
+- `videos_expiring_soon` — publications waiting for approval whose vista previa can
+  give its video final for 2 more days at most (a Seedance draft lasts 7 days from its
+  `created_at`; founder, 2026-10-24): «{n} videos vencen pronto».
 - `comments_unanswered` — comments on the business's own publications from the last
   7 days that no reply from Qualify has answered (`comment_reply_drafts.status =
   'sent'`) and that were not deleted. The window is the week: older comments are
@@ -42,12 +45,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from qualify_creative.adapters.byteplus_ark import DRAFT_TTL_SECONDS
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 #: «Así te fue esta semana» = the last 7 days, counted back from now.
 WEEK = timedelta(days=7)
+#: «{n} videos vencen pronto»: from 2 days before a vista previa expires (founder,
+#: 2026-10-24).
+EXPIRING_SOON = timedelta(days=2)
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,8 @@ class HomeCounts:
     mentions_week: int = 0
     instagram_connected: bool = False
     has_publication: bool = False
+    #: Last, so positional construction keeps its meaning (founder, 2026-10-24).
+    videos_expiring_soon: int = 0
 
     @property
     def messages_week(self) -> int:
@@ -83,6 +92,18 @@ HOME_COUNTS_SQL = text(
       ) AS people_waiting,
       (SELECT count(*) FROM content_drafts d WHERE d.status = 'generated')
         AS drafts_to_approve,
+      (SELECT count(DISTINCT d.id) FROM content_drafts d
+         JOIN image_assets a ON a.draft_id = d.id
+        WHERE d.status = 'generated'
+          AND a.params ? 'draft'
+          AND COALESCE(a.params->'draft'->>'status', 'draft') IN ('draft', 'failed')
+          AND NOT (a.params->'draft' ? 'raw_final')
+          AND jsonb_typeof(a.params->'draft'->'created_at') = 'number'
+          AND (a.params->'draft'->>'created_at')::double precision + :draft_ttl
+              > extract(epoch FROM CAST(:now AS timestamptz))
+          AND (a.params->'draft'->>'created_at')::double precision + :draft_ttl
+              <= extract(epoch FROM CAST(:now AS timestamptz)) + :expiring_soon
+      ) AS videos_expiring_soon,
       (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id
         WHERE t.channel = 'comment' AND m.direction = 'inbound' AND m.deleted_at IS NULL
           AND COALESCE(m.posted_at, m.ingested_at) >= :since
@@ -121,6 +142,7 @@ def counts_from_row(row: Any) -> HomeCounts:
     return HomeCounts(
         people_waiting=int(row.people_waiting or 0),
         drafts_to_approve=int(row.drafts_to_approve or 0),
+        videos_expiring_soon=int(row.videos_expiring_soon or 0),
         comments_unanswered=int(row.comments_unanswered or 0),
         messages_week_dm=int(row.messages_week_dm or 0),
         messages_week_whatsapp=int(row.messages_week_whatsapp or 0),
@@ -138,10 +160,24 @@ def read_home_counts(
     session_factory: SessionFactory = tenant_session,
 ) -> HomeCounts:
     """Every figure of Inicio for `tenant_id`. Blocking (DB) — run off the event loop."""
-    since = (now or datetime.now(UTC)) - WEEK
+    moment = now or datetime.now(UTC)
+    since = moment - WEEK
+    params = {
+        "since": since,
+        "now": moment,
+        "draft_ttl": DRAFT_TTL_SECONDS,
+        "expiring_soon": EXPIRING_SOON.total_seconds(),
+    }
     with session_factory(tenant_id) as session:
-        row = session.execute(HOME_COUNTS_SQL, {"since": since}).one()
+        row = session.execute(HOME_COUNTS_SQL, params).one()
     return counts_from_row(row)
 
 
-__all__ = ["HOME_COUNTS_SQL", "WEEK", "HomeCounts", "counts_from_row", "read_home_counts"]
+__all__ = [
+    "EXPIRING_SOON",
+    "HOME_COUNTS_SQL",
+    "WEEK",
+    "HomeCounts",
+    "counts_from_row",
+    "read_home_counts",
+]

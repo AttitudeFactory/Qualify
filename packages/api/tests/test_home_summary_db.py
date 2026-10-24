@@ -128,3 +128,60 @@ def test_a_tenant_with_nothing_reads_zeros() -> None:
     counts = read_home_counts(tenant_id, now=NOW)
     assert counts.people_waiting == counts.messages_week == counts.mentions_week == 0
     assert counts.instagram_connected
+
+
+def _draft_with_preview(tenant_id: UUID, *, created: datetime, status: str = "draft") -> None:
+    """A generated publication whose video is a vista previa made at `created`."""
+    from qualify_api.creative.models import ContentBrief, ContentDraft, ImageAsset
+    from qualify_api.tenancy.models import Brand
+
+    with admin_session() as session:
+        brand = Brand(tenant_id=tenant_id, name=f"home-brand-{uuid4().hex[:6]}")
+        session.add(brand)
+        session.flush()
+        brand_id = brand.id
+    with tenant_session(tenant_id) as session:
+        brief = ContentBrief(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            objective="sale",
+            topic="shawarma mixto",
+            platform="instagram",
+            format="reels_9_16",
+            intent="organic",
+            content_type="product",
+            image_route="template_only",
+            kind="clip",
+        )
+        session.add(brief)
+        session.flush()
+        draft = ContentDraft(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            brief_id=brief.id,
+            status="generated",
+            pipeline_version="creative-v2",
+        )
+        session.add(draft)
+        session.flush()
+        session.add(
+            ImageAsset(
+                tenant_id=tenant_id,
+                draft_id=draft.id,
+                media_url=f"generated/{tenant_id}/{draft.id}/clip.mp4",
+                object_key=f"generated/{tenant_id}/{draft.id}/clip.mp4",
+                position=0,
+                params={"draft": {"status": status, "created_at": created.timestamp()}},
+            )
+        )
+
+
+def test_videos_about_to_expire_are_counted_from_two_days_before() -> None:
+    """Founder 2026-10-24: a vista previa lasts 7 days; Inicio warns from 2 days before."""
+    tenant_id, _conn = _tenant_with_connection("expiring")
+    _draft_with_preview(tenant_id, created=NOW - timedelta(days=6))  # 1 day left: counted
+    _draft_with_preview(tenant_id, created=NOW - timedelta(days=5, hours=1))  # counted
+    _draft_with_preview(tenant_id, created=NOW - timedelta(days=2))  # 5 days left: not yet
+    _draft_with_preview(tenant_id, created=NOW - timedelta(days=8))  # expired: not counted
+    _draft_with_preview(tenant_id, created=NOW - timedelta(days=6), status="final")
+    assert read_home_counts(tenant_id, now=NOW).videos_expiring_soon == 2

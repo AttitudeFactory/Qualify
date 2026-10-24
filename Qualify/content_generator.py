@@ -25,7 +25,6 @@ from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
-    CLIP_DURATIONS,
     DURATIONS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
@@ -340,6 +339,17 @@ def _options_panel() -> rx.Component:
                 rx.vstack(
                     rx.heading("¿Qué creamos?", size="4", as_="h2"),
                     rx.text("Elige qué hacer.", size="1", color=T.TEXT_MUTED),
+                    # CREAR-5: the month's creations, never money («Te quedan 18 de 30»)
+                    rx.cond(
+                        CreativeState.creations_left_text != "",
+                        rx.hstack(
+                            rx.icon("sparkles", size=T.ICON_SM, color=T.TEXT_MUTED),
+                            rx.text(CreativeState.creations_left_text, size="1", weight="medium"),
+                            spacing="1",
+                            align="center",
+                            margin_top="0.35rem",
+                        ),
+                    ),
                     spacing="0",
                     align_items="start",
                 ),
@@ -3376,8 +3386,12 @@ def _duration_select() -> rx.Component:
     «15 s» over two lines (m-24820845)."""
     return rx.vstack(
         rx.text("Duración", size="2", weight="medium"),
+        # CREAR-5: a presenter offers only the lengths the month still pays for
         rx.segmented_control.root(
-            *_seconds_items(DURATIONS),
+            rx.foreach(
+                CreativeState.duration_choices,
+                lambda s: rx.segmented_control.item(s + "\u00a0s", value=s),
+            ),
             value=CreativeState.media_duration,
             on_change=CreativeState.set_media_duration,
             class_name="q-seg-fit q-seg-fit--nowrap",
@@ -3668,8 +3682,12 @@ def _section_channel() -> rx.Component:
             CreativeState.brief_kind == "clip",
             _field(
                 "Duración",
+                # CREAR-5 v2: only the lengths the month can pay for
                 rx.segmented_control.root(
-                    *_seconds_items(CLIP_DURATIONS),
+                    rx.foreach(
+                        CreativeState.clip_duration_choices,
+                        lambda s: rx.segmented_control.item(s + "\u00a0s", value=s),
+                    ),
                     value=CreativeState.clip_duration,
                     on_change=CreativeState.set_clip_duration,
                     size="2",
@@ -4394,9 +4412,40 @@ def _summary_view() -> rx.Component:
             spacing="0",
             width="100%",
         ),
+        _creations_notice(),
         spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+def _creations_notice() -> rx.Component:
+    """CREAR-5 (m-24848531): before Crear, what the piece uses of the month's creations
+    and what would be left — never money. A presenter the month cannot pay offers the
+    shorter one instead, when that one fits."""
+    return rx.fragment(
+        rx.cond(
+            CreativeState.gen_creations_notice != "",
+            callout(CreativeState.gen_creations_notice, "info", icon="sparkles"),
+        ),
+        rx.cond(
+            CreativeState.gen_presenter_fallback != "",
+            rx.vstack(
+                callout(CreativeState.gen_presenter_fallback, "info"),
+                rx.button(
+                    rx.icon("timer", size=T.ICON_SM),
+                    "Usar el video de 15 segundos",
+                    variant="soft",
+                    size="3",
+                    radius=_CONTROL_RADIUS,
+                    min_height="44px",
+                    on_click=CreativeState.use_short_presenter,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
     )
 
 

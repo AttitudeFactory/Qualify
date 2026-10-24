@@ -61,7 +61,8 @@ from qualify_api.planner.service import (
 
 from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
-from .creative_provider import default_brand_id, final_video_state
+from .creative_provider import default_brand_id, final_video_state, recreate_note
+from .creative_vm import VideoDraftVM
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
@@ -265,6 +266,8 @@ def _post_option(
     thumbnails: dict[str, str | None] | None = None,
     video_url: str = "",
     final_rendering: bool = False,
+    video: VideoDraftVM | None = None,
+    recreate_note: str = "",
 ) -> PostOptionVM:
     """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
     so each chip can say when and where that output goes out. `video_url` is the
@@ -315,6 +318,10 @@ def _post_option(
         retention_state=post.retention_state,
         purge_days_left=post.purge_days_left,
         final_rendering=final_rendering,
+        expiry_note=video.expiry_note if video is not None else "",
+        preview_expired=video is not None and video.expired,
+        recreate_note=recreate_note,
+        expires_at=video.expires_at if video is not None else 0.0,
     )
 
 
@@ -329,19 +336,34 @@ def _draft_pending(post: PostSummary) -> bool:
     return any(o.unpublishable_reason == _DRAFT_PENDING_TEXT for o in post.outputs)
 
 
-def _final_rendering(tenant_id: UUID, post: PostSummary) -> bool:
-    """An approved post held back by a video final being made right now (m-24842981,
-    finding 8: «Preparando el video final» on its card) — not one that failed, which
-    stays «Le falta algo» and opens the page with «Intentar de nuevo». Only posts the
-    gate already holds for a preview are asked (the same light read as the final
-    poll); a failed read leaves the card as it was. Blocking (DB)."""
+def _video_state(tenant_id: UUID, post: PostSummary) -> VideoDraftVM | None:
+    """A post's vista previa / video final state, for its card: «Preparando el video
+    final» (m-24842981, finding 8), and — while it waits for approval — «Apruébala antes
+    del …» or, expired, «Crearla otra vez» (founder, 2026-10-24). Only posts the gate
+    already holds for a vista previa are asked (the same light read as the final poll);
+    a failed read leaves the card as it was. Blocking (DB)."""
     if not _draft_pending(post):
-        return False
+        return None
     try:
-        video = final_video_state(tenant_id, post.post_id)
+        return final_video_state(tenant_id, post.post_id)
     except Exception as exc:  # noqa: BLE001 — one card's extra state never breaks the grid
         logger.warning("gallery final state read failed: %s", type(exc).__name__)
-        return False
+        return None
+
+
+def _recreate_note(tenant_id: UUID, brand_id: UUID, post_id: UUID) -> str:
+    """What «Crearla otra vez» uses, for an expired card; "" when it cannot be read."""
+    try:
+        return recreate_note(tenant_id, brand_id, post_id)
+    except Exception as exc:  # noqa: BLE001 — one card's extra line never breaks the grid
+        logger.warning("gallery recreate note failed: %s", type(exc).__name__)
+        return ""
+
+
+def _final_rendering(tenant_id: UUID, post: PostSummary) -> bool:
+    """An approved post held back by a video final being made right now — not one that
+    failed, which stays «Le falta algo» and opens the page with «Intentar de nuevo»."""
+    video = _video_state(tenant_id, post)
     return video is not None and video.rendering
 
 
@@ -389,6 +411,7 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
         for p in posts
         if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
     }
+    states = {p.post_id: _video_state(tenant_id, p) for p in posts}
     options = [
         _post_option(
             p,
@@ -397,7 +420,13 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
             connections=index,
             thumbnails={str(p.post_id): _thumbnail_url(tenant_id, p.thumbnail_url)},
             video_url=videos.get(str(p.post_id), ""),
-            final_rendering=_final_rendering(tenant_id, p),
+            final_rendering=(video := states[p.post_id]) is not None and video.rendering,
+            video=video,
+            recreate_note=(
+                _recreate_note(tenant_id, brand_id, p.post_id)
+                if video is not None and video.expired
+                else ""
+            ),
         )
         for p in posts
     ]

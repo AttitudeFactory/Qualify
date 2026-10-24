@@ -35,8 +35,13 @@ import reflex as rx
 
 from .auth_state import AuthState
 from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from_query
-from .creative_provider import acting_user_id, catalog_products, default_brand_id
-from .creative_vm import APPROVED_OPEN_ACTION, approval_notice
+from .creative_provider import (
+    acting_user_id,
+    catalog_products,
+    creations_balance,
+    default_brand_id,
+)
+from .creative_vm import APPROVED_OPEN_ACTION, approval_notice, pieces_use_notice
 from .tenant import tenant_uuid
 from .variations_provider import (
     approve_variation_angle,
@@ -290,12 +295,47 @@ class VariationsState(rx.State):
     def can_generate(self) -> bool:
         return self.pending_count > 0 and not self.generating
 
+    #: CREAR-5: the month's creations (-1 = no quota wired: nothing is said).
+    creations_left: int = -1
+    creations_quota: int = 0
+    #: The day it renews («1 de noviembre»; "" = unknown).
+    creations_renews: str = ""
+
+    @rx.var
+    def creations_text(self) -> str:
+        """What generating the kept ideas uses and what would be left — or what is
+        missing, in which case nothing is generated."""
+        if self.creations_left < 0 or not self.pending_count:
+            return ""
+        return pieces_use_notice(
+            self.pending_count,
+            self.creations_left,
+            self.creations_quota,
+            renews=self.creations_renews,
+        )
+
+    @rx.var
+    def creations_short(self) -> bool:
+        return 0 <= self.creations_left < self.pending_count
+
+    async def _refresh_creations(self, tenant_id: UUID, brand_id: UUID) -> None:
+        try:
+            balance = await asyncio.to_thread(creations_balance, tenant_id, brand_id)
+        except Exception as exc:  # noqa: BLE001 — the service still refuses what it cannot pay
+            logger.warning("variations: creations unreadable: %s", type(exc).__name__)
+            return
+        async with self:
+            # images only here: the month's videos are not this screen's concern
+            self.creations_left, self.creations_quota, self.creations_renews = (
+                balance[:3] if balance else (-1, 0, "")
+            )
+
     @rx.var
     def generate_label(self) -> str:
         pending = self.pending_count
         if pending == 1:
-            return "Generar 1 pieza"
-        return f"Generar {pending} piezas"
+            return "Crear 1 publicación"
+        return f"Crear {pending} publicaciones"
 
     @rx.var
     def has_sets(self) -> bool:
@@ -393,6 +433,7 @@ class VariationsState(rx.State):
                 self.products_loading = False
             return False
         tenant_id, brand_id, _ = ids
+        await self._refresh_creations(tenant_id, brand_id)
         try:
             rows = await asyncio.to_thread(catalog_products, tenant_id, brand_id)
         except Exception as exc:  # noqa: BLE001 — any read failure reads the same here
@@ -642,7 +683,7 @@ class VariationsState(rx.State):
             async with self:
                 self.generating = False
             return
-        tenant_id, _, user_id = ids
+        tenant_id, brand_id, user_id = ids
         if user_id is None:
             async with self:
                 self.generating = False
@@ -654,10 +695,12 @@ class VariationsState(rx.State):
             )
         except Exception as exc:  # noqa: BLE001 — turned into words for the operator
             logger.warning("variations: generation failed: %s", type(exc).__name__)
+            await self._refresh_creations(tenant_id, brand_id)
             async with self:
                 self.generating = False
                 self.error = variation_error_message(exc)
             return
+        await self._refresh_creations(tenant_id, brand_id)
         async with self:
             # what went wrong stays on the page with its details; what went right is a
             # toast (request 2026-10-22: «10 en generación» used to sit there for good)

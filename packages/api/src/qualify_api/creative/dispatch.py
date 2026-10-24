@@ -32,6 +32,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
+from qualify_api.creative.creations import refund_in_session
 from qualify_api.creative.fsm import (
     DRAFTING,
     REAP_FAILURE_REASON,
@@ -136,4 +137,9 @@ def reap_stale_drafts(
         for draft in stale:
             draft.status = apply_transition(draft.status, DraftTrigger.REAP)
             draft.failure_reason = REAP_FAILURE_REASON
+        # CREAR-5: a reaped generation gives its creations back, in the same transaction
+        if stale:
+            refund_in_session(
+                session, ((draft.id, draft.revision) for draft in stale), REAP_FAILURE_REASON, now
+            )
         return len(stale)

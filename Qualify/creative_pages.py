@@ -22,7 +22,9 @@ from .creative_vm import (
     AI_LABEL_HINT,
     HARD_RULES_HINT,
     PURGED_TEXT,
+    RECREATE_LABEL,
     VIDEO_DRAFT,
+    VIDEO_EXPIRED,
     VIDEO_FINAL,
     CopyVariantVM,
     GapVM,
@@ -983,7 +985,28 @@ def _gallery_card(post) -> rx.Component:
     busy = GalleryState.busy_post_id == post.post_id
     can_discard = post.can_review | ((post.gallery_state == "schedulable") & ~post.in_calendar)
     actions = rx.box(
-        _card_main_button(post),
+        # founder 2026-10-24: the vista previa expired — a new piece from the same request
+        rx.cond(
+            post.preview_expired,
+            rx.vstack(
+                rx.button(
+                    rx.icon("refresh-cw", size=15),
+                    RECREATE_LABEL,
+                    size="2",
+                    width="100%",
+                    disabled=busy,
+                    on_click=GalleryState.recreate_post(post.post_id),
+                ),
+                # founder 2026-10-24: what it uses, before it is pressed
+                rx.cond(
+                    post.recreate_note != "",
+                    rx.text(post.recreate_note, size="2", color=T.TEXT_MUTED),
+                ),
+                spacing="1",
+                width="100%",
+            ),
+            _card_main_button(post),
+        ),
         # On a ready card the main button opens Tu semana, and on a «preparing» card it
         # is disabled, so opening the publication gets its own quiet link — it never
         # depends on knowing the picture is tappable (the picture is hidden from
@@ -1068,6 +1091,18 @@ def _gallery_card(post) -> rx.Component:
                 wrap="wrap",
                 gap="0.4rem",
                 align="center",
+            ),
+            # founder 2026-10-24: «Apruébala antes del jueves 30 de octubre para tener el
+            # video final.» while the vista previa waits for approval
+            rx.cond(
+                post.expiry_note != "",
+                rx.hstack(
+                    rx.icon("clock", size=13, flex_shrink="0"),
+                    rx.text(post.expiry_note, size="2"),
+                    class_name="q-gcard-note",
+                    align="start",
+                    spacing="1",
+                ),
             ),
             # m-24842981: what «Ya probada» / «Por probar» means, in sight (never `title=`)
             rx.cond(
@@ -1466,22 +1501,53 @@ def _video_draft_notice() -> rx.Component:
 
     return rx.cond(
         (video.state != "") & (video.state != VIDEO_FINAL),
-        rx.hstack(
-            rx.match(video.tone, ("error", toned("error")), ("warn", toned("warn")), toned("info")),
-            rx.cond(
-                video.can_retry,
-                rx.button(
-                    rx.icon("refresh-cw", size=15),
-                    "Intentar de nuevo",
-                    variant="soft",
-                    size="2",
-                    on_click=CreativeState.retry_final_render,
+        rx.vstack(
+            rx.hstack(
+                rx.match(
+                    video.tone, ("error", toned("error")), ("warn", toned("warn")), toned("info")
                 ),
+                rx.cond(
+                    video.can_retry,
+                    rx.button(
+                        rx.icon("refresh-cw", size=15),
+                        "Intentar de nuevo",
+                        variant="soft",
+                        size="2",
+                        min_height=_TAP_MIN_HEIGHT,
+                        on_click=CreativeState.retry_final_render,
+                    ),
+                ),
+                # founder 2026-10-24: an expired vista previa is made again as a new piece
+                rx.cond(
+                    video.state == VIDEO_EXPIRED,
+                    rx.button(
+                        rx.icon("refresh-cw", size=15),
+                        RECREATE_LABEL,
+                        variant="soft",
+                        size="2",
+                        min_height=_TAP_MIN_HEIGHT,
+                        on_click=CreativeState.recreate_expired,
+                    ),
+                ),
+                align="center",
+                spacing="3",
+                width="100%",
+                wrap="wrap",
             ),
-            align="center",
-            spacing="3",
+            # «Apruébala antes del jueves 30 de octubre para tener el video final.»
+            # founder 2026-10-24: what «Crearla otra vez» uses, before it is pressed
+            rx.cond(
+                (video.state == VIDEO_EXPIRED) & (CreativeState.recreate_note != ""),
+                rx.text(CreativeState.recreate_note, size="2", color=T.TEXT_MUTED),
+            ),
+            # hidden while approving is blocked for want of videos: a deadline next to a
+            # button that cannot be pressed reads as a contradiction (UX review)
+            rx.cond(
+                (video.expiry_note != "") & ~CreativeState.approve_videos_short,
+                rx.text(video.expiry_note, size="2", weight="medium"),
+            ),
+            spacing="2",
             width="100%",
-            wrap="wrap",
         ),
     )
 
@@ -2127,15 +2193,9 @@ def _review_panel() -> rx.Component:
                     cursor="help",
                 ),
             ),
-            # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop. The
-            # amount alone; the profile and the models on hover.
-            rx.box(
-                rx.icon("coins", size=14),
-                rx.text("Coste: ", draft.cost_short, as_="span"),
-                class_name="q-rv-pill",
-                title=draft.cost_label,
-                cursor="help",
-            ),
+            # CREAR-5 (decision 8): the owner never reads money here — what a new version
+            # uses is said in creations where it is asked for; the team reads the dollars
+            # in `qualify_api.creative.creations_report`.
             align="center",
             width="100%",
             wrap="wrap",
@@ -2204,6 +2264,15 @@ def _reject_dialog() -> rx.Component:
                 ),
                 size="2",
             ),
+            # CREAR-5: what the new version uses and what would be left, before it is asked
+            rx.cond(
+                regenerate & (CreativeState.regen_creations_text != ""),
+                rx.cond(
+                    CreativeState.regen_creations_short,
+                    callout(CreativeState.regen_creations_text, "warn", margin_top="0.75rem"),
+                    callout(CreativeState.regen_creations_text, "info", margin_top="0.75rem"),
+                ),
+            ),
             rx.flex(
                 rx.alert_dialog.cancel(
                     rx.button(
@@ -2221,7 +2290,10 @@ def _reject_dialog() -> rx.Component:
                             rx.icon("refresh-cw", size=15),
                             "Sí, pedir otra versión",
                             size="2",
+                            min_height="44px",
                             on_click=CreativeState.confirm_reject,
+                            # without enough creations nothing is asked (CREAR-5)
+                            disabled=CreativeState.regen_creations_short,
                             **T.tone_scheme("warn"),
                         ),
                         rx.button(
@@ -2396,14 +2468,28 @@ def _decision_bar_or_nothing() -> rx.Component:
                         "hora en que sale.",
                         "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
                     ),
-                    button=rx.button(
-                        rx.icon("circle-check", size=15),
-                        CreativeState.approve_label,
-                        size="2",
+                    button=rx.vstack(
+                        # founder 2026-10-24: what approving uses of the month's videos —
+                        # or why it cannot be approved yet — above the button
+                        rx.cond(
+                            CreativeState.approve_videos_text != "",
+                            rx.cond(
+                                CreativeState.approve_videos_short,
+                                callout(CreativeState.approve_videos_text, "warn"),
+                                callout(CreativeState.approve_videos_text, "info"),
+                            ),
+                        ),
+                        rx.button(
+                            rx.icon("circle-check", size=15),
+                            CreativeState.approve_label,
+                            size="2",
+                            width="100%",
+                            min_height=_TAP_MIN_HEIGHT,
+                            disabled=~CreativeState.can_approve_now,
+                            on_click=CreativeState.approve_selected,
+                        ),
+                        spacing="2",
                         width="100%",
-                        min_height=_TAP_MIN_HEIGHT,
-                        disabled=~CreativeState.can_approve_now,
-                        on_click=CreativeState.approve_selected,
                     ),
                 ),
                 class_name="q-decide-grid",
