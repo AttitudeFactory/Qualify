@@ -311,12 +311,25 @@ def window_pill(
         if minutes == 1:
             return "Responde en el próximo minuto", "warn"
         return f"Responde en los próximos {minutes} min", "warn"
-    return f"Puedes responder hasta {time_label_12h(_local(closes_at, zone))}", "ok"
+    return deadline_label(_local(closes_at, zone)), "ok"
+
+
+def deadline_label(local_close: datetime) -> str:
+    """«Puedes escribirle hasta las 5:00 p. m.» — «la» for one o'clock (m-24842994)."""
+    clock = time_label_12h(local_close)
+    article = "la" if clock.startswith("1:") else "las"
+    return f"Puedes escribirle hasta {article} {clock}"
+
+
+#: m-24842994: the chat's badge says who answers, in the owner's words.
+MODE_MENU = "Responde el menú"
+MODE_PERSON = "Respondes tú"
 
 
 def mode_pill(automation_paused: bool) -> tuple[str, str]:
-    """«Persona» when someone took over (the menu stays quiet), else «Automático»."""
-    return ("Persona", "info") if automation_paused else ("Automático", "neutral")
+    """«Respondes tú» when someone took over (the menu stays quiet), else «Responde el
+    menú»."""
+    return (MODE_PERSON, "info") if automation_paused else (MODE_MENU, "neutral")
 
 
 def initials(name: str) -> str:
@@ -407,7 +420,7 @@ EMPTY_THREAD = ThreadRowVM(
     window_label=WINDOW_CLOSED_PILL,
     window_tone="neutral",
     window_open=False,
-    mode_label="Automático",
+    mode_label=MODE_MENU,
     mode_tone="neutral",
     automation_paused=False,
     agent_id="",
@@ -491,7 +504,7 @@ _TICK_LABELS: dict[str, str] = {
     "delivered": "Entregado",
     "read": "Leído",
     "failed": "No entregado",
-    "queued": "En cola",
+    "queued": "Por enviar",
 }
 
 
@@ -633,7 +646,7 @@ def build_message_vm(
 
 
 def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> MessageVM:
-    """An outbox row shown as an outbound bubble: «En cola» while pending/sending, the
+    """An outbox row shown as an outbound bubble: «Por enviar» while pending/sending, the
     `error` tone with Meta's code once failed/dead."""
     failed = item.status in {"failed", "dead"}
     tick = "failed" if failed else "queued"

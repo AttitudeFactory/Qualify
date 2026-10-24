@@ -57,6 +57,10 @@ _NOT_ALGORITHM = frozenset(
         "PhasedDiscovery",
         "phase_signature",
         # avatars and card presentation
+        # phase titles the owner reads (NAV-11, m-24849129): words, not which accounts
+        "phase_title",
+        "owner_phase_title",
+        "SIMILAR_PREFIX",
         "compact_count",
         "_compact",
         "_tiktok_avatar",
@@ -102,7 +106,11 @@ FINGERPRINTS: dict[int, str] = {
     # 11: the same accounts as 10 — `Candidate` gained the profile link and the count of
     # AI-labelled videos seen, read on the feeds; the profile reads moved to Postgres
     11: "c33c339245106ebaaae4f29fd9499e355b5b73d62d132fe528f8cfed82c08dda",
-    12: "1f3513dc18d2911b3bdbe8766dc43b11a99ab2440f3301f8d59182bc40fa6efe",
+    # 12 re-pinned, not bumped (NAV-11, m-24849129): `phase_title` moved to
+    # `_NOT_ALGORITHM` — the owner's words for a phase, not which accounts it finds; a bump
+    # would recompute every brand's saved search and spend credits for the same accounts.
+    # Was "1f3513dc18d2911b3bdbe8766dc43b11a99ab2440f3301f8d59182bc40fa6efe".
+    12: "1fc685cc844f93fa7b18792c0d704e725e1dc6b5b48d24af93e78bb5d199fad8",
 }
 
 

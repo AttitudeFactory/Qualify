@@ -22,8 +22,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 
 from .connections_vm import WHATSAPP_RECONNECT_HINT, whatsapp_label
+from .nav_url import with_query
 
 # --------------------------------------------------------------------------------------
 # Tabs. The order is the strip's order. Chats (WA-11) and Menú (WA-16) are their own
@@ -61,6 +63,16 @@ def resolve_tab(requested: str) -> str:
     """`?tab=<key>` → a known tab key; anything else → `DEFAULT_TAB`. The value arrives in
     the URL, so junk is ignored rather than echoed."""
     return requested if requested in TAB_KEYS else DEFAULT_TAB
+
+
+WHATSAPP_ROUTE: Final = "/whatsapp"
+TAB_PARAM: Final = "tab"
+
+
+def tab_url(tab: str) -> str:
+    """The address of a tab (N5): `/whatsapp?tab=plantillas`. An unknown key is the
+    default tab, the same rule `resolve_tab` applies on the way in."""
+    return with_query(WHATSAPP_ROUTE, **{TAB_PARAM: resolve_tab(tab)})
 
 
 # --------------------------------------------------------------------------------------

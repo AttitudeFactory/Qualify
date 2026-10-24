@@ -345,7 +345,12 @@ def test_with_the_capability_off_a_story_reply_is_not_continued() -> None:
         _service(world).open_for_interaction(
             tenant_id=WS_TENANT, origin_message_id=origin.id, trigger=FollowupTrigger.MANUAL
         )
-    assert "R3" in exc.value.reason
+    # NAV-11 (m-24849129): the owner reads plain words; the R3 evidence stays in `reason`
+    # of the registry, not on screen
+    assert exc.value.reason == (
+        "Contestar a quien respondió una historia todavía no está disponible. Mientras tanto, "
+        "contéstale desde Instagram."
+    )
 
 
 # --- 5. classification and automatic opening ----------------------------------------------

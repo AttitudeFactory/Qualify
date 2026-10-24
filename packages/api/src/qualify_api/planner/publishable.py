@@ -137,6 +137,8 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.IMAGE_RATIO_NOT_ALLOWED: "Instagram solo acepta en una publicación imágenes entre 4:5 "
     "(vertical) y 1.91:1 (horizontal).",
     R.STOCK_NOT_PUBLISHABLE: "Una imagen de stock no se publica sola: úsala dentro de una pieza.",
+    R.MEDIA_DRAFT_PENDING: "El video es todavía un borrador a 480p: espera a que termine el "
+    "video final (o reinténtalo desde la publicación).",
     R.MEDIA_PURGED: "Los archivos de esta pieza se eliminaron a los 3 meses: ya no se puede "
     "publicar. Vuelve a generarla.",
 }
@@ -275,6 +277,8 @@ class MediaCandidate:
     output_port: str | None = None  # `image_assets.output_port` (0038), None before MP-11
     width: int | None = None  # `image_assets.width/height`, when the POST recorded them
     height: int | None = None
+    #: m-24820142: a 480p Seedance draft whose 1080p final is not in place yet.
+    draft_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -399,6 +403,7 @@ def _port_media(media: tuple[MediaCandidate, ...], output_port: str) -> tuple[Me
             media_type=item.media_type,
             position=index,
             output_port=item.output_port,
+            draft_pending=item.draft_pending,
         )
         for index, item in enumerate(own)
     )
@@ -470,6 +475,8 @@ def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
     for item, publisher_type in zip(ordered, publisher_types, strict=True):
         if not item.object_key:
             return _refuse(candidate, R.MEDIA_NOT_IN_R2, f"position {item.position}")
+        if item.draft_pending:
+            return _refuse(candidate, R.MEDIA_DRAFT_PENDING, f"position {item.position}")
         try:
             require_tenant_prefix(candidate.tenant_id, item.object_key)
         except TenantPrefixViolation:
