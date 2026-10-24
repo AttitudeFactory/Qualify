@@ -26,6 +26,10 @@ class RecordingQueue:
         RecordingQueue.calls.append(("requeue", entry_id, execute))
         return 3
 
+    def requeue_unsupported_postbacks(self, *, now, execute, entry_id=None):
+        RecordingQueue.calls.append(("requeue-postbacks", entry_id, execute))
+        return 4
+
 
 @pytest.fixture(autouse=True)
 def fake_queue(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,6 +78,23 @@ def test_requeue_comments_execute_for_one_account(capsys) -> None:
     assert worker.main(["--requeue-comments", "--account", "ig-1", "--execute"]) == 0
     assert RecordingQueue.calls == [("requeue", "ig-1", True)]
     assert "requeued events=3" in capsys.readouterr().out
+
+
+def test_requeue_postbacks_is_a_dry_run_by_default(capsys) -> None:
+    assert worker.main(["--requeue-postbacks"]) == 0
+    assert RecordingQueue.calls == [("requeue-postbacks", None, False)]
+    assert "instagram postbacks: would requeue (dry run) events=4" in capsys.readouterr().out
+
+
+def test_requeue_postbacks_execute_for_one_account(capsys) -> None:
+    assert worker.main(["--requeue-postbacks", "--account", "ig-1", "--execute"]) == 0
+    assert RecordingQueue.calls == [("requeue-postbacks", "ig-1", True)]
+    assert "instagram postbacks: requeued events=4" in capsys.readouterr().out
+
+
+def test_the_two_requeues_are_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        worker.main(["--requeue-postbacks", "--requeue-comments"])
 
 
 def test_account_without_requeue_is_refused() -> None:

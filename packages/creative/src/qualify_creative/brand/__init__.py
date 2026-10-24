@@ -5,7 +5,13 @@ prompt-cache economics of `render_prompt` and the hard rules of `check_hard_rule
 provable in unit tests rather than observable in production.
 """
 
-from qualify_creative.brand.fidelity import check_hard_rules, check_route_allowed
+from qualify_creative.brand.fidelity import check_hard_rules, check_route_allowed, fit_caption
 from qualify_creative.brand.render import printed_limits, render_prompt
 
-__all__ = ["check_hard_rules", "check_route_allowed", "printed_limits", "render_prompt"]
+__all__ = [
+    "check_hard_rules",
+    "check_route_allowed",
+    "fit_caption",
+    "printed_limits",
+    "render_prompt",
+]
