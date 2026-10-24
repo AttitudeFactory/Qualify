@@ -4,13 +4,18 @@ uses and what would be left, the presenter's sentence, the 15 s offer — never 
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
+from qualify_creative.creations import weight_for_request
+from qualify_creative.enums import ContentType, ImageRoute
+from qualify_creative.schemas import ImagePolicy
 
 from . import creative_state
 from .creative_state import CreativeState
 from .creative_vm import (
     SHORT_ADVICE_SIMPLER,
+    build_route_options,
     creations_left_label,
     creations_use_notice,
     failure_vm,
@@ -251,3 +256,72 @@ def test_choosing_the_presenter_on_a_short_month_picks_a_length_it_pays_for(
     state.choose_kind("avatar_video")
     assert state.video_engine == "omnihuman"
     assert state.media_duration == "15"
+
+
+# -- m-24851829: the presenter's duration control, and no money on these screens ---------
+
+
+@pytest.mark.parametrize("left", [-1, 30])
+def test_the_presenter_offers_exactly_5_10_15_and_30_seconds_all_priced(left: int) -> None:
+    """Every length the control offers is priced by the table: none can end in
+    `CreationNotOffered` (founder 2026-10-24: 5, 10, 15 and 30 s; never 45 or 60 s)."""
+    state = _presenter(left)
+    assert state.duration_choices == ["5", "10", "15", "30"]
+    for value in state.duration_choices:
+        price = weight_for_request(
+            "avatar_video", duration_seconds=int(value), video_engine="omnihuman"
+        )
+        assert price.is_presenter and price.presenter_seconds == int(value)
+        state.set_media_duration(value)
+        assert state.media_duration == value
+        assert state._creations_price() is not None
+
+
+def test_45_and_60_seconds_cannot_be_chosen_for_a_presenter() -> None:
+    state = _presenter(30, duration="15")
+    for value in ("45", "60"):
+        assert value not in state.duration_choices
+        state.set_media_duration(value)  # a stale control, or a crafted event
+        assert state.media_duration == "15"
+    state = _presenter(20, duration="15")
+    state.set_media_duration("30")  # offered only while the month pays for it
+    assert state.media_duration == "15"
+
+
+def test_the_last_presenter_length_is_preselected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(creative_state, "configured_video_engine", lambda: "omnihuman")
+    state = CreativeState()
+    state.creations_left, state.creations_quota = 30, 30
+    state.choose_kind("avatar_video")
+    state.set_media_duration("10")
+    state.choose_kind("creator_script")
+    state.set_media_duration("60")  # a script keeps every length
+    assert state.media_duration == "60"
+    state.choose_kind("avatar_video")
+    assert state.media_duration == "10"  # back on the presenter: the one chosen last
+    # a month that no longer pays for it: the longest one it still pays for
+    state.choose_kind("creator_script")
+    state.creations_left = 8
+    state.choose_kind("avatar_video")
+    assert state.media_duration == "5"
+
+
+def test_the_image_ways_say_creations_never_money() -> None:
+    options = build_route_options(
+        policy=ImagePolicy(allowed_routes=frozenset(ImageRoute)),
+        content_type=ContentType.PROMOTION,
+    )
+    assert options
+    for option in options:
+        assert option.cost_label == "Usa 1 creación"
+
+
+@pytest.mark.parametrize(
+    "module", ["content_generator.py", "creative_pages.py", "variations_view.py"]
+)
+def test_the_creation_screens_carry_no_money_nor_credits_wording(module: str) -> None:
+    """Decision 8: the owner never reads money on #299's screens; «Consume créditos» and
+    «Coste» gave way to the creations wording."""
+    source = (Path(__file__).parent / module).read_text(encoding="utf-8")
+    for banned in ("Consume créditos", "créditos", "Coste:", "cost_short", "USD", "~$"):
+        assert banned not in source, f"{banned!r} in {module}"

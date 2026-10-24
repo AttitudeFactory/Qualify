@@ -395,32 +395,35 @@ GENERATE_WARNING = (
     "(horarios, promos, fondos)."
 )
 
+_ONE_CREATION = "Usa 1 creación"
+
 _ROUTE_COPY: dict[ImageRoute, tuple[str, str, str]] = {
-    # route -> (title, description, cost label)
+    # route -> (title, description, what it uses of the month). CREAR-5 decision 8: never
+    # money — every image route is one image, 1 creation (`pesos-creaciones-v2`).
     ImageRoute.TEMPLATE_ONLY: (
         "Solo tu plantilla",
         "Tarjeta de marca sin fotografía: horarios, menú, promos de texto. Sin IA.",
-        "Gratis",
+        _ONE_CREATION,
     ),
     ImageRoute.FROM_UPLOAD: (
         "Tu foto, con tu marca",
         "Sube la foto y la ponemos en tu marco. Sin retoque de IA.",
-        "Gratis",
+        _ONE_CREATION,
     ),
     ImageRoute.RESTYLE_ENHANCE: (
         "Tu foto, mejorada",
         "Corregimos luz y color sobre TU foto real. No requiere etiqueta de IA en anuncios.",
-        "~$0.03",
+        _ONE_CREATION,
     ),
     ImageRoute.RESTYLE_SCENE: (
         "Tu producto, en otro fondo",
         "Lleva tu producto real a un contexto nuevo. Meta obliga a marcarlo como IA en anuncios.",
-        "~$0.03",
+        _ONE_CREATION,
     ),
     ImageRoute.GENERATE: (
         "Generar desde cero",
         "La imagen se inventa por completo a partir del encargo.",
-        "~$0.03–0.09",
+        _ONE_CREATION,
     ),
 }
 

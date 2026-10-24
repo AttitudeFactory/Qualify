@@ -889,6 +889,9 @@ class CreativeState(rx.State):
     piece_picker_open: bool = False
     pieces_loading: bool = False
     media_duration: str = "30"
+    #: The presenter's length the owner last chose (m-24851829): preselected the next
+    #: time a presenter is asked, when the month still pays for it ("" = none yet).
+    presenter_duration: str = ""
     #: A clip's length, one of `CLIP_DURATIONS` (§ request 2026-10-23).
     clip_duration: str = "5"
     #: «Con audio» (§ request 2026-10-23): the clip comes with the sound the video
@@ -4535,8 +4538,13 @@ class CreativeState(rx.State):
 
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
+        """Only a length the control offers: a presenter's is one of `duration_choices`
+        (5, 10, 15 or 30 s, those the month pays for), never 45 or 60 s (m-24851829)."""
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in DURATIONS:
+        if self._is_presenter():
+            if value in self._duration_choices():
+                self.media_duration = self.presenter_duration = value
+        elif value in DURATIONS:
             self.media_duration = value
 
     @rx.event
@@ -4861,9 +4869,12 @@ class CreativeState(rx.State):
     def _fit_duration(self) -> None:
         """A length the month no longer pays for is not left chosen: the longest one it
         still pays for is (UX review 2026-10-23, §4.4 values already filled in) — the
-        presenter's and the clip's."""
+        presenter's and the clip's. A presenter starts on the length the owner last
+        chose for one, when it is still offered (m-24851829)."""
         choices = self._duration_choices()
-        if choices and self.media_duration not in choices:
+        if self._is_presenter() and self.presenter_duration in choices:
+            self.media_duration = self.presenter_duration
+        elif choices and self.media_duration not in choices:
             self.media_duration = choices[-1]
         clip = self._clip_duration_choices()
         if clip and self.clip_duration not in clip:
@@ -5005,7 +5016,7 @@ class CreativeState(rx.State):
         """«Usar el más corto»: the longest presenter the month still pays for."""
         table = load_weights()
         fits = table.longest_presenter_within(max(self.creations_left, 0))
-        self.media_duration = str((fits or table.shortest_presenter)[0])
+        self.media_duration = self.presenter_duration = str((fits or table.shortest_presenter)[0])
         self.create_error = ""
 
     async def _refresh_creations(self, tenant_id: UUID, brand_id: UUID) -> None:
