@@ -876,6 +876,7 @@ class AuthState(rx.State):
             from .publishing_state import PublishState
             from .replies_state import RepliesState
             from .responder_state import ResponderState
+            from .results_state import ResultsState
             from .settings_state import SettingsState
             from .state import DashboardState
             from .stories_state import StoriesState
@@ -926,6 +927,8 @@ class AuthState(rx.State):
                 GalleryState,
                 # Inicio (m-24842962): the tenant's pending counts and week figures
                 HomeState,
+                # Resultados (m-24843003): the open tab and the week's figures
+                ResultsState,
                 # the POST's «Campaña» field (QUA-143): the brand's campaigns
                 CampaignState,
                 # the Canva card: links of a draft and the pending OAuth verifier

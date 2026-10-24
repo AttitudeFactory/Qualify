@@ -20,7 +20,7 @@ _HERE = Path(__file__).parent
 # Route → the module whose `page_header` (or `creative_pages._screen`) names the page.
 _PAGE_SOURCE: dict[str, str] = {
     "/": "home_page.py",
-    "/menciones": "components.py",
+    "/resultados": "results_page.py",
     "/connections": "connections_page.py",
     "/whatsapp": "whatsapp_page.py",
     "/inbox": "inbox_page.py",
@@ -31,7 +31,6 @@ _PAGE_SOURCE: dict[str, str] = {
     "/planner": "planner_page.py",
     "/publish": "publishing_page.py",
     "/leads": "leads_page.py",
-    "/clarity": "clarity_page.py",
     "/brand/kit": "brand_kit_editor.py",
     "/catalog": "catalog_page.py",
     "/settings": "settings_page.py",
@@ -44,10 +43,9 @@ _PAGE_SOURCE: dict[str, str] = {
 # one. label → (the route it points at today, the hub's own route, the ticket).
 # `test_a_pending_hub_is_switched_the_day_it_lands` fails as soon as the hub exists, so
 # this table only shrinks.
-# Inicio (m-24842962) and «Por responder» (m-24842990) have landed and left the table.
-_PENDING_HUBS: dict[str, tuple[str, str, str]] = {
-    "Resultados": (RESULTS_ROUTE, "/resultados", "m-24843003"),
-}
+# Inicio (m-24842962), «Por responder» (m-24842990) and «Resultados» (m-24843003) have
+# landed and left the table.
+_PENDING_HUBS: dict[str, tuple[str, str, str]] = {}
 
 # The one sanctioned short form (ticket m-24842958): the page is «Clientes interesados»,
 # the rail has room for «Interesados».
@@ -101,6 +99,12 @@ def _hub_has_landed(label: str) -> bool:
 
 def test_every_menu_entry_has_a_known_page() -> None:
     assert {route for _label, route in _menu_items()} <= set(_PAGE_SOURCE)
+
+
+def test_resultados_opens_its_own_screen() -> None:
+    """RESULTADOS-5 (m-24843003): the menu entry points at the real hub, not Tu página web."""
+    assert RESULTS_ROUTE == "/resultados"
+    assert _tab_titles()[RESULTS_ROUTE] == "Qualify · Resultados"
 
 
 @pytest.mark.parametrize("label", sorted(_PENDING_HUBS))

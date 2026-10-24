@@ -22,9 +22,6 @@ from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
 from .catalog_page import catalog_index
 from .catalog_state import CatalogState
-from .clarity_page import clarity_index
-from .clarity_state import ClarityState
-from .components import filter_bar, mentions_body, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
 from .creative_pages import (
@@ -54,11 +51,11 @@ from .publishing_state import PublishState
 from .r2_media import router as r2_media_router
 from .responder_page import legacy_redirect, responder_index
 from .responder_state import ResponderState
+from .results_page import results_index
+from .results_state import ResultsState
 from .settings_page import settings_index
 from .signals_page import signals_index
-from .state import DashboardState
 from .styleguide_page import styleguide_index
-from .ui import app_shell, page_body
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
@@ -90,16 +87,6 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 avatar_api.include_router(r2_media_router)
 # «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
 avatar_api.include_router(piece_download_router)
-
-
-def mentions_index() -> rx.Component:
-    """Menciones (m-24842962): no longer the home — Inicio is `/` now (founder decision
-    1, 2026-10-23). It keeps its own stable route until Resultados › «Quién habla de
-    ti» (m-24843003) hosts it."""
-    return app_shell(
-        topbar(),
-        page_body(stats_row(), filter_bar(), mentions_body()),
-    )
 
 
 # Type faces + the `--q-*` tokens (assets/qualify.css) layer on top of the Radix theme
@@ -231,11 +218,35 @@ app.add_page(
     on_load=[AuthState.require_login_or_brand_start, HomeState.load],
     title="Qualify · Inicio",
 )
+# m-24843003 (RESULTADOS-5): «¿cómo me va?» in one place — Redes · WhatsApp · Tu página
+# web · Quién habla de ti, each tab with its own `?tab=` (N5). `enter_page` reads the tab
+# and starts only that tab's load.
 app.add_page(
-    mentions_index,
+    results_index,
+    route="/resultados",
+    on_load=[AuthState.require_login, ResultsState.enter_page],
+    title="Qualify · Resultados",
+)
+
+
+# Menciones and Tu página web became tabs of Resultados (founder decision 1, 2026-10-23).
+# Their old routes stay so saved links do not break (ux-guia-navegacion §3): they only
+# redirect, keeping the query string (`/menciones?sentimiento=negativas` still filters).
+def _results_redirect() -> rx.Component:
+    return rx.fragment()
+
+
+app.add_page(
+    _results_redirect,
     route="/menciones",
-    on_load=[AuthState.require_login, DashboardState.load_mentions],
-    title="Qualify · Menciones",
+    on_load=ResultsState.redirect_mentions,
+    title="Qualify · Resultados",
+)
+app.add_page(
+    _results_redirect,
+    route="/clarity",
+    on_load=ResultsState.redirect_clarity,
+    title="Qualify · Resultados",
 )
 app.add_page(
     connections_index,
@@ -299,12 +310,6 @@ app.add_page(
     route="/leads",
     on_load=ResponderState.redirect_legacy,
     title="Qualify · Clientes interesados",
-)
-app.add_page(
-    clarity_index,
-    route="/clarity",
-    on_load=[AuthState.require_login, ClarityState.load],
-    title="Qualify · Tu página web",
 )
 # The two «Pronto» screens of the menu (N10, NAV-1 m-24842957): static, no load beyond
 # the session gate; each says what is coming and links to something that works today.

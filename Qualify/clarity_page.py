@@ -25,24 +25,16 @@ from . import clarity_vm as W
 from .clarity_provider import ActionItemVM, FrictionCardVM, MetricTableVM
 from .clarity_state import ClarityState
 from .ui import (
-    app_shell,
     callout,
     card,
     empty_state,
     loading_spinner,
-    page_body,
-    page_header,
     section,
     skeleton_rows,
     stat_card,
     tone_badge,
 )
 from .ui import tokens as T
-
-
-def _topbar() -> rx.Component:
-    # The literal title: `test_nav_one_name` checks menu, header and tab say the same.
-    return page_header("Tu página web", W.PAGE_SUBTITLE)
 
 
 def _stat_card(stat: list[str]) -> rx.Component:
@@ -329,8 +321,20 @@ def _snapshot_view() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    return page_body(
+def clarity_content() -> rx.Component:
+    """The reading screen without its shell: what Resultados › «Tu página web»
+    (m-24843003) shows under its tab strip. `ClarityState.load` must run on entry."""
+    return rx.vstack(
+        rx.text(W.PAGE_SUBTITLE, size="2", color=T.TEXT_MUTED),
+        *_content(),
+        spacing="4",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _content() -> tuple[rx.Component, ...]:
+    return (
         _messages(),
         rx.cond(
             ClarityState.load_error != "",
@@ -350,7 +354,3 @@ def _body() -> rx.Component:
             ),
         ),
     )
-
-
-def clarity_index() -> rx.Component:
-    return app_shell(_topbar(), _body())

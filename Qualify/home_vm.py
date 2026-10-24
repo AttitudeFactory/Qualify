@@ -29,7 +29,8 @@ DRAFTS_TO_APPROVE_URL = "/drafts?estado=por-completar"
 COMMENTS_URL = "/inbox"
 CONVERSATIONS_URL = "/conversations"
 WHATSAPP_CHATS_URL = "/whatsapp?tab=chats"
-MENTIONS_URL = "/menciones"
+# m-24843003: mentions are Resultados › «Quién habla de ti».
+MENTIONS_URL = "/resultados?tab=menciones"
 CONNECTIONS_URL = "/connections"
 CREATE_URL = "/create"
 
