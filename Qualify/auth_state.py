@@ -824,6 +824,7 @@ class AuthState(rx.State):
             from .ice_breakers_state import IceBreakersState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
+            from .pending_state import PendingState
             from .planner_state import PlannerState
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
@@ -909,6 +910,8 @@ class AuthState(rx.State):
                 WhatsAppContactsState,
                 WhatsAppCampaignsState,
                 WhatsAppMetricsState,
+                # m-24842963: the menu's pending counts of this tenant
+                PendingState,
                 # m-24842967: Configuración's country and currency of the business
                 SettingsState,
             ):

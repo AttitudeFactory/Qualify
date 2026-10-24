@@ -31,6 +31,7 @@ from .creative_vm import (  # noqa: F401
     APPROVED_TOAST_ACTION,
     approval_notice,
 )
+from .pending_state import PendingState
 from .planner_provider import load_gallery
 from .planner_vm import (
     GALLERY_FILTER_ALL,
@@ -258,6 +259,7 @@ class GalleryState(rx.State):
             yield getattr(rx.toast, notice.kind)(notice.text)
         if data is None:
             yield GalleryState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     @rx.event
     def ask_reject_post(self, post_id: str, title: str) -> None:
@@ -304,3 +306,4 @@ class GalleryState(rx.State):
             self.busy_post_id = ""
         yield rx.toast.success("Publicación descartada.")
         yield GalleryState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now

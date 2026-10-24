@@ -100,7 +100,7 @@ from .whatsapp_templates_vm import (
     build_send_components,
     send_variables,
 )
-from .whatsapp_vm import TAB_CHATS
+from .whatsapp_vm import TAB_CHATS, TAB_TEMPLATES
 
 logger = logging.getLogger(__name__)
 
@@ -579,6 +579,9 @@ class WhatsAppCampaignsState(rx.State):
     def set_wizard_open(self, is_open: bool) -> rx.event.EventSpec | None:
         if is_open or self.w_busy or self.launching:
             return None
+        return self._close_wizard()
+
+    def _close_wizard(self) -> rx.event.EventSpec | None:
         self.wizard_open = False
         if self.w_campaign_id:
             # The draft stays: it is in the list, launchable or cancellable from there.
@@ -784,3 +787,16 @@ class WhatsAppCampaignsState(rx.State):
         self.detail_open = False
         self.detail_id = ""
         return WhatsAppState.select_tab(TAB_CHATS)
+
+    @rx.event
+    def create_approved_message(self) -> list[rx.event.EventSpec]:
+        """«Crear un mensaje aprobado» (N3) from the wizard without any: close the
+        wizard the way its own close does (a saved draft stays), open «Mensajes
+        aprobados»."""
+        events: list[rx.event.EventSpec] = []
+        if not (self.w_busy or self.launching):
+            follow_up = self._close_wizard()
+            if follow_up is not None:
+                events.append(follow_up)
+        events.append(WhatsAppState.select_tab(TAB_TEMPLATES))
+        return events

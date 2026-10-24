@@ -29,6 +29,7 @@ import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
+from ..pending_state import HEARTBEAT_MS, PendingState
 from . import tokens as T
 from .primitives import tone_badge
 from .state import NavState
@@ -111,6 +112,17 @@ NAV_BUSINESS: list[Item] = [
     # The account itself (2026-10-06): who is in, and changing the password.
     ("Configuración", "settings", "/settings", True),
 ]
+
+# m-24842963 (NAV-6, N11): the entries that carry a pending count, by label (a label
+# keeps its count when its route changes, e.g. «Por responder» → /responder):
+# (badge text, tone, spoken name). `warn` only where people wait for an answer;
+# `neutral` (the tone of «Pronto») where nothing is urgent. At 0 nothing is rendered.
+NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
+    "Por responder": (PendingState.respond_badge, "warn", PendingState.respond_aria),
+    "WhatsApp": (PendingState.whatsapp_badge, "warn", PendingState.whatsapp_aria),
+    "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
+    "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),
+}
 
 # The foot block's head (guide §3): the business setup, touched rarely.
 BUSINESS_ZONE_LABEL = "Tu negocio"
@@ -279,13 +291,27 @@ def _nav_row(
     )
 
 
+def _count_badge(label: str) -> rx.Component | None:
+    """The pending count of an entry (N11), or None for an entry that has none. Shown
+    only above 0; hidden in zen like «Pronto» (the tab title still carries the total)."""
+    counter = NAV_COUNTERS.get(label)
+    if counter is None:
+        return None
+    text, tone, _spoken = counter
+    return rx.cond(
+        text != "",
+        rx.box(tone_badge(text, tone), class_name="q-soon", margin_left="auto"),
+    )
+
+
 def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
     """One menu entry, always a link. A «Pronto» entry (``enabled=False``) carries the
     word «Pronto» as text next to its label (N10: never only by colour or by looking
-    off) and opens its own screen, which says what is coming and where to go today."""
+    off) and opens its own screen, which says what is coming and where to go today. An
+    entry with something waiting carries its count (N11, m-24842963)."""
     active = NavState.router.page.path == route
     soon = (
-        None
+        _count_badge(label)
         if enabled
         else rx.box(tone_badge("Pronto", "neutral"), class_name="q-soon", margin_left="auto")
     )
@@ -301,6 +327,9 @@ def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
         width="100%",
         underline="none",
         aria_current=rx.cond(active, "page", ""),
+        # N10: the count is announced with what it counts («Por aprobar: 3
+        # publicaciones esperan tu aprobación»); only on counted entries.
+        **({"aria_label": NAV_COUNTERS[label][2]} if enabled and label in NAV_COUNTERS else {}),
         # No-op on desktop (the drawer is never open there); on a phone viewport
         # this is what makes picking a page also close the overlay instead of
         # leaving it covering the page that just loaded underneath it.
@@ -474,6 +503,14 @@ def sidebar() -> rx.Component:
         # injects on Reflex >= 0.9.9 — the shared venv was at 0.9.7 on 2026-10-08).
         # The file guards its own double-run.
         rx.el.script(src="/glass-nav.js", async_=True),
+        # m-24842963 (NAV-6): the pending counts are re-read on every screen (the rail
+        # mounts with each page) and every 30 s while one is open; the same read writes
+        # «(N)» at the start of the tab title. Browser-side timer, stops with the page.
+        rx.moment(
+            interval=HEARTBEAT_MS,
+            on_change=lambda _tick: PendingState.tick,
+            display="none",
+        ),
         tenant_block(),
         rx.cond(
             AuthState.is_guest,
@@ -495,6 +532,7 @@ def sidebar() -> rx.Component:
             ),
         ),
         aria_label="Secciones",
+        on_mount=PendingState.on_shell_mount,
         class_name=rx.cond(
             NavState.zen,
             rx.cond(NavState.mobile_open, "q-sidebar q-zen q-mobile-open", "q-sidebar q-zen"),
@@ -613,10 +651,16 @@ def _mobile_nav_toggle() -> rx.Component:
     visually, but staying simple: the CSS rule is the only gate."""
     return rx.el.button(
         rx.icon("menu", size=T.ICON_MD),
+        # m-24842963 UX review: on a phone the tab title is out of sight, so the
+        # button carries the total of what waits (same tone_badge, nothing at 0).
+        rx.cond(
+            PendingState.total_badge != "",
+            rx.box(tone_badge(PendingState.total_badge, "warn"), class_name="q-menu-count"),
+        ),
         id="q-mobile-nav-toggle",
         on_click=NavState.toggle_mobile_nav,
         class_name="q-mobile-nav-toggle",
-        aria_label="Abrir el menú",
+        aria_label=PendingState.menu_button_aria,
     )
 
 

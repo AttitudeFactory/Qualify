@@ -697,7 +697,7 @@ def test_approved_message_copy_speaks_the_owners_words() -> None:
         assert not any(word in text.lower() for word in banned), text
     # Assisted, never autonomous: the description says it leaves on the owner's tap.
     assert "«Enviar»" in vm.SEND_APPROVED_DESCRIPTION
-    assert vm.CREATE_APPROVED_ROUTE == "/whatsapp?tab=plantillas"
+    assert vm.CREATE_APPROVED_ROUTE == "/whatsapp?tab=promociones&sub=aprobados"
 
 
 def test_template_choice_and_fields_vm() -> None:

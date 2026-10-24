@@ -10,6 +10,7 @@ import textwrap
 from qualify_api.planner.gallery import GalleryState as DerivedState
 
 from .gallery_state import GalleryState
+from .pending_state import PendingState
 from .planner_state import MODE_ASSIGN, PlannerState
 from .planner_vm import (
     CARD_ACTION_PLANNER,
@@ -545,7 +546,8 @@ async def test_quick_approve_toast_says_not_out_yet_and_offers_elegir_dia_y_hora
     assert "label='Elegir día y hora'" in toast and '["onClick"]' in toast
     assert f"/planner?post={_QA_POST_ID}" in toast
     assert "POST aprobado" not in toast
-    assert len(events) == 1  # no second read of the grid
+    # no second read of the grid; only the menu's pending counts (m-24842963)
+    assert len(events) == 2 and events[-1] is PendingState.refresh_now
 
 
 async def test_quick_approve_of_a_not_ready_publication_offers_no_dead_end(monkeypatch) -> None:
@@ -564,7 +566,8 @@ async def test_quick_approve_with_an_unreadable_grid_still_offers_the_way(monkey
     # the approval stands, so the way to Tu semana is offered (it is the real gate) …
     assert f"/planner?post={_QA_POST_ID}" in str(events[0])
     # … and the grid is read again by `load`, which shows its own error if it fails
-    assert events[-1] is GalleryState.load
+    assert events[-2] is GalleryState.load
+    assert events[-1] is PendingState.refresh_now  # m-24842963: the menu's count
 
 
 def test_schedule_readiness_reads_the_publication_from_the_grid() -> None:

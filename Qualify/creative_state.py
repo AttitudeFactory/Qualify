@@ -136,6 +136,7 @@ from .creative_vm import (
     seen_label,
 )
 from .gallery_state import schedule_readiness
+from .pending_state import PendingState
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
 from .stock_provider import (
@@ -5649,6 +5650,7 @@ class CreativeState(rx.State):
         # is offered — the card says why (`approved_hold_note`).
         notice = approval_notice(vm.video_draft, ready=ready)
         yield getattr(rx.toast, notice.kind)(notice.text)
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         if start_poll:
             yield CreativeState.poll_final
 
@@ -5904,6 +5906,7 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != vm.draft_id
             if should_poll:
                 self._polling_draft_id = vm.draft_id
+        yield PendingState.refresh_now  # m-24842963: discarded or regenerated, recount
         if should_poll:
             # the regeneration says "listo" even from another tab (pendientes §5)
             yield rx.call_script(_ASK_NOTIFICATIONS_JS)

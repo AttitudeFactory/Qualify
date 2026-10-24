@@ -2197,8 +2197,7 @@ def _reject_dialog() -> rx.Component:
             rx.alert_dialog.description(
                 rx.cond(
                     regenerate,
-                    "Esta versión se descarta y se generan versiones nuevas del mismo "
-                    "encargo. Consume créditos.",
+                    "Esta versión se descarta y se generan versiones nuevas del mismo encargo.",
                     "La publicación se descarta y no se genera nada nuevo. No se podrá "
                     "aprobar ni publicar.",
                 ),
@@ -2372,7 +2371,7 @@ def _decision_bar_or_nothing() -> rx.Component:
                     icon="refresh-cw",
                     title="Pedir otra versión",
                     text="Si la idea sirve pero el resultado no: descarta este y crea "
-                    "variantes nuevas del mismo encargo. Consume créditos.",
+                    "variantes nuevas del mismo encargo.",
                     button=rx.button(
                         rx.icon("refresh-cw", size=15),
                         "Regenerar",
