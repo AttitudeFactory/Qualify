@@ -34,6 +34,7 @@
 2. **Los finales de las publicaciones programadas se hacen de noche, con una segunda mirada:** el dueño confirma el final en «Tu semana» antes de que se publique. ux-designer diseña los indicadores.
 3. El ticket a BytePlus para subir el cupo se manda hacia los **100 negocios** (m-24852172).
 4. «Generar ya» solo se cobra en la **Fase 2** (m-24852171).
+5. Respuesta a la primera versión de este ADR (mismo día): **todo final**, también el pedido a mano, pasa por `final_ready` y se confirma; el final se hace **la primera noche después de aprobar**; las del mismo día y «Publicar ahora», en el momento con prioridad; sin confirmar no se publica («Falta tu confirmación» 24 h, luego «Vencido»); «Pedir otra versión» de un final cuesta 1 vista previa y 1 video; aviso por correo a la mañana, sin WhatsApp (§3).
 
 ## 2. Decisión
 
@@ -47,50 +48,78 @@
    5. suelta el cupo cuando BytePlus da la tarea por terminada (éxito, falla o `expired`).
 4. **Dos carriles por modelo, sin cobro:**
    - **Inmediato** (vista previa, regenerar, final pedido a mano): lo que el dueño espera en pantalla. Siempre tiene **2 cupos reservados** de Seedance que el carril nocturno no puede tomar de día.
-   - **Nocturno** (final de una publicación programada): se envía entre las **00:00 y las 06:00** hora del negocio, con plazo. 10 a la vez × 6 h ÷ 60 s por final ≈ **3 600 finales por noche**. 1 000 negocios con el cupo agotado hacen ~6 400 finales al mes (4 / 8 / 16 por plan, mezcla 60/30/10): ~210 por noche, el 6 % de esa capacidad.
+   - **Nocturno** (final de toda vista previa aprobada, con o sin fecha, salvo las del mismo día): se envía **la primera noche después de aprobar**, entre las **00:00 y las 06:00** hora del negocio, con plazo. 10 a la vez × 6 h ÷ 60 s por final ≈ **3 600 finales por noche**. 1 000 negocios con el cupo agotado hacen ~6 400 finales al mes (4 / 8 / 16 por plan, mezcla 60/30/10): ~210 por noche, el 6 % de esa capacidad.
    - «Generar ya» con prioridad y costo extra **no se construye ahora**: es la Fase 2 (m-24852171), cuando la espera p95 en el pico pase de ~3–5 min.
-5. **El plazo de un final nocturno** = el más temprano de: (a) la hora de publicación menos 12 h, para dejar al dueño una mañana para confirmarlo; (b) la creación del borrador + 7 días − 15 min (el id del borrador de BytePlus caduca a los 7 días, m-24852168). Si la publicación está a menos de ~12 h o no queda una noche antes del plazo, el final va al carril inmediato con prioridad, como hoy. Detalle y estados en el §3.
+5. **El final se pide la primera noche después de aprobar** y su plazo es el más temprano de: (a) la creación del borrador + 7 días − 15 min (el id del borrador de BytePlus caduca a los 7 días, m-24852168); (b) la hora de publicación menos 12 h, si tiene fecha. Las publicaciones del mismo día y «Publicar ahora» van al carril inmediato con prioridad. **Todo final, de cualquier carril, espera la confirmación del dueño.** Detalle, estados, cobro y aviso en el §3.
 6. **La puerta del worker** es un rol nuevo, `qualify_creative_worker`, con su módulo `qualify_shared/db/creative_worker.py`, hermano de `webhook_worker_session` (migración 0050). **Sin BYPASSRLS**: una política RLS de solo ese rol en `creative_jobs` y GRANT por columna (las de la cola, nunca el contenido), y GRANT en `vendor_slots`. Ningún otro privilegio. Detalle, amenazas y mitigaciones en `docs/seguridad-creative-worker.md`.
 7. **`dispatch.py` cambia de implementación, no de contrato.** `TaskDispatcher` ya prevé el cambio: un `QueueDispatcher` inserta en `creative_jobs` en lugar de lanzar un hilo, con la misma firma de dos UUID. `InlineDispatcher` queda solo para pruebas y desarrollo local sin el worker. El reaper pasa a contar desde que BytePlus empieza a hacer la tarea (`running`) y desde la concesión del cupo, no desde la creación de la fila (m-24852166).
 8. **Idempotencia y procedencia** (regla 5): clave natural `UNIQUE (tenant_id, draft_id, kind, revision, position)`, de modo que pedir dos veces el mismo final no paga dos; `vendor_task_id` se escribe una sola vez y un trabajo con `vendor_task_id` nunca se vuelve a enviar, solo se consulta; cada fila guarda el modelo, la versión de la tabla de precios y `queued_at` / `submitted_at` / `running_at` / `finished_at` para medir (m-24852158).
 9. **Visibilidad sin fuga entre negocios:** la app no puede contar los trabajos de otros negocios (RLS). El worker publica en Redis, por modelo, solo agregados (cupos ocupados, largo de la fila, espera estimada), sin ids ni negocios, como ya hace el latido de `calendar-worker`. El aviso «Tu video está en fila…» (m-24852170) lee eso.
 
-## 3. Finales nocturnos con confirmación del dueño
+## 3. Finales con confirmación del dueño
 
-### 3.1 Estados del final
+Reglas del fundador del 2026-10-24 (respuesta a la primera versión de este ADR): **todo final pasa por la confirmación del dueño, sin excepción**, y el final nocturno se hace **la primera noche después de aprobar**, no la noche antes de publicar.
+
+### 3.1 Cuándo se hace el final
+
+| Caso | Carril | Cuándo |
+|---|---|---|
+| Vista previa aprobada, pieza programada para **otro día** | Nocturno | **La primera noche después de aprobar** (00–06 h, hora del negocio). Así «listo mañana temprano» es verdad y el final se pide lejos de la caducidad del borrador |
+| Vista previa aprobada, pieza **sin fecha** | Nocturno | También la primera noche después de aprobar |
+| Pieza programada para **el mismo día**, o «Publicar ahora» | Inmediato, con prioridad | En el momento |
+| Final pedido a mano desde la pieza | Inmediato | En el momento |
+| «Pedir otra versión» sobre un final | Igual que el final que reemplaza | Ver §3.5 por el cobro |
+
+**Plazo del trabajo** (`deadline` en `creative_jobs`), el más temprano de:
+
+1. **la creación del borrador + 7 días − 15 min**: el id del borrador de BytePlus caduca a los 7 días y después ya no hay final (m-24852168). Es el límite duro;
+2. **la hora de publicación − 12 h**, si la pieza tiene fecha: otro tope, para que el dueño tenga una mañana para confirmar.
+
+El carril nocturno pide el final en su primera noche. Si esa noche no llega antes del plazo (por ejemplo, se aprueba a las 23:50 para publicar a las 10:00), el trabajo pasa al carril inmediato con prioridad. Si un final nocturno falla, se reintenta esa misma noche y, si no alcanza, en el carril inmediato a primera hora, siempre dentro del plazo.
+
+### 3.2 Estados del final
 
 El bloque `params["draft"]` de `image_assets` (`creative/draft_mode.py`) gana estados. El nombre en código va en inglés; lo que ve el dueño lo decide ux-designer con `qualify-copy-es`.
 
 | Estado (`status`) | Qué significa | ¿Se publica? |
 |---|---|---|
 | `draft` | La vista previa a 480p, aprobada o por aprobar | No |
-| `final_scheduled` | **Nuevo.** La vista previa está aprobada y la pieza programada; el final espera su noche en `creative_jobs` (carril nocturno, con plazo) | No |
+| `final_scheduled` | **Nuevo.** Vista previa aprobada; el final espera su noche en `creative_jobs` (carril nocturno, con plazo) | No |
 | `rendering` | El final se está haciendo | No |
 | `final_ready` | **Nuevo.** El final a 1080p está en R2, **esperando que el dueño lo confirme** | **No** |
 | `final` | El dueño confirmó el final (`confirmed_by`, `confirmed_at`, `confirmed_sha256` del objeto confirmado) | Sí |
 | `failed` | El final falló; se reintenta mientras viva el id del borrador | No |
 
-Hoy `draft_pending(params)` = `status != "final"`, y el Planificador ya rechaza publicar un video pendiente (`R.MEDIA_DRAFT_PENDING` en `planner/publishable.py`). **Por eso la regla «nada se publica sin confirmación» queda en el dato, no en la pantalla:** `final_ready` es «pendiente» para el mismo guardián que ya existe. Se agrega un motivo propio, `R.MEDIA_FINAL_UNCONFIRMED`, para que el Planificador diga por qué no salió.
+**Todo final pasa por `final_ready`**, sea nocturno, inmediato, del mismo día o de «Publicar ahora». Hoy `draft_pending(params)` = `status != "final"`, y el Planificador ya rechaza publicar un video pendiente (`R.MEDIA_DRAFT_PENDING` en `planner/publishable.py`). **Por eso la regla «nada se publica sin confirmación» queda en el dato, no en la pantalla:** `final_ready` es «pendiente» para el mismo guardián que ya existe. Se agrega un motivo propio, `R.MEDIA_FINAL_UNCONFIRMED`, para que el Planificador diga por qué no salió.
 
-### 3.2 La confirmación
+### 3.3 La confirmación
 
-- Se confirma desde «Tu semana» (indicadores de ux-designer) o desde la ficha de la pieza: **una sola decisión**, «usar este video» o «volver a hacerlo».
+- Se confirma desde «Tu semana» (indicadores de ux-designer) o desde la ficha de la pieza: **una sola decisión**, «usar este video» o «pedir otra versión».
+- En «Publicar ahora» y en las piezas del mismo día, el dueño confirma en cuanto el final aparece; la publicación sale en la primera vuelta de `calendar-worker` después de confirmar.
 - La confirmación queda atada **al objeto** que el dueño vio (`confirmed_sha256` y la clave de R2). Si el final se rehace, la confirmación anterior no vale y el estado vuelve a `final_ready`. El guardián de publicación compara el hash del objeto que va a publicar con el confirmado.
 - La confirmación es por pieza y revisión, no por evento: una pieza recurrente se confirma una vez.
 - Es la **segunda aprobación humana** de la regla 4 aplicada al archivo que de verdad se publica: la primera es el ángulo y la vista previa; la segunda, el final.
 
-### 3.3 Qué pasa a la hora de publicar si no está confirmado
+### 3.4 Qué pasa a la hora de publicar si no está confirmado
 
-**No se publica.** El ejecutor del calendario ya trata un `NotPublishable` antes de reclamar como `NOT_READY` (`planner/executor.py`, `try_execute`): el evento **sigue `scheduled`**, no se crea intento de publicación y no se llama a Meta. Consecuencias, todas con piezas que ya existen:
+**No se publica.** El ejecutor del calendario ya trata un `NotPublishable` antes de reclamar como `NOT_READY` (`planner/executor.py`, `try_execute`): el evento **sigue `scheduled`**, no se crea intento de publicación y no se llama a Meta.
 
-1. Si el dueño confirma **dentro de la ventana de ejecución de 24 h** (`planner/rules.py`, `EXECUTION_WINDOW`), la publicación sale en la primera vuelta de `calendar-worker` después de confirmar (≤ 60 s), con retraso respecto de su hora.
-2. Si pasan 24 h sin confirmar, el evento queda **«Venció»** (`BLOCKED_EXPIRED`, QUA-115) y hay que reprogramarlo. Nunca se publica tarde por su cuenta.
-3. Si el final falló de noche y no se pudo rehacer antes de la hora, pasa lo mismo: no hay archivo confirmado, no se publica.
-4. Avisos al dueño antes de llegar ahí (diseño de ux-designer, sin decidir aquí): indicador en «Tu semana» en cuanto el final está listo y un recordatorio unas horas antes de la publicación.
+| Momento | Estado del evento | Lo que ve el dueño (texto final de ux-designer) |
+|---|---|---|
+| Desde la hora de publicación y durante **24 h** (`EXECUTION_WINDOW`, `planner/rules.py`) | `scheduled`, `NOT_READY` por `MEDIA_FINAL_UNCONFIRMED` | **«Falta tu confirmación»**, con **«Confirmar y publicar ahora»** (confirma el final; sale en la siguiente vuelta, ≤ 60 s) y **«Elegir otra hora»** (reprograma: nueva hora, sube `revision`) |
+| Pasadas las 24 h | `BLOCKED_EXPIRED` (QUA-115) | **«Vencido»**: hay que reprogramar. Nunca se publica tarde por su cuenta |
 
-### 3.4 Cambio de comportamiento para el dueño
+Si el final falló y no se pudo rehacer antes de la hora, el evento sigue el mismo camino: no hay archivo confirmado, no se publica.
 
-Hoy un video en borrador **no se puede programar** (el aviso de `MEDIA_DRAFT_PENDING` en la galería y en Crear pieza). Con este ADR **sí se puede programar con la vista previa aprobada**: el final se encola como `final_scheduled` en lugar de pedirse en ese momento. El final pedido a mano desde la pieza (sin programar) sigue yendo al carril inmediato, como hoy. **Punto abierto para el fundador:** si ese final inmediato también debe pasar por `final_ready` (la regla «ningún video se publica sin que alguien vea el final» sería entonces universal) o si basta con que el dueño lo vea aparecer en pantalla. La recomendación es universal: un estado menos que razonar en el guardián, y un toque más solo cuando el dueño ya está mirando la pieza.
+### 3.5 Regla de cobro: «Pedir otra versión» sobre un final
+
+**Pedir otra versión de un final descuenta del cupo del plan 1 vista previa y 1 video**: rehacerlo exige un borrador nuevo (el final sale del id de un borrador) y su final. Queda como regla del libro de consumo (épica de costos y cobro m-24848869, `docs/modelo-cobro-generacion.md`); el trabajo en `creative_jobs` lleva la referencia al consumo que lo pagó, para que un reintento por falla nuestra no vuelva a descontar.
+
+### 3.6 Aviso por correo a la mañana
+
+Cada mañana, a cada negocio con finales en `final_ready`, **un correo con plantilla y enlaces a los videos listos** para confirmarlos. **Sin WhatsApp.** Lo manda un paso del `creative-worker` al cerrar el carril nocturno, una vez por negocio y día (clave de idempotencia `(tenant_id, fecha)`), con el texto según `qualify-copy-es`.
+
+**Dependencia: el módulo de correo** (`qualify_api.mail`, Resend). Hoy solo manda invitaciones; necesita una plantilla nueva y enlaces que abran la pieza tras iniciar sesión (nunca un enlace que confirme sin sesión). Costo: el plan gratis de Resend es de 100 correos al día y 3 000 al mes; un correo diario por negocio lo agota hacia los **~100 negocios** (≈ 22 días hábiles × 100 = 2 200 al mes, más invitaciones y recuperaciones). Desde ahí, el plan de pago de Resend (USD 20 al mes por 50 000, precio a verificar al contratarlo) ≈ **USD 0,20 por negocio al mes a 100 negocios**.
 
 ## 4. Opciones consideradas
 
@@ -110,7 +139,7 @@ Hoy un video en borrador **no se puede programar** (el aviso de `MEDIA_DRAFT_PEN
 ## 6. Consecuencias
 
 - **Positivas.** Ningún video pagado se pierde por esperar (la tarea se consulta por su id hasta 48 h). La fila es nuestra: reparto justo, espera visible y carril nocturno. Los finales salen del pico del día: son el **83 % del costo** y nadie los espera en pantalla. El final que se publica siempre lo vio el dueño.
-- **Negativas.** Un servicio más en producción. Una pieza programada pasa a depender de que el dueño confirme a tiempo: si no confirma, no se publica, y eso se verá como «no salió» si los avisos de ux-designer no llegan bien. Un estado más en el bloque del borrador y un motivo más en el guardián de publicación.
+- **Negativas.** Un servicio más en producción. Un correo diario por negocio con finales listos: el plan gratis de Resend no alcanza desde ~100 negocios (§3.6). Una pieza programada pasa a depender de que el dueño confirme a tiempo: si no confirma, no se publica, y eso se verá como «no salió» si los avisos de ux-designer no llegan bien. Un estado más en el bloque del borrador y un motivo más en el guardián de publicación.
 - **No crea capacidad.** A 1 000 negocios el viernes sigue habiendo 35–52 min de espera; solo deja de fallar y de cobrarse, y se ve. La capacidad viene del ticket a BytePlus (hacia los 100 negocios) y, como último recurso, de varias cuentas (m-24852174, solo con el visto bueno escrito de BytePlus).
 - **Desarrollo y evaluaciones comparten las 10** con producción. Las evaluaciones con video corren fuera del horario de los comercios; el worker deja un margen configurable (por defecto 0) para restar cupos cuando haya una evaluación grande.
 - **Cambia el contrato de seguridad:** un rol nuevo con lectura entre negocios, acotada. Ver `docs/seguridad-creative-worker.md`.
