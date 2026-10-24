@@ -52,7 +52,7 @@ from qualify_api.replies.repository import DraftRecord
 from qualify_api.replies.service import RegenerationRefused, RetryRefused, UnknownDraft
 
 from .conversations_provider import gateway as conversations_gateway
-from .inbox_provider import tenant_zone
+from .inbox_provider import stored_thumbnail_path, tenant_zone
 from .inbox_vm import CandidateMediaVM
 from .replies_vm import PUBLICATION_ALT_FALLBACK, DraftVM, build_draft_vm
 
@@ -102,15 +102,16 @@ def build_queue(
     signals: Mapping[UUID, IntentSignal] | None = None,
     reliable: Mapping[IntentClass, bool] | None = None,
     candidates: Iterable[CandidateMediaVM] = (),
+    tenant_id: UUID | None = None,
 ) -> list[DraftVM]:
     """The review queue as VMs. A commercial draft (it carries a grounding record) gets
     its comment's current intent chips; a sentiment-era draft gets none.
 
-    m-24842989: `candidates` is the inbox's ALREADY-loaded candidate list — the only
-    source of a publication picture, since the inbox stores none (Meta's URLs expire).
-    Same cross-reference `inbox_provider._to_reel_summary_vm` does for the Reel cards:
-    zero new queries, zero new Meta calls. A publication outside the 2-week list gets
-    no thumbnail."""
+    m-24852202: a publication's picture is the one kept in R2 (the record's
+    `media_thumbnail_key`, served through `/r2media` for `tenant_id`) first; else
+    (m-24842989) `candidates`, the inbox's ALREADY-loaded live list — the same order
+    `inbox_provider._to_reel_summary_vm` uses for the Reel cards. Zero new Meta calls.
+    With neither, no thumbnail."""
     signals = signals or {}
     by_media_id = {c.external_media_id: c for c in candidates}
     return [
@@ -120,6 +121,12 @@ def build_queue(
             signal=signals.get(r.message_id) if r.grounding is not None else None,
             reliable=reliable or {},
             media=by_media_id.get(r.external_media_id),
+            # m-24852202: the picture kept in R2, when there is one (needs the tenant).
+            stored_thumbnail=stored_thumbnail_path(
+                tenant_id,
+                getattr(r, "media_thumbnail_key", ""),
+                getattr(r, "media_thumbnail_content_type", ""),
+            ),
         )
         for r in records
     ]
@@ -151,6 +158,7 @@ def pending_drafts(
         signals=signals,
         reliable=reliable,
         candidates=candidates,
+        tenant_id=tenant_id,
     )
 
 
@@ -243,7 +251,9 @@ def retryable_drafts(
     records = _list_retryable_drafts(tenant_id=tenant_id, connection_id=connection_id)
     if not records:
         return []
-    return build_queue(records, zone=_tenant_zone(tenant_id), candidates=candidates)
+    return build_queue(
+        records, zone=_tenant_zone(tenant_id), candidates=candidates, tenant_id=tenant_id
+    )
 
 
 async def retry_draft(*, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftVM:

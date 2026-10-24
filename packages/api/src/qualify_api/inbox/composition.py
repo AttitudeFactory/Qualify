@@ -34,6 +34,9 @@ from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.config import R2Settings
+from qualify_shared.objects.gate import ObjectGate
+from qualify_shared.objects.s3 import R2ObjectStore
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings, redis_url
@@ -47,8 +50,14 @@ from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.inbox.client import HttpCommentsClient
 from qualify_api.inbox.media_client import HttpMediaClient
 from qualify_api.inbox.repository import PostgresInboxRepository
-from qualify_api.inbox.service import CandidateMedia, InboxService, SyncSummary
+from qualify_api.inbox.service import (
+    CandidateMedia,
+    InboxService,
+    SyncSummary,
+    ThumbnailBackfill,
+)
 from qualify_api.inbox.sync_guard import Lease, SyncAlreadyRunning, SyncGuard, wall_clock
+from qualify_api.inbox.thumbnails import R2ThumbnailStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -156,7 +165,15 @@ async def production_inbox_service_for(*, tenant_id: UUID, connection_id: UUID) 
         granted_scopes=frozenset(scopes or ()),
         connection_degrader=degrade_connection_on_auth_error,
         story_comments=story_comments_enabled(),
+        thumbnails=R2ThumbnailStore(gate_factory=_object_gate),
     )
+
+
+def _object_gate() -> ObjectGate:
+    """The R2 door for thumbnails (m-24852202), built only when a picture is stored: a
+    missing R2 configuration then fails that one picture (the screen keeps its icon),
+    never the sync or the activation around it."""
+    return ObjectGate(R2ObjectStore(R2Settings.from_env()))
 
 
 async def list_candidate_media(
@@ -247,6 +264,21 @@ async def sync_comments(
             "mark_finished",
         )
     return summary
+
+
+async def backfill_thumbnails(
+    *, tenant_id: UUID, connection_id: UUID, limit: int
+) -> ThumbnailBackfill:
+    """The published seam for the optional thumbnail backfill (m-24852202). Refused, like
+    a sync, on an unknown or inactive connection — a disconnected account is never read."""
+    production_ig_user_id_for(tenant_id=tenant_id, connection_id=connection_id)
+    status = production_connection_status_for(tenant_id=tenant_id, connection_id=connection_id)
+    if status != ConnectionStatus.ACTIVE:
+        raise InboxConnectionInactive(status)
+    service = await production_inbox_service_for(tenant_id=tenant_id, connection_id=connection_id)
+    return await service.backfill_thumbnails(
+        tenant_id=tenant_id, connection_id=connection_id, limit=limit
+    )
 
 
 # --- one pass per connection (`sync_guard.py`) ---------------------------------------

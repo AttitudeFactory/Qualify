@@ -559,6 +559,9 @@ def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
         # m-24789644 (B2): the media's surface and format — scalars about the media.
         "media_product_type": "str | None",
         "media_type": "str | None",
+        # m-24852202: the R2 key of the media's stored picture and its content type.
+        "thumbnail_key": "str | None",
+        "thumbnail_content_type": "str | None",
     }
 
 

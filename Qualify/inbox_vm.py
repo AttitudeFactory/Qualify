@@ -268,9 +268,10 @@ class ReelSummaryVM:
     `caption`/`permalink` (QUA-149) come first from the PERSISTED `monitored_media`
     metadata, so they survive the 14-day window; the live `CandidateMediaVM` (opción A,
     ZERO extra Meta calls) is only a fallback, e.g. for a legacy row not read yet.
-    `thumbnail_url` comes only from that live list (Meta's CDN URLs expire, so it is not
-    stored) — `""` once the Reel leaves it, and the page shows its generic icon. Same "no
-    raw nullable reaching a `str` field" convention every VM in this module follows.
+    `thumbnail_url` (m-24852202) is the picture kept in R2 when the media's details were
+    saved (a `/r2media/<token>` path), else Meta's live URL from that list, else `""` and
+    the page shows its generic icon. Same "no raw nullable reaching a `str` field"
+    convention every VM in this module follows.
 
     `monitoring_state` (QUA-149) is what the badge shows — one of the `MONITORING_*`
     constants above, computed from `is_monitored` AND the persisted publication date by

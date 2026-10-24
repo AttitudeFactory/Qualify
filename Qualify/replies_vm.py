@@ -408,10 +408,12 @@ def build_draft_vm(
     signal: IntentSignal | None = None,
     reliable: Mapping[IntentClass, bool] | None = None,
     media: CandidateMediaVM | None = None,
+    stored_thumbnail: str = "",
 ) -> DraftVM:
     """`media` is the publication the comment was left on, from the inbox's ALREADY
-    loaded candidates (m-24842989) — the only source of a picture, since the inbox
-    stores none (Meta's URLs expire). Without it the thumbnail is `""`."""
+    loaded candidates (m-24842989). `stored_thumbnail` (m-24852202) is the `/r2media`
+    path of its picture kept in R2, preferred over the live one. With neither the
+    thumbnail is `""`."""
     grounding = record.grounding
     triage = grounding.get("triage") if isinstance(grounding, Mapping) else None
     kind = str(triage.get("kind") or "") if isinstance(triage, Mapping) else ""
@@ -459,7 +461,7 @@ def build_draft_vm(
         sources_more_label=_more_label(len(sources) - SOURCES_VISIBLE),
         intent_chips=intent_chips(signal, reliable or {}) if is_commercial else [],
         author_username=record.author_username or "",
-        media_thumbnail_url=media.thumbnail_url if media else "",
+        media_thumbnail_url=stored_thumbnail or (media.thumbnail_url if media else ""),
         media_alt=caption or PUBLICATION_ALT_FALLBACK,
         media_day=media.posted_day if media else "",
         failure=failure or "",

@@ -82,6 +82,7 @@ from qualify_api.inbox.monitoring import (
     metadata_read_due,
 )
 from qualify_api.inbox.repository import InboxRepository
+from qualify_api.inbox.thumbnails import ThumbnailStore
 
 # The product rule (Herwin, 2026-08-14): only the last 2 weeks of content is offered for
 # monitoring, and re-enforced here — not merely in what the candidate list returns. The
@@ -331,8 +332,12 @@ class InboxService:
         granted_scopes: frozenset[str] = frozenset(),
         connection_degrader: ConnectionDegrader | None = None,
         story_comments: bool = False,
+        thumbnails: ThumbnailStore | None = None,
     ) -> None:
         self._repository = repository
+        # m-24852202: where a media's picture is kept once its details are saved. `None`
+        # (tests, or a caller that does not care) stores nothing — the screen's icon.
+        self._thumbnails = thumbnails
         self._comments_client = comments_client
         self._media_client = media_client
         # Defaults to empty, not "everything granted" — an unwired caller must fail
@@ -426,6 +431,9 @@ class InboxService:
                 monitored=True,
                 metadata=_metadata_from(media),
                 fetched_at=reference_now,
+            )
+            await self.save_thumbnail(
+                tenant_id=tenant_id, connection_id=connection_id, media=media, now=reference_now
             )
             return
         self._repository.set_media_monitored(
@@ -708,6 +716,10 @@ class InboxService:
                 attempted_at=now,
             )
             return _Backfill.FAILED
+        # m-24852202: the same answer carries a fresh picture URL — kept now, no extra call.
+        await self.save_thumbnail(
+            tenant_id=tenant_id, connection_id=connection_id, media=summary, now=now
+        )
         if not media.needs_metadata:
             return self._complete_media_type(
                 tenant_id=tenant_id,
@@ -724,6 +736,82 @@ class InboxService:
             fetched_at=now,
         )
         return _Backfill.ACTIVE if is_within_window(summary.timestamp, now) else _Backfill.EXPIRED
+
+    async def save_thumbnail(
+        self, *, tenant_id: UUID, connection_id: UUID, media: MediaSummary, now: datetime
+    ) -> bool:
+        """m-24852202: keep this media's picture (`inbox.thumbnails`), once. Never raises:
+        a missing or failed picture leaves the row without a key and the screen keeps its
+        icon — a sync or an activation must never fail over a picture. True when a
+        picture was stored now; False when there was one already, or none could be."""
+        if self._thumbnails is None:
+            return False
+        existing = self._repository.get_monitored_media(
+            tenant_id=tenant_id, connection_id=connection_id, external_media_id=media.id
+        )
+        if existing is None or existing.thumbnail_key is not None:
+            return False
+        try:
+            stored = await self._thumbnails.store(
+                tenant_id=tenant_id, connection_id=connection_id, media=media
+            )
+        except Exception as exc:  # noqa: BLE001 - a picture is never worth failing the caller
+            _LOGGER.info(
+                "inbox.thumbnail.unavailable media_id=%s reason=%s",
+                media.id,
+                type(exc).__name__,
+            )
+            return False
+        return self._repository.record_media_thumbnail(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_media_id=media.id,
+            key=stored.key,
+            content_type=stored.content_type,
+            source=stored.source.value,
+            stored_at=now,
+        )
+
+    async def backfill_thumbnails(
+        self, *, tenant_id: UUID, connection_id: UUID, limit: int, now: datetime | None = None
+    ) -> ThumbnailBackfill:
+        """m-24852202: the optional backfill for media monitored before pictures were kept
+        (`just inbox-thumbs-backfill`). One `GET /{media}` per media (the picture URL in
+        the stored row would have expired), each logged to the 200/hour ledger first and
+        never past what remains of it. Up to `limit` media; re-running continues where it
+        stopped (only rows still without a key are read), so it is idempotent."""
+        reference_now = now if now is not None else datetime.now(UTC)
+        pending = self._repository.list_media_missing_thumbnail(
+            tenant_id=tenant_id, connection_id=connection_id, limit=limit
+        )
+        remaining = META_CALL_BUDGET_PER_HOUR - self._repository.calls_in_last_hour(
+            tenant_id=tenant_id, connection_id=connection_id, now=reference_now
+        )
+        stored = failed = 0
+        for index, media_id in enumerate(pending):
+            if remaining <= 0:
+                return ThumbnailBackfill(
+                    stored=stored, failed=failed, skipped_budget=len(pending) - index
+                )
+            self._repository.record_call(
+                tenant_id=tenant_id, connection_id=connection_id, called_at=reference_now
+            )
+            remaining -= 1
+            try:
+                summary = await self._media_client.get_media(media_id=media_id)
+            except (MediaReadError, httpx.TransportError) as exc:
+                if isinstance(exc, MediaReadError) and _is_auth_error(exc):
+                    self._degrade(tenant_id=tenant_id, connection_id=connection_id)
+                    raise CommentsAuthExpired(connection_id=connection_id) from exc
+                failed += 1
+                continue
+            if await self.save_thumbnail(
+                tenant_id=tenant_id, connection_id=connection_id, media=summary, now=reference_now
+            ):
+                stored += 1
+            else:
+                failed += 1
+        return ThumbnailBackfill(stored=stored, failed=failed, skipped_budget=0)
 
     def _complete_media_type(
         self,
@@ -760,6 +848,15 @@ class InboxService:
             fetched_at=now,
         )
         return _Backfill.ACTIVE
+
+
+@dataclass(frozen=True)
+class ThumbnailBackfill:
+    """What one `InboxService.backfill_thumbnails` run did (m-24852202)."""
+
+    stored: int
+    failed: int
+    skipped_budget: int
 
 
 class _Backfill(Enum):

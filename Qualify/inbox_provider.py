@@ -55,9 +55,10 @@ repository's cursor types, only the VM ones.
 `reel_summaries_page`'s caption/permalink (QUA-149) come from the PERSISTED
 `monitored_media` metadata first, so a Reel keeps them after its 14-day window; the
 `CandidateMediaVM` list the caller already loaded (opción A, founder-approved 2026-08-25 —
-no new query, no new Meta call) is the fallback, and the only source of `thumbnail_url`
-(Meta's CDN URLs expire, so they are not stored; outside the list the page shows its
-generic icon).
+no new query, no new Meta call) is the fallback. `thumbnail_url` (m-24852202) is the
+picture kept in R2 (`qualify_api.inbox.thumbnails`, served as `/r2media/<token>` by
+`stored_thumbnail_path`) first, Meta's live CDN URL from that list next (it expires, so it
+is never stored as a URL); with neither the page shows its generic icon.
 
 `ReelSummaryVM.monitoring_state` (QUA-149) is what the badge shows. It is computed here
 by `_monitoring_state` from the SHARED rule (`qualify_api.inbox.monitoring.
@@ -148,6 +149,7 @@ from .inbox_vm import (
 )
 from .planner_vm import time_label_12h
 from .publishing_vm import ConnectionOptionVM
+from .r2_media import issue_view_path
 
 logger = logging.getLogger(__name__)
 
@@ -333,13 +335,29 @@ def _monitoring_state(summary: ReelSummary, now: datetime) -> str:
     return MONITORING_INACTIVE
 
 
+def stored_thumbnail_path(tenant_id: UUID | None, key: str | None, content_type: str | None) -> str:
+    """m-24852202: the `/r2media/<token>` path of a publication's picture kept in R2, or
+    "" when there is none (or it cannot be served right now — the live list or the icon
+    then stand in; a picture is never worth an error on the screen)."""
+    if tenant_id is None or not key:
+        return ""
+    try:
+        return issue_view_path(tenant_id, key, "image", content_type or "image/jpeg")
+    except Exception:  # noqa: BLE001 - cosmetic: Redis down must not break the list
+        logger.warning("inbox.thumbnail.view_path_failed")
+        return ""
+
+
 def _to_reel_summary_vm(
     summary: ReelSummary,
     candidates_by_media_id: dict[str, CandidateMediaVM],
     now: datetime,
     zone: ZoneInfo = _UTC,
+    tenant_id: UUID | None = None,
 ) -> ReelSummaryVM:
     enrichment = candidates_by_media_id.get(summary.external_thread_id)
+    # m-24852202: the picture kept in R2 first (survives the window), the live list next.
+    stored = stored_thumbnail_path(tenant_id, summary.thumbnail_key, summary.thumbnail_content_type)
     return ReelSummaryVM(
         thread_id=str(summary.thread_id),
         external_thread_id=summary.external_thread_id,
@@ -349,7 +367,7 @@ def _to_reel_summary_vm(
         neutral=summary.neutral,
         negative=summary.negative,
         not_analyzed=summary.not_analyzed,
-        thumbnail_url=enrichment.thumbnail_url if enrichment else "",
+        thumbnail_url=stored or (enrichment.thumbnail_url if enrichment else ""),
         # QUA-149: persisted first (survives the window), live candidate list as fallback.
         caption=summary.caption or (enrichment.caption if enrichment else ""),
         permalink=summary.permalink or (enrichment.permalink if enrichment else ""),
@@ -391,7 +409,9 @@ def reel_summaries_page(
     )
     reference_now = now if now is not None else datetime.now(UTC)
     zone = tenant_zone(tenant_id) if page else _UTC
-    items = [_to_reel_summary_vm(s, candidates_by_media_id, reference_now, zone) for s in page]
+    items = [
+        _to_reel_summary_vm(s, candidates_by_media_id, reference_now, zone, tenant_id) for s in page
+    ]
     next_cursor = None
     if page:
         last = page[-1]

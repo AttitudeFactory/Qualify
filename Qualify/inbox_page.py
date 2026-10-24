@@ -81,6 +81,7 @@ from .next_steps_vm import (
     DISMISS_LABEL,
     NEXT_PENDING_LABEL,
 )
+from .post_card import viewable_src
 from .publishing_vm import ConnectionOptionVM
 from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
@@ -647,8 +648,15 @@ def _global_summary_widget() -> rx.Component:
 
 def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
     """Same shape as `_thumbnail(candidate)` above, over `ReelSummaryVM`'s own
-    thumbnail_url — opción A enrichment, `""` for a Reel outside the 2-week window."""
-    return media_thumb(reel.thumbnail_url, size="72px", icon="film")
+    thumbnail_url: the picture kept in R2 (a `/r2media` path, resolved by `viewable_src`)
+    or Meta's live URL (m-24852202); `""` shows the icon."""
+    return media_thumb(
+        viewable_src(reel.thumbnail_url),
+        size="72px",
+        icon="film",
+        has=reel.thumbnail_url != "",
+        custom_attrs={"loading": "lazy"},
+    )
 
 
 def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
@@ -1587,7 +1595,14 @@ def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
     it. Its picture comes from the candidates the screen already loaded; without one the
     frame shows the generic icon. Not decorative here: it is the only thing on the card
     that names the publication, so its alt is the caption (else «Publicación»)."""
-    return media_thumb(draft.media_thumbnail_url, size="48px", icon="image", alt=draft.media_alt)
+    return media_thumb(
+        viewable_src(draft.media_thumbnail_url),
+        size="48px",
+        icon="image",
+        alt=draft.media_alt,
+        has=draft.media_thumbnail_url != "",
+        custom_attrs={"loading": "lazy"},
+    )
 
 
 def _draft_comment_block(draft: DraftVM) -> rx.Component:
