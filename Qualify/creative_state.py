@@ -282,7 +282,8 @@ _SLIDE_SOURCES = ("generated", "animated")
 #: What a slide may carry printed (§ 2026-10-14): nothing or the title — the hook. The
 #: «Botón de acción» left: the scene already holds the button, and the post its CTA.
 _SLIDE_TEXTS = ("none", "hook")
-_SLIDE_SECONDS = ("5", "10")
+#: An animated slide's length — the editor's choices and what `set_slide_field` keeps.
+SLIDE_SECONDS = ("5", "10")
 _CAROUSEL_MIN = 2
 _CAROUSEL_MAX = 10
 #: The gallery (§ request 2026-10-14): exactly three slides, one video at most, no
@@ -522,7 +523,7 @@ def _pill_items(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-_DURATIONS = ("15", "30", "45", "60")
+DURATIONS = ("15", "30", "45", "60")
 _FORMAT_LABELS = {
     "feed_4_5": "Publicación 4:5",
     "feed_1_1": "Publicación cuadrada 1:1",
@@ -1383,7 +1384,7 @@ class CreativeState(rx.State):
             "scene": None,
             "background": ("1", ""),
             "text": (*_SLIDE_TEXTS, "cta"),
-            "seconds": _SLIDE_SECONDS,
+            "seconds": SLIDE_SECONDS,
         }
         index = int(index)
         if field not in allowed or not 0 <= index < len(self.carousel_slides):
@@ -4190,7 +4191,7 @@ class CreativeState(rx.State):
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in _DURATIONS:
+        if value in DURATIONS:
             self.media_duration = value
 
     async def _save_uploads(self, files: list[rx.UploadFile]) -> list[tuple[str, str]]:

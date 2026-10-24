@@ -708,3 +708,30 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 .q-cr-cat-dot { width: 14px; height: 3px; border-radius: 2px; background: var(--gray-a6); transition: background var(--q-dur-fast) var(--q-ease); }
 .q-cr-cat-dot.is-on { background: var(--accent-9); }
 @media (prefers-reduced-motion: reduce) { .q-cr-cat-photo { transition: none; } }
+
+/* «Resumen» (m-24820845): label · value · Editar in a row; on a phone the label and
+   «Editar» share the top line and the value takes the full width below, so no word is
+   ever cut in half. A value only breaks inside a word when that word alone is wider
+   than the line (a long link). */
+.q-cr-summary-row { display: grid; grid-template-columns: 10rem minmax(0, 1fr) auto; grid-template-areas: "label value edit"; column-gap: var(--space-3); row-gap: 0.15rem; align-items: start; padding-block: 0.55rem; }
+.q-cr-summary-label { grid-area: label; }
+.q-cr-summary-value { grid-area: value; min-width: 0; white-space: pre-wrap; word-break: normal; overflow-wrap: break-word; hyphens: none; }
+.q-cr-summary-edit { grid-area: edit; justify-self: end; }
+@media (max-width: 640px) {
+  .q-cr-summary-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label edit" "value value"; align-items: center; }
+}
+
+/* «Replicar con mi marca», not built yet (m-24820845): the button is the soft grey
+   variant, flat — no hover lift — with «Muy pronto» on it. The wrapper carries the
+   pointer's tooltip, since the disabled button itself takes no pointer events. */
+.q-dr-replicate-wrap { display: block; width: 100%; border-radius: var(--q-radius-control); cursor: not-allowed; }
+.radix-themes .rt-Button.q-dr-replicate:disabled,
+.radix-themes .rt-Button.q-dr-replicate[data-disabled],
+.radix-themes .rt-Button.q-dr-replicate:disabled:hover {
+  pointer-events: none;
+  transform: none;
+  background: var(--gray-a3);
+  box-shadow: inset 0 0 0 1px var(--gray-a6);
+  color: var(--gray-10);
+}
+.q-dr-soon { padding: 0 0.45rem; border-radius: 999px; background: var(--gray-a4); color: var(--gray-11); font-size: 0.7rem; font-weight: 600; line-height: 1.15rem; }
