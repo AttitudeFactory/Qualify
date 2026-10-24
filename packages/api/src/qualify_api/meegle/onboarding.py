@@ -77,8 +77,10 @@ class InvitationResult:
     reason: str = ""  # short, log-safe code when not ok
     invite_id: UUID | None = None
     # «Cuenta de Instagram» normalized (`normalize_instagram_handle`), None when absent or
-    # invalid. Read, not acted on: the Brand Kit prefill (PB-4) is what will use it.
+    # invalid. The Brand Kit prefill (PB-4, `meegle.prefill`) acts on it after a success.
     instagram_handle: str | None = None
+    # The address the invitation went to (the Alta draft is prepared for it, PB-4).
+    email: str = ""
 
 
 def text_value(value: Any) -> str:
@@ -227,7 +229,9 @@ class OnboardingEngine:
             f"Invitación enviada a {invite.email}. Vence el {date_es(invite.expires_at)}.",
         )
         logger.info("meegle onboarding: work_item=%s invite=%s sent", work_item_id, invite.id)
-        return InvitationResult(ok=True, invite_id=invite.id, instagram_handle=instagram)
+        return InvitationResult(
+            ok=True, invite_id=invite.id, instagram_handle=instagram, email=invite.email
+        )
 
     def _fail(
         self,

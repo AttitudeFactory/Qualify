@@ -34,6 +34,12 @@ Instagram connection (`comment_analysis.sweep_pending_comment_analysis`). Each c
 normally analyzed right after the sync that brought it; the sweep catches backlogs,
 failures and model outages. It never calls Meta and never sends anything.
 
+Every batch (loop and `--once`) also drains the Brand Kit prefill jobs of Meegle Altas
+(PB-4, m-24852198; `qualify_api.meegle.prefill`) when the Meegle engine is configured:
+ScrapeCreators + Claude for real, then one comment on the Alta item. Nothing is queued
+unless `QUALIFY_ALTA_PREFILL_ENABLED` and `QUALIFY_ALTA_PREFILL_MAX_USD` are set (off by
+default), and a job found while off is settled without running.
+
 Loop mode also runs the age purge for real, once at start and then every `PURGE_EVERY` —
 that is what keeps "29 days + at most 24 h" ≤ 30 days (QUA-127). It deletes only
 settled/failed changes older than `RETENTION`, never `pending`/`processing`.
@@ -56,9 +62,13 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from qualify_api.webhooks.processor import DEFAULT_BATCH, production_processor
 from qualify_api.webhooks.repository import RETENTION, PurgeReport, WebhookQueue
+
+if TYPE_CHECKING:
+    from qualify_api.meegle.prefill import AltaPrefillRunner
 
 logger = logging.getLogger("qualify_api.webhooks.worker")
 
@@ -173,8 +183,27 @@ async def _comment_analysis_sweep() -> None:
         logger.exception("comments.analysis_sweep failed")
 
 
+async def _alta_prefill_pass(runner: AltaPrefillRunner | None) -> None:
+    """PB-4: the due Alta prefill jobs. Never raises; one bad job never stops the loop."""
+    if runner is None:
+        return
+    try:
+        report = await asyncio.to_thread(runner.run_once)
+        if report:
+            logger.info("meegle.alta_prefill %s", dict(report))
+    except Exception:  # noqa: BLE001 — a failed pass must not stop processing
+        logger.exception("meegle.alta_prefill failed")
+
+
+def _prefill_runner(wid: str) -> AltaPrefillRunner | None:
+    from qualify_api.meegle.handlers import production_prefill_runner  # noqa: PLC0415
+
+    return production_prefill_runner(worker_id=wid)
+
+
 async def _run_loop(*, interval: int, limit: int) -> None:
     processor = production_processor(worker_id=worker_id())
+    prefill = _prefill_runner(worker_id())
     queue = WebhookQueue()
     next_purge = time.monotonic()
     next_sweep = time.monotonic()
@@ -199,6 +228,7 @@ async def _run_loop(*, interval: int, limit: int) -> None:
                 )
         except Exception:  # noqa: BLE001 — log and keep going
             logger.exception("webhooks.batch failed")
+        await _alta_prefill_pass(prefill)
         await asyncio.sleep(max(0.0, interval - (time.monotonic() - started)))
 
 
@@ -244,6 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.once:
         report = asyncio.run(production_processor(worker_id=worker_id()).run_once(limit=args.limit))
         print(f"claimed={report.claimed} outcomes={dict(report.outcomes)} lost={report.lost}")
+        asyncio.run(_alta_prefill_pass(_prefill_runner(worker_id())))
         return 0
     try:
         asyncio.run(_run_loop(interval=args.interval, limit=args.limit))

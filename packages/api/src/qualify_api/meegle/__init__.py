@@ -17,6 +17,10 @@ Meegle work item "Alta de cliente", and this package is the engine behind it —
                 through the client, the delta from the event.
 - `handlers`  — the webhook-processor handlers (`meegle:1001|1005|1009|2001|2004|3001`),
                 routed by work item type, and their production assembly.
+- `prefill`   — PB-4 (m-24852198): after a sent invitation, the reserved Brand Kit draft
+                and a queued prefill job; the runner the webhook-worker drains them with
+                (cost cap → `CallCaps`, one retry, one comment). Off by default.
+- `prefill_jobs` — the `alta_prefill_jobs` queue (migration 0092) and its in-memory fake.
 
 The plugin secret is confined to this package (`test_meegle_sanctity.py`).
 """
