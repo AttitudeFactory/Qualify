@@ -980,7 +980,8 @@ APPROVE_VERSION_LABEL = "Aprobar esta versión"
 @dataclass(frozen=True)
 class VideoDraftVM:
     state: str
-    #: «Borrador · 480p · USD 0,51» — the badge over the video.
+    #: «Vista previa» — the badge over the video. Never money (founder decision 8,
+    #: m-24851824): the owner counts creations; the dollar cost is the team's.
     badge: str
     #: `signal_pill` tone of the badge.
     tone: str
@@ -1060,7 +1061,7 @@ def approval_notice(
     if video.rendering:
         tail = f" {elsewhere} para ver cuándo está listo." if elsewhere else ""
         return ApprovalNotice(
-            "info", f"Versión aprobada: estamos generando el video final a 1080p.{tail}", False
+            "info", f"Aprobada. Estamos preparando el video en alta calidad.{tail}", False
         )
     if video.can_retry:
         tail = f" {elsewhere} para reintentarlo." if elsewhere else " Puedes reintentarlo."
@@ -1075,7 +1076,7 @@ def approval_notice(
 #: The final's own note while it is not there yet, in the «Aprobada. Todavía no se
 #: publica.» card: why no day and time can be chosen yet.
 FINAL_RENDERING_NOTE = (
-    "Estamos generando el video final a 1080p. Cuando esté listo podrás elegir cuándo sale."
+    "Estamos preparando el video en alta calidad. Cuando esté listo podrás elegir cuándo sale."
 )
 FINAL_FAILED_NOTE = (
     "No pudimos generar el video final. Reinténtalo y después podrás elegir cuándo sale."
@@ -1084,10 +1085,8 @@ FINAL_FAILED_NOTE = (
 
 #: The toast when the final lands while the piece is on screen: it is still not out —
 #: choose when it goes out, or first see what is missing (m-24842978).
-FINAL_READY_TEXT = "El video final a 1080p está listo. Ahora elige cuándo sale."
-FINAL_READY_NOT_READY = (
-    "El video final a 1080p está listo. Revisa lo que falta antes de elegir cuándo sale."
-)
+FINAL_READY_TEXT = "Tu video ya está listo. Ahora elige cuándo sale."
+FINAL_READY_NOT_READY = "Tu video ya está listo. Revisa lo que falta antes de elegir cuándo sale."
 
 
 def final_pending_note(video: VideoDraftVM) -> str:
@@ -1104,7 +1103,8 @@ def final_pending_note(video: VideoDraftVM) -> str:
 #: A failed final on a piece no longer approved (edited after its approval): approving
 #: it again orders the final, so that is what the screen says instead of «Reintentar».
 FINAL_NEEDS_APPROVAL_TEXT = (
-    "El video final no está listo. Cuando vuelvas a aprobar la publicación, lo generamos a 1080p."
+    "El video final no está listo. Cuando vuelvas a aprobar la publicación, lo preparamos "
+    "en alta calidad."
 )
 
 
@@ -1120,41 +1120,41 @@ def video_draft_vm(
     `still_rendering` (`draft_mode.draft_rendering`): some video of the piece has its
     final being made right now, whatever state the summary shows first. `approved`: the
     piece is approved — only then can a failed final be ordered again (`can_retry`);
-    otherwise approving it again is what orders it."""
+    otherwise approving it again is what orders it. `cost_usd` is never shown: the
+    owner never sees money (founder decision 8, m-24851824) — the spend stays recorded
+    for the team, not on this screen."""
+    del cost_usd
     if not state:
         return NO_VIDEO_DRAFT
-    cost = ""
-    if cost_usd:
-        # qualify-copy-es: the draft's spend is in dollars whatever the tenant's own
-        # currency, so it names it («$» alone reads as pesos in Colombia), with the
-        # Spanish decimal comma — the house `format_money` style («USD 1,50»)
-        cents = Decimal(cost_usd).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        cost = f" · USD {cents}".replace(".", ",")
     if state == VIDEO_DRAFT:
         return VideoDraftVM(
             state,
-            f"Borrador · 480p{cost}",
+            "Vista previa",
             "info",
-            "Es una versión borrador, barata y a 480p. Al aprobarla generamos el video "
-            "final a 1080p desde este mismo borrador.",
+            "Es una vista previa en calidad baja, para que decidas rápido. Al aprobarla "
+            "preparamos el mismo video en alta calidad.",
         )
     if state == VIDEO_RENDERING:
         return VideoDraftVM(
             state,
-            "Generando final · 1080p",
+            "Preparando el video final",
             "info",
-            "Estamos generando el video final a 1080p. Tarda unos minutos; puedes salir "
-            "de esta pantalla.",
+            "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
+            "y lo verás aquí cuando esté listo.",
             rendering=True,
         )
     if state == VIDEO_FAILED and not approved:
         return VideoDraftVM(
-            state, "Final pendiente", "warn", FINAL_NEEDS_APPROVAL_TEXT, rendering=still_rendering
+            state,
+            "Falta el video final",
+            "warn",
+            FINAL_NEEDS_APPROVAL_TEXT,
+            rendering=still_rendering,
         )
     if state == VIDEO_FAILED:
         return VideoDraftVM(
             state,
-            "Final pendiente",
+            "Falta el video final",
             "error",
             error or "No pudimos generar el video final.",
             can_retry=True,
@@ -1163,13 +1163,12 @@ def video_draft_vm(
     if state == VIDEO_EXPIRED:
         return VideoDraftVM(
             state,
-            "Borrador caducado",
+            "La vista previa venció",
             "warn",
-            "El borrador caducó (se guarda 7 días): vuelve a generar la publicación para tener "
-            "uno nuevo.",
+            "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva.",
             rendering=still_rendering,
         )
-    return VideoDraftVM(state, "Final · 1080p", "ok", "")
+    return VideoDraftVM(state, "Video final", "ok", "")
 
 
 # -- piece retention (m-24828907) ----------------------------------------------------------

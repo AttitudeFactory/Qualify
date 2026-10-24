@@ -5492,7 +5492,9 @@ class CreativeState(rx.State):
             return
         except InvalidTransition:
             async with self:
-                self.action_error = "Aprueba la publicación antes de generar su video final."
+                self.action_error = (
+                    "Primero aprueba la publicación; después preparamos el video final."
+                )
             return
         except DraftExpired as exc:
             async with self:
