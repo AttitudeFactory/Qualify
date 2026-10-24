@@ -738,3 +738,237 @@ def test_the_draft_page_shows_each_composition_warning_as_a_warn_callout() -> No
     rendered = str(tile.render())
     assert "Callout" in rendered
     assert all(str(value) in rendered for value in T.tone_scheme("warn").values())
+
+
+# -- Seedance 2.5 draft mode (m-24820142) ----------------------------------------------
+
+
+def test_a_draft_video_is_badged_as_a_preview_without_money() -> None:
+    """m-24851824 (founder decision 8): the owner never sees money — the badge is
+    «Vista previa» whatever the draft cost; m-24851826: no resolutions either."""
+    from Qualify.creative_vm import NO_VIDEO_DRAFT, video_draft_vm
+
+    draft = video_draft_vm("draft", "0.513600")
+    assert draft.badge == "Vista previa"
+    for state in ("draft", "rendering", "failed", "expired", "final"):
+        for approved in (False, True):
+            vm = video_draft_vm(state, "0.513600", approved=approved)
+            for text in (vm.badge, vm.note):
+                assert "USD" not in text and "$" not in text and "0,51" not in text
+                assert "480p" not in text and "1080p" not in text
+                assert "Final pendiente" not in text and "Generando final" not in text
+    assert draft.tone == "info" and not draft.can_retry and not draft.rendering
+    assert video_draft_vm("rendering", None).rendering
+    failed = video_draft_vm("failed", None, "ModelArk falló.", approved=True)
+    assert failed.can_retry and failed.note == "ModelArk falló." and failed.tone == "error"
+    expired = video_draft_vm("expired", "0.5")
+    assert not expired.can_retry and expired.badge == "La vista previa venció"
+    assert expired.note == (
+        "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva."
+    )
+    assert video_draft_vm("final", None).badge == "Video final"
+    assert video_draft_vm("", None) is NO_VIDEO_DRAFT
+
+
+def test_draft_summary_shows_the_state_that_needs_the_operator_first() -> None:
+    import time
+
+    from qualify_api.creative.draft_mode import draft_summary
+
+    now = time.time()
+    ready = {"draft": {"status": "draft", "created_at": now, "cost_usd": "0.5"}}
+    failed = {"draft": {"status": "failed", "created_at": now, "cost_usd": "0.25", "error": "x"}}
+    old = {"draft": {"status": "draft", "created_at": now - 8 * 86400, "cost_usd": "0.5"}}
+    assert draft_summary([ready, failed]) == ("failed", "0.75", "x")
+    assert draft_summary([ready, old])[0] == "expired"
+    assert draft_summary([{"resolution": "720p"}, None]) == ("", None, "")
+    final = {"draft": {"status": "final", "created_at": now - 8 * 86400, "cost_usd": "0.5"}}
+    assert draft_summary([final])[0] == "final"  # a final never expires
+
+
+def test_a_final_left_rendering_by_a_dead_process_shows_as_retryable() -> None:
+    import time
+
+    from qualify_api.creative.draft_mode import (
+        FINAL_STALE_SECONDS,
+        draft_rendering,
+        draft_summary,
+    )
+
+    from Qualify.creative_vm import video_draft_vm
+
+    now = time.time()
+    stale = {
+        "draft": {
+            "status": "rendering",
+            "created_at": now,
+            "rendering_at": now - FINAL_STALE_SECONDS,
+        }
+    }
+    fresh = {"draft": {"status": "rendering", "created_at": now, "rendering_at": now}}
+    state, _, error = draft_summary([stale], now)
+    assert state == "failed" and "a medias" in error
+    assert video_draft_vm(state, None, error, approved=True).can_retry
+    assert draft_summary([fresh], now)[0] == "rendering"
+    assert draft_rendering([stale, fresh], now) and not draft_rendering([stale], now)
+
+
+def test_the_final_poll_waits_for_every_video_and_stays_quiet_on_a_regenerated_piece() -> None:
+    from Qualify.creative_vm import (
+        FINAL_POLL_CONTINUE,
+        FINAL_POLL_DONE,
+        FINAL_POLL_FAILED,
+        FINAL_POLL_STOP,
+        final_poll_step,
+        video_draft_vm,
+    )
+
+    assert final_poll_step(video_draft_vm("rendering", None)) == FINAL_POLL_CONTINUE
+    # one video failed while another still renders: keep polling, no toast yet
+    failed_while_rendering = video_draft_vm(
+        "failed", None, "x", still_rendering=True, approved=True
+    )
+    assert failed_while_rendering.can_retry
+    assert final_poll_step(failed_while_rendering) == FINAL_POLL_CONTINUE
+    assert final_poll_step(video_draft_vm("failed", None, "x", approved=True)) == FINAL_POLL_FAILED
+    assert final_poll_step(video_draft_vm("expired", None)) == FINAL_POLL_FAILED
+    assert final_poll_step(video_draft_vm("final", None)) == FINAL_POLL_DONE
+    # regenerated: back to a draft, or no draft video at all
+    assert final_poll_step(video_draft_vm("draft", None)) == FINAL_POLL_STOP
+    assert final_poll_step(video_draft_vm("", None)) == FINAL_POLL_STOP
+
+
+def test_the_approval_toast_follows_the_piece_not_the_poll() -> None:
+    """Review 2026-10-23: a poll already running for the piece used to turn «we are
+    making the final» into «ya puedes programarlo»."""
+    from .creative_vm import VideoDraftVM, approval_notice, video_draft_vm
+
+    rendering = video_draft_vm("rendering", None)
+    assert approval_notice(rendering)[0] == "info"
+    failed = video_draft_vm("failed", None, "x", approved=True)
+    assert approval_notice(failed)[0] == "error"
+    assert approval_notice(VideoDraftVM("", "", "neutral", ""))[0] == "success"
+
+
+def test_every_screen_words_the_approval_notice_from_the_same_choice() -> None:
+    """Review round 3: the gallery and Variaciones use the piece's own notice too — a
+    final that could not be ordered never reads «ya puedes programarlo»."""
+    from .creative_vm import NO_VIDEO_DRAFT, POST_APPROVED_TEXT, approval_notice, video_draft_vm
+
+    failed = video_draft_vm("failed", None, "x", approved=True)
+    kind, text, offer, offer_open = approval_notice(failed, elsewhere="Ábrela")
+    assert kind == "error" and text.endswith("Ábrela para reintentarlo.")
+    assert "programarlo" not in text and offer is False
+    assert offer_open is True  # m-24842981: «Ver publicación» goes with «Ábrela»
+    kind, text, offer, offer_open = approval_notice(
+        video_draft_vm("rendering", None), elsewhere="Ábrela en Por aprobar"
+    )
+    assert kind == "info" and text.endswith("Ábrela en Por aprobar para ver cuándo está listo.")
+    assert offer is False and offer_open is True
+    # on the publication's own page there is nowhere else to go
+    assert approval_notice(video_draft_vm("rendering", None)).offer_open is False
+    assert approval_notice(NO_VIDEO_DRAFT) == ("success", POST_APPROVED_TEXT, True, False)
+    assert approval_notice(NO_VIDEO_DRAFT, approved="Pieza aprobada.")[1] == "Pieza aprobada."
+
+
+def test_the_approval_notice_offers_a_day_and_time_only_when_nothing_holds_it_back() -> None:
+    """m-24842978 merged with m-24820142: «Elegir día y hora» goes with the notice only
+    when the publication can be planned AND its own 1080p final is not still being made
+    or failed — a draft-pending video cannot be scheduled (MEDIA_DRAFT_PENDING)."""
+    from .creative_vm import (
+        APPROVED_NOT_READY_TOAST,
+        APPROVED_TOAST,
+        FINAL_FAILED_NOTE,
+        FINAL_RENDERING_NOTE,
+        NO_VIDEO_DRAFT,
+        approval_notice,
+        final_pending_note,
+        video_draft_vm,
+    )
+
+    assert approval_notice(NO_VIDEO_DRAFT, ready=True) == (
+        "success",
+        APPROVED_TOAST,
+        True,
+        False,
+    )
+    assert approval_notice(NO_VIDEO_DRAFT, ready=False) == (
+        "success",
+        APPROVED_NOT_READY_TOAST,
+        False,
+        False,
+    )
+    rendering = video_draft_vm("rendering", None)
+    failed = video_draft_vm("failed", None, "x", approved=True)
+    for video in (rendering, failed):
+        notice = approval_notice(video, ready=True)
+        assert notice.offer_schedule is False and "Ahora elige" not in notice.text
+    assert final_pending_note(rendering) == FINAL_RENDERING_NOTE
+    assert final_pending_note(failed) == FINAL_FAILED_NOTE
+    assert final_pending_note(video_draft_vm("final", None)) == ""
+    assert final_pending_note(NO_VIDEO_DRAFT) == ""
+    for text in (APPROVED_TOAST, FINAL_RENDERING_NOTE, FINAL_FAILED_NOTE):
+        assert "POST" not in text and "Planificador" not in text
+
+
+def test_the_view_models_video_states_are_draft_modes_own() -> None:
+    """Review round 3: the view-model keeps `draft_mode`'s states as strings (it never
+    imports the backend); a test, which may import both, keeps them equal."""
+    from qualify_api.creative import draft_mode
+
+    from . import creative_vm
+
+    assert creative_vm.VIDEO_DRAFT == draft_mode.DRAFT_READY
+    assert creative_vm.VIDEO_RENDERING == draft_mode.DRAFT_RENDERING
+    assert creative_vm.VIDEO_FINAL == draft_mode.DRAFT_FINAL
+    assert creative_vm.VIDEO_FAILED == draft_mode.DRAFT_FAILED
+    assert creative_vm.VIDEO_EXPIRED == draft_mode.DRAFT_EXPIRED
+    # and the module stays pure: no backend import of its own
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(creative_vm.__file__).read_text(encoding="utf-8"))
+    imported = {
+        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert not any(name.startswith("qualify_api") for name in imported)
+
+
+def test_an_approved_piece_whose_final_was_never_ordered_offers_to_order_it() -> None:
+    """Review 2026-10-23: the approval is saved before the finals are ordered; when
+    ordering fails the video stays at its draft — on an approved piece that is a final
+    to order, with «Reintentar»."""
+    from qualify_api.creative.draft_mode import (
+        FINAL_NOT_ORDERED_TEXT,
+        draft_summary,
+        final_retryable,
+    )
+
+    from .creative_vm import video_draft_vm
+
+    ready = {"draft": {"status": "draft", "cost_usd": "0.5"}}
+    assert draft_summary([ready])[0] == "draft"
+    state, cost, error = draft_summary([ready], approved=True)
+    assert (state, error) == ("failed", FINAL_NOT_ORDERED_TEXT)
+    vm = video_draft_vm(state, cost, error, approved=True)
+    assert vm.can_retry and vm.note == FINAL_NOT_ORDERED_TEXT
+    assert final_retryable(ready["draft"], approved=True)
+    assert not final_retryable(ready["draft"])
+
+
+def test_a_failed_final_on_a_piece_edited_after_approval_offers_no_retry() -> None:
+    """Review round 4: an edit takes the piece back to «generated» and `retry_final`
+    orders finals of an approved piece only — the button was offered and always failed.
+    The state shows, without «Reintentar», saying that approving again orders it."""
+    from .creative_vm import FINAL_NEEDS_APPROVAL_TEXT, approval_notice, video_draft_vm
+
+    edited = video_draft_vm("failed", None, "ModelArk falló.")
+    assert not edited.can_retry and edited.badge == "Falta el video final"
+    assert edited.note == FINAL_NEEDS_APPROVAL_TEXT and "aprobar" in edited.note
+    assert approval_notice(edited)[0] == "success"  # nothing to retry from a toast
+    assert video_draft_vm("failed", None, "ModelArk falló.", approved=True).can_retry

@@ -15,6 +15,9 @@ from uuid import UUID
 
 from qualify_api.clarity import production_clarity_service
 from qualify_api.clarity.repository import SnapshotRow
+from qualify_api.support import SupportTicket, create_support_request
+
+from .clarity_vm import TEAM_REQUEST_MESSAGE, TEAM_REQUEST_SCREEN
 
 # Metrics whose information rows are single aggregate objects worth headline cards.
 _HEADLINE_METRIC = "Traffic"
@@ -178,6 +181,23 @@ def save_config(tenant_id: UUID, *, project_id: str, api_token: str) -> None:
     """Persist project id + token (encrypted service-side). Raises ValueError on blanks."""
     production_clarity_service().configure(
         tenant_id=tenant_id, project_id=project_id, api_token=api_token
+    )
+
+
+def request_website_connection(tenant_id: UUID, *, contact_email: str) -> SupportTicket:
+    """RESULTADOS-4: «Escribir al equipo» in Configuración — a support ticket asking the
+    Qualify team to connect the business's website. Same service as the connections
+    screen's «Pedir ayuda 1:1», topic `other`, with only the closed `screen` context key.
+
+    Raises `InvalidSupportRequest` on a bad email. Blocking (Postgres + one HTTP call).
+    """
+    return create_support_request(
+        tenant_id=tenant_id,
+        topic="other",
+        contact_email=contact_email,
+        contact_whatsapp="",
+        message=TEAM_REQUEST_MESSAGE,
+        context={"screen": TEAM_REQUEST_SCREEN},
     )
 
 
