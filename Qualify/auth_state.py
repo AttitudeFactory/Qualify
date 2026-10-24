@@ -824,10 +824,12 @@ class AuthState(rx.State):
             from .ice_breakers_state import IceBreakersState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
+            from .pending_state import PendingState
             from .planner_state import PlannerState
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
             from .replies_state import RepliesState
+            from .responder_state import ResponderState
             from .settings_state import SettingsState
             from .state import DashboardState
             from .stories_state import StoriesState
@@ -845,6 +847,8 @@ class AuthState(rx.State):
             for state_cls in (
                 ConnectionsState,
                 LeadsState,
+                # m-24842990 «Por responder»: the open tab and the tenant's pending counts
+                ResponderState,
                 ClarityState,
                 InboxState,
                 PublishState,
@@ -906,6 +910,8 @@ class AuthState(rx.State):
                 WhatsAppContactsState,
                 WhatsAppCampaignsState,
                 WhatsAppMetricsState,
+                # m-24842963: the menu's pending counts of this tenant
+                PendingState,
                 # m-24842967: Configuración's country and currency of the business
                 SettingsState,
             ):

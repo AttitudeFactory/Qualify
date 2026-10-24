@@ -36,10 +36,77 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import REVIEW_PORT_LABELS
+from .creative_vm import FINAL_PREPARING_LABEL, REVIEW_PORT_LABELS
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
+
+# m-24842987 (PUBLICAR-6, N7): the week and the view travel in the address, so every
+# ficha opened from Tu semana can say «‹ Tu semana» and bring the owner back to the same
+# week, in the same view — after a reload or from another screen too.
+# `/planner?semana=2026-10-19&vista=lista`; a ficha gets `?desde=semana&semana=…&vista=…`.
+URL_WEEK = "semana"
+URL_VIEW = "vista"
+URL_FROM = "desde"
+FROM_WEEK = "semana"
+PLANNER_PATH = "/planner"
+BACK_TO_WEEK = "Tu semana"  # shown after a «‹» glyph — «‹ Tu semana» (N7)
+_VIEW_TO_URL = {VIEW_LIST: "lista", VIEW_CALENDAR: "calendario"}
+_URL_TO_VIEW = {v: k for k, v in _VIEW_TO_URL.items()}
+
+
+def parse_week_param(value: object) -> str:
+    """`?semana=` → the Monday (ISO) of the week that date falls in; "" for junk."""
+    try:
+        day = date.fromisoformat(str(value or "").strip())
+    except ValueError:
+        return ""
+    return (day - timedelta(days=day.weekday())).isoformat()
+
+
+def parse_view_param(value: object) -> str:
+    """`?vista=` → VIEW_LIST / VIEW_CALENDAR; "" when absent or unknown."""
+    return _URL_TO_VIEW.get(str(value or "").strip().lower(), "")
+
+
+def _week_query(monday_iso: str, view_mode: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    monday = parse_week_param(monday_iso)
+    if monday:
+        parts.append((URL_WEEK, monday))
+    if view_mode in _VIEW_TO_URL:
+        parts.append((URL_VIEW, _VIEW_TO_URL[view_mode]))
+    return parts
+
+
+def week_href(monday_iso: str, view_mode: str) -> str:
+    """The address of Tu semana on that week and view («‹ Tu semana»'s target)."""
+    query = "&".join(f"{k}={v}" for k, v in _week_query(monday_iso, view_mode))
+    return f"{PLANNER_PATH}?{query}" if query else PLANNER_PATH
+
+
+def week_return_query(monday_iso: str, view_mode: str) -> str:
+    """`?desde=semana&semana=…&vista=…` — appended to a ficha's address by Tu semana."""
+    parts = [(URL_FROM, FROM_WEEK), *_week_query(monday_iso, view_mode)]
+    return "?" + "&".join(f"{k}={v}" for k, v in parts)
+
+
+def from_week_href(href: str, monday_iso: str, view_mode: str) -> str:
+    """A ficha's address when opened from Tu semana: it carries where to come back to."""
+    if not href:
+        return ""
+    query = week_return_query(monday_iso, view_mode)
+    return href + ("&" + query[1:] if "?" in href else query)
+
+
+def back_to_week_href(params: Mapping[str, object]) -> str:
+    """On a ficha: «‹ Tu semana»'s target when it was opened from Tu semana, else ""."""
+    if str(params.get(URL_FROM, "") or "") != FROM_WEEK:
+        return ""
+    return week_href(
+        parse_week_param(params.get(URL_WEEK, "")), parse_view_param(params.get(URL_VIEW, ""))
+    )
+
 
 # QUA-118 v2 (founder review, 2026-10-06): the assign flow plans SEVERAL POSTs at once —
 # a story at 2 a. m., a carousel at 10 a. m. and a reel at 11 a. m. are one plan. Three
@@ -467,6 +534,13 @@ def zone_countries() -> dict[str, str]:
     return zones
 
 
+#: m-24842984: the first sentence of a publication in review, always true on its own.
+REVIEW_NOTHING_WITHOUT_YOU = "Nada sale sin tu aprobación."
+#: m-24842984: left on the panel when «Aprobar» finds no version that passes the brand
+#: rules (or a price the catalog does not have) — where to fix it, with a link there.
+REVIEW_EDIT_NOTE = "Ninguna versión cumple las reglas de tu marca. Edítala en Por aprobar."
+REVIEW_EDIT_LINK = "Ir a Por aprobar ›"
+
 # What the Planificador tells the operator about automatic publication (QUA-111).
 AUTO_PUBLISH_ACTIVE = "active"  # the worker runs for this tenant and it has an account
 AUTO_PUBLISH_NO_CONNECTION = "no_connection"  # worker fine; the tenant has no active account
@@ -584,16 +658,75 @@ class ConnectionChoiceVM:
 
 # QUA-118: the POST's five gallery states (`planner.gallery.GalleryState`) as the card
 # prints them — a different entity from the five event states, deliberately other words.
+# m-24842981 (CREAR-3): the owner's words. «needs_action» covers two different jobs for
+# the owner — a publication waiting for their review («Por revisar», `CARD_STATES`) and
+# an approved one that cannot go out yet («Le falta algo») — so the card splits it.
 GALLERY_LABELS: dict[str, tuple[str, str]] = {
-    "draft": ("Borrador", "neutral"),
-    "needs_action": ("Por completar", "warn"),
-    "schedulable": ("Listo", "ok"),
-    "used": ("Usado", "info"),
-    "discarded": ("Desechado", "error"),
+    "draft": ("Creándose", "neutral"),
+    "needs_action": ("Le falta algo", "warn"),
+    "schedulable": ("Lista para programar", "ok"),
+    "used": ("Ya salió", "info"),
+    "discarded": ("Descartada", "error"),
 }
 GALLERY_FILTER_ALL = "all"
+
+
+@dataclass(frozen=True)
+class CardStateVM:
+    """What a «Por aprobar» card says about a publication (m-24842981): its state in
+    words and tone, and its ONE main button — what the owner has to do with it."""
+
+    key: str
+    label: str
+    tone: str
+    action: str  # CARD_ACTION_*: what the main button does
+    action_label: str
+
+
+CARD_ACTION_REVIEW = "review"  # opens the publication's page
+CARD_ACTION_SCHEDULE = "schedule"  # hands it to Tu semana to choose day and time
+CARD_ACTION_VIEW = "view"  # opens the publication's page, nothing to do
+CARD_ACTION_PLANNER = "planner"  # opens Tu semana on it: it is already on the calendar
+CARD_ACTION_WAIT = "wait"  # nothing to do yet: the button is disabled and says why
+
+#: The ready card's button keeps the name CREAR-1 (m-24842978) gave this same step —
+#: it opens Tu semana, where «Programar» is the final, confirming verb (navigation map
+#: §3); the ticket's table said «Programar», flagged to the founder in the PR.
+SCHEDULE_ACTION_LABEL = "Elegir día y hora"
+
+# In the order the filters show them: what needs the owner first, history last.
+CARD_STATES: dict[str, CardStateVM] = {
+    s.key: s
+    for s in (
+        CardStateVM("review", "Por revisar", "warn", CARD_ACTION_REVIEW, "Revisar"),
+        CardStateVM("missing", "Le falta algo", "warn", CARD_ACTION_REVIEW, "Ver qué falta"),
+        # review 2026-10-24 (finding 8): approved, its video final still being made —
+        # the owner waits; the button stays disabled with the same words until it lands
+        CardStateVM(
+            "preparing",
+            FINAL_PREPARING_LABEL,
+            "info",
+            CARD_ACTION_WAIT,
+            FINAL_PREPARING_LABEL,
+        ),
+        CardStateVM(
+            "ready", "Lista para programar", "ok", CARD_ACTION_SCHEDULE, SCHEDULE_ACTION_LABEL
+        ),
+        CardStateVM("scheduled", "Programada", "info", CARD_ACTION_PLANNER, "Ver en Tu semana"),
+        CardStateVM("used", "Ya salió", "info", CARD_ACTION_VIEW, "Ver"),
+        CardStateVM("discarded", "Descartada", "error", CARD_ACTION_VIEW, "Ver"),
+        CardStateVM("drafting", "Creándose", "neutral", CARD_ACTION_VIEW, "Ver"),
+    )
+}
+_CARD_STATE_BY_GALLERY: dict[str, str] = {
+    "draft": "drafting",
+    "needs_action": "missing",
+    "schedulable": "ready",
+    "used": "used",
+    "discarded": "discarded",
+}
 GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
-    (value, label) for value, (label, _tone) in GALLERY_LABELS.items()
+    (key, state.label) for key, state in CARD_STATES.items()
 )
 
 # m-24842962 (N11): Inicio's «publicaciones listas para que las apruebes» opens the
@@ -613,6 +746,52 @@ def gallery_filter_from_param(slug: str) -> str | None:
     """`?estado=por-completar` → `"needs_action"`; absent or unknown → None (keep the
     filter the owner already had)."""
     return GALLERY_FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+
+
+def card_state(
+    gallery_state: str,
+    *,
+    waiting_review: bool,
+    times_published: int = 0,
+    final_rendering: bool = False,
+) -> CardStateVM | None:
+    """The card's state (m-24842981): a publication generated and waiting for the
+    owner is «Por revisar» whatever else it lacks — reviewing comes first. An approved
+    one held back only because its video final is being made (`final_rendering`) is
+    «Preparando el video final»: nothing for the owner to fix. A «used» one that has
+    never gone out is only on the calendar: «Programada», not «Ya salió»."""
+    key = _CARD_STATE_BY_GALLERY.get(gallery_state)
+    if key is None:
+        return None
+    if gallery_state == "needs_action" and waiting_review:
+        key = "review"
+    elif gallery_state == "needs_action" and final_rendering:
+        key = "preparing"
+    if gallery_state == "used" and times_published <= 0:
+        key = "scheduled"
+    return CARD_STATES[key]
+
+
+#: The card states where «Ya probada» / «Por probar» helps a decision — whether to
+#: repeat it. Everywhere else the line is noise on a phone (UX review, m-24842981).
+HISTORY_CARD_STATES: frozenset[str] = frozenset({"ready", "used"})
+
+
+def history_help(times_published: int) -> str:
+    """The visible help under «Ya probada» / «Por probar» (m-24842981): how many times
+    the publication already went out — on the card and on its own page, never only in
+    a tooltip (N12). The threshold is the temperature's (`COLD_MIN_USES`)."""
+    n = max(times_published, 0)
+    if n >= COLD_MIN_USES:
+        return f"Ya salió {n} veces en tus redes: se puede repetir sin problema."
+    if n == 1:
+        return "Salió 1 vez en tus redes: todavía no sabemos si funciona."
+    return "Todavía no ha salido en tus redes."
+
+
+def history_word(times_published: int) -> str:
+    """«Ya probada» / «Por probar» (m-24842981, the words approved in wave 1)."""
+    return "Ya probada" if max(times_published, 0) >= COLD_MIN_USES else "Por probar"
 
 
 @dataclass(frozen=True)
@@ -801,6 +980,15 @@ class PostOptionVM:
     # 15-day window, «Contenido eliminado» (neutral) once the files are gone; "" otherwise.
     retention_label: str = ""
     retention_tone: str = "neutral"
+    # m-24842981 (CREAR-3): the «Por aprobar» card — its state in words (`CARD_STATES`),
+    # its one main button, and the visible help under «Ya probada» / «Por probar».
+    card_state: str = ""
+    card_label: str = ""
+    card_tone: str = "neutral"
+    card_action: str = CARD_ACTION_VIEW
+    card_action_label: str = "Ver"
+    history_word: str = ""
+    history_help: str = ""
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -866,9 +1054,22 @@ class EventDetailVM:
     # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
     # — derived from local_date/local_time, so every builder gets it without passing it.
     approved_line: str = field(init=False, default="")
+    # m-24842984: what a publication in review says above «Aprobar» / «No la quiero» —
+    # «Nada sale sin tu aprobación. Si la apruebas, sale el lunes 28 … a las 3:00 p. m.»
+    review_line: str = field(init=False, default=REVIEW_NOTHING_WITHOUT_YOU)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "approved_line", approved_line(self.local_date, self.local_time))
+        object.__setattr__(
+            self,
+            "review_line",
+            review_line(
+                self.local_date,
+                self.local_time,
+                expired=self.expired,
+                publish_note=self.publish_note,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1077,11 +1278,21 @@ def build_post_option(
     event_count: int = 0,
     retention_state: str = "",
     purge_days_left: int | None = None,
+    final_rendering: bool = False,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
     chips = list(outputs)
     g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
+    card = card_state(
+        gallery_state,
+        waiting_review=lifecycle_status == "generated",
+        times_published=times_published,
+        final_rendering=final_rendering,
+    )
+    shows_history = card is not None and card.key in HISTORY_CARD_STATES
+    if card is not None:  # the same words on every surface that prints the state
+        g_label, g_tone = card.label, card.tone
     kind, aspect = frame_shape(category or "", "")
     ratio = aspect.replace(" / ", ":")
     medium = "Video" if video_url else "Imagen"
@@ -1121,16 +1332,23 @@ def build_post_option(
         event_count=event_count,
         retention_label=r_label,
         retention_tone=r_tone,
+        card_state=card.key if card is not None else "",
+        card_label=card.label if card is not None else "",
+        card_tone=card.tone if card is not None else "neutral",
+        card_action=card.action if card is not None else CARD_ACTION_VIEW,
+        card_action_label=card.action_label if card is not None else "Ver",
+        history_word=history_word(times_published) if shows_history else "",
+        history_help=history_help(times_published) if shows_history else "",
     )
 
 
 def filter_posts(posts: Iterable[PostOptionVM], *, state: str, category: str) -> list[PostOptionVM]:
-    """The gallery's filters: by derived state and by raw category; `GALLERY_FILTER_ALL`
-    (or "") means no filter on that axis."""
+    """The gallery's filters: by the card's state (`CARD_STATES`, m-24842981) and by raw
+    category; `GALLERY_FILTER_ALL` (or "") means no filter on that axis."""
     return [
         post
         for post in posts
-        if (state in ("", GALLERY_FILTER_ALL) or post.gallery_state == state)
+        if (state in ("", GALLERY_FILTER_ALL) or post.card_state == state)
         and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
     ]
 
@@ -1938,11 +2156,13 @@ def scheduled_message(
     return head + (f" para {when}" if when else "")
 
 
-def approved_line(day_iso: str, at: str) -> str:
-    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
-    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
-    "" without a valid date; no final period, «p. m.» already ends the sentence. The
-    owner approved it; Qualify never publishes on its own."""
+#: m-24842984: the toast after «Aprobar» when the publication cannot go out as planned —
+#: the panel's own note says what is missing (an account, the media, an expired hour).
+APPROVED_CHECK_TOAST = "Publicación aprobada. Aquí arriba te decimos qué falta para que salga."
+
+
+def _when_phrase(day_iso: str, at: str) -> str:
+    """«el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»); "" without a valid date."""
     try:
         day = date.fromisoformat(day_iso)
     except ValueError:
@@ -1951,4 +2171,41 @@ def approved_line(day_iso: str, at: str) -> str:
     article = "a la" if hour % 12 == 1 else "a las"
     weekday = _WEEKDAYS_LONG[day.weekday()].lower()
     month = _MONTHS_LONG[day.month - 1]
-    return f"Aprobada por ti: sale el {weekday} {day.day} de {month} {article} {time_label(at)}"
+    return f"el {weekday} {day.day} de {month} {article} {time_label(at)}"
+
+
+def review_line(day_iso: str, at: str, *, expired: bool = False, publish_note: str = "") -> str:
+    """m-24842984: the event panel of a publication still in review — «Nada sale sin tu
+    aprobación. Si la apruebas, sale el lunes 28 de septiembre a las 3:00 p. m.». Only
+    the first sentence when the hour is gone (expired: approving alone does not bring it
+    back), unknown, or something else is missing (`publish_note`: the media, the text) —
+    N13, never an hour approving alone will not keep. The panel also drops the second
+    sentence when no account can publish. No final period after «p. m.»."""
+    when = "" if expired or publish_note else _when_phrase(day_iso, at)
+    if not when:
+        return REVIEW_NOTHING_WITHOUT_YOU
+    return f"{REVIEW_NOTHING_WITHOUT_YOU} Si la apruebas, sale {when}"
+
+
+def approved_toast(detail: EventDetailVM, auto_publish: str) -> str:
+    """m-24842984: what «Aprobar» says once the panel is read again. The day and hour
+    only when the publication will really go out then — approved and ready, still
+    scheduled, not expired, and the worker able to publish (N13: the same conditions as
+    the panel's «Aprobada por ti: sale …» line); otherwise, look at what is missing."""
+    goes_out = (
+        detail.approval_tone == "ok"
+        and detail.status_tone == "info"
+        and not detail.expired
+        and auto_publish == AUTO_PUBLISH_ACTIVE
+        and detail.approved_line != ""
+    )
+    return detail.approved_line if goes_out else APPROVED_CHECK_TOAST
+
+
+def approved_line(day_iso: str, at: str) -> str:
+    """N13 (m-24842959): what the event panel says of an approved, scheduled publication —
+    «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.» («a la 1:…»).
+    "" without a valid date; no final period, «p. m.» already ends the sentence. The
+    owner approved it; Qualify never publishes on its own."""
+    when = _when_phrase(day_iso, at)
+    return f"Aprobada por ti: sale {when}" if when else ""

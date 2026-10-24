@@ -40,7 +40,27 @@ from qualify_api.followups.workspace import FollowupCard, IntentChip
 
 from . import inbox_provider, inbox_state
 from .followups_state import FollowupsState
-from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, FollowupCardVM, build_card_vm, time_left
+from .followups_vm import (
+    DELIVERY_FAILED,
+    DELIVERY_SENDING,
+    DELIVERY_SENT,
+    DELIVERY_UNKNOWN,
+    STEP_ASKED,
+    STEP_REPLY,
+    STEP_REVIEW,
+    VIEW_MESSAGES,
+    VIEW_QUERIES,
+    FollowupCardVM,
+    build_card_vm,
+    delivery_headline,
+    done_title,
+    failed_line,
+    notice_line,
+    recipient_line,
+    sending_line,
+    step_label,
+    time_left,
+)
 from .inbox_vm import IntentAnalysisSummaryVM
 
 NOW = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
@@ -202,15 +222,16 @@ def test_every_comment_offers_reply_by_dm() -> None:
 
 
 def test_conversations_loads_the_queries_on_entry_and_shows_the_toggle() -> None:
-    source = (Path(__file__).parent / "Qualify.py").read_text(encoding="utf-8")
-    start = source.index("conversations_index,")
-    block = source[start : source.index(")", start)]
-    assert "FollowupsState.enter_page" in block
+    # m-24842990: the queries are the «Quieren comprar» tab of /responder, whose entry
+    # hands over to FollowupsState.enter_page; /conversations keeps the toggle.
+    source = (Path(__file__).parent / "responder_state.py").read_text(encoding="utf-8")
+    assert "FollowupsState.enter_page" in source
     from .conversations_page import conversations_index
 
     rendered = str(conversations_index().render())
     assert "Mensajes" in rendered
-    assert "No hay consultas pendientes" in rendered
+    assert "esperando para comprar" in rendered and "Ver comentarios" in rendered
+    assert "/responder?tab=comentarios" in rendered
 
 
 def test_the_state_accepts_only_known_views_and_known_cards() -> None:
@@ -238,8 +259,10 @@ def test_the_card_renders_the_notice_block_behind_its_capability() -> None:
 
     rendered = str(_notice(FollowupsState.cards[0]).render())
     # The compiled JSX escapes non-ASCII («también» → `tambi\u00e9n`), escaped again by str().
-    assert "Publicar tambi\\\\u00e9n un aviso en el comentario" in rendered
-    assert "Texto del aviso p\\\\u00fablico" in rendered
+    # m-24842991: the label says what is left on the comment, with its text.
+    assert "Tambi\\\\u00e9n dejamos" in rendered and "en su comentario." in rendered
+    assert "Texto del aviso en su comentario" in rendered
+    assert "solo cuando el mensaje privado salga" in rendered
     # The whole block hangs from the card's `notice_available` (no capability, no box).
     assert "notice_available" in rendered
 
@@ -305,3 +328,265 @@ def test_a_story_reply_card_says_it_answered_a_story() -> None:
     assert (vm.permalink, vm.caption) == ("https://cdn/story", "")
     comment = build_card_vm(card, now=NOW, zone=ZONE)
     assert comment.origin_label == "Comentó en tu Reel"
+
+
+# --- three steps and the confirmation (m-24842991, ATENDER-6) -----------------------------
+
+
+def test_the_notice_proposes_the_owners_words_by_default() -> None:
+    assert DEFAULT_NOTICE_TEXT == "Te escribimos al privado 💬"
+    assert notice_line(DEFAULT_NOTICE_TEXT) == (
+        "También dejamos “Te escribimos al privado 💬” en su comentario."
+    )
+
+
+def test_each_step_has_its_number_and_name() -> None:
+    assert step_label(STEP_ASKED) == "Paso 1 de 3 · Qué preguntó"
+    assert step_label(STEP_REPLY) == "Paso 2 de 3 · Qué le respondes"
+    assert step_label(STEP_REVIEW) == "Paso 3 de 3 · Revisa y aprueba"
+    assert step_label(9) == "Paso 1 de 3 · Qué preguntó"
+
+
+def test_the_review_says_who_gets_it_in_words() -> None:
+    vm = build_card_vm(_card(), now=NOW, zone=ZONE)
+    assert vm.recipient_line == "Le llega a @ana por mensaje privado."
+    assert recipient_line("Cliente") == "Le llega por mensaje privado."
+
+
+def test_the_confirmation_names_the_person_and_the_next_step() -> None:
+    assert done_title("@ana", more_left=True) == (
+        "Listo. Le escribiste a @ana. ¿Seguimos con la siguiente?"
+    )
+    assert done_title("Cliente", more_left=False) == (
+        "Listo. Le escribiste a tu cliente. No queda nadie más esperando."
+    )
+
+
+def test_back_and_forth_keeps_what_was_written() -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    fid = first.followup_id
+    state.edits = {fid: first.draft_text}
+    state.steps = {fid: STEP_ASKED}
+    FollowupsState.go_step.fn(state, fid, STEP_REPLY)  # type: ignore[attr-defined]
+    FollowupsState.set_edit.fn(state, fid, "Hola Ana, lo tenemos en rojo")  # type: ignore[attr-defined]
+    FollowupsState.go_step.fn(state, fid, STEP_REVIEW)  # type: ignore[attr-defined]
+    assert state.steps[fid] == STEP_REVIEW
+    FollowupsState.go_step.fn(state, fid, STEP_REPLY)  # type: ignore[attr-defined]
+    FollowupsState.go_step.fn(state, fid, STEP_ASKED)  # type: ignore[attr-defined]
+    assert state.steps[fid] == STEP_ASKED
+    assert state.edits[fid] == "Hola Ana, lo tenemos en rojo"  # «Atrás» erased nothing
+
+
+def test_the_review_needs_a_message_and_only_known_steps_and_cards() -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    fid = first.followup_id
+    state.edits = {fid: "   "}
+    state.steps = {fid: STEP_REPLY}
+    assert FollowupsState.go_step.fn(state, fid, STEP_REVIEW) is not None  # type: ignore[attr-defined]
+    assert state.steps[fid] == STEP_REPLY
+    assert FollowupsState.go_step.fn(state, fid, 7) is None  # type: ignore[attr-defined]
+    assert FollowupsState.go_step.fn(state, str(uuid4()), STEP_REPLY) is None  # type: ignore[attr-defined]
+    assert state.steps == {fid: STEP_REPLY}
+
+
+def test_after_approving_the_confirmation_leads_to_the_next_one() -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    state.done_author = "@bea"
+    state.done_note = "Tu mensaje privado a @bea sale en unos segundos."
+    state.delivery = DELIVERY_SENT
+    assert state.showing_done is True
+    assert state.done_text == "Listo. Le escribiste a @bea. ¿Seguimos con la siguiente?"
+    FollowupsState.next_query.fn(state)  # type: ignore[attr-defined]
+    assert (state.showing_done, state.done_author) == (False, "")
+    assert state.highlight_id == first.followup_id
+    assert state.steps[first.followup_id] == STEP_ASKED
+    nobody = _state_with()
+    nobody.done_author = "@bea"
+    nobody.delivery = DELIVERY_SENT
+    assert nobody.done_text.endswith("No queda nadie más esperando.")
+
+
+def test_the_panel_has_the_steps_the_confirmation_and_no_tooltip() -> None:
+    import inspect
+
+    from . import followups_page
+
+    assert "rx.tooltip" not in inspect.getsource(followups_page)  # nothing hover-only
+    rendered = str(followups_page.followups_panel().render())
+    for text in ("Siguiente", "Atr\\\\u00e1s", "Volver a comentarios", "Aprobar y enviar"):
+        assert text in rendered, text
+    assert "Otra idea" in rendered and "/responder?tab=comentarios" in rendered
+    assert "44px" in rendered
+
+
+def test_the_ux_review_fixes_are_on_the_card() -> None:
+    """m-24842991 UX review: blocked route said on step 1 with a way out, step 2's
+    «Siguiente» off while the box is empty (and why), a titled preview with «Cambiar
+    mensaje», and a notice label that does not echo the box."""
+    from .followups_page import _notice, _step_asked, _step_reply, _step_review
+
+    c = FollowupsState.cards[0]
+    asked = str(_step_asked(c).render())
+    assert "No disponible todav" in asked and "Volver a comentarios" in asked
+    assert "route_available" in asked
+    reply = str(_step_reply(c).render())
+    assert "para seguir." in reply and "pyStrip" in reply
+    review = str(_step_review(c).render())
+    assert "Tu mensaje:" in review and "Cambiar mensaje" in review
+    label = str(_notice(c).render())
+    assert "notice_default" in label
+
+
+def test_the_notice_messages_use_the_same_words_as_the_card() -> None:
+    from . import followups_state as fs
+
+    for text in (fs._NOTICE_EMPTY, fs._NOTICE_TOO_LONG):
+        assert "aviso público" not in text and "en su comentario" in text
+
+
+# --- whether the private message went out (m-24849131, ATENDER-10) -----------------------
+
+
+def _sending(state: FollowupsState, c: FollowupCardVM, *, notice: bool = False) -> None:
+    """What `approve` leaves once the outbox has the message."""
+    state.done_author = c.author
+    state.done_note = ""
+    state.delivery, state.delivery_id = DELIVERY_SENDING, c.followup_id
+    state.delivery_card = [c]
+    state.delivery_text = "Hola Ana, cuesta 50.000"
+    state._delivery_notice = notice  # noqa: SLF001
+
+
+def test_the_outcome_lines_are_the_exact_texts() -> None:
+    assert sending_line("@ana") == "Enviando a @ana…"
+    assert failed_line("@ana") == "No pudimos enviarle el mensaje a @ana. Instagram no lo aceptó."
+    assert failed_line("Cliente") == (
+        "No pudimos enviarle el mensaje a tu cliente. Instagram no lo aceptó."
+    )
+    assert delivery_headline(DELIVERY_SENT, "@ana", more_left=False).startswith(
+        "Listo. Le escribiste a @ana."
+    )
+    assert delivery_headline(DELIVERY_UNKNOWN, "@ana", more_left=True) == (
+        "No sabemos si salió. Revísalo en Instagram."
+    )
+
+
+def test_after_approving_the_card_waits_for_the_result() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with()  # `load` already dropped the approved card from the list
+    _sending(state, c)
+    assert state.showing_done and state.delivery_pending
+    assert state.done_text == "Enviando a @ana…"  # never «Listo» before it is out
+    assert state.delivery_card == [c]
+    # No way past it while it goes out, and re-entering the tab keeps it.
+    assert FollowupsState.next_query.fn(state) is None  # type: ignore[attr-defined]
+    assert state.delivery == DELIVERY_SENDING
+    # Still in the outbox: the watcher keeps waiting.
+    assert state._settle(c.followup_id, DELIVERY_SENDING) is False  # noqa: SLF001
+
+
+def test_a_sent_message_says_listo() -> None:
+    c = build_card_vm(_card(notice_available=True), now=NOW, zone=ZONE)
+    state = _state_with()
+    _sending(state, c, notice=True)
+    assert state._settle(c.followup_id, DELIVERY_SENT) is True  # noqa: SLF001
+    assert state.delivery_sent
+    assert state.done_text == "Listo. Le escribiste a @ana. No queda nadie más esperando."
+    assert state.done_note == "Tu aviso en su comentario aparece en unos segundos."
+    assert state.undelivered == []
+
+
+def test_a_refused_message_keeps_the_card_and_resends_nothing() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    other = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(other)
+    _sending(state, c)
+    assert state._settle(c.followup_id, DELIVERY_FAILED) is True  # noqa: SLF001
+    assert state.delivery_failed
+    assert state.done_text == "No pudimos enviarle el mensaje a @ana. Instagram no lo aceptó."
+    [kept] = state.undelivered
+    assert (kept.followup_id, kept.message, kept.failed) == (
+        c.followup_id,
+        "Hola Ana, cuesta 50.000",
+        True,
+    )
+    # A late or repeated result changes nothing and adds no second card.
+    assert state._settle(c.followup_id, DELIVERY_SENT) is True  # noqa: SLF001
+    assert state.delivery_failed and len(state.undelivered) == 1
+    # «Siguiente» moves on; the refused card stays in the list until «Entendido».
+    FollowupsState.next_query.fn(state)  # type: ignore[attr-defined]
+    assert state.showing_done is False and len(state.undelivered) == 1
+    FollowupsState.dismiss_undelivered.fn(state, c.followup_id)  # type: ignore[attr-defined]
+    assert state.undelivered == []
+
+
+def test_no_answer_says_we_do_not_know() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with()
+    _sending(state, c)
+    assert state._settle(c.followup_id, DELIVERY_UNKNOWN) is True  # noqa: SLF001
+    assert state.done_text == "No sabemos si salió. Revísalo en Instagram."
+    [kept] = state.undelivered
+    assert kept.failed is False and kept.next_step == ""
+
+
+def test_only_the_send_on_screen_is_settled() -> None:
+    c = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with()
+    _sending(state, c)
+    assert state._settle(str(uuid4()), DELIVERY_FAILED) is True  # noqa: SLF001 — stop
+    assert state.delivery_pending and state.undelivered == []
+    assert state._settle(c.followup_id, "weird") is False  # noqa: SLF001
+    assert state.delivery_pending
+
+
+def test_the_watcher_only_reads() -> None:
+    import inspect
+
+    from . import followups_state as fs
+
+    source = inspect.getsource(fs.FollowupsState.watch_delivery.fn)
+    assert "gateway().delivery" in source
+    for verb in ("approve", "enqueue", "retry", "send"):
+        assert f"gateway().{verb}" not in source, verb
+    approve = inspect.getsource(fs.FollowupsState.approve.fn)
+    assert "FollowupsState.watch_delivery(followup_id)" in approve
+
+
+def test_the_gateway_reads_the_delivery_from_the_workspace() -> None:
+    from qualify_api.followups import Delivery
+
+    from .followups_provider import FollowupsGateway
+
+    class Workspace:
+        def delivery(self, **kw: object) -> Delivery:
+            return Delivery.FAILED
+
+    assert FollowupsGateway(Workspace()).delivery(TENANT, uuid4()) == DELIVERY_FAILED  # type: ignore[arg-type]
+
+
+def test_the_panel_renders_every_outcome() -> None:
+    from . import followups_page
+
+    rendered = str(followups_page.followups_panel().render())
+    for text in ("Entendido", "q-spinner", "delivery_card", "undelivered", "Tu mensaje:"):
+        assert text in rendered, text
+    assert "Reintentar" not in rendered  # ATENDER-9 decides it
+
+
+def test_the_ux_review_of_the_send_status_is_on_the_card() -> None:
+    """m-24849131 UX review: the way back stays while it goes out, one live region
+    announces every outcome, and approving adds no second line under «Enviando…»."""
+    import inspect
+
+    from . import followups_state as fs
+    from .followups_page import _back_while_sending, _outcome_line
+
+    assert "Volver a comentarios" in str(_back_while_sending().render())
+    assert "Siguiente" not in str(_back_while_sending().render())
+    outcome = str(_outcome_line().render())
+    assert outcome.count("aria-live") + outcome.count("ariaLive") == 1
+    assert "queued_message" not in inspect.getsource(fs.FollowupsState.approve.fn)  # type: ignore[attr-defined]

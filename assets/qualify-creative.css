@@ -250,14 +250,17 @@
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
 }
 .q-gcard-note { color: var(--amber-11); background: var(--amber-a2); border-radius: var(--q-radius-control); padding: 0.35rem 0.5rem; }
-.q-gcard-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.6rem 0.9rem 0.9rem; }
-.q-gcard-actions > :only-child { grid-column: 1 / -1; }
-.q-gcard-actions--review { grid-template-columns: 1fr 1fr; }
-/* An approved piece not yet scheduled (2026-10-22): the ✕ beside «Ver POST» on the first
-   row, «Programar» whole on the second — three in one row clipped the verb. */
-.q-gcard-actions--ready { grid-template-columns: auto 1fr; }
-.q-gcard-actions--ready > :last-child { grid-column: 1 / -1; }
-.q-gcard-actions--review > :last-child { grid-column: 1 / -1; }
+/* m-24842981: ONE main button per card, full width, and «Descartar» under it as a quiet
+   text button when the publication can still be thrown out. */
+.q-gcard-actions { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.6rem 0.9rem 0.9rem; }
+/* The picture opens the publication: a block link, no underline, no hover-only cue. */
+a.q-gcard-media { display: block; text-decoration: none; color: inherit; }
+/* N12: on a phone (or any touch screen) every target on the card and the state
+   filters is at least 44 px tall. */
+@media (max-width: 640px), (pointer: coarse) {
+  .q-gcard-actions .rt-Button,
+  .q-gfilter.rt-Button { min-height: 44px; }
+}
 
 
 /* The file bar under the review media. */
@@ -389,13 +392,26 @@
   .q-cr-layout { grid-template-columns: 15.5rem minmax(0, 1fr); gap: 1.25rem; align-items: stretch; }
   .q-cr-options-inner { position: sticky; top: 7.5rem; }
 }
-/* On a phone the options are one row that slides sideways, so the view is on screen
-   right away instead of below a full screen of buttons. */
+/* CREAR-6 (m-24842980): on a phone the options are one column and every option shows
+   its blurb — no row that slides sideways hiding «Variaciones» and «Descubrir ideas de
+   videos» off screen, no explanation that only a mouse could reveal (N12). The «?»
+   beside an option is for the wide, compact panel, where the blurb is hidden. */
+.q-cr-option-blurb { display: none; }
 @media (max-width: 899px) {
-  .q-cr-options-list { flex-direction: row !important; flex-wrap: nowrap; overflow-x: auto; }
-  .q-cr-options-list > * { flex: 0 0 auto; width: auto !important; }
   .q-cr-options-label { display: none; }
+  .q-cr-option-blurb { display: block; }
+  .q-cr-option-help { display: none; }
 }
+/* CREAR-6: «Datos clave» — each fact's two labelled fields side by side, one under the
+   other on a phone; every control of the section a ≥ 44 px target. */
+.q-cr-highlight-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 0.5rem; }
+@media (max-width: 599px) { .q-cr-highlight-row { grid-template-columns: minmax(0, 1fr); } }
+.q-cr-highlight-label { font-size: var(--font-size-1); font-weight: 500; color: var(--gray-11); }
+.q-cr-rules .rt-TextFieldRoot, .q-cr-rules .rt-Button { min-height: 44px; }
+.q-cr-rules .rt-IconButton { min-height: 44px; min-width: 44px; }
+.q-cr-phrase-chip { overflow-wrap: anywhere; }
+/* UX review: the «?» of an option, a ≥ 44 px target on a wide touch screen. */
+.q-cr-option-help .rt-IconButton { min-width: 44px; min-height: 44px; }
 /* The view's footer sits right under its content, never sticky (§ 2026-10-14). */
 .q-cr-view .q-cr-view-nav {
   padding-top: 0.75rem;
@@ -407,7 +423,8 @@
    onto a second line (a word is never split), the joining lines give way first, and if
    it still does not fit the bar goes on to a second row — nothing is ever clipped. */
 .q-cr-view .q-stepper { overflow: visible; flex-wrap: wrap; row-gap: 0.35rem; }
-.q-cr-view .q-step { flex: 0 1 auto; }
+/* CREAR-2: four steps now; each one is a ≥ 44 px target on a phone (N12). */
+.q-cr-view .q-step { flex: 0 1 auto; min-height: 44px; }
 .q-cr-view .q-step-label {
   white-space: normal;
   line-height: 1.15;
@@ -722,8 +739,9 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
 }
 
 /* «Replicar con mi marca», not built yet (m-24820845): the button is the soft grey
-   variant, flat — no hover lift — with «Muy pronto» on it. The wrapper carries the
-   pointer's tooltip, since the disabled button itself takes no pointer events. */
+   variant, flat — no hover lift — with «Pronto» on it and its help always visible
+   below (m-24842980). The wrapper carries the pointer's tooltip, an extra for the
+   mouse, since the disabled button itself takes no pointer events. */
 .q-dr-replicate-wrap { display: block; width: 100%; border-radius: var(--q-radius-control); cursor: not-allowed; }
 .radix-themes .rt-Button.q-dr-replicate:disabled,
 .radix-themes .rt-Button.q-dr-replicate[data-disabled],

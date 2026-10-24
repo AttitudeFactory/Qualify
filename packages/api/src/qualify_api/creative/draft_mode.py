@@ -27,7 +27,7 @@ DRAFT_FINAL = "final"
 DRAFT_FAILED = "failed"
 #: Client-facing: no vendor name (qualify-copy-es) — what the operator does next.
 DRAFT_EXPIRED_TEXT = (
-    "El borrador caducó (se guarda 7 días): vuelve a generar la publicación para tener uno nuevo."
+    "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva."
 )
 #: An approved piece whose final was never ordered (the approval was saved, ordering
 #: it failed): the operator orders it with «Reintentar».

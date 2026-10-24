@@ -148,9 +148,11 @@ _UNSUPPORTED_SURFACE = (
 
 
 def is_inbox_path(path: str) -> bool:
-    """Whether the tab is on the inbox screen (`/inbox`, with or without the trailing
-    slash the production build adds). Used to keep a late sync toast off other pages."""
-    return path.rstrip("/") == "/inbox"
+    """Whether the tab is on the comments screen (`/responder` since m-24842990, whose
+    «Comentarios» tab holds it; `/inbox` only redirects there), with or without the
+    trailing slash the production build adds. Used to keep a late sync toast off other
+    pages."""
+    return path.rstrip("/") in ("/responder", "/inbox")
 
 
 # `MediaNotEligible.reason` -> message; any other reason keeps `_NOT_ELIGIBLE`.
@@ -1147,7 +1149,8 @@ class InboxState(rx.State):
             except Exception as exc:  # noqa: BLE001
                 logger.error("reply_by_dm failed: %s", type(exc).__name__)
                 return rx.toast.error(_REPLY_BY_DM_FAILED, duration=_RESULT_TOAST_DURATION_MS)
-            return rx.redirect(f"/conversations?consulta={followup_id}")
+            # m-24842990: the query card lives in «Por responder» › Quieren comprar.
+            return rx.redirect(f"/responder?tab=comprar&consulta={followup_id}")
         finally:
             async with self:
                 self.replying_dm_id = ""
@@ -1172,7 +1175,7 @@ class InboxState(rx.State):
     def back_to_reel_list(self) -> rx.event.EventSpec:
         """QUA-93: «‹ Comentarios» — synchronous, no reload. The AC's explicit
         requirement: the Reel list already in state stays exactly as it was, no wasted
-        round-trip. N5: the address goes back to the list (`/inbox`)."""
+        round-trip. N5: the address goes back to the list (the «Comentarios» tab)."""
         self.selected_thread_id = ""
         self.selected_reel_summary = None
         # replaceState, not pushState: «‹ Comentarios» closes the detail, so the next
@@ -1215,6 +1218,18 @@ class InboxState(rx.State):
             if value == self.search_query:
                 return
             self.search_query = value
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event(background=True)
+    async def clear_thread_filters(self) -> None:
+        """m-24842961 (N8): «Quitar filtros» on «Sin comentarios para este filtro» — the
+        sentiment, intent and search back to everything, then a fresh first page."""
+        async with self:
+            self.sentiment_filter = FILTER_ALL
+            self.intent_filter = FILTER_ALL
+            self.search_query = ""
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
         await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))

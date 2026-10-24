@@ -93,6 +93,7 @@ from .followups_page import followups_panel, followups_toggle
 from .followups_state import FollowupsState
 from .ice_breakers_panel import ice_breakers_panel
 from .ice_breakers_panel import open_button as ice_breakers_button
+from .next_steps_vm import ALL_CLEAR_BODY, ALL_CLEAR_TITLE, CREATE_LABEL, CREATE_ROUTE
 from .ui import (
     app_shell,
     callout,
@@ -471,13 +472,59 @@ def _empty_list() -> rx.Component:
             "Todavía no se han leído mensajes de esta cuenta",
             "Mientras el acceso a los mensajes esté por verificar, una lista vacía no "
             "significa que nadie haya escrito. Revisa el aviso de arriba.",
+            # N8: the access is granted in «Tus redes».
+            action=rx.link(
+                rx.button("Ir a Tus redes", variant="soft", size="3"), href="/connections"
+            ),
         ),
         empty_state(
             "messages-square",
             "Aún no hay conversaciones en esta cuenta",
             "Cuando alguien escriba por mensaje privado a esta cuenta, su conversación "
             "aparece aquí y puedes responderla desde esta pantalla.",
+            # N8: a publication is what makes people write.
+            action=_create_link(),
         ),
+    )
+
+
+def _create_link() -> rx.Component:
+    """The one solid next step once nobody waits: the next publication (N3, N8)."""
+    return rx.link(
+        rx.button(rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3"),
+        href=CREATE_ROUTE,
+    )
+
+
+def _all_clear_state() -> rx.Component:
+    """m-24842961: zero people waiting — «¡Al día!» and the next job, never a blank list."""
+    return empty_state("circle-check", ALL_CLEAR_TITLE, ALL_CLEAR_BODY, action=_create_link())
+
+
+def _all_clear_card() -> rx.Component:
+    """The same news above a list with nothing pending (filter «Todas»): one line and the
+    button, wrapping under the text at 360 px (N12)."""
+    return card(
+        rx.flex(
+            rx.hstack(
+                rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                rx.vstack(
+                    rx.text(ALL_CLEAR_TITLE, size="2", weight="medium"),
+                    rx.text(ALL_CLEAR_BODY, size="2", color=T.TEXT_MUTED),
+                    spacing="0",
+                    align_items="start",
+                ),
+                spacing="3",
+                align="center",
+            ),
+            _create_link(),
+            justify="between",
+            align="center",
+            wrap="wrap",
+            gap="0.75rem",
+            width="100%",
+        ),
+        padding="0.75rem 1rem",
     )
 
 
@@ -498,16 +545,43 @@ def _list_body() -> rx.Component:
                 rx.cond(
                     S.visible_rows.length() > 0,
                     rx.vstack(
-                        rx.foreach(S.visible_rows, _thread_row),
+                        rx.cond(
+                            S.all_clear & (S.filter_key == FILTER_ALL),
+                            _all_clear_card(),
+                        ),
+                        rx.vstack(
+                            rx.foreach(S.visible_rows, _thread_row),
+                            spacing="2",
+                            width="100%",
+                            class_name="q-wa-scroll q-wa-scroll--list q-conv-list",
+                        ),
                         spacing="2",
                         width="100%",
-                        class_name="q-wa-scroll q-wa-scroll--list q-conv-list",
                     ),
-                    rx.text(
-                        "No hay conversaciones con este filtro.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                        padding="1rem 0.25rem",
+                    rx.cond(
+                        S.filter_key == FILTER_PENDING,
+                        _all_clear_state(),
+                        # Filter exception (listed in the PR): the way out is the chip
+                        # «Todas», given as a button so the empty list is not a dead end.
+                        rx.vstack(
+                            rx.text(
+                                "No hay conversaciones con este filtro.",
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            ),
+                            rx.button(
+                                "Ver todas",
+                                on_click=S.set_filter(FILTER_ALL),
+                                variant="soft",
+                                size="2",
+                                min_height="44px",
+                                type="button",
+                                **T.tone_scheme("neutral"),
+                            ),
+                            spacing="2",
+                            padding="1rem 0.25rem",
+                            align_items="start",
+                        ),
                     ),
                 ),
             ),
@@ -1517,6 +1591,14 @@ def _templates_list() -> rx.Component:
                 "Aún no tienes plantillas en esta cuenta",
                 "Crea la primera: un saludo, tus precios o tu horario, listos para "
                 "responder más rápido.",
+                action=rx.button(
+                    rx.icon("plus", size=16),
+                    "Crear la primera",
+                    on_click=S.start_new_template,
+                    variant="soft",
+                    size="3",
+                    type="button",
+                ),
             ),
             rx.vstack(rx.foreach(S.templates, _template_row), spacing="2", width="100%"),
         ),
@@ -1976,25 +2058,55 @@ def _inbox() -> rx.Component:
     )
 
 
+def _guarded(content: rx.Component) -> rx.Component:
+    """Load error → retry; accounts loading → skeleton; no account → how to connect one;
+    else `content`."""
+    return rx.cond(
+        S.load_error != "",
+        rx.vstack(
+            callout(S.load_error, "error"),
+            _retry_button("Reintentar", S.load_accounts),
+            width="100%",
+            spacing="3",
+        ),
+        rx.cond(
+            ~S.accounts_loaded,
+            rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
+            rx.cond(S.show_no_accounts, _no_accounts_state(), content),
+        ),
+    )
+
+
 def _body() -> rx.Component:
     return page_body(
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
         ice_breakers_panel(),
-        rx.cond(
-            S.load_error != "",
-            rx.vstack(
-                callout(S.load_error, "error"),
-                _retry_button("Reintentar", S.load_accounts),
-                width="100%",
-                spacing="3",
-            ),
-            rx.cond(
-                ~S.accounts_loaded,
-                rx.vstack(skeleton_rows(1, height="2.25rem"), skeleton_rows(4, height="5.5rem")),
-                rx.cond(S.show_no_accounts, _no_accounts_state(), _inbox()),
-            ),
+        _guarded(_inbox()),
+    )
+
+
+def messages_tab() -> rx.Component:
+    """m-24842990: the «Mensajes» tab of «Por responder» — the private inbox without the
+    Mensajes / Consultas toggle (the queries are the «Quieren comprar» tab there). The
+    account selector, the «Preguntas iniciales» door and the pending badge move from the
+    page header into the tab."""
+    return rx.vstack(
+        _heartbeat(),
+        rx.script(src="/qualify-voice.js"),
+        ice_breakers_panel(),
+        rx.hstack(
+            account_selector(),
+            _ice_breakers_door(),
+            _pending_badge(),
+            spacing="3",
+            align="center",
+            wrap="wrap",
+            width="100%",
         ),
+        _guarded(_chats()),
+        spacing="4",
+        width="100%",
     )
 
 

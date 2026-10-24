@@ -21,6 +21,17 @@ What a card says, and where it comes from:
   claims the generator could not ground;
 - **the public notice** (PR 4): only when `public_notice` is on and the origin is a
   comment, the default text the person may edit and approve together with the message.
+
+**Three steps** (m-24842991, ATENDER-6, guide N3/N6): the card is walked as ① «Qué
+preguntó» ② «Qué le respondes» ③ «Revisa y aprueba»; approving ends in «Listo. Le
+escribiste a @ana. ¿Seguimos con la siguiente?» with «Siguiente» and «Volver a
+comentarios». Every explanation is visible text, never a tooltip (a phone has no hover).
+
+**Whether it went out** (m-24849131, ATENDER-10): approving only queues the message, so
+the card stays on screen with «Enviando a @ana…» until the outbox says how it ended —
+«Listo. Le escribiste a @ana.» once sent, «No pudimos enviarle el mensaje a @ana.
+Instagram no lo aceptó.» when refused (the card stays in the list), or «No sabemos si
+salió. Revísalo en Instagram.» when the answer does not come. Nothing is re-sent (N13).
 """
 
 from __future__ import annotations
@@ -77,6 +88,21 @@ TRIGGER_LABELS: Final = {
     FollowupTrigger.MANUAL: "La abriste tú desde Comentarios",
 }
 CAPTION_CHARS: Final = 120
+
+# -- the three steps (m-24842991) ----------------------------------------------------------
+STEP_ASKED: Final = 1
+STEP_REPLY: Final = 2
+STEP_REVIEW: Final = 3
+STEP_TITLES: Final[dict[int, str]] = {
+    STEP_ASKED: "Qué preguntó",
+    STEP_REPLY: "Qué le respondes",
+    STEP_REVIEW: "Revisa y aprueba",
+}
+STEP_COUNT: Final = len(STEP_TITLES)
+#: Where «Volver a comentarios» goes, after approving or with nobody left.
+COMMENTS_HREF: Final = "/responder?tab=comentarios"
+ANOTHER_IDEA: Final = "Otra idea"
+SUGGEST_ONE: Final = "Sugerir un mensaje"
 STORY_WHERE: Final = "tu historia"
 STORY_ORIGIN_LABEL: Final = "Respondió a tu historia por mensaje directo"
 
@@ -132,6 +158,97 @@ class FollowupCardVM:
     # The public notice under the comment: offered only with `public_notice` on.
     notice_available: bool = False
     notice_default: str = ""
+    # Step 3, in words: «Le llega a @ana por mensaje privado.»
+    recipient_line: str = ""
+
+
+def step_label(step: int) -> str:
+    """«Paso 2 de 3 · Qué le respondes» — M is real: the three steps always apply."""
+    title = STEP_TITLES.get(step, STEP_TITLES[STEP_ASKED])
+    number = step if step in STEP_TITLES else STEP_ASKED
+    return f"Paso {number} de {STEP_COUNT} · {title}"
+
+
+def recipient_line(author: str) -> str:
+    if author.startswith("@"):
+        return f"Le llega a {author} por mensaje privado."
+    return "Le llega por mensaje privado."
+
+
+def notice_line(text: str) -> str:
+    """The notice offered in step 3: «También dejamos “Te escribimos al privado 💬” en su
+    comentario.»"""
+    return f"También dejamos “{text}” en su comentario."
+
+
+def done_title(author: str, *, more_left: bool) -> str:
+    """The confirmation once approved (N3): who got it, and the next step."""
+    who = _who(author)
+    tail = "¿Seguimos con la siguiente?" if more_left else "No queda nadie más esperando."
+    return f"Listo. Le escribiste a {who}. {tail}"
+
+
+# -- whether the message went out (m-24849131) ---------------------------------------------
+DELIVERY_SENDING: Final = "sending"
+DELIVERY_SENT: Final = "sent"
+DELIVERY_FAILED: Final = "failed"
+DELIVERY_UNKNOWN: Final = "unknown"
+#: §2b-7a: the outcome never arrived (or cannot be read) — never claim it went out.
+DELIVERY_UNKNOWN_TEXT: Final = "No sabemos si salió. Revísalo en Instagram."
+#: The next step after a refusal: there is no «Reintentar» here (ATENDER-9 decides it).
+DELIVERY_FAILED_NEXT: Final = "Puedes escribirle desde Instagram."
+NOTICE_AFTER_SENT: Final = "Tu aviso en su comentario aparece en unos segundos."
+
+
+def _who(author: str) -> str:
+    return author if author.startswith("@") else "tu cliente"
+
+
+def sending_line(author: str) -> str:
+    """While the outbox has it: «Enviando a @ana…» — never «Listo» before it is out."""
+    return f"Enviando a {_who(author)}…"
+
+
+def failed_line(author: str) -> str:
+    return f"No pudimos enviarle el mensaje a {_who(author)}. Instagram no lo aceptó."
+
+
+def delivery_headline(delivery: str, author: str, *, more_left: bool) -> str:
+    """The one line the card says for each outcome of the send."""
+    if delivery == DELIVERY_SENT:
+        return done_title(author, more_left=more_left)
+    if delivery == DELIVERY_FAILED:
+        return failed_line(author)
+    if delivery == DELIVERY_UNKNOWN:
+        return DELIVERY_UNKNOWN_TEXT
+    return sending_line(author)
+
+
+@dataclass(frozen=True)
+class UndeliveredVM:
+    """A card whose message did not (or may not have) gone out: it stays in the list,
+    with what was asked, what was written and why, until the person dismisses it."""
+
+    followup_id: str
+    author: str
+    comment_text: str
+    message: str
+    headline: str
+    next_step: str
+    failed: bool
+
+
+def undelivered_vm(card: FollowupCardVM, message: str, delivery: str) -> UndeliveredVM:
+    failed = delivery == DELIVERY_FAILED
+    return UndeliveredVM(
+        followup_id=card.followup_id,
+        author=card.author,
+        comment_text=card.comment_text,
+        message=message,
+        headline=failed_line(card.author) if failed else DELIVERY_UNKNOWN_TEXT,
+        next_step=DELIVERY_FAILED_NEXT if failed else "",
+        failed=failed,
+    )
 
 
 def date_label(value: datetime | None, zone: ZoneInfo) -> str:
@@ -207,5 +324,6 @@ def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> Follo
         unsupported_claims=[str(c) for c in unsupported if str(c).strip()],
         notice_available=card.notice_available,
         notice_default=DEFAULT_NOTICE_TEXT if card.notice_available else "",
+        recipient_line=recipient_line(author),
         **route_fields,  # type: ignore[arg-type]
     )

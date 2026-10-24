@@ -166,6 +166,8 @@ from .conversations_vm import (
     validate_reply,
     voice_note_name,
 )
+from .next_steps_vm import all_clear as is_all_clear
+from .pending_state import PendingState
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -406,6 +408,11 @@ class ConversationsState(rx.State):
     @rx.var
     def pending_count(self) -> int:
         return filter_counts(self.rows)[FILTER_PENDING]
+
+    @rx.var
+    def all_clear(self) -> bool:
+        """m-24842961 (N3/N8): conversations exist and nobody waits for an answer."""
+        return self.list_loaded_for != "" and is_all_clear(len(self.rows), self.pending_count)
 
     @rx.var
     def list_ready(self) -> bool:
@@ -922,8 +929,9 @@ class ConversationsState(rx.State):
         return self.close_conversation()
 
     @rx.event(background=True)
-    async def load_conversation(self) -> None:
+    async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:
         await self._read_conversation(silent=False, mark_read=True)
+        yield PendingState.refresh_now  # m-24842963: opening marks it read, the count drops
 
     async def _read_conversation(self, *, silent: bool, mark_read: bool = False) -> None:
         async with self:
@@ -1496,6 +1504,7 @@ class ConversationsState(rx.State):
             row = self.open_thread if self.open_thread_id == thread_id else EMPTY_THREAD
             who = row.handle or row.title
         yield rx.toast.info(reply_sent_message(who), duration=_TOAST_MS)
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         yield ConversationsState.refresh
         await gw.signal(tenant_id, connection, thread, ACTION_TYPING_OFF)
 

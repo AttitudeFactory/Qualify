@@ -896,7 +896,7 @@ NO_FOLLOWUPS = (
 )
 CREATE_APPROVED_LABEL = "Crear un mensaje aprobado"
 #: N5: the link lands on the tab where approved messages are created.
-CREATE_APPROVED_ROUTE = "/whatsapp?tab=plantillas"
+CREATE_APPROVED_ROUTE = "/whatsapp?tab=promociones&sub=aprobados"
 NO_PERMISSION_NOTICE = (
     "Esta persona todavía no te ha escrito ni aceptó recibir tus mensajes. "
     "Cuando te escriba, podrás responderle desde este chat."

@@ -48,13 +48,19 @@ from .catalog_vm import (
     STEP_DONE,
     STEP_NAME,
     STEP_PHOTO,
+    ProductMediaVM,
     ProductVM,
     business_default_currency,
     currency_from_choice,
     editor_is_dirty,
     leave_description,
+    missing_photo_filter_label,
     parse_price_input,
+    product_count_label,
+    products_to_show,
     rejection_message,
+    remove_media_description,
+    remove_media_title,
     step_counter,
     steps_done,
 )
@@ -171,6 +177,11 @@ class CatalogState(rx.State):
     media_dragging: str = ""
     #: The order a drop (or «Hacer principal») asked for, waiting for `sync_media_order`.
     _media_order: list[str] = []
+    #: m-24842977 — «Quitar» asks first: the photo or clip waiting for «Sí, quitar»
+    #: ("" = no dialog open).
+    remove_media_id: str = ""
+    #: m-24842977 — the list narrowed to the products with no photo yet.
+    only_missing_photo: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
@@ -217,9 +228,55 @@ class CatalogState(rx.State):
         return self.error == _NO_BRAND
 
     @rx.var
+    def missing_photo_count(self) -> int:
+        return sum(1 for p in self.products if p.photo_count == 0)
+
+    @rx.var
     def product_count_label(self) -> str:
-        n = len(self.products)
-        return "1 producto" if n == 1 else f"{n} productos"
+        """«3 productos · 1 sin foto» (m-24842977)."""
+        return product_count_label(len(self.products), self.missing_photo_count)
+
+    @rx.var
+    def missing_filter_on(self) -> bool:
+        """The filter only narrows while some product still lacks a photo: once the last
+        one gets it, the whole list comes back on its own."""
+        return self.only_missing_photo and self.missing_photo_count > 0
+
+    @rx.var
+    def visible_products(self) -> list[ProductVM]:
+        return products_to_show(self.products, only_missing_photo=self.missing_filter_on)
+
+    @rx.var
+    def missing_filter_label(self) -> str:
+        return missing_photo_filter_label(self.missing_photo_count, active=self.missing_filter_on)
+
+    @rx.var
+    def show_missing_filter(self) -> bool:
+        """While it is on, or while some products lack a photo and others have one
+        (narrowing everything to everything would mean nothing)."""
+        n = self.missing_photo_count
+        return self.missing_filter_on or 0 < n < len(self.products)
+
+    @rx.var
+    def remove_media_open(self) -> bool:
+        return _media_in(self.selected, self.remove_media_id) is not None
+
+    @rx.var
+    def remove_media_title_text(self) -> str:
+        item = _media_in(self.selected, self.remove_media_id)
+        return remove_media_title(item.media_type if item is not None else "image")
+
+    @rx.var
+    def remove_media_text(self) -> str:
+        item = _media_in(self.selected, self.remove_media_id)
+        if item is None:
+            return remove_media_description("image", is_primary=False)
+        has_other_photo = self.selected is not None and any(
+            m.media_type == "image" and m.media_id != item.media_id for m in self.selected.media
+        )
+        return remove_media_description(
+            item.media_type, is_primary=item.is_primary, has_other_photo=has_other_photo
+        )
 
     @rx.var
     def new_step_counter(self) -> str:
@@ -1086,6 +1143,31 @@ class CatalogState(rx.State):
         if not failed:
             yield rx.toast.success(_ORDER_SAVED, duration=_TOAST_MS)
 
+    @rx.event
+    def toggle_missing_photo(self) -> None:
+        """«Ver los 2 sin foto» / «Ver todos los productos» (m-24842977)."""
+        self.only_missing_photo = not self.only_missing_photo
+
+    @rx.event
+    def ask_remove_media(self, media_id: str) -> None:
+        """«Quitar» opens «¿Quitar esta foto?» first (m-24842977): nothing is removed
+        until «Sí, quitar»."""
+        if self.media_busy:
+            return
+        self.remove_media_id = media_id
+
+    @rx.event
+    def set_remove_media_open(self, value: bool) -> None:
+        if not value:
+            self.remove_media_id = ""
+
+    @rx.event
+    def confirm_remove_media(self) -> rx.event.EventSpec | None:
+        media_id, self.remove_media_id = self.remove_media_id, ""
+        if not media_id:
+            return None
+        return CatalogState.delete_media(media_id)
+
     @rx.event(background=True)
     async def delete_media(self, media_id: str) -> None:
         await self._media_action(media_id, remove_media)
@@ -1119,6 +1201,13 @@ class CatalogState(rx.State):
 
 _BROWSER_IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEOS = {".mp4", ".mov", ".m4v", ".webm"}
+
+
+def _media_in(product: ProductVM | None, media_id: str) -> ProductMediaVM | None:
+    """The photo or clip `media_id` of the open product, if it is still there."""
+    if product is None or not media_id:
+        return None
+    return next((m for m in product.media if m.media_id == media_id), None)
 
 
 def _preview_row(path_str: str, name: str) -> dict[str, str]:

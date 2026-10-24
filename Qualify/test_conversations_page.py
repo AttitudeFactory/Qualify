@@ -13,22 +13,28 @@ from .ui.layout import NAV_ITEMS, NAV_ZONES
 _HERE = Path(__file__).parent
 
 
-def test_nav_item_sits_in_escuchas_after_comentarios_before_creadores() -> None:
-    assert ("Conversaciones", "messages-square", "/conversations", True) in NAV_ITEMS
+def test_por_responder_heads_atiende_and_reaches_the_private_inbox_today() -> None:
+    """NAV-1 (m-24842957): the private inbox is reached through «Por responder», the
+    first entry of «Atiende», which opens its hub (ATENDER-1, m-24842990)."""
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
-    listen = zones["listen"]
-    assert listen.index("Conversaciones") == listen.index("Comentarios") + 1
-    assert listen.index("Creadores") == listen.index("Conversaciones") + 1
-    assert "Conversaciones" not in zones["publish"]
+    assert zones["listen"][0] == "Por responder"
+    assert ("Por responder", "messages-square", "/responder", True) in NAV_ITEMS
+    assert "Conversaciones" not in [label for label, *_ in NAV_ITEMS]
 
 
 def test_route_is_registered_behind_login() -> None:
+    """m-24842990: the inbox is the «Mensajes» tab of `/responder` (behind the login);
+    `/conversations` only redirects there."""
     source = (_HERE / "Qualify.py").read_text(encoding="utf-8")
-    start = source.index("conversations_index,")
+    start = source.index("responder_index,")
     block = source[start : source.index(")", source.index("on_load", start)) + 1]
-    assert 'route="/conversations"' in block
+    assert 'route="/responder"' in block
     assert "AuthState.require_login" in block
-    assert "ConversationsState.enter_page" in block
+    assert "ResponderState.enter_page" in block
+    legacy = source.index('route="/conversations"')
+    assert "ResponderState.redirect_legacy" in source[legacy : source.index(")", legacy)]
+    state_source = (_HERE / "responder_state.py").read_text(encoding="utf-8")
+    assert "ConversationsState.enter_page" in state_source
 
 
 def test_the_page_talks_to_the_state_only() -> None:

@@ -273,6 +273,23 @@ def _empty_state() -> rx.Component:
         "Pulsa «Actualizar desde Clarity» para traer los primeros datos. "
         "Puedes actualizar hasta 10 veces al día; entre una y otra verás "
         "los últimos datos guardados.",
+        # N8 (m-24842961): the step before the data — connect first, then bring it.
+        action=rx.cond(
+            ClarityState.config.configured,
+            rx.button(
+                rx.icon("refresh-cw", size=16),
+                "Actualizar desde Clarity",
+                on_click=ClarityState.refresh_from_clarity,
+                loading=ClarityState.is_refreshing,
+                variant="soft",
+                size="3",
+            ),
+            # RESULTADOS-4 (m-24843002): connecting lives in Configuración, never here.
+            rx.link(
+                rx.button("Ir a Configuración", variant="soft", size="3", min_height="44px"),
+                href="/settings#tu-pagina-web",
+            ),
+        ),
     )
 
 

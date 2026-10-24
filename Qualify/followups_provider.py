@@ -106,6 +106,11 @@ class FollowupsGateway:
         )
         return approved.send_route.value if approved.send_route else ""
 
+    def delivery(self, tenant_id: UUID, followup_id: UUID) -> str:
+        """m-24849131: how the approved message stands — `sending`, `sent`, `failed` or
+        `unknown` (the `followups_vm.DELIVERY_*` values). Read-only."""
+        return self.workspace.delivery(tenant_id=tenant_id, followup_id=followup_id).value
+
 
 _GATEWAY: FollowupsGateway | None = None
 

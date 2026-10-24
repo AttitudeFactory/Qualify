@@ -63,6 +63,7 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .pending_state import PendingState
 from .tenant import tenant_uuid
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
@@ -455,6 +456,9 @@ class WhatsAppChatsState(rx.State):
     @rx.event
     async def enter(self) -> rx.event.EventSpec | None:
         """Tab root `on_mount`: entry or number switch."""
+        # m-24842990: «Por responder» › «Ver» opens the chats on «Sin leer» (N11).
+        if self.router.url.query_parameters.get("filtro") == "sin-leer":
+            self.filter_key = FILTER_UNREAD
         shell = await self.get_state(WhatsAppState)
         connection_id = shell.selected_connection_id
         if not connection_id:
@@ -877,6 +881,7 @@ class WhatsAppChatsState(rx.State):
             self._mark_paused(thread_id, True)
         yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
         yield WhatsAppChatsState.refresh
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     # ==================================================================================
     # Approved message from an expired chat (m-24848535)

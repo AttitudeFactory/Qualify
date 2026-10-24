@@ -34,7 +34,16 @@ from .creative_vm import (
 from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
-from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
+from .planner_back import WeekBackState, back_to_week_link
+from .planner_vm import (
+    CARD_ACTION_PLANNER,
+    CARD_ACTION_REVIEW,
+    CARD_ACTION_SCHEDULE,
+    CARD_ACTION_VIEW,
+    CARD_ACTION_WAIT,
+    GALLERY_FILTER_ALL,
+    GALLERY_STATE_FILTERS,
+)
 from .post_card import (
     campaign_badge,
     color_swatches,
@@ -794,13 +803,13 @@ def _create_form() -> rx.Component:
             rx.input(
                 value=CreativeState.brief_must_mention,
                 on_change=CreativeState.set_brief_must_mention,
-                placeholder="Debe mencionar (separado por comas)",
+                placeholder="Debe mencionar (ej.: envío gratis)",
                 width="100%",
             ),
             rx.input(
                 value=CreativeState.brief_must_avoid,
                 on_change=CreativeState.set_brief_must_avoid,
-                placeholder="Debe evitar (separado por comas)",
+                placeholder="Debe evitar (ej.: barato)",
                 width="100%",
             ),
         ),
@@ -852,141 +861,188 @@ def create_index() -> rx.Component:
 # /drafts — the POST gallery (QUA-118)
 
 
-_GALLERY_STATE_ICON = {
-    "schedulable": "circle-check",
-    "needs_action": "circle-alert",
-    "draft": "pencil-line",
+# m-24842981 (CREAR-3): one glyph per card state (`planner_vm.CARD_STATES`).
+_CARD_STATE_ICON = {
+    "review": "eye",
+    "missing": "circle-alert",
+    "ready": "circle-check",
+    "scheduled": "calendar-check",
     "used": "history",
     "discarded": "circle-x",
+    "drafting": "loader",
+    "preparing": "loader",
+}
+# The glyph on each card's one main button, by what it does (`planner_vm.CARD_ACTION_*`).
+_CARD_ACTION_ICON = {
+    CARD_ACTION_REVIEW: "pencil-line",
+    CARD_ACTION_SCHEDULE: "calendar-plus",
+    CARD_ACTION_VIEW: "eye",
+    CARD_ACTION_PLANNER: "calendar-days",
+    CARD_ACTION_WAIT: "loader",
 }
 
 
 def _gallery_state_badge(post) -> rx.Component:
-    """The POST's state on its media: glyph + word, in the state's tone."""
+    """The publication's state on its media, in words: glyph + «Por revisar» · «Le falta
+    algo» · «Lista para programar» · «Ya salió» · «Descartada» (m-24842981)."""
     return rx.box(
         rx.match(
-            post.gallery_state,
-            *[(key, rx.icon(icon, size=12)) for key, icon in _GALLERY_STATE_ICON.items()],
+            post.card_state,
+            *[(key, rx.icon(icon, size=12)) for key, icon in _CARD_STATE_ICON.items()],
             rx.icon("circle", size=12),
         ),
-        rx.text(
-            rx.cond(post.gallery_state == "schedulable", "Listo para publicar", post.gallery_label),
-            as_="span",
-        ),
+        rx.text(post.card_label, as_="span"),
         class_name="q-gstate q-gstate--" + post.gallery_state,
     )
 
 
-def _gallery_card(post) -> rx.Component:
-    """One POST of the gallery, picture first: its state on the media (a ready one is
-    solid and glows, one that is not ready has a dashed frame), its temperature in big —
-    Cold frosted, Hot in embers — and the actions it allows right on the card: review
-    («Aprobar» / «Rechazar») while it waits for you, «Elegir día y hora» once it is ready."""
-    busy = GalleryState.busy_post_id == post.post_id
-    view = rx.link(
-        rx.button(
+def _card_main_button(post) -> rx.Component:
+    """The card's ONE main button (m-24842981): «Revisar» while it waits for you,
+    «Programar» once it is ready, «Ver» when there is nothing left to do. Solid when it
+    asks something of the owner, soft when it only shows; disabled, saying «Preparando
+    el video final», while its final is being made (review 2026-10-24, finding 8)."""
+
+    def icon() -> rx.Component:
+        return rx.match(
+            post.card_action,
+            *[(key, rx.icon(name, size=15)) for key, name in _CARD_ACTION_ICON.items()],
             rx.icon("eye", size=15),
-            "Ver publicación",
-            variant="soft",
-            color_scheme="gray",
+        )
+
+    return rx.cond(
+        post.card_action == CARD_ACTION_SCHEDULE,
+        rx.button(
+            icon(),
+            post.card_action_label,
             size="2",
             width="100%",
-            white_space="nowrap",  # never «Ver / publicación» on two lines in a narrow card
+            on_click=GalleryState.assign(post.post_id),
         ),
-        href=post.detail_href,
-        width="100%",
+        rx.cond(
+            # «Programada»: already on the calendar — «Ver en Tu semana» opens it there.
+            post.card_action == CARD_ACTION_PLANNER,
+            rx.button(
+                icon(),
+                post.card_action_label,
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                width="100%",
+                on_click=GalleryState.assign(post.post_id),
+            ),
+            rx.cond(
+                post.card_action == CARD_ACTION_WAIT,
+                rx.vstack(
+                    rx.button(
+                        icon(),
+                        post.card_action_label,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                        width="100%",
+                        disabled=True,
+                    ),
+                    # «Por aprobar» does not refresh on its own: say how long it takes
+                    # and that the owner can leave (UX review, PR #274).
+                    rx.text(
+                        "Tarda unos minutos. Puedes salir: cuando esté lista aquí podrás "
+                        "elegir el día y la hora.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    width="100%",
+                ),
+                rx.link(
+                    rx.cond(
+                        post.card_action == CARD_ACTION_REVIEW,
+                        rx.button(icon(), post.card_action_label, size="2", width="100%"),
+                        rx.button(
+                            icon(),
+                            post.card_action_label,
+                            variant="soft",
+                            color_scheme="gray",
+                            size="2",
+                            width="100%",
+                        ),
+                    ),
+                    href=post.detail_href,
+                    width="100%",
+                ),
+            ),
+        ),
     )
-    actions = rx.cond(
-        post.can_review,
-        rx.box(
+
+
+def _gallery_card(post) -> rx.Component:
+    """One publication of «Por aprobar», picture first: its state in words on the media
+    (a ready one is solid, one that is not ready has a dashed frame), whether it is
+    already proven («Ya probada» / «Por probar», with the visible help in the body), and
+    ONE main button for what the owner has to do with it (m-24842981). «Descartar» stays
+    as a quiet text button while it can still be thrown out; the picture opens it."""
+    busy = GalleryState.busy_post_id == post.post_id
+    can_discard = post.can_review | ((post.gallery_state == "schedulable") & ~post.in_calendar)
+    actions = rx.box(
+        _card_main_button(post),
+        # On a ready card the main button opens Tu semana, and on a «preparing» card it
+        # is disabled, so opening the publication gets its own quiet link — it never
+        # depends on knowing the picture is tappable (the picture is hidden from
+        # keyboard and screen readers).
+        rx.cond(
+            (post.card_action == CARD_ACTION_SCHEDULE) | (post.card_action == CARD_ACTION_WAIT),
+            rx.link(
+                rx.button(
+                    rx.icon("eye", size=15),
+                    "Ver publicación",
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    width="100%",
+                ),
+                href=post.detail_href,
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            can_discard,
             rx.button(
                 rx.icon("circle-x", size=15),
                 "Descartar",
-                variant="outline",
+                variant="ghost",
                 size="2",
                 width="100%",
                 disabled=busy,
-                **T.tone_scheme("error"),
                 on_click=GalleryState.ask_reject_post(post.post_id, post.title),
-            ),
-            rx.button(
-                rx.icon("circle-check", size=15),
-                "Aprobar",
-                size="2",
-                width="100%",
-                loading=busy,
-                on_click=GalleryState.quick_approve(post.post_id),
-            ),
-            view,
-            class_name="q-gcard-actions q-gcard-actions--review",
-        ),
-        rx.box(
-            # request 2026-10-22: an approved piece can be thrown out too — unless it is
-            # already on the calendar; its own narrow column, so «Elegir día y hora» keeps its width
-            rx.cond(
-                (post.gallery_state == "schedulable") & ~post.in_calendar,
-                rx.tooltip(
-                    rx.icon_button(
-                        rx.icon("circle-x", size=15),
-                        variant="soft",
-                        size="2",
-                        disabled=busy,
-                        on_click=GalleryState.ask_reject_post(post.post_id, post.title),
-                        aria_label="Descartar",
-                        **T.tone_scheme("error"),
-                    ),
-                    content="Descartar",
-                ),
-            ),
-            view,
-            rx.cond(
-                post.gallery_state == "schedulable",
-                rx.button(
-                    rx.icon("calendar-plus", size=15),
-                    "Elegir día y hora",
-                    size="2",
-                    width="100%",
-                    on_click=GalleryState.assign(post.post_id),
-                ),
-            ),
-            class_name=rx.cond(
-                (post.gallery_state == "schedulable") & ~post.in_calendar,
-                "q-gcard-actions q-gcard-actions--ready",
-                "q-gcard-actions",
+                **T.tone_scheme("error"),
             ),
         ),
+        class_name="q-gcard-actions",
     )
     return rx.box(
-        rx.box(
+        rx.link(
             media_fill(post.thumbnail_url, post.video_url, post.kind),
             rx.box(class_name="q-gcard-shade"),
             rx.box(_gallery_state_badge(post), class_name="q-gcard-tl"),
+            # «Ya probada» / «Por probar» only where it helps decide whether to repeat it
+            # (ready and already-out cards: `planner_vm.HISTORY_CARD_STATES`).
             rx.cond(
-                post.temperature != "",
+                (post.temperature != "") & (post.history_word != ""),
                 rx.box(
                     rx.cond(
                         post.temperature == "cold",
-                        rx.icon("snowflake", size=15),
-                        rx.icon("flame", size=15),
+                        rx.icon("badge-check", size=15),
+                        rx.icon("sparkles", size=15),
                     ),
-                    rx.text(
-                        rx.cond(post.temperature == "cold", "Ya probada", "Por probar"), as_="span"
-                    ),
+                    rx.text(post.history_word, as_="span"),
                     class_name="q-temp q-temp--big q-temp--" + post.temperature,
-                    title=rx.cond(
-                        post.temperature == "cold",
-                        "Ya salió "
-                        + post.used_count.to_string()
-                        + " veces en tus redes: se puede repetir sin problema.",
-                        rx.cond(
-                            post.used_count > 0,
-                            "Salió 1 vez en tus redes.",
-                            "Todavía no ha salido en tus redes.",
-                        ),
-                    ),
                 ),
             ),
             rx.box(kind_chip(post.kind, post.kind_label, glass=True), class_name="q-gcard-bl"),
+            href=post.detail_href,
+            # The main button is the accessible way in; the picture is a touch shortcut,
+            # so it stays out of the tab order and the screen reader (no double stop).
+            tab_index=-1,
+            aria_hidden="true",
             class_name="q-gcard-media",
         ),
         rx.box(
@@ -1004,14 +1060,6 @@ def _gallery_card(post) -> rx.Component:
             rx.flex(
                 rx.text(post.media_label, size="1", color=T.TEXT_MUTED),
                 rx.cond(
-                    post.used_count > 0,
-                    rx.box(
-                        rx.icon("history", size=11),
-                        "Usado ×" + post.used_count.to_string(),
-                        class_name="q-gmeta",
-                    ),
-                ),
-                rx.cond(
                     post.in_calendar,
                     rx.box(
                         rx.icon("calendar-check", size=11), "En calendario", class_name="q-gmeta"
@@ -1020,6 +1068,11 @@ def _gallery_card(post) -> rx.Component:
                 wrap="wrap",
                 gap="0.4rem",
                 align="center",
+            ),
+            # m-24842981: what «Ya probada» / «Por probar» means, in sight (never `title=`)
+            rx.cond(
+                post.history_help != "",
+                rx.text(post.history_help, size="1", color=T.TEXT_MUTED),
             ),
             rx.cond(
                 post.readiness_note != "",
@@ -1081,7 +1134,7 @@ def _gallery_reject_dialog() -> rx.Component:
 
 
 def _state_chip(value: str, label: str) -> rx.Component:
-    """A state filter: the word, its count, selected = solid. «Todos» first."""
+    """A state filter: the word, its count, selected = solid. «Todas» first."""
     selected = GalleryState.state_filter == value
 
     def count() -> rx.Component:
@@ -1107,6 +1160,7 @@ def _state_chip(value: str, label: str) -> rx.Component:
             radius="full",
             on_click=GalleryState.set_state_filter(value),
             aria_pressed="true",
+            class_name="q-gfilter",
         ),
         rx.button(
             label,
@@ -1117,6 +1171,7 @@ def _state_chip(value: str, label: str) -> rx.Component:
             radius="full",
             on_click=GalleryState.set_state_filter(value),
             aria_pressed="false",
+            class_name="q-gfilter",
         ),
     )
 
@@ -1124,8 +1179,16 @@ def _state_chip(value: str, label: str) -> rx.Component:
 def _gallery_toolbar() -> rx.Component:
     return rx.flex(
         rx.flex(
-            _state_chip(GALLERY_FILTER_ALL, "Todos"),
-            *[_state_chip(value, label) for value, label in GALLERY_STATE_FILTERS],
+            _state_chip(GALLERY_FILTER_ALL, "Todas"),
+            # A state with nothing in it is noise on a phone: shown only when it has
+            # publications or is the one selected (UX review, m-24842981).
+            *[
+                rx.cond(
+                    (GalleryState.state_counts[value] > 0) | (GalleryState.state_filter == value),
+                    _state_chip(value, label),
+                )
+                for value, label in GALLERY_STATE_FILTERS
+            ],
             wrap="wrap",
             gap="0.35rem",
             align="center",
@@ -1167,9 +1230,9 @@ def _gallery_empty() -> rx.Component:
 
 
 def drafts_index() -> rx.Component:
-    """The gallery: every POST of the brand as a card with its state (Borrador · Por
-    completar · Listo · Usado · Desechado), filters, and «Asignar» into the
-    Planificador's drawer (QUA-118 AC 1 / AC 3)."""
+    """The gallery: every POST of the brand as a card with its state in words (Por
+    revisar · Le falta algo · Lista para programar · Ya salió · Descartada · Creándose,
+    m-24842981), filters, and «Programar» into the Planificador's drawer (QUA-118)."""
     return _screen(
         "Por aprobar",
         "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
@@ -1409,7 +1472,7 @@ def _video_draft_notice() -> rx.Component:
                 video.can_retry,
                 rx.button(
                     rx.icon("refresh-cw", size=15),
-                    "Reintentar video final",
+                    "Intentar de nuevo",
                     variant="soft",
                     size="2",
                     on_click=CreativeState.retry_final_render,
@@ -2134,8 +2197,7 @@ def _reject_dialog() -> rx.Component:
             rx.alert_dialog.description(
                 rx.cond(
                     regenerate,
-                    "Esta versión se descarta y se generan versiones nuevas del mismo "
-                    "encargo. Consume créditos.",
+                    "Esta versión se descarta y se generan versiones nuevas del mismo encargo.",
                     "La publicación se descarta y no se genera nada nuevo. No se podrá "
                     "aprobar ni publicar.",
                 ),
@@ -2309,7 +2371,7 @@ def _decision_bar_or_nothing() -> rx.Component:
                     icon="refresh-cw",
                     title="Pedir otra versión",
                     text="Si la idea sirve pero el resultado no: descarta este y crea "
-                    "variantes nuevas del mismo encargo. Consume créditos.",
+                    "variantes nuevas del mismo encargo.",
                     button=rx.button(
                         rx.icon("refresh-cw", size=15),
                         "Regenerar",
@@ -2328,9 +2390,9 @@ def _decision_bar_or_nothing() -> rx.Component:
                     title=CreativeState.approve_label,
                     text=rx.cond(
                         draft.video_draft.state == VIDEO_DRAFT,
-                        "Te quedas con esta versión y generamos el video final a 1080p "
-                        "desde este borrador. Consume créditos. Cuando esté listo eliges "
-                        "el día y la hora en que sale.",
+                        "Te quedas con esta versión y preparamos el video en alta "
+                        "calidad. Tarda unos minutos. Cuando esté listo eliges el día y la "
+                        "hora en que sale.",
                         "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
                     ),
                     button=rx.button(
@@ -2494,6 +2556,30 @@ def _campaign_field() -> rx.Component:
     )
 
 
+def _history_line() -> rx.Component:
+    """m-24842981: «Ya probada» / «Por probar» on the publication's own page, with its
+    help in sight: «Ya salió 3 veces en tus redes: se puede repetir sin problema.»
+    Only once the publication is approved (the state fills it then, `_history_texts`) —
+    before that it does not help any decision; nothing either if the count is unknown."""
+    return rx.cond(
+        (CreativeState.draft_history_help != "")
+        & ~CreativeState.draft.is_drafting
+        & ~CreativeState.draft.is_failed,
+        rx.hstack(
+            rx.cond(
+                CreativeState.draft_history_word == "Ya probada",
+                tone_badge(CreativeState.draft_history_word, "info", icon="badge-check"),
+                tone_badge(CreativeState.draft_history_word, "neutral", icon="sparkles"),
+            ),
+            rx.text(CreativeState.draft_history_help, size="2", color=T.TEXT_MUTED),
+            align="center",
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
+    )
+
+
 def draft_detail_index() -> rx.Component:
     return _screen(
         "Revisar publicación",
@@ -2508,14 +2594,20 @@ def draft_detail_index() -> rx.Component:
                     CreativeState.draft,
                     rx.vstack(
                         rx.hstack(
-                            rx.link(
-                                rx.button(
-                                    rx.icon("arrow-left", size=14),
-                                    "Por aprobar",
-                                    variant="ghost",
-                                    size="1",
+                            # m-24842987 (N7): opened from Tu semana, the way back
+                            # says «‹ Tu semana» and keeps that week and view.
+                            rx.cond(
+                                WeekBackState.href != "",
+                                back_to_week_link(),
+                                rx.link(
+                                    rx.button(
+                                        rx.icon("arrow-left", size=14),
+                                        "Por aprobar",
+                                        variant="ghost",
+                                        size="1",
+                                    ),
+                                    href="/drafts",
                                 ),
-                                href="/drafts",
                             ),
                             rx.spacer(),
                             status_badge(
@@ -2529,6 +2621,7 @@ def draft_detail_index() -> rx.Component:
                         _campaign_field(),
                         _retention_notice(),
                         _video_draft_notice(),
+                        _history_line(),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),

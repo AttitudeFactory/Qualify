@@ -362,3 +362,55 @@ def editor_is_dirty(
         or not _same_price(price, product.price_amount)
         or (currency or "") != (product.price_currency or "")
     )
+
+
+# -- the main photo and removing media (m-24842977) -----------------------------------
+
+#: The two tile actions, as words on the button (never only an icon).
+MAKE_PRIMARY = "Hacer principal"
+REMOVE_MEDIA = "Quitar"
+REMOVE_CONFIRM = "Sí, quitar"
+REMOVE_STAY = "Volver"
+
+
+def remove_media_title(media_type: str) -> str:
+    """«¿Quitar esta foto?» / «¿Quitar este video?»."""
+    return "¿Quitar este video?" if media_type == "video" else "¿Quitar esta foto?"
+
+
+def remove_media_description(
+    media_type: str, *, is_primary: bool, has_other_photo: bool = False
+) -> str:
+    """What happens after «Sí, quitar», in the owner's words. When the main photo goes,
+    the next photo takes its place (`CatalogService.remove_media` promotes it); when it
+    was the only photo, the product is left without one, and we say so plainly."""
+    what = "Este video" if media_type == "video" else "Esta foto"
+    text = f"{what} ya no se usará para crear publicaciones. Las que ya hiciste no cambian."
+    if is_primary and media_type != "video":
+        if has_other_photo:
+            text += " La siguiente foto pasa a ser la principal."
+        else:
+            text += " Tu producto quedará sin foto hasta que subas otra."
+    return text
+
+
+def product_count_label(total: int, missing_photo: int) -> str:
+    """«3 productos · 1 sin foto»; the second half only when some product has no photo."""
+    label = "1 producto" if total == 1 else f"{total} productos"
+    if missing_photo > 0:
+        label += f" · {missing_photo} sin foto"
+    return label
+
+
+def missing_photo_filter_label(missing_photo: int, *, active: bool) -> str:
+    """The button that narrows the list to the products still without a photo."""
+    if active:
+        return "Ver todos los productos"
+    return "Ver el que no tiene foto" if missing_photo == 1 else f"Ver los {missing_photo} sin foto"
+
+
+def products_to_show(products: Sequence[ProductVM], *, only_missing_photo: bool) -> list[ProductVM]:
+    """The grid's rows: all of them, or only those with no photo yet."""
+    if not only_missing_photo:
+        return list(products)
+    return [p for p in products if p.photo_count == 0]

@@ -32,8 +32,13 @@ from .campaign_provider import (
     error_message as campaign_error_message,
 )
 from .creative_provider import acting_user_id
+from .pending_state import PendingState
 from .planner_provider import (
     ALL_CONNECTIONS,
+    NoPassingVariant,
+    PriceBlocked,
+    approve_error_message,
+    approve_post,
     cancel_event,
     create_tag,
     delete_tag,
@@ -48,6 +53,7 @@ from .planner_provider import (
     set_event_tags,
 )
 from .planner_vm import (
+    APPROVED_CHECK_TOAST,
     ASSIGN_STEPS,
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
@@ -56,12 +62,15 @@ from .planner_vm import (
     OPENING_HOUR,
     PLAN_GOAL_KEYS,
     PLAN_GOALS,
+    REVIEW_EDIT_NOTE,
     STEP_LAST,
     STEP_POST,
     STEP_WHEN,
     SUBMIT_ASSIGN,
     SUBMIT_RESCHEDULE,
     TAG_SUGGESTIONS,
+    URL_VIEW,
+    URL_WEEK,
     VIEW_CALENDAR,
     VIEW_LIST,
     ConnectionChoiceVM,
@@ -74,16 +83,21 @@ from .planner_vm import (
     TagSuggestionVM,
     TagVM,
     TzOptionVM,
+    approved_toast,
     assign_steps_done,
     build_plan_row,
     campaign_value,
     join_es,
     now_slot,
+    parse_view_param,
+    parse_week_param,
     scheduled_message,
     split_time,
     timezone_options,
     tz_option,
     waiting_copy,
+    week_href,
+    week_return_query,
 )
 from .tenant import tenant_uuid
 
@@ -307,6 +321,8 @@ class PlannerState(rx.State):
     campaigns: list[CampaignOptionVM] = []
     tag_filter: list[str] = []
     tag_query: str = ""
+    # m-24842987: «Filtros» (account, tags, zone) in a side panel, off the week's bar.
+    filters_open: bool = False
 
     # -- assign / reschedule drawer ---------------------------------------------
     form_open: bool = False
@@ -346,6 +362,10 @@ class PlannerState(rx.State):
     detail: EventDetailVM = EventDetailVM()
     detail_error: str = ""
     detail_confirm: str = ""  # CONFIRM_CANCEL / CONFIRM_REMOVE while the panel asks
+    # m-24842984: «Aprobar» / «No la quiero» in flight — both buttons wait (no double tap).
+    review_busy: bool = False
+    # m-24842984: «Aprobar» refused for the text itself — kept on the panel with a link.
+    review_error: str = ""
     # -- delete a tag (confirmed inline, in the filter's own row) ------------------
     delete_tag_id: str = ""
     delete_tag_name: str = ""
@@ -365,6 +385,18 @@ class PlannerState(rx.State):
     @rx.var
     def is_list_view(self) -> bool:
         return self.view_mode == VIEW_LIST
+
+    @rx.var
+    def week_return_query(self) -> str:
+        """m-24842987: appended to every ficha opened from here, so the ficha's
+        «‹ Tu semana» comes back to this week, in this view."""
+        return week_return_query(self.monday_iso, self.view_mode)
+
+    @rx.var
+    def filters_active_count(self) -> int:
+        """How many of «Filtros» hide publications: account and tags. The zone hides
+        nothing, so it is not counted (it is said under the week's dates instead)."""
+        return int(self.connection_filter != ALL_CONNECTIONS) + int(bool(self.tag_filter))
 
     @rx.var
     def unscheduled_count(self) -> int:
@@ -748,12 +780,25 @@ class PlannerState(rx.State):
                 self._open_assign(post_id=wanted, now=self._url_now())
         if not quiet:
             yield rx.call_script(_SCROLL_TO_OPENING_HOUR)
+            async with self:
+                address = self._sync_address()
+            yield address
 
-    def _url_post(self) -> str:
+    def _url_param(self, name: str) -> str:
         try:
-            return str(self.router.url.query_parameters.get("post", "") or "")
+            return str(self.router.url.query_parameters.get(name, "") or "")
         except Exception:  # noqa: BLE001 — no router outside a page (tests)
             return ""
+
+    def _url_post(self) -> str:
+        return self._url_param("post")
+
+    def _sync_address(self) -> rx.event.EventSpec:
+        """m-24842987: the address bar follows the week and the view on screen, so a
+        reload — or the browser's back from a ficha — lands on the same week. The
+        router's own history entry is kept (only the URL changes)."""
+        href = week_href(self.monday_iso, self.view_mode)
+        return rx.call_script(f"window.history.replaceState(window.history.state, '', '{href}')")
 
     def _url_now(self) -> bool:
         """`/planner?post=<id>&cuando=ahora` (the «Publicar ahora» of the approved card,
@@ -766,13 +811,19 @@ class PlannerState(rx.State):
 
     @rx.event
     def load_current_week(self):
-        """on_load: always open on the current week, with no dialog left open.
+        """on_load: open on the week (and view) the address names — `?semana=` and
+        `?vista=`, what «‹ Tu semana» sends back (m-24842987) — or on the current week,
+        always with no dialog left open.
 
         State outlives the route: leaving through «Ver POST» with the detail open used to
         bring the same (stale) dialog back on the next visit."""
-        self.monday_iso = ""
+        self.monday_iso = parse_week_param(self._url_param(URL_WEEK))
+        view = parse_view_param(self._url_param(URL_VIEW))
+        if view:
+            self.view_mode = view
         self.form_open = False
         self.detail_open = False
+        self.filters_open = False
         self.detail_confirm = ""
         self.delete_tag_id = ""
         return PlannerState.load
@@ -800,8 +851,8 @@ class PlannerState(rx.State):
         chosen = value[0] if isinstance(value, list) and value else value
         self.view_mode = chosen if chosen in (VIEW_CALENDAR, VIEW_LIST) else VIEW_CALENDAR
         if self.view_mode == VIEW_CALENDAR:
-            return rx.call_script(_SCROLL_TO_OPENING_HOUR)
-        return None
+            return [rx.call_script(_SCROLL_TO_OPENING_HOUR), self._sync_address()]
+        return self._sync_address()
 
     # -- timezone picker ------------------------------------------------------
 
@@ -880,21 +931,77 @@ class PlannerState(rx.State):
     # -- the POST's own review from the dialog ------------------------------------
 
     @rx.event(background=True)
+    async def approve_post_from_detail(self):
+        """m-24842984: «Aprobar» on the panel of a publication in review — the gallery's
+        approval (creative FSM `generated → approved`), nothing more. It publishes
+        nothing (N13): the event keeps the day and hour the owner chose and the calendar
+        worker takes it only then. The panel is read again in place (no skeleton, no
+        page reload), so its state turns to approved and its line says when it goes out."""
+        async with self:
+            if self.review_busy:
+                return
+            event_id = self.detail.event_id
+            view_tz = self.view_tz
+            self.review_busy = True
+            self.review_error = ""
+        tenant_id = await self._tenant()
+        if tenant_id is None or not event_id:
+            async with self:
+                self.review_busy = False
+            return
+        try:
+            await asyncio.to_thread(approve_post, tenant_id, event_id)
+        except Exception as exc:
+            if not isinstance(exc, (PlannerError, CreativeInvalidTransition)):
+                logger.error("planner approve_post failed: %s", type(exc).__name__)
+            async with self:
+                self.review_busy = False
+                if isinstance(exc, (NoPassingVariant, PriceBlocked)):
+                    self.review_error = (
+                        REVIEW_EDIT_NOTE if isinstance(exc, NoPassingVariant) else exc.detail
+                    )
+            yield rx.toast.error(approve_error_message(exc))
+            return
+        try:
+            detail = await asyncio.to_thread(event_detail, tenant_id, event_id, view_tz)
+        except Exception as exc:  # noqa: BLE001 — the approval stands; `load` re-reads
+            logger.warning("planner detail after approve failed: %s", type(exc).__name__)
+            detail = None
+        async with self:
+            self.review_busy = False
+            if detail is not None and self.detail.event_id == event_id:
+                self.detail = detail
+            auto_publish = self.auto_publish
+        yield rx.toast.success(
+            approved_toast(detail, auto_publish) if detail is not None else APPROVED_CHECK_TOAST
+        )
+        yield PlannerState.load
+
+    @rx.event(background=True)
     async def reject_post_from_detail(self):
         """Reject the event's POST (creative FSM `generated → rejected`). The event stays
         scheduled; the worker will not publish a rejected POST."""
         async with self:
+            if self.review_busy:
+                return
             event_id = self.detail.event_id
+            self.review_busy = True
         tenant_id = await self._tenant()
         if tenant_id is None or not event_id:
+            async with self:
+                self.review_busy = False
             return
         try:
             await asyncio.to_thread(reject_post, tenant_id, event_id)
         except Exception as exc:
             if not isinstance(exc, (PlannerError, CreativeInvalidTransition)):
                 logger.error("planner reject_post failed: %s", type(exc).__name__)
+            async with self:
+                self.review_busy = False
             yield rx.toast.error(planner_error_message(exc))
             return
+        async with self:
+            self.review_busy = False
         yield rx.toast.success("Publicación rechazada: no saldrá.")
         yield PlannerState.load
         yield PlannerState.open_detail(event_id)
@@ -1062,6 +1169,17 @@ class PlannerState(rx.State):
         added = [self._add_post(post.post_id) for post in self.unscheduled if post.schedulable]
         if any(added):
             self._go_to(STEP_WHEN)
+
+    @rx.event
+    def open_filters(self) -> None:
+        self.filters_open = True
+
+    @rx.event
+    def set_filters_open(self, value: bool) -> None:
+        self.filters_open = bool(value)
+        if not value:
+            self.tz_query = ""
+            self.delete_tag_id = ""
 
     @rx.event
     def set_connection_filter(self, value: str):
@@ -1535,6 +1653,7 @@ class PlannerState(rx.State):
             )
         yield rx.toast.success(message)
         yield PlannerState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     # -- detail (a side panel, never a modal) -------------------------------------
 
@@ -1554,6 +1673,7 @@ class PlannerState(rx.State):
             self.detail_open = True
             self.detail_loading = True
             self.detail_error = ""
+            self.review_error = ""
             self.detail_confirm = confirm if confirm in (CONFIRM_CANCEL, CONFIRM_REMOVE) else ""
             self.detail = EventDetailVM()
             view_tz = self.view_tz
@@ -1673,3 +1793,4 @@ class PlannerState(rx.State):
             self.detail_open = False
         yield rx.toast.success("Publicación cancelada: salió del calendario")
         yield PlannerState.load
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now

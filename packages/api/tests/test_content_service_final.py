@@ -251,7 +251,7 @@ def test_an_expired_draft_refuses_the_approval_before_any_write() -> None:
             tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID
         )
 
-    assert "caducó" in excinfo.value.detail
+    assert "duran 7 días" in excinfo.value.detail
     assert repo.drafts[draft_id].status != APPROVED
     assert _status(repo, draft_id) == DRAFT_READY and dispatcher.finals == []
 

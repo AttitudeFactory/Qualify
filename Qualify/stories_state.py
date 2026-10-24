@@ -289,6 +289,42 @@ class StoriesState(rx.State):
         self.pending_filename = ""
         self.pending_is_image = False
 
+    def adopt_file(
+        self, *, filename: str, content_type: str, data: bytes, connection_id: str
+    ) -> bool:
+        """Take the one file and the account chosen in steps 1-2 of «Publicar ahora»
+        (PUBLICAR-4) — the assistant buffers files in `PublishState` whatever they end
+        up being, and hands them over here only when the owner publishes a historia.
+        A plain method, called server-side by `PublishHubState.publish_now` (the bytes
+        never travel through the browser). Refuses — returning False — while a publish
+        is in flight or for a type a historia cannot carry."""
+        if self.phase not in ("idle", "success", "failure"):
+            return False
+        resolved = _resolve_story_media(content_type, filename)
+        if resolved is None or not data:
+            return False
+        self._pending_bytes = data
+        self._pending_content_type = resolved
+        self.pending_filename = filename
+        self.pending_is_image = resolved == _JPEG_CONTENT_TYPE
+        self.selected_connection_id = connection_id
+        return True
+
+    @rx.event
+    def reset_form(self) -> None:
+        """«Publicar otra» (PUBLICAR-4): forget the last historia and its outcome.
+        A no-op while a publish is in flight."""
+        if self.phase not in ("idle", "success", "failure"):
+            return
+        self._pending_bytes = b""
+        self._pending_content_type = ""
+        self.pending_filename = ""
+        self.pending_is_image = False
+        self.phase = "idle"
+        self.error = ""
+        self.attempt = None
+        self._poll_started_monotonic = 0.0
+
     # -- share to Instagram (Web Share API handoff) -------------------------
 
     @rx.event
@@ -321,7 +357,9 @@ class StoriesState(rx.State):
                 "Prueba desde Chrome (Android) o Safari (iPhone)."
             )
         if result == "no_file":
-            return rx.toast.error("Sube el video o la imagen de la historia antes de compartir.")
+            return rx.toast.error(
+                "Vuelve al paso 1 y elige otra vez la foto o el video para abrirlo en Instagram."
+            )
         if result == "cannot_share_file":
             return rx.toast.error(
                 "Este navegador no puede compartir este archivo (formato o tamaño no soportado)."

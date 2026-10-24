@@ -12,8 +12,9 @@ gap, not by a rule.
 
 Four guarantees a screen gets for free, so no page re-implements them:
 
-* the sidebar — business on top, zones in the middle, sales metrics and Salir at the
-  bottom — with the active item derived from the route;
+* the sidebar — business on top, then the owner's jobs (Inicio · Atiende · Publica ·
+  Resultados) and «Tu negocio» with Salir at the bottom — with the active item derived
+  from the route;
 * zen mode: one class on the nav root collapses every island to a 72 px rail, with the
   labels revealed by mask and the width springing (``assets/qualify.css``);
 * the page panel, its gutter (``tokens.PAGE_X``) and its entrance;
@@ -28,55 +29,58 @@ import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
+from ..pending_state import HEARTBEAT_MS, PendingState
 from . import tokens as T
+from .primitives import tone_badge
 from .state import NavState
 
 LANDING_URL = "https://qualify.la"
 
-# An item is (label, lucide icon, route, enabled). Enabled items navigate; disabled ones
-# show a "pronto" badge. The active item is derived from the current route, never
-# hardcoded.
+# An item is (label, lucide icon, route, enabled). Enabled items navigate to a working
+# screen. A disabled item is a «Pronto» entry (N10, founder decision 4, 2026-10-23): it
+# still navigates, to a screen that says what is coming and links to something that
+# works today, and its row shows the word «Pronto» — never a dead row, never an empty
+# screen. The active item is derived from the current route, never hardcoded.
 Item = tuple[str, str, str, bool]
 
 # Not a Lucide name: the app's own composed icon (`mention_icon`), resolved by `nav_icon`.
 MENTION_ICON = "qualify-mention"
 
-# Order follows the operator's flow, and the two tinted zones are the product's own two
-# axes (docs/index.md): what the market says, and what the business says. Connections is
-# the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
-# measurement — deliberately outside the colour zones.
-NAV_BASE: list[Item] = [
-    # m-24842962 (NAV-4, N2): Inicio is the centre, so it heads the menu. The final menu
-    # order (Inicio · Atiende · Publica · Resultados · Tu negocio) is NAV-1's.
-    ("Inicio", "house", "/", True),
-    ("Tus redes", "link", "/connections", True),
-    # WA-12: the WhatsApp module (own number: connection, profile, QR, chats, menu).
-    ("WhatsApp", "message-circle", "/whatsapp", True),
-]
+# m-24842957 (NAV-1): the menu map of docs/ux-guia-navegacion.md §3, ordered by the
+# owner's four jobs — what is there for me today, answer people, publish, how am I doing
+# — with the rarely touched business setup at the foot.
+#
+# Inicio (NAV-4, m-24842962) and «Por responder» (ATENDER-1, m-24842990) have their own
+# screens. «Resultados» is still built by another story: until it lands, its entry points
+# at today's closest screen, and a test (`test_nav_one_name.py`) fails the moment the real
+# screen exists, so the route below gets switched instead of forgotten:
+#   TODO(m-24843003, RESULTADOS-5): «Resultados» → "/resultados" (today Tu página web).
+HOME_ROUTE = "/"
+RESPOND_ROUTE = "/responder"
+RESULTS_ROUTE = "/clarity"
 
+NAV_HOME: list[Item] = [("Inicio", "house", HOME_ROUTE, True)]
+
+# The two tinted zones keep the same two tints as before (no new colour): «Escuchas»
+# became «Atiende» and «Publicas» became «Publica» (guide §3).
 NAV_ZONES: list[tuple[str, str, list[Item]]] = [
     (
         "listen",
-        "Escuchas",
+        "Atiende",
         [
-            # m-24842962: `/` is Inicio now; Menciones keeps a route of its own.
-            ("Menciones", MENTION_ICON, "/menciones", True),
-            # m-24789644 (B1): formerly «Contenido»; the route stays `/inbox`.
-            ("Comentarios", "film", "/inbox", True),
-            # QUA-226: the private inbox of the connected accounts. Founder's placement
-            # (2026-10-16): inside Escuchas, after Interacciones, before Creadores.
-            ("Conversaciones", "messages-square", "/conversations", True),
-            ("Creadores", "users", "#", False),
-            ("Señales", "bell", "#", False),
+            # One place to answer (founder decision 3): messages, buyers, comments,
+            # WhatsApp chats and interested people are tabs of «Por responder».
+            ("Por responder", "messages-square", RESPOND_ROUTE, True),
+            # WA-12: the WhatsApp module keeps the auto-reply menu and promotions.
+            ("WhatsApp", "message-circle", "/whatsapp", True),
         ],
     ),
     (
         "publish",
-        "Publicas",
+        "Publica",
         [
             # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
-            # before the login and edited from Negocio → Brand Kit. The guest rail
-            # keeps "Marca" as the entry to make it.
+            # before the login and edited from Tu negocio → Tu marca.
             ("Crear publicación", "wand-sparkles", "/create", True),
             ("Por aprobar", "layout-list", "/drafts", True),
             ("Tu semana", "calendar-days", "/planner", True),
@@ -86,25 +90,74 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
     ),
 ]
 
-NAV_LOOSE: list[Item] = [("Interesados", "user-plus", "/leads", True)]
+# «Resultados», then what is coming, marked «Pronto» (decision 4; «Señales» is
+# «Oportunidades» since the second round of decisions, §2b-6).
+NAV_RESULTS: list[Item] = [
+    ("Resultados", "trending-up", RESULTS_ROUTE, True),
+    # m-24842962 (NAV-4): `/` is Inicio, Menciones keeps its own route. It moves inside
+    # Resultados › «Quién habla de ti» with RESULTADOS-5 (m-24843003); until then it is
+    # listed here, next to Resultados, so it stays reachable from the menu.
+    ("Menciones", MENTION_ICON, "/menciones", True),
+    ("Creadores", "users", "/creadores", False),
+    ("Oportunidades", "bell", "/signals", False),
+]
 
 NAV_BUSINESS: list[Item] = [
-    ("Tu página web", "activity", "/clarity", True),
     ("Tu marca", "swatch-book", "/brand/kit", True),
     # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
     # the templates compose. Next to the Brand Kit — both are what the brand IS.
     ("Tus productos", "package", "/catalog", True),
+    # Connections enable everything above, so they belong to the business setup.
+    ("Tus redes", "link", "/connections", True),
     # The account itself (2026-10-06): who is in, and changing the password.
     ("Configuración", "settings", "/settings", True),
 ]
 
+# m-24842963 (NAV-6, N11): the entries that carry a pending count, by label (a label
+# keeps its count when its route changes, e.g. «Por responder» → /responder):
+# (badge text, tone, spoken name). `warn` only where people wait for an answer;
+# `neutral` (the tone of «Pronto») where nothing is urgent. At 0 nothing is rendered.
+NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
+    "Por responder": (PendingState.respond_badge, "warn", PendingState.respond_aria),
+    "WhatsApp": (PendingState.whatsapp_badge, "warn", PendingState.whatsapp_aria),
+    "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
+    "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),
+}
+
+# The foot block's head (guide §3): the business setup, touched rarely.
+BUSINESS_ZONE_LABEL = "Tu negocio"
+
 # Flat view of the whole menu, in visual order. Kept because it is the cheapest thing to
 # assert against in a test and the shape older code imported.
 NAV_ITEMS: list[Item] = [
-    *NAV_BASE,
+    *NAV_HOME,
     *[item for _zone, _label, items in NAV_ZONES for item in items],
-    *NAV_LOOSE,
+    *NAV_RESULTS,
     *NAV_BUSINESS,
+]
+
+# m-24842964 (NAV-7, docs/design-system.md §4.4): the phone's bottom bar. Four accesses
+# taken from the sidebar's own entries — same icon and route (N1), so when a hub moves
+# (NAV-4, ATENDER-1) the bar follows on its own — then «Más», which opens the drawer.
+# «Crear» is the one approved short form of «Crear publicación» (decision 5).
+BOTTOM_BAR_SOURCE: tuple[str, ...] = ("Inicio", "Por responder", "Crear publicación", "Tu semana")
+BOTTOM_BAR_SHORT_FORM: dict[str, str] = {"Crear publicación": "Crear"}
+MORE_LABEL = "Más"
+MORE_ICON = "menu"
+# What «Más» counts: the counted entries that live only behind the drawer and are not
+# already on the bar (WhatsApp chats are part of «Por responder»).
+MORE_COUNTED: tuple[str, ...] = ("Por aprobar",)
+SIDEBAR_ID = "q-sidebar"
+
+
+def _menu_entry(label: str) -> Item:
+    return next(item for item in NAV_ITEMS if item[0] == label)
+
+
+# (shown label, the sidebar label it comes from, icon, route).
+NAV_BOTTOM: list[tuple[str, str, str, str]] = [
+    (BOTTOM_BAR_SHORT_FORM.get(label, label), label, icon, route)
+    for label, icon, route, _enabled in map(_menu_entry, BOTTOM_BAR_SOURCE)
 ]
 
 # `⌘ .` / `Ctrl .` toggles zen. Registered once per document: the sidebar mounts on every
@@ -226,7 +279,6 @@ def _nav_row(
     label: str,
     *,
     active: rx.Var | bool = False,
-    disabled: bool = False,
     trailing: rx.Component | None = None,
     tooltip: str | None = None,
 ) -> rx.Component:
@@ -258,39 +310,50 @@ def _nav_row(
         # wrapper's `aria-current="page"`.
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
-        opacity="0.55" if disabled else "1",
         class_name="q-nav-item",
         custom_attrs={"data-label": tooltip or label},
-        **({"aria_disabled": "true"} if disabled else {}),
+    )
+
+
+def _count_badge(label: str) -> rx.Component | None:
+    """The pending count of an entry (N11), or None for an entry that has none. Shown
+    only above 0; hidden in zen like «Pronto» (the tab title still carries the total)."""
+    counter = NAV_COUNTERS.get(label)
+    if counter is None:
+        return None
+    text, tone, _spoken = counter
+    return rx.cond(
+        text != "",
+        rx.box(tone_badge(text, tone), class_name="q-soon", margin_left="auto"),
     )
 
 
 def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
-    """One menu entry. Disabled entries render the row without a link, so they cannot be
-    tabbed to or followed."""
-    if not enabled:
-        return _nav_row(
+    """One menu entry, always a link. A «Pronto» entry (``enabled=False``) carries the
+    word «Pronto» as text next to its label (N10: never only by colour or by looking
+    off) and opens its own screen, which says what is coming and where to go today. An
+    entry with something waiting carries its count (N11, m-24842963)."""
+    active = NavState.router.page.path == route
+    soon = (
+        _count_badge(label)
+        if enabled
+        else rx.box(tone_badge("Pronto", "neutral"), class_name="q-soon", margin_left="auto")
+    )
+    return rx.link(
+        _nav_row(
             icon,
             label,
-            disabled=True,
-            tooltip=f"{label} · pronto",
-            trailing=rx.badge(
-                "pronto",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                class_name="q-soon",
-                margin_left="auto",
-            ),
-        )
-
-    active = NavState.router.page.path == route
-    return rx.link(
-        _nav_row(icon, label, active=active),
+            active=active,
+            trailing=soon,
+            tooltip=None if enabled else f"{label} · Pronto",
+        ),
         href=route,
         width="100%",
         underline="none",
         aria_current=rx.cond(active, "page", ""),
+        # N10: the count is announced with what it counts («Por aprobar: 3
+        # publicaciones esperan tu aprobación»); only on counted entries.
+        **({"aria_label": NAV_COUNTERS[label][2]} if enabled and label in NAV_COUNTERS else {}),
         # No-op on desktop (the drawer is never open there); on a phone viewport
         # this is what makes picking a page also close the overlay instead of
         # leaving it covering the page that just loaded underneath it.
@@ -414,7 +477,7 @@ def _guest_islands() -> rx.Component:
     """The rail of a pre-login Brand Kit (§ request 2026-10-02): no sections — every
     other page needs a login — only where the kit is being saved and the way into an
     account (the signup with that email adopts it)."""
-    # "Tu marca" under "Negocio" is the same label and route as the logged-in rail's
+    # "Tu marca" under "Tu negocio" is the same label and route as the logged-in rail's
     # entry (m-24842958, N1: one name per place), so a pointer to it holds for a guest
     # too. "Crea tu marca" is the creation entry (/brand), same words as its header.
     return rx.fragment(
@@ -432,7 +495,7 @@ def _guest_islands() -> rx.Component:
         ),
         rx.spacer(),
         _island(
-            _zone_head("Negocio", "business"),
+            _zone_head(BUSINESS_ZONE_LABEL, "business"),
             _nav_item("Tu marca", "swatch-book", "/brand/kit", True),
             rx.divider(margin="0.15rem 0"),
             _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True),
@@ -464,20 +527,28 @@ def sidebar() -> rx.Component:
         # injects on Reflex >= 0.9.9 — the shared venv was at 0.9.7 on 2026-10-08).
         # The file guards its own double-run.
         rx.el.script(src="/glass-nav.js", async_=True),
+        # m-24842963 (NAV-6): the pending counts are re-read on every screen (the rail
+        # mounts with each page) and every 30 s while one is open; the same read writes
+        # «(N)» at the start of the tab title. Browser-side timer, stops with the page.
+        rx.moment(
+            interval=HEARTBEAT_MS,
+            on_change=lambda _tick: PendingState.tick,
+            display="none",
+        ),
         tenant_block(),
         rx.cond(
             AuthState.is_guest,
             _guest_islands(),
             rx.fragment(
-                _island(*[_nav_item(*item) for item in NAV_BASE]),
+                _island(*[_nav_item(*item) for item in NAV_HOME]),
                 *[
                     _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
                     for zone, label, items in NAV_ZONES
                 ],
-                _island(*[_nav_item(*item) for item in NAV_LOOSE]),
+                _island(*[_nav_item(*item) for item in NAV_RESULTS]),
                 rx.spacer(),
                 _island(
-                    _zone_head("Negocio", "business"),
+                    _zone_head(BUSINESS_ZONE_LABEL, "business"),
                     *[_nav_item(*item) for item in NAV_BUSINESS],
                     rx.divider(margin="0.15rem 0"),
                     logout_action(),
@@ -485,6 +556,9 @@ def sidebar() -> rx.Component:
             ),
         ),
         aria_label="Secciones",
+        # The bottom bar's «Más» names the drawer it opens (`aria-controls`).
+        id=SIDEBAR_ID,
+        on_mount=PendingState.on_shell_mount,
         class_name=rx.cond(
             NavState.zen,
             rx.cond(NavState.mobile_open, "q-sidebar q-zen q-mobile-open", "q-sidebar q-zen"),
@@ -589,25 +663,133 @@ def page_body(
         # This is what lets a page hand a child `flex="1"` and have it reach the panel's
         # bottom edge without doing any `100vh` arithmetic of its own (see `app_shell`).
         flex="1 0 auto",
-        class_name="q-settle",
+        # `q-page-body`: on a phone the shell reserves the bottom bar's height at its
+        # foot (assets/qualify.css, "Bottom bar"), so no page writes it by hand.
+        class_name="q-settle q-page-body",
     )
 
 
-def _mobile_nav_toggle() -> rx.Component:
-    """Hamburger button that opens the sidebar as an overlay drawer on a phone
-    viewport. Lives OUTSIDE the sidebar (unlike `_zen_toggle`) precisely because the
-    drawer is closed by default there — a control to open it can't live inside the
-    thing it opens. Hidden on wider viewports by `.q-mobile-nav-toggle` in
-    `assets/qualify.css`; nothing renders it there, `display: none` just keeps it
-    out of the layout and off the tab order isn't needed since it's unreachable
-    visually, but staying simple: the CSS rule is the only gate."""
+def _route_is_current(route: str) -> rx.Var:
+    """Whether the current page is ``route`` or one of its own views (``/planner/…``
+    marks «Tu semana»). Home is matched exactly: every route starts with ``/``."""
+    path = NavState.router.page.path
+    if route == HOME_ROUTE:
+        return path == route
+    return (path == route) | path.startswith(f"{route}/")
+
+
+def _bottom_badge(text: rx.Var | str, tone: str) -> rx.Component:
+    """A count on the icon's corner (absolute, like the old menu button's): the cell
+    keeps its size and nothing is drawn at 0."""
+    if isinstance(text, str):
+        return rx.box(tone_badge(text, tone), class_name="q-menu-count") if text else rx.fragment()
+    return rx.cond(text != "", rx.box(tone_badge(text, tone), class_name="q-menu-count"))
+
+
+def _bottom_cell_body(
+    icon: str, label: str, active: rx.Var | bool, badge: rx.Component | None
+) -> rx.Component:
+    return rx.box(
+        rx.box(
+            nav_icon(icon, T.ICON_MD),
+            *([badge] if badge is not None else []),
+            class_name="q-bottom-icon",
+        ),
+        rx.el.span(label, class_name="q-bottom-label"),
+        class_name="q-bottom-cell",
+        custom_attrs={"data-active": rx.cond(active, "true", "false")},
+    )
+
+
+def bottom_bar_link(
+    label: str,
+    icon: str,
+    route: str,
+    *,
+    active: rx.Var | bool,
+    badge: rx.Component | None = None,
+    aria_label: rx.Var | str | None = None,
+) -> rx.Component:
+    """One of the bar's four accesses: a real link, `aria-current` on the active one."""
+    return rx.link(
+        _bottom_cell_body(icon, label, active, badge),
+        href=route,
+        underline="none",
+        class_name="q-bottom-link",
+        aria_current=rx.cond(active, "page", ""),
+        **({"aria_label": aria_label} if aria_label is not None else {}),
+        on_click=NavState.close_mobile_nav,
+    )
+
+
+def bottom_bar_more(
+    *,
+    active: rx.Var | bool,
+    badge: rx.Component | None = None,
+    aria_label: rx.Var | str = MORE_LABEL,
+    expanded: rx.Var | bool = False,
+    interactive: bool = True,
+) -> rx.Component:
+    """«Más»: a button, not a link — it opens the drawer, it does not navigate."""
     return rx.el.button(
-        rx.icon("menu", size=T.ICON_MD),
-        id="q-mobile-nav-toggle",
-        on_click=NavState.toggle_mobile_nav,
-        class_name="q-mobile-nav-toggle",
-        aria_label="Abrir el menú",
+        _bottom_cell_body(MORE_ICON, MORE_LABEL, active, badge),
+        type="button",
+        class_name="q-bottom-link q-bottom-more",
+        aria_label=aria_label,
+        aria_expanded=rx.cond(expanded, "true", "false"),
+        aria_controls=SIDEBAR_ID,
+        **({"on_click": NavState.toggle_mobile_nav} if interactive else {}),
     )
+
+
+def bottom_bar_frame(*cells: rx.Component, demo: bool = False) -> rx.Component:
+    """The bar's island. ``demo`` renders it in the flow (the `/design` sample)
+    instead of fixed to the bottom of a phone screen."""
+    return rx.el.nav(
+        *cells,
+        aria_label="Accesos rápidos (muestra)" if demo else "Accesos rápidos",
+        class_name="q-bottom-bar q-bottom-bar--demo" if demo else "q-bottom-bar",
+    )
+
+
+def _bottom_bar() -> rx.Component:
+    """The phone's bottom bar (m-24842964, NAV-7, docs/design-system.md §4.4): Inicio ·
+    Por responder · Crear · Tu semana, then «Más», which opens the same drawer the ☰
+    button used to. Only at ≤ 640 px (`.q-bottom-bar` in assets/qualify.css); above,
+    the sidebar gives the same accesses. The counts are the menu's (`NAV_COUNTERS`),
+    never read again here; «Más» carries what waits only inside the drawer."""
+    actives = [_route_is_current(route) for _label, _source, _icon, route in NAV_BOTTOM]
+    cells: list[rx.Component] = []
+    for (label, source, icon, route), active in zip(NAV_BOTTOM, actives, strict=True):
+        counter = NAV_COUNTERS.get(source)
+        cells.append(
+            bottom_bar_link(
+                label,
+                icon,
+                route,
+                active=active,
+                badge=_bottom_badge(counter[0], counter[1]) if counter else None,
+                # A short form speaks the menu's full name («Crear publicación»), which
+                # contains the visible word (N1, WCAG 2.5.3).
+                aria_label=counter[2] if counter else (source if source != label else None),
+            )
+        )
+    on_none = ~actives[0]
+    for active in actives[1:]:
+        on_none = on_none & ~active
+    # Neutral always: what «Más» counts (Por aprobar) is not people waiting.
+    more_badge = _bottom_badge(PendingState.more_badge, "neutral")
+    cells.append(
+        bottom_bar_more(
+            # Every page has a cell that says «you are here»: one outside the four
+            # (Tu marca, WhatsApp, Por aprobar…) lights «Más».
+            active=on_none,
+            badge=more_badge,
+            aria_label=PendingState.more_aria,
+            expanded=NavState.mobile_open,
+        )
+    )
+    return bottom_bar_frame(*cells)
 
 
 def _mobile_nav_backdrop() -> rx.Component:
@@ -654,7 +836,7 @@ def _refraction_filter() -> rx.Component:
 
 def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
-    then the body blocks. ``rail=False`` drops the sidebar (and its phone toggle): the
+    then the body blocks. ``rail=False`` drops the sidebar (and the phone's bottom bar): the
     panel alone, for a flow that is only its views — the Brand Kit wizard (§ request
     2026-10-02: "solo las views, más nada").
 
@@ -678,11 +860,7 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
     `creative_wizard_pages.py` was restored from another worktree while this file kept
     the new model — if you are reverting one of the two, revert both.
     """
-    chrome = (
-        [_mobile_nav_toggle(), rx.cond(NavState.mobile_open, _mobile_nav_backdrop()), sidebar()]
-        if rail
-        else []
-    )
+    chrome = [rx.cond(NavState.mobile_open, _mobile_nav_backdrop()), sidebar()] if rail else []
     return rx.hstack(
         _refraction_filter(),
         *chrome,
@@ -710,6 +888,8 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
             margin=f"{T.GAP} {T.GAP} {T.GAP} 0" if rail else T.GAP,
             overflow="hidden auto",
         ),
+        # After <main>: a screen reader and the keyboard reach the content first.
+        *([_bottom_bar()] if rail else []),
         width="100%",
         spacing="0",
         align_items="start",
