@@ -19,8 +19,8 @@ from pathlib import Path
 from uuid import UUID
 
 from qualify_api.hashtags import ai as hashtag_ai
+from qualify_api.hashtags import catalog as hashtag_catalog
 
-from . import hashtag_catalog
 from .refresh_referentes import all_tenant_ids
 
 DEFAULT_MAX_BATCHES = 10

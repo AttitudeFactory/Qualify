@@ -77,6 +77,9 @@ from qualify_api.referentes.discovery_seed import (
     _GENERIC_HASHTAGS as _GENERIC_HASHTAGS,
 )
 from qualify_api.referentes.discovery_seed import (
+    CHOSEN_HASHTAGS as CHOSEN_HASHTAGS,
+)
+from qualify_api.referentes.discovery_seed import (
     COUNTRIES,
     NICHE_TAXONOMY,
     PHASED_PLAN_VERSION,
@@ -94,6 +97,12 @@ from qualify_api.referentes.discovery_seed import (
 )
 from qualify_api.referentes.discovery_seed import (
     NICHE_LABELS as NICHE_LABELS,
+)
+from qualify_api.referentes.discovery_seed import (
+    SECTOR_CATALOG_TAGS as SECTOR_CATALOG_TAGS,
+)
+from qualify_api.referentes.discovery_seed import (
+    _is_place_tag as _is_place_tag,
 )
 from qualify_api.referentes.discovery_seed import (
     _is_place_tag_anywhere as _is_place_tag_anywhere,
@@ -1185,29 +1194,12 @@ class PhaseResult:
     review_failed: bool = False
 
 
-def _is_place_tag(tag: str, seed: DiscoverySeed) -> bool:
-    """`#cucutafood` / `#comidacolombia` name a place — they belong to the national /
-    local phases, not to a location-free sector search."""
-    slug = _slug(tag)
-    places = [_slug(seed.city), _slug(country_name(seed.country_code))]
-    return any(place and place in slug for place in places)
-
-
 #: Search terms per sector phase — the account's own topical hashtags first, then the
 #: taxonomy's sector terms, de-duplicated. Four TikTok queries at 2 pages and three
-#: Google pages is the widest net a run casts.
+#: Google pages is the widest net a run casts. (`_is_place_tag`, `SECTOR_CATALOG_TAGS`
+#: and `CHOSEN_HASHTAGS` moved to `qualify_api.referentes.discovery_seed`, m-24852197,
+#: for the hashtag catalog that now lives in the backend.)
 SECTOR_OWN_TAGS = 2
-#: Catalog hashtags (`DiscoverySeed.catalog_hashtags`) the sector phase adds after the
-#: account's own. They EXTEND the `SECTOR_TERMS` cap instead of competing for it — each
-#: one found is one more query, none found is the same plan as before the catalog — so
-#: they never crowd out the taxonomy phrasings that surface a sector's biggest creators.
-#: Three since plan 7: the tags are now vetted per brand by Claude (a restaurant does
-#: not get `#streetfood`), so a third one widens the net without the drift two fuzzy
-#: matches risked. Each is one more keyword query (at most two pages of credits).
-SECTOR_CATALOG_TAGS = 3
-#: The most pills the operator can keep on Tu rubro y ubicación — each one is a sector
-#: query, so the cap is what bounds the credits a curated search spends.
-CHOSEN_HASHTAGS = 5
 SECTOR_TERMS = 4
 
 

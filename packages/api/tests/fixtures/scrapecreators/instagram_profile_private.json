@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "status": "ok",
+  "data": {
+    "user": {
+      "username": "cuenta.privada.demo",
+      "full_name": "Cuenta Privada",
+      "biography": "",
+      "category_name": null,
+      "is_verified": false,
+      "is_private": true,
+      "edge_followed_by": {"count": 85},
+      "edge_follow": {"count": 120},
+      "edge_owner_to_timeline_media": {"count": 12},
+      "profile_pic_url_hd": "https://scontent.cdninstagram.com/v/t51.2885-19/privada.jpg",
+      "external_url": ""
+    }
+  }
+}

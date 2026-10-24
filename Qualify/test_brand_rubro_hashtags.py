@@ -4,9 +4,10 @@ with (`DiscoverySeed.chosen_hashtags`), so changing them re-runs the search."""
 
 from __future__ import annotations
 
+from qualify_api.hashtags import catalog as hashtag_catalog
+
 from . import creative_wizard_pages as wiz
 from . import creator_discovery as cd
-from . import hashtag_catalog
 from .creative_wizard_pages import (
     BrandConnectState,
     add_pills,

@@ -623,17 +623,35 @@ async def test_a_live_profile_read_is_recorded_in_the_creator_history(
         return 1
 
     monkeypatch.setattr(growth_provider, "record_profile_read", record)
-    from . import creator_cache_provider as cache
+    from qualify_api.creative import brand_prefill
 
     cached: dict[tuple[UUID, str, str], dict[str, object]] = {}
-    monkeypatch.setattr(cache, "cached_snapshot", lambda t, n, h: cached.get((t, n, h)))
+
+    class Cache:
+        def get(self, t: UUID, n: str, h: str) -> dict[str, object] | None:
+            return cached.get((t, n, h))
+
+        def put(self, t: UUID, n: str, h: str, p: dict[str, object]) -> None:
+            cached[(t, n, h)] = p
+
+    class Claims:
+        def claim(self, *_a: object) -> bool:
+            return True
+
+        def release(self, *_a: object) -> None:
+            return None
+
+        def keep_only(self, *_a: object) -> None:
+            return None
+
     monkeypatch.setattr(
-        cache, "remember_snapshot", lambda t, n, h, p: cached.__setitem__((t, n, h), p)
+        wiz.scrapecreators_client, "fetch_profile_and_posts", lambda n, h, **_k: profile
     )
-    monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", lambda n, h: profile)
     brand = UUID("b0000000-0000-4000-8000-0000000000a1")
-    monkeypatch.setattr(wiz.account_claims_provider, "claim", lambda _t, _n, _h: (brand, True))
-    monkeypatch.setattr(wiz.account_claims_provider, "keep_only", lambda *_a: None)
+    monkeypatch.setattr(wiz, "default_brand_id", lambda _t: brand)
+    monkeypatch.setattr(
+        wiz, "_prefill_ports", lambda: brand_prefill.PrefillPorts(claims=Claims(), cache=Cache())
+    )
     tenant = "a0000000-0000-4000-8000-0000000000a1"
     _without_session(monkeypatch, tenant)
 
@@ -651,7 +669,7 @@ async def test_a_live_profile_read_is_recorded_in_the_creator_history(
     monkeypatch.setattr(
         wiz.scrapecreators_client,
         "fetch_profile_and_posts",
-        lambda n, h: (_ for _ in ()).throw(AssertionError("no read expected")),
+        lambda n, h, **_k: (_ for _ in ()).throw(AssertionError("no read expected")),
     )
     async for _ in BrandConnectState.analyze.fn(state):
         pass

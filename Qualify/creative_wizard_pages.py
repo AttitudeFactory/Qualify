@@ -54,8 +54,9 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
-from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
-from qualify_api.creative import logo_palette
+from qualify_api.claude_tools import api_key_from_env
+from qualify_api.creative import brand_prefill, logo_palette
+from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_api.referentes import discovery_seed, scrapecreators_client
 from qualify_creative.brand import fonts as brand_fonts
@@ -65,14 +66,12 @@ from reflex.vars import VarData
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
-    account_claims_provider,
     avatar_proxy,
     brand_documents,
     creator_cache_provider,
     creator_discovery,
     creator_pool_provider,
     growth_provider,
-    hashtag_catalog,
     referentes_provider,
     referentes_review,
 )
@@ -890,10 +889,9 @@ class BrandWizardState(rx.State):
         Not an event handler: callers are handlers already running in an event context
         (it needs `get_state`), including `BrandConnectState.answer_has_logo` through
         `get_state(BrandWizardState)`."""
-        colours = await asyncio.to_thread(logo_palette.extract_palette, data)
         creative = await self.get_state(CreativeState)
-        creative.kit_palette = logo_palette.merge_into_palette(
-            creative.kit_palette, self.logo_colors, colours
+        creative.kit_palette, colours = await asyncio.to_thread(
+            brand_prefill.logo_colours_update, creative.kit_palette, self.logo_colors, data
         )
         self.logo_colors = colours
         self.logo_source = source if colours else ""
@@ -3512,54 +3510,31 @@ def merge_suggestions(
     return out, note
 
 
+#: The shared hashtag catalog (`qualify_api.hashtags.catalog`), as the prefill's step
+#: functions take it — the same object path the Alta's worker runs.
+_HASHTAG_CATALOG = brand_prefill.CatalogHashtags()
+
+
+def _prefill_ports() -> brand_prefill.PrefillPorts:
+    """What `brand_prefill.prefill_brand_kit` talks to: the backend's own claim, cache,
+    Scrape Creators read and hashtag catalog — the Alta's defaults. A function so tests
+    can swap the whole set."""
+    return brand_prefill.PrefillPorts(catalog=_HASHTAG_CATALOG)
+
+
 def _generate_from_account(account: from_profile.AccountText) -> from_profile.Proposal | None:
-    """Claude reads the account (`from_profile.generate`): a rubro phrase and the tags its
-    content lives under. None without a key, with nothing to read, or when the call
-    fails — every caller has a fallback."""
-    if not account.has_content:
-        return None
-    try:
-        proposal = from_profile.generate(
-            account, api_key=api_key_from_env(), max_tags=creator_discovery.CHOSEN_HASHTAGS
-        )
-    except MissingAPIKey:
-        return None
-    except (ClaudeToolError, ValueError) as exc:
-        logger.warning("hashtags: creation failed: %s", exc)
-        return None
-    except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
-        logger.warning("hashtags: creation failed: %s", exc)
-        return None
-    if proposal.stats is not None:
-        logger.info(
-            "hashtags: %s read @%s → rubro %r, created %s ($%.4f)",
-            proposal.model,
-            account.handle,
-            proposal.rubro,
-            [t.tag for t in proposal.tags],
-            proposal.stats.cost_usd,
-        )
-    return proposal
+    """Claude reads the account (`brand_prefill.generate_from_account`): a rubro phrase
+    and the tags its content lives under. None without a key, with nothing to read, or
+    when the call fails — every caller has a fallback."""
+    return brand_prefill.generate_from_account(account, api_key=api_key_from_env)
 
 
 def _propose_rubro(
     account: from_profile.AccountText,
 ) -> tuple[str, from_profile.Proposal | None]:
     """Tu rubro, autocompleted (§ third round of 2026-10-05, "que autocompletes el input de
-    tu rubro"): the phrase Claude reads off the account, and the proposal it came with (its
-    tags are kept for when the catalog has none). Without Claude, the profile's own
-    category ("Restaurante") stands in, or nothing."""
-    proposal = _generate_from_account(account)
-    rubro = proposal.rubro if proposal is not None else ""
-    return (rubro or account.category.strip().lower()), proposal
-
-
-def _as_choice(proposal: from_profile.Proposal, by: str) -> hashtag_catalog.HashtagChoice:
-    return hashtag_catalog.HashtagChoice(
-        tags=tuple(t.tag for t in proposal.tags),
-        by=by,
-        picks={t.tag: {"reason": t.reason, "model": proposal.model} for t in proposal.tags},
-    )
+    tu rubro"): `brand_prefill.propose_rubro`, the same step the Alta's prefill runs."""
+    return brand_prefill.propose_rubro(account, api_key=api_key_from_env)
 
 
 def _hashtags_db_first(
@@ -3569,57 +3544,19 @@ def _hashtags_db_first(
     *,
     network: str = "",
     created: from_profile.Proposal | None = None,
-) -> tuple[hashtag_catalog.HashtagChoice | None, str]:
-    """Tu rubro's hashtags, in three cases tried in order (§ fourth round of 2026-10-05):
-
-    1. **The database** — the shared catalog, which Claude explores with its tools for
-       this rubro and this account (`hashtag_catalog.suggest_hashtags`; the rule path
-       without a key).
-    2. **The latest posts** — when the catalog has nothing that fits: the hashtags the
-       account itself used in its latest posts (`from_profile.from_posts`, reach-only
-       tags like #fyp left out).
-    3. **Created** — when its posts carry none: Claude writes them from the description
-       and the posts (`from_profile.generate`, or the proposal `created` already made
-       while it named the rubro), and they are stored in the catalog
-       (`hashtag_catalog.remember_created`) so the next brand with that rubro finds them
-       in case 1.
-
-    Returns the choice for `merge_suggestions`, or None with the note to show."""
-    cap = creator_discovery.CHOSEN_HASHTAGS
-    # 1. the database
-    if tenant_id is not None and (seed.terms or seed.niches):
-        try:
-            found = hashtag_catalog.suggest_hashtags(
-                tenant_id, seed, bio=account.bio, category=account.category
-            )
-        except (SQLAlchemyError, OSError, ValueError) as exc:
-            logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)
-        else:
-            if found.tags:
-                return found, ""
-    # 2. the latest posts
-    own = from_profile.from_posts(account.used_hashtags, max_tags=cap)
-    if own.tags:
-        return _as_choice(own, "rule"), ""
-    # 3. created from the description and the posts
-    proposal = created if created is not None and created.tags else None
-    if proposal is None:
-        proposal = _generate_from_account(account)
-    if proposal is None or not proposal.tags:
-        if not account.has_content:
-            return None, "Escribe tu rubro (o elige una categoría) y te sugerimos etiquetas."
-        return None, (
-            "No encontramos etiquetas para tu rubro ni en tus publicaciones. Agrega las "
-            "tuyas: con ellas buscamos."
-        )
-    if tenant_id is not None and seed.terms:
-        try:
-            hashtag_catalog.remember_created(
-                tenant_id, seed, tuple(t.tag for t in proposal.tags), network=network or None
-            )
-        except (SQLAlchemyError, ValueError) as exc:
-            logger.warning("hashtags: created tags not stored in the catalog: %s", exc)
-    return _as_choice(proposal, "ai"), ""
+) -> tuple[brand_prefill.HashtagChoice | None, str]:
+    """Tu rubro's hashtags — the database, else the latest posts, else created
+    (`brand_prefill.hashtags_db_first`, with this app's catalog). Returns the choice for
+    `merge_suggestions`, or None with the note to show."""
+    return brand_prefill.hashtags_db_first(
+        tenant_id,
+        seed,
+        account,
+        network=network,
+        created=created,
+        catalog=_HASHTAG_CATALOG,
+        api_key=api_key_from_env,
+    )
 
 
 #: Every key a card may carry beyond `account_card`'s original ones, defaulted so a
@@ -5248,53 +5185,38 @@ class BrandConnectState(rx.State):
         # § request 2026-10-06: the account is claimed for this brand BEFORE anything of
         # it is read — cache included — so another email's own account never reaches
         # this session. No Brand Kit session means no brand to claim it for: no read.
-        claimed = await self._claim_account(tenant_id, network, handle)
-        if claimed is None:
-            return
-        brand_id, newly_claimed = claimed
-
-        fetched_live = False
-        try:
-            # § 2026-10-01: the tenant's own cache in Postgres, 7 days (the week the
-            # metrics describe).
-            profile = await asyncio.to_thread(
-                creator_cache_provider.cached_snapshot, tenant_id, network, handle
-            )
-            if profile is None:
-                fetched_live = True
-                # Profile + the last `METRICS_WINDOW_DAYS` days of posts (two reads,
-                # one normalized dict — the posts are what the metrics are computed on).
-                profile = await asyncio.to_thread(
-                    scrapecreators_client.fetch_profile_and_posts, network, handle
-                )
-                await asyncio.to_thread(
-                    creator_cache_provider.remember_snapshot,
-                    tenant_id,
-                    network,
-                    handle,
-                    profile,
-                )
-        except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
-            # The vendor detail (HTTP status, "insufficient credits", etc. — see
-            # scrapecreators_client._error_detail) is diagnostic, not for the operator:
-            # it stays in the server log. What reaches the screen is the one generic,
-            # translated message every other provider-call failure in this flow uses.
-            logger.warning("brand connect profile read failed: %s", exc)
-            if newly_claimed:  # a typo must not lock an account nobody was shown
-                await self._settle_claim(
-                    account_claims_provider.release, tenant_id, brand_id, network, handle
-                )
+        # The claim, the read (the tenant's cache first, § 2026-10-01) and what it says
+        # are `brand_prefill.prefill_brand_kit` — the same run the Alta makes (PB-3);
+        # `propose=False`: here the operator walks the rest, nothing is written.
+        brand_id = await self._session_brand(tenant_id)
+        if tenant_id is None or brand_id is None:
             async with self:
                 self.analyzing = False
                 self.error = _PROFILE_UNAVAILABLE
             return
-
-        # The account read is now the brand's one account on this network: the one it
-        # read before is free again for whoever owns it.
-        await self._settle_claim(
-            account_claims_provider.keep_only, tenant_id, brand_id, network, handle
+        result = await asyncio.to_thread(
+            brand_prefill.prefill_brand_kit,
+            tenant_id,
+            brand_id,
+            network,
+            handle,
+            propose=False,
+            ports=_prefill_ports(),
         )
-        if fetched_live:
+        if not result.read or result.profile is None:
+            # The vendor detail stays in the server log (`brand_prefill`); what reaches
+            # the screen is the one generic, translated message every other
+            # provider-call failure in this flow uses — or that the account is taken.
+            async with self:
+                self.analyzing = False
+                self.error = (
+                    _ACCOUNT_TAKEN
+                    if result.outcome is brand_prefill.PrefillOutcome.ACCOUNT_TAKEN
+                    else _PROFILE_UNAVAILABLE
+                )
+            return
+        profile = result.profile
+        if result.fetched_live:
             await self._record_read(tenant_id, network, handle, profile)
 
         followers = profile.get("followers")
@@ -5312,14 +5234,13 @@ class BrandConnectState(rx.State):
             self.profile_pic_is_real = False  # checked below, once the read is on screen
             read_pic, read_handle = self.profile_pic, self.profile_username
             # Real figures over the window (`recentPosts` of this same read).
-            self._set_metrics(scrapecreators_client.profile_metrics(network, profile))
+            self._set_metrics(result.metrics)
             # Prefill Tu rubro y ubicación with what the read lets us detect (bio,
             # Instagram category, the account's own hashtags) — the step then only
             # shows for an existing account when something is still missing.
-            detected = discovery_seed.seed_from_profile(profile)
-            self.sector = detected.niches[0] if detected.niches else ""
-            self.country_code = detected.country_code
-            self.city = detected.city
+            self.sector = result.sector
+            self.country_code = result.country_code
+            self.city = result.city
             self.rubro_asked = False
             self._clear_discovery()
             self.analyzing = False
@@ -5328,7 +5249,12 @@ class BrandConnectState(rx.State):
             # profile alone says, and runs while the operator walks the kit steps; the
             # rubro step restarts it only if it changes the seed (`next_step`). A fresh
             # start has nothing to seed from until that step.
-            start_now = not self._is_fresh() and bool(detected.niches or detected.hashtags)
+            detected = result.seed
+            start_now = (
+                not self._is_fresh()
+                and detected is not None
+                and bool(detected.niches or detected.hashtags)
+            )
         if start_now:
             yield BrandConnectState.run_discovery
         # After the read is on screen and the search has started: whether its picture is
@@ -5340,42 +5266,18 @@ class BrandConnectState(rx.State):
             if self.profile_pic == read_pic:
                 self.profile_pic_is_real = is_real
 
-    async def _claim_account(
-        self, tenant_id: UUID | None, network: str, handle: str
-    ) -> tuple[UUID, bool] | None:
-        """(brand, whether this read took the account) once Tu cuenta's account is the
-        session brand's own (`account_claims_provider.claim`); None — with the reason on
-        screen — when it cannot be: no Brand Kit session, another email's account, or a
-        claim that could not be checked. Must NOT be called while holding the lock."""
-        error = _PROFILE_UNAVAILABLE
-        if tenant_id is not None:
-            try:
-                return await asyncio.to_thread(
-                    account_claims_provider.claim, tenant_id, network, handle
-                )
-            except account_claims_provider.AccountTaken:
-                error = _ACCOUNT_TAKEN
-            except (SQLAlchemyError, LookupError, ValueError) as exc:
-                logger.warning("brand connect: account claim not checked: %s", exc)
-        async with self:
-            self.analyzing = False
-            self.error = error
-        return None
-
     @staticmethod
-    async def _settle_claim(
-        action: Callable[[UUID, UUID, str, str], None],
-        tenant_id: UUID,
-        brand_id: UUID,
-        network: str,
-        handle: str,
-    ) -> None:
-        """`release` / `keep_only` after the read. Never fails the analysis: a claim left
-        behind only keeps an account this brand already read reserved for it."""
+    async def _session_brand(tenant_id: UUID | None) -> UUID | None:
+        """The session's brand (the eldest, like every Brand Kit screen), or None — no
+        Brand Kit session, no brand, or the database unreachable. Must NOT be called
+        while holding the lock."""
+        if tenant_id is None:
+            return None
         try:
-            await asyncio.to_thread(action, tenant_id, brand_id, network, handle)
+            return await asyncio.to_thread(default_brand_id, tenant_id)
         except SQLAlchemyError as exc:
-            logger.warning("brand connect: account claim not settled: %s", exc)
+            logger.warning("brand connect: the session's brand is unreadable: %s", exc)
+            return None
 
     async def _picture_is_real(self, network: str, handle: str, picture_url: str) -> bool:
         """True when the profile picture exists, can be fetched (`avatar_proxy.

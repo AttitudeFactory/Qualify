@@ -831,6 +831,28 @@ def _is_place_tag_anywhere(tag: str) -> bool:
     return False
 
 
+def _is_place_tag(tag: str, seed: DiscoverySeed) -> bool:
+    """`#cucutafood` / `#comidacolombia` name a place — they belong to the national /
+    local phases, not to a location-free sector search."""
+    slug = _slug(tag)
+    places = [_slug(seed.city), _slug(country_name(seed.country_code))]
+    return any(place and place in slug for place in places)
+
+
+#: Catalog hashtags (`DiscoverySeed.catalog_hashtags`) the sector phase adds after the
+#: account's own. They EXTEND the `SECTOR_TERMS` cap instead of competing for it — each
+#: one found is one more query, none found is the same plan as before the catalog — so
+#: they never crowd out the taxonomy phrasings that surface a sector's biggest creators.
+#: Three since plan 7: the tags are now vetted per brand by Claude (a restaurant does
+#: not get `#streetfood`), so a third one widens the net without the drift two fuzzy
+#: matches risked. Each is one more keyword query (at most two pages of credits).
+#: (Moved from `Qualify/creator_discovery.py` with the hashtag catalog, m-24852197.)
+SECTOR_CATALOG_TAGS = 3
+#: The most pills the operator can keep on Tu rubro y ubicación — each one is a sector
+#: query, so the cap is what bounds the credits a curated search spends.
+CHOSEN_HASHTAGS = 5
+
+
 _STOPWORDS = frozenset(
     {"para", "con", "sin", "del", "las", "los", "una", "uno", "por", "que", "and", "the", "for"}
 )

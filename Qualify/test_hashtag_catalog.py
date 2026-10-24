@@ -8,8 +8,9 @@ from uuid import UUID
 
 import pytest
 from qualify_api.hashtags import MATCH_TERM, MemoryHashtagRepository
+from qualify_api.hashtags import catalog as hashtag_catalog
 
-from . import creator_discovery, hashtag_catalog
+from . import creator_discovery
 from .creator_discovery import Candidate, DiscoverySeed
 
 TENANT = UUID("7a7a0000-0000-4000-8000-0000000000b1")
