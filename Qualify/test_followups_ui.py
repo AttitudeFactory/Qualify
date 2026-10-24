@@ -202,15 +202,16 @@ def test_every_comment_offers_reply_by_dm() -> None:
 
 
 def test_conversations_loads_the_queries_on_entry_and_shows_the_toggle() -> None:
-    source = (Path(__file__).parent / "Qualify.py").read_text(encoding="utf-8")
-    start = source.index("conversations_index,")
-    block = source[start : source.index(")", start)]
-    assert "FollowupsState.enter_page" in block
+    # m-24842990: the queries are the «Quieren comprar» tab of /responder, whose entry
+    # hands over to FollowupsState.enter_page; /conversations keeps the toggle.
+    source = (Path(__file__).parent / "responder_state.py").read_text(encoding="utf-8")
+    assert "FollowupsState.enter_page" in source
     from .conversations_page import conversations_index
 
     rendered = str(conversations_index().render())
     assert "Mensajes" in rendered
-    assert "No hay consultas pendientes" in rendered
+    assert "esperando para comprar" in rendered and "Ver comentarios" in rendered
+    assert "/responder?tab=comentarios" in rendered
 
 
 def test_the_state_accepts_only_known_views_and_known_cards() -> None:
