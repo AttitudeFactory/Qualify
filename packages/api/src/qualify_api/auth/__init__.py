@@ -10,6 +10,7 @@ from qualify_api.auth.drafts import (
     BrandKitDraftResult,
     DraftEmailInvalid,
     EmailHasAccount,
+    start_alta_brand_kit_draft,
     start_brand_kit_draft,
 )
 from qualify_api.auth.fake import FakeAuthProvider
@@ -106,6 +107,7 @@ __all__ = [
     "resolve_login",
     "send_invite_email",
     "signup_open",
+    "start_alta_brand_kit_draft",
     "start_brand_kit_draft",
     "throttle_key",
 ]
