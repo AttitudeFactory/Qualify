@@ -1,5 +1,7 @@
 # Calidad de código: revisión automática con Claude, anotaciones de ruff y SonarQube
 
+> **Actualización 2026-10-24 (ADR 40):** SonarQube pasa a **SonarQube Cloud** (`https://sonarcloud.io`, gratis con el repo público); la Community Build autoalojada de §1.3 y §2.3 queda retirada. Configuración y pasos: [`adr-40-sonar-langfuse-gestionados.md`](adr-40-sonar-langfuse-gestionados.md).
+
 `[IMPLEMENTADO 2026-10-05]` — rama `ci/auto-review-sonarqube`. Todo lo descrito aquí es
 costo cero u open source, o usa la suscripción Claude Max que el fundador ya paga. Las
 afirmaciones de precio y capacidad llevan `[V fecha]` con el enlace donde se verificaron;
