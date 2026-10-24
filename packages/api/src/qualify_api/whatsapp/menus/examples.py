@@ -8,7 +8,8 @@ engine tests walk it end to end; WA-16 can also seed a new number with it. Its
 `productos` node is `source: 'catalog'`: in production the rows come from the number's
 brand catalog (`whatsapp.catalog.load_catalog_for_phone`, WA-15).
 
-Texts are product copy (Spanish) on purpose — they are what a customer reads.
+Texts are product copy (Spanish) on purpose — they are what a customer reads. Each step
+also has a `title`: its name in the editor (m-24848536), never sent to WhatsApp.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
         "nodes": {
             "inicio": {
                 "kind": "buttons",
+                "title": "Saludo",
                 "body": "¿Qué quieres hacer?",
                 "options": [
                     {"id": "ver_menu", "label": "Ver menú y pedir", "next": "productos"},
@@ -60,6 +62,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "info": {
                 "kind": "buttons",
+                "title": "Horario y ubicación",
                 "body": "¿Qué necesitas saber?",
                 "options": [
                     {"id": "horario", "label": "Horario", "next": "horario"},
@@ -69,6 +72,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "horario": {
                 "kind": "text",
+                "title": "Horario",
                 "body": (
                     "Abrimos de lunes a domingo de 12:00 a 22:00.\n"
                     "Cuando quieras pedir, escribe *menú*."
@@ -76,6 +80,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "ubicacion": {
                 "kind": "text",
+                "title": "Ubicación",
                 "body": (
                     "Estamos en la Calle 10 # 5-20, barrio Centro.\n"
                     "Cuando quieras pedir, escribe *menú*."
@@ -83,6 +88,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "productos": {
                 "kind": "products",
+                "title": "Tus productos",
                 "source": "catalog",
                 "body": "Elige un producto para agregarlo a tu pedido.",
                 "button_label": "Ver productos",
@@ -93,6 +99,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "agregado": {
                 "kind": "buttons",
+                "title": "Producto agregado",
                 "body": "Listo, lo agregué a tu pedido. ¿Qué sigue?",
                 "options": [
                     {"id": "agregar_mas", "label": "Agregar más", "next": "productos"},
@@ -102,6 +109,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "resumen": {
                 "kind": "order_summary",
+                "title": "Resumen del pedido",
                 "body": "Total: {total}\n¿Confirmas tu pedido?",
                 "confirm_next": "direccion",
                 "add_more_next": "productos",
@@ -109,6 +117,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "direccion": {
                 "kind": "collect",
+                "title": "Pedir la dirección",
                 "prompt": "¿A qué dirección te lo llevamos? Escríbela completa, con barrio.",
                 "field": "direccion",
                 "validation": "text",
@@ -117,6 +126,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "pedido_confirmado": {
                 "kind": "handoff",
+                "title": "Pedido confirmado",
                 "message": (
                     "¡Gracias! Una persona del equipo confirma tu pedido y el tiempo de "
                     "entrega en un momento."
@@ -125,12 +135,14 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "cancelado": {
                 "kind": "text",
+                "title": "Pedido cancelado",
                 "body": (
                     "Listo, cancelé el pedido. Cuando quieras volver a empezar, escribe *menú*."
                 ),
             },
             "persona": {
                 "kind": "handoff",
+                "title": "Hablar con una persona",
                 "message": "Te paso con una persona del equipo; en un momento te responden.",
                 "reason": "customer_request",
             },
