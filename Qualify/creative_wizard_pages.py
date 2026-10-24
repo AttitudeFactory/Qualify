@@ -984,13 +984,20 @@ def _tone_slider(
         rx.hstack(
             rx.text(left, size="2", color=T.TEXT_MUTED),
             rx.spacer(),
-            rx.text(value.to_string(), size="1", color=T.TEXT_FAINT),
-            rx.spacer(),
+            # no bare 0-100 number (m-24848529 UX review): it says nothing to an owner
             rx.text(right, size="2", color=T.TEXT_MUTED),
             width="100%",
             align="center",
         ),
-        rx.slider(value=[value], on_change=handler, min=0, max=100, step=1, width="100%"),
+        rx.slider(
+            value=[value],
+            on_change=handler,
+            min=0,
+            max=100,
+            step=1,
+            width="100%",
+            aria_label=f"Entre {left} y {right}",
+        ),
         spacing="2",
         width="100%",
         align_items="start",
@@ -3067,8 +3074,9 @@ def _change_email_button() -> rx.Component:
             "Usar otro correo",
             variant="ghost",
             color_scheme="gray",
-            size="2",
+            size="3",
             radius=_CONTROL_RADIUS,
+            min_height="44px",  # N12, like every other footer control
             on_click=AuthState.leave_brand_draft,
             title=AuthState.guest_email,
         ),
@@ -3303,7 +3311,7 @@ _ACCOUNT_TAKEN = (
 #: step).
 NETWORKS: tuple[tuple[str, str, str, str], ...] = (
     ("instagram", "Instagram", "Reels, carruseles y publicaciones.", "camera"),
-    ("tiktok", "TikTok", "Vídeos cortos y galerías de fotos.", "music_2"),
+    ("tiktok", "TikTok", "Videos cortos y fotos.", "music_2"),
 )
 
 
@@ -6366,7 +6374,7 @@ def _kind_flag(item: rx.Var[dict[str, str]]) -> rx.Component:
 def _signal_flags(item: rx.Var[dict[str, str]]) -> rx.Component:
     """What tells an account apart at a glance (§ request 2026-10-01): **IA** when the
     videos the search saw carry the platform's own "made with AI" label (`ai` = how many
-    of how many, hover for the words), and **Señales de pauta** when its reach is far
+    of how many, hover for the words), and **Quizá paga anuncios** when its reach is far
     above the phase's with far less interaction per view (`signal`, the reason on
     hover) — the same test the organic growth estimate runs, here on the search's own
     sightings. Neither says "not AI" / "organic": a card without a flag is simply one
@@ -6384,7 +6392,7 @@ def _signal_flags(item: rx.Var[dict[str, str]]) -> rx.Component:
         rx.cond(
             item["signal"] != "",
             rx.tooltip(
-                tone_badge("Señales de pauta", "warn", icon="megaphone"),
+                tone_badge("Quizá paga anuncios", "warn", icon="megaphone"),
                 content=item["signal"],
             ),
         ),
@@ -7520,7 +7528,11 @@ def _connect_heading_for(index: int) -> rx.Var[str]:
 
 def _connect_loading() -> rx.Component:
     # the profile plus up to five pages of posts: several reads, so a longer creep
-    return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.", creep_seconds=20)
+    return _loading_view(
+        "Leyendo tu perfil",
+        "Tomamos de ahí tu logo, tus colores y a qué te dedicas. Tarda unos segundos.",
+        creep_seconds=20,
+    )
 
 
 def _referentes_loading() -> rx.Component:

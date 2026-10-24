@@ -16,6 +16,7 @@ from .auth_pages import (
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
+from .brand_minimal import BrandMinimalState, brand_minimal_index
 from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
@@ -35,13 +36,16 @@ from .creative_state import CreativeState
 from .creative_wizard_pages import (
     BrandConnectState,
     BrandWizardState,
-    brand_choice_index,
     brand_connect_index,
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .creators_page import creators_index
 from .gallery_state import GalleryState
+from .home_page import home_index
+from .home_state import HomeState
 from .piece_download import router as piece_download_router
+from .planner_back import WeekBackState
 from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publish_hub_state import PublishHubState
@@ -87,7 +91,10 @@ avatar_api.include_router(r2_media_router)
 avatar_api.include_router(piece_download_router)
 
 
-def index() -> rx.Component:
+def mentions_index() -> rx.Component:
+    """Menciones (m-24842962): no longer the home — Inicio is `/` now (founder decision
+    1, 2026-10-23). It keeps its own stable route until Resultados › «Quién habla de
+    ti» (m-24843003) hosts it."""
     return app_shell(
         topbar(),
         page_body(stats_row(), filter_bar(), mentions_body()),
@@ -134,7 +141,18 @@ app = rx.App(
     # 2026-10-08, PR #101. The sidebar's `assets/glass-nav.js` is loaded by the rail
     # itself (`ui.layout.sidebar`, an async `<script>` React hoists), independent of
     # the Reflex version.
-    head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
+    head_components=[
+        rx.script(src="/deck-drag.js"),
+        rx.script(src="/rank-drag.js"),
+        # m-24842964 (NAV-7): Reflex's own viewport meta plus `viewport-fit=cover`, so
+        # `env(safe-area-inset-*)` reports the gesture bar and the phone's bottom bar
+        # sits above it (docs/design-system.md §4.4). Declaring a viewport meta here is
+        # what makes Reflex skip its default one — never two in the head.
+        rx.el.meta(
+            name="viewport",
+            content="width=device-width, initial-scale=1, viewport-fit=cover",
+        ),
+    ],
 )
 
 
@@ -204,9 +222,18 @@ app.add_page(
 # Every business page requires a session: `require_login` runs FIRST in each on_load
 # chain and redirects to /login when there is none. The loads behind it also refuse on
 # their own when no tenant is present — the guard is UX, RLS + AuthState is the wall.
+# m-24842962 (NAV-4, N2): `/` is Inicio — login, a finished brand and the old storefront
+# link all land here. An anonymous visitor is still sent to the Brand Kit's first view.
 app.add_page(
-    index,
-    on_load=[AuthState.require_login_or_brand_start, DashboardState.load_mentions],
+    home_index,
+    route="/",
+    on_load=[AuthState.require_login_or_brand_start, HomeState.load],
+    title="Qualify · Inicio",
+)
+app.add_page(
+    mentions_index,
+    route="/menciones",
+    on_load=[AuthState.require_login, DashboardState.load_mentions],
     title="Qualify · Menciones",
 )
 app.add_page(
@@ -278,13 +305,19 @@ app.add_page(
     on_load=[AuthState.require_login, ClarityState.load],
     title="Qualify · Tu página web",
 )
-# Fase 3 placeholder (see signals_page.py's module docstring) — static, no load beyond
-# the session gate. Reached today only from the Brand Kit connect flow's final screen.
+# The two «Pronto» screens of the menu (N10, NAV-1 m-24842957): static, no load beyond
+# the session gate; each says what is coming and links to something that works today.
 app.add_page(
     signals_index,
     route="/signals",
     on_load=[AuthState.require_login],
-    title="Qualify · Señales",
+    title="Qualify · Oportunidades",
+)
+app.add_page(
+    creators_index,
+    route="/creadores",
+    on_load=[AuthState.require_login],
+    title="Qualify · Creadores",
 )
 app.add_page(
     settings_index,
@@ -319,15 +352,24 @@ app.add_page(
 # there is no "Marca": `enter_brand_home` sends a login (and a guest whose kit is
 # already finished) to the editor, Negocio → Brand Kit, and a kit left halfway back
 # into its wizard.
+# m-24848529 (MARCA-4): /brand is «Tu marca» in five steps — the one mandatory path.
+# It replaced the «¿Tienes redes?» fork (`brand_choice_index`, left unrouted). Every
+# unfinished kit resumes here (`brand_finish._FLOW_ROUTES`), a draft from either old flow
+# included: the loads put its data back, `BrandMinimalState.enter` picks the step (and
+# sends a finished kit to the editor). The old flows stay routable for «Mejora tu marca».
 app.add_page(
-    brand_choice_index,
+    brand_minimal_index,
     route="/brand",
     on_load=[
         AuthState.require_brand_access,
-        BrandConnectState.clear_entry,
-        BrandConnectState.enter_brand_home,
+        CreativeState.load_brand,
+        CreativeState.load_voice,
+        VoiceLabState.load_clone,
+        BrandWizardState.load_saved_assets,
+        BrandConnectState.load_saved_details,
+        BrandMinimalState.enter,
     ],
-    title="Qualify · Crea tu marca",
+    title="Qualify · Tu marca",
 )
 
 # The "No, todavía no" answer's detour: instructions for creating an Instagram or
@@ -423,7 +465,12 @@ app.add_page(
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
-    on_load=[AuthState.require_login, CreativeState.load_draft, CampaignState.load],
+    on_load=[
+        AuthState.require_login,
+        WeekBackState.read,  # m-24842987: «‹ Tu semana» when opened from there
+        CreativeState.load_draft,
+        CampaignState.load,
+    ],
     title="Qualify · Revisar publicación",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).

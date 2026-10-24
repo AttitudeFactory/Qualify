@@ -3,8 +3,8 @@
 They pin:
 1. The VM boundary: frozen, no credential-bearing field, no raw datetime.
 2. Meta status/quality/rejection → (label, tone) with design-system tones only.
-3. The guided form's validation (name alphabet, variables, examples, start/end rule,
-   buttons) and the named → POSITIONAL conversion Meta reviews.
+3. The guided form (m-24842997): four steps, the name button instead of `{{…}}`, the
+   example and Meta's internal name filled in automatically, the exact notice (N3).
 4. Reading components back for a send (positional and named) and the wizard's blocks.
 5. The provider over `MemoryTemplateRepository` + a fake client: Meta first, then the
    mirror; a duplicate refused before any Graph call; an auth error degrades.
@@ -28,32 +28,54 @@ from qualify_api.whatsapp.templates import (
 )
 
 from . import whatsapp_tab_templates
+from .whatsapp_campaigns_vm import EMPTY_TEMPLATE
 from .whatsapp_templates_provider import (
     create_template,
     delete_template,
     list_templates,
     sync_templates,
 )
+from .whatsapp_templates_state import WhatsAppTemplatesState
 from .whatsapp_templates_vm import (
     BUTTONS_QUICK,
     BUTTONS_URL,
     CATEGORY_AUTHENTICATION,
+    DONE_HINT_PROMO,
+    DONE_HINT_UTILITY,
     EMPTY_FORM,
-    ExampleFieldVM,
+    FORM_REVIEW_NOTICE,
+    GUIDED_CATEGORIES,
+    NAME_EXAMPLE,
+    NAME_HINT_PROMO,
+    NAME_HINT_UTILITY,
+    NEXT_STEP_CHATS,
+    NEXT_STEP_CONTACTS,
+    RESTART_LABEL,
+    RESUME_NOTICE,
+    STEP_BUTTONS,
+    STEP_KIND,
+    STEP_MESSAGE,
+    STEP_REVIEW,
+    STEPS,
+    SUBMIT_LABEL,
+    SUBMITTED_MESSAGE,
     SendVariable,
     TemplateForm,
     TemplateVM,
-    body_variables,
+    auto_label,
     build_components,
     build_send_components,
     build_template_vm,
-    example_fields,
+    display_name,
+    insert_name,
     preview_body,
     quality_display,
     rejection_display,
     send_variables,
     status_display,
     suggest_name,
+    template_name,
+    validate_step,
     validate_template_form,
     wizard_block,
 )
@@ -68,8 +90,7 @@ def _form(**overrides: Any) -> TemplateForm:
     base = dataclasses.replace(
         EMPTY_FORM,
         name="promo_octubre",
-        body="Hola {{nombre}}, tu pedido {{pedido}} ya salió.",
-        examples={"nombre": "Ana", "pedido": "A-12"},
+        body="Hola [nombre], tu pedido ya salió.",
     )
     return dataclasses.replace(base, **overrides)
 
@@ -78,7 +99,7 @@ def _form(**overrides: Any) -> TemplateForm:
 
 
 def test_whatsapp_templates_vm_has_no_credential_fields() -> None:
-    for vm in (TemplateVM, TemplateForm, ExampleFieldVM, SendVariable):
+    for vm in (TemplateVM, TemplateForm, SendVariable):
         assert dataclasses.is_dataclass(vm)
         assert vm.__dataclass_params__.frozen  # type: ignore[attr-defined]
         for f in dataclasses.fields(vm):
@@ -144,7 +165,7 @@ def test_vm_from_components() -> None:
     assert not vm.sendable and vm.can_delete
 
 
-# --- 3. the form ----------------------------------------------------------------------
+# --- 3. the guided form (m-24842997) --------------------------------------------------
 
 
 def test_a_valid_form_passes() -> None:
@@ -154,19 +175,20 @@ def test_a_valid_form_passes() -> None:
 @pytest.mark.parametrize(
     ("overrides", "fragment"),
     [
-        ({"name": ""}, "nombre"),
-        ({"name": "Promo Octubre"}, "minúsculas"),
-        ({"language": "xx"}, "idioma"),
+        ({"category": "otra"}, "qué quieres avisar"),
         ({"body": ""}, "mensaje"),
-        ({"body": "{{nombre}} hola"}, "empiece o termine"),
-        ({"body": "Hola {{nombre}}"}, "empiece o termine"),
-        ({"body": "Hola {{ Nombre }} ya"}, "dobles llaves"),
-        ({"examples": {"nombre": "Ana"}}, "{{pedido}}"),
-        ({"header": "Hola {{nombre}}"}, "encabezado"),
-        ({"footer": "x" * 61}, "pie"),
+        ({"body": "[nombre], hola"}, "saludo"),
+        ({"body": "Hola [nombre]"}, "después del nombre"),
+        ({"body": "Hola {{nombre}} ya"}, "llaves"),
+        ({"body": "Hola {{1}} ya"}, "Agregar el nombre del cliente"),
+        ({"header": "Hola [nombre]"}, "título"),
+        ({"header": "x" * 61}, "título"),
+        ({"footer": "x" * 61}, "final"),
+        ({"language": "xx"}, "idioma"),
         ({"button_kind": BUTTONS_QUICK}, "respuesta rápida"),
         ({"button_kind": BUTTONS_QUICK, "quick_replies": ("Sí", "Sí", "")}, "repetirse"),
         ({"button_kind": BUTTONS_URL, "url_text": "Ver", "url": "http://x.co"}, "https://"),
+        ({"name": "Promo Octubre"}, "más opciones"),
     ],
 )
 def test_form_validation(overrides: dict[str, Any], fragment: str) -> None:
@@ -174,14 +196,42 @@ def test_form_validation(overrides: dict[str, Any], fragment: str) -> None:
     assert fragment.lower() in problem.lower()
 
 
+def test_no_message_asks_the_owner_for_braces_or_underscores() -> None:
+    """Criterion 1: the owner never writes `{{…}}` nor a name with an underscore — no
+    visible string of the form asks for them."""
+    for path in (whatsapp_tab_templates.__file__,):
+        source = open(path).read()
+        assert "{{nombre}}" not in source
+        assert "promo_octubre" not in source
+        assert "guion bajo" not in source
+    form = _form(body="")
+    for step in range(len(STEPS)):
+        problem = validate_step(form, step)
+        assert "{{" not in problem and "_" not in problem
+
+
+def test_steps_validate_one_at_a_time() -> None:
+    form = _form(body="", button_kind=BUTTONS_QUICK)
+    assert validate_step(form, STEP_KIND) == ""
+    assert validate_step(form, STEP_MESSAGE) == "Escribe el mensaje."
+    assert "respuesta rápida" in validate_step(form, STEP_BUTTONS)
+    assert validate_step(form, STEP_REVIEW) != ""
+
+
 def test_authentication_is_explained_not_built() -> None:
     problem = validate_template_form(_form(category=CATEGORY_AUTHENTICATION))
-    assert "WhatsApp Manager" in problem
+    assert "cuenta de WhatsApp Business en Meta" in problem
+    assert CATEGORY_AUTHENTICATION not in {key for key, _l, _h in GUIDED_CATEGORIES}
 
 
-def test_named_variables_become_positional_with_examples_in_order() -> None:
+def test_the_name_button_inserts_the_variable_and_meta_gets_its_example() -> None:
+    """Criterion 2: examples fill themselves and Meta receives the fields it requires."""
+    body = insert_name("")
+    assert body == "Hola [nombre], "
+    body += "tu pedido ya salió."
+    assert insert_name("Gracias por venir.") == "Gracias por venir. [nombre] "
     form = _form(
-        body="Hola {{nombre}}, tu pedido {{pedido}} para {{nombre}} ya salió.",
+        body=body,
         header="Novedades",
         footer="Responde BAJA",
         button_kind=BUTTONS_URL,
@@ -193,28 +243,167 @@ def test_named_variables_become_positional_with_examples_in_order() -> None:
     assert components[0] == {"type": "HEADER", "format": "TEXT", "text": "Novedades"}
     assert components[1] == {
         "type": "BODY",
-        "text": "Hola {{1}}, tu pedido {{2}} para {{1}} ya salió.",
-        "example": {"body_text": [["Ana", "A-12"]]},
+        "text": "Hola {{1}}, tu pedido ya salió.",
+        "example": {"body_text": [[NAME_EXAMPLE]]},
     }
     assert components[2] == {"type": "FOOTER", "text": "Responde BAJA"}
     assert components[3]["buttons"] == [
         {"type": "URL", "text": "Ver", "url": "https://qualify.la/menu"}
     ]
+    # Read back for a send: `{{1}}` with the example, as the chat drawer prefills it.
+    assert send_variables(components) == [SendVariable("body", "1", False, NAME_EXAMPLE)]
 
 
-def test_body_without_variables_has_no_example() -> None:
-    components = build_components(_form(body="Hola, hay promo hoy.", examples={}))
+def test_repeated_name_reuses_the_same_variable() -> None:
+    form = _form(body="Hola [nombre], [nombre] tiene premio.")
+    assert build_components(form)[0]["text"] == "Hola {{1}}, {{1}} tiene premio."
+
+
+def test_body_without_the_name_has_no_example() -> None:
+    components = build_components(_form(body="Hola, hay promo hoy."))
     assert components == [{"type": "BODY", "text": "Hola, hay promo hoy."}]
 
 
-def test_preview_and_examples() -> None:
-    form = _form(examples={"nombre": "Ana"})
-    assert body_variables(form.body) == ["nombre", "pedido"]
-    assert preview_body(form.body, form.examples) == "Hola Ana, tu pedido [pedido] ya salió."
-    assert [f.placeholder for f in example_fields(form)] == ["{{nombre}}", "{{pedido}}"]
+def test_preview_and_names() -> None:
+    form = _form()
+    assert preview_body(form.body) == "Hola Ana, tu pedido ya salió."
     assert suggest_name("Promo Octubre") == "promo_octubre"
-    assert suggest_name("_Promo ") == "promo_"  # the space just typed survives
     assert suggest_name("Pastelería Ñ") == "pasteleria_n"
+    assert auto_label("marketing", "Hola [nombre], 2x1 en helados hoy!") == (
+        "Promoción Hola 2x1 en helados"
+    )
+    assert auto_label("utility", "") == "Aviso"
+    assert template_name("", "marketing", "Hola [nombre], 2x1 hoy", set()) == (
+        "promocion_hola_2x1_hoy"
+    )
+    assert template_name("Promo de octubre", "marketing", "", set()) == "promo_de_octubre"
+    taken = {"promo_de_octubre", "promo_de_octubre_2"}
+    assert template_name("Promo de octubre", "marketing", "", taken) == "promo_de_octubre_3"
+    assert template_name("¡¡!!", "utility", "", set()) == "aviso"
+    assert len(template_name("x" * 200, "marketing", "", set())) <= 40
+    assert display_name("promo_de_octubre_2") == "Promo de octubre 2"
+    assert display_name("") == "Mensaje sin nombre"
+
+
+def test_the_submitted_notice_is_exact() -> None:
+    """Criterion 3 (N3): the exact notice and the next step after sending."""
+    assert SUBMITTED_MESSAGE == "Te avisamos cuando esté aprobado (puede tardar hasta 24 h)."
+    assert NEXT_STEP_CONTACTS == "Ver clientes que aceptaron"
+    assert SUBMIT_LABEL == "Enviar a aprobación"
+    assert STEPS == ("Qué avisar", "Mensaje", "Botones", "Revisar")
+
+
+def test_the_list_reads_in_the_owners_words() -> None:
+    vm = build_template_vm(
+        template_id="t1",
+        name="promo_de_octubre",
+        language="es",
+        category="marketing",
+        status="PENDING",
+        quality=None,
+        rejected_reason=None,
+        components=[
+            {"type": "BODY", "text": "Hola {{1}}, {{2}}", "example": {"body_text": [["Ana"]]}}
+        ],
+        updated_at=None,
+    )
+    assert vm.display_name == "Promo de octubre"
+    assert vm.body_preview == "Hola Ana, …"
+    assert vm.option_label == "Promo de octubre · Español"
+
+
+# --- 3b. the state: four steps, «Atrás» keeps everything (N6) -------------------------
+
+
+def test_state_walks_the_four_steps_and_keeps_answers() -> None:
+    state = WhatsAppTemplatesState()
+    state.open_form()
+    assert state.step == STEP_KIND and state.form_open
+    state.set_category("utility")
+    state.next_step()
+    assert state.step == STEP_MESSAGE
+    state.next_step()  # empty message: stays, says why
+    assert state.step == STEP_MESSAGE and state.form_error == "Escribe el mensaje."
+    state.add_name()
+    state.set_field("body", state.form_body + "tu pedido ya salió.")
+    assert state.form_body == "Hola [nombre], tu pedido ya salió."
+    state.next_step()
+    state.set_button_kind(BUTTONS_QUICK)
+    state.set_quick_reply(1, "Gracias")
+    state.next_step()
+    assert state.step == STEP_REVIEW
+    assert state.preview_text == "Hola Ana, tu pedido ya salió."
+    assert state.form_display_name == "Aviso hola tu pedido ya"
+    assert state.form_kind_label == "Un aviso de pedido"
+    assert state.form_problem == ""
+    state.back()
+    state.back()
+    assert state.step == STEP_MESSAGE
+    assert state.form_body == "Hola [nombre], tu pedido ya salió."
+    assert state.form_quick_1 == "Gracias"
+    state.go_to_step(STEP_REVIEW)  # ahead of the current step: ignored
+    assert state.step == STEP_MESSAGE
+    state.set_field("label", "Pedido listo")
+    assert state.form_display_name == "Pedido listo"
+    state.set_field("name", "promo_x")  # Meta's name is never typed: ignored
+    assert state._form().name == "pedido_listo"
+
+
+def test_state_never_reuses_a_name_of_this_number() -> None:
+    state = WhatsAppTemplatesState()
+    state.templates = [dataclasses.replace(EMPTY_TEMPLATE, name="pedido_listo")]
+    state.open_form()
+    state.set_field("label", "Pedido listo")
+    assert state._form().name == "pedido_listo_2"
+
+
+def test_closing_the_drawer_keeps_the_draft() -> None:
+    """N6 (UX review): a stray tap outside must not erase the message; only
+    «Empezar de nuevo» or sending drops it."""
+    state = WhatsAppTemplatesState()
+    state.open_form()
+    assert not state.form_resumed
+    state.set_category("utility")
+    state.next_step()
+    state.set_field("body", "Hola, tu pedido ya salió.")
+    state.set_form_open(False)
+    assert not state.form_open
+    assert state.form_body == "Hola, tu pedido ya salió." and state.step == STEP_MESSAGE
+    state.open_form()
+    assert state.form_open and state.form_resumed
+    assert state.step == STEP_MESSAGE and state.form_category == "utility"
+    state.next_step()
+    assert not state.form_resumed
+    state.restart_form()
+    assert state.form_open and not state.form_resumed
+    assert state.form_body == "" and state.step == STEP_KIND
+    assert state.form_category == "marketing"
+
+
+def test_a_sent_message_starts_fresh_next_time() -> None:
+    state = WhatsAppTemplatesState()
+    state.open_form()
+    state.set_field("body", "Hola")
+    state.form_done = True
+    state.set_form_open(False)
+    assert state.form_body == "" and not state.form_done
+    state.open_form()
+    assert not state.form_resumed
+
+
+def test_the_hints_and_next_step_follow_the_type() -> None:
+    """UX review: a promotion sends one text to everyone; an order notice goes from a chat."""
+    assert "todos reciben el mismo texto" in NAME_HINT_PROMO
+    assert NAME_EXAMPLE in NAME_HINT_UTILITY
+    assert NEXT_STEP_CHATS == "Ir a los chats"
+    assert "chat" in DONE_HINT_UTILITY and "promociones" in DONE_HINT_PROMO
+    assert "plantilla" not in FORM_REVIEW_NOTICE.lower()
+    assert RESUME_NOTICE == "Seguimos donde lo dejaste."
+    assert RESTART_LABEL == "Empezar de nuevo"
+    source = open(whatsapp_tab_templates.__file__).read()
+    assert "BAJA" not in source  # no example that promises an unsubscribe we do not do
+    assert "30 días" not in source
+    assert "t.name" not in source  # the delete prompt shows the owner's name for it
 
 
 # --- 4. reading components for a send -------------------------------------------------
@@ -320,7 +509,11 @@ async def test_create_goes_to_meta_then_mirrors() -> None:
     service, _repo = _service(client)
     vm = await create_template(TENANT, CONNECTION, _form(), service=service)
     assert client.created[0][:4] == ("waba-1", "promo_octubre", "es", "marketing")
-    assert client.created[0][4][0]["text"] == "Hola {{1}}, tu pedido {{2}} ya salió."
+    assert client.created[0][4][0] == {
+        "type": "BODY",
+        "text": "Hola {{1}}, tu pedido ya salió.",
+        "example": {"body_text": [["Ana"]]},
+    }
     assert vm.status_label == "En revisión" and vm.status_tone == "info"
     listed = await list_templates(TENANT, CONNECTION, service=service)
     assert [t.name for t in listed] == ["promo_octubre"]
@@ -382,5 +575,5 @@ def test_tab_renders() -> None:
     component = whatsapp_tab_templates.templates_tab()
     assert isinstance(component, rx.Component)
     rendered = str(component.render())
-    for text in ("Sincronizar con Meta", "Nueva plantilla", "Enviar a revisi"):
+    for text in ("Ver si ya las aprobaron", "Crear un mensaje", "Enviar a aprobaci", "Paso "):
         assert text in rendered, text

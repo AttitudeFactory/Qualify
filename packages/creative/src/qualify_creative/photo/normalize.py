@@ -88,10 +88,30 @@ def export_for_instagram(image: Image.Image, *, width: int = 1080, quality: int 
 REFERENCE_MAX_SIDE = 2048
 
 
-def to_reference_jpeg(data: bytes, *, max_side: int = REFERENCE_MAX_SIDE) -> bytes:
+def crop_to_aspect(image: Image.Image, aspect: tuple[int, int]) -> Image.Image:
+    """`image` cover-cropped, centred, to the proportions of `aspect` (width, height) at
+    its OWN resolution: pixels are only ever removed, never invented by an upscale."""
+    target_w, target_h = aspect
+    width, height = image.size
+    if width * target_h > height * target_w:  # too wide: trim the sides
+        new_w = max(1, min(width, round(height * target_w / target_h)))
+        left = (width - new_w) // 2
+        return image.crop((left, 0, left + new_w, height))
+    new_h = max(1, min(height, round(width * target_h / target_w)))
+    top = (height - new_h) // 2
+    return image.crop((0, top, width, top + new_h))
+
+
+def to_reference_jpeg(
+    data: bytes, *, max_side: int = REFERENCE_MAX_SIDE, aspect: tuple[int, int] | None = None
+) -> bytes:
     """An operator photo (or a generated frame) as the JPEG a model takes as reference:
-    upright and sRGB (`load_normalized`), at most `max_side` px on its long side, q90."""
+    upright and sRGB (`load_normalized`), at most `max_side` px on its long side, q90.
+    With `aspect` it is first cover-cropped to those proportions (`crop_to_aspect`) —
+    still one decode and one JPEG encode."""
     image = load_normalized(data)
+    if aspect is not None:
+        image = crop_to_aspect(image, aspect)
     image.thumbnail((max_side, max_side), Image.LANCZOS)
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=90, optimize=True)

@@ -292,8 +292,8 @@ def test_unreadable_post_is_shown_honestly() -> None:
         _item("x", datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS), post_title=None), connections={}
     )
     card = grid.days[1].cards[0]
-    assert card.title == "POST no disponible"
-    assert card.approval_label == "POST no disponible"
+    assert card.title == "Publicación no disponible"
+    assert card.approval_label == "Publicación no disponible"
     assert card.account_label == "Cuenta desconocida"
 
 
@@ -333,9 +333,10 @@ def test_provider_error_messages_are_specific_spanish() -> None:
         assert message and "Inténtalo de nuevo." not in message
     assert planner_error_message(RuntimeError("boom")).endswith("Inténtalo de nuevo.")
     # QUA-118 D1: the evaluator's exact reason reaches the operator.
-    refused = PostNotSchedulable("x", reason="Falta el formato de algún archivo del POST.")
+    refused = PostNotSchedulable("x", reason="Falta el formato de algún archivo de la publicación.")
     assert planner_error_message(refused) == (
-        "Ese POST no se puede planificar: Falta el formato de algún archivo del POST."
+        "Esa publicación no se puede programar: Falta el formato de algún archivo de la "
+        "publicación."
     )
     # QUA-118 Phase 2: every recurrence refusal has its own wording, with the cap.
     assert planner_error_message(InvalidSeries("x", code="too_many")) == (
@@ -799,14 +800,14 @@ def test_an_approved_post_without_approved_copy_is_not_ready_and_says_why() -> N
     ready = readiness("approved", is_publishable=ok, reason=reason)
     assert ready.label == "Aprobado, pero no listo para publicar"
     assert ready.tone == "warn"
-    assert ready.note == "No se encuentra el texto aprobado del POST."
+    assert ready.note == "No se encuentra el texto aprobado de la publicación."
 
 
 def test_an_approved_post_without_media_is_not_ready_and_says_why() -> None:
     ok, reason = _verdict(media=())
     ready = readiness("approved", is_publishable=ok, reason=reason)
     assert ready.label == "Aprobado, pero no listo para publicar"
-    assert ready.note == "El POST no tiene imágenes ni video."
+    assert ready.note == "La publicación no tiene imágenes ni video."
 
 
 def test_media_outside_r2_or_with_a_bad_format_is_not_ready() -> None:
@@ -833,7 +834,7 @@ def test_a_post_that_is_not_approved_keeps_its_approval_wording() -> None:
     ok, reason = _verdict(approval=ApprovalStatus.PENDING)
     ready = readiness("pending", is_publishable=ok, reason=reason)
     assert (ready.label, ready.tone) == ("En revisión", "warn")
-    assert ready.note == "El POST no está aprobado."
+    assert ready.note == "La publicación no está aprobada."
 
 
 def test_card_and_detail_share_one_function() -> None:
@@ -891,7 +892,9 @@ def test_an_incomplete_post_cannot_enter_the_plan_and_a_move_keeps_its_note() ->
     state.open_assign_blank()
     state.toggle_plan_post("p1")
     assert state.plan_items == []  # a dashed tile: never selectable (D1)
-    assert state.form_tiles[0].readiness_note == "No se encuentra el texto aprobado del POST."
+    assert (
+        state.form_tiles[0].readiness_note == "No se encuentra el texto aprobado de la publicación."
+    )
     # Rescheduling reads the event's own detail, same note as the panel.
     state.detail = EventDetailVM(
         event_id="e1",
@@ -903,7 +906,7 @@ def test_an_incomplete_post_cannot_enter_the_plan_and_a_move_keeps_its_note() ->
         publish_note=REASON_TEXT[UnpublishableReason.NO_MEDIA],
     )
     state.reschedule_from_detail()
-    assert state.plan_rows[0].note == "El POST no tiene imágenes ni video."
+    assert state.plan_rows[0].note == "La publicación no tiene imágenes ni video."
 
 
 # --- event dialog actions: review, rejection and the event's own state (2026-09-30) ------
@@ -1001,7 +1004,7 @@ def _chip(port: str, *, scheduled: bool = False, publishable: bool = True) -> Ou
         is_publishable=publishable,
         unpublishable_reason=""
         if publishable
-        else "Los archivos del POST todavía no están listos.",
+        else "Los archivos de la publicación todavía no están listos.",
         event_status="scheduled" if scheduled else None,
         when_label="lun 28 · 12:00 p. m." if scheduled else "",
         account_label="@bianki" if scheduled else "",
@@ -1032,7 +1035,7 @@ def _package(post_id: str = "pkg", **chips: bool) -> PostOptionVM:
 
 def test_output_chips_say_the_output_and_its_planning_state() -> None:
     unscheduled = _chip("feed")
-    assert (unscheduled.word, unscheduled.label) == ("Feed", "Feed 4:5")
+    assert (unscheduled.word, unscheduled.label) == ("Publicación", "Publicación 4:5")
     assert (unscheduled.state_label, unscheduled.tone, unscheduled.scheduled) == (
         OUTPUT_UNSCHEDULED,
         "neutral",
@@ -1079,7 +1082,7 @@ def test_a_per_output_event_card_carries_the_output_word() -> None:
         _item("w", datetime(2026, 9, 22, 10, 0, tzinfo=CARACAS)),
     )
     labels = {card.event_id: card.output_label for card in grid.days[1].cards}
-    assert labels == {"r": "Reel", "f": "Feed", "w": ""}
+    assert labels == {"r": "Reel", "f": "Publicación", "w": ""}
     assert output_label("story") == "Historia" and output_label(None) == ""
 
 
@@ -1101,7 +1104,7 @@ def test_open_assign_for_a_package_preselects_its_next_output() -> None:
     row = state.plan_rows[0]
     assert row.output_port == "feed" and row.has_outputs
     assert [c.port for c in row.outputs] == ["reel", "feed", "story"]
-    assert row.output_label == "Feed 4:5" and row.kind == "image"
+    assert row.output_label == "Publicación 4:5" and row.kind == "image"
     assert row.destination == "post"  # the feed output goes out as a Publicación
     state.set_item_output("pkg", "story")
     assert state.plan_items[0].output_port == "story"
@@ -1166,7 +1169,7 @@ def test_output_errors_have_their_own_spanish() -> None:
     for exc in (OutputRequired("x"), UnknownOutput("x"), DuplicateEvent("x")):
         message = planner_error_message(exc)
         assert message and "Inténtalo de nuevo." not in message
-    assert "salida" in planner_error_message(OutputRequired("x")).lower()
+    assert "formato" in planner_error_message(OutputRequired("x")).lower()
 
 
 # --- QUA-118 Phase 3: the assign drawer, step by step ----------------------------------
@@ -1251,13 +1254,13 @@ def test_steps_done_never_shows_a_gap() -> None:
     assert assign_steps_done(post_ok=True, when_ok=True, reached=0) == [True, False, False]
     assert assign_steps_done(post_ok=True, when_ok=True, reached=1)[1] is True
     # Three steps, each named by a glyph and a word — never a number.
-    assert ASSIGN_STEPS == ("Contenido", "Programación", "Confirmar")
+    assert ASSIGN_STEPS == ("Contenido", "Cuándo sale", "Confirmar")
     assert len(ASSIGN_STEP_ICONS) == len(ASSIGN_STEPS)
 
 
 def test_frame_shape_follows_the_output_then_the_category() -> None:
     assert frame_shape("galeria", "reel") == ("Reel", "9 / 16")
-    assert frame_shape("galeria", "feed") == ("Feed 4:5", "4 / 5")
+    assert frame_shape("galeria", "feed") == ("Publicación (vertical)", "4 / 5")
     assert frame_shape("galeria", "story") == ("Historia", "9 / 16")
     assert frame_shape("galeria", "") == ("Galería", "1 / 1")
     assert frame_shape("reel", "") == ("Reel", "9 / 16")
@@ -1285,7 +1288,7 @@ def test_the_drawer_opens_on_the_content_step_and_a_chosen_post_skips_ahead() ->
     assert state.form_step_error == "Elige al menos una publicación lista para salir."
     assert not state.form_can_advance
     state.toggle_plan_post("p1")
-    assert state.form_can_advance and state.form_selection_label == "1 pieza seleccionada"
+    assert state.form_can_advance and state.form_selection_label == "1 publicación seleccionada"
     state.next_step()
     assert state.form_step == 1
     state.open_assign_for_post("p1")
@@ -1322,7 +1325,7 @@ def test_a_package_needs_a_publishable_output_before_its_programming_is_done() -
     state.set_item_output("p3", "story")
     assert state.plan_rows[0].error != "" and not state.form_when_ok
     state.set_item_output("p3", "")
-    assert state.plan_rows[0].error == "Elige qué salida programar (Reel, feed o historia)."
+    assert state.plan_rows[0].error == "Elige qué formato programar (reel, publicación o historia)."
 
 
 def test_the_programming_step_validates_dates_and_the_series_cap() -> None:
@@ -1380,7 +1383,7 @@ def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> Non
     state.open_assign_for_day("2026-10-12")
     for post_id in ("p1", "p2", "p3"):
         state.toggle_plan_post(post_id)
-    assert state.form_selection_label == "3 piezas seleccionadas"
+    assert state.form_selection_label == "3 publicaciones seleccionadas"
     state.next_step()
     state.set_item_time("p1", "14:00")
     state.set_item_time("p2", "10:00")
@@ -1399,7 +1402,7 @@ def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> Non
     assert [r.post_id for r in state.plan_rows_by_time] == ["p2", "p3", "p1"]
     assert state.form_event_count == 6  # 3 weekly + 2 accounts + 1
     assert state.form_submit_label == "Programar 6 publicaciones"
-    assert state.form_plan_summary == "3 piezas · 6 publicaciones · lun 12 oct"
+    assert state.form_plan_summary == "3 publicaciones · 6 fechas · lun 12 oct"
     assert state.plan_rows[1].when_label == "lun 12 oct · 10:00 a. m."
     # ✎ goes back to «Programación»; 🗑 drops the piece; an empty plan goes back to pick.
     state.edit_plan_item("p2")
@@ -1480,12 +1483,12 @@ def test_series_preview_vm_defaults_are_a_single_publication() -> None:
 
 
 def test_temperature_reads_cold_for_proven_content_and_hot_for_new() -> None:
-    assert temperature(0)[:2] == ("hot", "Hot")
+    assert temperature(0)[:2] == ("hot", "Por probar")
     assert temperature(1)[0] == "hot"  # once is not a track record
-    assert temperature(COLD_MIN_USES)[:2] == ("cold", "Cold")
-    assert "evergreen" in temperature(5)[2]
+    assert temperature(COLD_MIN_USES)[:2] == ("cold", "Ya probada")
+    assert "repetirla" in temperature(5)[2]
     option = _ready_post(times_published=3)
-    assert (option.temperature, option.temperature_label) == ("cold", "Cold")
+    assert (option.temperature, option.temperature_label) == ("cold", "Ya probada")
     assert _ready_post().temperature == "hot"
 
 
@@ -1517,10 +1520,10 @@ def test_the_grid_filters_by_content_and_counts_every_kind() -> None:
 
 def test_the_plan_goals_are_the_six_of_the_brief_and_toggle() -> None:
     assert [g.label for g in PLAN_GOALS] == [
-        "Likes",
+        "Me gusta",
         "Vistas",
         "Comentarios",
-        "Ads",
+        "Para anunciar pagando",
         "Seguidores",
         "Interacción",
     ]
@@ -1565,7 +1568,7 @@ def test_an_image_goes_to_publicacion_or_historia_never_reel() -> None:
     }
     assert post.default_destination == "post"  # a galería image publishes as a post today
     labels = [d.label for d in post.destinations]
-    assert labels == ["Publicación", "Reel", "Historia"]  # never «Feed»
+    assert labels == ["Publicación", "Reel (video corto)", "Historia"]  # never «Feed»
 
 
 def test_a_vertical_image_cannot_be_a_publicacion_and_says_why() -> None:
@@ -1635,7 +1638,7 @@ def test_a_card_says_whether_its_post_is_cold_or_hot() -> None:
 
     assert (card(times_published=3).temperature, card(times_published=3).temperature_label) == (
         "cold",
-        "Cold",
+        "Ya probada",
     )
     assert card(times_published=0).temperature == "hot"
     assert card().temperature == ""  # history unknown → no badge, no effect
@@ -1682,7 +1685,7 @@ def test_a_weekly_series_picks_its_days_time_and_weeks() -> None:
 def test_stored_goals_read_as_labels_in_plan_order() -> None:
     from .planner_vm import goal_labels
 
-    assert goal_labels(["followers", "likes"]) == ["Likes", "Seguidores"]
+    assert goal_labels(["followers", "likes"]) == ["Me gusta", "Seguidores"]
     assert goal_labels([]) == [] and goal_labels(None) == []
 
 
