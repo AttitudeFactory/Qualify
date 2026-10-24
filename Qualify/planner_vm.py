@@ -41,6 +41,73 @@ from .creative_vm import REVIEW_PORT_LABELS
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
 
+# m-24842987 (PUBLICAR-6, N7): the week and the view travel in the address, so every
+# ficha opened from Tu semana can say «‹ Tu semana» and bring the owner back to the same
+# week, in the same view — after a reload or from another screen too.
+# `/planner?semana=2026-10-19&vista=lista`; a ficha gets `?desde=semana&semana=…&vista=…`.
+URL_WEEK = "semana"
+URL_VIEW = "vista"
+URL_FROM = "desde"
+FROM_WEEK = "semana"
+PLANNER_PATH = "/planner"
+BACK_TO_WEEK = "Tu semana"  # shown after a «‹» glyph — «‹ Tu semana» (N7)
+_VIEW_TO_URL = {VIEW_LIST: "lista", VIEW_CALENDAR: "calendario"}
+_URL_TO_VIEW = {v: k for k, v in _VIEW_TO_URL.items()}
+
+
+def parse_week_param(value: object) -> str:
+    """`?semana=` → the Monday (ISO) of the week that date falls in; "" for junk."""
+    try:
+        day = date.fromisoformat(str(value or "").strip())
+    except ValueError:
+        return ""
+    return (day - timedelta(days=day.weekday())).isoformat()
+
+
+def parse_view_param(value: object) -> str:
+    """`?vista=` → VIEW_LIST / VIEW_CALENDAR; "" when absent or unknown."""
+    return _URL_TO_VIEW.get(str(value or "").strip().lower(), "")
+
+
+def _week_query(monday_iso: str, view_mode: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    monday = parse_week_param(monday_iso)
+    if monday:
+        parts.append((URL_WEEK, monday))
+    if view_mode in _VIEW_TO_URL:
+        parts.append((URL_VIEW, _VIEW_TO_URL[view_mode]))
+    return parts
+
+
+def week_href(monday_iso: str, view_mode: str) -> str:
+    """The address of Tu semana on that week and view («‹ Tu semana»'s target)."""
+    query = "&".join(f"{k}={v}" for k, v in _week_query(monday_iso, view_mode))
+    return f"{PLANNER_PATH}?{query}" if query else PLANNER_PATH
+
+
+def week_return_query(monday_iso: str, view_mode: str) -> str:
+    """`?desde=semana&semana=…&vista=…` — appended to a ficha's address by Tu semana."""
+    parts = [(URL_FROM, FROM_WEEK), *_week_query(monday_iso, view_mode)]
+    return "?" + "&".join(f"{k}={v}" for k, v in parts)
+
+
+def from_week_href(href: str, monday_iso: str, view_mode: str) -> str:
+    """A ficha's address when opened from Tu semana: it carries where to come back to."""
+    if not href:
+        return ""
+    query = week_return_query(monday_iso, view_mode)
+    return href + ("&" + query[1:] if "?" in href else query)
+
+
+def back_to_week_href(params: Mapping[str, object]) -> str:
+    """On a ficha: «‹ Tu semana»'s target when it was opened from Tu semana, else ""."""
+    if str(params.get(URL_FROM, "") or "") != FROM_WEEK:
+        return ""
+    return week_href(
+        parse_week_param(params.get(URL_WEEK, "")), parse_view_param(params.get(URL_VIEW, ""))
+    )
+
+
 # QUA-118 v2 (founder review, 2026-10-06): the assign flow plans SEVERAL POSTs at once —
 # a story at 2 a. m., a carousel at 10 a. m. and a reel at 11 a. m. are one plan. Three
 # steps, each named by an icon and a word, never a number: pick the content from a grid,

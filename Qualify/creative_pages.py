@@ -34,6 +34,7 @@ from .creative_vm import (
 from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
+from .planner_back import WeekBackState, back_to_week_link
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
 from .post_card import (
     campaign_badge,
@@ -2508,14 +2509,20 @@ def draft_detail_index() -> rx.Component:
                     CreativeState.draft,
                     rx.vstack(
                         rx.hstack(
-                            rx.link(
-                                rx.button(
-                                    rx.icon("arrow-left", size=14),
-                                    "Por aprobar",
-                                    variant="ghost",
-                                    size="1",
+                            # m-24842987 (N7): opened from Tu semana, the way back
+                            # says «‹ Tu semana» and keeps that week and view.
+                            rx.cond(
+                                WeekBackState.href != "",
+                                back_to_week_link(),
+                                rx.link(
+                                    rx.button(
+                                        rx.icon("arrow-left", size=14),
+                                        "Por aprobar",
+                                        variant="ghost",
+                                        size="1",
+                                    ),
+                                    href="/drafts",
                                 ),
-                                href="/drafts",
                             ),
                             rx.spacer(),
                             status_badge(
