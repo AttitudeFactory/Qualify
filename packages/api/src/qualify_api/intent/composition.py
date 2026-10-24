@@ -70,19 +70,22 @@ def production_intent_service() -> IntentService:
     )
 
 
-def analyze_pending_intents(*, tenant_id: UUID, connection_id: UUID) -> IntentAnalysisSummary:
-    """Classify every pending comment of the connection under `CURRENT_INTENT_VERSION`.
-    Raises `UnknownIntentConnection` or `IntentModelUnavailable` before any work."""
+def analyze_pending_intents(
+    *, tenant_id: UUID, connection_id: UUID, limit: int | None = None
+) -> IntentAnalysisSummary:
+    """Classify the pending comments of the connection under `CURRENT_INTENT_VERSION` —
+    every one, or the newest `limit` (m-24852204's bounded automatic pass). Raises
+    `UnknownIntentConnection` or `IntentModelUnavailable` before any work."""
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     return production_intent_service().analyze_pending_intents(
-        tenant_id=tenant_id, connection_id=connection_id
+        tenant_id=tenant_id, connection_id=connection_id, limit=limit
     )
 
 
 def analyze_comment_intent(*, tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
-    """The intent pass of «Ordenar por prioridad», for ONE comment (ATENDER-4b,
-    m-24848533): «Responder aquí» stores the analysis row a draft needs instead of
-    sending the owner to sort first. Raises like `analyze_pending_intents`."""
+    """The intent pass for ONE comment (ATENDER-4b, m-24848533): «Responder aquí»
+    stores the analysis row a draft needs when the automatic pass (m-24852204) has not
+    reached that comment yet. Raises like `analyze_pending_intents`."""
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     production_intent_service().analyze_pending_intents(
         tenant_id=tenant_id, connection_id=connection_id, message_ids=(message_id,)

@@ -30,10 +30,8 @@ Pins:
 8. Tenant isolation itself is RLS's job, below this module: `packages/api/tests/
    test_inbox_composition_db.py` pins that another tenant's connection is
    `UnknownInboxConnection` there, before any credential or Meta call.
-9. `analyze_sentiment_now` (QUA-92) runs the same `analyze_pending_comments` seam
-   `POST /api/sentiment/analyze` wraps (no second analysis engine), forwards the tenant,
-   projects `comments_checked`/`new_results`/`skipped_empty` (all-zero included) and
-   propagates `UnknownSentimentConnection` and `SentimentModelUnavailable`.
+9. `analyze_comments_now` (m-24852204) runs `comment_analysis.analyze_after_sync`, the
+   one analysis runner (pinned in `test_interacciones_intent.py`).
 10. `reel_summaries_page`/`global_summary_vm`/`thread_comments_page` (QUA-93) call the
     real read seams (`qualify_api.sentiment.list_reel_summaries`/
     `global_sentiment_summary`/`list_comments_for_thread`), none `async def` (ordinary
@@ -67,8 +65,6 @@ from qualify_api.inbox import (
 )
 from qualify_api.inbox.service import CandidateMedia, MediaNotEligible
 from qualify_api.sentiment import (
-    AnalysisSummary,
-    SentimentModelUnavailable,
     UnknownSentimentConnection,
 )
 from qualify_api.sentiment.repository import (
@@ -234,7 +230,7 @@ def test_sync_and_analysis_have_no_dev_bridge_left() -> None:
     for fragment in ("_DEV_SYNC", "Bearer", "ASGITransport", "dev-inbox-sync"):
         assert fragment not in source, fragment
     assert "await sync_comments(" in inspect.getsource(inbox_provider.sync_now)
-    assert "analyze_pending_comments" in inspect.getsource(inbox_provider.analyze_sentiment_now)
+    assert "analyze_after_sync" in inspect.getsource(inbox_provider.analyze_comments_now)
 
 
 def test_instagram_connections_requires_active_instagram_and_read_comments() -> None:
@@ -414,64 +410,6 @@ def test_sync_now_propagates_every_typed_refusal_unchanged() -> None:
                 assert raised is exc
             else:
                 raise AssertionError(f"sync_now swallowed {type(exc).__name__}")
-
-
-# --------------------------------------------------------------------------------------
-# analyze_sentiment_now (QUA-92) — the "Analizar sentimiento" button's transport: the
-# same `analyze_pending_comments` seam `POST /api/sentiment/analyze` wraps, in process.
-# --------------------------------------------------------------------------------------
-
-
-def test_analyze_sentiment_now_forwards_the_session_tenant_and_projects() -> None:
-    calls: list[dict] = []
-
-    def _fake(**kwargs: object) -> AnalysisSummary:
-        calls.append(kwargs)
-        return AnalysisSummary(comments_checked=3, new_results=2, skipped_empty=1)
-
-    with _patched(analyze_pending_comments=_fake):
-        vm = _run_coro(
-            inbox_provider.analyze_sentiment_now(tenant_id=_OTHER_TENANT, connection_id=_CONNECTION)
-        )
-    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION}]
-    assert (vm.comments_checked, vm.new_results, vm.skipped_empty) == (3, 2, 1)
-
-
-def test_analyze_sentiment_now_projects_nothing_pending() -> None:
-    """Nothing pending is a normal, all-zero success — `InboxState.analyze_sentiment` is
-    what turns it into "No hay comentarios pendientes de análisis", not this function."""
-
-    def _fake(**kwargs: object) -> AnalysisSummary:
-        return AnalysisSummary(comments_checked=0, new_results=0, skipped_empty=0)
-
-    with _patched(analyze_pending_comments=_fake):
-        vm = _run_coro(
-            inbox_provider.analyze_sentiment_now(tenant_id=_TENANT, connection_id=_CONNECTION)
-        )
-    assert (vm.comments_checked, vm.new_results, vm.skipped_empty) == (0, 0, 0)
-
-
-def test_analyze_sentiment_now_propagates_its_typed_refusals() -> None:
-    refusals: list[Exception] = [
-        UnknownSentimentConnection(str(_CONNECTION)),
-        SentimentModelUnavailable("the `ml` dependency group is not installed"),
-    ]
-    for exc in refusals:
-
-        def _fake(_exc: Exception = exc, **kwargs: object) -> AnalysisSummary:
-            raise _exc
-
-        with _patched(analyze_pending_comments=_fake):
-            try:
-                _run_coro(
-                    inbox_provider.analyze_sentiment_now(
-                        tenant_id=_TENANT, connection_id=_CONNECTION
-                    )
-                )
-            except type(exc) as raised:
-                assert raised is exc
-            else:
-                raise AssertionError(f"analyze_sentiment_now swallowed {type(exc).__name__}")
 
 
 def _reel_summary(**overrides: object) -> ReelSummary:

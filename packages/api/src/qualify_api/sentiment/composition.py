@@ -3,10 +3,10 @@
 
 `analyze_pending_comments` below is the published seam: a plain function over ids, no
 HTTP hop, same role `inbox.composition.sync_comments`/`connections.composition.
-check_connection_health` have for their own modules. Its only caller today is
-`http/sentiment_routes.py` — deliberately manual, deliberately not chained after
-`inbox.composition.sync_comments()`. Adding that chaining, or a scheduler, is an
-explicit, separate design decision this module does not make for itself.
+check_connection_health` have for their own modules. Its callers are
+`http/sentiment_routes.py` and, since m-24852204, `qualify_api.comment_analysis` — the
+automatic pass after every comment sync plus the webhook worker's sweep. Chaining and
+scheduling live there, not here.
 """
 
 from __future__ import annotations
@@ -91,14 +91,17 @@ def production_sentiment_service() -> SentimentService:
     )
 
 
-def analyze_pending_comments(*, tenant_id: UUID, connection_id: UUID) -> AnalysisSummary:
-    """The published seam. Synchronous — see `service.py`'s module docstring for why.
-    Raises `UnknownSentimentConnection` if the connection id is not visible to this
-    tenant, and `SentimentModelUnavailable` (from the service, before any work) when the
-    local model's runtime is not installed."""
+def analyze_pending_comments(
+    *, tenant_id: UUID, connection_id: UUID, limit: int | None = None
+) -> AnalysisSummary:
+    """The published seam; `limit` bounds the pass to the newest pending comments.
+    Synchronous — see `service.py`'s module docstring for why. Raises
+    `UnknownSentimentConnection` if the connection id is not visible to this tenant, and
+    `SentimentModelUnavailable` (from the service, before any work) when the local
+    model's runtime is not installed."""
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     return production_sentiment_service().analyze_pending_comments(
-        tenant_id=tenant_id, connection_id=connection_id
+        tenant_id=tenant_id, connection_id=connection_id, limit=limit
     )
 
 

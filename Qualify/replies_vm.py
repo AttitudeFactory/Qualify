@@ -99,7 +99,7 @@ _REPLY_HERE_NOT_YET: Final = (
     "con el botón de al lado."
 )
 # Only when «Responder aquí»'s own analysis of the comment failed (UX review, m-24848533):
-# the owner is never sent to «Ordenar por prioridad» first.
+# there is no button to send the owner to: analysis is automatic (m-24852204).
 _REPLY_HERE_NOT_SORTED: Final = (
     "No pudimos preparar la respuesta todavía. Intenta de nuevo en unos minutos."
 )
@@ -511,7 +511,7 @@ def reply_here_error_message(exc: BaseException) -> str:
             return _REGENERATE_GONE
         if "private message" in reason:
             return _REGENERATE_ANSWERED_BY_DM
-        if "Ordenar por prioridad" in reason:
+        if "automatic analysis has not reached it" in reason:
             return _REPLY_HERE_NOT_SORTED
         if "answered meanwhile" in reason:
             return _REGENERATE_DECIDED

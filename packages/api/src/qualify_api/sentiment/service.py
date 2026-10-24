@@ -1,8 +1,8 @@
 """The sentiment service (QUA-21): analyzes pending comments for one connection and
-persists results, versioned. Manual trigger only, by product decision — no scheduler,
-no automatic run chained after `inbox.sync_comments()`. That decision lives in the
-composition/HTTP layer (there is nothing here that could call itself on a timer);
-this module only knows how to run one pass when asked.
+persists results, versioned. This module only knows how to run one pass when asked;
+who asks lives outside it. Since m-24852204 (founder, 2026-10-24) that is automatic:
+`qualify_api.comment_analysis` runs a bounded pass after every comment sync and on the
+webhook worker's periodic sweep — the manual button is gone.
 
 Synchronous throughout, same posture `connections.composition.check_connection_health`/
 `revoke_connection` already establish: nothing here awaits network I/O (the model runs
@@ -81,7 +81,11 @@ class SentimentService:
         self._version = version
         self._provider = provider
 
-    def analyze_pending_comments(self, *, tenant_id: UUID, connection_id: UUID) -> AnalysisSummary:
+    def analyze_pending_comments(
+        self, *, tenant_id: UUID, connection_id: UUID, limit: int | None = None
+    ) -> AnalysisSummary:
+        """One pass over the connection's pending comments — the newest `limit` of them
+        when bounded (m-24852204's automatic analysis), every one when `None`."""
         # Lazy on purpose, same reason `SentimentProvider` above is TYPE_CHECKING-only:
         # this is the one real runtime dependency this module has on `qualify_models`
         # (the `ml` group), deferred to the moment analysis actually runs rather than
@@ -95,7 +99,7 @@ class SentimentService:
             raise SentimentModelUnavailable("the `ml` dependency group is not installed")
 
         pending = self._repository.list_pending_for_analysis(
-            tenant_id=tenant_id, connection_id=connection_id, version=self._version
+            tenant_id=tenant_id, connection_id=connection_id, version=self._version, limit=limit
         )
 
         checked = 0

@@ -120,7 +120,10 @@ def test_an_edit_does_not_clear_other_blocking_reasons() -> None:
     [
         ("the comment is no longer available on Instagram", "ya no está en Instagram"),
         ("a person already approved a private message (Fase C followup)", "mensaje privado"),
-        ("triage says 'complaint' but ... run «Ordenar por prioridad» first", "Intenta de nuevo"),
+        (
+            "triage says 'complaint' but ... the automatic analysis has not reached it",
+            "Intenta de nuevo",
+        ),
         ("sentiment 'NEG' is not 'POS' and no current commercial intent", "Escríbele en privado"),
     ],
 )
@@ -155,7 +158,9 @@ def test_the_state_lists_the_comments_with_a_waiting_draft() -> None:
 
 def test_reply_here_never_sends_the_owner_to_sort_first() -> None:
     message = vm.reply_here_error_message(
-        RegenerationRefused("triage says 'question' but ... run «Ordenar por prioridad» first")
+        RegenerationRefused(
+            "triage says 'question' but ... the automatic analysis has not reached it"
+        )
     )
     assert "Ordenar" not in message
 

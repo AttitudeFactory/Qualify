@@ -52,46 +52,13 @@ _MONTHS: Final = (
 UNSURE_INTENT_NOTE: Final = "No estamos seguros: lee el comentario antes de responder."
 
 
-# m-24849132: «Ordenar por prioridad» runs two passes (sentiment and intent); either one
-# failing, or both, shows ONE notice instead of two near-identical boxes. The text still
-# depends on the cause (UX review): a retry is only suggested when a retry can help.
-# The per-pass reasons below are owned here so `inbox_state` and this mapping share them.
+# Shared by `inbox_state`'s sync notices. Since m-24852204 there is no analysis notice:
+# sentiment and intent run on their own in the background and never show an error.
 SESSION_EXPIRED: Final = "Tu sesión expiró. Vuelve a iniciar sesión."
 NO_CONNECTION_SELECTED: Final = "Elige primero una cuenta de Instagram."
 UNKNOWN_CONNECTION: Final = (
     "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 )
-# The local model's runtime (`ml` group) is not installed in this deployment — not a
-# transient failure, so "intenta de nuevo" would be a lie.
-ANALYZE_UNAVAILABLE: Final = (
-    "Ahora no podemos ver si tus comentarios son buenos o malos. "
-    "Puedes leerlos y responderlos igual."
-)
-# m-24789644: same case for the intent pass. Unavailable = no Anthropic key here.
-ANALYZE_INTENT_UNAVAILABLE: Final = (
-    "Ahora no podemos ver quién quiere comprar. Lee los comentarios y responde tú."
-)
-PRIORITIZE_UNAVAILABLE: Final = (
-    "Ahora no podemos ordenar tus comentarios. Puedes leerlos y responderlos igual."
-)
-PRIORITIZE_FAILED: Final = "No pudimos ordenar tus comentarios. Intenta de nuevo."
-
-# Causes in priority order: the first one present in EITHER pass wins.
-_PRIORITIZE_CAUSES: Final = (SESSION_EXPIRED, NO_CONNECTION_SELECTED, UNKNOWN_CONNECTION)
-
-
-def prioritize_error_message(sentiment_error: str, intent_error: str) -> str:
-    """The single notice for «Ordenar por prioridad» (m-24849132): empty when neither
-    pass failed; otherwise one sentence chosen by cause — session, account choice,
-    account gone, both passes unavailable here, or the generic retry."""
-    if not (sentiment_error or intent_error):
-        return ""
-    for cause in _PRIORITIZE_CAUSES:
-        if cause in (sentiment_error, intent_error):
-            return cause
-    if sentiment_error == ANALYZE_UNAVAILABLE and intent_error == ANALYZE_INTENT_UNAVAILABLE:
-        return PRIORITIZE_UNAVAILABLE
-    return PRIORITIZE_FAILED
 
 
 def short_day_label(moment: datetime) -> str:
@@ -192,7 +159,7 @@ class CommentVM:
     `comment_sentiment_results` row exists yet for the model version this deployment
     runs today, pre-coerced here (never a raw `None` reaching the client) so
     `ui.sentiment_badge` can match on the four states directly. The page renders `""`
-    as «Sin revisar» — it must NEVER be shown as NEU (QUA-92's explicit requirement).
+    as «En revisión» — it must NEVER be shown as NEU (QUA-92's explicit requirement).
     `score_display` is pre-formatted (`"0.87"`) and empty exactly when
     `sentiment_label` is empty — same "no raw nullable reaching a `str` field"
     convention every other VM in this module follows.
@@ -335,35 +302,3 @@ class CommentPageCursorVM:
 
     sort_key: str
     message_id: str
-
-
-@dataclass(frozen=True)
-class AnalysisSummaryVM:
-    """Display-ready projection of one "Analizar sentimiento" click (QUA-92) — the
-    result of `POST /api/sentiment/analyze`, QUA-21's existing mechanism reused as-is
-    (never a second analysis engine). Fields mirror `qualify_api.sentiment.service.
-    AnalysisSummary`/the route's `AnalyzeResponse` field-for-field.
-
-    `comments_checked == 0` is the caller's signal to render "No hay comentarios
-    pendientes de análisis" instead of a generic zero-count summary — see
-    `inbox_state.py::InboxState.analyze_sentiment`.
-    """
-
-    comments_checked: int
-    new_results: int
-    skipped_empty: int
-
-
-@dataclass(frozen=True)
-class IntentAnalysisSummaryVM:
-    """Display-ready projection of one "Analizar intención" click (m-24789644) —
-    `qualify_api.intent.IntentAnalysisSummary` field-for-field. `unclassified` counts
-    the comments the model gave no usable answer for; they stay pending for the next
-    click, so the toast says so instead of hiding them."""
-
-    comments_checked: int
-    new_results: int
-    skipped_empty: int
-    unclassified: int
-    # m-24789646 (B1): commercial queries this pass sent to Conversaciones.
-    followups_opened: int = 0

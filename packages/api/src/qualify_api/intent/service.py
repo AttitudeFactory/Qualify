@@ -1,7 +1,8 @@
 """The intent service (m-24789644): classifies the pending comments of one connection
 and persists one `IntentSignal` each, versioned. Same posture as `sentiment.service`:
-one pass when asked, synchronous, no scheduler — who triggers it is the composition/UI
-layer's decision.
+one pass when asked, synchronous, no scheduler of its own — who triggers it is the
+caller's decision (since m-24852204, `qualify_api.comment_analysis`: after every comment
+sync and on the webhook worker's periodic sweep).
 
 A comment the classifier gave no usable answer for is NOT recorded: it stays pending and
 is retried on the next pass, instead of being stored as a class nobody assigned.
@@ -57,14 +58,18 @@ class IntentService:
         tenant_id: UUID,
         connection_id: UUID,
         message_ids: Collection[UUID] | None = None,
+        limit: int | None = None,
     ) -> IntentAnalysisSummary:
         """`message_ids` limits the pass to those comments (ATENDER-4b's «Responder
-        aquí» analyzes only the one the owner tapped); None = every pending comment."""
+        aquí» analyzes only the one the owner tapped); None = every pending comment.
+        `limit` bounds the pass to the newest pending comments (m-24852204's automatic
+        analysis); it is not combined with `message_ids`."""
         pending = self._repository.list_pending_for_intent(
             tenant_id=tenant_id,
             connection_id=connection_id,
             version=self._version,
             include_story_replies=self._include_story_replies,
+            limit=limit if message_ids is None else None,
         )
         if message_ids is not None:
             wanted = set(message_ids)

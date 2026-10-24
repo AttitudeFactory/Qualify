@@ -10,7 +10,7 @@ El código está en `packages/api/src/qualify_api/replies/` (puerta, generador p
 
 Un comentario público de Instagram que pregunta algo comercial («¿cuánto cuesta?», «¿tienen en talla M?») recibe un **borrador de respuesta pública** basado solo en el catálogo del negocio. Una persona lo revisa y lo aprueba; nada se publica solo.
 
-1. **Señal (Fase A).** «Analizar intención» guarda en `comment_intent_results` si el comentario tiene intención comercial y qué clases pregunta, con su versión de detector (`intent-claude-v2` / `intent-pipeline-v1`, `intent/composition.py`).
+1. **Señal (Fase A).** El análisis automático de intención (m-24852204; antes el botón «Analizar intención») guarda en `comment_intent_results` si el comentario tiene intención comercial y qué clases pregunta, con su versión de detector (`intent-claude-v2` / `intent-pipeline-v1`, `intent/composition.py`).
 2. **Candidatos.** «Generar borradores» (`replies/composition.py:84`, siempre a mano, sin programador) lista los comentarios entrantes, no borrados, de la conexión elegida, que **no tienen ningún borrador** y tienen sentimiento `POS` o intención comercial en la versión actual (`replies/repository.py:462`).
 3. **Puerta barata** (`replies/gate.py:82`). Determinista, sin red ni modelo: decide si el comentario merece borrador y por qué ruta (`commercial` o `sentiment`). Sección 3.
 4. **Hechos validados** (`assisted/grounding.py:215`, `catalog_grounding_for`). Conexión → su marca (`social_connections.brand_id`) → nombre de la marca y productos activos de `brand_products`, ordenados por `position` y nombre, leídos con `tenant_session`. Cada producto lleva su id y su `updated_at` para quien revisa.
@@ -188,7 +188,7 @@ Tests que lo prueban (todos `-m db`, contra el Postgres de compose):
 | Entorno | Qualify en local contra la API real de Meta |
 | Conexión | `@rauldevgames`, Facebook Login for Business, acceso Standard, app «QualifyMkt Connector» |
 | Comentario | «Cuanto cuesta?», de `@raul._.rangel` (tester con rol en la app), en una publicación de `@rauldevgames` |
-| Flujo | «Sincronizar comentarios» → «Analizar intención» (clase: precio) → «Generar borradores» |
+| Flujo | «Sincronizar comentarios» → «Analizar intención» (clase: precio) → «Generar borradores» (desde m-24852204 el análisis es automático) |
 | 1.er borrador, catálogo vacío | Motivos `empty_catalog` + `price_unknown`: «Requiere revisión» |
 | Tras cargar un producto con precio y «Regenerar» | Sin motivos de revisión. Fuente: «Curso de Godot desde cero · actualizado el 23 oct 2026». El precio no se mostró ni se dijo (D1) |
 | Texto del borrador | «¡Hola! Te escribimos por DM con el precio 😊» |
@@ -207,7 +207,7 @@ Qué demuestra:
 
 1. Con una conexión de Instagram que tenga `instagram_manage_comments` y **marca enlazada** (`social_connections.brand_id`, sección 6), y al menos un producto activo con precio en el Catálogo de esa marca.
 2. Desde una cuenta **con rol en la app de Meta** (tester, desarrollador o administrador: acceso Standard), comentar una pregunta de precio en una publicación de la cuenta conectada.
-3. En `/inbox`: «Sincronizar comentarios» → «Analizar intención» → «Generar borradores».
+3. En `/inbox`: «Buscar comentarios nuevos» → (análisis automático, m-24852204) → «Generar borradores».
 4. En la tarjeta, comprobar las fuentes («Productos de tu catálogo que usamos»), que no aparezca ningún precio y los motivos de revisión. Si hay motivos bloqueantes, marcar «Ya revisé estos puntos».
 5. «Aceptar y enviar».
 6. Anotar: id del borrador, `status` (`sent`), `external_reply_id`, `send_error_code`, `approved_at` y `sent_at` (del log y de la fila), tokens y `cost_usd`.

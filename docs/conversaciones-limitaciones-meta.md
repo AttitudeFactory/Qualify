@@ -178,7 +178,7 @@ Conclusión: no es un permiso que falte (el mismo token lee los comentarios de l
    - `comments_refused`: el edge responde con error (el JSON trae `http_status`, `code` y `subcode`) → limitación de Meta o de permisos.
    - `stories_not_listed`: falla `/stories` (lo más probable, falta `pages_read_engagement`) → configuración pendiente.
    - `no_live_story`: no había historia en las últimas 24 h → repetir el paso 1.
-4. Solo con `comments_served`: arrancar la app con `QUALIFY_STORY_COMMENTS=on`, monitorear la historia en Interacciones, sincronizar y pulsar «Analizar sentimiento» y «Analizar intención». Si el comentario aparece con su sentimiento y su intención, R1 queda confirmado y la capacidad se puede encender en producción.
+4. Solo con `comments_served`: arrancar la app con `QUALIFY_STORY_COMMENTS=on`, monitorear la historia en Interacciones, sincronizar y esperar el análisis automático (m-24852204: corre solo tras la búsqueda). Si el comentario aparece con su sentimiento y su intención, R1 queda confirmado y la capacidad se puede encender en producción.
 
 Si Meta cambia de criterio, repetir estos pasos y sustituir el resultado de arriba.
 
@@ -226,7 +226,7 @@ El DM normal a un hilo con la ventana de 24 h abierta **no** es una capacidad: Q
 
 ### Consultas desde comentarios (PR 3)
 
-- **Apertura automática (B1).** Al pulsar «Analizar intención» en Interacciones, cada comentario con intención comercial de los **últimos 7 días** que aún no tiene consulta se abre en Conversaciones → «Consultas desde comentarios», con su borrador. Los más antiguos no se abren solos (ya no admiten respuesta privada), pero se pueden abrir a mano. El análisis no se deshace si la apertura falla: se reintenta en el siguiente.
+- **Apertura automática (B1).** Tras cada análisis automático de intención (m-24852204: después de cada búsqueda de comentarios y en el barrido del `webhook-worker`), cada comentario con intención comercial de los **últimos 7 días** que aún no tiene consulta se abre en Conversaciones → «Consultas desde comentarios», con su borrador. Los más antiguos no se abren solos (ya no admiten respuesta privada), pero se pueden abrir a mano. El análisis no se deshace si la apertura falla: se reintenta en el siguiente.
 - **Apertura a mano.** «Responder por DM» en cada comentario de Interacciones abre (o reutiliza) su consulta y lleva a `/conversations?consulta=<id>`, con la tarjeta primero y resaltada.
 - **El borrador** lo escribe el mismo generador que «Sugerir respuesta» (Claude Haiku), con contexto: que es un DM que responde a un comentario público, en qué publicación y qué intención se detectó. Solo usa los datos validados del negocio; si falta uno, marca «Requiere revisión» y lista lo que hay que confirmar. Si el borrador falla, la tarjeta ofrece «Generar borrador».
 - **Decidir.** Editar, «Regenerar» (el borrador anterior queda descartado), «Descartar» la consulta o «Aprobar y enviar». Al aprobar, el mensaje entra al outbox con la aprobación de la persona y el borrador queda `accepted` (enviado tal cual) o `edited` (con el texto enviado): `generated_text` frente a `final_text` es el diff guardado (B2).
@@ -277,7 +277,7 @@ Una respuesta a una historia **no es un comentario**: llega como un mensaje dire
 | Un `reply_to` con `mid` (respuesta a otro mensaje), una mención de historia o un mensaje propio (eco) **no** es una respuesta a historia | `conversations/webhook.py`, `instagram_source.py` |
 | Si la sincronización guardó el mensaje sin la historia y luego llega con ella (webhook, o sincronización con la capacidad encendida), se completa; nunca se sobrescribe una historia ya guardada ni se toca nada más del mensaje | `conversations/repository.py` (`insert_message`) |
 | En el hilo de Conversaciones, la burbuja dice «Respondió a tu historia» (con enlace mientras la URL funcione) | `Qualify/conversations_page.py` |
-| Con la capacidad encendida, «Analizar intención» (Interacciones) clasifica también el texto de las respuestas a historias con el mismo `IntentSignal`, y las comerciales de las **últimas 24 h** se abren en «Consultas desde comentarios» con su borrador | `intent/repository.py`, `followups/origins.py`, `followups/workspace.py` |
+| Con la capacidad encendida, el análisis automático de intención clasifica también el texto de las respuestas a historias con el mismo `IntentSignal`, y las comerciales de las **últimas 24 h** se abren en «Consultas desde comentarios» con su borrador | `intent/repository.py`, `followups/origins.py`, `followups/workspace.py` |
 | Solo un DM que Meta marcó como respuesta a una historia es una consulta de este origen; cualquier otro DM ya es una conversación y se responde en ella | `followups/service.py` |
 | Sale siempre como **DM normal** en el mismo hilo, dentro de la ventana de 24 h (verificado en QUA-226); nunca respuesta privada ni aviso público (no hay comentario) | `followups/service.py`, CHECKs de 0071 |
 | La tarjeta dice «Respondió a tu historia por mensaje directo» con el enlace a la historia | `Qualify/followups_vm.py` |
@@ -287,7 +287,7 @@ Una respuesta a una historia **no es un comentario**: llega como un mensaje dire
 1. Publicar una historia en la cuenta conectada. Un tester con rol en la app responde a la historia por mensaje directo con una pregunta comercial (p. ej. «¿Cuánto cuesta?»).
 2. Encender `QUALIFY_STORY_REPLY_CONTEXT=on` **en la app y en el conversations-worker** y correr `just conversations-tick --tenant <uuid> --sync` (o esperar al webhook si la Página está suscrita, QUA-129).
 3. Comprobar en la base que el mensaje tiene `story_reply_id` (y `story_reply_url`), y en Conversaciones que la burbuja dice «Respondió a tu historia». Si llegó por la sincronización, confirmar que la respuesta de Meta trae `story.reply_to` (y no otra forma): es la parte del contrato que la documentación no muestra completa.
-4. Pulsar «Analizar intención» en Interacciones: la consulta aparece en «Consultas desde comentarios» con «Respondió a tu historia», borrador y ruta «Mensaje directo». Aprobarla y comprobar que sale en el mismo hilo.
+4. Buscar comentarios nuevos en Interacciones y esperar el análisis automático: la consulta aparece en «Consultas desde comentarios» con «Respondió a tu historia», borrador y ruta «Mensaje directo». Aprobarla y comprobar que sale en el mismo hilo.
 5. Pegar aquí la fecha, la vía por la que llegó (webhook o sincronización) y la forma observada (sin tokens ni textos de usuario). Con eso, `story_reply_context` pasa a **verificada** en `followups/capabilities.py`.
 
 ### Resultados de las pruebas reales (2026-10-22)
