@@ -117,13 +117,13 @@ MEDIA_UNAVAILABLE_NOTICE = "No se pudo traer el archivo; reintentar"
 MEDIA_GONE_NOTICE = "Este mensaje ya no está disponible"
 MEDIA_RETRY = "Reintentar"
 # m-24842993: the owner never reads «ventana» or «plantillas» — say what happened and
-# what comes next. A way to write first (an approved message from the chat) returns with
-# m-24848535; until then there is no link to a place where they still cannot write.
+# what comes next. m-24848535 adds the way out, «Enviar un mensaje aprobado», in the chat
+# itself (copy: docs/ux-auditoria-2026-10/m6-whatsapp.md hallazgo 1).
 WINDOW_CLOSED_NOTICE = (
     "Pasaron más de 24 horas desde su último mensaje. "
-    "Cuando vuelva a escribirte, podrás responderle aquí."
+    "WhatsApp solo deja escribirle con un mensaje aprobado."
 )
-WINDOW_CLOSED_PILL = "Ya no puedes responderle"
+WINDOW_CLOSED_PILL = "Solo con mensaje aprobado"
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
 
@@ -299,7 +299,7 @@ def window_pill(
     is_open: bool, closes_at: datetime | None, now: datetime, zone: tzinfo
 ) -> tuple[str, str]:
     """(label, tone) of the 24 h window: `ok` open, `warn` closing within the hour
-    («Responde en los próximos 42 min»), `neutral` closed («Ya no puedes responderle»).
+    («Responde en los próximos 42 min»), `neutral` closed («Solo con mensaje aprobado»).
     Worded by what the owner can do, never «ventana»."""
     if not is_open or closes_at is None:
         return WINDOW_CLOSED_PILL, "neutral"
@@ -572,6 +572,8 @@ def failure_label(code: str | None) -> str:
     the owner (the code stays in the outbox row and the logs)."""
     if code == "window_closed" or code in {"131047", "131026"}:
         return "No se entregó: pasaron más de 24 horas desde su último mensaje."
+    if code == "opted_out":
+        return "No se entregó: esta persona pidió no recibir más promociones."
     return "No se entregó"
 
 
@@ -872,5 +874,157 @@ def validate_compose(mode: str, text: str, titles: Sequence[str], url: str, capt
 
 
 def composer_enabled(window_open: bool, has_thread: bool) -> bool:
-    """Free-form sends need the 24 h window open (templates arrive with E4)."""
+    """Free-form sends need the 24 h window open; outside it the composer gives way to
+    «Enviar un mensaje aprobado» (m-24848535)."""
     return has_thread and window_open
+
+
+# ======================================================================================
+# Approved messages from an expired chat (m-24848535, WHATSAPP-2)
+# ======================================================================================
+
+SEND_APPROVED_LABEL = "Enviar un mensaje aprobado"
+SEND_APPROVED_DESCRIPTION = (
+    "Elige uno de tus mensajes que WhatsApp ya aprobó. Solo se envía cuando tocas «Enviar»."
+)
+#: Founder decision 2026-10-23 (epic §2b-4): the exact notice and button.
+PROMOTIONS_NEED_CONSENT = "Para enviarle promociones, esta persona tiene que aceptar recibirlas."
+ASK_CONSENT_LABEL = "Pedirle que acepte"
+NO_FOLLOWUPS = (
+    "Todavía no tienes un mensaje aprobado para retomar una conversación. "
+    "Crea uno y, cuando WhatsApp lo apruebe, podrás enviarlo desde aquí."
+)
+CREATE_APPROVED_LABEL = "Crear un mensaje aprobado"
+#: N5: the link lands on the tab where approved messages are created.
+CREATE_APPROVED_ROUTE = "/whatsapp?tab=plantillas"
+NO_PERMISSION_NOTICE = (
+    "Esta persona todavía no te ha escrito ni aceptó recibir tus mensajes. "
+    "Cuando te escriba, podrás responderle desde este chat."
+)
+TEMPLATE_PICK_HINT = "Elige un mensaje para ver cómo le llega."
+TEMPLATE_FILL_HINT = "Completa los datos del mensaje para poder enviarlo."
+TEMPLATE_PREVIEW_LABEL = "Así le llega"
+TEMPLATE_FIELDS_LABEL = "Datos del mensaje"
+#: Two steps inside the drawer (UX review): pick, then fill and review.
+TEMPLATE_STEP_PICK = "Paso 1 de 2 · Elige el mensaje"
+TEMPLATE_STEP_REVIEW = "Paso 2 de 2 · Completa y revisa"
+TEMPLATE_BACK_LABEL = "Atrás"
+TEMPLATE_EXAMPLE_PREFIX = "Ejemplo: "
+#: The two categories the chat can send, in the owner's words (Meta: utility / marketing).
+_TEMPLATE_KIND: dict[str, tuple[str, str]] = {
+    "utility": ("Seguimiento", "info"),
+    "marketing": ("Promoción", "neutral"),
+}
+_NAME_WORDS = frozenset({"nombre", "name", "cliente", "first_name", "nombre_cliente"})
+
+
+@dataclass(frozen=True)
+class TemplateChoiceVM:
+    """One approved message the owner may pick. Never the template's JSON."""
+
+    template_id: str = ""
+    title: str = ""
+    kind_label: str = ""
+    kind_tone: str = "neutral"
+    preview: str = ""
+    is_consent_request: bool = False
+
+
+@dataclass(frozen=True)
+class TemplateFieldVM:
+    """One value the chosen message needs (`id` = `component:key`)."""
+
+    id: str = ""
+    label: str = ""
+    value: str = ""
+    #: «Ejemplo: …» from the example Meta stored for the variable ("" when none).
+    example: str = ""
+
+
+class TemplateOptionLike(Protocol):
+    template_id: Any
+    name: str
+    category: str
+    preview: str
+    is_consent_request: bool
+
+
+class TemplateVariableLike(Protocol):
+    component: str
+    key: str
+    named: bool
+
+    @property
+    def id(self) -> str: ...
+
+
+def template_title(name: str) -> str:
+    """`seguimiento_pedido` → «Seguimiento pedido»: Meta's internal name, readable."""
+    words = " ".join(part for part in (name or "").replace("-", "_").split("_") if part)
+    return words[:1].upper() + words[1:] if words else "Mensaje aprobado"
+
+
+def template_kind(category: str) -> tuple[str, str]:
+    return _TEMPLATE_KIND.get(category, ("Mensaje aprobado", "neutral"))
+
+
+def build_template_choice(
+    option: TemplateOptionLike, preview: str | None = None
+) -> TemplateChoiceVM:
+    """`preview` overrides the service's one (the state passes it with «[label]» gaps)."""
+    label, tone = template_kind(option.category)
+    return TemplateChoiceVM(
+        template_id=str(option.template_id),
+        title=template_title(option.name),
+        kind_label=label,
+        kind_tone=tone,
+        preview=option.preview if preview is None else preview,
+        is_consent_request=bool(option.is_consent_request),
+    )
+
+
+def template_field_label(variable: TemplateVariableLike) -> str:
+    """«Nombre del cliente» for the name; «Pedido» for a named `{{pedido}}`; «Dato 2 del
+    mensaje» for a positional one («(arriba del mensaje)» when it lives in the header)."""
+    key = variable.key
+    if variable.named and key.lower() in _NAME_WORDS:
+        label = "Nombre del cliente"
+    elif variable.named:
+        label = template_title(key)
+    else:
+        label = f"Dato {key} del mensaje"
+    return f"{label} (arriba del mensaje)" if variable.component == "header" else label
+
+
+def build_template_fields(
+    variables: Sequence[TemplateVariableLike],
+    values: Mapping[str, str],
+    examples: Mapping[str, str] | None = None,
+) -> list[TemplateFieldVM]:
+    examples = examples or {}
+    return [
+        TemplateFieldVM(
+            id=v.id,
+            label=template_field_label(v),
+            value=values.get(v.id, ""),
+            example=f"{TEMPLATE_EXAMPLE_PREFIX}{examples[v.id]}" if examples.get(v.id) else "",
+        )
+        for v in variables
+    ]
+
+
+def preview_values(
+    variables: Sequence[TemplateVariableLike], values: Mapping[str, str]
+) -> dict[str, str]:
+    """The values for the preview: what the owner typed, and «[label]» in every gap, so
+    the preview never shows a raw `{{1}}` and says which field fills which gap. Only the
+    preview uses it; the send still refuses an empty value (`MissingValues`)."""
+    out = {k: v for k, v in values.items() if isinstance(v, str) and v.strip()}
+    for variable in variables:
+        if variable.id not in out:
+            out[variable.id] = f"[{template_field_label(variable)}]"
+    return out
+
+
+def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
+    return all(f.value.strip() for f in fields)

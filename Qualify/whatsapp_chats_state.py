@@ -36,7 +36,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
@@ -49,6 +49,16 @@ from qualify_api.whatsapp.chats import (
     ThreadNotFound,
     UnknownAgent,
     WindowClosed,
+)
+from qualify_api.whatsapp.template_reply import (
+    MissingValues,
+    NoPermission,
+    PromotionNeedsConsent,
+    TemplateNotAvailable,
+    TemplateOption,
+    TemplateReplyOptions,
+    render_preview,
+    variable_examples,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -75,15 +85,23 @@ from .whatsapp_chats_vm import (
     MEDIA_NOT_FOUND,
     MEDIA_UNAVAILABLE,
     MEDIA_VIDEO,
+    NO_PERMISSION_NOTICE,
+    PROMOTIONS_NEED_CONSENT,
+    TEMPLATE_FILL_HINT,
+    TEMPLATE_PICK_HINT,
     WINDOW_CLOSED_NOTICE,
     AgentVM,
     MediaResolution,
     MessageVM,
     OrderCardVM,
+    TemplateChoiceVM,
+    TemplateFieldVM,
     ThreadRowVM,
     UnsentItem,
     build_conversation,
     build_order_card,
+    build_template_choice,
+    build_template_fields,
     build_thread_row,
     composer_enabled,
     filter_counts,
@@ -92,7 +110,9 @@ from .whatsapp_chats_vm import (
     media_control_for,
     merge_pages,
     mode_pill,
+    preview_values,
     resolution_after,
+    template_fields_complete,
     validate_compose,
 )
 from .whatsapp_state import WhatsAppState
@@ -115,6 +135,10 @@ _ACTION_FAILED = "No se pudo completar la acción. Vuelve a intentarlo en un mom
 _NO_ORDER = "Esta conversación ya no tiene un pedido confirmado."
 _UNKNOWN_AGENT = "Esa persona ya no forma parte del equipo."
 _QUEUED = "Tu mensaje sale en unos segundos."
+_TEMPLATES_FAILED = (
+    "No se pudieron cargar tus mensajes aprobados. Vuelve a intentarlo en un momento."
+)
+_TEMPLATE_GONE = "Ese mensaje ya no está aprobado. Elige otro."
 _TOAST_MS = 4000
 #: The «Sin asignar» item of the «Asignar» select.
 UNASSIGNED = "__none__"
@@ -173,6 +197,23 @@ class WhatsAppChatsState(rx.State):
     # -- media lightbox (an image's fresh URL; "" = closed) -----------------------------
     lightbox_url: str = ""
 
+    # -- approved message from an expired chat (m-24848535) -----------------------------
+    tpl_open: bool = False
+    tpl_loading: bool = False
+    tpl_error: str = ""
+    tpl_choices: list[TemplateChoiceVM] = []
+    tpl_selected: str = ""
+    #: Step 2 of the drawer («Completa y revisa») is showing; «Atrás» goes back to the
+    #: list keeping the choice and what was typed.
+    tpl_reviewing: bool = False
+    tpl_fields: list[TemplateFieldVM] = []
+    tpl_preview: str = ""
+    tpl_promotions_blocked: bool = False
+    tpl_consent_id: str = ""
+    tpl_has_followups: bool = True
+    tpl_no_permission: bool = False
+    tpl_sending: bool = False
+
     # -- backend only -------------------------------------------------------------------
     _connection_id: str = ""
     _zone_name: str = ""
@@ -184,6 +225,11 @@ class WhatsAppChatsState(rx.State):
     # message id → what the media locator answered (URL + expiry, or the failure code).
     _media: dict[str, MediaResolution] = {}
     _media_loading: list[str] = []
+    # The service's options (with each template's components) and the values typed so
+    # far; the request key of the «Enviar» intent, reused by a retry so it queues once.
+    _tpl_options: list[TemplateOption] = []
+    _tpl_values: dict[str, str] = {}
+    _tpl_request_key: str = ""
 
     # ==================================================================================
     # Computed vars
@@ -267,6 +313,28 @@ class WhatsAppChatsState(rx.State):
             return WINDOW_CLOSED_NOTICE
         return ""
 
+    @rx.var
+    def show_send_approved(self) -> bool:
+        """The expired chat's way out: «Enviar un mensaje aprobado» (m-24848535)."""
+        return self.open_thread_id != "" and not self.open_thread.window_open
+
+    @rx.var
+    def tpl_hint(self) -> str:
+        if self.tpl_no_permission:
+            return ""
+        if not self.tpl_selected or not self.tpl_reviewing:
+            return TEMPLATE_PICK_HINT if self.tpl_choices else ""
+        return "" if template_fields_complete(self.tpl_fields) else TEMPLATE_FILL_HINT
+
+    @rx.var
+    def can_send_template(self) -> bool:
+        return (
+            self.tpl_selected != ""
+            and self.tpl_reviewing
+            and not self.tpl_sending
+            and template_fields_complete(self.tpl_fields)
+        )
+
     # ==================================================================================
     # Plumbing
     # ==================================================================================
@@ -293,7 +361,62 @@ class WhatsAppChatsState(rx.State):
         self._media_loading = []
         self.lightbox_url = ""
         self._reset_composer()
+        self._reset_templates()
         self.banner = ""
+
+    def _reset_templates(self) -> None:
+        self.tpl_open = False
+        self.tpl_loading = False
+        self.tpl_error = ""
+        self.tpl_choices = []
+        self.tpl_promotions_blocked = False
+        self.tpl_consent_id = ""
+        self.tpl_has_followups = True
+        self.tpl_no_permission = False
+        self.tpl_sending = False
+        self._tpl_options = []
+        self._clear_template_choice()
+
+    def _clear_template_choice(self) -> None:
+        self.tpl_selected = ""
+        self.tpl_reviewing = False
+        self.tpl_fields = []
+        self.tpl_preview = ""
+        self._tpl_values = {}
+        self._tpl_request_key = ""
+
+    def _tpl_option(self, template_id: str) -> TemplateOption | None:
+        return next((o for o in self._tpl_options if str(o.template_id) == template_id), None)
+
+    def _render_template_choice(self) -> None:
+        option = self._tpl_option(self.tpl_selected)
+        if option is None:
+            self._clear_template_choice()
+            return
+        self.tpl_fields = build_template_fields(
+            option.variables, self._tpl_values, variable_examples(option.components)
+        )
+        self.tpl_preview = render_preview(
+            option.components, preview_values(option.variables, self._tpl_values)
+        )
+
+    def _apply_template_options(self, options: TemplateReplyOptions) -> None:
+        self._tpl_options = list(options.options)
+        self.tpl_choices = [
+            build_template_choice(
+                o, render_preview(o.components, preview_values(o.variables, o.prefill))
+            )
+            for o in options.options
+        ]
+        self.tpl_promotions_blocked = options.promotions_blocked
+        consent = options.consent_request
+        self.tpl_consent_id = str(consent.template_id) if consent is not None else ""
+        self.tpl_has_followups = options.has_followups
+        self.tpl_no_permission = options.permission.value == "none"
+        if self._tpl_option(self.tpl_selected) is None:
+            self._clear_template_choice()
+        else:
+            self._render_template_choice()
 
     def _reset_composer(self) -> None:
         self.draft_text = ""
@@ -751,6 +874,181 @@ class WhatsAppChatsState(rx.State):
             self.sending = False
             if clear_composer and self.open_thread_id == thread_id:
                 self._reset_composer()
+            self._mark_paused(thread_id, True)
+        yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
+        yield WhatsAppChatsState.refresh
+
+    # ==================================================================================
+    # Approved message from an expired chat (m-24848535)
+    # ==================================================================================
+
+    @rx.event
+    def open_templates(self) -> rx.event.EventSpec | None:
+        """«Enviar un mensaje aprobado»: open the picker and (re)load what this person
+        may receive. Nothing is sent here."""
+        if not self.show_send_approved:
+            return None
+        self.tpl_open = True
+        return WhatsAppChatsState.load_templates
+
+    @rx.event
+    def set_templates_open(self, is_open: bool) -> None:
+        if not is_open:
+            self.tpl_open = False
+
+    @rx.event(background=True)
+    async def load_templates(self) -> None:
+        await self._read_templates(keep_error=False)
+
+    async def _read_templates(self, *, keep_error: bool) -> None:
+        async with self:
+            thread_id, connection_id = self.open_thread_id, self._connection_id
+            if not thread_id or self.tpl_loading:
+                return
+            self.tpl_loading = True
+            if not keep_error:
+                self.tpl_error = ""
+            tenant_id = await self._tenant()
+        thread, connection = _uuid(thread_id), _uuid(connection_id)
+        if tenant_id is None or thread is None or connection is None:
+            async with self:
+                self.tpl_loading = False
+                self.tpl_error = _NO_SESSION
+            return
+        try:
+            options = await asyncio.to_thread(
+                gateway().template_options, tenant_id, connection, thread
+            )
+        except ThreadNotFound:
+            async with self:
+                self.tpl_loading = False
+                self.tpl_open = False
+                self._set_banner(_THREAD_GONE, "warn")
+            return
+        except _DB_ERRORS as exc:
+            logger.error("whatsapp chats templates failed: %s", type(exc).__name__)
+            async with self:
+                self.tpl_loading = False
+                self.tpl_error = _TEMPLATES_FAILED
+            return
+        async with self:
+            self.tpl_loading = False
+            if self.open_thread_id != thread_id:
+                return
+            self._apply_template_options(options)
+
+    def _choose(self, template_id: str) -> None:
+        """Pick one listed message (an id the list does not hold is ignored). A new pick
+        starts a new «Enviar» intent, so it gets a new request key."""
+        if not isinstance(template_id, str):
+            return
+        if template_id and template_id == self.tpl_selected:
+            # The same message again (after «Atrás»): back to step 2, values intact.
+            self.tpl_reviewing = True
+            return
+        option = self._tpl_option(template_id)
+        if option is None:
+            return
+        self.tpl_selected = template_id
+        self.tpl_reviewing = True
+        self.tpl_error = ""
+        self._tpl_values = dict(option.prefill)
+        self._tpl_request_key = str(uuid4())
+        self._render_template_choice()
+
+    @rx.event
+    def choose_template(self, template_id: str) -> None:
+        self._choose(template_id)
+
+    @rx.event
+    def back_to_templates(self) -> None:
+        """«Atrás»: step 1 again; the choice and what was typed are kept."""
+        self.tpl_reviewing = False
+        self.tpl_error = ""
+
+    @rx.event
+    def ask_consent(self) -> None:
+        """«Pedirle que acepte»: picks the approved message that asks; the owner still
+        reads it and presses «Enviar» (N13)."""
+        if self.tpl_consent_id:
+            self._choose(self.tpl_consent_id)
+
+    @rx.event
+    def set_template_value(self, field_id: str, value: str) -> None:
+        if not isinstance(field_id, str) or not isinstance(value, str):
+            return
+        if field_id not in {f.id for f in self.tpl_fields}:
+            return
+        self._tpl_values = {**self._tpl_values, field_id: value[:1024]}
+        self._render_template_choice()
+
+    @rx.event(background=True)
+    async def send_template(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The owner's «Enviar» — the only path that queues an approved message."""
+        async with self:
+            if not self.can_send_template or not self.open_thread_id:
+                return
+            option = self._tpl_option(self.tpl_selected)
+            if option is None:
+                return
+            if not self._tpl_request_key:
+                self._tpl_request_key = str(uuid4())
+            request_key = self._tpl_request_key
+            values = dict(self._tpl_values)
+            template_id = option.template_id
+            self.tpl_sending = True
+            self.tpl_error = ""
+            thread_id, connection_id = self.open_thread_id, self._connection_id
+            tenant_id = await self._tenant()
+        thread, connection = _uuid(thread_id), _uuid(connection_id)
+        error = ""
+        try:
+            if tenant_id is None or thread is None or connection is None:
+                raise PermissionError
+            user = await self._acting_user(tenant_id)
+            if user is None:
+                error = _NO_USER
+            else:
+                await asyncio.to_thread(
+                    gateway().send_template,
+                    tenant_id,
+                    connection,
+                    thread,
+                    user,
+                    template_id,
+                    values,
+                    request_key,
+                )
+        except PermissionError:
+            error = _NO_SESSION
+        except ThreadNotFound:
+            error = _THREAD_GONE
+        except PromotionNeedsConsent:
+            error = PROMOTIONS_NEED_CONSENT
+        except NoPermission:
+            error = NO_PERMISSION_NOTICE
+        except TemplateNotAvailable:
+            error = _TEMPLATE_GONE
+        except MissingValues:
+            error = TEMPLATE_FILL_HINT
+        except ValueError:
+            error = _REJECTED
+        except _DB_ERRORS as exc:
+            # The key is kept: «Enviar» again retries the SAME intent and queues once.
+            logger.error("whatsapp chats template send failed: %s", type(exc).__name__)
+            error = _ACTION_FAILED
+        if error:
+            async with self:
+                self.tpl_sending = False
+                self.tpl_error = error
+            if error in (PROMOTIONS_NEED_CONSENT, _TEMPLATE_GONE, NO_PERMISSION_NOTICE):
+                # The list on screen was stale: re-read it, keeping the reason visible.
+                await self._read_templates(keep_error=True)
+            return
+        async with self:
+            self.tpl_sending = False
+            self.tpl_open = False
+            self._clear_template_choice()
             self._mark_paused(thread_id, True)
         yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
         yield WhatsAppChatsState.refresh
