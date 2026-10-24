@@ -27,7 +27,7 @@
 #                    server-deploy.sh waits for it to be healthy; enabling it needs the bigger
 #                    server first (docs/despliegue-hetzner.md).
 
-# Memory caps (m-24852229). The VPS has 3.8 GB shared with Pedidos and the edge proxy, and
+# Memory caps (m-24852229). The VPS has 3.8 GB shared with the edge proxy and other products, and
 # before these caps no service but render had one: a runaway process could push the kernel
 # into swap or make it OOM-kill Postgres. Each Python service gets mem_limit = memswap_limit
 # (no swap for the container) at ~2.5-3x what `docker stats` measured on 2026-10-24, so a

@@ -173,7 +173,7 @@ touch "$release"
 # every other sha, plus the `:latest` tags a Mac-side `just deploy` builds on the server.
 # `docker image rm` without -f refuses an image a container still uses, which is the guard
 # for anything running; nothing outside the qualify-* repositories is named here, so
-# Pedidos' and the edge proxy's images are never candidates. Volumes are never pruned.
+# other products' and the edge proxy's images are never candidates. Volumes are never pruned.
 echo "==> Pruning images (keeping the image sets of $KEEP_IMAGES releases)"
 keep=$(cd "$ROOT/releases" && ls -1t | { grep -v '^\.' || true; } | head -n "$KEEP_IMAGES")
 for image in qualify-app qualify-web qualify-deploy qualify-render; do
@@ -186,7 +186,7 @@ for image in qualify-app qualify-web qualify-deploy qualify-render; do
 done
 docker image prune -f >/dev/null || true
 # BuildKit cache. CI builds in GitHub, so this cache comes from builds ON the server:
-# `just deploy` (5.9 GB measured 2026-10-24) and Pedidos' local image. Entries unused for
+# `just deploy` (5.9 GB measured 2026-10-24) and other products' local images. Entries unused for
 # 24 h go; a build from the last day keeps its cache. Best effort, like everything here.
 docker builder prune -f --filter until=24h >/dev/null 2>&1 || true
 echo "==> Disk after pruning: $(df -h "$ROOT" | awk 'NR==2 {print $3 " used, " $4 " free (" $5 ")"}')"
