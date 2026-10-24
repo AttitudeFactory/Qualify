@@ -145,12 +145,12 @@ def test_a_pending_post_cannot_be_planned_nothing_incomplete_enters_the_calendar
     svc = _service(post)
     with pytest.raises(PostNotSchedulable) as excinfo:
         _schedule(svc, post)
-    assert excinfo.value.reason == "El POST no está aprobado."
+    assert excinfo.value.reason == "La publicación no está aprobada."
     assert svc._repo.list_for_post(tenant_id=TENANT, post_id=post.post_id) == []
 
 
 def test_an_approved_but_unpublishable_post_cannot_be_planned_and_says_why() -> None:
-    reason = "Falta el formato de algún archivo del POST."
+    reason = "Falta el formato de algún archivo de la publicación."
     post = _post(is_publishable=False, unpublishable_reason=reason)
     svc = _service(post)
     with pytest.raises(PostNotSchedulable) as excinfo:
@@ -160,7 +160,7 @@ def test_an_approved_but_unpublishable_post_cannot_be_planned_and_says_why() -> 
 
 
 def test_a_package_output_that_is_not_publishable_cannot_be_planned() -> None:
-    reason = "Los archivos del POST todavía no están listos para publicar (R2)."
+    reason = "Los archivos de la publicación todavía no están listos para publicar."
     post = _post(
         outputs=(
             PostOutput(port="reel", media_type="video", is_publishable=True),

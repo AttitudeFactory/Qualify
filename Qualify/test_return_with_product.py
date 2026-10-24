@@ -134,18 +134,18 @@ def test_the_copy() -> None:
 
 
 def test_one_way_out_while_returning() -> None:
-    """UX review: while the form is open and the owner came from a publication, the
-    form's «Cancelar» is replaced by the way back (one exit, N7); the hint shows only
-    while the form is open, and with it closed the way back names its destination."""
+    """UX review: while the form is open and the owner came from a publication, its
+    first step offers the way back without adding (one exit, N7) and the hint says
+    saving takes them back; with the form closed the way back names its destination."""
     page = (Path(__file__).parent / "catalog_page.py").read_text(encoding="utf-8")
-    hint = page.split("def _return_hint", 1)[1].split("\ndef ", 1)[0]
-    assert "CatalogState.form_open" in hint
-    assert "RETURN_HINT" in hint and "RETURN_LABEL" in hint
-    assert "RETURN_WITHOUT_LABEL" not in hint
-    form = page.split("def _new_product_form", 1)[1].split("\ndef ", 1)[0]
-    assert "CatalogState.returning" in form and "RETURN_WITHOUT_LABEL" in form
+    drawer = page.split("def _new_product_drawer", 1)[1].split("\ndef ", 1)[0]
+    assert "CatalogState.returning" in drawer and "RETURN_HINT" in drawer
+    footer = page.split("def _new_product_footer", 1)[1].split("\ndef ", 1)[0]
+    assert "RETURN_WITHOUT_LABEL" in footer and "RETURN_LABEL" in footer
+    index = page.split("def catalog_index", 1)[1]
+    assert "CatalogState.returning & ~CatalogState.form_open" in index
     editor = page.split("def _create_with_product_button", 1)[1].split("\ndef ", 1)[0]
-    assert 'size="2"' not in editor
+    assert "RETURN_LABEL" in editor and 'size="2"' not in editor
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +176,7 @@ def _catalog_state(monkeypatch: pytest.MonkeyPatch, query: str) -> CatalogState:
     monkeypatch.setattr(
         catalog_state_module, "list_products", lambda tenant_id, brand_id: (_product(_NEW),)
     )
+    monkeypatch.setattr(catalog_state_module, "business_currency", lambda tenant_id: "COP")
     state = CatalogState()
     state.router = _router(f"/catalog{query}")
     return state
@@ -186,11 +187,13 @@ async def test_from_crear_the_form_opens_and_listo_goes_back(
 ) -> None:
     state = _catalog_state(monkeypatch, "?nuevo=1&volver=%2Fcreate")
 
-    await CatalogState.load_catalog.fn(state)
+    events = [event async for event in CatalogState.load_catalog.fn(state)]
 
     assert state.form_open is True and state.returning is True
     assert state.return_to == "/create"
-    state.created_id = _NEW
+    # `?nuevo=1` comes off the address (same entry), so «atrás» never reopens the form
+    assert len(events) == 1
+    state.created_product_id = _NEW
     assert state.created_href == f"/create?producto={_NEW}"
     state.selected_id = _NEW
     assert state.selected_create_href == f"/create?producto={_NEW}"
@@ -201,10 +204,24 @@ async def test_from_variaciones_listo_goes_back_to_variaciones(
 ) -> None:
     state = _catalog_state(monkeypatch, "?nuevo=1&volver=%2Fcreate%3Fmodo%3Dvariaciones")
 
-    await CatalogState.load_catalog.fn(state)
+    events = [event async for event in CatalogState.load_catalog.fn(state)]
 
-    state.created_id = _NEW
+    assert len(events) == 1
+    state.created_product_id = _NEW
     assert state.created_href == f"/create?modo=variaciones&producto={_NEW}"
+
+
+async def test_opening_an_editor_keeps_the_way_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Subirle una foto» moves to `/catalog?producto=<id>` (N5): the way back stays, and
+    the editor's button goes back to the publication with the product."""
+    state = _catalog_state(monkeypatch, f"?producto={_NEW}")
+    state.return_to = "/create"
+
+    events = [event async for event in CatalogState.load_catalog.fn(state)]
+
+    assert events == [] and state.returning is True
+    assert state.selected_id == _NEW
+    assert state.selected_create_href == f"/create?producto={_NEW}"
 
 
 @pytest.mark.parametrize(
@@ -217,11 +234,12 @@ async def test_from_the_menu_or_a_foreign_route_there_is_no_way_back(
     state = _catalog_state(monkeypatch, query)
     state.return_to = "/create"  # left over from an earlier round trip
 
-    await CatalogState.load_catalog.fn(state)
+    events = [event async for event in CatalogState.load_catalog.fn(state)]
 
     assert state.return_to == "" and state.returning is False
     assert state.form_open is False
-    state.created_id = _NEW
+    assert events == []
+    state.created_product_id = _NEW
     assert state.created_href == f"/create?producto={_NEW}"  # PRODUCTOS-1, unchanged
 
 

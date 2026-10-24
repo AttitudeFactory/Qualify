@@ -22,6 +22,8 @@ from .creative_vm import (
     AI_LABEL_HINT,
     HARD_RULES_HINT,
     PURGED_TEXT,
+    VIDEO_DRAFT,
+    VIDEO_FINAL,
     CopyVariantVM,
     GapVM,
     MediaVM,
@@ -32,11 +34,13 @@ from .creative_vm import (
 from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
+from .planner_back import WeekBackState, back_to_week_link
 from .planner_vm import (
     CARD_ACTION_PLANNER,
     CARD_ACTION_REVIEW,
     CARD_ACTION_SCHEDULE,
     CARD_ACTION_VIEW,
+    CARD_ACTION_WAIT,
     GALLERY_FILTER_ALL,
     GALLERY_STATE_FILTERS,
 )
@@ -59,6 +63,7 @@ from .ui import (
     loading_spinner,
     page_body,
     page_header,
+    signal_pill,
     skeleton_rows,
     tone_badge,
 )
@@ -865,6 +870,7 @@ _CARD_STATE_ICON = {
     "used": "history",
     "discarded": "circle-x",
     "drafting": "loader",
+    "preparing": "loader",
 }
 # The glyph on each card's one main button, by what it does (`planner_vm.CARD_ACTION_*`).
 _CARD_ACTION_ICON = {
@@ -872,6 +878,7 @@ _CARD_ACTION_ICON = {
     CARD_ACTION_SCHEDULE: "calendar-plus",
     CARD_ACTION_VIEW: "eye",
     CARD_ACTION_PLANNER: "calendar-days",
+    CARD_ACTION_WAIT: "loader",
 }
 
 
@@ -892,7 +899,8 @@ def _gallery_state_badge(post) -> rx.Component:
 def _card_main_button(post) -> rx.Component:
     """The card's ONE main button (m-24842981): «Revisar» while it waits for you,
     «Programar» once it is ready, «Ver» when there is nothing left to do. Solid when it
-    asks something of the owner, soft when it only shows."""
+    asks something of the owner, soft when it only shows; disabled, saying «Preparando
+    el video final», while its final is being made (review 2026-10-24, finding 8)."""
 
     def icon() -> rx.Component:
         return rx.match(
@@ -922,10 +930,9 @@ def _card_main_button(post) -> rx.Component:
                 width="100%",
                 on_click=GalleryState.assign(post.post_id),
             ),
-            rx.link(
-                rx.cond(
-                    post.card_action == CARD_ACTION_REVIEW,
-                    rx.button(icon(), post.card_action_label, size="2", width="100%"),
+            rx.cond(
+                post.card_action == CARD_ACTION_WAIT,
+                rx.vstack(
                     rx.button(
                         icon(),
                         post.card_action_label,
@@ -933,10 +940,35 @@ def _card_main_button(post) -> rx.Component:
                         color_scheme="gray",
                         size="2",
                         width="100%",
+                        disabled=True,
                     ),
+                    # «Por aprobar» does not refresh on its own: say how long it takes
+                    # and that the owner can leave (UX review, PR #274).
+                    rx.text(
+                        "Tarda unos minutos. Puedes salir: cuando esté lista aquí podrás "
+                        "elegir el día y la hora.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    width="100%",
                 ),
-                href=post.detail_href,
-                width="100%",
+                rx.link(
+                    rx.cond(
+                        post.card_action == CARD_ACTION_REVIEW,
+                        rx.button(icon(), post.card_action_label, size="2", width="100%"),
+                        rx.button(
+                            icon(),
+                            post.card_action_label,
+                            variant="soft",
+                            color_scheme="gray",
+                            size="2",
+                            width="100%",
+                        ),
+                    ),
+                    href=post.detail_href,
+                    width="100%",
+                ),
             ),
         ),
     )
@@ -952,10 +984,12 @@ def _gallery_card(post) -> rx.Component:
     can_discard = post.can_review | ((post.gallery_state == "schedulable") & ~post.in_calendar)
     actions = rx.box(
         _card_main_button(post),
-        # On a ready card the main button opens Tu semana, so opening the publication
-        # gets its own quiet link — it never depends on knowing the picture is tappable.
+        # On a ready card the main button opens Tu semana, and on a «preparing» card it
+        # is disabled, so opening the publication gets its own quiet link — it never
+        # depends on knowing the picture is tappable (the picture is hidden from
+        # keyboard and screen readers).
         rx.cond(
-            post.card_action == CARD_ACTION_SCHEDULE,
+            (post.card_action == CARD_ACTION_SCHEDULE) | (post.card_action == CARD_ACTION_WAIT),
             rx.link(
                 rx.button(
                     rx.icon("eye", size=15),
@@ -1410,6 +1444,44 @@ def _retention_notice() -> rx.Component:
             align="center",
             spacing="3",
             width="100%",
+        ),
+    )
+
+
+def _video_draft_notice() -> rx.Component:
+    """m-24820142: a Seedance 2.5 piece's video is a 480p draft until its approval makes
+    the 1080p final — the badge says which, the note what happens, and a failed final
+    offers to try again."""
+    video = CreativeState.draft.video_draft
+
+    def toned(tone: str) -> rx.Component:
+        # the pill and the callout take their tone as a plain string
+        return rx.hstack(
+            signal_pill(video.badge, tone),
+            rx.box(callout(video.note, tone), flex="1"),
+            align="center",
+            spacing="3",
+            flex="1",
+        )
+
+    return rx.cond(
+        (video.state != "") & (video.state != VIDEO_FINAL),
+        rx.hstack(
+            rx.match(video.tone, ("error", toned("error")), ("warn", toned("warn")), toned("info")),
+            rx.cond(
+                video.can_retry,
+                rx.button(
+                    rx.icon("refresh-cw", size=15),
+                    "Intentar de nuevo",
+                    variant="soft",
+                    size="2",
+                    on_click=CreativeState.retry_final_render,
+                ),
+            ),
+            align="center",
+            spacing="3",
+            width="100%",
+            wrap="wrap",
         ),
     )
 
@@ -2090,8 +2162,8 @@ def _decision_card(
     *,
     tone: str,
     icon: str,
-    title: str,
-    text: str,
+    title: str | rx.Var,
+    text: str | rx.Var,
     button: rx.Component,
 ) -> rx.Component:
     """One way to decide on the draft: what it does, in a sentence, right above the
@@ -2186,6 +2258,7 @@ APPROVED_BODY = "Elige el día y la hora en que sale."
 #: (`approved_note`, the evaluator's words) follows, and no way to a dead end is offered.
 APPROVED_NOT_READY_BODY = "Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_SCHEDULE = "Elegir día y hora"
+APPROVED_PUBLISH_NOW = "Publicar ahora"
 APPROVED_CREATE_ANOTHER = "Crear otra publicación"
 
 # N12: every tap target at least 44 px tall on a phone.
@@ -2195,8 +2268,9 @@ _TAP_MIN_HEIGHT = "2.75rem"
 def _approved_next() -> rx.Component:
     """After approving (m-24842978, N3): say plainly that it is not out yet and take the
     owner straight to choosing when it goes out — Tu semana opens on this publication.
-    If it cannot go out yet, say what is missing instead of offering that way."""
-    ready = CreativeState.approved_ready
+    If it cannot go out yet, say what is missing instead of offering that way — its
+    1080p final still being made or failed included (m-24820142)."""
+    ready = CreativeState.approved_can_schedule
     return _card(
         rx.hstack(
             rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
@@ -2211,7 +2285,7 @@ def _approved_next() -> rx.Component:
             align="center",
             spacing="2",
         ),
-        rx.cond(~ready, readiness_note(CreativeState.approved_note)),
+        rx.cond(~ready, readiness_note(CreativeState.approved_hold_note)),
         rx.flex(
             rx.cond(
                 ready,
@@ -2221,6 +2295,19 @@ def _approved_next() -> rx.Component:
                     size="3",
                     min_height=_TAP_MIN_HEIGHT,
                     on_click=CreativeState.go_schedule,
+                ),
+            ),
+            # m-24842985: the soft way to «Ahora» — Tu semana opens with it chosen and
+            # still asks for «Programar».
+            rx.cond(
+                ready,
+                rx.button(
+                    rx.icon("zap", size=16),
+                    APPROVED_PUBLISH_NOW,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN_HEIGHT,
+                    on_click=CreativeState.go_publish_now,
                 ),
             ),
             rx.button(
@@ -2307,11 +2394,17 @@ def _decision_bar_or_nothing() -> rx.Component:
                 _decision_card(
                     tone="green",
                     icon="circle-check",
-                    title="Aprobar",
-                    text="Te quedas con esta versión. Después eliges el día y la hora en que sale.",
+                    title=CreativeState.approve_label,
+                    text=rx.cond(
+                        draft.video_draft.state == VIDEO_DRAFT,
+                        "Te quedas con esta versión y preparamos el video en alta "
+                        "calidad. Tarda unos minutos. Cuando esté listo eliges el día y la "
+                        "hora en que sale.",
+                        "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
+                    ),
                     button=rx.button(
                         rx.icon("circle-check", size=15),
-                        "Aprobar",
+                        CreativeState.approve_label,
                         size="2",
                         width="100%",
                         min_height=_TAP_MIN_HEIGHT,
@@ -2508,14 +2601,20 @@ def draft_detail_index() -> rx.Component:
                     CreativeState.draft,
                     rx.vstack(
                         rx.hstack(
-                            rx.link(
-                                rx.button(
-                                    rx.icon("arrow-left", size=14),
-                                    "Por aprobar",
-                                    variant="ghost",
-                                    size="1",
+                            # m-24842987 (N7): opened from Tu semana, the way back
+                            # says «‹ Tu semana» and keeps that week and view.
+                            rx.cond(
+                                WeekBackState.href != "",
+                                back_to_week_link(),
+                                rx.link(
+                                    rx.button(
+                                        rx.icon("arrow-left", size=14),
+                                        "Por aprobar",
+                                        variant="ghost",
+                                        size="1",
+                                    ),
+                                    href="/drafts",
                                 ),
-                                href="/drafts",
                             ),
                             rx.spacer(),
                             status_badge(
@@ -2528,6 +2627,7 @@ def draft_detail_index() -> rx.Component:
                         ),
                         _campaign_field(),
                         _retention_notice(),
+                        _video_draft_notice(),
                         _history_line(),
                         rx.foreach(
                             CreativeState.draft.warnings,

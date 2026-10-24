@@ -519,7 +519,7 @@ def test_phased_run_ranks_by_influence_and_never_repeats_an_account(tmp_path: Pa
 
     # national: country evidence required (Bogotá in a caption yes, México no), and the
     # Cúcuta account is reserved for the local phase even though it is bigger
-    assert national.title == "Referentes en Colombia"
+    assert national.title == "Negocios parecidos al tuyo en Colombia"
     # `comida.col` did not fit the sector's eight slots, so it is national's now
     assert handles(national) == ["ig.bogota", "comida.col", "bogota.sabor"]
     # the mirror lookups of this phase's TikTok accounts all 404 → no credit, no error
@@ -529,7 +529,7 @@ def test_phased_run_ranks_by_influence_and_never_repeats_an_account(tmp_path: Pa
 
     # local: the keyword 404 is an empty result, not an error; the hidden-follower
     # TikTok accounts were enriched, then ranked with the Instagram one
-    assert local.title == "Referentes en Cúcuta"
+    assert local.title == "Negocios parecidos al tuyo en Cúcuta"
     assert local.errors == []
     assert handles(local) == [
         "sabor.cucuta",
@@ -1150,3 +1150,29 @@ def test_reach_far_above_the_phase_with_little_interaction_is_flagged() -> None:
     result = cd.PhaseResult(key="sector", title="s", accounts=[*peers, pushed])
     cards = cd.phase_to_dict(result)["accounts"]
     assert [c["signal"] != "" for c in cards] == [False] * 4 + [True]
+
+
+def test_place_phase_titles_name_similar_businesses() -> None:
+    """NAV-11 (m-24849129): the owner reads «Negocios parecidos al tuyo …», never
+    «Referentes en …», for the country and city phases."""
+    seed = cd.DiscoverySeed("x", ("food_drink",), (), "CO", "Cúcuta")
+    bare = cd.DiscoverySeed("x", ("food_drink",))
+    assert cd.phase_title("national", seed) == "Negocios parecidos al tuyo en Colombia"
+    assert cd.phase_title("local", seed) == "Negocios parecidos al tuyo en Cúcuta"
+    assert cd.phase_title("national", bare) == "Negocios parecidos al tuyo en tu país"
+    assert cd.phase_title("local", bare) == "Negocios parecidos al tuyo cerca de ti"
+
+
+@pytest.mark.parametrize(
+    ("key", "stored", "shown"),
+    [
+        ("national", "Referentes en Colombia", "Negocios parecidos al tuyo en Colombia"),
+        ("national", "Referentes nacionales", "Negocios parecidos al tuyo en tu país"),
+        ("local", "Referentes en Cúcuta", "Negocios parecidos al tuyo en Cúcuta"),
+        ("local", "Referentes locales", "Negocios parecidos al tuyo cerca de ti"),
+        ("local", "Negocios parecidos al tuyo en Cúcuta", "Negocios parecidos al tuyo en Cúcuta"),
+        ("sector", "Referentes del sector", "Referentes del sector"),
+    ],
+)
+def test_a_saved_search_shows_its_title_in_todays_words(key: str, stored: str, shown: str) -> None:
+    assert cd.owner_phase_title(key, stored) == shown

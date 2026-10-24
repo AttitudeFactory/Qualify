@@ -132,7 +132,7 @@ def test_with_no_quota_wired_the_screen_says_nothing_about_creations() -> None:
 def test_other_kinds_keep_every_length() -> None:
     state = CreativeState()
     state.choose_category("script")
-    assert state.duration_choices == ["15", "30", "45", "60"]
+    assert state.duration_choices == ["5", "10", "15", "30", "45", "60"]
 
 
 def test_variations_say_what_the_kept_ideas_use_all_or_nothing() -> None:

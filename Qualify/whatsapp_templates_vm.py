@@ -5,14 +5,17 @@
 (`test_whatsapp_templates_vm_has_no_credential_fields` pins it). Dates are pre-formatted
 here, server-side.
 
-**Named variables on screen, positional on the wire.** The operator writes the body with
-named variables (`Hola {{nombre}}, tu pedido {{pedido}} está listo`) because a name says
-what goes there. `HttpWhatsAppClient.create_template` sends no `parameter_format`, so Meta
-applies its default — POSITIONAL (`{{1}}`, `{{2}}`) — and would reject a named body. So
-`build_components` numbers the names in order of first appearance (a repeated name reuses
-its number) and sends `example.body_text` in that order: what Meta reviews is exactly
-what the preview showed. Templates authored in WhatsApp Manager with named parameters
-come back through «Sincronizar con Meta» untouched; `send_variables` reads both styles.
+**The owner never writes `{{…}}` (m-24842997).** The guided form has four steps (what to
+announce → the message → buttons → «Así lo verá tu cliente»). The only variable it offers
+is the customer's name: «Agregar el nombre del cliente» inserts `NAME_TOKEN` («[nombre]»)
+into the text, and `build_components` turns it into `{{1}}` with its example filled in
+(`NAME_EXAMPLE`), so Meta always receives the example it requires and the owner never
+types one. `HttpWhatsAppClient.create_template` sends no `parameter_format`, so Meta reads
+POSITIONAL parameters; `{{1}}` is also what the chat's approved-message drawer prefills
+with the person's first name (`qualify_api.whatsapp.template_reply.prefill`). Meta's
+internal name is chosen from the owner's words (`template_name`), never typed with an
+underscore. Templates authored in WhatsApp Manager with named parameters come back
+through «Ver si ya las aprobaron» untouched; `send_variables` reads both styles.
 
 Meta's rules surfaced here (template-management, read 2026-10-14): name = lowercase
 letters, digits and `_`; header ≤ 60 chars, body ≤ 1024, footer ≤ 60; a body cannot start
@@ -27,7 +30,7 @@ Pure module: no Reflex, network or database import (plain unit tests).
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -46,13 +49,13 @@ CATEGORY_AUTHENTICATION = "authentication"
 CATEGORIES: tuple[tuple[str, str, str], ...] = (
     (
         CATEGORY_MARKETING,
-        "Marketing",
-        "Promociones, novedades y ofertas. Solo a contactos con opt-in; Meta limita "
-        "cuántas recibe cada persona.",
+        "Promociones",
+        "Promociones, novedades y ofertas. Solo a contactos que aceptaron recibir tus "
+        "mensajes; Meta limita cuántas recibe cada persona.",
     ),
     (
         CATEGORY_UTILITY,
-        "Utilidad",
+        "Avisos de pedidos",
         "Avisos sobre algo que el cliente ya pidió: su pedido, su reserva, su pago.",
     ),
     (
@@ -97,11 +100,12 @@ BUTTON_KIND_KEYS: frozenset[str] = frozenset(key for key, _ in BUTTON_KINDS)
 
 REVIEW_NOTICE = (
     "Meta revisa cada plantilla antes de que puedas usarla; la revisión puede tardar "
-    "hasta 24 h. El estado se actualiza solo, o con «Sincronizar con Meta»."
+    "hasta 24 h. El estado se actualiza solo, o con «Ver si ya las aprobaron»."
 )
 AUTHENTICATION_NOTICE = (
     "Las plantillas de autenticación usan el formato fijo de Meta (un código de un solo "
-    "uso). Créalas en WhatsApp Manager y luego pulsa «Sincronizar con Meta»."
+    "uso). Créalas desde tu cuenta de WhatsApp Business en Meta y luego pulsa «Ver si ya "
+    "las aprobaron»."
 )
 
 # --------------------------------------------------------------------------------------
@@ -135,7 +139,7 @@ _QUALITY: dict[str, tuple[str, str]] = {
 # `rejected_reason` enum (template-management «Rejection reasons»).
 _REJECTION: dict[str, str] = {
     "INVALID_FORMAT": "Formato inválido",
-    "PROMOTIONAL": "Contenido promocional en una categoría que no es Marketing",
+    "PROMOTIONAL": "Contenido promocional en un tipo que no es Promociones",
     "INCORRECT_CATEGORY": "La categoría no corresponde al contenido",
     "TAG_CONTENT_MISMATCH": "La categoría no corresponde al contenido",
     "ABUSIVE_CONTENT": "Contenido que infringe las políticas de WhatsApp",
@@ -360,7 +364,9 @@ class TemplateVM:
     can_delete: bool
     sendable: bool  # APPROVED and fillable by the campaign wizard
     wizard_block: str  # why not (for an approved template the wizard cannot fill)
-    option_label: str  # «promo_octubre · Español» — the campaign select item
+    option_label: str  # «Promo octubre · Español» — the campaign select item
+    display_name: str = ""  # «Promo octubre»: the internal name, readable (m-24842997)
+    body_preview: str = ""  # the body with Meta's examples in place of `{{…}}`
 
 
 def build_template_vm(
@@ -403,21 +409,91 @@ def build_template_vm(
         can_delete=status.upper() not in _GONE_STATUSES,
         sendable=status.upper() == "APPROVED" and not block,
         wizard_block=block,
-        option_label=f"{name} · {language_label(language)}",
+        option_label=f"{display_name(name)} · {language_label(language)}",
+        display_name=display_name(name),
+        body_preview=readable_body(components),
     )
 
 
 # --------------------------------------------------------------------------------------
-# The guided form
+# The guided form (m-24842997): ¿qué avisar? → mensaje → botones → así lo verá tu cliente
 # --------------------------------------------------------------------------------------
 
+#: What the owner sees (and the «Agregar el nombre del cliente» button inserts) where the
+#: customer's name goes. Never `{{…}}`: `build_components` turns it into `{{1}}`.
+NAME_TOKEN = "[nombre]"
+#: The example Meta requires for that variable — filled in automatically, never typed.
+NAME_EXAMPLE = "Ana"
+ADD_NAME_LABEL = "Agregar el nombre del cliente"
+
+# (key, label, one-line explanation): what the guided form offers. Authentication
+# templates have Meta's fixed format and are not built here (see the module docstring).
+GUIDED_CATEGORIES: tuple[tuple[str, str, str], ...] = (
+    (
+        CATEGORY_MARKETING,
+        "Una promoción",
+        "Ofertas, novedades o descuentos. Solo les llega a los clientes que aceptaron "
+        "recibir tus promociones.",
+    ),
+    (
+        CATEGORY_UTILITY,
+        "Un aviso de pedido",
+        "Algo sobre lo que el cliente ya pidió: su pedido, su reserva o su pago.",
+    ),
+)
+GUIDED_CATEGORY_KEYS: frozenset[str] = frozenset(key for key, _l, _h in GUIDED_CATEGORIES)
+
+STEPS: tuple[str, ...] = ("Qué avisar", "Mensaje", "Botones", "Revisar")
+STEP_KIND, STEP_MESSAGE, STEP_BUTTONS, STEP_REVIEW = range(4)
+STEP_TITLES: tuple[str, ...] = (
+    "¿Qué quieres avisar?",
+    "Escribe el mensaje",
+    "Botones (opcional)",
+    "Así lo verá tu cliente",
+)
+
+FORM_TITLE = "Crear un mensaje"
+SUBMIT_LABEL = "Enviar a aprobación"
+MAX_LABEL_CHARS = 60
+#: N3 — the exact notice once the message reached Meta, and the next step under it.
+SUBMITTED_MESSAGE = "Te avisamos cuando esté aprobado (puede tardar hasta 24 h)."
+NEXT_STEP_CONTACTS = "Ver clientes que aceptaron"
+#: N3 for «Un aviso de pedido»: the real next job is to use it from that client's chat.
+NEXT_STEP_CHATS = "Ir a los chats"
+DONE_HINT_PROMO = (
+    "Mientras tanto, revisa quiénes aceptaron recibir tus promociones: a ellos les "
+    "podrás enviar este mensaje."
+)
+DONE_HINT_UTILITY = "Cuando esté aprobado, lo podrás enviar desde el chat de ese cliente."
+
+STEP_KIND_HINT = "Elige uno. Así te lo aprueban a la primera."
+#: The drawer's own review line (one name for the thing: «mensaje», N1). `REVIEW_NOTICE`
+#: stays for the tab until WHATSAPP-7 renames it.
+FORM_REVIEW_NOTICE = "Meta revisa el mensaje antes de que puedas enviarlo. Puede tardar hasta 24 h."
+#: Under «Agregar el nombre del cliente», by type: a promotion sends one text to all.
+NAME_HINT_PROMO = (
+    "Ojo: en una promoción todos reciben el mismo texto. Si pones [nombre], escribes tú "
+    "una sola palabra al enviarla (por ejemplo, vecino)."
+)
+NAME_HINT_UTILITY = (
+    "Al enviarlo desde un chat, ponemos el nombre de esa persona. En la revisión de Meta "
+    "se muestra como " + NAME_EXAMPLE + "."
+)
+
+#: N6: closing the drawer keeps the answers; reopening resumes where the owner left.
+RESUME_NOTICE = "Seguimos donde lo dejaste."
+RESTART_LABEL = "Empezar de nuevo"
+
+_MAX_AUTO_NAME_CHARS = 40
 _NAME_CHARS = re.compile(r"[a-z0-9_]+")
-_VARIABLE = re.compile(r"\{\{\s*([a-z_][a-z0-9_]*)\s*\}\}")
+_BRACES = re.compile(r"[{}]")
 
 
 @dataclass(frozen=True)
 class TemplateForm:
-    """What the «Nueva plantilla» form holds — plain strings, as typed."""
+    """What the guided form holds — plain strings, as typed. `body` is in the owner's
+    words, with `NAME_TOKEN` where the customer's name goes; `name` is Meta's internal
+    name, chosen by the state (`template_name`), never typed with an underscore."""
 
     category: str
     name: str
@@ -429,7 +505,6 @@ class TemplateForm:
     quick_replies: tuple[str, str, str]
     url_text: str
     url: str
-    examples: Mapping[str, str]
 
 
 EMPTY_FORM = TemplateForm(
@@ -443,74 +518,110 @@ EMPTY_FORM = TemplateForm(
     quick_replies=("", "", ""),
     url_text="",
     url="",
-    examples={},
 )
 
 
-def body_variables(body: str) -> list[str]:
-    """Named variables in order of first appearance (`{{nombre}}`, case-sensitive)."""
-    names: list[str] = []
-    for match in _VARIABLE.finditer(body):
-        if match.group(1) not in names:
-            names.append(match.group(1))
-    return names
+def uses_name(body: str) -> bool:
+    return NAME_TOKEN in body
+
+
+def insert_name(body: str) -> str:
+    """«Agregar el nombre del cliente»: an empty message starts with a greeting (a body
+    cannot start with a variable); otherwise the name goes at the end, ready to keep
+    writing after it."""
+    if not body.strip():
+        return f"Hola {NAME_TOKEN}, "
+    return f"{body.rstrip()} {NAME_TOKEN} "
 
 
 def suggest_name(text: str) -> str:
-    """«Promo Octubre» → «promo_octubre»: what the name field becomes as it is typed. Only a
-    LEADING «_» is dropped: a trailing one is the space just typed, and stripping it would
-    glue the next word on («promo» + «n» → «promon»)."""
+    """«Promo Octubre» → «promo_octubre»: Meta's alphabet (lowercase, digits, «_»)."""
     folded = text.lower().replace("ñ", "n")
     for accented, plain in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         folded = folded.replace(accented, plain)
     return re.sub(r"[^a-z0-9_]+", "_", folded).lstrip("_")[:MAX_NAME_CHARS]
 
 
+def auto_label(category: str, body: str) -> str:
+    """What the owner will recognise the message by, until they write their own name in
+    «Más opciones»: the kind plus the first words of the message (the name left out)."""
+    kind = "Aviso" if category == CATEGORY_UTILITY else "Promoción"
+    words = [w for w in body.replace(NAME_TOKEN, " ").split() if any(c.isalnum() for c in w)]
+    return " ".join([kind, *words[:4]])
+
+
+def template_name(label: str, category: str, body: str, taken: Collection[str]) -> str:
+    """Meta's internal name from the owner's words: folded to Meta's alphabet, short, and
+    never one already used on this number (Meta keeps a deleted name for 30 days, and
+    the mirror still lists it) — «_2», «_3»… when it is."""
+    base = suggest_name(label.strip() or auto_label(category, body))
+    base = base[:_MAX_AUTO_NAME_CHARS].strip("_") or (
+        "aviso" if category == CATEGORY_UTILITY else "promocion"
+    )
+    if base not in taken:
+        return base
+    suffix = 2
+    while f"{base}_{suffix}" in taken:
+        suffix += 1
+    return f"{base}_{suffix}"
+
+
+def display_name(name: str) -> str:
+    """`promo_octubre` → «Promo octubre»: Meta's internal name, readable."""
+    words = " ".join(part for part in (name or "").replace("-", "_").split("_") if part)
+    return words[:1].upper() + words[1:] if words else "Mensaje sin nombre"
+
+
 def _quick_replies(form: TemplateForm) -> list[str]:
     return [q.strip() for q in form.quick_replies if q.strip()]
 
 
-def validate_template_form(form: TemplateForm) -> str:
-    """Spanish copy for the first thing Meta (or the client) would refuse; "" = sendable."""
-    if form.category not in CATEGORY_KEYS:
-        return "Elige una categoría."
+def _meta_body(body: str) -> str:
+    return body.strip().replace(NAME_TOKEN, "{{1}}")
+
+
+def validate_kind(form: TemplateForm) -> str:
     if form.category == CATEGORY_AUTHENTICATION:
         return AUTHENTICATION_NOTICE
-    name = form.name.strip()
-    if not name:
-        return "Escribe un nombre para la plantilla."
-    if len(name) > MAX_NAME_CHARS or not _NAME_CHARS.fullmatch(name):
-        return "El nombre solo admite minúsculas, números y guion bajo (ej.: promo_octubre)."
-    if form.language not in LANGUAGE_KEYS:
-        return "Elige el idioma de la plantilla."
-    header = form.header.strip()
-    if len(header) > MAX_HEADER_CHARS:
-        return f"El encabezado admite hasta {MAX_HEADER_CHARS} caracteres."
-    if "{{" in header or "}}" in header:
-        return "El encabezado no admite variables en este formulario."
+    if form.category not in GUIDED_CATEGORY_KEYS:
+        return "Elige qué quieres avisar."
+    return ""
+
+
+def validate_message(form: TemplateForm) -> str:
+    """Spanish copy for the first thing Meta would refuse in the message step."""
     body = form.body.strip()
     if not body:
         return "Escribe el mensaje."
-    if len(body) > MAX_BODY_CHARS:
-        return f"El mensaje admite hasta {MAX_BODY_CHARS} caracteres."
-    stripped = _VARIABLE.sub("", body)
-    if "{{" in stripped or "}}" in stripped:
+    if _BRACES.search(body):
         return (
-            "Revisa las variables: escríbelas entre dobles llaves, en minúsculas y sin "
-            "espacios, como {{nombre}}."
+            "Quita las llaves del mensaje. Para poner el nombre del cliente, toca "
+            f"«{ADD_NAME_LABEL}»."
         )
-    if _VARIABLE.match(body) or re.search(r"\{\{\s*[a-z_][a-z0-9_]*\s*\}\}$", body):
-        return "Meta no acepta un mensaje que empiece o termine con una variable."
-    for variable in body_variables(body):
-        if not form.examples.get(variable, "").strip():
-            return f"Escribe un ejemplo para {{{{{variable}}}}}: Meta lo exige para revisarla."
+    if len(_meta_body(body)) > MAX_BODY_CHARS:
+        return f"El mensaje admite hasta {MAX_BODY_CHARS} caracteres."
+    if body.startswith(NAME_TOKEN):
+        return "Empieza con un saludo antes del nombre del cliente, por ejemplo «Hola»."
+    if body.endswith(NAME_TOKEN):
+        return "Escribe algo después del nombre del cliente: el mensaje no puede terminar con él."
+    header = form.header.strip()
+    if len(header) > MAX_HEADER_CHARS:
+        return f"El título admite hasta {MAX_HEADER_CHARS} caracteres."
+    if _BRACES.search(header) or NAME_TOKEN in header:
+        return "El título no puede llevar el nombre del cliente ni llaves."
     footer = form.footer.strip()
     if len(footer) > MAX_FOOTER_CHARS:
-        return f"El pie admite hasta {MAX_FOOTER_CHARS} caracteres."
-    if "{{" in footer:
-        return "El pie no admite variables."
+        return f"El texto pequeño del final admite hasta {MAX_FOOTER_CHARS} caracteres."
+    if _BRACES.search(footer) or NAME_TOKEN in footer:
+        return "El texto pequeño del final no puede llevar el nombre del cliente ni llaves."
+    if form.language not in LANGUAGE_KEYS:
+        return "Elige el idioma del mensaje en «Más opciones»."
+    return ""
+
+
+def validate_buttons(form: TemplateForm) -> str:
     if form.button_kind not in BUTTON_KIND_KEYS:
-        return "Elige el tipo de botones."
+        return "Elige si el mensaje lleva botones."
     if form.button_kind == BUTTONS_QUICK:
         replies = _quick_replies(form)
         if not replies:
@@ -527,23 +638,45 @@ def validate_template_form(form: TemplateForm) -> str:
             return f"El texto del botón admite hasta {MAX_BUTTON_CHARS} caracteres."
         if not url.startswith("https://") or len(url) > MAX_URL_CHARS or " " in url:
             return "El enlace del botón debe empezar por https:// y no llevar espacios."
-        if "{{" in url:
-            return "El enlace del botón no admite variables en este formulario."
+        if _BRACES.search(url):
+            return "El enlace del botón no puede llevar llaves."
+    return ""
+
+
+def validate_step(form: TemplateForm, step: int) -> str:
+    """What still blocks «Siguiente» on `step` ("" = it can move on)."""
+    if step == STEP_KIND:
+        return validate_kind(form)
+    if step == STEP_MESSAGE:
+        return validate_message(form)
+    if step == STEP_BUTTONS:
+        return validate_buttons(form)
+    return validate_template_form(form)
+
+
+def validate_template_form(form: TemplateForm) -> str:
+    """Spanish copy for the first thing Meta (or the client) would refuse; "" = sendable."""
+    for check in (validate_kind, validate_message, validate_buttons):
+        problem = check(form)
+        if problem:
+            return problem
+    name = form.name.strip()
+    if not name or len(name) > MAX_NAME_CHARS or not _NAME_CHARS.fullmatch(name):
+        # The state chooses the name; a bad one is our bug, said in the owner's words.
+        return "Escribe un nombre para reconocer el mensaje en «Más opciones»."
     return ""
 
 
 def build_components(form: TemplateForm) -> list[dict[str, Any]]:
-    """The `components` Meta reviews, POSITIONAL (see the module docstring). Assumes
-    `validate_template_form(form) == ""`."""
-    names = body_variables(form.body.strip())
-    numbers = {name: str(index + 1) for index, name in enumerate(names)}
-    body_text = _VARIABLE.sub(lambda m: f"{{{{{numbers[m.group(1)]}}}}}", form.body.strip())
+    """The `components` Meta reviews, POSITIONAL (see the module docstring): the name is
+    `{{1}}` and its example is filled in here, so Meta always gets the field it requires.
+    Assumes `validate_template_form(form) == ""`."""
     components: list[dict[str, Any]] = []
     if form.header.strip():
         components.append({"type": "HEADER", "format": "TEXT", "text": form.header.strip()})
-    body: dict[str, Any] = {"type": "BODY", "text": body_text}
-    if names:
-        body["example"] = {"body_text": [[form.examples[name].strip() for name in names]]}
+    body: dict[str, Any] = {"type": "BODY", "text": _meta_body(form.body)}
+    if uses_name(form.body):
+        body["example"] = {"body_text": [[NAME_EXAMPLE]]}
     components.append(body)
     if form.footer.strip():
         components.append({"type": "FOOTER", "text": form.footer.strip()})
@@ -566,28 +699,26 @@ def build_components(form: TemplateForm) -> list[dict[str, Any]]:
     return components
 
 
-@dataclass(frozen=True)
-class ExampleFieldVM:
-    """One «ejemplo» input of the form: the variable's name and what was typed."""
-
-    name: str
-    placeholder: str  # «{{nombre}}»
-    value: str
+def preview_body(body: str) -> str:
+    """The body as the customer would read it: the name replaced by the example."""
+    return body.strip().replace(NAME_TOKEN, NAME_EXAMPLE)
 
 
-def example_fields(form: TemplateForm) -> list[ExampleFieldVM]:
-    return [
-        ExampleFieldVM(name=n, placeholder=f"{{{{{n}}}}}", value=form.examples.get(n, ""))
-        for n in body_variables(form.body)
-    ]
+def readable_body(components: Sequence[Mapping[str, Any]]) -> str:
+    """A stored body for the list: each `{{…}}` replaced by Meta's example (what the
+    customer would read), or «…» when the template carries none."""
+    body = _component(components, "BODY")
+    text = _text_of(body)
+    positional = _examples(body, "BODY")
+    named = _named_examples(body, "BODY")
 
+    def example(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key.isdigit() and 0 < int(key) <= len(positional):
+            return positional[int(key) - 1] or "…"
+        return named.get(key) or "…"
 
-def preview_body(body: str, examples: Mapping[str, str]) -> str:
-    """The body as the customer would read it: each variable replaced by its example,
-    or by «[nombre]» while the example is still empty."""
-    return _VARIABLE.sub(
-        lambda m: examples.get(m.group(1), "").strip() or f"[{m.group(1)}]", body.strip()
-    )
+    return _ANY_PLACEHOLDER.sub(example, text)
 
 
 def preview_buttons(form: TemplateForm) -> list[str]:
@@ -601,4 +732,4 @@ def preview_buttons(form: TemplateForm) -> list[str]:
 def sync_report_message(listed: int, created: int, updated: int) -> str:
     if listed == 0:
         return "Meta no tiene plantillas para este número todavía."
-    return f"Sincronizado con Meta: {listed} plantillas ({created} nuevas, {updated} actualizadas)."
+    return f"Revisamos con Meta: {listed} plantillas ({created} nuevas, {updated} actualizadas)."

@@ -1394,10 +1394,12 @@ class AngleSetService:
             self._repo.update_set(tenant_id=tenant_id, set_id=record.id, status=SET_GENERATING)
         return draft_id
 
-    def approve_angle(self, *, tenant_id: UUID, angle_id: UUID, user_id: UUID) -> None:
+    def approve_angle(self, *, tenant_id: UUID, angle_id: UUID, user_id: UUID) -> DraftDetail:
         """Approve the angle's piece (its selected or first copy variant) through the
         content service — HITL #2 stays the content service's; this only records it. A
-        copy that quotes a price other than the catalog's is refused (requirement 8)."""
+        copy that quotes a price other than the catalog's is refused (requirement 8).
+        Returns the approved piece (a 480p draft video's 1080p final may be rendering:
+        m-24820142); `DraftExpired` from the content service passes through."""
         angle = self._require_angle(tenant_id, angle_id)
         if angle.draft_id is None:
             raise AngleNotActionable("Esa propuesta todavía no tiene pieza.")
@@ -1412,10 +1414,11 @@ class AngleSetService:
         )
         if problem is not None:
             raise AngleNotActionable(problem)
-        self._drafts.approve(
+        approved = self._drafts.approve(
             tenant_id=tenant_id, draft_id=angle.draft_id, variant_id=variant.id, user_id=user_id
         )
         self._repo.update_angle(tenant_id=tenant_id, angle_id=angle_id, status=ANGLE_APPROVED)
+        return approved
 
     # -- internals -------------------------------------------------------------------------
 

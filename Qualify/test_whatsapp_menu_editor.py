@@ -42,7 +42,6 @@ from .whatsapp_menu_vm import (
     order_lines,
     preview_turn,
     publish_notice,
-    rename_node,
     validate_form,
     validate_menu_name,
 )
@@ -175,28 +174,17 @@ def test_optional_fields_serialize_as_none() -> None:
     assert payload["entry"]["welcome"] is None
 
 
-def test_rename_carries_every_reference_along() -> None:
-    form = _demo_form()
-    index, _ = _node(form, "productos")
-    renamed = rename_node(form, index, "carta")
-    result = validate_form(renamed)
+def test_renaming_a_step_changes_its_name_never_its_id() -> None:
+    """m-24848536: a step is renamed through its title; the id every arrow, keyword and
+    published shortcut points at stays put, so a published menu keeps working."""
+    form = _with_node(_demo_form(), "productos", title="La carta")
+    result = validate_form(form)
     assert result.error_count == 0
     assert result.definition is not None
-    assert "carta" in result.definition.nodes and "productos" not in result.definition.nodes
-    assert result.definition.entry.keywords["menu"] == "carta"
-    assert result.definition.nodes["agregado"].options[0].next == "carta"  # type: ignore[union-attr]
-
-
-def test_rename_into_a_collision_does_not_steal_references() -> None:
-    form = _demo_form()
-    index, _ = _node(form, "horario")
-    collided = rename_node(form, index, "ubicacion")
-    result = validate_form(collided)
-    assert result.definition is None
-    assert result.form.nodes[index].errors["node_id"] == "Ya hay otro paso con este identificador."
-    # The keyword still points at the old id, now flagged rather than redirected.
-    horario_kw = next(k for k in result.form.keywords if k.word == "horario")
-    assert horario_kw.node == "horario" and horario_kw.errors["node"] == "Elige un paso que exista."
+    assert "productos" in result.definition.nodes
+    assert result.definition.nodes["productos"].title == "La carta"
+    assert result.definition.entry.keywords["menu"] == "productos"
+    assert _node(result.form, "productos")[1].label == "La carta"
 
 
 def test_change_kind_keeps_text_and_options() -> None:
@@ -379,7 +367,10 @@ def test_references_and_fallback() -> None:
 def test_step_ids_and_cycles() -> None:
     form = _demo_form()
     index, _ = _node(form, "horario")
-    form = rename_node(form, index, "Horario Abierto")
+    # Only an old hand-made definition can carry such an id: the editor generates them.
+    nodes = list(form.nodes)
+    nodes[index] = replace(nodes[index], node_id="Horario Abierto")
+    form = replace(form, nodes=nodes)
     result = validate_form(form)
     assert result.form.nodes[index].errors["node_id"].startswith("Solo minúsculas")
     assert result.definition is None

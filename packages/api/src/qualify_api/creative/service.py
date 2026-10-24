@@ -22,17 +22,19 @@ yet — when the brand kit has no ``template_asset_key`` there is nothing to ren
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
-from uuid import UUID
+from typing import Any, Protocol
+from uuid import UUID, uuid4
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import (
     check_hard_rules,
     check_route_allowed,
+    fit_caption,
     printed_limits,
     render_prompt,
 )
@@ -78,17 +80,31 @@ from qualify_api.creative.creations import (
     NotEnoughCreations,
 )
 from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
+from qualify_api.creative.draft_mode import (
+    DRAFT_EXPIRED_TEXT,
+    DRAFT_FAILED,
+    DRAFT_READY,
+    DRAFT_RENDERING,
+    FINAL_NOT_ORDERED_TEXT,
+    draft_expired,
+    draft_state,
+    final_retryable,
+)
 from qualify_api.creative.fsm import (
+    APPROVED,
     DRAFT_STATUSES,
     DRAFTING,
     FAILED,
     GENERATED,
     REJECTED,
     DraftTrigger,
+    InvalidTransition,
     apply_transition,
 )
 from qualify_api.creative.media import (
+    FinalOutcome,
     MediaProducer,
+    MediaUsage,
     MediaWarning,
     MediaWrite,
     TemplateRunWrite,
@@ -155,6 +171,15 @@ class ApprovalBlocked(Exception):
     write; `detail` is the operator's Spanish."""
 
     def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class DraftExpired(Exception):
+    """A draft video's id can no longer make its final (m-24820142: ModelArk keeps a
+    draft 7 days). Raised before any write or vendor call; the operator regenerates."""
+
+    def __init__(self, detail: str = DRAFT_EXPIRED_TEXT) -> None:
         super().__init__(detail)
         self.detail = detail
 
@@ -505,6 +530,12 @@ class ContentRepository(Protocol):
 
     def media_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]: ...
 
+    def draft_videos_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
+        """Only the videos of the draft made as a Seedance draft (`params ? 'draft'`,
+        m-24820142), in order — what approving and finishing read, without every
+        other media row."""
+        ...
+
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
 
     def details_for(
@@ -515,6 +546,41 @@ class ContentRepository(Protocol):
 
     def set_edited_copy(
         self, *, tenant_id: UUID, variant_id: UUID, edited_copy: Mapping[str, object]
+    ) -> None: ...
+
+    def set_video_draft(
+        self, *, tenant_id: UUID, asset_id: UUID, changes: Mapping[str, object]
+    ) -> None:
+        """Merge `changes` into one video's draft block (m-24820142), under the row's
+        lock: only the keys given are written, every other key keeps what the row holds
+        NOW (a newer order's `status`/`attempt` written meanwhile is never lost)."""
+        ...
+
+    def claim_final(
+        self, *, tenant_id: UUID, asset_id: UUID, attempt: str | None, claim: str
+    ) -> bool:
+        """Atomically take one ordered final for the run making it (m-24820142): only
+        while the video is still `rendering` for `attempt` (the order this run read) and
+        no run claimed it yet. Stamps `claim` and restarts its `rendering_at`."""
+        ...
+
+    def fail_final(self, *, tenant_id: UUID, asset_id: UUID, claim: str, error: str) -> None:
+        """Mark a claimed final failed with why — only while `claim` still holds it."""
+        ...
+
+    def settle_final(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brand_id: UUID,
+        asset_id: UUID,
+        media: MediaWrite | None,
+        error: str | None,
+        usage: tuple[UsageWrite, ...],
+        spent_usd: Decimal,
+        claim: str | None = None,
+        draft_changes: Mapping[str, object] | None = None,
     ) -> None: ...
 
 
@@ -847,28 +913,7 @@ class PostgresContentRepository:
                         model_revision=write.model_revision,
                     )
                 )
-            for event in usage:
-                session.add(
-                    orm.CreativeUsageEvent(
-                        tenant_id=tenant_id,
-                        brand_id=brand_id,
-                        draft_id=draft_id,
-                        provider=event.provider,
-                        model_id=event.model_id,
-                        unit=event.unit,
-                        input_tokens=event.input_tokens,
-                        output_tokens=event.output_tokens,
-                        cache_read_tokens=event.cache_read_tokens,
-                        cache_creation_tokens=event.cache_creation_tokens,
-                        # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
-                        # calls) and `occurred_at` NOT NULL with no server default.
-                        pieces=event.pieces,
-                        cost_usd=event.cost_usd,
-                        paid_by=event.paid_by,
-                        pricing_table_version=event.pricing_table_version,
-                        occurred_at=datetime.now(UTC),
-                    )
-                )
+            _add_usage(session, tenant_id, brand_id, draft_id, usage)
             if media or variants:
                 # A regeneration replaces the draft's media: the old files stay on disk
                 # (provenance), the rows describe what the draft shows now. Also when the
@@ -936,14 +981,7 @@ class PostgresContentRepository:
                         content_type=item.content_type,
                     )
                 )
-            if spent_usd:
-                config = session.scalar(
-                    select(orm.CreativeEngineConfig).where(
-                        orm.CreativeEngineConfig.brand_id == brand_id
-                    )
-                )
-                if config is not None:
-                    config.budget_spent_usd = Decimal(config.budget_spent_usd) + spent_usd
+            _add_spend(session, brand_id, spent_usd)
             if draft is not None and (media or variants):
                 draft.preview_key = preview_of(media)
             if draft is not None and requires_ai_disclosure is not None:
@@ -1066,6 +1104,18 @@ class PostgresContentRepository:
             )
             return tuple(_image_record(row) for row in rows)
 
+    def draft_videos_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(orm.ImageAsset)
+                .where(
+                    orm.ImageAsset.draft_id == draft_id,
+                    orm.ImageAsset.params.has_key("draft"),
+                )
+                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+            )
+            return tuple(_image_record(row) for row in rows)
+
     def get_variant(self, *, tenant_id: UUID, variant_id: UUID) -> VariantRecord | None:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.CopyVariant, variant_id)
@@ -1080,6 +1130,147 @@ class PostgresContentRepository:
                 raise UnknownVariant(str(variant_id))
             row.edited_copy = dict(edited_copy)
 
+    def set_video_draft(
+        self, *, tenant_id: UUID, asset_id: UUID, changes: Mapping[str, object]
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            # the row lock, like `claim_final`/`fail_final`/`settle_final`: a concurrent
+            # merge (an order and a stale run's raw-final record) waits for the other's
+            # commit and merges over what it wrote, instead of over a stale read
+            row = session.get(orm.ImageAsset, asset_id, with_for_update=True)
+            if row is None:
+                raise UnknownDraft(str(asset_id))
+            params = dict(row.params or {})
+            # a new dict, so the JSONB column is seen as changed
+            params["draft"] = {**dict(params.get("draft") or {}), **changes}
+            row.params = params
+
+    def claim_final(
+        self, *, tenant_id: UUID, asset_id: UUID, attempt: str | None, claim: str
+    ) -> bool:
+        with tenant_session(tenant_id) as session:
+            # the row lock makes the check-and-set atomic against a concurrent run
+            row = session.get(orm.ImageAsset, asset_id, with_for_update=True)
+            if row is None:
+                return False
+            block = dict((row.params or {}).get("draft") or {})
+            if not _final_claimable(block, attempt):
+                return False
+            params = dict(row.params or {})
+            params["draft"] = {**block, "claim": claim, "rendering_at": time.time()}
+            row.params = params
+            return True
+
+    def fail_final(self, *, tenant_id: UUID, asset_id: UUID, claim: str, error: str) -> None:
+        with tenant_session(tenant_id) as session:
+            row = session.get(orm.ImageAsset, asset_id, with_for_update=True)
+            if row is None:
+                return
+            block = dict((row.params or {}).get("draft") or {})
+            if not _final_held_by(block, claim):
+                return
+            params = dict(row.params or {})
+            params["draft"] = {**block, "status": DRAFT_FAILED, "error": error}
+            row.params = params
+
+    def settle_final(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brand_id: UUID,
+        asset_id: UUID,
+        media: MediaWrite | None,
+        error: str | None,
+        usage: tuple[UsageWrite, ...],
+        spent_usd: Decimal,
+        claim: str | None = None,
+        draft_changes: Mapping[str, object] | None = None,
+    ) -> None:
+        """One transaction: the final's spend (also when it failed — the money went
+        either way) and either the final in place of its draft, in the SAME row every
+        reader already reads, or the draft marked failed with why. With `claim`, the
+        row is written only while that claim still holds it (a final ordered again
+        meanwhile belongs to its new run); the spend is recorded either way. A failure
+        keeps `draft_changes` in the draft block (the paid raw final a retry reuses)."""
+        with tenant_session(tenant_id) as session:
+            _add_usage(session, tenant_id, brand_id, draft_id, usage)
+            _add_spend(session, brand_id, spent_usd)
+            row = session.get(orm.ImageAsset, asset_id, with_for_update=claim is not None)
+            if row is None:
+                return
+            if claim is not None and not _final_held_by(
+                dict((row.params or {}).get("draft") or {}), claim
+            ):
+                logger.warning("final of asset %s settled after it was ordered again", asset_id)
+                return
+            if media is None:
+                params = dict(row.params or {})
+                params["draft"] = {
+                    **dict(params.get("draft") or {}),
+                    **dict(draft_changes or {}),
+                    "status": DRAFT_FAILED,
+                    "error": error,
+                }
+                row.params = params
+                return
+            row.media_url = media.media_url
+            row.object_key = media.object_key
+            row.media_expires_at = None
+            row.width = media.width
+            row.height = media.height
+            row.model_id = media.model_id
+            row.provider = media.provider
+            row.params = dict(media.params)
+            row.content_type = media.content_type
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+            draft = session.get(orm.ContentDraft, draft_id)
+            if draft is not None:
+                rows = tuple(
+                    session.scalars(
+                        select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
+                    )
+                )
+                draft.preview_key = preview_of(rows)  # type: ignore[arg-type]
+
+
+def _add_usage(
+    session: Any, tenant_id: UUID, brand_id: UUID, draft_id: UUID, usage: Sequence[UsageWrite]
+) -> None:
+    for event in usage:
+        session.add(
+            orm.CreativeUsageEvent(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                draft_id=draft_id,
+                provider=event.provider,
+                model_id=event.model_id,
+                unit=event.unit,
+                input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens,
+                cache_read_tokens=event.cache_read_tokens,
+                cache_creation_tokens=event.cache_creation_tokens,
+                # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
+                # calls) and `occurred_at` NOT NULL with no server default.
+                pieces=event.pieces,
+                cost_usd=event.cost_usd,
+                paid_by=event.paid_by,
+                pricing_table_version=event.pricing_table_version,
+                occurred_at=datetime.now(UTC),
+            )
+        )
+
+
+def _add_spend(session: Any, brand_id: UUID, spent_usd: Decimal) -> None:
+    if not spent_usd:
+        return
+    config = session.scalar(
+        select(orm.CreativeEngineConfig).where(orm.CreativeEngineConfig.brand_id == brand_id)
+    )
+    if config is not None:
+        config.budget_spent_usd = Decimal(config.budget_spent_usd) + spent_usd
+
 
 # ---------------------------------------------------------------------------
 # The service
@@ -1087,6 +1278,23 @@ class PostgresContentRepository:
 
 #: A POST title is a label, not a caption.
 TITLE_MAX = 120
+
+#: What a final that failed in our own code (not the vendor's) says on the screen.
+_FINAL_FAILED_TEXT = "Algo falló al generar el video final. Inténtalo de nuevo."
+_FINAL_SAVE_FAILED_TEXT = "No pudimos guardar el video final. Inténtalo de nuevo."
+
+
+def _final_claimable(block: Mapping[str, Any], attempt: str | None) -> bool:
+    """A final ordered for `attempt` that no run has taken yet."""
+    return (
+        block.get("status") == DRAFT_RENDERING
+        and block.get("attempt") == attempt
+        and not block.get("claim")
+    )
+
+
+def _final_held_by(block: Mapping[str, Any], claim: str) -> bool:
+    return block.get("status") == DRAFT_RENDERING and block.get("claim") == claim
 
 
 def preview_of(media: tuple[MediaWrite, ...]) -> str | None:
@@ -1550,14 +1758,19 @@ class ContentService:
         variant_writes: list[VariantWrite] = []
         any_passed = False
         for ordinal, result in enumerate(results):
-            payload = CopyPayload.model_validate(result.payload)
+            # A caption a few characters over the brand maximum is fitted, not thrown
+            # away with the whole run (2026-10-22: 601 against 600 cost a clip). The
+            # fit is recorded next to the verdict, so the adjustment is traceable.
+            payload, fitted = fit_caption(CopyPayload.model_validate(result.payload), kit)
             hard = check_hard_rules(payload, kit)
             if not hard:
                 any_passed = True
-            fidelity = {
+            fidelity: dict[str, Any] = {
                 "passed": not hard,
                 "hard_failures": [failure_item.model_dump() for failure_item in hard],
             }
+            if fitted is not None:
+                fidelity["adjustments"] = [fitted]
             variant_writes.append(
                 VariantWrite(
                     ordinal=ordinal,
@@ -1593,22 +1806,7 @@ class ContentService:
                 revision=draft.revision,
             )
             spent += outcome.spent_usd
-            usage_writes.extend(
-                UsageWrite(
-                    provider=item.provider,
-                    model_id=item.model_id,
-                    unit=item.unit,
-                    input_tokens=0,
-                    output_tokens=0,
-                    cache_read_tokens=0,
-                    cache_creation_tokens=0,
-                    cost_usd=item.cost_usd,
-                    paid_by=PaidBy.PLATFORM.value,
-                    pricing_table_version=self._pricing.version,
-                    pieces=item.quantity,
-                )
-                for item in outcome.usage
-            )
+            usage_writes.extend(self._media_usage(outcome.usage))
             media_writes = with_composition_warnings(outcome.media, outcome.warnings)
             media_failure = outcome.failure
             template_run = outcome.template_run
@@ -1670,6 +1868,27 @@ class ContentService:
             revision=draft.revision,
             providers={write.provider for write in media_writes},
         )
+
+    def _media_usage(self, items: Sequence[MediaUsage]) -> list[UsageWrite]:
+        """The `creative_usage_events` rows of what the media producer paid for."""
+        return [
+            UsageWrite(
+                provider=item.provider,
+                model_id=item.model_id,
+                unit=item.unit,
+                input_tokens=0,
+                # a token-billed media call (Seedance) keeps its billed count beside the
+                # seconds; the cost is already priced from it — nothing re-prices tokens
+                output_tokens=item.output_tokens,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=item.cost_usd,
+                paid_by=PaidBy.PLATFORM.value,
+                pricing_table_version=self._pricing.version,
+                pieces=item.quantity,
+            )
+            for item in items
+        ]
 
     def _keeps_previous_version(
         self, *, tenant_id: UUID, draft: DraftRecord, kind: ContentKind
@@ -1824,6 +2043,18 @@ class ContentService:
             )
         )
 
+    def video_drafts_state(
+        self, *, tenant_id: UUID, draft_id: UUID
+    ) -> tuple[str, tuple[Mapping[str, object] | None, ...]] | None:
+        """What a screen polling a 1080p final reads every few seconds (m-24820142): the
+        draft's status and its draft videos' `params` — two small reads (the draft row,
+        `draft_videos_for`) instead of the whole piece. None when the draft is gone."""
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record is None:
+            return None
+        videos = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        return record.status, tuple(video.params for video in videos)
+
     def get_drafts(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftDetail]:
         """Several drafts at once, by id — what a gallery polling N pieces reads, in a
         constant number of statements instead of five per draft. Ids not visible in this
@@ -1929,6 +2160,13 @@ class ContentService:
         new_status = apply_transition(
             record.status, DraftTrigger.APPROVE, selected_variant_id=variant_id
         )
+        # m-24820142: approving a version with 480p draft videos orders their finals —
+        # refused first, with nothing written, if a draft can no longer make one. Only
+        # the draft videos are read (`draft_videos_for`): the detail returned is the
+        # one full read of the piece.
+        drafts = self._waiting_drafts(tenant_id, draft_id)
+        if any(draft_expired(draft_state(asset.params) or {}) for asset in drafts):
+            raise DraftExpired()
         self._repo.set_approved(
             tenant_id=tenant_id,
             draft_id=draft_id,
@@ -1945,7 +2183,239 @@ class ContentService:
             copy=variant.copy,
             edited_copy=variant.edited_copy,
         )
+        try:
+            self._order_finals(tenant_id, draft_id, drafts)
+        except Exception:
+            # the approval stands: a video left at its draft on an approved piece shows
+            # «Final pendiente» with «Reintentar» (`final_retryable(approved=True)`)
+            logger.exception("draft %s approved, but its finals could not be ordered", draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
+    # -- Seedance 2.5 finals (m-24820142) -----------------------------------------------
+
+    def _waiting_drafts(self, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
+        """The draft's videos still at their 480p draft (never finalized, or failed)."""
+        return tuple(
+            asset
+            for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+            if (draft_state(asset.params) or {}).get("status") in (DRAFT_READY, DRAFT_FAILED)
+        )
+
+    def _order_finals(
+        self, tenant_id: UUID, draft_id: UUID, assets: tuple[ImageRecord, ...]
+    ) -> None:
+        if not assets:
+            return
+        for asset in assets:
+            # a new attempt per order: a run that read an older one (or a run of this
+            # one that already took it) never makes it again — `claim_final`
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=asset.id,
+                changes={
+                    "status": DRAFT_RENDERING,
+                    "error": None,
+                    "rendering_at": time.time(),
+                    "attempt": uuid4().hex,
+                    "claim": None,
+                },
+            )
+        if self.dispatcher is None:
+            return
+        try:
+            self.dispatcher.dispatch_finalize(tenant_id=tenant_id, draft_id=draft_id)
+        except Exception:
+            # nothing will make them: back to failed, so «Reintentar» shows at once
+            # instead of after `FINAL_STALE_SECONDS`
+            for asset in assets:
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id,
+                    asset_id=asset.id,
+                    changes={"status": DRAFT_FAILED, "error": FINAL_NOT_ORDERED_TEXT},
+                )
+            raise
+
+    def retry_final(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail:
+        """Order again the finals that failed (or were left half-made by a dead process:
+        `rendering` past `FINAL_STALE_SECONDS` since their own work started, or never
+        ordered because ordering failed after the approval was saved) of an
+        approved draft — while their drafts live. A draft that expired is marked so (its
+        final can no longer be made: the operator regenerates) and the others are
+        ordered; `DraftExpired` only when none of them can be. A final still
+        legitimately rendering is never ordered twice."""
+        record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record.status != APPROVED:
+            raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
+        now = time.time()
+        assets = tuple(
+            asset
+            for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+            if final_retryable(draft_state(asset.params), now, approved=True)
+        )
+        expired = tuple(a for a in assets if draft_expired(draft_state(a.params) or {}))
+        for asset in expired:
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=asset.id,
+                changes={"status": DRAFT_FAILED, "error": DRAFT_EXPIRED_TEXT},
+            )
+        gone = {asset.id for asset in expired}
+        live = tuple(asset for asset in assets if asset.id not in gone)
+        if expired and not live:
+            raise DraftExpired()
+        self._order_finals(tenant_id, draft_id, live)
+        return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
+    def run_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
+        """Make the final of every video of the draft whose final was ordered.
+
+        IDEMPOTENT PER VIDEO: each `rendering` video is first CLAIMED atomically for the
+        order this run read (`claim_final`), so two runs of one draft (a retry while an
+        older run still works) never pay for the same final twice, and a run never makes
+        a final that was ordered again after it read it. Every claimed video ends
+        `final` or `failed` with why — an unexpected exception included — and a final
+        that was paid for has its spend recorded even when writing it in place fails."""
+        try:
+            assets = tuple(
+                asset
+                for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+                if (draft_state(asset.params) or {}).get("status") == DRAFT_RENDERING
+            )
+        except Exception:
+            # nothing claimed: the finals stay `rendering` until they go stale, when the
+            # screen offers to order them again
+            logger.exception("finals of draft %s: could not read its videos", draft_id)
+            return
+        context: tuple[DraftRecord, ContentBrief, BrandKit] | None = None
+        for asset in assets:
+            claim = uuid4().hex
+            attempt = (draft_state(asset.params) or {}).get("attempt")
+            try:
+                claimed = self._repo.claim_final(
+                    tenant_id=tenant_id,
+                    asset_id=asset.id,
+                    attempt=None if attempt is None else str(attempt),
+                    claim=claim,
+                )
+            except Exception:
+                logger.exception("final of asset %s: could not claim it", asset.id)
+                continue
+            if not claimed:
+                continue  # another run took it, or it was ordered again since
+            try:
+                if context is None:
+                    context = self._final_context(tenant_id, draft_id)
+                draft, brief, kit = context
+                if self._media is None:
+                    raise RuntimeError("no media producer is wired")
+                budget = (
+                    self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
+                    or _UNLIMITED_BUDGET
+                )
+                outcome = self._media.finalize(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    brief=brief,
+                    kit=kit,
+                    asset=asset,
+                    budget=BudgetContext(
+                        remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop
+                    ),
+                    revision=draft.revision,
+                    on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
+                )
+            except Exception:
+                logger.exception("final of draft %s failed unexpectedly", draft_id)
+                self._fail_final(tenant_id, asset.id, claim, _FINAL_FAILED_TEXT)
+                continue
+            self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, claim, outcome)
+
+    def _raw_final_recorder(
+        self, tenant_id: UUID, asset_id: UUID
+    ) -> Callable[[Mapping[str, Any]], None]:
+        """What `MediaProducer.finalize` calls the moment the paid raw 1080p is kept:
+        it goes into the draft block at once (a small write before the re-encode), so a
+        final whose last write never lands — the process died, the database was down —
+        is finished by the next try from the saved file instead of being paid again.
+        Never raises: when this write fails, the outcome still carries the raw file
+        (`FinalOutcome.draft_changes`) to the final write."""
+
+        def record(raw: Mapping[str, Any]) -> None:
+            try:
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id, asset_id=asset_id, changes={"raw_final": dict(raw)}
+                )
+            except Exception:
+                logger.exception("final of asset %s: raw final not recorded yet", asset_id)
+
+        return record
+
+    def _final_context(
+        self, tenant_id: UUID, draft_id: UUID
+    ) -> tuple[DraftRecord, ContentBrief, BrandKit]:
+        draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        brief = (
+            self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id) if draft else None
+        )
+        kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id) if draft else None
+        if draft is None or brief is None or kit is None:
+            raise RuntimeError("the draft, its brief or its brand kit is unreadable")
+        return draft, brief, kit
+
+    def _fail_final(self, tenant_id: UUID, asset_id: UUID, claim: str, error: str) -> None:
+        try:
+            self._repo.fail_final(tenant_id=tenant_id, asset_id=asset_id, claim=claim, error=error)
+        except Exception:
+            # left `rendering`: it goes stale and the screen offers to order it again
+            logger.exception("final of asset %s: could not mark it failed", asset_id)
+
+    def _settle_final(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brand_id: UUID,
+        asset_id: UUID,
+        claim: str,
+        outcome: FinalOutcome,
+    ) -> None:
+        """The final (or its failure) and its spend in one write — and when that write
+        fails, the spend again with the video marked failed: money spent is never lost
+        silently."""
+        usage = tuple(self._media_usage(outcome.usage))
+        for item in usage:
+            cost_logger.info(
+                "draft %s final: %s %s %s USD",
+                draft_id,
+                item.provider,
+                item.model_id,
+                item.cost_usd,
+            )
+        first_error = None if outcome.media is not None else outcome.detail
+        writes: tuple[tuple[MediaWrite | None, str | None], ...] = (
+            (outcome.media, first_error),
+            (None, first_error or _FINAL_SAVE_FAILED_TEXT),
+        )
+        for media, error in writes:
+            try:
+                self._repo.settle_final(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    brand_id=brand_id,
+                    asset_id=asset_id,
+                    media=media,
+                    error=error,
+                    usage=usage,
+                    spent_usd=outcome.spent_usd,
+                    claim=claim,
+                    draft_changes=outcome.draft_changes,
+                )
+                return
+            except Exception:
+                logger.exception("final of draft %s: could not save it", draft_id)
+        cost_logger.error(
+            "draft %s final: %s USD spent and NOT recorded", draft_id, outcome.spent_usd
+        )
+        self._fail_final(tenant_id, asset_id, claim, _FINAL_SAVE_FAILED_TEXT)
 
     def reject(
         self,

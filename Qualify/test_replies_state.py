@@ -425,3 +425,87 @@ def test_set_reviewed_ticks_and_unticks_one_draft() -> None:
 def test_regenerate_log_detail_includes_the_gate_reason_only() -> None:
     detail = replies_state_module._safe_error_detail(RegenerationRefused("no POS"))
     assert detail == "RegenerationRefused: no POS"
+
+
+# --- m-24842961 (NAV-3, N3): a reply that went out ends in a confirmation that stays ---
+
+
+async def _send_with_status(monkeypatch: pytest.MonkeyPatch, status: str) -> RepliesState:
+    async def fake_send(**_: Any) -> SimpleNamespace:
+        return SimpleNamespace(status=status, failure="", can_retry=False)
+
+    monkeypatch.setattr(replies_state_module, "decide_draft", lambda **_: None)
+    monkeypatch.setattr(replies_state_module, "send_draft", fake_send)
+    state = RepliesState()
+    state.drafts = [_draft_vm(needs_review=False)]
+    await _collect(state._decide_and_send(_DRAFT, decision="accepted", final_text=None))
+    return state
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("resolved")
+async def test_a_sent_reply_leaves_a_persistent_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = await _send_with_status(monkeypatch, "sent")
+    assert state.sent_notice == replies_state_module.sent_message("")
+    assert state.action_error == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("resolved")
+async def test_a_refused_reply_never_says_listo(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = await _send_with_status(monkeypatch, "send_failed")
+    assert state.sent_notice == ""
+    assert state.action_error != ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("resolved")
+async def test_the_next_action_clears_the_previous_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = await _send_with_status(monkeypatch, "sent")
+    state.drafts = [_draft_vm(needs_review=False)]
+    state.busy_draft_id = ""
+
+    async def refuse(**_: Any) -> SimpleNamespace:
+        return SimpleNamespace(status="send_failed", failure="", can_retry=False)
+
+    monkeypatch.setattr(replies_state_module, "send_draft", refuse)
+    await _collect(state._decide_and_send(_DRAFT, decision="accepted", final_text=None))
+    assert state.sent_notice == ""
+
+
+def test_dismiss_closes_the_confirmation() -> None:
+    state = RepliesState()
+    state.sent_notice = "Listo, tu respuesta ya está en Instagram."
+    RepliesState.dismiss_sent_notice.fn(state)
+    assert state.sent_notice == ""
+
+
+def test_the_send_no_longer_ends_in_a_toast_only() -> None:
+    source = inspect.getsource(RepliesState._decide_and_send)
+    assert "rx.toast.success(sent_message" not in source
+    assert "self.sent_notice = sent_message(author)" in source
+
+
+def test_the_confirmation_is_scrolled_into_view_after_a_send() -> None:
+    """On a phone the answered card vanishes and the «Listo» sits above, off screen."""
+    from . import inbox_page
+
+    source = inspect.getsource(RepliesState._decide_and_send)
+    assert "rx.scroll_to(REPLIES_SENT_ID)" in source
+    assert "id=REPLIES_SENT_ID" in inspect.getsource(inbox_page._replies_sent_block)
+
+
+def test_the_all_clear_on_comments_speaks_only_of_comments() -> None:
+    """Private messages or WhatsApp chats may still wait: «nadie» would be a lie here."""
+    from . import inbox_page
+    from .next_steps_vm import COMMENTS_ALL_CLEAR
+
+    assert COMMENTS_ALL_CLEAR == (
+        "¡Al día con tus comentarios! No queda ninguno esperando respuesta."
+    )
+    block = inspect.getsource(inbox_page._replies_sent_block)
+    assert "COMMENTS_ALL_CLEAR" in block and "ALL_CLEAR_BODY" not in block

@@ -58,6 +58,7 @@ from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import TenantPrefixViolation
 
 from .auth_state import AuthState
+from .publish_wizard_vm import FLOW_POSTS, FLOW_STORIES, review_sentence
 from .publishing_provider import (
     PendingUpload,
     PublishAttemptVM,
@@ -73,25 +74,33 @@ from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
+_NO_TENANT = "No encontramos tu negocio en esta sesión. Cierra sesión y vuelve a entrar."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
-_NOT_CONFIGURED = "El almacenamiento (R2) todavía no está configurado en este entorno."
+_NOT_CONFIGURED = (
+    "No podemos subir archivos en este momento. Inténtalo en unos minutos; si sigue, escríbenos."
+)
 _TOO_LARGE = "El video supera el tamaño máximo permitido (300 MB)."
 _IMAGE_TOO_LARGE = "La imagen supera el tamaño máximo permitido (8 MB)."
 _BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro archivo."
 # QUA-103 — `add_files` never guesses a type for a file it cannot resolve (no fallback to
 # VIDEO/REELS); this is what a rejection reads as instead.
-_UNSUPPORTED_FORMAT = "Formato no soportado. Usa JPG/JPEG para imagen, o MP4/MOV para video."
+_UNSUPPORTED_FORMAT = (
+    "Ese archivo no se puede publicar en Instagram. Sube una foto o un video tal como salen "
+    "de la cámara de tu celular."
+)
 # QUA-103 — the ONE real content check (magic bytes), server-side, for the case a file
 # passed the extension/content_type check above but its actual bytes are not a JPEG.
 _UNSUPPORTED_IMAGE_FORMAT = (
-    "El archivo no es un JPEG válido. Solo se aceptan imágenes JPEG (.jpg/.jpeg) — "
-    "PNG, WebP, GIF y HEIC no son compatibles con Instagram."
+    "Esta foto no se puede usar tal cual. Desde tu celular, compártela como “JPG” o "
+    "haz una captura de pantalla y súbela."
 )
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
-_POLL_FAILED = "No se pudo consultar el estado de la publicación."
+_POLL_FAILED = (
+    "No sabemos todavía si se publicó. Revisa tu Instagram en unos minutos antes de "
+    "volver a intentarlo, para no publicarlo dos veces."
+)
 # QUA-99 (6/6): Meta caps a carousel at 10 items (client.py's MAX_CAROUSEL_ITEMS,
 # service.py). Checked HERE too, before a single byte is read off the upload — the
 # dropzone's own `max_files=10` (publishing_page.py) is the client-side nicety on top of
@@ -105,7 +114,7 @@ _TOO_MANY = f"Puedes publicar hasta {_MAX_ITEMS} archivos a la vez."
 # explained by Meta's own per-container async processing plus this pipeline's 60 s poll
 # cadence (client.py's CONTAINER_POLL_INTERVAL_SECONDS) — nothing to fix in the backend,
 # only to say out loud in the UI.
-_WAIT_EXPLANATION = "Meta está procesando tu contenido. Esto puede tardar varios minutos."
+_WAIT_EXPLANATION = "Instagram está preparando tu publicación. Puede tardar unos minutos."
 # Client-side safety net only — the SERVER already settles an attempt as 'failed' once
 # CONTAINER_POLL_CEILING_SECONDS (300 s) elapses, at roughly one poll per
 # CONTAINER_POLL_INTERVAL_SECONDS (60 s). This is just the belt on top of that suspenders,
@@ -238,6 +247,13 @@ class PublishState(rx.State):
     connections: list[ConnectionOptionVM] = []
     is_loading_connections: bool = False
     load_error: str = ""
+    # PUBLICAR-4 UX review: True once a load finished without error, so «connect your
+    # Instagram first» shows above step 1 only when there really is no account — never
+    # as a flash before the first load.
+    connections_loaded: bool = False
+    # PUBLICAR-4 UX review (N3): the last pick was refused by the dropzone. Step 1 keeps
+    # the reason on screen (the toast alone vanishes); cleared by the next valid pick.
+    last_drop_rejected: bool = False
 
     selected_connection_id: str = ""
     caption: str = ""
@@ -339,7 +355,7 @@ class PublishState(rx.State):
             if child.status in ("pending", "uploading"):
                 return f"Subiendo video {child.position + 1} de {total}"
             if child.status == "processing":
-                return f"Procesando video {child.position + 1} de {total} en Meta"
+                return f"Preparando video {child.position + 1} de {total} en Instagram"
         if self.attempt is not None and self.attempt.awaiting_confirmation:
             return "Confirmando publicación"
         return "Creando carrusel"
@@ -357,11 +373,12 @@ class PublishState(rx.State):
         return f"{minutes:02d}:{seconds:02d}"
 
     @rx.event(background=True)
-    async def load_active_connections(self) -> None:
+    async def load_active_connections(self) -> AsyncIterator[rx.event.EventSpec | None]:
         """Load the active connections for the current session tenant."""
         async with self:
             self.is_loading_connections = True
             self.load_error = ""
+            self.connections_loaded = False
 
         async with self:
             auth = await self.get_state(AuthState)
@@ -387,6 +404,68 @@ class PublishState(rx.State):
         async with self:
             self.connections = options
             self.is_loading_connections = False
+            self.connections_loaded = True
+            # PUBLICAR-4: with exactly one connected account, step 2 («¿Dónde sale?»)
+            # arrives with it already chosen — the owner only confirms.
+            preselected = self._preselect_single_connection()
+        if preselected:
+            yield TrendingState.set_audio_connection(preselected)
+
+    def _preselect_single_connection(self) -> str:
+        """Choose the account when there is exactly one and none is chosen yet;
+        returns the id it chose, or `""` when it left the choice alone."""
+        if self.selected_connection_id or len(self.connections) != 1:
+            return ""
+        self.selected_connection_id = self.connections[0].id
+        return self.selected_connection_id
+
+    def _selected_connection(self) -> ConnectionOptionVM | None:
+        for conn in self.connections:
+            if conn.id == self.selected_connection_id:
+                return conn
+        return None
+
+    @rx.var
+    def selected_platform(self) -> str:
+        """The chosen account's network (`instagram`, `facebook`…), `""` if none."""
+        conn = self._selected_connection()
+        return conn.platform if conn is not None else ""
+
+    @rx.var
+    def review_post_sentence(self) -> str:
+        """Step 3's review for a publication (PUBLICAR-4) — see `publish_wizard_vm`."""
+        conn = self._selected_connection()
+        if conn is None:
+            return ""
+        return review_sentence(FLOW_POSTS, username=conn.external_username, platform=conn.platform)
+
+    @rx.var
+    def review_story_sentence(self) -> str:
+        """Step 3's review for a historia (PUBLICAR-4) — see `publish_wizard_vm`."""
+        conn = self._selected_connection()
+        if conn is None:
+            return ""
+        return review_sentence(
+            FLOW_STORIES, username=conn.external_username, platform=conn.platform
+        )
+
+    @rx.event
+    def reset_form(self) -> None:
+        """«Publicar otra» (PUBLICAR-4): an empty step 1 again — files, text, outcome.
+        A no-op while a publish is in flight. Keeps the loaded accounts and, with only
+        one, chooses it again."""
+        if self.phase not in ("idle", "success", "failure"):
+            return
+        self._pending_files = []
+        self.pending_items = []
+        self.caption = ""
+        self.phase = "idle"
+        self.error = ""
+        self.attempt = None
+        self.carousel_children = []
+        self._is_carousel = False
+        self._poll_started_monotonic = 0.0
+        self._preselect_single_connection()
 
     @rx.event
     def set_caption(self, value: str) -> None:
@@ -465,7 +544,14 @@ class PublishState(rx.State):
         # remains the only count guard; there is no longer a type-based restriction here.
         self._pending_files = self._pending_files + new_pending
         self.pending_items = self.pending_items + new_items
+        self.last_drop_rejected = False
         return None
+
+    @rx.event
+    def mark_drop_rejected(self, _rejected: list[dict] | None = None) -> None:
+        """The dropzone refused a pick (format, size or count). Step 1 then shows the
+        reason in a lasting callout next to the toast (N3); `add_files` clears it."""
+        self.last_drop_rejected = True
 
     @rx.event
     def remove_pending_file(self, index: int) -> None:

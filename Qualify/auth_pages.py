@@ -12,9 +12,15 @@ from __future__ import annotations
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 
+from .access_interest_state import MODE_CODE, MODE_FORM, MODE_SENT, AccessInterestState
+from .access_vm import ACCESS_NOTICE, CONSENT_LABEL, INTEREST_SENT, INTEREST_SENT_TITLE
 from .auth_state import AuthState
+from .settings_vm import country_options
 from .ui import brand_mark, callout, card, loading_spinner
 from .ui import tokens as T
+
+# N12 (m-24842967): every control on the access screens is at least 44 px tall.
+_TAP = "2.75rem"
 
 
 def _auth_card(*children: rx.Component) -> rx.Component:
@@ -22,8 +28,8 @@ def _auth_card(*children: rx.Component) -> rx.Component:
     the app ground — `.q-ground`, the same Noir scene `app_shell` lays under the rail
     and the panel, so the login does not open on a bare page. `.q-auth-stage`
     (assets/qualify-listen.css) gives the card the overlay elevation a surface with no
-    panel under it needs. Nothing here touches the inputs: placeholders stay the
-    labels and the browser's autocomplete is left alone (signed ruling §6.1)."""
+    panel under it needs. Nothing here touches the inputs' autocomplete (signed ruling
+    §6.1); the signup labels each field above it (`_labeled`, m-24842967)."""
     return rx.center(
         card(
             rx.vstack(
@@ -55,6 +61,8 @@ def email_field(placeholder: str = "Correo", **props) -> rx.Component:
         custom_attrs={"autoComplete": "username", "autoCapitalize": "none", "spellCheck": "false"},
         required=True,
         width="100%",
+        size="3",
+        height=_TAP,
         **props,
     )
 
@@ -64,6 +72,7 @@ def password_field(
     *,
     name: str = "password",
     new: bool = False,
+    **props,
 ) -> rx.Component:
     """A password input with an eye toggle. `new=True` asks the password manager for a
     suggestion (`new-password`); otherwise it offers the saved one (`current-password`)."""
@@ -74,7 +83,12 @@ def password_field(
                 type="button",
                 variant="ghost",
                 color_scheme="gray",
-                size="1",
+                size="2",
+                # N12 (m-24842967): a 44 px target for a thumb, not the 24 px icon alone.
+                # Radix's ghost button is content-box with padding: border-box keeps it 44.
+                width="44px",
+                height="44px",
+                box_sizing="border-box",
                 on_click=AuthState.toggle_show_password,
                 aria_label=rx.cond(
                     AuthState.show_password, "Ocultar contraseña", "Mostrar contraseña"
@@ -89,11 +103,74 @@ def password_field(
         custom_attrs={"autoComplete": "new-password" if new else "current-password"},
         required=True,
         width="100%",
+        size="3",
+        height=_TAP,
+        **props,
+    )
+
+
+def _hint_text(text: str) -> rx.Component:
+    """The small muted help line under a field."""
+    return rx.text(text, size="1", color=T.TEXT_MUTED)
+
+
+def labeled_field(
+    label: str, field_id: str, control: rx.Component, *, hint: str | rx.Component = ""
+) -> rx.Component:
+    """A field with its label visible above it (m-24842967): a placeholder disappears
+    the moment the owner starts typing, a label does not. `html_for` ties the two, so
+    tapping the label focuses the field and screen readers announce it. `hint` is a plain
+    string, or a component when it depends on state (e.g. an `rx.cond`)."""
+    if isinstance(hint, rx.Component):
+        hint_component: rx.Component = hint
+    elif hint:
+        hint_component = _hint_text(hint)
+    else:
+        hint_component = rx.fragment()
+    return rx.vstack(
+        rx.el.label(
+            rx.text(label, size="2", weight="medium", color=T.TEXT_STRONG),
+            html_for=field_id,
+        ),
+        control,
+        hint_component,
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def country_select(field_id: str, **props) -> rx.Component:
+    """«¿En qué país está tu negocio?»: the three markets, posted as `country` (ISO code).
+    Zone and currency are deduced from it (`qualify_api.tenancy.locale`)."""
+    return rx.select.root(
+        rx.select.trigger(placeholder="Elige tu país", id=field_id, width="100%", height=_TAP),
+        rx.select.content(
+            *[
+                rx.select.item(option["label"], value=option["value"])
+                for option in country_options()
+            ]
+        ),
+        size="3",
+        **props,
     )
 
 
 def _footer_link(prompt: str, label: str, href: str) -> rx.Component:
-    return rx.text(prompt, " ", rx.link(label, href=href), size="2", color=T.TEXT_MUTED)
+    # The link inside the sentence keeps a 44 px tap zone at phone width (N12).
+    return rx.text(
+        prompt,
+        " ",
+        rx.link(
+            label,
+            href=href,
+            display="inline-flex",
+            align_items="center",
+            min_height=_TAP,
+        ),
+        size="2",
+        color=T.TEXT_MUTED,
+    )
 
 
 def login_index() -> rx.Component:
@@ -124,6 +201,8 @@ def login_index() -> rx.Component:
                     "Entrar",
                     type="submit",
                     width="100%",
+                    size="3",
+                    height=_TAP,
                     loading=AuthState.is_authenticating,
                 ),
                 spacing="3",
@@ -140,6 +219,8 @@ def login_index() -> rx.Component:
                 "Crear mi marca",
                 variant="soft",
                 width="100%",
+                size="3",
+                height=_TAP,
             ),
             href="/brand/start",
             width="100%",
@@ -187,7 +268,13 @@ def forgot_index() -> rx.Component:
                     color=T.TEXT_MUTED,
                 ),
                 rx.link(
-                    rx.button("Volver a iniciar sesión", variant="soft", width="100%"),
+                    rx.button(
+                        "Volver a iniciar sesión",
+                        variant="soft",
+                        width="100%",
+                        size="3",
+                        height=_TAP,
+                    ),
                     href="/login",
                     width="100%",
                 ),
@@ -209,6 +296,8 @@ def forgot_index() -> rx.Component:
                             "Enviarme el enlace",
                             type="submit",
                             width="100%",
+                            size="3",
+                            height=_TAP,
                             loading=AuthState.is_authenticating,
                         ),
                         spacing="3",
@@ -249,6 +338,8 @@ def reset_index() -> rx.Component:
                                 "Guardar y entrar",
                                 type="submit",
                                 width="100%",
+                                size="3",
+                                height=_TAP,
                                 loading=AuthState.is_authenticating,
                             ),
                             spacing="3",
@@ -266,7 +357,7 @@ def reset_index() -> rx.Component:
                 rx.vstack(
                     _error_banner(),
                     rx.link(
-                        rx.button("Pedir un enlace nuevo", width="100%"),
+                        rx.button("Pedir un enlace nuevo", width="100%", size="3", height=_TAP),
                         href="/forgot",
                         width="100%",
                     ),
@@ -285,24 +376,243 @@ def reset_index() -> rx.Component:
     )
 
 
-def brand_start_index() -> rx.Component:
-    """The Brand Kit's first view, before any login (§ request 2026-10-02): the email the
-    kit is saved to. The signup with the same email later opens with the kit in it."""
-    return _auth_card(
-        rx.heading("Crea tu marca", size="4"),
+def _code_form(next_step: str) -> rx.Component:
+    """«Tengo mi código»: the invitation's code, typed or pasted with its whole link.
+    `next_step` is where a good code goes: "brand" (into the Brand Kit) or "signup"
+    (the form on this same page)."""
+    field_id = f"access-code-{next_step}"
+    return rx.vstack(
+        rx.cond(
+            AuthState.invite_code_error != "",
+            callout(AuthState.invite_code_error, "error"),
+        ),
+        rx.form(
+            rx.vstack(
+                labeled_field(
+                    "Tu código de invitación",
+                    field_id,
+                    rx.input(
+                        id=field_id,
+                        name="code",
+                        placeholder="Pega aquí tu código",
+                        required=True,
+                        width="100%",
+                        size="3",
+                        height=_TAP,
+                        custom_attrs={
+                            "autoComplete": "off",
+                            "autoCapitalize": "none",
+                            "spellCheck": "false",
+                        },
+                    ),
+                    hint="Está en el correo de tu invitación. También puedes pegar el "
+                    "enlace completo.",
+                ),
+                rx.el.input(type="hidden", name="next", value=next_step),
+                rx.button(
+                    "Empezar mi marca" if next_step == "brand" else "Seguir",
+                    type="submit",
+                    width="100%",
+                    size="3",
+                    height=_TAP,
+                    loading=AuthState.is_authenticating,
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            on_submit=AuthState.redeem_invite_code,
+            reset_on_submit=False,
+            width="100%",
+        ),
+        rx.button(
+            "No tengo código",
+            variant="soft",
+            width="100%",
+            size="3",
+            height=_TAP,
+            on_click=AccessInterestState.open_form,
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _honeypot() -> rx.Component:
+    """A field people never see nor reach with the keyboard; bots fill it."""
+    return rx.el.div(
+        rx.el.label("No llenes este campo", html_for="interest-website"),
+        rx.el.input(
+            id="interest-website",
+            name="website",
+            type="text",
+            tab_index=-1,
+            custom_attrs={"autoComplete": "off"},
+        ),
+        aria_hidden="true",
+        position="absolute",
+        left="-10000px",
+        width="1px",
+        height="1px",
+        overflow="hidden",
+    )
+
+
+def _interest_form() -> rx.Component:
+    """«No tengo código»: name, business and WhatsApp, with the mandatory consent."""
+    return rx.vstack(
+        rx.text(
+            "Déjanos tus datos y te escribimos por WhatsApp para darte tu invitación.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.form(
+            rx.vstack(
+                labeled_field(
+                    "Tu nombre",
+                    "interest-name",
+                    rx.input(
+                        id="interest-name",
+                        name="full_name",
+                        required=True,
+                        max_length=120,
+                        width="100%",
+                        size="3",
+                        height=_TAP,
+                        custom_attrs={"autoComplete": "name"},
+                    ),
+                ),
+                labeled_field(
+                    "Nombre de tu negocio",
+                    "interest-business",
+                    rx.input(
+                        id="interest-business",
+                        name="business_name",
+                        placeholder="Ej.: Heladería La Esquina",
+                        required=True,
+                        max_length=120,
+                        width="100%",
+                        size="3",
+                        height=_TAP,
+                        custom_attrs={"autoComplete": "organization"},
+                    ),
+                ),
+                labeled_field(
+                    "Tu WhatsApp",
+                    "interest-whatsapp",
+                    rx.input(
+                        id="interest-whatsapp",
+                        name="whatsapp_phone",
+                        type="tel",
+                        placeholder="+58 414 123 4567",
+                        required=True,
+                        max_length=32,
+                        width="100%",
+                        size="3",
+                        height=_TAP,
+                        custom_attrs={"autoComplete": "tel", "inputMode": "tel"},
+                    ),
+                    hint="Con el código de tu país: +57 Colombia, +58 Venezuela, +598 Uruguay.",
+                ),
+                _honeypot(),
+                rx.text(
+                    rx.flex(
+                        rx.checkbox(
+                            name="consent",
+                            checked=AccessInterestState.consent,
+                            on_change=AccessInterestState.set_consent,
+                            # Not `required`: Radix hides the real control, so the
+                            # browser would block silently (or in English); the
+                            # service answers with the Spanish sentence instead.
+                            size="3",
+                        ),
+                        CONSENT_LABEL,
+                        spacing="2",
+                        align="center",
+                        min_height=_TAP,
+                    ),
+                    as_="label",
+                    size="2",
+                    color=T.TEXT_STRONG,
+                    cursor="pointer",
+                    width="100%",
+                ),
+                rx.cond(
+                    AccessInterestState.error != "",
+                    callout(AccessInterestState.error, "error"),
+                ),
+                rx.button(
+                    "Quiero que me contacten",
+                    type="submit",
+                    width="100%",
+                    size="3",
+                    height=_TAP,
+                    loading=AccessInterestState.sending,
+                ),
+                spacing="3",
+                width="100%",
+                position="relative",
+            ),
+            on_submit=AccessInterestState.submit,
+            reset_on_submit=False,
+            width="100%",
+        ),
+        rx.button(
+            "Tengo un código",
+            variant="ghost",
+            width="100%",
+            size="3",
+            height=_TAP,
+            on_click=AccessInterestState.back_to_code,
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def access_gate(next_step: str) -> rx.Component:
+    """MARCA-5 (m-24842968, founder decision 7b): before anything is built, the visitor
+    reads that Qualify is by invitation; with a code they go on, without one they leave
+    their details and nothing is created. Used by /brand/start and by the signup page
+    reached without an invitation, so no path ends in a closed door."""
+    return rx.match(
+        AccessInterestState.mode,
+        (
+            MODE_SENT,
+            rx.vstack(
+                callout(INTEREST_SENT, "ok", icon="message-circle"),
+                rx.button(
+                    "Ya tengo mi código",
+                    variant="soft",
+                    width="100%",
+                    size="3",
+                    height=_TAP,
+                    on_click=AccessInterestState.back_to_code,
+                ),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+        # The notice already did its job on the code view; the form opens on its
+        # own one-line introduction.
+        (MODE_FORM, _interest_form()),
+        rx.vstack(
+            callout(ACCESS_NOTICE, "info", icon="mail"),
+            _code_form(next_step),
+            spacing="4",
+            width="100%",
+        ),
+    )
+
+
+def _brand_start_email_form() -> rx.Component:
+    """Dev only (`QUALIFY_SIGNUP_OPEN=1`): the Brand Kit started from any email, as it
+    was before the invitation gate. Production never shows it."""
+    return rx.vstack(
         rx.text(
             "Sin crear cuenta. Lo guardamos con tu correo y, cuando te registres con ese "
             "mismo correo, tu cuenta ya lo tendrá.",
             size="2",
             color=T.TEXT_MUTED,
-        ),
-        rx.cond(
-            AuthState.guest_has_account,
-            callout(
-                rx.fragment(AuthState.guest_error, " ", rx.link("Iniciar sesión", href="/login")),
-                "info",
-            ),
-            rx.cond(AuthState.guest_error != "", callout(AuthState.guest_error, "error")),
         ),
         rx.form(
             rx.vstack(
@@ -313,11 +623,15 @@ def brand_start_index() -> rx.Component:
                     required=True,
                     auto_focus=True,
                     width="100%",
+                    size="3",
+                    height=_TAP,
                 ),
                 rx.button(
                     "Empezar",
                     type="submit",
                     width="100%",
+                    size="3",
+                    height=_TAP,
                     loading=AuthState.is_authenticating,
                 ),
                 spacing="3",
@@ -326,32 +640,67 @@ def brand_start_index() -> rx.Component:
             on_submit=AuthState.start_brand_kit,
             width="100%",
         ),
+        spacing="4",
+        width="100%",
+    )
+
+
+def brand_start_index() -> rx.Component:
+    """The Brand Kit's first view, before any login (§ request 2026-10-02). Since
+    MARCA-5 it opens with the invitation notice: a code starts the Brand Kit under the
+    invitation's email (the signup later opens with the kit in it); without a code the
+    visitor leaves their details instead of building a brand that could not be saved."""
+    return _auth_card(
+        rx.cond(
+            AccessInterestState.mode == MODE_SENT,
+            rx.heading(INTEREST_SENT_TITLE, size="4"),
+            rx.heading("Crea tu marca", size="4"),
+        ),
+        rx.cond(
+            AccessInterestState.mode == MODE_CODE,
+            rx.text(
+                "Arma la identidad de tu negocio en cinco pasos. Al terminar creas tu "
+                "cuenta y la encuentras lista.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        rx.cond(
+            AuthState.guest_has_account,
+            callout(
+                rx.fragment(AuthState.guest_error, " ", rx.link("Iniciar sesión", href="/login")),
+                "info",
+            ),
+            rx.cond(AuthState.guest_error != "", callout(AuthState.guest_error, "error")),
+        ),
+        rx.cond(AuthState.signup_open, _brand_start_email_form(), access_gate("brand")),
         _footer_link("¿Ya tienes cuenta?", "Inicia sesión", "/login"),
     )
 
 
 def _invite_only() -> rx.Component:
-    """/registro without a usable invite (MVP, founder decision 2026-10-14): no form."""
+    """/registro without a usable invite (MVP, founder decision 2026-10-14). Since
+    MARCA-5 it is not a dead end: the same gate as /brand/start — a code opens the form
+    right here, and without one the visitor leaves their details."""
     return rx.vstack(
-        rx.heading("Qualify es solo por invitación", size="4"),
+        rx.cond(
+            AccessInterestState.mode == MODE_SENT,
+            rx.heading(INTEREST_SENT_TITLE, size="4"),
+            rx.cond(
+                AuthState.guest_email != "",
+                rx.heading("Tu marca está guardada", size="4"),
+                rx.heading("Crea tu cuenta", size="4"),
+            ),
+        ),
         rx.cond(
             AuthState.invite_state == "invalid",
             callout(
                 "Esta invitación venció o ya se usó. Pide una nueva a quien te invitó.",
                 "warn",
             ),
-            rx.text(
-                "Para crear una cuenta necesitas una invitación. Si ya la recibiste, abre el "
-                "enlace desde el correo.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
         ),
-        rx.link(
-            rx.button("Iniciar sesión", variant="soft", width="100%"),
-            href="/login",
-            width="100%",
-        ),
+        access_gate("signup"),
+        _footer_link("¿Ya tienes cuenta?", "Inicia sesión", "/login"),
         spacing="4",
         width="100%",
     )
@@ -371,7 +720,7 @@ def _signup_form() -> rx.Component:
                 rx.fragment(
                     "Te invitaron a Qualify con ",
                     rx.text.strong(AuthState.invite_email),
-                    ". Elige tu contraseña y entras directo.",
+                    ". Elige tu contraseña y tu país, y entras directo.",
                 ),
                 "ok",
                 icon="mail-check",
@@ -398,46 +747,67 @@ def _signup_form() -> rx.Component:
         _error_banner(),
         rx.form(
             rx.vstack(
-                rx.input(
-                    placeholder="Nombre del negocio",
-                    name="business_name",
-                    default_value=AuthState.invite_business,
-                    required=True,
-                    width="100%",
-                    # Remount when the invite resolves (see the email field below).
-                    key=AuthState.invite_business,
-                ),
-                email_field(
-                    "Correo del negocio (uno por negocio)",
-                    default_value=rx.cond(
-                        invited,
-                        AuthState.invite_email,
-                        AuthState.guest_email,
-                    ),
-                    read_only=invited,
-                    # Remount when the invite resolves: `default_value` only applies on mount,
-                    # and the invite is read in on_load, after the form is already on screen.
-                    key=AuthState.invite_email,
-                ),
-                password_field("Contraseña (mínimo 8 caracteres)", new=True),
-                rx.hstack(
-                    rx.input(placeholder="País", name="country", default_value="VE", width="100%"),
+                # m-24842967: exactly four labelled fields, one column at any width; the
+                # zone and the currency are deduced from the country.
+                labeled_field(
+                    "Nombre del negocio",
+                    "signup-business",
                     rx.input(
-                        placeholder="Zona horaria",
-                        name="timezone",
-                        default_value="America/Caracas",
+                        id="signup-business",
+                        placeholder="Ej.: Heladería La Esquina",
+                        name="business_name",
+                        default_value=AuthState.invite_business,
+                        required=True,
                         width="100%",
+                        size="3",
+                        height=_TAP,
+                        custom_attrs={"autoComplete": "organization"},
+                        # Remount when the invite resolves (see the email field below).
+                        key=AuthState.invite_business,
                     ),
-                    rx.input(
-                        placeholder="Moneda", name="currency", default_value="USD", width="100%"
+                ),
+                labeled_field(
+                    "Correo del negocio",
+                    "signup-email",
+                    email_field(
+                        "tu@negocio.com",
+                        id="signup-email",
+                        default_value=rx.cond(
+                            invited,
+                            AuthState.invite_email,
+                            AuthState.guest_email,
+                        ),
+                        read_only=invited,
+                        # Remount when the invite resolves: `default_value` only applies on
+                        # mount, and the invite is read in on_load, after the form is
+                        # already on screen.
+                        key=AuthState.invite_email,
                     ),
-                    spacing="2",
-                    width="100%",
+                    hint=rx.cond(
+                        invited,
+                        _hint_text("Es el correo de tu invitación: con él entras siempre."),
+                        _hint_text("Uno por negocio: con este correo entras siempre."),
+                    ),
+                ),
+                labeled_field(
+                    "Contraseña",
+                    "signup-password",
+                    password_field("", new=True, id="signup-password"),
+                    hint="Mínimo 8 caracteres.",
+                ),
+                labeled_field(
+                    "¿En qué país está tu negocio?",
+                    "signup-country",
+                    country_select("signup-country", name="country", required=True),
+                    hint="Con esto ponemos tu hora y la moneda de tus precios. La moneda la "
+                    "puedes cambiar después en Configuración.",
                 ),
                 rx.button(
                     rx.cond(invited, "Crear mi cuenta", "Registrar y entrar"),
                     type="submit",
                     width="100%",
+                    size="3",
+                    height=_TAP,
                     loading=AuthState.is_authenticating,
                 ),
                 spacing="3",

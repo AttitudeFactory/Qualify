@@ -41,6 +41,7 @@ from qualify_api.http.replies_routes import (
     SendDraft,
 )
 from qualify_api.http.sentiment_routes import AnalyzePendingComments
+from qualify_api.leads.interest import AccessInterestService
 from qualify_api.leads.service import LeadIntakeService
 from qualify_api.mail import routes as mail_routes
 from qualify_api.publishing.media_token import MediaTokenStore
@@ -211,6 +212,13 @@ def build_production_leads_service() -> LeadIntakeService:
     return production_leads_service()
 
 
+def build_production_interest_service() -> AccessInterestService:
+    """MARCA-5: the house tenant's interest form, lazy for the same Redis reason."""
+    from qualify_api.leads.composition import production_interest_service  # noqa: PLC0415
+
+    return production_interest_service()
+
+
 def build_production_generate_drafts() -> GenerateDrafts:
     """Lazy import like `build_production_analyze_pending_comments`: keeps
     `qualify_models` (the `ml` group) out of this route's import graph unless the
@@ -298,6 +306,9 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
             build_production_analyze_pending_comments
         )
         app.dependency_overrides[leads_routes.get_leads_service] = build_production_leads_service
+        app.dependency_overrides[leads_routes.get_interest_service] = (
+            build_production_interest_service
+        )
         app.dependency_overrides[mentions_routes.get_webhook_settings] = (
             build_production_mentions_settings
         )

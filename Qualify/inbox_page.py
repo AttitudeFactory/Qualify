@@ -74,11 +74,22 @@ from .inbox_vm import (
     IntentChipVM,
     ReelSummaryVM,
 )
+from .next_steps_vm import (
+    COMMENTS_ALL_CLEAR,
+    CREATE_LABEL,
+    CREATE_ROUTE,
+    DISMISS_LABEL,
+    NEXT_PENDING_LABEL,
+)
 from .publishing_vm import ConnectionOptionVM
-from .replies_state import RepliesState
+from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
     PUBLICATION_ALT_FALLBACK,
+    RETRY_BADGE,
+    RETRY_BUSY_LABEL,
+    RETRY_LABEL,
+    RETRY_SECTION_TITLE,
     REVIEW_BADGE,
     REVIEW_CONFIRM_LABEL,
     SOURCES_EMPTY,
@@ -276,6 +287,11 @@ def _empty_candidates_state() -> rx.Component:
         "film",
         "Sin Reels ni publicaciones en las últimas 2 semanas",
         "Esta cuenta no subió Reels ni publicaciones a tu perfil en los últimos 14 días.",
+        # N8 (m-24842961): comments come from publishing.
+        action=rx.link(
+            rx.button(rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3"),
+            href=CREATE_ROUTE,
+        ),
     )
 
 
@@ -357,21 +373,33 @@ def _connected_body() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    return page_body(
+def _body(wrapped: bool = True) -> rx.Component:
+    """`wrapped=False` returns the content without the page gutter, for the «Comentarios»
+    tab of «Por responder» (m-24842990), which already sits inside a `page_body`."""
+    content = rx.cond(
+        InboxState.connections_error != "",
+        _connections_error(),
         rx.cond(
-            InboxState.connections_error != "",
-            _connections_error(),
+            InboxState.is_loading_connections,
+            _card_skeleton(),
             rx.cond(
-                InboxState.is_loading_connections,
-                _card_skeleton(),
-                rx.cond(
-                    ~InboxState.has_connections,
-                    _no_connections_state(),
-                    _connected_body(),
-                ),
+                ~InboxState.has_connections,
+                _no_connections_state(),
+                _connected_body(),
             ),
         ),
+    )
+    return page_body(content) if wrapped else content
+
+
+def comments_tab() -> rx.Component:
+    """m-24842990: the «Comentarios» tab of «Por responder». The account selector moves
+    from the page header to the top of the tab."""
+    return rx.vstack(
+        rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
+        _body(wrapped=False),
+        spacing="4",
+        width="100%",
     )
 
 
@@ -692,7 +720,19 @@ def _load_more_reels_button() -> rx.Component:
     )
 
 
+def _missing_post_notice() -> rx.Component:
+    return rx.cond(
+        InboxState.missing_post_notice != "",
+        callout(InboxState.missing_post_notice, "info"),
+        rx.fragment(),
+    )
+
+
 def _reel_summaries_list() -> rx.Component:
+    return rx.vstack(_missing_post_notice(), _reel_summaries_list_body(), spacing="3", width="100%")
+
+
+def _reel_summaries_list_body() -> rx.Component:
     return rx.cond(
         InboxState.reel_summaries_error != "",
         _reel_summaries_error_block(),
@@ -720,11 +760,12 @@ def _reel_detail_header() -> rx.Component:
     reel = InboxState.selected_reel_summary
     return rx.vstack(
         rx.button(
-            rx.icon("arrow-left", size=16),
-            "Volver",
+            rx.icon("chevron-left", size=16),
+            "Comentarios",
             on_click=InboxState.back_to_reel_list,
             variant="ghost",
             size="2",
+            min_height="44px",
         ),
         rx.cond(
             reel,
@@ -838,6 +879,13 @@ def _thread_comments_empty_state() -> rx.Component:
         "message-circle",
         "Sin comentarios para este filtro",
         "Prueba con otro filtro o borra la búsqueda.",
+        action=rx.button(
+            "Quitar filtros",
+            on_click=InboxState.clear_thread_filters,
+            variant="soft",
+            size="3",
+            class_name="q-inbox-tap",
+        ),
     )
 
 
@@ -926,22 +974,14 @@ def _prioritize_button() -> rx.Component:
     )
 
 
-def _analyze_intent_error_block() -> rx.Component:
+def _prioritize_error_block() -> rx.Component:
+    # m-24849132: ONE persistent `callout` for «Ordenar por prioridad», whether the
+    # sentiment pass, the intent pass or both failed — never two near-identical boxes.
+    # The success side is a transient `rx.toast.success` dispatched by
+    # `InboxState.analyze_intent` (docs/design-system.md §5.4); only errors persist.
     return rx.cond(
-        InboxState.analyze_intent_error != "",
-        callout(InboxState.analyze_intent_error, "error"),
-        rx.fragment(),
-    )
-
-
-def _analyze_error_block() -> rx.Component:
-    # The success side (`analyze_result`) has no render block here on purpose — it is a
-    # transient `rx.toast.success`, dispatched by `InboxState.analyze_sentiment` itself
-    # (see that handler's docstring), not a persistent callout. Only the error stays a
-    # persistent `callout`, per docs/design-system.md §5.4.
-    return rx.cond(
-        InboxState.analyze_error != "",
-        callout(InboxState.analyze_error, "error"),
+        InboxState.prioritize_error != "",
+        callout(InboxState.prioritize_error, "error"),
         rx.fragment(),
     )
 
@@ -957,8 +997,7 @@ def _comments_section() -> rx.Component:
             spacing="2",
             wrap="wrap",
         ),
-        _analyze_error_block(),
-        _analyze_intent_error_block(),
+        _prioritize_error_block(),
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
@@ -986,7 +1025,7 @@ def _sync_now_button() -> rx.Component:
 
 def _sync_error_block() -> rx.Component:
     # Same "success is a toast, error is a persistent callout" split as
-    # `_analyze_error_block` above — see that function's comment.
+    # `_prioritize_error_block` above — see that function's comment.
     return rx.cond(
         InboxState.sync_error != "",
         callout(InboxState.sync_error, "error"),
@@ -1115,6 +1154,74 @@ def _replies_action_error_block() -> rx.Component:
         RepliesState.action_error != "",
         callout(RepliesState.action_error, "error"),
         rx.fragment(),
+    )
+
+
+_REPLIES_LIST_ID = "q-replies-list"
+
+
+def _replies_sent_block() -> rx.Component:
+    """m-24842961 (N3): a reply that went out ends in a confirmation that stays, with the
+    next job — the next reply while people wait, else «¡Al día!» and the next publication
+    — plus a soft «Entendido» that only closes it. Never only a toast."""
+    next_button = rx.cond(
+        RepliesState.has_pending_drafts,
+        rx.button(
+            NEXT_PENDING_LABEL,
+            on_click=[RepliesState.dismiss_sent_notice, rx.scroll_to(_REPLIES_LIST_ID)],
+            size="3",
+            class_name="q-inbox-tap",
+        ),
+        rx.link(
+            rx.button(
+                rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3", class_name="q-inbox-tap"
+            ),
+            href=CREATE_ROUTE,
+        ),
+    )
+    return rx.cond(
+        RepliesState.sent_notice != "",
+        card(
+            rx.vstack(
+                rx.hstack(
+                    rx.icon("circle-check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                    rx.vstack(
+                        rx.text(RepliesState.sent_notice, size="2", weight="medium"),
+                        rx.cond(
+                            RepliesState.has_pending_drafts,
+                            rx.fragment(),
+                            rx.text(
+                                COMMENTS_ALL_CLEAR,
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            ),
+                        ),
+                        spacing="0",
+                        align_items="start",
+                    ),
+                    spacing="3",
+                    align="start",
+                ),
+                rx.flex(
+                    next_button,
+                    rx.button(
+                        DISMISS_LABEL,
+                        on_click=RepliesState.dismiss_sent_notice,
+                        variant="soft",
+                        size="3",
+                        class_name="q-inbox-tap",
+                        **T.tone_scheme("neutral"),
+                    ),
+                    wrap="wrap",
+                    gap="0.5rem",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            padding="0.875rem 1rem",
+            role="status",
+            id=REPLIES_SENT_ID,
+        ),
     )
 
 
@@ -1403,6 +1510,59 @@ def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
     return media_thumb(draft.media_thumbnail_url, size="48px", icon="image", alt=draft.media_alt)
 
 
+def _draft_comment_block(draft: DraftVM) -> rx.Component:
+    """Who commented, on which publication, and what they said — the top of a reply card
+    (m-24842989), shared by the card waiting for approval and the one that did not go out
+    (ATENDER-9)."""
+    return rx.hstack(
+        _draft_publication_thumb(draft),
+        rx.vstack(
+            rx.cond(
+                draft.author_username != "",
+                rx.text(
+                    "@" + draft.author_username,
+                    size="2",
+                    weight="medium",
+                    word_break="break-word",
+                ),
+            ),
+            # Which publication, in words: its day when we know it, else its
+            # caption (the fallback alt «Publicación» says nothing).
+            rx.cond(
+                draft.media_day != "",
+                rx.text(
+                    "En tu publicación del " + draft.media_day,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+            rx.cond(
+                (draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK),
+                rx.text(
+                    "En tu publicación «" + draft.media_alt + "»",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    max_width="100%",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+            ),
+            rx.text(
+                rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="1",
+            align_items="start",
+            min_width="0",
+        ),
+        spacing="3",
+        align="start",
+        width="100%",
+    )
+
+
 def _draft_card(draft: DraftVM) -> rx.Component:
     """One reply waiting for approval: who commented and on which publication, the
     comment, then the prepared reply. No internal id on screen (m5 hallazgo 5). A
@@ -1429,53 +1589,7 @@ def _draft_card(draft: DraftVM) -> rx.Component:
                 width="100%",
                 wrap="wrap",
             ),
-            rx.hstack(
-                _draft_publication_thumb(draft),
-                rx.vstack(
-                    rx.cond(
-                        draft.author_username != "",
-                        rx.text(
-                            "@" + draft.author_username,
-                            size="2",
-                            weight="medium",
-                            word_break="break-word",
-                        ),
-                    ),
-                    # Which publication, in words: its day when we know it, else its
-                    # caption (the fallback alt «Publicación» says nothing).
-                    rx.cond(
-                        draft.media_day != "",
-                        rx.text(
-                            "En tu publicación del " + draft.media_day,
-                            size="1",
-                            color=T.TEXT_MUTED,
-                        ),
-                    ),
-                    rx.cond(
-                        (draft.media_day == "") & (draft.media_alt != PUBLICATION_ALT_FALLBACK),
-                        rx.text(
-                            "En tu publicación «" + draft.media_alt + "»",
-                            size="1",
-                            color=T.TEXT_MUTED,
-                            max_width="100%",
-                            overflow="hidden",
-                            text_overflow="ellipsis",
-                            white_space="nowrap",
-                        ),
-                    ),
-                    rx.text(
-                        rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="1",
-                    align_items="start",
-                    min_width="0",
-                ),
-                spacing="3",
-                align="start",
-                width="100%",
-            ),
+            _draft_comment_block(draft),
             _draft_intents(draft),
             rx.box(
                 rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),
@@ -1492,14 +1606,88 @@ def _draft_card(draft: DraftVM) -> rx.Component:
     )
 
 
+def _retry_card(draft: DraftVM) -> rx.Component:
+    """ATENDER-9 (m-24849130): a reply that did not go out because Instagram did not
+    answer. It stays visible with the reply the owner approved, the plain reason, and
+    «Reintentar» — which sends only on that tap (N13) and is a full-width ≥ 44 px target
+    (`size="3"`, N12). No Meta code on screen; the sentence comes from `replies_vm`."""
+    is_retrying = RepliesState.retrying_draft_id == draft.id
+    return card(
+        rx.vstack(
+            rx.hstack(
+                tone_badge(RETRY_BADGE, "warn", icon="circle-alert"),
+                rx.spacer(),
+                rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
+                align="center",
+                spacing="2",
+                width="100%",
+                wrap="wrap",
+            ),
+            _draft_comment_block(draft),
+            rx.box(
+                rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),
+                display="inline-block",
+                padding_left="0.25rem",
+            ),
+            chat_bubble(
+                rx.text(
+                    rx.cond(draft.final_text != "", draft.final_text, draft.generated_text),
+                    size="2",
+                ),
+                direction="out",
+            ),
+            callout(draft.failure_message, "warn"),
+            rx.cond(
+                draft.can_retry,
+                rx.button(
+                    rx.cond(is_retrying, loading_spinner("sm"), rx.icon("rotate-cw", size=16)),
+                    rx.cond(is_retrying, RETRY_BUSY_LABEL, RETRY_LABEL),
+                    on_click=RepliesState.retry_send(draft.id),
+                    disabled=RepliesState.busy_draft_id != "",
+                    size="3",
+                    variant="soft",
+                    width="100%",
+                    **T.tone_scheme("ok"),
+                ),
+            ),
+            spacing="2",
+            align_items="start",
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def _retry_list() -> rx.Component:
+    """ATENDER-9: the replies that did not go out, above the ones waiting for approval —
+    a person who was already answered once comes first. Nothing shows when there are
+    none."""
+    return rx.cond(
+        RepliesState.has_retry_drafts,
+        rx.vstack(
+            rx.heading(RETRY_SECTION_TITLE, as_="h3", size="3", weight="medium"),
+            rx.foreach(RepliesState.retry_drafts, _retry_card),
+            spacing="3",
+            width="100%",
+        ),
+    )
+
+
 def _replies_list() -> rx.Component:
     return rx.cond(
         RepliesState.is_loading,
         rx.vstack(_card_skeleton(), spacing="3", width="100%"),
         rx.cond(
             RepliesState.has_pending_drafts,
-            rx.vstack(rx.foreach(RepliesState.drafts, _draft_card), spacing="3", width="100%"),
-            _replies_empty_state(),
+            rx.vstack(
+                rx.foreach(RepliesState.drafts, _draft_card),
+                spacing="3",
+                width="100%",
+                id=_REPLIES_LIST_ID,
+            ),
+            # Right after the last reply the confirmation already says «¡Al día!» with
+            # its button; the empty state below it would repeat it.
+            rx.cond(RepliesState.sent_notice != "", rx.fragment(), _replies_empty_state()),
         ),
     )
 
@@ -1532,6 +1720,8 @@ def _replies_section() -> rx.Component:
         _replies_load_error_block(),
         _replies_generate_error_block(),
         _replies_action_error_block(),
+        _replies_sent_block(),
+        _retry_list(),
         _replies_list(),
         description=(
             "Respuestas listas para los comentarios que te felicitan o preguntan por tus "
