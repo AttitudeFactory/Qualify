@@ -552,10 +552,70 @@ def test_load_stories_screen_marks_loaded_only_on_success() -> None:
     assert "self._connections_loaded = True" in success_block
 
 
-def test_share_to_instagram_reads_only_the_stories_gallery_file() -> None:
-    """QUA-113 criterion 12: "Abrir en Instagram" shares the file of THIS gallery,
-    never the last file dropped anywhere on the page."""
-    script = stories_page._SHARE_TO_INSTAGRAM_SCRIPT
+def test_share_to_instagram_reads_only_the_given_gallery_file() -> None:
+    """QUA-113 criterion 12, kept by PUBLICAR-4: "Abrir en Instagram" shares the file of
+    the gallery it is given (step 1's since PUBLICAR-4), never a page-global last file."""
+    script = stories_page.share_to_instagram_script("publish-gallery-root")
     assert "lastFile" not in script
     assert "__STORIES_GALLERY_FILE__" not in script
-    assert 'filesByRoot["stories-gallery-root"]' in script
+    assert 'filesByRoot["publish-gallery-root"]' in script
+
+
+# ----------------------------------------------------------------------------------
+# PUBLICAR-4: the assistant hands step 1's file over; «Publicar otra» resets
+# ----------------------------------------------------------------------------------
+
+
+def test_adopt_file_takes_the_file_and_the_account() -> None:
+    state = StoriesState()
+
+    adopted = state.adopt_file(
+        filename="foto.jpg", content_type="image/jpeg", data=b"jpeg", connection_id="c-1"
+    )
+
+    assert adopted is True
+    assert state._pending_bytes == b"jpeg"
+    assert state._pending_content_type == "image/jpeg"
+    assert state.pending_filename == "foto.jpg"
+    assert state.pending_is_image is True
+    assert state.selected_connection_id == "c-1"
+    assert state.can_publish is True
+
+
+def test_adopt_file_refuses_while_in_flight_or_for_an_unknown_type() -> None:
+    busy = StoriesState()
+    busy.phase = "polling"
+    assert (
+        busy.adopt_file(filename="a.mp4", content_type="video/mp4", data=b"v", connection_id="c")
+        is False
+    )
+    assert busy._pending_bytes == b""
+
+    idle = StoriesState()
+    assert (
+        idle.adopt_file(
+            filename="a.pdf", content_type="application/pdf", data=b"x", connection_id="c"
+        )
+        is False
+    )
+    assert idle.pending_filename == ""
+
+
+def test_reset_form_clears_the_last_historia_but_not_while_in_flight() -> None:
+    state = StoriesState()
+    state.adopt_file(filename="a.mp4", content_type="video/mp4", data=b"v", connection_id="c")
+    state.phase = "success"
+    state.error = "x"
+
+    state.reset_form()
+
+    assert state.phase == "idle"
+    assert state.error == ""
+    assert state.pending_filename == ""
+    assert state._pending_bytes == b""
+
+    busy = StoriesState()
+    busy.phase = "staging_and_starting"
+    busy.pending_filename = "kept.mp4"
+    busy.reset_form()
+    assert busy.pending_filename == "kept.mp4"

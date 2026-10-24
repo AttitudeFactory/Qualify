@@ -281,74 +281,75 @@ def test_the_options_live_in_a_side_panel_and_the_centre_names_the_choice() -> N
 
 
 def test_each_option_is_a_sequence_of_views() -> None:
-    """§ request 2026-10-14 ("estilo view"): one view at a time, Avatar opening on its
-    types. § request 2026-10-20: every option ends «Datos clave» → «Contexto» →
-    «Resumen», and Generar is on the summary; m-24820838: the optional «Campaña» right
-    before it."""
-    from .creative_state import generator_views
+    """CREAR-2 (m-24848530): every option is four short steps — ① Qué mostrar ② Qué
+    decir ③ Cómo la quieres ④ Revisa y crea. What a kind cannot do without is in step
+    1; «Datos clave» is in step 2 and «Campaña» in step 3, each behind its step's «Más
+    opciones» (UX review: the price or a promotion are what the piece says)."""
+    from .creative_state import generator_steps, generator_views
 
-    # § 2026-10-20 (2): an avatar's reference video is asked in «Guion y fondo»
     assert generator_views("video", "avatar_video") == [
         "avatar_type",
-        "channel",
         "presenter",
         "details",
-        "rules",
         "topic",
+        "rules",
+        "channel",
         "campaign",
         "summary",
+    ]
+    assert generator_steps("video", "avatar_video") == [
+        ("show", ["avatar_type", "presenter", "details"]),
+        ("say", ["topic", "rules"]),
+        ("how", ["channel", "campaign"]),
+        ("review", ["summary"]),
     ]
     # no «Presentador» for the animated avatar: its character is in «Tipo de avatar»
     assert "presenter" not in generator_views("video", "animated_avatar_video")
-    assert generator_views("image", "static_flyer") == [
-        "channel",
-        "details",
-        "rules",
-        "topic",
-        "campaign",
-        "summary",
+    # the ad's photos, the template's photos and the gallery's slides are in step 1
+    assert generator_steps("image", "static_flyer")[0] == ("show", ["details"])
+    assert generator_steps("template", "template")[0] == ("show", ["details"])
+    assert generator_steps("carousel", "carousel")[0] == ("show", ["details"])
+    # Clip and Ad take their references in step 1
+    assert generator_steps("clip", "clip")[0] == ("show", ["reference"])
+    # the creator's script shows nothing of its own: «Paso N de 3», never an empty step
+    assert [step for step, _ in generator_steps("script", "creator_script")] == [
+        "say",
+        "how",
+        "review",
     ]
-    # Avatar and Clip take their references first; a clip's frames are applied from
-    # its references, so it has no «details» view
-    assert generator_views("clip", "clip") == [
-        "reference",
-        "channel",
-        "rules",
-        "topic",
-        "campaign",
-        "summary",
-    ]
-    assert generator_views("script", "creator_script") == [
-        "channel",
-        "rules",
-        "topic",
-        "campaign",
-        "summary",
-    ]
-    assert generator_views("carousel", "carousel")[-4:] == ["rules", "topic", "campaign", "summary"]
-    assert "reference" not in generator_views("template", "template")
+    for category, kind in (
+        ("video", "avatar_video"),
+        ("image", "static_flyer"),
+        ("clip", "clip"),
+        ("carousel", "carousel"),
+        ("template", "template"),
+    ):
+        steps = generator_steps(category, kind)
+        assert [step for step, _ in steps] == ["show", "say", "how", "review"]
+        # nothing optional in step 1, nothing a kind needs behind «Más opciones»
+        assert not {"rules", "campaign"} & set(steps[0][1])
     state = CreativeState()
     state.choose_category("video")
     assert state.gen_view == "avatar_type" and state.gen_is_first_view
+    assert state.gen_step_count == "Paso 1 de 4"
     state.next_view()
-    assert state.gen_view == "channel"
-    state.go_to_view("99")  # clamped to the last view
-    assert state.gen_view == "summary" and state.gen_is_last_view
+    assert state.gen_step_key == "say" and state.gen_step_count == "Paso 2 de 4"
+    state.go_to_view("99")  # clamped to the last step
+    assert state.gen_step_key == "review" and state.gen_is_last_view
     state.next_view()
-    assert state.gen_view == "summary"
+    assert state.gen_step_key == "review"
     state.prev_view()
-    assert state.gen_view == "campaign"
-    state.prev_view()
-    assert state.gen_view == "topic"
+    assert state.gen_step_key == "how"
+    assert state.gen_step_views == ["channel", "campaign"]
     steps = state.gen_view_steps
-    assert [step["label"] for step in steps][-4:] == [
-        "Datos clave",
-        "Contexto",
-        "Campaña",
-        "Resumen",
+    assert [step["label"] for step in steps] == [
+        "Qué mostrar",
+        "Qué decir",
+        "Cómo la quieres",
+        "Revisa y crea",
     ]
-    assert steps[0]["done"] == "true" and steps[5]["current"] == "true"
-    # another option starts on its own first view
+    assert steps[0]["done"] == "true" and steps[2]["current"] == "true"
+    # another option starts on its own first step
     state.choose_category("carousel")
     assert state.gen_step == 0 and state.gen_view == "details"
     # «Descubrir reels» is a mode of its own; picking an option goes back to creating
@@ -784,6 +785,75 @@ def test_an_avatar_type_is_its_avatar_and_its_name() -> None:
     assert '"Crear"' not in picker
 
 
+def test_the_topic_and_siguiente_reach_crear() -> None:
+    """CREAR-2: with the same kind and format as last time, writing the topic and
+    «Siguiente» reach «Crear» with nothing missing; «Atrás» keeps what was written."""
+    for category in ("script", "clip", "image"):
+        state = CreativeState()
+        state.choose_category(category)
+        while state.gen_step_key != "say":
+            state.next_view()
+        if state.brief_kind == "static_flyer":
+            state.set_ad_scene_prompt("Una mano sosteniendo el vaso, luz cálida")
+        else:
+            state.set_brief_topic("La smash doble, solo este fin de semana")
+        while not state.gen_is_last_view:
+            state.next_view()
+        assert state.gen_step_key == "review"
+        assert state.gen_problem == "", category
+        state.prev_view()
+        state.prev_view()
+        assert state.gen_step_key == "say"
+        assert state.brief_topic or state.ad_scene_prompt
+
+
+def test_the_four_steps_render_with_mas_opciones_folded() -> None:
+    """CREAR-2: «Paso N de M», each step's «Más opciones» folded with its 44 px target,
+    «Crear» as the last step's action — saying it publishes nothing — and «Datos clave»
+    saying they never change the brand."""
+    from .content_generator import (
+        _create_view,
+        _script_source,
+        _section_channel,
+        _section_details,
+        _section_rules,
+        _step_how,
+        _step_say,
+        _summary_view,
+    )
+
+    def has(rendered: str, text: str) -> bool:
+        return text in rendered or json.dumps(text)[1:-1] in rendered
+
+    view = str(_create_view())
+    assert "gen_step_count" in view and "gen_step_key" in view
+    assert '"Crear"' in view and '"Generar"' not in view
+    say, how = str(_step_say()), str(_step_how())
+    # step 2 folds «Datos clave»; step 3 folds «Campaña»
+    assert has(say, "Más opciones") and "toggle_rules" in say and "44px" in say
+    assert has(say, "El precio o una promoción, y qué decir o evitar.")
+    assert has(how, "Más opciones") and "toggle_campaign_open" in how
+    assert "toggle_rules" not in how
+    assert has(how, "Agrupa esta publicación en una campaña.")
+    # an avatar's reference video and brand resources are behind step 1's fold
+    details = str(_section_details())
+    assert "toggle_show_more" in details
+    assert has(details, "Un video de referencia y tus fotos de marca.")
+    rules = str(_section_rules())
+    assert "tu marca no cambia" in rules
+    # the avatar's script is asked in «Qué decir», with a named switch and a 44 px label
+    assert "set_own_script_on" in say
+    script = str(_script_source())
+    assert '"aria-label":"Escribir mi propio guion"' in script
+    assert 'jsx("label"' in script and "44px" in script
+    # «De qué trata» was the type of publication, asked twice: now it says so
+    channel = str(_section_channel())
+    assert has(channel, "Tipo de publicación") and not has(channel, "De qué trata")
+    assert has(channel, "Ya elegimos uno por ti; cámbialo si quieres.")
+    assert "RadioGroup" in channel  # one format per line at 360 px
+    assert has(str(_summary_view()), "Crear no publica nada")
+
+
 def test_avatar_holds_the_presenters_and_clip_follows_it() -> None:
     """§ request 2026-10-14: the human and animated presenters are «Avatar»; «Clip» is
     the next option — a generated video with no presenter."""
@@ -820,15 +890,13 @@ def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
     state = _clip_state_with_product()
     state.choose_category("clip")
     assert (state.gen_category, state.brief_kind) == ("clip", "clip")
-    assert state.gen_views == ["reference", "channel", "rules", "topic", "campaign", "summary"]
+    assert state.gen_views == ["reference", "topic", "rules", "channel", "campaign", "summary"]
     labels = [step["label"] for step in state.gen_view_steps]
     assert labels == [
-        "Referencias",
-        "Publicación",
-        "Datos clave",
-        "Contexto",
-        "Campaña",
-        "Resumen",
+        "Qué mostrar",
+        "Qué decir",
+        "Cómo la quieres",
+        "Revisa y crea",
     ]
     assert state.clip_first_frame_key == "uploads/t/p1.jpg"
     assert state.clip_image_keys == ["uploads/t/p1.jpg"]
@@ -1191,9 +1259,15 @@ def test_generar_guion_asks_its_length_in_publicacion() -> None:
 
     channel = str(_section_channel())
     assert "set_media_duration" in channel and "creator_script" in channel
+    # § request 2026-10-23: a clip's length is asked there too
+    assert "set_clip_duration" in channel
+    # § request 2026-10-23: whether it comes with sound sits behind step ③'s «Más
+    # opciones», not beside the length (UX review 2026-10-24, finding 4)
+    assert "set_clip_audio" not in channel
     state = CreativeState()
     state.choose_category("script")
-    assert state.gen_views[0] == "channel" and state.gen_views[-1] == "summary"
+    assert state.gen_views[0] == "topic" and state.gen_views[-1] == "summary"
+    assert state.gen_step_count == "Paso 1 de 3"
 
 
 def test_a_piece_is_named_by_its_title_not_its_prompt() -> None:
@@ -1266,13 +1340,52 @@ def test_the_summary_names_every_choice_and_edits_it_in_its_own_view() -> None:
     assert rows["Datos clave"]["value"] == "precio: 20 $"
     assert rows["Contexto"]["value"].startswith("Falta")
     assert state.gen_problem != ""  # the context is still missing
-    # «Editar» goes back to the view that sets it
-    assert state.gen_views[int(rows["Contexto"]["index"])] == "topic"
-    assert state.gen_views[int(rows["Referencias"]["index"])] == "reference"
+    # «Editar» goes back to the step that sets it (CREAR-2)
+    assert (rows["Contexto"]["view"], rows["Contexto"]["index"]) == ("topic", "1")
+    assert (rows["Referencias"]["view"], rows["Referencias"]["index"]) == ("reference", "0")
+    assert rows["Datos clave"]["index"] == "1"
+    state.edit_view(rows["Datos clave"]["view"])  # behind «Más opciones»: unfolded
+    assert state.gen_step_key == "say" and state.rules_open and not state.campaign_open
+    state.edit_view(rows["Contexto"]["view"])
+    assert state.gen_step_key == "say"
+    state.go_to_view("99")
     state.brief_topic = "La smash doble cayendo en cámara lenta"
     rows = {row["label"]: row for row in state.gen_summary}
     assert rows["Contexto"]["value"] == "La smash doble cayendo en cámara lenta"
     assert state.gen_problem == ""
+
+
+def test_a_clips_sound_has_its_own_row_and_editar_opens_its_switch() -> None:
+    """UX review 2026-10-24 (N2/N6): «Publicación» no longer mentions the sound; the
+    «Sonido» row's «Editar» lands on step 3 with «Más opciones» open, where it lives."""
+    from .content_generator import _audio_switch
+
+    state = CreativeState()
+    state.choose_category("clip")
+    state.go_to_view(str(len(state.gen_views) - 1))  # the summary
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert "sonido" not in rows["Publicación"]["value"]
+    assert rows["Sonido"]["value"] == ("Con sonido" if state.clip_audio else "Sin sonido")
+    assert rows["Sonido"]["view"] == "channel:more"
+    assert state.campaign_open is False
+    state.edit_view(rows["Sonido"]["view"])
+    assert state.gen_step_key == "how" and state.campaign_open
+    assert not state.show_more_open
+    state.set_clip_audio(not state.clip_audio)
+    state.go_to_view("99")
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert rows["Sonido"]["value"] == ("Con sonido" if state.clip_audio else "Sin sonido")
+    # N12: a named switch, toggled by its text too, with a 44 px target
+    rendered = str(_audio_switch(checked=True, on_change=CreativeState.set_clip_audio))
+    assert "Con sonido" in rendered and "44px" in rendered
+    assert "aria-label" in rendered or "ariaLabel" in rendered
+
+
+def test_only_a_clip_shows_the_sound_row() -> None:
+    state = CreativeState()
+    state.choose_category("video")
+    state.go_to_view(str(len(state.gen_views) - 1))
+    assert "Sonido" not in {row["label"] for row in state.gen_summary}
 
 
 def test_the_animated_avatar_takes_its_character_from_the_brand_kit() -> None:
@@ -1291,7 +1404,11 @@ def test_the_animated_avatar_takes_its_character_from_the_brand_kit() -> None:
     state.go_to_view(str(len(state.gen_views) - 1))  # the summary
     rows = {row["label"]: row for row in state.gen_summary}
     assert rows["Personaje"]["index"] == ""  # the Brand Kit's: not edited here
-    assert state.gen_views[int(rows["Video de referencia"]["index"])] == "details"
+    # step 1, «Qué mostrar», behind its «Más opciones» (UX review, N6)
+    assert rows["Video de referencia"]["view"] == "details:more"
+    assert rows["Video de referencia"]["index"] == "0"
+    state.edit_view(rows["Video de referencia"]["view"])
+    assert state.gen_step_key == "show" and state.show_more_open
 
 
 async def test_the_brand_kits_drawn_avatar_is_the_character(

@@ -799,7 +799,9 @@ def _detail_footer() -> rx.Component:
                 description="Los envíos que aún no salieron se retiran; los que ya salieron "
                 "no se pueden deshacer. Una promoción detenida no se puede reanudar.",
                 verb="Sí, detenerla",
-                dismiss=rx.cond(d.row.status == "running", "Seguir enviando", "Volver"),
+                dismiss=rx.cond(
+                    d.row.status == "running", "Seguir enviando", "Seguir con la promoción"
+                ),
                 on_confirm=S.cancel_campaign,
             ),
             rx.fragment(),

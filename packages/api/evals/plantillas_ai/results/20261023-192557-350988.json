@@ -1,0 +1,265 @@
+{
+  "stamp": "20261023-192557-350988",
+  "pricing_version": "v6",
+  "prompt_version": "plantillas-ai-v1",
+  "size": "2K",
+  "ceiling_usd": "0.20",
+  "spent_usd": "0.140",
+  "reservations": 4,
+  "ledger": {
+    "ceiling_usd": "0.20",
+    "spent_usd": "0.140",
+    "held_usd": "0.000",
+    "reserved_usd": "0.140",
+    "overage_usd": "0",
+    "over_ceiling_usd": "0",
+    "reservations": 4,
+    "settlements": 4,
+    "releases": 0,
+    "open_reservations": 0
+  },
+  "totales": {
+    "estimado_usd": "0.140",
+    "reservado_usd": "0.140",
+    "gastado_usd": "0.140",
+    "exceso_sobre_reserva_usd": "0",
+    "exceso_sobre_tope_usd": "0",
+    "retenido_usd": "0.000",
+    "alerta": false
+  },
+  "stopped": null,
+  "error_inesperado": null,
+  "lector": {
+    "tipo": "ninguno"
+  },
+  "results_path": "packages/api/evals/plantillas_ai/results/20261023-192557-350988.json",
+  "salidas": "packages/api/evals/plantillas_ai/imagenes/salidas/20261023-192557-350988",
+  "items": {
+    "color:fix-objeto-disco+paleta-menta-coral-cobre@seedream-5-0-lite-260128": {
+      "provider": "seedream",
+      "model_id": "seedream-5-0-lite-260128",
+      "prompt_version": "plantillas-ai-v1",
+      "pricing_version": "v6",
+      "estimated_usd": "0.035",
+      "block": "color",
+      "model_revision": "seedream-5-0-260128",
+      "metricas": {
+        "metricas_version": "metricas-v1",
+        "origen_mascara": "mask",
+        "paleta_referencia_lab": [
+          [
+            55.29,
+            24.0,
+            46.0
+          ],
+          [
+            65.88,
+            -42.0,
+            12.0
+          ],
+          [
+            67.84,
+            47.0,
+            49.0
+          ]
+        ],
+        "paleta_resultado_lab": [
+          [
+            42.54,
+            23.26,
+            43.57
+          ],
+          [
+            60.97,
+            -37.8,
+            8.01
+          ],
+          [
+            67.8,
+            44.41,
+            43.04
+          ]
+        ],
+        "delta_e_paleta": 9.032,
+        "delta_e_resultado_a_referencia": 9.032,
+        "delta_e_referencia_a_resultado": 9.032,
+        "paleta_dentro_del_umbral": true,
+        "psnr_fondo_db": 24.777,
+        "borde_recompuesto_psnr_db": null,
+        "resultado_redimensionado": true
+      },
+      "estado": "hecho",
+      "estimado_usd": "0.035",
+      "reservado_usd": "0.035",
+      "gastado_usd": "0.035",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    },
+    "color:fix-objeto-rombo+paleta-azul-arena-terracota@seedream-5-0-lite-260128": {
+      "provider": "seedream",
+      "model_id": "seedream-5-0-lite-260128",
+      "prompt_version": "plantillas-ai-v1",
+      "pricing_version": "v6",
+      "estimated_usd": "0.035",
+      "block": "color",
+      "model_revision": "seedream-5-0-260128",
+      "metricas": {
+        "metricas_version": "metricas-v1",
+        "origen_mascara": "mask",
+        "paleta_referencia_lab": [
+          [
+            32.55,
+            2.0,
+            -40.0
+          ],
+          [
+            46.67,
+            38.0,
+            37.0
+          ],
+          [
+            81.57,
+            4.0,
+            23.0
+          ]
+        ],
+        "paleta_resultado_lab": [
+          [
+            20.18,
+            4.9,
+            -38.22
+          ],
+          [
+            45.67,
+            38.07,
+            36.46
+          ],
+          [
+            88.5,
+            1.35,
+            13.81
+          ]
+        ],
+        "delta_e_paleta": 8.592,
+        "delta_e_resultado_a_referencia": 8.592,
+        "delta_e_referencia_a_resultado": 8.592,
+        "paleta_dentro_del_umbral": true,
+        "psnr_fondo_db": 24.064,
+        "borde_recompuesto_psnr_db": null,
+        "resultado_redimensionado": true
+      },
+      "estado": "hecho",
+      "estimado_usd": "0.035",
+      "reservado_usd": "0.035",
+      "gastado_usd": "0.035",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    },
+    "texture:fix-luma+textura-rayas-cobre@seedream-5-0-lite-260128": {
+      "provider": "seedream",
+      "model_id": "seedream-5-0-lite-260128",
+      "prompt_version": "plantillas-ai-v1",
+      "pricing_version": "v6",
+      "estimated_usd": "0.035",
+      "block": "texture",
+      "model_revision": "seedream-5-0-260128",
+      "legibilidad": {
+        "metricas_version": "metricas-v1",
+        "estado": "pendiente"
+      },
+      "estado": "hecho",
+      "estimado_usd": "0.035",
+      "reservado_usd": "0.035",
+      "gastado_usd": "0.035",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    },
+    "texture:fix-nucleo+textura-puntos-mostaza@seedream-5-0-lite-260128": {
+      "provider": "seedream",
+      "model_id": "seedream-5-0-lite-260128",
+      "prompt_version": "plantillas-ai-v1",
+      "pricing_version": "v6",
+      "estimated_usd": "0.035",
+      "block": "texture",
+      "model_revision": "seedream-5-0-260128",
+      "legibilidad": {
+        "metricas_version": "metricas-v1",
+        "estado": "pendiente"
+      },
+      "estado": "hecho",
+      "estimado_usd": "0.035",
+      "reservado_usd": "0.035",
+      "gastado_usd": "0.035",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    },
+    "flat:fix-luma+textura-rayas-cobre@pillow-flat-texture": {
+      "provider": "pillow-flat-texture",
+      "model_id": "pillow-flat-texture",
+      "prompt_version": "flat-texture-v1",
+      "pricing_version": null,
+      "estimated_usd": "0",
+      "block": "flat",
+      "metricas": {
+        "tamano": [
+          1080,
+          351
+        ],
+        "origen_mascara": "alpha",
+        "iou_mascara": 0.984145,
+        "diferencia_mascara": 0.003354,
+        "trazo_minimo_px": 34,
+        "componentes_antes": 4,
+        "componentes_despues": 4,
+        "trazo_perdido": false,
+        "aprobado": true
+      },
+      "estado": "hecho",
+      "estimado_usd": "0",
+      "reservado_usd": "0.000",
+      "gastado_usd": "0.000",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    },
+    "flat:fix-nucleo+textura-puntos-mostaza@pillow-flat-texture": {
+      "provider": "pillow-flat-texture",
+      "model_id": "pillow-flat-texture",
+      "prompt_version": "flat-texture-v1",
+      "pricing_version": null,
+      "estimated_usd": "0",
+      "block": "flat",
+      "metricas": {
+        "tamano": [
+          1080,
+          331
+        ],
+        "origen_mascara": "alpha",
+        "iou_mascara": 0.98929,
+        "diferencia_mascara": 0.001578,
+        "trazo_minimo_px": 12,
+        "componentes_antes": 7,
+        "componentes_despues": 7,
+        "trazo_perdido": false,
+        "aprobado": true
+      },
+      "estado": "hecho",
+      "estimado_usd": "0",
+      "reservado_usd": "0.000",
+      "gastado_usd": "0.000",
+      "exceso_sobre_reserva_usd": "0",
+      "exceso_sobre_tope_usd": "0",
+      "retenido_usd": "0.000",
+      "exceso": false
+    }
+  }
+}
