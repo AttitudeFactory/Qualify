@@ -332,7 +332,7 @@ def test_the_intent_filter_is_part_of_every_comment_read_and_its_race_guard() ->
         source = inspect.getsource(handler)
         assert "intent_filter=intent_filter" in source
         assert "intent_filter == self.intent_filter" in source
-    assert "self.intent_filter = FILTER_ALL" in inspect.getsource(InboxState.select_reel.fn)
+    assert "self.intent_filter = FILTER_ALL" in inspect.getsource(InboxState._open_detail)
 
 
 @pytest.mark.parametrize(

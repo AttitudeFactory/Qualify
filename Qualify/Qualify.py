@@ -44,6 +44,8 @@ from .creative_wizard_pages import (
 )
 from .followups_state import FollowupsState
 from .gallery_state import GalleryState
+from .home_page import home_index
+from .home_state import HomeState
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
@@ -92,7 +94,10 @@ avatar_api.include_router(r2_media_router)
 avatar_api.include_router(piece_download_router)
 
 
-def index() -> rx.Component:
+def mentions_index() -> rx.Component:
+    """Menciones (m-24842962): no longer the home — Inicio is `/` now (founder decision
+    1, 2026-10-23). It keeps its own stable route until Resultados › «Quién habla de
+    ti» (m-24843003) hosts it."""
     return app_shell(
         topbar(),
         page_body(stats_row(), filter_bar(), mentions_body()),
@@ -209,9 +214,18 @@ app.add_page(
 # Every business page requires a session: `require_login` runs FIRST in each on_load
 # chain and redirects to /login when there is none. The loads behind it also refuse on
 # their own when no tenant is present — the guard is UX, RLS + AuthState is the wall.
+# m-24842962 (NAV-4, N2): `/` is Inicio — login, a finished brand and the old storefront
+# link all land here. An anonymous visitor is still sent to the Brand Kit's first view.
 app.add_page(
-    index,
-    on_load=[AuthState.require_login_or_brand_start, DashboardState.load_mentions],
+    home_index,
+    route="/",
+    on_load=[AuthState.require_login_or_brand_start, HomeState.load],
+    title="Qualify · Inicio",
+)
+app.add_page(
+    mentions_index,
+    route="/menciones",
+    on_load=[AuthState.require_login, DashboardState.load_mentions],
     title="Qualify · Menciones",
 )
 app.add_page(
@@ -249,7 +263,7 @@ app.add_page(
 app.add_page(
     inbox_index,
     route="/inbox",
-    on_load=[AuthState.require_login, InboxState.load_screen],
+    on_load=[AuthState.require_login, InboxState.enter_screen],
     title="Qualify · Comentarios",
 )
 # QUA-226: the private inbox of the connected accounts (Instagram Direct first).
