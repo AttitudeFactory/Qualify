@@ -2233,6 +2233,7 @@ class ContentService:
                     asset_id=asset.id,
                     changes={"status": DRAFT_FAILED, "error": FINAL_NOT_ORDERED_TEXT},
                 )
+            self._refund_final_part(tenant_id, draft_id, "final_not_ordered")
             raise
 
     def retry_final(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail:
@@ -2259,6 +2260,8 @@ class ContentService:
                 asset_id=asset.id,
                 changes={"status": DRAFT_FAILED, "error": DRAFT_EXPIRED_TEXT},
             )
+        if expired:
+            self._refund_final_part(tenant_id, draft_id, "draft_expired")
         gone = {asset.id for asset in expired}
         live = tuple(asset for asset in assets if asset.id not in gone)
         if expired and not live:
@@ -2327,6 +2330,7 @@ class ContentService:
             except Exception:
                 logger.exception("final of draft %s failed unexpectedly", draft_id)
                 self._fail_final(tenant_id, asset.id, claim, _FINAL_FAILED_TEXT)
+                self._refund_final_part(tenant_id, draft_id, "final_failed")
                 continue
             self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, claim, outcome)
 
@@ -2409,6 +2413,10 @@ class ContentService:
                     claim=claim,
                     draft_changes=outcome.draft_changes,
                 )
+                if media is None:
+                    # the vendor failed it, or it could not be saved: no final for the
+                    # owner, so the finals' part of the charge goes back (CREAR-5 v2)
+                    self._refund_final_part(tenant_id, draft_id, error or "final_failed")
                 return
             except Exception:
                 logger.exception("final of draft %s: could not save it", draft_id)
@@ -2416,6 +2424,28 @@ class ContentService:
             "draft %s final: %s USD spent and NOT recorded", draft_id, outcome.spent_usd
         )
         self._fail_final(tenant_id, asset_id, claim, _FINAL_SAVE_FAILED_TEXT)
+        self._refund_final_part(tenant_id, draft_id, "final_not_saved")
+
+    def _refund_final_part(self, tenant_id: UUID, draft_id: UUID, reason: str) -> None:
+        """CREAR-5 v2 (m-24851828): a 1080p final that fails gives back only the part of
+        the piece's charge that paid for the finals (`final_weight`) — the preview's part
+        stays charged. Idempotent in the ledger (a second failure gives nothing more), and
+        a retried final that then comes out is not charged again. Never a reason to break
+        the run: a refund that cannot be written is logged."""
+        if self._creations is None:
+            return
+        try:
+            record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+            if record is None:
+                return
+            self._creations.refund_final(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                revision=record.revision,
+                reason=reason,
+            )
+        except Exception:
+            logger.exception("draft %s: final creations refund failed", draft_id)
 
     def reject(
         self,

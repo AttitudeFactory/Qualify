@@ -25,7 +25,6 @@ from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
-    CLIP_DURATIONS,
     DURATIONS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
@@ -3683,8 +3682,12 @@ def _section_channel() -> rx.Component:
             CreativeState.brief_kind == "clip",
             _field(
                 "Duración",
+                # CREAR-5 v2: only the lengths the month can pay for
                 rx.segmented_control.root(
-                    *_seconds_items(CLIP_DURATIONS),
+                    rx.foreach(
+                        CreativeState.clip_duration_choices,
+                        lambda s: rx.segmented_control.item(s + "\u00a0s", value=s),
+                    ),
                     value=CreativeState.clip_duration,
                     on_change=CreativeState.set_clip_duration,
                     size="2",

@@ -4,6 +4,9 @@
 Autor: data scientist / FDE · Fecha: 2026-10-23 · Pesos: **`pesos-creaciones-v1`** sobre la
 tabla de precios **`v5`** (`packages/creative/src/qualify_creative/pricing_data/v5.json`).
 
+> **Vigentes desde 2026-10-24: `pesos-creaciones-v2` sobre la tabla `v7` (§5, m-24851828).**
+> Las secciones 1 a 4 son la medición de v1 y se conservan como estaban.
+
 El dueño ve «creaciones del mes» («Te quedan 18 de 30 este mes»), nunca dinero. El equipo ve
 los dólares. Esta página fija cuánto vale cada pedido en creaciones, con qué datos se midió y
 cuánto queda sin medir.
@@ -111,3 +114,146 @@ genera y se le ofrece el de 15 s (13 creaciones).
 inmobiliaria o viajes), repetir la misma lectura agregada y recalcular p50/p90 de creaciones por
 negocio y mes y el p95 de costo por tipo. Si el p90 real pasa de 30, subir el cupo; si algún
 p95 por tipo supera su peso × 0,15, subir ese peso y versionar `pesos-creaciones-v2`.
+
+## 5. Pesos `pesos-creaciones-v2` (vigentes desde 2026-10-24, m-24851828)
+
+Fecha: 2026-10-24 · Pesos: **`pesos-creaciones-v2`**
+(`packages/creative/src/qualify_creative/creations_data/pesos-creaciones-v2.json`) sobre la
+tabla de precios **`v7`**. `pesos-creaciones-v1` se conserva tal cual (versionado, no se edita)
+y cada cobro sigue guardando su peso, la versión de pesos y la versión de la tabla de precios.
+
+**Por qué hay v2.** v1 se calculó antes de #304 (Seedance 2.5 con modo borrador, m-24820142).
+Sobre `main` dejaba de cuadrar en seis puntos (`docs/ux-revision-equipo-2026-10-24.md` §Pesos
+de #299): duración del clip, presentador de 5 y 10 s, vista previa + final, video de
+referencia, versión de la tabla y sonido.
+
+### 5.1 Decisiones del fundador (2026-10-24)
+
+- **Presentador:** se ofrece a **5, 10, 15 y 30 s**. **45 y 60 s quedan fuera**: no tienen
+  fila, no aparecen en las duraciones del presentador y una prueba lo comprueba.
+- **Modo borrador:** todo se cobra **al crear**: la vista previa a 480p y el final a 1080p que
+  se hace al aprobar. **Aprobar no cobra nada.** Si el final falla, se devuelve solo la parte
+  del final y se registra aparte.
+- **Duración del clip:** un clip se cobra por **su** duración (`clip_duration`), no por la del
+  presentador (`media_duration`). Un clip de 5 s se cobra como de 5 s.
+- **Video de referencia:** se cobran sus segundos de entrada.
+- **Tabla de precios:** `v7`.
+- **Sonido:** lo decide data-scientist-fde (§5.4).
+
+### 5.2 Cómo se calcula el video generado (Seedance 2.5)
+
+El peso ya no es una fila escrita a mano: sale de la tabla `v7` al cargar los pesos, así que no
+puede separarse de la tabla que cita. Modelo `dreamina-seedance-2-5-260628`, el de producción
+para clip, avatar de Seedance y diapositiva animada.
+
+| Parte | Tokens por segundo (proporción más cara, 3:4) | Tarifa `v7` sin / con video de entrada | USD por segundo sin / con video |
+|---|---:|---:|---:|
+| Vista previa 480p (560 × 752) | 9 870 | 10,70 / 6,40 por millón | 0,1056 / 0,0632 |
+| Final 1080p (1248 × 1664) | 48 672 | 11,70 / 7,00 por millón | 0,5695 / 0,3407 |
+
+- Tokens por segundo = ancho × alto × 24 / 1024 (fórmula de ModelArk, la misma de
+  `estimate_video_tokens`). Se toma 3:4, la proporción con más píxeles; 9:16 da 9 607 y 48 600.
+- Más **USD 0,068 fijos** por video (texto p95 0,033 + una imagen 0,035, medidos en producción).
+  El clip no genera imagen propia; se deja el fijo de v1 como techo.
+- Peso = ⌈(fijo + vista previa + final) / 0,15⌉. **Parte del final** = peso − ⌈(fijo + vista
+  previa) / 0,15⌉. Esa parte es la única que se devuelve si el final falla.
+- **Video de referencia:** con video de entrada la tarifa baja, pero se cobran sus segundos al
+  tamaño de salida (medido en `docs/modelos-generativos/seedance-2-5.md`, SD25-001: 115 690 y
+  118 851 tokens frente a ~48 000 sin entrada). v2 supone que el final a 1080p **también**
+  vuelve a cobrar la entrada: no está medido en vivo, y así el peso nunca se queda corto. El
+  brief no guarda cuánto dura el video de referencia, así que se cobra el máximo que acepta una
+  tarea de 2.5: **30 s**.
+- El clip sigue limitado a 15 s (`max_output_seconds`).
+
+### 5.3 Presentador (OmniHuman 1.5, sin vista previa)
+
+Costo = guion 0,033 + OmniHuman 1.5 a USD 0,12 por segundo + voz (Seed Speech, USD 30 por
+millón de caracteres, 15 caracteres por segundo). OmniHuman no tiene vista previa ni final:
+el presentador no tiene parte del final y no se le devuelve nada aparte.
+
+### 5.4 Sonido: no cambia el peso
+
+- `v7` tiene **una sola tarifa** para Seedance 2.5, con o sin sonido (página de precios leída
+  el 2026-10-07 y el 2026-10-23). El 2026-10-24 se intentó releer la página en vivo y no se
+  pudo: la página carga sus precios con JavaScript.
+- En SD25-001 el clip con sonido (`generate_audio` encendido) facturó 115 690 tokens y la
+  diapositiva sin sonido 118 851. Las dos quedan dentro de la fórmula de tokens (118 461 y
+  121 697), así que el sonido **no añadió tokens**.
+- **Decisión:** «Con sonido» no cambia el peso (`audio_usd_per_second = 0`). Una prueba lo
+  comprueba. Si la primera factura de BytePlus cobra el sonido aparte, se pone su precio en
+  `v8` y se versiona `pesos-creaciones-v3`.
+
+### 5.5 Tabla `pesos-creaciones-v2`
+
+| Pedido | Costo estimado (USD) | Creaciones | De ellas, parte del final | Cambio frente a v1 |
+|---|---:|---:|---:|---|
+| Imagen con texto (incluye su juego de ángulos) | 0,07 | **1** | — | igual |
+| Otra versión de la imagen | 0,07 | **1** | — | igual |
+| Otra versión solo del texto / proponer ángulos de nuevo | ≤ 0,03 | **0** | — | igual |
+| Carrusel de 2 a 3 / 4 a 7 / 8 a 10 imágenes | 0,14 / 0,28 / 0,38 | **1 / 2 / 3** | — | igual |
+| Guion para una persona; video con plantilla | 0,03–0,07 | **1** | — | igual |
+| Clip (o avatar de Seedance) de 5 s, sin referencia | 3,44 | **23** | 19 | era 3 |
+| Clip de 10 s | 6,82 | **46** | 38 | era 5 |
+| Clip de 15 s | 10,19 | **68** | 56 | era 6 |
+| Clip de 5 s con 3 s de video de referencia (medidos) | 3,30 | **22** | 18 | nuevo |
+| Clip de 5 s con 7,33 s de referencia (el caso medido en SD25-001) | 5,05 | **34** | 28 | nuevo |
+| Clip de 5 s con video de referencia de duración desconocida (se cobran 30 s) | 14,20 | **95** | 79 | nuevo |
+| Diapositiva animada de 5 s en un carrusel (se suma a las imágenes) | 3,44 | **+23** | 19 | era +3 |
+| Presentador de 5 s | 0,64 | **5** | — | nuevo (en v1 costaba 13) |
+| Presentador de 10 s | 1,24 | **9** | — | nuevo (en v1 costaba 13) |
+| Presentador de 15 s | 1,84 | **13** | — | igual |
+| Presentador de 30 s | 3,65 | **25** | — | igual |
+| Presentador de 45 o 60 s | — | **no se ofrece** | — | decisión del fundador |
+
+Cuando el mes no alcanza para el presentador pedido, la pantalla ofrece **el más largo que
+alcance** (con 20 creaciones, el de 15 s; con 11, el de 10 s; con 6, el de 5 s). Antes ofrecía
+siempre el de 15 s.
+
+### 5.6 Lo que los números contradicen del plan (para decidir)
+
+Con las decisiones de §5.1 y la tabla `v7`, **el video generado no cabe en un mes de 30**:
+
+- Un clip de **5 s usa 23 de 30**. Los de **10 s (46) y 15 s (68) no caben ni con el mes
+  entero**, así que la pantalla ya no los ofrece: el control de duración del clip muestra solo
+  lo que el saldo paga, y al menos el de 5 s (`clip_duration_choices`).
+- Un clip con **video de referencia** pasa de 30 casi siempre: el brief no guarda la duración
+  del video y se cobran 30 s (95). Con la duración medida, solo una referencia de unos 6 s o
+  menos cabe en un mes completo. Hoy la pantalla deja subir el video de referencia y después
+  dice «Te faltan N creaciones».
+- El 84 % del costo es el **final a 1080p** (USD 0,57 por segundo, frente a 0,11 de la vista
+  previa). En v1, Seedance 1.0 pro a 720p costaba 0,054 por segundo: el video generado cuesta
+  ahora **12 veces más** por segundo.
+
+Opciones (precios de `v7`, clip de 5 / 10 / 15 s):
+
+| Opción | Creaciones | Qué cambia |
+|---|---|---|
+| A. Lo de hoy: vista previa 480p + final 1080p | 23 / 46 / 68 | nada |
+| B. Final a **720p** en vez de 1080p | 12 / 23 / 35 | el final cuesta 2,4 veces menos por segundo; necesita una prueba de calidad en `docs/modelos-generativos/` |
+| C. Sin vista previa, directo a 1080p | 20 / 39 / 58 | se pierde la vista previa barata; ahorro pequeño |
+| D. Subir el cupo para quien use video, o un cupo de video aparte | — | fuera del alcance de este ticket (el cupo de 30 y el tope en dólares no se tocan) |
+
+**Recomendación:** B, final a 720p, con una prueba de calidad antes (mismo borrador, final a
+720p y a 1080p, a la vista de una dueña en un teléfono). Con B el clip de 5 s usa 12, cabe
+junto a un mes normal (20 + 12 = 32, cerca de 30) y el de 10 s usa 23. Hasta que se decida,
+v2 cobra lo que de verdad cuesta (A) y la pantalla no ofrece lo que no se puede pagar.
+
+Pendiente de medir: un final a 1080p de un borrador **con** video de entrada (si vuelve a
+cobrar la entrada) y la primera factura de BytePlus (tarifas y sonido). Cualquiera de los dos
+puede bajar los pesos del video con referencia y lleva a `pesos-creaciones-v3`.
+
+### 5.7 Cómo se cobra y se devuelve (código)
+
+- `weight_for(brief)` / `weight_for_request(...)` devuelven el peso y `final_weight`, la parte
+  del final. La pantalla y el servicio leen la misma regla.
+- `creation_charges` (migración `0088`, antes `0084`, ahora sobre la cabeza `0087` de `main`)
+  guarda `final_weight`, y además `final_refunded_at` y `final_refund_reason` cuando el final
+  falla. La fila sigue en `charged` por su vista previa y el saldo cuenta `weight −
+  final_weight`. La devolución se hace una sola vez.
+- Se devuelve la parte del final cuando el proveedor falla el final, cuando falla nuestro
+  código, cuando no se puede guardar, cuando no se pudo encargar y cuando la vista previa
+  venció. **Reintentar un final que falló no vuelve a cobrar**: el fallo fue nuestro o del
+  proveedor, no del dueño.
+- El informe del equipo (`creations_report`) cuenta la parte devuelta como devuelta.
+- Pruebas: `packages/creative/tests/test_creations.py`,
+  `packages/api/tests/test_creations_ledger.py` y `Qualify/test_creations_of_the_month.py`.

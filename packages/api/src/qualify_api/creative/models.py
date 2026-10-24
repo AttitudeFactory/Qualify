@@ -707,9 +707,11 @@ CREATION_CHARGE_STATUSES: tuple[str, ...] = ("charged", "refunded")
 
 
 class CreationCharge(Base):
-    """One charged generation in «creaciones del mes» (0084, CREAR-5 m-24848531): its
+    """One charged generation in «creaciones del mes» (0088, CREAR-5 m-24848531): its
     weight and the versions that priced it. A refund keeps the row and turns its status;
-    the dollars stay in `creative_usage_events`, joined by `draft_id` for the team."""
+    the dollars stay in `creative_usage_events`, joined by `draft_id` for the team.
+    `final_weight` (v2, m-24851828) is the part of `weight` that paid for the 1080p
+    finals; a failed final gives back only that part (`final_refunded_at`)."""
 
     __tablename__ = "creation_charges"
     __table_args__ = (
@@ -742,6 +744,11 @@ class CreationCharge(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    final_weight: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    final_refunded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    final_refund_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # `creative_angle_sets` / `creative_angles` vocabularies (0070, ticket 24803289). Strings

@@ -11,6 +11,11 @@ zone, the one the owner lives in.
   transaction, so two asks at once cannot both spend the last creations; a generation
   already charged is not charged again (idempotent by its unique key).
 - `refund` is idempotent too: only a `charged` row turns.
+- `refund_final` (v2, m-24851828) gives back only the part of a charge that paid for the
+  1080p finals (`final_weight`) when a final fails: the row stays `charged` for its
+  preview, records `final_refunded_at` and why, and the balance stops counting that part.
+  Idempotent: a second failure gives nothing more. A retried final that then comes out
+  is not charged again — the failure was ours or the vendor's, never the owner's.
 - The dollar cap of `creative_engine_config` stays as the team's safety net; the owner
   never sees money (decision 8).
 """
@@ -27,7 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_creative.creations import CreationPrice, CreationWeights, load_weights
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -99,6 +104,11 @@ class CreationsLedger(Protocol):
         """Give back one generation's creations; False when nothing was charged."""
         ...
 
+    def refund_final(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
+        """Give back only the finals' part of one generation's charge; False when there is
+        none to give (no final part, already given, or the whole charge refunded)."""
+        ...
+
 
 def month_start(now: datetime, zone: str) -> date:
     """The first day of `now`'s month in `zone` (UTC when the zone is unknown)."""
@@ -139,8 +149,13 @@ class PostgresCreationsLedger:
 
     @staticmethod
     def _used(session: Session, tenant_id: UUID, brand_id: UUID, period: date) -> int:
+        # a charge whose final failed keeps counting only its preview's part
+        counted = CreationCharge.weight - case(
+            (CreationCharge.final_refunded_at.is_not(None), CreationCharge.final_weight),
+            else_=0,
+        )
         total = session.scalar(
-            select(func.coalesce(func.sum(CreationCharge.weight), 0)).where(
+            select(func.coalesce(func.sum(counted), 0)).where(
                 CreationCharge.tenant_id == tenant_id,
                 CreationCharge.brand_id == brand_id,
                 CreationCharge.period_month == period,
@@ -194,6 +209,7 @@ class PostgresCreationsLedger:
                     revision=revision,
                     request_kind=price.request_kind,
                     weight=price.weight,
+                    final_weight=price.final_weight,
                     monthly_quota=self._weights.monthly_quota,
                     weights_version=self._weights.version,
                     pricing_table_version=self._weights.pricing_table_version,
@@ -207,6 +223,25 @@ class PostgresCreationsLedger:
     def refund(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
         with tenant_session(tenant_id) as session:
             return refund_in_session(session, ((draft_id, revision),), reason, self._clock()) > 0
+
+    def refund_final(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
+        with tenant_session(tenant_id) as session:
+            row = session.scalar(
+                select(CreationCharge)
+                .where(
+                    CreationCharge.draft_id == draft_id,
+                    CreationCharge.revision == revision,
+                    CreationCharge.status == CHARGED,
+                    CreationCharge.final_weight > 0,
+                    CreationCharge.final_refunded_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if row is None:
+                return False
+            row.final_refunded_at = self._clock()
+            row.final_refund_reason = reason[:200]
+            return True
 
 
 def refund_in_session(
@@ -244,6 +279,12 @@ class _MemoryRow:
     price: CreationPrice
     status: str = CHARGED
     reason: str | None = None
+    final_refunded: bool = False
+    final_reason: str | None = None
+
+    @property
+    def counted(self) -> int:
+        return self.price.weight - (self.price.final_weight if self.final_refunded else 0)
 
 
 class InMemoryCreationsLedger:
@@ -256,7 +297,7 @@ class InMemoryCreationsLedger:
 
     def _used(self, brand_id: UUID) -> int:
         return self._opening + sum(
-            row.price.weight
+            row.counted
             for row in self.rows.values()
             if row.brand_id == brand_id and row.status == CHARGED
         )
@@ -291,6 +332,16 @@ class InMemoryCreationsLedger:
             return False
         row.status = REFUNDED
         row.reason = reason
+        return True
+
+    def refund_final(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
+        row = self.rows.get((draft_id, revision))
+        if row is None or row.status != CHARGED or row.final_refunded:
+            return False
+        if row.price.final_weight <= 0:
+            return False
+        row.final_refunded = True
+        row.final_reason = reason
         return True
 
 

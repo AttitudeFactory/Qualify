@@ -40,6 +40,17 @@ class ChargeRow:
     pricing_table_version: str
     period_month: date
     charged_at: datetime
+    #: v2: the part of `weight` that paid for 1080p finals, and whether it was given
+    #: back because a final failed.
+    final_weight: int = 0
+    final_refunded: bool = False
+
+    @property
+    def counted(self) -> int:
+        """What this charge still takes from the month."""
+        if self.status != CHARGED:
+            return 0
+        return self.weight - (self.final_weight if self.final_refunded else 0)
 
 
 @dataclass(frozen=True)
@@ -87,8 +98,8 @@ def build_report(
                 draft_id=draft_id,
                 first_charged_at=rows[0].charged_at,
                 request_kind=rows[0].request_kind,
-                creations_charged=sum(r.weight for r in rows if r.status == CHARGED),
-                creations_refunded=sum(r.weight for r in rows if r.status != CHARGED),
+                creations_charged=sum(r.counted for r in rows),
+                creations_refunded=sum(r.weight - r.counted for r in rows),
                 usd_real=usd_by_draft.get(draft_id, Decimal(0)),
                 versions=", ".join(
                     sorted({f"{r.weights_version}/{r.pricing_table_version}" for r in rows})
@@ -101,7 +112,7 @@ def build_report(
         MonthLine(
             brand_id=brand_id,
             period_month=period,
-            creations_used=sum(r.weight for r in rows if r.status == CHARGED),
+            creations_used=sum(r.counted for r in rows),
             quota=quota,
             usd_real=sum(
                 (usd_by_draft.get(d, Decimal(0)) for d in {r.draft_id for r in rows}),
@@ -154,6 +165,8 @@ def _fetch(tenant_id: UUID, month: date | None) -> tuple[list[ChargeRow], dict[U
                 pricing_table_version=c.pricing_table_version,
                 period_month=c.period_month,
                 charged_at=c.charged_at,
+                final_weight=c.final_weight,
+                final_refunded=c.final_refunded_at is not None,
             )
             for c in session.scalars(query)
         ]

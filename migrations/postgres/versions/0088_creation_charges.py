@@ -6,9 +6,16 @@ Create Date: 2026-10-23
 
 CREAR-5: the owner sees «Te quedan 18 de 30 este mes», never money. Every generation
 (a first one and each «Pedir otra versión») is charged in creations when it is ASKED for,
-with the weight of `qualify_creative.creations` (`pesos-creaciones-v1` over pricing table
-`v5`). A generation that fails, is refused by moderation or is reaped is REFUNDED: the
-row stays (provenance), `status` turns `refunded` and stops counting.
+with the weight of `qualify_creative.creations` (`pesos-creaciones-v2` over pricing table
+`v7`, m-24851828; v1 over `v5` before it). A generation that fails, is refused by
+moderation or is reaped is REFUNDED: the row stays (provenance), `status` turns
+`refunded` and stops counting.
+
+- `final_weight` (v2): a generated video is charged at creation for its 480p preview AND
+  the 1080p final made at approval (founder, 2026-10-24); this column is the part of
+  `weight` that paid for the finals. When a final fails only that part is given back:
+  the row stays `charged`, `final_refunded_at` / `final_refund_reason` record it, and
+  the balance counts `weight − final_weight` for it. 0 = the charge pays no final.
 
 - `draft_id` + `revision` say which generation the charge paid for, and are UNIQUE: a
   retried dispatch or a concurrent call can never charge the same generation twice
@@ -87,6 +94,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("refunded_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("final_weight", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column("final_refunded_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("final_refund_reason", sa.Text(), nullable=True),
         sa.CheckConstraint("weight >= 0", name="ck_creation_charges_weight"),
         sa.CheckConstraint("monthly_quota >= 0", name="ck_creation_charges_quota"),
         sa.CheckConstraint("revision >= 1", name="ck_creation_charges_revision"),
@@ -98,6 +108,14 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "period_month = date_trunc('month', period_month)::date",
             name="ck_creation_charges_period",
+        ),
+        sa.CheckConstraint(
+            "final_weight >= 0 AND final_weight <= weight",
+            name="ck_creation_charges_final_weight",
+        ),
+        sa.CheckConstraint(
+            "final_refunded_at IS NULL OR final_weight > 0",
+            name="ck_creation_charges_final_refund",
         ),
         sa.UniqueConstraint("draft_id", "revision", name="uq_creation_charges_generation"),
     )

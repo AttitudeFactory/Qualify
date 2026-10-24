@@ -4860,10 +4860,14 @@ class CreativeState(rx.State):
 
     def _fit_duration(self) -> None:
         """A length the month no longer pays for is not left chosen: the longest one it
-        still pays for is (UX review 2026-10-23, §4.4 values already filled in)."""
+        still pays for is (UX review 2026-10-23, §4.4 values already filled in) — the
+        presenter's and the clip's."""
         choices = self._duration_choices()
         if choices and self.media_duration not in choices:
             self.media_duration = choices[-1]
+        clip = self._clip_duration_choices()
+        if clip and self.clip_duration not in clip:
+            self.clip_duration = clip[-1]
 
     def _is_presenter(self) -> bool:
         return is_presenter_request(self.brief_kind, self.video_engine)
@@ -4872,18 +4876,33 @@ class CreativeState(rx.State):
         """What the piece in the form would use — the same rule the service charges
         with (`qualify_creative.creations`). None when the table does not price it."""
         kind = self.brief_kind
+        clip = kind == "clip"
+        return self._price_for(
+            int(self.clip_duration or 5) if clip else int(self.media_duration or 30)
+        )
+
+    def _price_for(self, seconds: int) -> CreationPrice | None:
+        """`_creations_price` at another length — what a duration control may offer. A
+        clip is priced at ITS length (`clip_duration`, m-24851828), with its reference
+        videos and sound as the brief will carry them."""
+        kind = self.brief_kind
+        clip = kind == "clip"
         slides = self.carousel_slides if kind == "carousel" else []
+        animated = [s for s in slides if s.get("source") == "animated"]
         own = self.own_script.strip() if self.own_script_on and self._is_presenter() else ""
         try:
             return weight_for_request(
                 kind,
-                duration_seconds=int(self.media_duration or 30),
+                duration_seconds=seconds,
                 video_engine=self.video_engine,
                 own_script_chars=len(own),
                 generated_slides=sum(1 for s in slides if s.get("source") == "generated"),
-                animated_slide_seconds=tuple(
-                    int(s.get("seconds") or 5) for s in slides if s.get("source") == "animated"
+                animated_slide_seconds=tuple(int(s.get("seconds") or 5) for s in animated),
+                animated_slide_references=tuple(
+                    bool(s.get("reference_video_key")) for s in animated
                 ),
+                reference_videos=len(self.clip_videos) if clip else 0,
+                audio=self.clip_audio if clip else False,
             )
         except (CreationNotOffered, ValueError):
             return None
@@ -4931,19 +4950,20 @@ class CreativeState(rx.State):
 
     @rx.var(cache=False)
     def gen_presenter_fallback(self) -> str:
-        """A presenter the month cannot pay, when the shorter one fits: the screen
-        offers it instead (CREAR-5: under 25 left, the 15 s at 13)."""
+        """A presenter the month cannot pay, when a shorter one fits: the screen offers
+        the longest that fits instead (CREAR-5 v2: under 25 left, the 15 s at 13; under
+        13, the 10 s at 9; under 9, the 5 s at 5)."""
         if self.creations_left < 0 or not self._on_summary() or not self._is_presenter():
             return ""
         if self.own_script_on and self.own_script.strip():
             return ""  # its length is the script's: nothing to switch
-        seconds, weight = load_weights().shortest_presenter
         price = self._creations_price()
         if price is not None and price.weight <= self.creations_left:
             return ""
-        if weight > self.creations_left or self.media_duration == str(seconds):
+        fits = load_weights().longest_presenter_within(self.creations_left)
+        if fits is None or self.media_duration == str(fits[0]):
             return ""
-        return presenter_fallback_text(seconds, weight)
+        return presenter_fallback_text(*fits)
 
     @rx.var
     def duration_choices(self) -> list[str]:
@@ -4952,6 +4972,8 @@ class CreativeState(rx.State):
         return self._duration_choices()
 
     def _duration_choices(self) -> list[str]:
+        """v2 (founder, 2026-10-24): a presenter is offered at 5, 10, 15 and 30 s only —
+        the rows of the weights table; 45 and 60 s are never offered."""
         if not is_presenter_request(self.brief_kind, self.video_engine):
             return list(DURATIONS)
         table = load_weights()
@@ -4961,9 +4983,29 @@ class CreativeState(rx.State):
             lengths = fits or lengths[:1]
         return [str(s) for s in lengths]
 
+    @rx.var
+    def clip_duration_choices(self) -> list[str]:
+        """A clip's lengths (5/10/15 s) the month can pay for, priced as preview + final
+        with its references (`pesos-creaciones-v2`) — at least the shortest, so the
+        control never empties and the summary says what is missing."""
+        return self._clip_duration_choices()
+
+    def _clip_duration_choices(self) -> list[str]:
+        if self.brief_kind != "clip" or self.creations_left < 0:
+            return list(CLIP_DURATIONS)
+        fits = []
+        for value in CLIP_DURATIONS:
+            price = self._price_for(int(value))
+            if price is not None and price.weight <= self.creations_left:
+                fits.append(value)
+        return fits or list(CLIP_DURATIONS[:1])
+
     @rx.event
     def use_short_presenter(self) -> None:
-        self.media_duration = str(load_weights().shortest_presenter[0])
+        """«Usar el más corto»: the longest presenter the month still pays for."""
+        table = load_weights()
+        fits = table.longest_presenter_within(max(self.creations_left, 0))
+        self.media_duration = str((fits or table.shortest_presenter)[0])
         self.create_error = ""
 
     async def _refresh_creations(self, tenant_id: UUID, brand_id: UUID) -> None:

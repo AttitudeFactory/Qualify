@@ -161,7 +161,7 @@ class PlanVM:
 
 
 def build_plan_vm(plan: AngleSetPlan) -> PlanVM:
-    """What the ideas will make, in creations: each image is one (`pesos-creaciones-v1`);
+    """What the ideas will make, in creations: each image is one (`pesos-creaciones-v2`);
     the dollars are the team's (decision 8)."""
     weight = weight_for_request("static_flyer").weight
     images = f"{plan.count} publicaciones · usan hasta {plan.count * weight} de tus creaciones"

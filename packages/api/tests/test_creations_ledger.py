@@ -326,6 +326,159 @@ def test_the_team_sees_the_real_dollars_next_to_the_creations() -> None:
     assert "pesos-creaciones-v1/v5" in text
 
 
+# -- v2 (m-24851828): preview + final charged at creation, the final's part refunded ---
+
+
+def _clip(seconds: int = 5):  # noqa: ANN202
+    return make_brief(
+        variants=1,
+        kind=ContentKind.CLIP,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(duration_seconds=seconds),
+    )
+
+
+def test_a_clip_is_charged_whole_at_creation_with_its_final_part_recorded() -> None:
+    ledger = InMemoryCreationsLedger()
+    service, _, _ = _service(ledger)
+    draft_id = service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(5), user_id=USER_ID
+    )
+    price = ledger.rows[(draft_id, 1)].price
+    # a 5 s clip at its own length: 4 for the 480p preview + 19 for the 1080p final
+    assert (price.request_kind, price.weight, price.final_weight) == ("generated_video", 23, 19)
+    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 7
+
+
+def test_a_10_second_clip_does_not_fit_a_whole_month() -> None:
+    ledger = InMemoryCreationsLedger()
+    service, repo, _ = _service(ledger)
+    with pytest.raises(NotEnoughCreations) as refused:
+        service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(10), user_id=USER_ID
+        )
+    assert (refused.value.weight, refused.value.left) == (46, 30)
+    assert repo.drafts == {}
+
+
+def test_refund_final_gives_back_only_the_final_part_once() -> None:
+    ledger = InMemoryCreationsLedger()
+    draft = uuid4()
+    clip = CreationPrice("generated_video", 23, final_weight=19)
+    ledger.charge(tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, price=clip)
+    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 7
+    assert ledger.refund_final(
+        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="provider_error"
+    )
+    # the preview's 4 stay charged; the row stays `charged` with the refund recorded
+    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 26
+    row = ledger.rows[(draft, 1)]
+    assert (row.status, row.final_refunded, row.final_reason) == (
+        CHARGED,
+        True,
+        "provider_error",
+    )
+    assert not ledger.refund_final(
+        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="provider_error"
+    )
+    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 26
+    # a charge with no final has nothing of the kind to give
+    image = uuid4()
+    ledger.charge(tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=image, revision=1, price=IMAGE)
+    assert not ledger.refund_final(tenant_id=TENANT_ID, draft_id=image, revision=1, reason="x")
+
+
+def _final_setup(fail: bool):  # noqa: ANN202
+    from . import test_content_service_final as tf
+
+    ledger = InMemoryCreationsLedger()
+    service, repo, dispatcher, draft_id, variant_id, finals = tf._setup(
+        finals=tf.FakeFinals(fail=fail)
+    )
+    service._creations = ledger  # type: ignore[assignment]
+    ledger.charge(
+        tenant_id=TENANT_ID,
+        brand_id=repo.drafts[draft_id].brand_id,
+        draft_id=draft_id,
+        revision=repo.drafts[draft_id].revision,
+        price=CreationPrice("generated_video", 23, final_weight=19),
+    )
+    return ledger, service, repo, draft_id, variant_id, finals
+
+
+def _left(ledger: InMemoryCreationsLedger, repo, draft_id) -> int:  # noqa: ANN001
+    brand = repo.drafts[draft_id].brand_id
+    return ledger.balance(tenant_id=TENANT_ID, brand_id=brand).left
+
+
+def test_approving_charges_nothing_more_and_a_final_that_comes_out_keeps_it_all() -> None:
+    ledger, service, repo, draft_id, variant_id, _ = _final_setup(fail=False)
+    assert _left(ledger, repo, draft_id) == 7
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    assert _left(ledger, repo, draft_id) == 7  # nothing is charged at approval
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert _left(ledger, repo, draft_id) == 7
+
+
+def test_a_failed_final_gives_back_its_part_and_its_retry_is_not_charged_again() -> None:
+    ledger, service, repo, draft_id, variant_id, finals = _final_setup(fail=True)
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    # the vendor failed the 1080p final: its 19 come back, the preview's 4 stay
+    assert _left(ledger, repo, draft_id) == 26
+    (row,) = ledger.rows.values()
+    assert row.status == CHARGED and row.final_refunded
+    assert row.final_reason == "ModelArk falló."
+    # failing again gives nothing more; the retry that comes out is not charged again
+    service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert _left(ledger, repo, draft_id) == 26
+    finals.fail = False
+    service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert _left(ledger, repo, draft_id) == 26
+
+
+def test_a_final_that_breaks_in_our_code_gives_back_its_part_too() -> None:
+    from . import test_content_service_final as tf
+
+    class Exploding(tf.FakeFinals):
+        def finalize(self, **_: object):  # noqa: ANN202
+            raise RuntimeError("boom")
+
+    ledger, service, repo, draft_id, variant_id, _ = _final_setup(fail=False)
+    service._media = Exploding()  # type: ignore[assignment]
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert _left(ledger, repo, draft_id) == 26
+    (row,) = ledger.rows.values()
+    assert row.final_reason == "final_failed"
+
+
+def test_the_report_counts_a_refunded_final_as_given_back() -> None:
+    draft = uuid4()
+    at = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+    charge = ChargeRow(
+        brand_id=BRAND_ID,
+        draft_id=draft,
+        revision=1,
+        request_kind="generated_video",
+        weight=23,
+        status=CHARGED,
+        weights_version="pesos-creaciones-v2",
+        pricing_table_version="v7",
+        period_month=date(2026, 10, 1),
+        charged_at=at,
+        final_weight=19,
+        final_refunded=True,
+    )
+    pieces, months = build_report([charge], {draft: Decimal("0.60")}, quota=30)
+    (piece,) = pieces
+    assert (piece.creations_charged, piece.creations_refunded) == (4, 19)
+    assert months[0].creations_used == 4
+    assert "pesos-creaciones-v2/v7" in render(pieces, months)
+
+
 # -- «Variaciones»: the batch is all or nothing --------------------------------------------
 
 

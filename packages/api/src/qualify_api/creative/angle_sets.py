@@ -1258,7 +1258,7 @@ class AngleSetService:
 
     def _ensure_creations(self, tenant_id: UUID, brand_id: UUID, pieces: int) -> None:
         """Refuse, before anything is created, a request the month cannot pay: each
-        piece is one image (`pesos-creaciones-v1`)."""
+        piece is one image (`pesos-creaciones-v2`)."""
         if self._creations is None:
             return
         needed = pieces * weight_for_request(ContentKind.STATIC_FLYER.value).weight

@@ -39,4 +39,17 @@
 - Confirmar las tarifas con la primera factura de BytePlus.
 - Seedance 2.0 (y fast, mini) también tiene tarifa con video, pero no está en la tabla. Hoy se cobra a la tarifa sin video, que es la más alta: el registro se pasa, nunca se queda corto.
 
+## Revisión de precios para los pesos v2 — 2026-10-24 (m-24851828)
+
+- **Sin llamadas al proveedor.** Se intentó releer en vivo la página de precios de ModelArk
+  y la del producto Seedance: las dos cargan los precios con JavaScript y no se pudieron leer.
+  Se usan las tarifas de `v7` (leídas el 2026-10-07 y el 2026-10-23).
+- **Sonido:** `v7` tiene una sola tarifa con o sin `generate_audio`. En SD25-001 el clip con
+  sonido facturó 115.690 tokens y la diapositiva sin sonido 118.851, los dos dentro de la
+  fórmula: el sonido no añade tokens. Los pesos v2 no cambian con «Con sonido».
+- **Costo por segundo con vista previa 480p + final 1080p** (proporción 3:4, la más cara):
+  sin video de entrada USD 0,675 por segundo (0,106 + 0,569); con video de entrada USD 0,404
+  por segundo de salida más entrada. Un clip de 5 s cuesta ≈ USD 3,44: **23 creaciones**
+  (`docs/creaciones-del-mes-medicion.md` §5).
+
 > Cuando la bitácora central (`docs/modelos-generativos/pruebas.md`, hoy sin commitear en otra rama) llegue a `main`, copiar esta entrada ahí.
