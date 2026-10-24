@@ -19,7 +19,8 @@ _HERE = Path(__file__).parent
 
 # Route → the module whose `page_header` (or `creative_pages._screen`) names the page.
 _PAGE_SOURCE: dict[str, str] = {
-    "/": "components.py",
+    "/": "home_page.py",
+    "/menciones": "components.py",
     "/connections": "connections_page.py",
     "/whatsapp": "whatsapp_page.py",
     "/inbox": "inbox_page.py",

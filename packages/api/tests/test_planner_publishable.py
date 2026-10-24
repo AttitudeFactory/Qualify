@@ -260,6 +260,21 @@ def test_a_traversal_key_is_not_in_r2() -> None:
     assert _reason(_post(_image(object_key=f"t/{TENANT}/../x.jpg"))) is R.MEDIA_NOT_IN_R2
 
 
+def test_a_480p_draft_video_waits_for_its_final() -> None:
+    # m-24820142: approved, but the 1080p final has not replaced the Seedance draft yet
+    assert _reason(_post(_video(draft_pending=True), category="reel")) is R.MEDIA_DRAFT_PENDING
+    assert isinstance(evaluate(_post(_video(), category="reel")), PublishablePost)
+
+
+def test_draft_pending_reads_the_videos_draft_block() -> None:
+    from qualify_api.creative.draft_mode import draft_pending
+
+    assert draft_pending({"draft": {"status": "draft"}})
+    assert draft_pending({"draft": {"status": "failed"}})
+    assert not draft_pending({"draft": {"status": "final"}})
+    assert not draft_pending({"resolution": "720p"}) and not draft_pending(None)
+
+
 def test_a_stock_file_is_never_published_as_is() -> None:
     # stock plan §5.2: an input of a piece, never the piece (both licences)
     stock = _image(object_key=f"t/{TENANT}/stock/pixabay/8434113/abcdef0123456789.jpg")

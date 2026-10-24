@@ -40,6 +40,13 @@ Every thread-level call re-reads the thread and refuses (`ThreadNotFound`) one t
 belongs to another number of the same tenant, so a stale or forged thread id from the
 browser can never act across numbers — RLS already stops it across tenants.
 
+**Approved messages from an expired chat (m-24848535).** `template_options` and
+`send_template` go through `qualify_api.whatsapp.template_reply.TemplateReplyService`,
+scoped to the number like every other thread call: the service decides which approved
+templates this person may receive (follow-ups after a chat, promotions only with an
+explicit opt-in) and refuses the rest server-side; the send is a `template_reply` outbox
+row keyed by the screen's `request_key`, so a double tap queues once.
+
 All functions are blocking (SQLAlchemy is synchronous): the state runs them through
 `asyncio.to_thread`. `ChatsGateway` takes the service and the store by injection so
 `test_whatsapp_chats_provider.py` drives it with the in-memory repositories.
@@ -69,6 +76,7 @@ from qualify_api.whatsapp.chats import (
 )
 from qualify_api.whatsapp.models import WhatsAppOutboxItem, WhatsAppThreadState
 from qualify_api.whatsapp.orders import OrderSummary, order_ready_text, read_order
+from qualify_api.whatsapp.template_reply import TemplateReplyOptions, TemplateReplyService
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
 
@@ -150,6 +158,7 @@ class PostgresChatsStore:
                     WhatsAppOutboxItem.payload,
                     WhatsAppOutboxItem.created_at,
                     WhatsAppOutboxItem.error_code,
+                    WhatsAppOutboxItem.preview_text,
                 )
                 .where(
                     WhatsAppOutboxItem.thread_id == thread_id,
@@ -163,7 +172,8 @@ class PostgresChatsStore:
             UnsentItem(
                 id=str(r.id),
                 status=r.status,
-                text=outbox_text(r.payload or {}),
+                # 0087: a template reply carries the text the person reads.
+                text=r.preview_text or outbox_text(r.payload or {}),
                 created_at=r.created_at,
                 error_code=r.error_code,
             )
@@ -218,11 +228,23 @@ class ChatsGateway:
         store: ChatsStore | None = None,
         clock: Callable[[], datetime] = _utcnow,
         media_locator: MediaLocator | None = None,
+        template_replies: TemplateReplyService | None = None,
     ) -> None:
         self._service = service
         self._store: ChatsStore = store or PostgresChatsStore()
         self._clock = clock
         self._media_locator = media_locator
+        self._template_replies = template_replies
+
+    @property
+    def template_replies(self) -> TemplateReplyService:
+        if self._template_replies is None:
+            from qualify_api.whatsapp.template_reply import (  # noqa: PLC0415
+                production_template_reply_service,
+            )
+
+            self._template_replies = production_template_reply_service()
+        return self._template_replies
 
     @property
     def service(self) -> ChatService:
@@ -345,6 +367,36 @@ class ChatsGateway:
             raise NoOrder(str(thread_id))
         return self.service.send(
             tenant_id, thread_id, user_id, TextSend(text=order_ready_text(order))
+        )
+
+    # --- approved messages from an expired chat (m-24848535) ---------------------------
+
+    def template_options(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID
+    ) -> TemplateReplyOptions:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.template_replies.options(tenant_id, thread_id)
+
+    def send_template(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        template_id: UUID,
+        values: dict[str, str],
+        request_key: str,
+    ) -> UUID:
+        """Only ever called from the owner's «Enviar» (N13). The service re-checks the
+        template and the permission; nothing the browser sends becomes the body."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.template_replies.send(
+            tenant_id,
+            thread_id,
+            user_id,
+            template_id=template_id,
+            values=values,
+            request_key=request_key,
         )
 
     # --- actions -----------------------------------------------------------------------

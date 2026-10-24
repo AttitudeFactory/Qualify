@@ -1191,6 +1191,10 @@ def test_generar_guion_asks_its_length_in_publicacion() -> None:
 
     channel = str(_section_channel())
     assert "set_media_duration" in channel and "creator_script" in channel
+    # § request 2026-10-23: a clip's length is asked there too
+    assert "set_clip_duration" in channel
+    # § request 2026-10-23: and whether it comes with sound
+    assert "set_clip_audio" in channel
     state = CreativeState()
     state.choose_category("script")
     assert state.gen_views[0] == "channel" and state.gen_views[-1] == "summary"

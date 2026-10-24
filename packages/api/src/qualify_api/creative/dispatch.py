@@ -63,6 +63,11 @@ class TaskDispatcher(Protocol):
 
     def dispatch_generation(self, *, tenant_id: UUID, draft_id: UUID) -> None: ...
 
+    def dispatch_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
+        """The finals of a draft's approved 480p drafts (m-24820142) —
+        `ContentService.run_finalize`, the same two-UUID shape."""
+        ...
+
 
 class InlineDispatcher:
     """MVP dispatcher (D6): runs the generation callable in a daemon thread of THIS
@@ -71,14 +76,24 @@ class InlineDispatcher:
     UUIDs a ``CeleryDispatcher`` would put on the wire, so migrating means swapping this
     class and nothing else (§7.4's four-property contract)."""
 
-    def __init__(self, run: GenerationRunner) -> None:
+    def __init__(self, run: GenerationRunner, finalize: GenerationRunner | None = None) -> None:
         self._run = run
+        self._finalize = finalize
 
     def dispatch_generation(self, *, tenant_id: UUID, draft_id: UUID) -> None:
+        self._start(self._run, "creative-generation", tenant_id, draft_id)
+
+    def dispatch_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
+        if self._finalize is None:
+            raise RuntimeError("this dispatcher was wired without a finalize runner")
+        self._start(self._finalize, "creative-final", tenant_id, draft_id)
+
+    @staticmethod
+    def _start(target: GenerationRunner, name: str, tenant_id: UUID, draft_id: UUID) -> None:
         thread = threading.Thread(
-            target=self._run,
+            target=target,
             kwargs={"tenant_id": tenant_id, "draft_id": draft_id},
-            name=f"creative-generation-{draft_id}",
+            name=f"{name}-{draft_id}",
             daemon=True,
         )
         thread.start()

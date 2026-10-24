@@ -26,7 +26,8 @@ policy). Schema: migration 0057 / `whatsapp/models.py`.
   `pending`, `next_attempt_at = last + 6 s`, **no attempt counted**.
 - **failed** (terminal; a person decides, WA-11 shows it) — window closed for a
   free-form kind (`window_closed`), Meta's window codes `131047`/`131026`, any other 4xx,
-  or a `campaign_send` whose recipient's opt-in is no longer active (`opted_out`): a STOP
+  or a `campaign_send` — or a promotion sent from a chat (`template_reply` with category
+  `marketing`, 0087) — whose recipient's opt-in is no longer active (`opted_out`): a STOP
   that arrives AFTER the campaign queued the row must still stop it. The opt-in is read
   at send time, through `opt_ins` (`OptInService` in production — `qualify_app` reads
   `whatsapp_opt_ins` under RLS), and migration 0060's `wa_outbox_campaign_mirror` trigger
@@ -75,7 +76,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from qualify_api.inbox.models import Message, Thread
 from qualify_api.whatsapp.client import WhatsAppApiError, WhatsAppClient
-from qualify_api.whatsapp.models import OUTBOX_KINDS, WhatsAppOutboxItem
+from qualify_api.whatsapp.models import (
+    OUTBOX_KINDS,
+    TEMPLATE_REPLY_CATEGORIES,
+    WhatsAppOutboxItem,
+)
 from qualify_api.whatsapp.window import (
     FREE_FORM_KINDS,
     WINDOW_CLOSED_ERROR_CODES,
@@ -102,6 +107,11 @@ ERROR_OPTED_OUT: Final = "opted_out"
 # The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
 # Replies and automation answer a person inside their own 24 h window — no opt-in.
 OPT_IN_REQUIRED_KINDS: Final = frozenset({"campaign_send"})
+# m-24848535 (0087): a template sent from a chat. A follow-up (`utility`) rides on the
+# person having written before; anything else — a promotion — needs the ACTIVE opt-in at
+# send time too, like a campaign (founder decision 2026-10-23, epic §2b-4).
+KIND_TEMPLATE_REPLY: Final = "template_reply"
+CHAT_PERMISSION_CATEGORIES: Final = frozenset({"utility"})
 
 # Meta error codes that ride an HTTP 400 but mean "try later", from the Cloud API
 # error-codes reference (support/error-codes, read 2026-10-14; not yet seen live):
@@ -160,11 +170,24 @@ class ClaimedOutboxItem:
     kind: str
     payload: dict[str, Any]
     attempts: int
+    # 0087: the category of a `template_reply`'s template; `None` for the other kinds.
+    template_category: str | None = None
 
     @property
     def recipient(self) -> str | None:
         to = self.payload.get("to")
         return to if isinstance(to, str) and to else None
+
+    @property
+    def needs_opt_in(self) -> bool:
+        """Must the recipient hold an ACTIVE opt-in when this row leaves? A campaign
+        always; a template reply unless it is a follow-up (fail closed: an unknown
+        category is treated as a promotion)."""
+        if self.kind in OPT_IN_REQUIRED_KINDS:
+            return True
+        if self.kind == KIND_TEMPLATE_REPLY:
+            return self.template_category not in CHAT_PERMISSION_CATEGORIES
+        return False
 
 
 class OutboxRepository(Protocol):
@@ -181,10 +204,19 @@ class OutboxRepository(Protocol):
         kind: str,
         payload: dict[str, Any],
         created_by_user_id: UUID | None,
+        request_key: str | None = None,
+        template_id: UUID | None = None,
+        template_category: str | None = None,
+        preview_text: str | None = None,
     ) -> UUID:
         """Queue an already-built `/messages` body. `kind` must be one of
         `models.OUTBOX_KINDS`; a free-form kind (`reply`, `automation`) needs `thread_id`
-        — the window is decided from that thread. Returns the new row id."""
+        — the window is decided from that thread. Returns the new row id.
+
+        0087: a `template_reply` also needs `request_key`, `template_id` and
+        `template_category`. With a `request_key` the enqueue is idempotent: a second
+        call with the same `(tenant_id, request_key)` writes nothing and returns the id
+        of the row already queued."""
         ...
 
     def claim(
@@ -230,7 +262,15 @@ class OutboxRepository(Protocol):
         ...
 
 
-def _validate_enqueue(kind: str, payload: dict[str, Any], thread_id: UUID | None) -> None:
+def _validate_enqueue(
+    kind: str,
+    payload: dict[str, Any],
+    thread_id: UUID | None,
+    *,
+    request_key: str | None = None,
+    template_id: UUID | None = None,
+    template_category: str | None = None,
+) -> None:
     if kind not in OUTBOX_KINDS:
         raise ValueError(f"unknown outbox kind {kind!r}")
     if not isinstance(payload, dict) or not payload:
@@ -240,6 +280,15 @@ def _validate_enqueue(kind: str, payload: dict[str, Any], thread_id: UUID | None
         raise ValueError("payload must carry a recipient in 'to'")
     if kind in FREE_FORM_KINDS and thread_id is None:
         raise ValueError(f"a {kind!r} needs a thread: the 24 h window is decided from it")
+    if request_key is not None and not request_key.strip():
+        raise ValueError("request_key must not be blank")
+    if kind == KIND_TEMPLATE_REPLY:
+        if thread_id is None or not request_key or template_id is None:
+            raise ValueError("a 'template_reply' needs a thread, a request_key and a template")
+        if template_category not in TEMPLATE_REPLY_CATEGORIES:
+            raise ValueError(
+                f"a 'template_reply' category must be one of {TEMPLATE_REPLY_CATEGORIES}"
+            )
 
 
 # --------------------------------------------------------------------------------------
@@ -278,7 +327,7 @@ CLAIM_SQL = text(
       FROM due
      WHERE o.id = due.id
     RETURNING o.id, o.tenant_id, o.connection_id, o.thread_id, o.kind, o.payload, o.attempts,
-              o.created_at
+              o.created_at, o.template_category
     """
 )
 
@@ -308,20 +357,52 @@ class PostgresOutboxRepository:
         kind: str,
         payload: dict[str, Any],
         created_by_user_id: UUID | None,
+        request_key: str | None = None,
+        template_id: UUID | None = None,
+        template_category: str | None = None,
+        preview_text: str | None = None,
     ) -> UUID:
-        _validate_enqueue(kind, payload, thread_id)
+        _validate_enqueue(
+            kind,
+            payload,
+            thread_id,
+            request_key=request_key,
+            template_id=template_id,
+            template_category=template_category,
+        )
+        values: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "connection_id": connection_id,
+            "thread_id": thread_id,
+            "kind": kind,
+            "payload": payload,
+            "created_by_user_id": created_by_user_id,
+            "request_key": request_key,
+            "template_id": template_id,
+            "template_category": template_category,
+            "preview_text": preview_text,
+        }
         with tenant_session(tenant_id) as session:
-            row = WhatsAppOutboxItem(
-                tenant_id=tenant_id,
-                connection_id=connection_id,
-                thread_id=thread_id,
-                kind=kind,
-                payload=payload,
-                created_by_user_id=created_by_user_id,
+            if request_key is None:
+                row = WhatsAppOutboxItem(**values)
+                session.add(row)
+                session.flush()
+                return row.id
+            new_id = session.scalar(
+                pg_insert(WhatsAppOutboxItem)
+                .values(**values)
+                .on_conflict_do_nothing(constraint="uq_wa_outbox_request_key")
+                .returning(WhatsAppOutboxItem.id)
             )
-            session.add(row)
-            session.flush()
-            return row.id
+            if new_id is not None:
+                return new_id
+            # The same key was queued before (a double tap, a retried request): that row.
+            existing = session.scalar(
+                select(WhatsAppOutboxItem.id).where(WhatsAppOutboxItem.request_key == request_key)
+            )
+            if existing is None:  # pragma: no cover — the conflict proves the row exists
+                raise LookupError("request_key conflicted but no row carries it")
+            return existing
 
     def claim(
         self, *, tenant_id: UUID, worker_id: str, now: datetime, limit: int
@@ -345,6 +426,7 @@ class PostgresOutboxRepository:
                 kind=r.kind,
                 payload=dict(r.payload),
                 attempts=int(r.attempts),
+                template_category=r.template_category,
             )
             for r in rows
         ]
@@ -371,7 +453,7 @@ class PostgresOutboxRepository:
                     connection_id=item.connection_id,
                     external_message_id=wamid,
                     direction="outbound",
-                    text=payload_text(item.payload),
+                    text=item.preview_text or payload_text(item.payload),
                     posted_at=now,
                     shape_version=SHAPE_VERSION,
                     delivery_status="sent",
@@ -470,6 +552,10 @@ class MemoryOutboxRow:
     error_code: str | None = None
     created_by_user_id: UUID | None = None
     sent_at: datetime | None = None
+    request_key: str | None = None
+    template_id: UUID | None = None
+    template_category: str | None = None
+    preview_text: str | None = None
     # Insertion order — the tie-break Postgres gets for free because every enqueue is its
     # own transaction with its own now(); a frozen test clock would otherwise leave two
     # rows tied on created_at and ordered by their random ids.
@@ -508,8 +594,23 @@ class MemoryOutboxRepository:
         kind: str,
         payload: dict[str, Any],
         created_by_user_id: UUID | None,
+        request_key: str | None = None,
+        template_id: UUID | None = None,
+        template_category: str | None = None,
+        preview_text: str | None = None,
     ) -> UUID:
-        _validate_enqueue(kind, payload, thread_id)
+        _validate_enqueue(
+            kind,
+            payload,
+            thread_id,
+            request_key=request_key,
+            template_id=template_id,
+            template_category=template_category,
+        )
+        if request_key is not None:
+            for existing in self.rows.values():
+                if existing.tenant_id == tenant_id and existing.request_key == request_key:
+                    return existing.id
         now = self._clock()
         row = MemoryOutboxRow(
             id=uuid4(),
@@ -521,6 +622,10 @@ class MemoryOutboxRepository:
             created_at=now,
             next_attempt_at=now,
             created_by_user_id=created_by_user_id,
+            request_key=request_key,
+            template_id=template_id,
+            template_category=template_category,
+            preview_text=preview_text,
             seq=next(self._seq),
         )
         self.rows[row.id] = row
@@ -556,6 +661,7 @@ class MemoryOutboxRepository:
                     kind=row.kind,
                     payload=dict(row.payload),
                     attempts=row.attempts,
+                    template_category=row.template_category,
                 )
             )
         return claimed
@@ -582,7 +688,7 @@ class MemoryOutboxRepository:
                 thread_id=row.thread_id,
                 connection_id=row.connection_id,
                 wamid=wamid,
-                text=payload_text(row.payload),
+                text=row.preview_text or payload_text(row.payload),
                 posted_at=now,
                 delivery_status="sent",
             )
@@ -796,7 +902,7 @@ class OutboxSender:
             )
             report.failed += 1
             return
-        if item.kind in OPT_IN_REQUIRED_KINDS and not self._opt_ins.is_opted_in(
+        if item.needs_opt_in and not self._opt_ins.is_opted_in(
             tenant_id=tenant_id, phone=recipient_e164(recipient)
         ):
             logger.info(

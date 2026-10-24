@@ -30,8 +30,11 @@ WINDOW: Final = timedelta(hours=24)
 # `campaign_send` is template-only by construction (WA-18 builds it from an approved
 # template), so the window never applies to it; a `reply` (a person, WA-10) and an
 # `automation` (the menu engine, WA-14) are free-form bodies and need the window OPEN.
+# A `template_reply` (m-24848535, 0087) is an approved template a person sends from an
+# expired chat: template-only, so it is exactly what still goes through once the window
+# has closed.
 FREE_FORM_KINDS: Final = frozenset({"reply", "automation"})
-TEMPLATE_ONLY_KINDS: Final = frozenset({"campaign_send"})
+TEMPLATE_ONLY_KINDS: Final = frozenset({"campaign_send", "template_reply"})
 
 # Meta error codes that mean "outside the window / re-engagement needed".
 WINDOW_CLOSED_ERROR_CODES: Final = frozenset({131047, 131026})
