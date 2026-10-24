@@ -88,12 +88,12 @@ def test_a_change_warns_that_it_reaches_the_posts_other_publications() -> None:
     assert changed.campaign_changed is True
     assert (changed.chosen_campaign_name, changed.chosen_campaign_color) == ("Navidad", "pink")
     assert changed.campaign_warning == (
-        "La campaña pertenece al POST y también se aplicará a sus otras 3 publicaciones."
+        "La campaña es de la publicación y también se aplicará a sus otras 3 fechas programadas."
     )
     cleared = _row(post, campaign=CAMPAIGN_NONE)
-    assert cleared.campaign_changed is True and "3 publicaciones" in cleared.campaign_warning
+    assert cleared.campaign_changed is True and "3 fechas" in cleared.campaign_warning
     assert campaign_warning(1) == (
-        "La campaña pertenece al POST y también se aplicará a su otra publicación."
+        "La campaña es de la publicación y también se aplicará a su otra fecha programada."
     )
     # A POST with no publications yet: a change, but nothing else to warn about.
     first_time = _row(_post(event_count=0), campaign=LANZ.id)
@@ -316,8 +316,8 @@ def test_confirm_shows_the_campaign_the_post_will_have() -> None:
     assert "chosen_campaign_name" in rendered and "campaign_warning" in rendered
     for text in (
         "Campaña nueva: se creará al programar.",
-        "El POST quedará sin campaña al programar.",
-        "La campaña del POST cambiará al programar.",
+        "La publicación quedará sin campaña al programar.",
+        "La campaña de la publicación cambiará al programar.",
     ):
         assert _js(text) in rendered
     assert "_confirm_campaign" not in rendered

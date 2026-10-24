@@ -22,7 +22,9 @@ the same day with one Seedream 5.0 lite image and one Seedance 1.0 pro clip:
   Spanish — and refuses real human faces as reference images (a face Seedream generated
   is fine as a first frame of 1.x; 2.x has its own portrait rules).
 - Billing: video by tokens, ``width × height × 24 fps × seconds / 1024`` at the output
-  size; image per generated piece.
+  size; image per generated piece. A video task with reference videos is billed at a
+  lower «with video input» rate, and its tokens include the input video (measured
+  2026-10-23, `estimate_video_tokens`).
 
 Both adapters poll/answer inside ``generate`` so they fit the synchronous Protocol and the
 ``InlineDispatcher`` thread unchanged, exactly like the HeyGen one.
@@ -53,6 +55,16 @@ DEFAULT_SEEDREAM_MODEL = "seedream-5-0-lite-260128"
 
 FPS = 24
 RATIOS = frozenset({"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"})
+#: The model picks the aspect from the task and its inputs (2.x; 2.5 requires it for a
+#: frame task, an edit and an extension). The token estimate prices it as 9:16.
+ADAPTIVE = "adaptive"
+#: `duration: -1`: the model picks the length (2.x); a 2.5 edit requires it.
+AUTO_DURATION = -1
+#: Seedance 2.5's omni reference subtasks (`omni_reference_task_type`, read
+#: 2026-10-22). Only a hint: the API checks each one's constraints at creation
+#: instead of failing the task later; `auto` (the default) lets the model decide.
+#: (An edit also needs its videos to last 4–30 s: nothing here measures them yet.)
+OMNI_TASK_TYPES = frozenset({"auto", "reference", "edit", "extend"})
 #: The video URL is valid for 24 h (Retrieve a video generation task API).
 MEDIA_URL_TTL_SECONDS = 24 * 3600
 #: Under the dispatcher's 10-minute reaper, like HeyGen's.
@@ -72,7 +84,8 @@ POST_RETRY_STATUSES = frozenset({429, 503})
 POST_RETRY_BACKOFF_SECONDS = 2.0
 #: Seedream 5.0 lite / 4.x take up to 14 reference images.
 MAX_REFERENCE_IMAGES = 14
-#: Seedance 2.x references (create-video-generation-task-api, read 2026-10-14).
+#: Seedance 2.0 references (create-video-generation-task-api, read 2026-10-14); 2.5
+#: takes more (`SeedanceFamily.max_references`).
 MAX_CLIP_REFERENCE_IMAGES = 9
 MAX_REFERENCE_VIDEOS = 3
 MAX_REFERENCE_AUDIOS = 3
@@ -103,6 +116,30 @@ class SeedanceFamily:
     #: Takes references — images, videos, audio (`role: reference_*`); 2.x only (docs
     #: read 2026-10-14: no 1.x model does).
     references: bool = False
+    #: Draft mode (m-24820142): `draft: true` renders a 480p preview whose task id later
+    #: becomes the final at `draft_final_resolution` — the only one the family takes for
+    #: it. Of our families only 2.5 has it (2.0, fast and mini do not).
+    draft_final_resolution: str | None = None
+    #: An opening/closing-frame task keeps the frame's own aspect: `ratio` must be
+    #: `adaptive` (2.5 only; the others take a named ratio there).
+    adaptive_frames: bool = False
+    #: At most (images, videos, audios) as references — 2.0's (9, 3, 3) by default.
+    max_references: tuple[int, int, int] = (
+        MAX_CLIP_REFERENCE_IMAGES,
+        MAX_REFERENCE_VIDEOS,
+        MAX_REFERENCE_AUDIOS,
+    )
+    #: Takes `omni_reference_task_type` (2.5 only).
+    omni_task_types: bool = False
+
+    @property
+    def adaptive(self) -> bool:
+        """`ratio: adaptive` and `duration: -1` are 2.x values (1.0 takes neither)."""
+        return self.references
+
+    @property
+    def draft(self) -> bool:
+        return self.draft_final_resolution is not None
 
 
 SEEDANCE_FAMILIES: dict[str, SeedanceFamily] = {
@@ -122,9 +159,29 @@ SEEDANCE_FAMILIES: dict[str, SeedanceFamily] = {
         4, 15, frozenset({"480p", "720p"}), True, False, "v2", True, True
     ),
     "dreamina-seedance-2-5": SeedanceFamily(
-        4, 30, frozenset({"480p", "720p", "1080p"}), True, False, "v2", True, True
+        4,
+        30,
+        frozenset({"480p", "720p", "1080p"}),
+        True,
+        False,
+        "v25",
+        True,
+        True,
+        draft_final_resolution="1080p",
+        adaptive_frames=True,
+        max_references=(30, 10, 10),
+        omni_task_types=True,
     ),
 }
+
+#: Draft mode renders at this resolution only (create-video-generation-task-api, `draft`).
+DRAFT_RESOLUTION = "480p"
+#: A draft task id makes a final for 7 days from its `created_at`.
+DRAFT_TTL_SECONDS = 7 * 24 * 3600
+#: The most reference video a task takes in all (2.5: 30 s over up to 10 clips; 2.0:
+#: 15 s — docs read 2026-10-14). A reference video whose length the caller did not say
+#: is priced at this: the estimate overcounts rather than under.
+MAX_REFERENCE_VIDEO_SECONDS = 30
 
 #: Output width × height per (table, resolution, ratio), from "Width and height pixel
 #: values corresponding to different aspect ratios" — what the token estimate needs.
@@ -158,6 +215,14 @@ _DIMS: dict[str, dict[str, dict[str, tuple[int, int]]]] = {
         },
     },
 }  # fmt: skip
+#: 2.5 renders 2.0's sizes except at 480p (docs read 2026-10-22).
+_DIMS["v25"] = {
+    **_DIMS["v2"],
+    "480p": {
+        "16:9": (854, 480), "4:3": (752, 560), "1:1": (640, 640),
+        "3:4": (560, 752), "9:16": (480, 854), "21:9": (992, 432),
+    },
+}  # fmt: skip
 
 
 def seedance_family(model_id: str) -> SeedanceFamily:
@@ -183,17 +248,80 @@ def output_dimensions(model_id: str, resolution: str, ratio: str) -> tuple[int, 
     return _DIMS[seedance_family(model_id).dims][resolution][ratio]
 
 
-def estimate_video_tokens(model_id: str, resolution: str, ratio: str, seconds: int) -> int:
+def estimate_video_tokens(
+    model_id: str,
+    resolution: str,
+    ratio: str,
+    seconds: int,
+    input_video_seconds: float = 0,
+) -> int:
     """`width × height × 24 × seconds / 1024` at the output size (ModelArk's own formula —
-    the real count comes back in `usage.completion_tokens`)."""
+    the real count comes back in `usage.completion_tokens`).
+
+    With reference videos the billed count also covers the INPUT video, and it fits the
+    same per-second rate at the output size, so `input_video_seconds` is simply added to
+    the output's. Measured 2026-10-23 on Seedance 2.5 at 480p, 5 s out: no video in,
+    49,673 billed (formula 48–49k); one 7.33 s video in, 115,690 and 118,851 billed
+    (formula with it 118–122k, without it ~48k: a 2.4x undercount); two videos, 22 s in,
+    259,802 billed (formula 259–266k)."""
     width, height = output_dimensions(model_id, resolution, ratio)
-    return round(width * height * FPS * seconds / 1024)
+    return round(width * height * FPS * (seconds + input_video_seconds) / 1024)
 
 
-def video_cost_usd(pricing: PricingTable, model_id: str, resolution: str, tokens: int) -> Decimal:
-    """What `tokens` of video cost on `model_id` at `resolution` (per-million-token rate)."""
-    rate = pricing.unit_price(model_id=model_id, unit=f"per_mtok_video_{resolution}")
+def video_cost_usd(
+    pricing: PricingTable,
+    model_id: str,
+    resolution: str,
+    tokens: int,
+    *,
+    video_input: bool = False,
+) -> Decimal:
+    """What `tokens` of video cost on `model_id` at `resolution` (per-million-token rate).
+
+    A task with reference videos (`video_input`) is billed at the «with video input» rate
+    (`per_mtok_video_<res>_with_video`, pricing v7: 2.5 at 6.40/M instead of 10.70/M at
+    480p/720p). The final of a draft is priced by whether its DRAFT had video input. A
+    family whose with-video rate the table does not carry yet is priced at its
+    without-video rate — BytePlus lists the with-video one lower, so that overcounts,
+    never under."""
+    unit = f"per_mtok_video_{resolution}"
+    if video_input:
+        try:
+            rate = pricing.unit_price(model_id=model_id, unit=f"{unit}_with_video")
+        except KeyError:
+            rate = pricing.unit_price(model_id=model_id, unit=unit)
+    else:
+        rate = pricing.unit_price(model_id=model_id, unit=unit)
     return (Decimal(tokens) * rate / Decimal(1_000_000)).quantize(Decimal("0.000001"))
+
+
+def _reference_video_seconds(value: object) -> float | None:
+    """`reference_video_seconds` — the reference videos' total length, for the estimate
+    only (never sent): a non-negative number, or None when the caller could not tell."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise ValueError(f"'reference_video_seconds' must be a non-negative number, got {value!r}")
+    return float(value)
+
+
+def _video_input_flag(value: object) -> bool:
+    """`video_input` on a final — whether its draft had video input (a boolean)."""
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"'video_input' must be a boolean, got {value!r}")
+    return value
+
+
+def _input_video_seconds(video_input: bool, measured: float | None) -> float:
+    """The input-video seconds the estimate prices: none without video input, the
+    measured total (capped at what a task takes) with it, the cap when not measured."""
+    if not video_input:
+        return 0.0
+    if measured is None:
+        return float(MAX_REFERENCE_VIDEO_SECONDS)
+    return min(measured, float(MAX_REFERENCE_VIDEO_SECONDS))
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +465,39 @@ def _capped(prompt: str) -> str:
 # Seedance — video
 
 
+def _video_ratio(params: Mapping[str, object], family: SeedanceFamily, model_id: str) -> str:
+    """`ratio`, checked against the family: `adaptive` only where the model takes it."""
+    ratio = str(params.get("ratio") or "9:16")
+    if ratio == ADAPTIVE and not family.adaptive:
+        raise ValueError(f"{model_id} takes no adaptive ratio")
+    if ratio not in RATIOS and ratio != ADAPTIVE:
+        raise ValueError(f"ratio must be one of {sorted(RATIOS)}, got {ratio!r}")
+    return ratio
+
+
+def _video_seconds(params: Mapping[str, object], family: SeedanceFamily) -> int:
+    """`duration_seconds` within the family's range; `-1` (the model picks) only where
+    the model takes it — elsewhere it is clamped like any other wish."""
+    raw_seconds = params.get("duration_seconds", family.min_seconds)
+    if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, int):
+        raise ValueError(f"duration_seconds must be an integer, got {raw_seconds!r}")
+    if raw_seconds == AUTO_DURATION and family.adaptive:
+        return AUTO_DURATION
+    # the brief's length is a wish; the model's range is a fact
+    return min(max(raw_seconds, family.min_seconds), family.max_seconds)
+
+
+def _estimate_ratio(ratio: str) -> str:
+    """The ratio the token estimate prices: an adaptive one is unknown before the task,
+    and every ratio of a resolution has about the same pixel count."""
+    return "9:16" if ratio == ADAPTIVE else ratio
+
+
+def _estimate_seconds(family: SeedanceFamily, seconds: int) -> int:
+    """The length the estimate prices: the model's longest for `-1`."""
+    return family.max_seconds if seconds == AUTO_DURATION else seconds
+
+
 @dataclass(frozen=True)
 class _VideoSpec:
     """``request.params`` validated once, before any network call — a bad spec must fail
@@ -358,11 +519,39 @@ class _VideoSpec:
     generate_audio: bool
     camera_fixed: bool | None
     return_last_frame: bool
+    #: A 480p draft (m-24820142) whose task id can later become the final.
+    draft: bool = False
+    #: `omni_reference_task_type` (2.5): None = not sent (the API's `auto`).
+    task_type: str | None = None
+    #: The reference videos' total length, for the estimate only (None: not measured).
+    reference_video_seconds: float | None = None
+
+    @property
+    def estimate_ratio(self) -> str:
+        return _estimate_ratio(self.ratio)
+
+    @property
+    def estimate_seconds(self) -> int:
+        return _estimate_seconds(self.family, self.seconds)
+
+    @property
+    def video_input(self) -> bool:
+        """Whether the task carries video input — billed at the with-video rate."""
+        return bool(self.reference_videos)
+
+    @property
+    def estimate_input_video_seconds(self) -> float:
+        return _input_video_seconds(self.video_input, self.reference_video_seconds)
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], default_model: str) -> _VideoSpec:
         model_id = str(params.get("model") or default_model)
         family = seedance_family(model_id)
+        draft = params.get("draft", False)
+        if not isinstance(draft, bool):
+            raise ValueError(f"'draft' must be a boolean, got {draft!r}")
+        if draft and not family.draft:
+            raise ValueError(f"{model_id} has no draft mode: use Seedance 2.5")
         prompt = _prompt(params)
         dialogue = params.get("dialogue")
         if isinstance(dialogue, str) and dialogue.strip() and family.audio:
@@ -388,24 +577,31 @@ class _VideoSpec:
             if first_frame or last_frame:
                 # ModelArk: a reference task cannot carry the frame roles
                 raise ValueError("references and first/last frame roles cannot be mixed")
-            if len(images) > MAX_CLIP_REFERENCE_IMAGES:
-                raise ValueError(f"at most {MAX_CLIP_REFERENCE_IMAGES} reference images")
-            if len(videos) > MAX_REFERENCE_VIDEOS or len(audios) > MAX_REFERENCE_AUDIOS:
+            max_images, max_videos, max_audios = family.max_references
+            if len(images) > max_images:
+                raise ValueError(f"{model_id} takes at most {max_images} reference images")
+            if len(videos) > max_videos or len(audios) > max_audios:
                 raise ValueError(
-                    f"at most {MAX_REFERENCE_VIDEOS} reference videos and "
-                    f"{MAX_REFERENCE_AUDIOS} audio files"
+                    f"{model_id} takes at most {max_videos} reference videos and "
+                    f"{max_audios} audio files"
                 )
-        ratio = str(params.get("ratio") or "9:16")
-        if ratio not in RATIOS:
-            raise ValueError(f"ratio must be one of {sorted(RATIOS)}, got {ratio!r}")
-        resolution = str(params.get("resolution") or "720p")
+        ratio = _video_ratio(params, family, model_id)
+        resolution = str(params.get("resolution") or (DRAFT_RESOLUTION if draft else "720p"))
+        if draft and resolution != DRAFT_RESOLUTION:
+            # ModelArk refuses any other one for a draft
+            raise ValueError(f"a draft renders at {DRAFT_RESOLUTION} only, not {resolution!r}")
         if resolution not in family.resolutions:
             raise ValueError(f"{model_id} renders {sorted(family.resolutions)}, not {resolution!r}")
-        raw_seconds = params.get("duration_seconds", family.min_seconds)
-        if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, int):
-            raise ValueError(f"duration_seconds must be an integer, got {raw_seconds!r}")
-        # the brief's length is a wish; the model's range is a fact
-        seconds = min(max(raw_seconds, family.min_seconds), family.max_seconds)
+        seconds = _video_seconds(params, family)
+        task_type = _omni_task_type(
+            params.get("omni_reference_task_type"),
+            family=family,
+            model_id=model_id,
+            references=bool(images or videos or audios),
+            videos=len(videos),
+            ratio=ratio,
+            seconds=seconds,
+        )
         audio = params.get("generate_audio", family.audio)
         camera_fixed = params.get("camera_fixed")
         return cls(
@@ -425,6 +621,9 @@ class _VideoSpec:
             if family.camera_fixed and camera_fixed is not None
             else None,
             return_last_frame=bool(params.get("return_last_frame", True)),
+            draft=draft,
+            task_type=task_type,
+            reference_video_seconds=_reference_video_seconds(params.get("reference_video_seconds")),
         )
 
     def body(self) -> dict[str, object]:
@@ -449,10 +648,15 @@ class _VideoSpec:
             content.append(
                 {"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"}
             )
+        # 2.5 keeps the opening frame's own aspect and takes no other ratio for it: the
+        # output follows the FRAME, not `self.ratio` (kept for the estimate). Callers
+        # that record a named ratio crop the frame to it first (the generator's
+        # `MediaProducer._opening_frame`); an uncropped frame makes a video of its shape
+        frames = self.first_frame is not None
         body: dict[str, object] = {
             "model": self.model_id,
             "content": content,
-            "ratio": self.ratio,
+            "ratio": "adaptive" if frames and self.family.adaptive_frames else self.ratio,
             "resolution": self.resolution,
             "duration": self.seconds,
             "watermark": False,
@@ -462,7 +666,123 @@ class _VideoSpec:
             body["generate_audio"] = self.generate_audio
         if self.camera_fixed is not None:
             body["camera_fixed"] = self.camera_fixed
+        if self.draft:
+            body["draft"] = True
+        if self.task_type is not None:
+            body["omni_reference_task_type"] = self.task_type
         return body
+
+
+def _omni_task_type(
+    value: object,
+    *,
+    family: SeedanceFamily,
+    model_id: str,
+    references: bool,
+    videos: int,
+    ratio: str,
+    seconds: int,
+) -> str | None:
+    """`omni_reference_task_type`, checked the way ModelArk does at creation (read
+    2026-10-22): `reference` needs a reference; `edit` a reference video, `ratio:
+    adaptive` and `duration: -1`; `extend` a reference video and `ratio: adaptive`. The
+    model still classifies the task from the prompt — a prompt that does not ask for an
+    edit or an extension fails the task later (`InvalidParameter.TaskTypeMismatch`)."""
+    if value is None:
+        return None
+    if value not in OMNI_TASK_TYPES:
+        raise ValueError(
+            f"omni_reference_task_type must be one of {sorted(OMNI_TASK_TYPES)}, got {value!r}"
+        )
+    if not family.omni_task_types:
+        raise ValueError(f"{model_id} takes no omni_reference_task_type: use Seedance 2.5")
+    if not references:
+        raise ValueError("omni_reference_task_type is for a task with references")
+    if value in ("edit", "extend"):
+        if not videos:
+            raise ValueError(f"an {value} task needs a reference video")
+        if ratio != ADAPTIVE:
+            raise ValueError(f"an {value} task needs ratio 'adaptive'")
+    if value == "edit" and seconds != AUTO_DURATION:
+        raise ValueError("an edit task needs duration -1: it keeps the edited video's length")
+    return str(value)
+
+
+@dataclass(frozen=True)
+class _FinalSpec:
+    """The final of a draft (m-24820142): only the draft's task id, the model and the
+    final resolution travel. The prompt, the references, `duration`, `ratio`, `seed`,
+    `generate_audio` and `omni_reference_task_type` are the draft's, reused by ModelArk,
+    which answers an error if any is sent again — even with the same value. `ratio` and
+    `seconds` are kept here for the cost estimate only, `generate_audio` (the draft's
+    own, passed as `generate_audio`) for the payload's provenance only."""
+
+    model_id: str
+    family: SeedanceFamily
+    draft_task_id: str
+    resolution: str
+    ratio: str
+    seconds: int
+    return_last_frame: bool
+    generate_audio: bool
+    #: Whether the DRAFT had video input: the final is billed at the with-video rate
+    #: then (model-pricing, read 2026-10-23). Never sent — the caller passes the draft's.
+    video_input: bool = False
+    #: The draft's reference videos' total length, for the estimate only.
+    reference_video_seconds: float | None = None
+
+    @classmethod
+    def from_params(cls, params: Mapping[str, object], default_model: str) -> _FinalSpec:
+        model_id = str(params.get("model") or default_model)
+        family = seedance_family(model_id)
+        if family.draft_final_resolution is None:
+            raise ValueError(f"{model_id} has no draft mode: use Seedance 2.5")
+        draft_task_id = params.get("draft_task_id")
+        if not isinstance(draft_task_id, str) or not draft_task_id.strip():
+            raise ValueError("'draft_task_id' must be the draft's task id")
+        return cls(
+            model_id=model_id,
+            family=family,
+            draft_task_id=draft_task_id.strip(),
+            resolution=family.draft_final_resolution,
+            # the same checks as the draft's own spec (`_VideoSpec`)
+            ratio=_video_ratio(params, family, model_id),
+            seconds=_video_seconds(params, family),
+            return_last_frame=bool(params.get("return_last_frame", True)),
+            # the final keeps the draft's sound or silence: what the draft was made with
+            # (a draft that does not say is taken as the family's default)
+            generate_audio=bool(params.get("generate_audio", family.audio)) and family.audio,
+            video_input=_video_input_flag(params.get("video_input")),
+            reference_video_seconds=_reference_video_seconds(params.get("reference_video_seconds")),
+        )
+
+    @property
+    def estimate_ratio(self) -> str:
+        return _estimate_ratio(self.ratio)
+
+    @property
+    def estimate_seconds(self) -> int:
+        return _estimate_seconds(self.family, self.seconds)
+
+    @property
+    def estimate_input_video_seconds(self) -> float:
+        # unmeasured whether a final's tokens count the draft's input video again: priced
+        # as if they do (the guard overcounts) until the first live final says otherwise
+        return _input_video_seconds(self.video_input, self.reference_video_seconds)
+
+    @property
+    def draft(self) -> bool:
+        return False
+
+    def body(self) -> dict[str, object]:
+        return {
+            "model": self.model_id,
+            "content": [{"type": "draft_task", "draft_task": {"id": self.draft_task_id}}],
+            "resolution": self.resolution,
+            # re-settable, and the model's default (not the draft's) applies when omitted
+            "watermark": False,
+            "return_last_frame": self.return_last_frame,
+        }
 
 
 class SeedanceVideoAdapter(_ArkClient):
@@ -480,7 +800,20 @@ class SeedanceVideoAdapter(_ArkClient):
       (``480p``/``720p``/``1080p`` as the family allows), ``duration_seconds`` (clamped
       to the family's range);
     - ``dialogue`` — the script line: spoken (in double quotes) by the audio families,
-      ignored by the silent 1.0 family; ``generate_audio``; ``camera_fixed`` (1.x).
+      ignored by the silent 1.0 family; ``generate_audio``; ``camera_fixed`` (1.x);
+    - ``omni_reference_task_type`` — with references on 2.5: ``reference`` (a new video
+      that follows them), ``edit`` (edit a reference video: ``ratio: adaptive``,
+      ``duration_seconds: -1``), ``extend`` (lengthen one: ``ratio: adaptive``) or
+      ``auto``; omitted = the model decides. ``ratio`` may be ``adaptive`` and
+      ``duration_seconds`` ``-1`` on any 2.x model;
+    - ``draft`` — a 480p draft (2.5 only, m-24820142); its ``task_id`` is the draft id;
+    - ``draft_task_id`` — instead of all of the above: the final of that draft, at the
+      family's final resolution, with only ``model`` beside it (``ratio`` and
+      ``duration_seconds`` may ride along for the cost estimate, ``generate_audio`` —
+      the draft's — for the payload; none of them is sent). ``video_input`` — whether
+      the draft had reference videos — prices the final at the with-video rate;
+    - ``reference_video_seconds`` — the reference videos' total length, for the price
+      estimate only (ModelArk bills the input video too); unmeasured = the 30 s cap.
     """
 
     name = "seedance"
@@ -510,7 +843,11 @@ class SeedanceVideoAdapter(_ArkClient):
         self._poll_timeout = poll_timeout_seconds
         self._monotonic = monotonic
 
-    def spec(self, params: Mapping[str, object]) -> _VideoSpec:
+    def spec(self, params: Mapping[str, object]) -> _VideoSpec | _FinalSpec:
+        """A `draft_task_id` asks for the final of that draft; anything else is a task of
+        its own (a draft when `draft` is true)."""
+        if params.get("draft_task_id") is not None:
+            return _FinalSpec.from_params(params, self.model)
         return _VideoSpec.from_params(params, self.model)
 
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
@@ -521,17 +858,27 @@ class SeedanceVideoAdapter(_ArkClient):
         content = data.get("content") if isinstance(data.get("content"), dict) else {}
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         tokens = int(usage.get("completion_tokens") or 0)
-        seconds = Decimal(str(data.get("duration") or spec.seconds))
+        seconds = Decimal(str(data.get("duration") or spec.estimate_seconds))
         payload: dict[str, object] = {
             "task_id": task_id,
             "video_url": content.get("video_url"),
             "last_frame_url": content.get("last_frame_url"),
             "duration_seconds": str(seconds),
-            "ratio": data.get("ratio") or spec.ratio,
+            "ratio": data.get("ratio") or spec.estimate_ratio,
             "resolution": data.get("resolution") or spec.resolution,
             "seed": data.get("seed"),
             "tokens": tokens,
             "generate_audio": spec.generate_audio,
+            # m-24820142: a draft's id makes its final for 7 days from `created_at` (Unix
+            # seconds); a final names the draft it came from
+            "draft": bool(data.get("draft", spec.draft)),
+            "draft_task_id": data.get("draft_task_id")
+            or (spec.draft_task_id if isinstance(spec, _FinalSpec) else None),
+            "created_at": data.get("created_at"),
+            # the with-video rate applies (a final's: its draft's); a draft keeps both for
+            # its final's price and estimate
+            "video_input": spec.video_input,
+            "reference_video_seconds": spec.reference_video_seconds,
         }
         return GenerationResult(
             payload=payload,
@@ -550,11 +897,20 @@ class SeedanceVideoAdapter(_ArkClient):
         *,
         api_key: str | None = None,  # unused: the token formula needs no vendor call
     ) -> Decimal:
-        """ModelArk's own token formula at the clamped length; an unpriced model or
-        resolution raises from the table rather than estimating zero."""
+        """ModelArk's own token formula at the clamped length, plus the input video's
+        seconds when there is one (billed too, at the with-video rate); an unpriced model
+        or resolution raises from the table rather than estimating zero."""
         spec = self.spec(request.params)
-        tokens = estimate_video_tokens(spec.model_id, spec.resolution, spec.ratio, spec.seconds)
-        return video_cost_usd(pricing, spec.model_id, spec.resolution, tokens)
+        tokens = estimate_video_tokens(
+            spec.model_id,
+            spec.resolution,
+            spec.estimate_ratio,
+            spec.estimate_seconds,
+            spec.estimate_input_video_seconds,
+        )
+        return video_cost_usd(
+            pricing, spec.model_id, spec.resolution, tokens, video_input=spec.video_input
+        )
 
     def get_task(self, task_id: str, *, api_key: str) -> Mapping[str, Any]:
         """One task's current state — the recovery path after an `ArkTaskTimeout`."""
@@ -565,7 +921,7 @@ class SeedanceVideoAdapter(_ArkClient):
 
     # -- internals ----------------------------------------------------------------------
 
-    def _create(self, client: Any, spec: _VideoSpec) -> str:
+    def _create(self, client: Any, spec: _VideoSpec | _FinalSpec) -> str:
         body = self._post(client, "/contents/generations/tasks", spec.body())
         task_id = body.get("id")
         if not task_id:

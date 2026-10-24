@@ -25,6 +25,10 @@ class ConnectionOptionVM:
     id: str
     external_username: str
     platform: str
+    # PUBLICAR-4 UX review: «@cuenta · Instagram», the same words step 3's review
+    # sentence uses. Computed by the provider (`rx.foreach` cannot call Python); empty
+    # for callers that do not show a selector label.
+    label: str = ""
 
 
 @dataclass(frozen=True)

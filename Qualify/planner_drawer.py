@@ -11,12 +11,15 @@ and every confirmation is asked inside the panel, never in a dialog on top of it
    Historia, Carrusel, Feed) by colour + glyph + word, and its temperature: **Cold**
    (evergreen, proven — it has gone out again and again) or **Hot** (new, still proving
    itself), see `planner_vm.temperature`.
-2. **Programación** — one card per piece: date, time, accounts, tags, output and weekly
-   repetition, each piece on its own (a story at 2 a. m., a carousel at 10 a. m., a reel
-   at 11 a. m.).
-3. **Confirmar** — the day as it will go out: a phone-shaped mock of each piece in its
-   channel's shape (story bars, reel rail, feed header) on a timeline, each with ✎ / 🗑,
-   and the plan's goals (likes, vistas, comentarios, ads, seguidores, interacción).
+2. **Cuándo sale** («Paso 2 de 3 · ¿Cuándo sale?», m-24842985, N6) — one card per piece
+   asking only the day and the hour, or «Ahora» (planned at the instant «Programar» is
+   tapped). The accounts already chosen are said in one line («Sale en @cuenta
+   (Instagram)»); output, destination, accounts, campaign, tags and weekly repetition
+   sit behind «Más opciones», which opens on its own when what is missing is in there.
+3. **Confirmar** — one sentence («Sale el jueves 30 a las 7:00 p. m. en Instagram
+   @cuenta», N13), then the day as it will go out: a phone-shaped mock of each piece in
+   its channel's shape on a timeline, each with ✎ / 🗑, and the plan's goals folded
+   behind «Más opciones».
 
 Colours are identity here, never state: a format has its scale (`q-kind-*` in
 `assets/qualify.css`), a goal has its scale, and Cold/Hot their own gradient. States keep
@@ -38,9 +41,13 @@ from .planner_vm import (
     ASSIGN_STEPS,
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
+    BACK_TO_WEEK,
     EXPIRED_NOTE,
     KIND_ICONS,
+    NOW_LABEL,
     PLAN_GOALS,
+    REVIEW_EDIT_LINK,
+    REVIEW_NOTHING_WITHOUT_YOU,
     STEP_POST,
     STEP_PREVIEW,
     STEP_WHEN,
@@ -62,6 +69,10 @@ from .post_card import (
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
+
+#: m-24842985 (N6): what is not the day and the hour waits behind this fold.
+MORE_OPTIONS = "Más opciones"
+MORE_OPTIONS_GOALS = "Más opciones: metas de esta planificación"
 
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
 _CLAMP_2 = {
@@ -315,13 +326,13 @@ def _legend() -> rx.Component:
         ),
         _legend_item(
             rx.box(rx.icon("snowflake", size=12), class_name="q-temp q-temp--cold q-temp--mini"),
-            "Cold",
-            "Probado: ya funcionó, contenido evergreen.",
+            "Ya probada",
+            "Ya salió antes y funcionó: puedes repetirla.",
         ),
         _legend_item(
             rx.box(rx.icon("flame", size=12), class_name="q-temp q-temp--hot q-temp--mini"),
-            "Hot",
-            "Nuevo: todavía en prueba.",
+            "Por probar",
+            "Todavía no ha salido en tus redes.",
         ),
         class_name="q-legend-box",
     )
@@ -330,15 +341,17 @@ def _legend() -> rx.Component:
 def _step_content() -> rx.Component:
     empty = rx.vstack(
         rx.center(rx.icon("layout-grid", size=22), class_name="q-section-glyph q-glyph-lg"),
-        rx.text("No hay POSTs para planificar", size="3", weight="bold"),
+        rx.text("No hay publicaciones para programar", size="3", weight="bold"),
         rx.text(
-            "Crea una pieza y apruébala: aparecerá aquí lista para programar.",
+            "Crea una publicación y apruébala: aparecerá aquí lista para programar.",
             size="2",
             color=T.TEXT_MUTED,
             text_align="center",
         ),
         rx.link(
-            rx.button(rx.icon("sparkles", size=16), "Crear POST", variant="soft", size="3"),
+            rx.button(
+                rx.icon("sparkles", size=16), "Crear una publicación", variant="soft", size="3"
+            ),
             href="/create",
         ),
         align="center",
@@ -355,7 +368,7 @@ def _step_content() -> rx.Component:
             _section_title(
                 "layout-grid",
                 "¿Qué vas a publicar?",
-                "Elige una o varias piezas listas. Cada una tendrá su propio horario.",
+                "Elige una o varias publicaciones listas. Cada una tendrá su propio horario.",
             ),
             rx.cond(
                 PlannerState.schedulable.length() > 0,
@@ -658,7 +671,7 @@ def _plan_campaign(row) -> rx.Component:
     (only once its publications were created), and the warning says it reaches every
     publication the POST already has."""
     picker = rx.select.root(
-        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña del POST"),
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña de la publicación"),
         rx.select.content(
             rx.select.item("Sin campaña", value="none"),
             rx.cond(PlannerState.campaigns.length() > 0, rx.select.separator()),
@@ -732,8 +745,8 @@ def _confirm_campaign(row) -> rx.Component:
         "Campaña nueva: se creará al programar.",
         rx.cond(
             row.chosen_campaign_name == "",
-            "El POST quedará sin campaña al programar.",
-            "La campaña del POST cambiará al programar.",
+            "La publicación quedará sin campaña al programar.",
+            "La campaña de la publicación cambiará al programar.",
         ),
     )
     return rx.fragment(
@@ -747,6 +760,178 @@ def _confirm_campaign(row) -> rx.Component:
                 color=T.TEXT_MUTED,
             ),
         ),
+    )
+
+
+def _when_choice(row, now: bool, label: str, icon: str) -> rx.Component:
+    """One of «Elegir día y hora» / «Ahora» (m-24842985): a radio pair, thumb-sized."""
+    on = row.now if now else ~row.now
+    return rx.el.button(
+        rx.icon(icon, size=14),
+        rx.text(label, as_="span"),
+        type="button",
+        role="radio",
+        aria_checked=on,
+        class_name=rx.cond(on, "q-choice q-choice--on", "q-choice"),
+        on_click=PlannerState.set_item_now(row.post_id, now),
+    )
+
+
+def _when_fields(row) -> rx.Component:
+    """«¿Cuándo sale?» — only the day and the hour, or «Ahora» (N6)."""
+    return rx.vstack(
+        rx.box(
+            _when_choice(row, False, "Elegir día y hora", "calendar-days"),
+            _when_choice(row, True, NOW_LABEL, "zap"),
+            class_name="q-when-choice",
+            role="radiogroup",
+            aria_label="¿Cuándo sale?",
+        ),
+        rx.cond(
+            row.now,
+            rx.hstack(
+                rx.icon("info", size=14, flex_shrink="0", margin_top="2px"),
+                rx.text(
+                    "Sale unos minutos después de que toques «"
+                    + PlannerState.form_submit_label
+                    + "».",
+                    size="2",
+                ),
+                align="start",
+                spacing="2",
+                color=T.TEXT_MUTED,
+            ),
+            rx.box(
+                rx.box(
+                    rx.cond(row.repeat, _label("Desde"), _label("Día")),
+                    rx.input(
+                        type="date",
+                        value=row.date,
+                        on_change=lambda v: PlannerState.set_item_date(row.post_id, v),
+                        min=PlannerState.today_iso,
+                        width="100%",
+                        aria_label="Día",
+                    ),
+                ),
+                rx.box(_label("Hora"), _time_picker(row)),
+                class_name="q-plan-grid",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _where_line(row) -> rx.Component:
+    """Where it goes out, already chosen («Sale en Instagram @cuenta»), so the owner
+    does not have to open «Más opciones» to know it."""
+    return rx.cond(
+        row.accounts_line != "",
+        rx.hstack(
+            rx.icon("send", size=14, flex_shrink="0", margin_top="2px"),
+            rx.text(row.accounts_line, size="2"),
+            align="start",
+            spacing="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.cond(
+            PlannerState.connections.length() == 0,
+            rx.vstack(
+                rx.text(
+                    "No hay cuentas activas: conéctalas en Tus redes.",
+                    size="2",
+                    color=T.tone_color("warn", 11),
+                ),
+                rx.link(
+                    rx.hstack(
+                        rx.text("Ir a Tus redes", size="2"),
+                        rx.icon("arrow-right", size=14),
+                        align="center",
+                        spacing="1",
+                    ),
+                    href="/connections",
+                    class_name="q-plan-link",
+                ),
+                spacing="1",
+            ),
+        ),
+    )
+
+
+def _more_options(row) -> rx.Component:
+    """Everything that is not the day and the hour (N6): format, where, accounts,
+    campaign, tags and weekly repetition — closed by default, open on its own when what
+    is missing is in here (`row.needs_more`)."""
+    return rx.accordion.root(
+        rx.accordion.item(
+            header=MORE_OPTIONS,
+            content=rx.vstack(
+                rx.cond(
+                    row.has_outputs,
+                    rx.box(
+                        _label("Formato"),
+                        rx.segmented_control.root(
+                            rx.foreach(
+                                row.outputs,
+                                lambda o: rx.segmented_control.item(o.label, value=o.port),
+                            ),
+                            value=row.output_port,
+                            on_change=lambda v: PlannerState.set_item_output(row.post_id, v),
+                            size="1",
+                        ),
+                        width="100%",
+                    ),
+                ),
+                _destination_selector(row),
+                # With no account at all, the warning and «Ir a Tus redes» sit above the
+                # fold (`_where_line`), so this box says nothing then.
+                rx.cond(
+                    PlannerState.connections.length() > 0,
+                    rx.box(
+                        _label("Canales"),
+                        rx.flex(
+                            rx.foreach(PlannerState.connections, lambda c: _account_chip(row, c)),
+                            wrap="wrap",
+                            gap="0.4rem",
+                        ),
+                        width="100%",
+                    ),
+                ),
+                rx.cond(~PlannerState.form_is_reschedule, _plan_campaign(row)),
+                rx.box(
+                    _label("Etiquetas"),
+                    rx.flex(
+                        rx.foreach(PlannerState.tags, lambda t: _tag_chip(row, t)),
+                        rx.foreach(PlannerState.tag_suggestions, lambda s: _suggested_chip(row, s)),
+                        wrap="wrap",
+                        gap="0.35rem",
+                    ),
+                    width="100%",
+                ),
+                _new_tag_box(),
+                rx.cond(~row.now, _repeat(row)),
+                rx.cond(
+                    PlannerState.form_count > 1,
+                    rx.button(
+                        rx.icon("copy", size=12),
+                        "Usar canales, etiquetas y campaña en todas",
+                        size="2",
+                        variant="ghost",
+                        on_click=PlannerState.apply_to_all(row.post_id),
+                    ),
+                ),
+                spacing="4",
+                width="100%",
+            ),
+            value="more",
+        ),
+        value=rx.cond(PlannerState.more_open.contains(row.post_id), "more", ""),
+        on_value_change=lambda v: PlannerState.set_item_more(row.post_id, v),
+        collapsible=True,
+        type="single",
+        variant="ghost",
+        width="100%",
+        class_name="q-plan-more",
     )
 
 
@@ -788,66 +973,8 @@ def _plan_card(row) -> rx.Component:
             width="100%",
             class_name="q-plan-head",
         ),
-        rx.box(
-            rx.box(
-                rx.cond(row.repeat, _label("Desde"), _label("Fecha")),
-                rx.input(
-                    type="date",
-                    value=row.date,
-                    on_change=lambda v: PlannerState.set_item_date(row.post_id, v),
-                    min=PlannerState.today_iso,
-                    width="100%",
-                ),
-            ),
-            rx.box(_label("Hora"), _time_picker(row)),
-            class_name="q-plan-grid",
-        ),
-        rx.cond(
-            row.has_outputs,
-            rx.box(
-                _label("Salida"),
-                rx.segmented_control.root(
-                    rx.foreach(
-                        row.outputs,
-                        lambda o: rx.segmented_control.item(o.label, value=o.port),
-                    ),
-                    value=row.output_port,
-                    on_change=lambda v: PlannerState.set_item_output(row.post_id, v),
-                    size="1",
-                ),
-                width="100%",
-            ),
-        ),
-        _destination_selector(row),
-        rx.box(
-            _label("Canales"),
-            rx.cond(
-                PlannerState.connections.length() > 0,
-                rx.flex(
-                    rx.foreach(PlannerState.connections, lambda c: _account_chip(row, c)),
-                    wrap="wrap",
-                    gap="0.4rem",
-                ),
-                rx.text(
-                    "No hay cuentas activas: conéctalas en Tus redes.",
-                    size="1",
-                    color=T.tone_color("warn", 11),
-                ),
-            ),
-            width="100%",
-        ),
-        rx.cond(~PlannerState.form_is_reschedule, _plan_campaign(row)),
-        rx.box(
-            _label("Etiquetas"),
-            rx.flex(
-                rx.foreach(PlannerState.tags, lambda t: _tag_chip(row, t)),
-                rx.foreach(PlannerState.tag_suggestions, lambda s: _suggested_chip(row, s)),
-                wrap="wrap",
-                gap="0.35rem",
-            ),
-            width="100%",
-        ),
-        _repeat(row),
+        _when_fields(row),
+        _where_line(row),
         rx.hstack(
             rx.cond(
                 row.error != "",
@@ -869,22 +996,12 @@ def _plan_card(row) -> rx.Component:
                     class_name="q-plan-status q-plan-status--ok",
                 ),
             ),
-            rx.spacer(),
-            rx.cond(
-                PlannerState.form_count > 1,
-                rx.button(
-                    rx.icon("copy", size=12),
-                    "Usar canales, etiquetas y campaña en todas",
-                    size="1",
-                    variant="ghost",
-                    on_click=PlannerState.apply_to_all(row.post_id),
-                ),
-            ),
             align="center",
             width="100%",
             wrap="wrap",
             gap="0.5rem",
         ),
+        _more_options(row),
         class_name="q-plan-card q-kind-" + row.kind,
     )
 
@@ -915,15 +1032,16 @@ def _new_tag_box() -> rx.Component:
 
 
 def _step_schedule() -> rx.Component:
+    """m-24842985 (N6): «Paso 2 de 3 · ¿Cuándo sale?» — one question per piece."""
     return rx.vstack(
         rx.flex(
             _section_title(
                 "calendar-clock",
-                "Programación",
+                PlannerState.form_step_counter + " · ¿Cuándo sale?",
                 rx.cond(
                     PlannerState.form_is_reschedule,
-                    "Mueve la publicación a otra fecha, hora o cuenta.",
-                    "Cuándo y dónde sale cada pieza.",
+                    "Elige el nuevo día y la hora.",
+                    "Elige el día y la hora, o «Ahora».",
                 ),
             ),
             rx.box(
@@ -939,7 +1057,6 @@ def _step_schedule() -> rx.Component:
             width="100%",
         ),
         rx.foreach(PlannerState.plan_rows, _plan_card),
-        _new_tag_box(),
         spacing="4",
         width="100%",
     )
@@ -1114,6 +1231,7 @@ def _timeline_item(row) -> rx.Component:
                     width="100%",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
+                rx.cond(row.sale_line != "", rx.text(row.sale_line, size="2")),
                 rx.flex(
                     rx.foreach(
                         row.accounts,
@@ -1221,9 +1339,13 @@ def _step_confirm() -> rx.Component:
                     size="4",
                     weight="bold",
                 ),
-                rx.text(PlannerState.form_plan_summary, size="2"),
+                rx.text(PlannerState.form_confirm_line, size="3", weight="medium"),
                 rx.text(
-                    "Zona horaria " + PlannerState.tz_name + " · Nada se publica antes de su hora.",
+                    "Hora de "
+                    + PlannerState.form_tz_city
+                    + " · Nada sale antes de que toques «"
+                    + PlannerState.form_submit_label
+                    + "».",
                     size="1",
                     opacity="0.8",
                 ),
@@ -1232,7 +1354,17 @@ def _step_confirm() -> rx.Component:
             class_name="q-hero",
         ),
         rx.box(rx.foreach(PlannerState.plan_rows_by_time, _timeline_item), class_name="q-tl"),
-        rx.cond(~PlannerState.form_is_reschedule, _goals()),
+        rx.cond(
+            ~PlannerState.form_is_reschedule,
+            rx.accordion.root(
+                rx.accordion.item(header=MORE_OPTIONS_GOALS, content=_goals(), value="goals"),
+                collapsible=True,
+                type="single",
+                variant="ghost",
+                width="100%",
+                class_name="q-plan-more",
+            ),
+        ),
         rx.cond(
             PlannerState.form_story_warnings > 0,
             callout(
@@ -1367,8 +1499,8 @@ def assign_drawer() -> rx.Component:
         description=rx.cond(
             PlannerState.form_is_reschedule,
             "Mueve la publicación a otra fecha, hora o cuenta.",
-            "Arma tu día: elige las piezas, dales hora y canal, y confirma. Nada se publica "
-            "hasta su hora.",
+            "Arma tu día: elige las publicaciones, dales hora y cuenta, y confirma. "
+            "Nada se publica hasta su hora.",
         ),
         footer=_assign_footer(),
         width="46rem",
@@ -1546,7 +1678,7 @@ def _detail_body() -> rx.Component:
         ),
         rx.cond(
             d.output_label != "",
-            _fact_tile("layers", "Salida", rx.text(d.output_label, size="2", weight="bold")),
+            _fact_tile("layers", "Formato", rx.text(d.output_label, size="2", weight="bold")),
         ),
         # QUA-143: the POST's campaign — shown only when the POST belongs to one.
         rx.cond(
@@ -1590,6 +1722,36 @@ def _detail_body() -> rx.Component:
         rx.cond(
             d.destination == "story",
             callout(STORY_CAPTION_NOTE, "info"),
+        ),
+        # m-24842984: in review, what approving means — nothing goes out without the
+        # owner, and if they approve it goes out on the day and hour they chose (N13).
+        # The hour only when the worker can publish for this tenant and nothing else is
+        # missing (UX review): otherwise just «Nada sale sin tu aprobación.».
+        rx.cond(
+            d.can_reject_post,
+            rx.cond(
+                PlannerState.auto_publish == AUTO_PUBLISH_ACTIVE,
+                callout(d.review_line, "info"),
+                callout(REVIEW_NOTHING_WITHOUT_YOU, "info"),
+            ),
+        ),
+        # «Aprobar» refused for the text itself: the way out stays on the panel, with a
+        # link to where it is edited (N3/N4 — the toast alone is a dead end).
+        rx.cond(
+            PlannerState.review_error != "",
+            rx.vstack(
+                callout(PlannerState.review_error, "warn"),
+                rx.cond(
+                    d.detail_href != "",
+                    rx.link(
+                        REVIEW_EDIT_LINK,
+                        href=d.detail_href + PlannerState.week_return_query,
+                        size="2",
+                    ),
+                ),
+                spacing="2",
+                width="100%",
+            ),
         ),
         rx.match(
             PlannerState.auto_publish,
@@ -1658,7 +1820,7 @@ def _detail_body() -> rx.Component:
         facts,
         _panel_section(
             "file-text",
-            "El POST",
+            "Lo que se publica",
             rx.cond(
                 d.caption_excerpt != "",
                 rx.text(d.caption_excerpt, size="2", class_name="q-caption-quote"),
@@ -1666,14 +1828,15 @@ def _detail_body() -> rx.Component:
             ),
             action=rx.cond(
                 d.detail_href != "",
+                # Stays in Qualify (N9: no ↗) and comes back with «‹ Tu semana».
                 rx.link(
-                    rx.hstack(
-                        rx.text("Abrir en Por aprobar", size="1"),
-                        rx.icon("external-link", size=12),
-                        align="center",
-                        spacing="1",
+                    rx.button(
+                        "Ver publicación",
+                        size="2",
+                        variant="ghost",
+                        min_height="44px",
                     ),
-                    href=d.detail_href,
+                    href=d.detail_href + PlannerState.week_return_query,
                 ),
             ),
         ),
@@ -1745,6 +1908,33 @@ def _detail_footer() -> rx.Component:
     the plan (outlined red) on the left, what moves it (solid) on the right. Every
     button the same size, each with its glyph."""
     d = PlannerState.detail
+    # m-24842984: a publication still in review is decided right here — «No la quiero»
+    # (outlined red) and «Aprobar» (solid), the gallery's own approval. Its own row, so
+    # the decision never gets mixed with moving or cancelling the date.
+    review = rx.cond(
+        d.can_reject_post,
+        # «Aprobar» first: on a phone the grid is one column, so the first thing under
+        # the thumb is approving, never discarding (UX review).
+        rx.box(
+            rx.button(
+                rx.icon("check", size=16),
+                "Aprobar",
+                size="3",
+                loading=PlannerState.review_busy,
+                on_click=PlannerState.approve_post_from_detail,
+            ),
+            rx.button(
+                rx.icon("thumbs-down", size=16),
+                "No la quiero",
+                variant="outline",
+                color_scheme="red",
+                size="3",
+                disabled=PlannerState.review_busy,
+                on_click=PlannerState.reject_post_from_detail,
+            ),
+            class_name="q-panel-actions",
+        ),
+    )
     actions = rx.box(
         rx.cond(
             d.can_remove_rejected,
@@ -1755,18 +1945,6 @@ def _detail_footer() -> rx.Component:
                 color_scheme="red",
                 size="3",
                 on_click=PlannerState.ask_remove_rejected,
-            ),
-        ),
-        # A POST still in review can be rejected from here (the creative FSM decides).
-        rx.cond(
-            d.can_reject_post,
-            rx.button(
-                rx.icon("thumbs-down", size=16),
-                "Rechazar POST",
-                variant="outline",
-                color_scheme="red",
-                size="3",
-                on_click=PlannerState.reject_post_from_detail,
             ),
         ),
         rx.cond(
@@ -1795,8 +1973,8 @@ def _detail_footer() -> rx.Component:
         (
             CONFIRM_CANCEL,
             _confirm_bar(
-                "¿Cancelar esta publicación? Sale del calendario y el POST vuelve a «Sin "
-                "programar»; su contenido no cambia.",
+                "¿Cancelar esta publicación? Sale del calendario y vuelve a «Sin programar»; "
+                "su contenido no cambia.",
                 "Sí, cancelar",
                 PlannerState.confirm_cancel,
             ),
@@ -1804,13 +1982,13 @@ def _detail_footer() -> rx.Component:
         (
             CONFIRM_REMOVE,
             _confirm_bar(
-                "¿Quitar el POST rechazado del calendario? Se cancelan sus publicaciones "
-                "pendientes; lo ya publicado se conserva.",
+                "¿Quitar la publicación rechazada del calendario? Se cancelan sus fechas "
+                "programadas pendientes; lo ya publicado se conserva.",
                 "Sí, quitar",
                 PlannerState.confirm_remove_rejected,
             ),
         ),
-        actions,
+        rx.vstack(review, actions, spacing="3", width="100%"),
     )
 
 
@@ -1819,21 +1997,39 @@ def event_panel() -> rx.Component:
     modal): the POST itself — media, text, format, Cold/Hot — when and where it goes
     out, its tags, and what can be done with it. Confirmations happen in the footer."""
     return drawer(
-        rx.cond(
-            PlannerState.detail_loading,
-            # content loading (the POST, its media, dates): a skeleton, never a spinner
-            rx.box(skeleton_card(5), padding="0.5rem 0", width="100%"),
-            rx.cond(
-                PlannerState.detail_error != "",
-                callout(PlannerState.detail_error, "error"),
-                _detail_body(),
+        rx.vstack(
+            # m-24842987 (N7): on a phone the panel is the whole screen; its way back
+            # names where it goes — the same week, in the same view. Outside the
+            # loading/error branches so it is always there; phone only, since on a
+            # wide screen the week shows behind and the panel's X already says it.
+            rx.el.div(
+                rx.button(
+                    rx.icon("chevron-left", size=T.ICON_MD),
+                    BACK_TO_WEEK,
+                    variant="ghost",
+                    size="3",
+                    min_height="44px",
+                    on_click=PlannerState.set_detail_open(False),
+                ),
+                class_name="q-narrow-only",
             ),
+            rx.cond(
+                PlannerState.detail_loading,
+                # content loading (the POST, its media, dates): a skeleton, never a spinner
+                rx.box(skeleton_card(5), padding="0.5rem 0", width="100%"),
+                rx.cond(
+                    PlannerState.detail_error != "",
+                    callout(PlannerState.detail_error, "error"),
+                    _detail_body(),
+                ),
+            ),
+            width="100%",
         ),
         open=PlannerState.detail_open,
         on_open_change=PlannerState.set_detail_open,
         title="Publicación planificada",
         icon="calendar-check",
-        description="Qué sale, cuándo y dónde. Desde aquí la mueves o la cancelas.",
+        description="Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas.",
         footer=_detail_footer(),
         width="36rem",
     )

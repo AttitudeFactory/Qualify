@@ -35,10 +35,43 @@ NO_CURRENCY = "Sin moneda"
 CURRENCY_CODES: tuple[str, ...] = ("USD", "UYU", "COP", "VES", "EUR", "CLP", "ARS", "MXN", "PEN")
 CURRENCY_OPTIONS: tuple[str, ...] = (NO_CURRENCY, *CURRENCY_CODES)
 
+#: m-24842974: a currency reads by its name, the code only in brackets. The four of the
+#: markets Qualify serves come first; the rest wait under «Otra moneda».
+MAIN_CURRENCIES: tuple[tuple[str, str], ...] = (
+    ("COP", "Pesos colombianos (COP)"),
+    ("VES", "Bolívares (VES)"),
+    ("USD", "Dólares (USD)"),
+    ("UYU", "Pesos uruguayos (UYU)"),
+)
+OTHER_CURRENCIES: tuple[tuple[str, str], ...] = (
+    ("EUR", "Euros (EUR)"),
+    ("CLP", "Pesos chilenos (CLP)"),
+    ("ARS", "Pesos argentinos (ARS)"),
+    ("MXN", "Pesos mexicanos (MXN)"),
+    ("PEN", "Soles (PEN)"),
+)
+OTHER_CURRENCY_GROUP = "Otra moneda"
+_CURRENCY_NAMES: dict[str, str] = dict(MAIN_CURRENCIES + OTHER_CURRENCIES)
+
 
 def currency_choice(code: str) -> str:
     """The stored code as the select shows it."""
     return code or NO_CURRENCY
+
+
+def currency_name(code: str) -> str:
+    """«Pesos colombianos (COP)» for "COP"; «Sin moneda» for none; an unknown code as-is."""
+    clean = (code or "").strip().upper()
+    if not clean:
+        return NO_CURRENCY
+    return _CURRENCY_NAMES.get(clean, clean)
+
+
+def business_default_currency(code: str | None) -> str:
+    """The business's own currency (`tenants.currency`, set at signup) as the form's
+    starting choice — "" when it is one the catalog does not offer."""
+    clean = (code or "").strip().upper()
+    return clean if clean in CURRENCY_CODES else ""
 
 
 def currency_from_choice(choice: str) -> str:
@@ -112,6 +145,52 @@ def parse_price_input(text: str) -> Decimal | None:
     return amount.quantize(Decimal("0.01"))
 
 
+# -- «Agregar producto» in three steps (m-24842974) --------------------------------------
+#: The photo first, then the name, then what to do with it. Indexes of `NEW_PRODUCT_STEPS`.
+STEP_PHOTO, STEP_NAME, STEP_DONE = 0, 1, 2
+NEW_PRODUCT_STEPS: tuple[str, ...] = ("La foto", "El nombre", "Listo")
+NEW_PRODUCT_STEP_ICONS: tuple[str, ...] = ("camera", "pencil-line", "check")
+NEW_PRODUCT_STEP_TITLES: tuple[str, ...] = (
+    "Muestra cómo se ve tu producto",
+    "¿Cómo se llama?",
+    "Listo",
+)
+MISSING_PHOTO = "Falta la foto"
+
+
+def step_counter(step: int) -> str:
+    """«Paso 2 de 3» — the step clamped into range."""
+    total = len(NEW_PRODUCT_STEPS)
+    return f"Paso {min(max(int(step), 0), total - 1) + 1} de {total}"
+
+
+def steps_done(step: int) -> list[bool]:
+    """What the stepper draws as checked: every step before the current one."""
+    return [index < int(step) for index in range(len(NEW_PRODUCT_STEPS))]
+
+
+#: The formats only show up when a file is refused (m-24842974: never on the main path).
+MEDIA_NOT_ACCEPTED = "Ese archivo no es una foto ni un video. Prueba con otra foto de tu galería."
+MEDIA_TOO_MANY = "Puedes subir hasta 12 fotos o videos por producto. Elige menos."
+MEDIA_TOO_BIG = "Ese archivo es demasiado pesado. Prueba con otra foto o un video más corto."
+
+
+def rejection_message(rejected: Sequence[object]) -> str:
+    """The owner's sentence for files the upload zone refused (react-dropzone's
+    `fileRejections`: `{"file": …, "errors": [{"code": …}]}` each)."""
+    codes: set[str] = set()
+    for row in rejected or ():
+        errors = row.get("errors", []) if isinstance(row, dict) else []
+        for error in errors or ():
+            if isinstance(error, dict):
+                codes.add(str(error.get("code", "")))
+    if "too-many-files" in codes:
+        return MEDIA_TOO_MANY
+    if "file-too-large" in codes:
+        return MEDIA_TOO_BIG
+    return MEDIA_NOT_ACCEPTED
+
+
 class _MediaLike(Protocol):
     id: object
     media_type: str
@@ -183,13 +262,14 @@ class ProductVM:
 
 
 def counts_label(photo_count: int, video_count: int) -> str:
-    """ "3 fotos · 1 video"; the zero side is dropped; "Sin fotos" when both are zero."""
+    """ "3 fotos · 1 video"; the zero side is dropped; «Falta la foto» when both are zero
+    (m-24842974: the product exists, and the words say what it still needs)."""
     parts: list[str] = []
     if photo_count:
         parts.append("1 foto" if photo_count == 1 else f"{photo_count} fotos")
     if video_count:
         parts.append("1 video" if video_count == 1 else f"{video_count} videos")
-    return " · ".join(parts) if parts else "Sin fotos"
+    return " · ".join(parts) if parts else MISSING_PHOTO
 
 
 def media_meta_label(
@@ -236,17 +316,115 @@ def build_product_vm(product: _ProductLike) -> ProductVM:
     )
 
 
+# -- leaving the editor (m-24842976) ----------------------------------------------------
+
+#: The query parameter that gives an open product its own address (N5):
+#: `/catalog?producto=<id>`. The phone's «atrás» drops it and closes the editor.
+PRODUCT_QUERY = "producto"
+LEAVE_TITLE = "¿Salir sin guardar?"
+LEAVE_STAY = "Volver"
+LEAVE_SAVE = "Guardar y salir"
+LEAVE_DISCARD = "Salir sin guardar"
+
+
+def leave_description(product_name: str) -> str:
+    """«Los cambios de «Shawarma mixto» se van a perder.»"""
+    return f"Los cambios de «{product_name.strip()}» se van a perder."
+
+
+def _same_price(typed: str, stored: str) -> bool:
+    """«12,5» and «12.50» are the same price: compare the parsed amounts when both
+    parse, the trimmed text otherwise (a half-typed price IS a change)."""
+    typed, stored = (typed or "").strip(), (stored or "").strip()
+    if typed == stored:
+        return True
+    try:
+        return parse_price_input(typed) == parse_price_input(stored)
+    except ValueError:
+        return False
+
+
+def editor_is_dirty(
+    product: ProductVM | None,
+    *,
+    name: str,
+    description: str,
+    category: str,
+    price: str,
+    currency: str,
+) -> bool:
+    """True when the editor holds something the stored product does not: closing it
+    now would lose it. Whitespace at the ends never counts (the save strips it)."""
+    if product is None:
+        return False
+    return (
+        name.strip() != product.name.strip()
+        or description.strip() != product.description.strip()
+        or category.strip() != product.category.strip()
+        or not _same_price(price, product.price_amount)
+        or (currency or "") != (product.price_currency or "")
+    )
+
+
+# -- the main photo and removing media (m-24842977) -----------------------------------
+
+#: The two tile actions, as words on the button (never only an icon).
+MAKE_PRIMARY = "Hacer principal"
+REMOVE_MEDIA = "Quitar"
+REMOVE_CONFIRM = "Sí, quitar"
+REMOVE_STAY = "Volver"
+
+
+def remove_media_title(media_type: str) -> str:
+    """«¿Quitar esta foto?» / «¿Quitar este video?»."""
+    return "¿Quitar este video?" if media_type == "video" else "¿Quitar esta foto?"
+
+
+def remove_media_description(
+    media_type: str, *, is_primary: bool, has_other_photo: bool = False
+) -> str:
+    """What happens after «Sí, quitar», in the owner's words. When the main photo goes,
+    the next photo takes its place (`CatalogService.remove_media` promotes it); when it
+    was the only photo, the product is left without one, and we say so plainly."""
+    what = "Este video" if media_type == "video" else "Esta foto"
+    text = f"{what} ya no se usará para crear publicaciones. Las que ya hiciste no cambian."
+    if is_primary and media_type != "video":
+        if has_other_photo:
+            text += " La siguiente foto pasa a ser la principal."
+        else:
+            text += " Tu producto quedará sin foto hasta que subas otra."
+    return text
+
+
+def product_count_label(total: int, missing_photo: int) -> str:
+    """«3 productos · 1 sin foto»; the second half only when some product has no photo."""
+    label = "1 producto" if total == 1 else f"{total} productos"
+    if missing_photo > 0:
+        label += f" · {missing_photo} sin foto"
+    return label
+
+
+def missing_photo_filter_label(missing_photo: int, *, active: bool) -> str:
+    """The button that narrows the list to the products still without a photo."""
+    if active:
+        return "Ver todos los productos"
+    return "Ver el que no tiene foto" if missing_photo == 1 else f"Ver los {missing_photo} sin foto"
+
+
+def products_to_show(products: Sequence[ProductVM], *, only_missing_photo: bool) -> list[ProductVM]:
+    """The grid's rows: all of them, or only those with no photo yet."""
+    if not only_missing_photo:
+        return list(products)
+    return [p for p in products if p.photo_count == 0]
+
+
 # -- «Crear publicación con este producto» (m-24842972, PRODUCTOS-1) --------------------
 #: The query parameter `/create` reads to open with a catalog product already chosen.
 CREATE_PRODUCT_PARAM = "producto"
 #: Why the button is off on a product with no photo: said under it, never hover-only.
 NEEDS_PHOTO_REASON = "Primero súbele una foto"
-#: What the button says while the photos dropped in the form are still being saved.
+#: What the editor says under the button while the product's photos are still saving.
 SAVING_PHOTOS_REASON = "Guardando sus fotos…"
-#: «Listo» notice, product with photo: the next step is a publication with it.
-CREATED_NEXT_STEP = "¿Hacemos una publicación con él?"
-#: «Listo» notice, product with no photo (and none saving): the photo comes first.
-CREATED_NEEDS_PHOTO = "Súbele una foto y hacemos una publicación con él."
 
 
 def create_with_product_href(product_id: str) -> str:
