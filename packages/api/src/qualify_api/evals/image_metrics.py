@@ -22,8 +22,9 @@ import hashlib
 import io
 import math
 import re
+import time
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -444,6 +445,28 @@ def _psnr_value(psnr: float | None) -> float | str | None:
     return "inf" if math.isinf(psnr) else round(psnr, 3)
 
 
+def dominant_hex(data: bytes, k: int = PALETTE_COLORS) -> list[str]:
+    """The `k` dominant sRGB colors of a reference image (its opaque pixels) as
+    ``#RRGGBB``, most frequent first: k-means on RGB with the fixed seed. For the v2
+    color prompt, which names the colors instead of showing their layout."""
+    rgba = np.asarray(_open(data).convert("RGBA")).reshape(-1, 4)
+    index = np.flatnonzero(rgba[:, 3] >= 128)
+    if len(index) == 0:
+        raise ValueError("the reference has no opaque pixels")
+    if len(index) > PALETTE_SAMPLE:  # sample first, as `_palette` does, then convert
+        rng = np.random.default_rng(PALETTE_SEED)
+        index = np.sort(rng.choice(index, size=PALETTE_SAMPLE, replace=False))
+    points = rgba[index, :3].astype(np.float64)
+    centers = kmeans_palette(points, k)
+    nearest = np.argmin(((points[:, None, :] - centers[None]) ** 2).sum(axis=2), axis=1)
+    counts = np.bincount(nearest, minlength=len(centers))
+    order = sorted(range(len(centers)), key=lambda i: (-counts[i], i))
+    return [
+        "#{:02X}{:02X}{:02X}".format(*(int(round(min(max(v, 0), 255))) for v in centers[i]))
+        for i in order
+    ]
+
+
 def _palette(image: Image.Image, where: np.ndarray | None, k: int) -> np.ndarray:
     """The palette of `image` (inside `where`, if given): at most `PALETTE_SAMPLE` pixels
     are drawn first (fixed seed) and only those are converted to Lab, so a 12 MP photo
@@ -576,20 +599,42 @@ def legibility_record(
     expected: str | None,
     *,
     retry: bool = True,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> dict[str, object]:
     """What the run records for a texture item: `pendiente` without a reader; else the
     reading, whether it matches `expected` and, on a mismatch, ONE more reading (the
     ticket's single retry — a read like any other, it counts against the reader's
     budget). A reader that cannot read (`ReaderUnavailable`) leaves the item «sin
     lectura», or keeps the first reading when only the retry was refused; any other error
-    on the retry keeps the first reading too and is recorded as `reintento_error`."""
+    on the retry keeps the first reading too and is recorded as `reintento_error`.
+
+    `latencias_s` has ONE ENTRY PER ATTEMPTED READ — the first read and the retry,
+    including one that failed or that the budget refused (3 decimals); `intentos` is
+    their count and `latencia_s` their sum. Every shape but «pendiente» carries the three.
+    """
     base: dict[str, object] = {"metricas_version": METRICS_VERSION}
     if reader is None or expected is None:
         return {**base, "estado": "pendiente"}
+    latencies: list[float] = []
+
+    def timed_read() -> str:
+        start = clock()
+        try:
+            return reader.read_text(image_bytes)
+        finally:
+            latencies.append(round(clock() - start, 3))
+
+    def timing() -> dict[str, object]:
+        return {
+            "latencias_s": list(latencies),
+            "intentos": len(latencies),
+            "latencia_s": round(sum(latencies), 3),
+        }
+
     try:
-        first = reader.read_text(image_bytes)
+        first = timed_read()
     except ReaderUnavailable as exc:
-        return {**base, "estado": "sin lectura", "motivo": str(exc)[:200]}
+        return {**base, "estado": "sin lectura", "motivo": str(exc)[:200], **timing()}
     record: dict[str, object] = {
         **base,
         "estado": "leido",
@@ -598,23 +643,26 @@ def legibility_record(
         "reintento": False,
         "lecturas": [first],
     }
-    if record["coincide"] or not retry:
-        return record
     try:
-        second = reader.read_text(image_bytes)
-    except ReaderUnavailable as exc:
-        record["motivo_sin_reintento"] = str(exc)[:200]
+        if record["coincide"] or not retry:
+            return record
+        try:
+            second = timed_read()
+        except ReaderUnavailable as exc:
+            record["motivo_sin_reintento"] = str(exc)[:200]
+            return record
+        except Exception as exc:  # noqa: BLE001 — the first (billed) reading is never lost
+            record["reintento_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            return record
+        record.update(
+            leido=second,
+            coincide=exact_match(expected, second),
+            reintento=True,
+            lecturas=[first, second],
+        )
         return record
-    except Exception as exc:  # noqa: BLE001 — the first (billed) reading is never lost
-        record["reintento_error"] = f"{type(exc).__name__}: {exc}"[:200]
-        return record
-    record.update(
-        leido=second,
-        coincide=exact_match(expected, second),
-        reintento=True,
-        lecturas=[first, second],
-    )
-    return record
+    finally:
+        record.update(timing())
 
 
 class FakeReader:

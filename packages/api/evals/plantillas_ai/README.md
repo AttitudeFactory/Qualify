@@ -6,6 +6,8 @@ aplicar textura a un logo»). El **PR 1** trajo la matriz, el costo y los candad
 legibilidad sin lector). El **PR 3, parte A** (sin costo) trae el material ficticio completo,
 el lector de legibilidad con Claude bajo su propio tope y el informe de faltantes por tipo; la
 sonda y el piloto pagados los corre después el hilo principal con la autorización del fundador.
+El **PR 4** (preparación, sin gasto) trae la latencia por llamada, los prompts `v2`, la
+comprobación de preparación, la comparación entre corridas y el procedimiento para 5.0 pro.
 
 ## Para qué
 
@@ -114,6 +116,69 @@ imagen: solo cotiza. La matriz completa son 110 ítems, 68 pagados: USD 3.264 a 
 La tabla muestra todos los ítems de los bloques elegidos, con su origen (`fixture` o `real`)
 y si las opciones actuales lo incluyen; el costo se suma solo para los incluidos.
 
+Más opciones (PR 4): `--prompts v1|v2` (por defecto `v1`, así las corridas anteriores siguen
+siendo comparables), `--texture-finish plano|volumen` (por defecto `plano`; `volumen` solo existe
+con `--prompts v2`, si no la corrida sale con código 2), `--cases <archivo>` (otra matriz con las
+mismas reglas, por defecto `cases.json`) y `--check-readiness`.
+
+### Prompts versionados
+
+`v1` (`plantillas-ai-v1`, el de las corridas registradas) no cambia ni un byte:
+
+- Color: «Image 1 is a product photo. Image 2 is a color reference. Recolor the object in Image 1
+  with the color palette of Image 2. Keep the object's shape, material, printed text, lighting,
+  shadows and the background of Image 1 unchanged.»
+- Textura: «Image 1 is a logo with the text "{expected_text}". Image 2 is a material texture.
+  Apply the material of Image 2 to the letters and shapes of the logo in Image 1. Keep the exact
+  text "{expected_text}", the letter shapes, the layout and the background of Image 1
+  unchanged.»
+
+`v2` (`plantillas-ai-v2`), escrito después de que 5.0 lite copiara las franjas de la paleta:
+
+- Color: «Image 1 is a product photo. Image 2 is a color reference with the colors {palette}.
+  Transfer the colors of Image 2 ({palette}) onto the object in Image 1 as its own material
+  colors. Do NOT reproduce the layout, stripes, bands or shapes of Image 2. Keep the object's
+  geometry, material, shadows, printed text and the background of Image 1 unchanged.»
+  `{palette}` son los 3 colores dominantes de la referencia en `#RRGGBB`, del más frecuente al
+  menos (`image_metrics.dominant_hex`, k-means con semilla fija); se guardan en el ítem como
+  `paleta_hex`.
+- Textura, acabado `plano`: el mismo texto de `v1`.
+- Textura, acabado `volumen`: «Image 1 is a logo with the text "{expected_text}". Image 2 is a
+  material texture. Render the word "{expected_text}" as 3D letters made of the material in
+  Image 2, with real volume, depth and lighting. Keep the spelling "{expected_text}" and the
+  letterforms of Image 1 exactly. Use a simple studio background that matches the material.»
+
+Cada ítem guarda la versión del TEXTO que se le envió (`prompt_version`: con `--prompts v2`, la
+textura `plano` sigue diciendo `plantillas-ai-v1` porque su texto es idéntico), el SHA-256 del
+prompt exacto (`prompt_sha256`; vacío en el acabado plano) y, si es de textura, su
+`texture_finish`. El informe guarda las opciones pedidas (`prompt_version`, `texture_finish`).
+
+### Latencia
+
+Cada ítem intentado guarda `latencia_s`: el tiempo de reloj desde que empieza el ítem (lectura
+de las entradas, colores de la paleta y armado de la solicitud) hasta la respuesta del proveedor
+(con los reintentos del propio adaptador) o el fin del acabado plano; si falla antes o durante la
+llamada, hasta el fallo. Las comprobaciones posteriores no cuentan. `totales` lleva
+`latencia_media_s` por bloque y en total (los ítems sin número, como los omitidos, no cuentan).
+En `legibilidad`, `latencias_s` tiene **una entrada por lectura intentada** (la primera y el
+reintento, también si falló o si el tope la negó), `intentos` cuenta esas entradas y
+`latencia_s` las suma. El simulacro no mide nada.
+
+### Comprobación de preparación (`--check-readiness`)
+
+Sin ninguna solicitud de red y con el mismo planificador que el simulacro (respeta `--configs`,
+`--size`, `--block`, `--limit`, `--skip-fixtures` y `--cases`), informa: los totales de esa
+matriz, el precio de un ítem pagado y el comando de la sonda PNG con su cotización para cada
+modelo de `--configs`, el tope de gasto aceptado, los topes del lector, si las variables
+`QUALIFY_BYTEPLUS_ARK_API_KEY` y `QUALIFY_ANTHROPIC_API_KEY` están en el entorno, en `.env` o
+ausentes (**solo el nombre, nunca el valor**; `NOMBRE=""` cuenta como ausente), las imágenes que
+faltan por tipo y cuántas fotos propias faltan. Una matriz inválida o un `--cases` que no existe
+sale con código 2; un modelo sin precio en la tabla, con código 3.
+
+```bash
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --check-readiness
+```
+
 ## Corrida pagada
 
 **Gasta dinero real y el fundador la autoriza cada vez.** No arranca sin
@@ -158,6 +223,88 @@ Códigos de salida (también en `--help`):
 | 5 | El tope detuvo la corrida, o el libro de gasto dio una alerta (exceso, dinero retenido) |
 | 6 | Ningún ítem pagado salió bien (todos fallaron o se omitieron) |
 
+## Procedimiento de comparación Lite vs Pro
+
+Cada paso necesita el anterior. Los costos salen de la tabla `v6` con 2 imágenes de entrada por
+ítem pagado (5.0 pro: USD 0.045 por imagen hasta 1.5K y USD 0.09 a 2K, más USD 0.003 por la
+segunda imagen; 5.0 lite: USD 0.035 por imagen, sin cobro por entradas). 5.0 lite no genera a
+1K: su tamaño mínimo es 2K (2560 × 1440).
+
+| Paso | Llamadas pagadas | 5.0 pro 1K | 5.0 pro 2K | 5.0 lite 2K | Autorización |
+|---|---|---|---|---|---|
+| 1. Simulacro y preparación | 0 | USD 0 | USD 0 | USD 0 | Ninguna |
+| 2. Sonda PNG | 1 | USD 0.048 | USD 0.093 | USD 0.035 (hecha el 2026-10-23) | 5.0 pro activado en la cuenta y gasto autorizado por el fundador |
+| 3. Piloto | 4 | USD 0.192 | USD 0.372 | USD 0.140 (hecho el 2026-10-23) | Gasto autorizado por el fundador |
+| 4. Muestra con fotos propias | 19 | USD 0.912 | USD 1.767 | USD 0.665 | Gasto autorizado y 3 fotos propias en `imagenes/` |
+| 5. Matriz completa | 68 | USD 3.264 | USD 6.324 | USD 2.380 | Autorización explícita del fundador y las 8 fotos propias |
+
+La muestra (paso 4) usa `cases-muestra.json`: 3 fotos propias × 3 paletas (9 de color) y 5 marcas
+× 2 texturas (10 de textura, más sus 10 acabados planos gratis). Si además se comparan los
+prompts (`v1` contra `v2`, o `plano` contra `volumen`), cada variante es otra corrida de 19
+llamadas: dos variantes con 5.0 pro a 1K suman USD 1.824. El lector de Claude, si se usa, tiene
+su propio tope (como máximo 50 lecturas y USD 0.50).
+
+Comandos, en orden (5.0 pro es el valor por defecto de `--configs`; para 5.0 lite se agrega
+`--configs seedream-5-0-lite-260128 --size 2K`):
+
+```bash
+# 1. sin gasto
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry-run
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --check-readiness
+# 2. sonda: ¿acepta el logo PNG con transparencia?
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --block texture --limit 1 --max-usd 0.05 --i-have-spend-authorization
+# 3. piloto (a 2K, --max-usd 0.40)
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --limit 2 --max-usd 0.20 --i-have-spend-authorization
+# 4. muestra con fotos propias (agregar --reader claude para la legibilidad)
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry-run --cases packages/api/evals/plantillas_ai/cases-muestra.json
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --cases packages/api/evals/plantillas_ai/cases-muestra.json --max-usd 1.00 --i-have-spend-authorization
+# 5. matriz completa, solo con autorización explícita
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --max-usd 3.30 --i-have-spend-authorization
+# comparar dos informes (solo lee los JSON)
+uv run --no-sync python packages/api/evals/plantillas_ai/compare_runs.py packages/api/evals/plantillas_ai/results/20261023-192557-350988.json packages/api/evals/plantillas_ai/results/<pro>.json
+```
+
+`compare_runs.py` imprime una tabla en Markdown con una fila por ítem, es decir por (caso,
+modelo) de cada corrida (un informe puede tener varios modelos), agrupada por caso: estado,
+gastado, latencia, ΔE de paleta, PSNR del fondo, acabado plano y legibilidad, y una fila de
+totales por corrida y modelo. Funciona también con un solo informe y no llama a nada.
+
+Qué necesita cada criterio del ticket:
+
+- **PNG con transparencia aceptado:** la sonda (paso 2). Verificado para 5.0 lite; falta 5.0 pro.
+- **Transferir colores** (fuera de la máscara idéntico tras recomponer; dentro, colores a menos
+  del umbral en 8 de 10 casos): al menos 10 casos de color con fotos reales y su máscara, y el
+  umbral de ΔE acordado (hoy 10, provisional). Fuera de la máscara la igualdad es por
+  construcción; se informan `psnr_fondo_db` y `borde_recompuesto_psnr_db`.
+- **Acabado plano** (silueta con menos del 1 % de diferencia, textura en el 100 % del interior,
+  costo cero): ya medible sin gasto con las 10 marcas ficticias (9 aprueban; «ARRECIFAL» no).
+- **Textura con volumen** (Claude lee exactamente el texto; un reintento): `--prompts v2
+  --texture-finish volumen` con `--reader claude`.
+
+### Muestras pendientes: las 8 fotos propias
+
+Van en `packages/api/evals/plantillas_ai/imagenes/color/objetos/` (en `.gitignore`, nunca al
+repositorio), una por archivo, con el nombre exacto que espera `cases.json`:
+
+| Archivo | Qué debe mostrar |
+|---|---|
+| `taza-ceramica-blanca.jpg` | Una taza de cerámica blanca |
+| `botella-acero.jpg` | Una botella de acero |
+| `zapatilla-lona.jpg` | Una zapatilla de lona |
+| `camiseta-algodon.jpg` | Una camiseta de algodón |
+| `bolso-cuero.jpg` | Un bolso de cuero |
+| `silla-madera.jpg` | Una silla de madera |
+| `termo-plastico.jpg` | Un termo de plástico |
+| `gorra-tela.jpg` | Una gorra de tela |
+
+Fotos propias de Attitude Factory (nunca de un cliente), en JPG (si es PNG, cambia la extensión
+en `cases.json`), de al menos 1080 px en el lado corto, con el objeto entero y sobre un fondo
+liso y simple. Las 3 primeras bastan para la muestra del paso 4. Una vez estén las fotos, 5.0 pro
+activado y la autorización: `--check-readiness` debe decir «Fotos propias pendientes: 0» para la
+matriz elegida, y se sigue el procedimiento desde el paso 2. Si hacen falta máscaras de los
+objetos, se agregan como `mask` en cada caso (por ahora la métrica de color usa toda la imagen y
+lo marca con `origen_mascara: "none"`).
+
 ## Corridas registradas
 
 **Evaluación exploratoria de `seedream-5-0-lite-260128` a 2K, no de 5.0 pro.** El intento con
@@ -192,7 +339,8 @@ ni sobre el tope, y nada quedó retenido.
   trazo mínimo 12 px, 7 / 7 piezas. Los dos aprueban.
 
 **Limitaciones:** es 5.0 lite, no pro; los objetos son sintéticos (faltan las 8 fotos propias);
-no hay control por región; el ejecutor no registra la latencia de cada llamada; la legibilidad
+no hay control por región; el ejecutor no registraba la latencia de cada llamada (lo hace
+desde el PR 4); la legibilidad
 quedó «pendiente» (el lector está implementado, pero no se ejecutó).
 
 **Casos pendientes:** 24 de color (8 fotos × 3 paletas), 40 de textura y 40 de acabado plano.
@@ -202,6 +350,7 @@ textura, una variante «con volumen».
 Las imágenes generadas quedan en `imagenes/salidas/<sello>/` (en `.gitignore`) y no se publican.
 
 Ficha del modelo con esta prueba: [`docs/modelos-generativos/seedream-5-0-lite.md`](../../../../docs/modelos-generativos/seedream-5-0-lite.md).
+Borrador de la ficha de 5.0 pro (sin resultados todavía): [`docs/modelos-generativos/seedream-5-0-pro.md`](../../../../docs/modelos-generativos/seedream-5-0-pro.md).
 
 ## Métricas locales (PR 2)
 
@@ -351,8 +500,7 @@ Para el PR 3, parte B (la corre el hilo principal con la autorización del funda
 - La sonda y el piloto pagados ya corrieron con 5.0 lite (ver «Corridas registradas»); falta
   repetirlos con 5.0 pro cuando se active en la cuenta, con `--reader claude`, y la ficha del
   modelo en `docs/modelos-generativos/` el mismo día.
-- Registrar la latencia de cada solicitud: el tiempo de reloj de cada llamada al proveedor en el
-  registro del ítem (por ejemplo, `latencia_s`), para comparar modelos y tamaños.
+- La latencia por solicitud ya se registra (`latencia_s`, PR 4); falta medirla en una corrida.
 - Las 8 fotos de productos propios del fundador (y, si hacen falta, sus máscaras con BiRefNet
   de `photo/segment.py`) antes de pasar del piloto.
 - Acordar el umbral de ΔE de la paleta (hoy 10, provisional) con los resultados.
@@ -390,6 +538,10 @@ Después:
     paleta PNG en `downscaled_png`; la redacción del aviso cuando falta un fixture; los topes del
     lector definidos en tres lugares (constantes, argumentos y `ReadBudget`); y el bucle de
     `ImageDraw.Draw` por columna al dibujar el rombo en `make_fixtures.py`.
+14. Limpieza pendiente de la revisión del PR 4: más allá del analizador común de `.env`, unir
+    `_env_names` y `_load_env`; el literal `FLAT_PROVIDER` y `LITE_MODEL` repetidos en
+    `compare_runs.py` y en el ejecutor; un administrador de contexto para medir tiempos; y los
+    `getattr` con valor por defecto sobre los argumentos.
 
 ## Dependencias abiertas
 

@@ -935,7 +935,10 @@ def test_a_configured_reader_checks_the_texture_items(
         reader=reader,
     )
     (record,) = report["items"].values()
-    assert record["legibilidad"] == {
+    legibility = dict(record["legibilidad"])
+    assert isinstance(legibility.pop("latencia_s"), float)
+    assert len(legibility.pop("latencias_s")) == 1 and legibility.pop("intentos") == 1
+    assert legibility == {
         "metricas_version": "metricas-v1",
         "estado": "leido",
         "leido": "luma",
@@ -962,14 +965,20 @@ def test_missing_inputs_are_grouped_by_role(tmp_path: Path, cases: tt.CaseSet) -
 
 
 def test_the_dry_run_lists_exactly_the_founders_photos(
-    no_http: list[httpx.Request], capsys: pytest.CaptureFixture[str]
+    no_http: list[httpx.Request],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    assert _runner().main(["--dry-run"]) == 0
+    runner = _runner()
+    monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)  # deterministic: no photo on disk
+    assert runner.main(["--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "Faltan 8 imágenes de entrada" in out and "  objetos (8):" in out
     for role in ("logos", "texturas", "referencias de color", "máscaras"):
         assert f"  {role} (" not in out
-    assert out.count("/imagenes/color/objetos/") == 8
+    listed = [line for line in out.splitlines() if line.startswith("    - ")]
+    assert len(listed) == 8 and all("objetos" in line for line in listed)
     assert no_http == []
 
 

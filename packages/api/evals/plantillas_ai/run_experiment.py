@@ -8,6 +8,7 @@ USD 10) is checked before every request, the adapter's retries included.
 
     uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry-run
     uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry-run --limit 2
+    uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --check-readiness
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -28,24 +30,40 @@ from qualify_api.evals import spend_control as sc
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[3]
 IMAGES_DIR = HERE / "imagenes"
+CASES_FILE = HERE / "cases.json"
+RUNNER = "uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py"
+#: The wall clock every latency is read from (tests replace it with a fake).
+_clock = time.perf_counter
+LITE_MODEL = "seedream-5-0-lite-260128"
+ENV_NAMES = ("QUALIFY_BYTEPLUS_ARK_API_KEY", "QUALIFY_ANTHROPIC_API_KEY")
 EPILOG = """exit codes:
-  0  done (or a dry run with nothing sent)
-  2  bad arguments, invalid matrix, missing images, no authorization, no key or a
-     worst case above the ceiling: nothing sent
-  3  a missing price in the pricing table: nothing sent
+  0  done (or a dry run or a readiness check with nothing sent)
+  2  bad arguments, invalid or missing matrix file, missing images, no
+     authorization, no key or a worst case above the ceiling: nothing sent
+  3  a missing price in the pricing table (also in --check-readiness): nothing sent
   4  a dry run saw a network attempt (blocked)
   5  the ceiling stopped the run, or the ledger raised an alert (overage, money held)
   6  no paid item succeeded (every one failed or was skipped)
 """
 
 
-def _load_env(path: str | None) -> None:
-    if not path or not Path(path).exists():
-        return
+def _env_pairs(path: str | None) -> dict[str, str]:
+    """`NAME=value` pairs of an env file, values stripped of spaces and quotes (so
+    `NAME=""` is an empty value). The one parser `_load_env` and `_env_names` share."""
+    pairs: dict[str, str] = {}
+    if not path or not Path(path).is_file():
+        return pairs
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         name, sep, value = line.partition("=")
-        if sep and name.strip() and not name.strip().startswith("#"):
-            os.environ.setdefault(name.strip(), value.strip().strip('"').strip("'"))
+        name = name.strip()
+        if sep and name and not name.startswith("#"):
+            pairs[name] = value.strip().strip('"').strip("'")
+    return pairs
+
+
+def _load_env(path: str | None) -> None:
+    for name, value in _env_pairs(path).items():
+        os.environ.setdefault(name, value)
 
 
 def _usd(value: str) -> Decimal:
@@ -124,6 +142,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--i-have-spend-authorization",
         action="store_true",
         help="required for a paid run: the founder authorized this run's spend",
+    )
+    parser.add_argument(
+        "--prompts",
+        choices=("v1", "v2"),
+        default="v1",
+        help="prompt set: v1 (default, comparable with earlier runs) or v2",
+    )
+    parser.add_argument(
+        "--texture-finish",
+        choices=("plano", "volumen"),
+        default="plano",
+        help="texture prompt finish; volumen exists only with --prompts v2",
+    )
+    parser.add_argument(
+        "--cases", type=Path, default=CASES_FILE, help="the matrix file (default cases.json)"
+    )
+    parser.add_argument(
+        "--check-readiness",
+        action="store_true",
+        help="report prices, flags, key names and missing inputs; no request of any kind",
     )
     parser.add_argument(
         "--reader",
@@ -219,11 +257,18 @@ def _print_totals(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.prompts == "v1" and args.texture_finish != "plano":
+        parser.error("--texture-finish volumen needs --prompts v2")
 
     from qualify_creative.pricing import JsonPricingTable
 
     from qualify_api.evals import template_transfer as tt
 
+    if args.check_readiness:
+        with sc.network_guard() as stats:
+            code = check_readiness(args, tt, JsonPricingTable)
+        print(f"\nSolicitudes de red: {stats['blocked']} (comprobación: ninguna llamada)")
+        return code if stats["blocked"] == 0 else 4
     if args.dry_run:
         with sc.network_guard() as stats:
             code = _plan_and_report(args, tt, JsonPricingTable)
@@ -235,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
 def _plan(
     args: argparse.Namespace, tt: Any, table: Any
 ) -> tuple[list[Any], dict[str, list[Path]], Any]:
-    cases = tt.load_cases(HERE / "cases.json")
+    cases = tt.load_cases(args.cases)
     items = tt.build_matrix(
         cases, blocks=args.block or tt.BLOCKS, limit=args.limit, skip_fixtures=args.skip_fixtures
     )
@@ -261,7 +306,7 @@ def _plan_or_exit_code(args: argparse.Namespace, tt: Any, table: Any) -> Any:
     except sc.MissingPriceError as exc:
         print(f"Sin precio en la tabla {tt.PRICING_VERSION}: {exc}. No se envía nada.")
         return 3
-    except (tt.CasesError, ValueError) as exc:
+    except (tt.CasesError, ValueError, OSError) as exc:
         print(f"Matriz inválida: {exc}")
         return 2
 
@@ -272,9 +317,11 @@ def _plan_and_report(args: argparse.Namespace, tt: Any, table: Any) -> int:
         return plan
     planned, missing, cases = plan
     full = tt.build_matrix(cases, blocks=args.block or tt.BLOCKS)
+    choice = prompt_choice(args, tt)
     print(
         f"Tabla de precios {tt.PRICING_VERSION} · tamaño {args.size} · prompts "
-        f"{tt.PROMPT_VERSION} · fixtures {'excluidos' if args.skip_fixtures else 'incluidos'}\n"
+        f"{choice.prompt_version} (textura {choice.finish}) · fixtures "
+        f"{'excluidos' if args.skip_fixtures else 'incluidos'}\n"
     )
     _print_table(full, planned)
     _, worst = _print_totals(full, planned, args.max_usd)
@@ -472,11 +519,16 @@ _MONEY_FIELDS = (
 )
 
 
-def _omitted(call: Any, tt: Any) -> dict[str, Any]:
+def prompt_choice(args: argparse.Namespace, tt: Any) -> Any:
+    """The run's `PromptChoice` (v1 and the flat finish unless the flags say otherwise)."""
+    return tt.PromptChoice(getattr(args, "prompts", "v1"), getattr(args, "texture_finish", "plano"))
+
+
+def _omitted(call: Any, tt: Any, choice: Any = None) -> dict[str, Any]:
     """The row of an item the run never attempted: the same keys as every other row
     (provenance, block, every money field at 0, `exceso`), estado «omitido»."""
     return {
-        **tt.provenance(call),
+        **tt.provenance(call, choice or tt.DEFAULT_PROMPTS),
         "block": call.item.block,
         **{name: "0" for name in _MONEY_FIELDS},
         "estado": "omitido",
@@ -515,7 +567,9 @@ def _after_generation(
             if metrics.recomposed_png is not None:
                 _output(out_dir, f"{name}~recompuesto.png").write_bytes(metrics.recomposed_png)
         elif item.block == "texture":
-            fields["legibilidad"] = im.legibility_record(reader, result, item.expected_text)
+            fields["legibilidad"] = im.legibility_record(
+                reader, result, item.expected_text, clock=_clock
+            )
     except Exception as exc:  # the image is already saved: keep it, record why
         fields["metricas_error"] = f"{type(exc).__name__}: {exc}"[:300]
     return fields
@@ -532,21 +586,37 @@ def _run_item(
     api_key: str,
     size: str,
     reader: Any = None,
+    choice: Any = None,
 ) -> dict[str, Any]:
     """One planned item. A failure is recorded on the item, never raised — except
-    `CeilingExceededError`, which stops the run."""
+    `CeilingExceededError`, which stops the run. `latencia_s` is the wall-clock time
+    from the item's start (inputs read, palette and request built) to the vendor's answer
+    (the adapter's own retries included) or to the end of the flat finish — or, when the
+    item fails before or during the call, to the failure. Every attempted item has it;
+    the offline checks after the answer are not counted."""
     from qualify_creative.adapters.byteplus_ark import SeedreamImageAdapter
 
+    choice = choice or tt.DEFAULT_PROMPTS
     item = call.item
     name = output_name(call)
-    record: dict[str, Any] = {**tt.provenance(call), "block": item.block}
+    record: dict[str, Any] = {**tt.provenance(call, choice), "block": item.block}
     before = _money(ledger)
+    start = _clock()
+
+    def stop() -> None:
+        if "latencia_s" not in record:
+            record["latencia_s"] = round(_clock() - start, 3)
+
     try:
         paths = [image.resolve(IMAGES_DIR, REPO_ROOT) for image in item.images]
         if call.quote is None:  # the flat finish: offline, free, with its checks
             from qualify_api.evals.image_metrics import flat_texture_fill
 
-            flat = flat_texture_fill(paths[0].read_bytes(), paths[1].read_bytes())
+            logo, texture = paths[0].read_bytes(), paths[1].read_bytes()
+            try:
+                flat = flat_texture_fill(logo, texture)
+            finally:
+                stop()
             _output(out_dir, f"{name}.png").write_bytes(flat.png)
             record["metricas"] = flat.as_record()
         else:
@@ -555,20 +625,38 @@ def _run_item(
             adapter = SeedreamImageAdapter(
                 model=call.model_id, base_url=base_url, transport=transport
             )
-            images = [sc.reference_data_url(p.read_bytes()) for p in paths]
-            result = adapter.generate(
-                tt.build_request(item, model_id=call.model_id, size=size, images=images),
-                api_key=api_key,
+            raw = [p.read_bytes() for p in paths]
+            images = [sc.reference_data_url(data) for data in raw]
+            palette = ()
+            if choice.version == "v2" and item.block == "color":
+                from qualify_api.evals.image_metrics import dominant_hex
+
+                palette = tuple(dominant_hex(raw[1]))
+                record["paleta_hex"] = list(palette)
+            request = tt.build_request(
+                item,
+                model_id=call.model_id,
+                size=size,
+                images=images,
+                choice=choice,
+                palette_hex=palette,
             )
+            record["prompt_sha256"] = tt.prompt_sha256(str(request.params["prompt"]))
+            try:
+                result = adapter.generate(request, api_key=api_key)
+            finally:
+                stop()
             generated = result.payload["images"][0]
             target.write_bytes(generated)
             record["model_revision"] = result.model_revision
             record.update(_after_generation(item, paths, generated, out_dir, name, reader))
         record["estado"] = "hecho"
     except sc.CeilingExceededError as exc:
+        stop()
         record["estado"] = "rechazado por el tope"
         record["error"] = str(exc)[:300]
     except Exception as exc:  # one failed item never stops the others
+        stop()
         record["estado"] = "error"
         record["error"] = f"{type(exc).__name__}: {exc}"[:300]
     after = _money(ledger)
@@ -583,6 +671,100 @@ def _run_item(
             f"(exceso sobre el tope de la corrida: USD {after['exceso_sobre_tope_usd']})."
         )
     return record
+
+
+def mean_latencies(items: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
+    """Mean `latencia_s` per block and over every timed item («total»); items without a
+    number (omitted ones, or a null) are skipped, and a block with none is left out."""
+    by_block: dict[str, list[float]] = {}
+    for record in items.values():
+        value = record.get("latencia_s")
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            by_block.setdefault(str(record.get("block")), []).append(float(value))
+    means = {block: round(sum(v) / len(v), 3) for block, v in by_block.items()}
+    every = [value for values in by_block.values() for value in values]
+    if every:
+        means["total"] = round(sum(every) / len(every), 3)
+    return means
+
+
+def _env_names(env_file: str | None) -> dict[str, str]:
+    """Where each key NAME is set: «entorno», «.env» or «ausente» (an empty value, as
+    `NAME=""`, is absent). Values are never printed."""
+    pairs = _env_pairs(env_file)
+    out: dict[str, str] = {}
+    for name in ENV_NAMES:
+        if os.environ.get(name, "").strip():
+            out[name] = "entorno"
+        elif pairs.get(name, "").strip():
+            out[name] = ".env"
+        else:
+            out[name] = "ausente"
+    return out
+
+
+def _probe_flags(model_id: str, size: str) -> str:
+    flags = "" if model_id == sc.SEEDREAM_PRO else f" --configs {model_id}"
+    return flags + ("" if size == "1K" else f" --size {size}")
+
+
+def check_readiness(args: argparse.Namespace, tt: Any, table: Any) -> int:
+    """What the paid run of THIS matrix and these models needs, checked without any
+    request. It plans exactly like the dry run (`--configs`, `--size`, `--block`,
+    `--limit`, `--skip-fixtures`, `--cases`): an invalid or missing matrix exits 2, a
+    missing price 3. Then: the matrix totals, the price of one paid item and the PNG
+    probe (command and quote) per model, the ceiling and reader caps, the key names
+    (never the values) and the missing inputs by role. Otherwise 0: nothing is sent."""
+    from qualify_api.evals.legibility_claude import HARD_MAX_READS, HARD_MAX_USD, worst_case_usd
+
+    plan = _plan_or_exit_code(args, tt, table)
+    if isinstance(plan, int):
+        return plan
+    planned, missing, _ = plan
+    pricing = table(tt.PRICING_VERSION)
+    paid = [c for c in planned if c.quote]
+    worst = sum((c.quote.max_usd for c in paid), Decimal(0))
+    print(f"Preparación para la corrida pagada (tabla de precios {tt.PRICING_VERSION})\n")
+    print(
+        f"Matriz {Path(args.cases).name}: {len(planned)} ítems ({len(paid)} pagados) · "
+        f"estimado USD {tt.total_usd(planned)} · máximo USD {worst} · tope USD {args.max_usd}"
+    )
+    print("\nPrecio de un ítem pagado (2 imágenes de entrada) y sonda PNG:")
+    for model_id in _models(args):
+        try:
+            q = sc.quote(pricing, model_id=model_id, size=args.size, references=2)
+        except sc.MissingPriceError as exc:
+            print(f"Sin precio en la tabla {tt.PRICING_VERSION}: {exc}. No se envía nada.")
+            return 3
+        except ValueError as exc:
+            print(f"Matriz inválida: {exc}")
+            return 2
+        cap = max(Decimal("0.05"), q.max_usd.quantize(Decimal("0.01"), rounding=ROUND_UP))
+        print(
+            f"  {model_id} a {args.size} (tramo {q.tier}): imagen USD {q.unit_usd} + "
+            f"entradas USD {q.references_usd} = USD {q.total_usd}"
+        )
+        print(
+            f"    {RUNNER} --block texture --limit 1 --max-usd {cap}"
+            f"{_probe_flags(model_id, args.size)} --i-have-spend-authorization"
+        )
+    print(
+        f"\nTope de gasto: --max-usd {args.max_usd} aceptado (máximo USD {sc.MAX_USD_CEILING} "
+        "por corrida; se revisa antes de cada solicitud)."
+    )
+    worst_read = worst_case_usd("claude-sonnet-5").normalize()
+    print(
+        f"Lector: --reader {args.reader} · --max-reads {args.max_reads} (máximo "
+        f"{HARD_MAX_READS}) · --max-reader-usd {args.max_reader_usd} (máximo USD "
+        f"{HARD_MAX_USD}) · peor caso por lectura USD {worst_read}."
+    )
+    print("\nVariables de entorno (solo el nombre, nunca el valor):")
+    for name, where in _env_names(args.env_file).items():
+        print(f"  {name}: {where}")
+    _report_missing(missing)
+    photos = missing.get("objetos", [])
+    print(f"\nFotos propias pendientes: {len(photos)}.")
+    return 0
 
 
 def run_paid(
@@ -604,6 +786,7 @@ def run_paid(
     import httpx
     from qualify_creative.adapters.byteplus_ark import BASE_URL
 
+    choice = prompt_choice(args, tt)
     stamp, out_dir, results_path = _claim_stamp(args.results_dir)
     base_url = os.environ.get("QUALIFY_BYTEPLUS_ARK_BASE_URL", "").strip() or BASE_URL
     items: dict[str, Any] = {}
@@ -615,7 +798,7 @@ def run_paid(
         for call in planned:
             key = f"{call.item.id}@{call.model_id}"
             if stopped and call.quote is not None:  # free items never touch the ledger
-                items[key] = _omitted(call, tt)
+                items[key] = _omitted(call, tt, choice)
                 continue
             record = _run_item(
                 call,
@@ -627,6 +810,7 @@ def run_paid(
                 api_key=api_key,
                 size=args.size,
                 reader=reader,
+                choice=choice,
             )
             items[key] = record
             if record["estado"] == "rechazado por el tope":
@@ -638,7 +822,7 @@ def run_paid(
         if inner_transport is None:
             inner.close()
         for call in planned:  # anything the loop never reached
-            items.setdefault(f"{call.item.id}@{call.model_id}", _omitted(call, tt))
+            items.setdefault(f"{call.item.id}@{call.model_id}", _omitted(call, tt, choice))
         for record in items.values():  # error texts may carry machine paths
             for text_field in ("error", "metricas_error"):
                 if record.get(text_field):
@@ -656,13 +840,15 @@ def run_paid(
             or money["exceso_sobre_tope_usd"]
             or unexpected
         )
+        totals["latencia_media_s"] = mean_latencies(items)
         if money["retenido_usd"]:
             print(f"AVISO: quedan USD {money['retenido_usd']} retenidos sin cerrar al terminar.")
         report.update(
             {
                 "stamp": stamp,
                 "pricing_version": tt.PRICING_VERSION,
-                "prompt_version": tt.PROMPT_VERSION,
+                "prompt_version": choice.prompt_version,
+                "texture_finish": choice.finish,
                 "size": args.size,
                 "ceiling_usd": str(ledger.ceiling_usd),
                 "spent_usd": str(ledger.spent_usd),
