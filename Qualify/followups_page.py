@@ -286,11 +286,14 @@ def followups_panel() -> rx.Component:
                 F.followups_count > 0,
                 rx.vstack(rx.foreach(F.cards, _card), spacing="3", width="100%"),
                 empty_state(
-                    "messages-square",
-                    "No hay consultas pendientes",
-                    "Cuando alguien pregunte por precios o pedidos en tus comentarios, o "
-                    "cuando elijas Escribirle en privado en «Comentarios», aparecerá aquí "
-                    "con un mensaje listo para revisar.",
+                    "shopping-bag",
+                    "Nadie más está esperando para comprar",
+                    "Cuando alguien pregunte por precios o pedidos en tus comentarios, "
+                    "aparecerá aquí con un mensaje listo para que lo revises y lo envíes.",
+                    action=rx.link(
+                        rx.button("Ver comentarios", size="3", min_height="44px"),
+                        href="/responder?tab=comentarios",
+                    ),
                 ),
             ),
         ),

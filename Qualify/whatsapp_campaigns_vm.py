@@ -40,17 +40,22 @@ DEFAULT_MAX_PER_MINUTE = 30
 MAX_PER_MINUTE = 1000
 
 RATE_CARD_NOTICE = "Tarifas de referencia pendientes: el costo es aproximado."
+#: m-24842994: «opt-in» in the owner's words.
+AUDIENCE_NONE = "Ningún contacto que aceptó recibir tus mensajes cumple estos filtros."
 PAYMENT_NOTICE = (
-    "Enviar plantillas requiere un método de pago en tu cuenta de WhatsApp Business "
-    "(WhatsApp Manager › Configuración de pagos)."
+    "Para enviar promociones, tu cuenta de WhatsApp Business necesita un método de pago. "
+    "Agrégalo en la configuración de pagos de tu cuenta de Meta."
 )
 PAYMENT_FAILED = (
-    "Meta rechazó envíos porque la cuenta de WhatsApp Business no tiene un método de pago "
-    "válido (código 131042). Agrégalo en WhatsApp Manager; los envíos que fallaron no se "
-    "reintentan solos, así que crea una campaña nueva para esos contactos."
+    "Meta no dejó salir algunos mensajes porque tu cuenta de WhatsApp Business no tiene un "
+    "método de pago válido (código 131042). Agrégalo en la configuración de pagos de tu "
+    "cuenta de Meta; "
+    "los mensajes que no salieron no se vuelven a enviar solos, así que crea una campaña "
+    "nueva para esos contactos."
 )
 SENDER_NOTICE = (
-    "Los envíos salen en segundo plano al ritmo elegido; actualiza para ver cómo avanzan."
+    "Los mensajes salen de a poco para cuidar tu número. Vuelve en unos minutos para ver "
+    "cuántos llegaron."
 )
 
 # --------------------------------------------------------------------------------------
@@ -71,7 +76,7 @@ FINAL = frozenset({"done", "cancelled"})
 
 _SEND_STATUS: dict[str, tuple[str, str]] = {
     "pending": ("Pendiente", "neutral"),
-    "queued": ("En cola", "info"),
+    "queued": ("Por enviar", "info"),
     "sent": ("Enviado", "info"),
     "delivered": ("Entregado", "ok"),
     "read": ("Leído", "ok"),
@@ -84,11 +89,11 @@ _SEND_STATUS: dict[str, tuple[str, str]] = {
 ERROR_PER_USER_LIMIT = "131049"
 ERROR_PAYMENT = "131042"
 _SEND_ERRORS: dict[str, str] = {
-    ERROR_PER_USER_LIMIT: "Límite de marketing por persona de Meta: reintentar ≥ 24 h",
+    ERROR_PER_USER_LIMIT: "Meta limita cuántas promociones recibe cada persona: inténtalo en 24 h",
     ERROR_PAYMENT: "La cuenta de WhatsApp Business no tiene un método de pago válido",
     "131026": "No se pudo entregar: el número no usa WhatsApp o no aceptó sus términos",
-    "131050": "La persona pidió no recibir mensajes de marketing",
-    "131047": "Fuera de la ventana de 24 h",
+    "131050": "La persona pidió no recibir promociones",
+    "131047": "Pasaron más de 24 horas desde su último mensaje",
     "131048": "Límite de envío por calidad: Meta frenó los envíos de este número",
     "131056": "Demasiados mensajes seguidos a la misma persona",
     "132000": "Las variables no coinciden con la plantilla",
@@ -98,8 +103,8 @@ _SEND_ERRORS: dict[str, str] = {
     "132012": "Las variables no tienen el formato que espera la plantilla",
     "132015": "Plantilla pausada por baja calidad",
     "132016": "Plantilla desactivada por baja calidad",
-    "130472": "Meta no la entregó (experimento de marketing de Meta)",
-    "not_opted_in": "Sin opt-in vigente al encolar",
+    "130472": "Meta no la entregó (una prueba de promociones de Meta)",
+    "not_opted_in": "No se envió: esta persona ya no acepta recibir tus mensajes",
     "campaign_cancelled": "Campaña cancelada",
 }
 
@@ -419,17 +424,19 @@ def audience_count_label(count: int) -> str:
     if count < 0:
         return ""
     if count == 0:
-        return "Ningún contacto con opt-in activo cumple estos filtros."
-    return f"{format_count(count)} contacto{'s' if count != 1 else ''} con opt-in activo"
+        return AUDIENCE_NONE
+    plural = "s" if count != 1 else ""
+    verb = "aceptaron" if count != 1 else "aceptó"
+    return f"{format_count(count)} contacto{plural} que {verb} recibir tus mensajes"
 
 
 def launch_message(*, enqueued: int, skipped: int, audience: int) -> str:
     if audience == 0:
         return "La campaña está en curso, pero no quedó nadie por enviar."
-    parts = [f"{format_count(enqueued)} mensajes en cola"]
+    parts = [f"{format_count(enqueued)} mensajes por salir"]
     if skipped:
-        parts.append(f"{format_count(skipped)} omitidos (sin opt-in vigente)")
-    return "Campaña lanzada: " + ", ".join(parts) + ". " + SENDER_NOTICE
+        parts.append(f"{format_count(skipped)} sin enviar (ya no aceptaban recibir tus mensajes)")
+    return "Empezamos a enviar la campaña: " + ", ".join(parts) + ". " + SENDER_NOTICE
 
 
 def retry_after_label(count: int) -> str:
@@ -437,8 +444,8 @@ def retry_after_label(count: int) -> str:
         return ""
     return (
         f"{format_count(count)} envío{'s' if count != 1 else ''} omitido"
-        f"{'s' if count != 1 else ''} por el límite de marketing por persona de Meta "
-        "(código 131049): no se reintentan antes de 24 h."
+        f"{'s' if count != 1 else ''} porque Meta limita cuántas promociones recibe cada "
+        "persona (código 131049): no se vuelven a intentar antes de 24 horas."
     )
 
 
