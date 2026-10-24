@@ -197,16 +197,17 @@ def _routes() -> dict[str, tuple[str, str]]:
     return found
 
 
-def test_root_is_inicio_and_mentions_has_its_own_route() -> None:
+def test_root_is_inicio_and_mentions_live_in_resultados() -> None:
     routes = _routes()
     assert routes["/"] == ("home_index", "Qualify · Inicio")
-    assert routes[MENTIONS_URL] == ("mentions_index", "Qualify · Menciones")
+    # m-24843003: «Hablaron de ti» opens Resultados › «Quién habla de ti».
+    assert MENTIONS_URL == "/resultados?tab=menciones"
+    assert routes["/resultados"] == ("results_index", "Qualify · Resultados")
 
 
 def test_menu_has_inicio_on_top_and_mentions_off_root() -> None:
     assert NAV_ITEMS[0] == ("Inicio", "house", "/", True)
-    mentions = [route for label, _icon, route, _enabled in NAV_ITEMS if label == "Menciones"]
-    assert mentions == [MENTIONS_URL]
+    assert not [label for label, *_ in NAV_ITEMS if label == "Menciones"]
 
 
 def test_login_lands_on_inicio() -> None:

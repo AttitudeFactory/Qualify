@@ -50,14 +50,12 @@ MENTION_ICON = "qualify-mention"
 # owner's four jobs — what is there for me today, answer people, publish, how am I doing
 # — with the rarely touched business setup at the foot.
 #
-# Inicio (NAV-4, m-24842962) and «Por responder» (ATENDER-1, m-24842990) have their own
-# screens. «Resultados» is still built by another story: until it lands, its entry points
-# at today's closest screen, and a test (`test_nav_one_name.py`) fails the moment the real
-# screen exists, so the route below gets switched instead of forgotten:
-#   TODO(m-24843003, RESULTADOS-5): «Resultados» → "/resultados" (today Tu página web).
+# Inicio (NAV-4, m-24842962), «Por responder» (ATENDER-1, m-24842990) and «Resultados»
+# (RESULTADOS-5, m-24843003) have their own screens. Menciones and Tu página web are tabs
+# of Resultados; their old routes only redirect there.
 HOME_ROUTE = "/"
 RESPOND_ROUTE = "/responder"
-RESULTS_ROUTE = "/clarity"
+RESULTS_ROUTE = "/resultados"
 
 NAV_HOME: list[Item] = [("Inicio", "house", HOME_ROUTE, True)]
 
@@ -93,11 +91,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
 # «Resultados», then what is coming, marked «Pronto» (decision 4; «Señales» is
 # «Oportunidades» since the second round of decisions, §2b-6).
 NAV_RESULTS: list[Item] = [
+    # m-24843003 (RESULTADOS-5): Redes · WhatsApp · Tu página web · Quién habla de ti
+    # are tabs of this one screen, so Menciones and Tu página web have no row of their own.
     ("Resultados", "trending-up", RESULTS_ROUTE, True),
-    # m-24842962 (NAV-4): `/` is Inicio, Menciones keeps its own route. It moves inside
-    # Resultados › «Quién habla de ti» with RESULTADOS-5 (m-24843003); until then it is
-    # listed here, next to Resultados, so it stays reachable from the menu.
-    ("Menciones", MENTION_ICON, "/menciones", True),
     ("Creadores", "users", "/creadores", False),
     ("Oportunidades", "bell", "/signals", False),
 ]

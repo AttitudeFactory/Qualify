@@ -23,7 +23,7 @@ from .ui.layout import (
 
 _HERE = Path(__file__).parent
 
-# The 12 entries of the guide §3, in its order.
+# The 11 entries of the guide §3, in its order.
 _GUIDE_MAP = [
     "Inicio",
     "Por responder",
@@ -32,11 +32,8 @@ _GUIDE_MAP = [
     "Por aprobar",
     "Tu semana",
     "Publicar ahora",
+    # RESULTADOS-5 (m-24843003): Menciones and Tu página web are tabs of Resultados.
     "Resultados",
-    # Interim (NAV-4, m-24842962): Menciones left `/` but its place inside Resultados ›
-    # «Quién habla de ti» comes with RESULTADOS-5 (m-24843003); until then it is listed
-    # next to Resultados. Drop this line the day RESULTADOS-5 lands.
-    "Menciones",
     "Tu marca",
     "Tus productos",
     "Tus redes",
@@ -61,14 +58,14 @@ def _registered_routes() -> set[str]:
     return routes
 
 
-def test_the_menu_has_the_twelve_entries_of_the_guide_in_order() -> None:
+def test_the_menu_has_the_eleven_entries_of_the_guide_in_order() -> None:
     usable = [label for label, _icon, _route, enabled in NAV_ITEMS if enabled]
     assert usable == _GUIDE_MAP
 
 
 def test_creadores_and_oportunidades_are_the_only_soon_entries() -> None:
     assert [label for label, _icon, _route, enabled in NAV_ITEMS if not enabled] == _SOON
-    assert [label for label, *_ in NAV_RESULTS] == ["Resultados", "Menciones", *_SOON]
+    assert [label for label, *_ in NAV_RESULTS] == ["Resultados", *_SOON]
 
 
 def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
@@ -101,7 +98,9 @@ def test_every_menu_entry_opens_a_registered_screen() -> None:
     assert len(routes) == len(NAV_ITEMS), "two entries share a route"
 
 
-@pytest.mark.parametrize("route", ["/", "/inbox", "/conversations", "/leads", "/clarity"])
+@pytest.mark.parametrize(
+    "route", ["/", "/inbox", "/conversations", "/leads", "/clarity", "/menciones"]
+)
 def test_old_addresses_keep_working(route: str) -> None:
     """No saved link breaks (guide §3): each old address is still a registered page."""
     assert route in _registered_routes()

@@ -30,6 +30,7 @@ from . import (
     inbox_vm,
     leads_page,
     leads_state,
+    leads_vm,
     replies_provider,
     replies_state,
 )
@@ -52,6 +53,7 @@ _SCREENS: tuple[ModuleType, ...] = (
     followups_vm,
     leads_page,
     leads_state,
+    leads_vm,
 )
 
 # The ticket's list: what a shop owner would have to ask about.
@@ -299,9 +301,10 @@ def test_followup_trigger_labels() -> None:
 
 
 def test_leads_screen_copy() -> None:
-    source = inspect.getsource(leads_page)
+    # m-24842992 moved the screen's words to `leads_vm` and rewrote the empty state.
+    source = inspect.getsource(leads_page) + inspect.getsource(leads_vm)
     assert '"Clientes interesados"' in source
     assert '"Personas que te dejaron sus datos y aceptaron que las contactes."' in source
-    assert '"Comparte tu formulario: cada persona que deje sus datos y acepte que la "' in source
-    assert '"Lo que te contaron"' in source
+    assert '"Todavía no hay interesados"' in source
+    assert '"Lo que te contaron:' in source
     assert "Datos extra" not in source

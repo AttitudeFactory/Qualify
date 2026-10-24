@@ -300,7 +300,7 @@ def _website_content() -> rx.Component:
                 rx.text(W.CONNECTED, size="2", color=T.TEXT_MUTED),
                 rx.link(
                     rx.button("Ver tu página web", size="3", min_height=_TAP),
-                    href="/clarity",
+                    href="/resultados?tab=web",
                 ),
                 spacing="2",
                 align_items="start",

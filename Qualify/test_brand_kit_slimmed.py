@@ -116,7 +116,7 @@ def test_the_editor_keeps_the_voice_and_the_lists_as_sections() -> None:
 
     titles = [title for _key, title, _icon, _blurb in SECTIONS]
     assert "Voz y tono" in titles
-    assert "Cómo habla" in titles and "Lo que nunca dice" in titles
+    assert "Cómo hablas" in titles and "Lo que nunca dices" in titles
 
 
 # -- the city category ----------------------------------------------------------------------

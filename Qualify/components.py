@@ -28,6 +28,7 @@ from .mentions_paging import (
 )
 from .mentions_provider import NO_LINK
 from .next_steps_vm import CREATE_LABEL, CREATE_ROUTE
+from .results_state import ResultsState
 from .state import DashboardState, MentionRow
 from .ui import (
     callout,
@@ -35,7 +36,6 @@ from .ui import (
     drawer,
     empty_state,
     mono,
-    page_header,
     platform_badge,
     sentiment_badge,
     session_badge,
@@ -57,7 +57,7 @@ __all__ = [
     "sidebar",
     "stat_card",
     "stats_row",
-    "topbar",
+    "mentions_intro",
 ]
 
 # QUA-152: the refresh heartbeat (`rx.moment`'s `interval`, a browser-side setInterval —
@@ -88,6 +88,8 @@ _MENTION_GUTTER = "2rem"
 # Every tap target on this screen (N12): pager, filters, buttons, links.
 _TARGET = "44px"
 
+MENTIONS_INTRO = "Lo que la gente publica o comenta cuando etiqueta a tu negocio."
+
 
 def _refresh_timer() -> rx.Component:
     """Hidden heartbeat: every tick re-reads the current page under the same snapshot and
@@ -104,13 +106,11 @@ def _muted(value: rx.Var | str, **props) -> rx.Component:
     return rx.text(value, size="2", color=T.TEXT_MUTED, **props)
 
 
-def topbar() -> rx.Component:
-    # Channel-neutral on purpose (founder review 2026-10-13): mentions will come from
-    # several channels; the channel of each one is its own column, never the page title.
-    return page_header(
-        "Menciones",
-        "Lo que la gente publica o comenta cuando etiqueta a tu negocio.",
-    )
+def mentions_intro() -> rx.Component:
+    """What the tab is about, under Resultados' tab strip (m-24843003). Channel-neutral on
+    purpose (founder review 2026-10-13): mentions will come from several channels; the
+    channel of each one is its own column, never the title."""
+    return _muted(MENTIONS_INTRO)
 
 
 def _sentiment_card(
@@ -823,14 +823,33 @@ def _mentions_empty_state() -> rx.Component:
                 size="3",
             ),
         ),
-        empty_state(
-            "at-sign",
-            "Aún no hay menciones",
-            "Cuando alguien mencione tu cuenta en una publicación o un comentario, aparecerá aquí.",
-            # N8: publishing is what gets the account mentioned.
-            action=rx.link(
-                rx.button(rx.icon("wand-sparkles", size=16), CREATE_LABEL, size="3"),
-                href=CREATE_ROUTE,
+        # N8 (m-24843003): without Instagram the way out is connecting it; with it, a new
+        # publication is what invites people to tag the business.
+        rx.cond(
+            ResultsState.instagram_connected,
+            empty_state(
+                "at-sign",
+                "Aún no hay menciones",
+                "Cuando alguien te etiquete en una publicación o un comentario, aparecerá "
+                "aquí. Una publicación nueva invita a que te etiqueten.",
+                action=rx.link(
+                    rx.button(
+                        rx.icon("wand-sparkles", size=16),
+                        CREATE_LABEL,
+                        size="3",
+                        min_height=_TARGET,
+                    ),
+                    href=CREATE_ROUTE,
+                ),
+            ),
+            empty_state(
+                "at-sign",
+                "Aún no hay menciones",
+                "Conecta tu Instagram para ver quién te menciona.",
+                action=rx.link(
+                    rx.button("Conectar mi Instagram", size="3", min_height=_TARGET),
+                    href="/connections",
+                ),
             ),
         ),
     )
