@@ -25,6 +25,12 @@ Onboarding, per event (plan §2):
   the person must fix (bad email, mail refused) is ALSO `processed`, with
   `invite_failed:<reason>` in `last_error`: the item itself shows the error and the node
   is rolled back — retrying the event would only repeat the same failure.
+  After a SENT invitation, and only then, the Brand Kit prefill is scheduled
+  (`prefill.AltaPrefillScheduler.schedule`, PB-4 m-24852198): a reserved draft and one
+  queued job, run later by the same worker. Whatever it does or raises never changes the
+  event's outcome into a retry — a retry would send the invitation again — so it is
+  swallowed and logged; with the prefill on, its label rides in `last_error`
+  (`prefill=<label>`) of the `processed` event.
 - **1005 terminated** — `expire_for_terminated`.
 - **2004 rolled back** — nothing (`ignored:rollback`).
 - **1001 / 1009 / 3001** on the onboarding type — nothing to do (`processed`,
@@ -53,7 +59,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import ValidationError
 
@@ -67,7 +73,7 @@ from qualify_api.meegle.envelope import (
     OBJECT_MEEGLE,
 )
 from qualify_api.meegle.events import MeegleEvent
-from qualify_api.meegle.onboarding import OnboardingEngine, WorkItemNotFound
+from qualify_api.meegle.onboarding import InvitationResult, OnboardingEngine, WorkItemNotFound
 from qualify_api.meegle.settings import MeegleNames
 from qualify_api.webhooks.processor import Handler, Outcome, handler_key
 from qualify_api.webhooks.repository import (
@@ -76,6 +82,10 @@ from qualify_api.webhooks.repository import (
     STATUS_UNSUPPORTED,
     ClaimedEvent,
 )
+
+if TYPE_CHECKING:
+    from qualify_api.meegle.client import MeegleClient
+    from qualify_api.meegle.prefill import AltaPrefillRunner
 
 logger = logging.getLogger("qualify_api.meegle.handlers")
 
@@ -107,6 +117,26 @@ WORK_ITEM_NOT_FOUND = "work_item_not_found"
 TypedHandler = Callable[[MeegleEvent, int], Awaitable[Outcome]]
 
 
+class PrefillScheduler(Protocol):
+    """`prefill.AltaPrefillScheduler`, or a fake: a short label, "" when off."""
+
+    def schedule(self, work_item_id: int, *, email: str, handle: str | None) -> str: ...
+
+
+PREFILL_ERROR = "error"
+
+
+def _schedule_quietly(
+    prefill: PrefillScheduler, work_item_id: int, result: InvitationResult
+) -> str:
+    """The prefill never touches the invitation: anything it raises is logged here."""
+    try:
+        return prefill.schedule(work_item_id, email=result.email, handle=result.instagram_handle)
+    except Exception:  # noqa: BLE001 — a retry of the event would email the invite again
+        logger.exception("meegle onboarding: work_item=%s prefill not scheduled", work_item_id)
+        return PREFILL_ERROR
+
+
 class TicketHandler(Protocol):
     """`tickets.TicketNotifier`, or a fake: returns the settle reason, raises
     `WorkItemNotFound` for an item that is not in the space."""
@@ -131,7 +161,7 @@ def _parse(event: ClaimedEvent) -> tuple[MeegleEvent, int] | Outcome:
 
 
 def _onboarding_handlers(
-    engine: OnboardingEngine, names: MeegleNames
+    engine: OnboardingEngine, names: MeegleNames, prefill: PrefillScheduler | None = None
 ) -> Mapping[int, TypedHandler]:
     async def node_completed(parsed: MeegleEvent, work_item_id: int) -> Outcome:
         keys = (parsed.data.node_info.update_nodes if parsed.data.node_info else None) or []
@@ -152,9 +182,13 @@ def _onboarding_handlers(
             result = await asyncio.to_thread(engine.start_invitation, work_item_id)
         except WorkItemNotFound:
             return Outcome(STATUS_DEAD, WORK_ITEM_NOT_FOUND)
-        if result.ok:
-            return Outcome(STATUS_PROCESSED)
-        return Outcome(STATUS_PROCESSED, f"invite_failed:{result.reason}")
+        if not result.ok:
+            return Outcome(STATUS_PROCESSED, f"invite_failed:{result.reason}")
+        if prefill is not None:
+            label = await asyncio.to_thread(_schedule_quietly, prefill, work_item_id, result)
+            if label:
+                return Outcome(STATUS_PROCESSED, f"prefill={label}")
+        return Outcome(STATUS_PROCESSED)
 
     async def work_item_terminated(parsed: MeegleEvent, work_item_id: int) -> Outcome:
         expired = await asyncio.to_thread(engine.expire_for_terminated, work_item_id)
@@ -194,10 +228,12 @@ def meegle_handlers(
     names: MeegleNames | None = None,
     tickets: TicketHandler | None = None,
     ticket_types: frozenset[str] = frozenset(),
+    prefill: PrefillScheduler | None = None,
 ) -> Mapping[str, Handler]:
     """One handler per event code, routing by work item type: `work_item_type` → the
-    onboarding engine; `ticket_types` → `tickets` (when given); the rest → unsupported."""
-    onboarding = _onboarding_handlers(engine, names or MeegleNames())
+    onboarding engine (and, after a sent invitation, `prefill`); `ticket_types` →
+    `tickets` (when given); the rest → unsupported."""
+    onboarding = _onboarding_handlers(engine, names or MeegleNames(), prefill)
     ticket = _ticket_handler(tickets) if tickets is not None else None
     codes = set(onboarding) | (TICKET_EVENT_CODES if ticket is not None else set())
 
@@ -275,4 +311,29 @@ def production_meegle_handlers() -> Mapping[str, Handler]:
         names=MeegleNames.from_env(),
         tickets=tickets,
         ticket_types=ticket_settings.ticket_types,
+        # PB-4: always wired; it reads QUALIFY_ALTA_PREFILL_* on every «Datos» and does
+        # nothing at all while the prefill is off (the default).
+        prefill=production_prefill_scheduler(MeegleClient(settings)),
     )
+
+
+def production_prefill_scheduler(client: MeegleClient) -> PrefillScheduler:
+    """The real scheduler: Postgres jobs, the Meegle comment through `client`."""
+    from qualify_api.meegle.prefill import AltaPrefillScheduler  # noqa: PLC0415
+    from qualify_api.meegle.prefill_jobs import PostgresPrefillJobs  # noqa: PLC0415
+
+    return AltaPrefillScheduler(PostgresPrefillJobs(), client.comment)
+
+
+def production_prefill_runner(*, worker_id: str) -> AltaPrefillRunner | None:
+    """What the webhook-worker drains Alta prefill jobs with; None while the Meegle
+    engine is off (no job can exist without it, and the comment needs the client)."""
+    from qualify_api.meegle.client import MeegleClient  # noqa: PLC0415
+    from qualify_api.meegle.prefill import AltaPrefillRunner  # noqa: PLC0415
+    from qualify_api.meegle.prefill_jobs import PostgresPrefillJobs  # noqa: PLC0415
+    from qualify_api.meegle.settings import MeegleSettings, meegle_configured  # noqa: PLC0415
+
+    if not meegle_configured():
+        return None
+    client = MeegleClient(MeegleSettings.from_env())
+    return AltaPrefillRunner(PostgresPrefillJobs(), client.comment, worker_id=worker_id)
