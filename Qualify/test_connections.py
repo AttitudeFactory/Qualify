@@ -207,16 +207,16 @@ def test_alternate_scope_spellings_resolve_to_the_same_key() -> None:
 def test_unrecognized_scope_is_surfaced_not_swallowed() -> None:
     labels, resolved = _scope_labels(["instagram_business_basic", "instagram_future_scope"])
     assert "Básico" in labels
-    assert any("instagram_future_scope" in label for label in labels), (
-        "an unknown Meta scope must be shown, not silently dropped"
-    )
+    # m-24842969: shown as one owner-facing chip, never as Meta's raw name.
+    assert "Otro permiso de Meta" in labels, "an unknown Meta scope must be shown, not dropped"
+    assert not any("instagram_future_scope" in label for label in labels)
     assert resolved == frozenset({ScopeKey.BASIC})
 
 
-def test_known_infrastructure_scopes_are_labeled_distinctly() -> None:
-    # QUA-96: the four scopes Meta grants to complete the OAuth/Page-enumeration flow
-    # (ADR 25/R4) or automatically (`public_profile`) must read as "Infraestructura: …",
-    # never as "Sin reconocer: …" — that text is reserved for a genuinely unknown scope.
+def test_known_infrastructure_scopes_are_not_shown() -> None:
+    # QUA-96 / m-24842969: the four scopes Meta grants to complete the OAuth/Page-
+    # enumeration flow (ADR 25/R4) or automatically (`public_profile`) are a normal part
+    # of the connection: no chip at all, and never the «Otro permiso de Meta» chip.
     infra_literals = [
         "business_management",
         "pages_read_engagement",
@@ -224,9 +224,7 @@ def test_known_infrastructure_scopes_are_labeled_distinctly() -> None:
         "public_profile",
     ]
     labels, resolved = _scope_labels(["instagram_business_basic", *infra_literals])
-    for literal in infra_literals:
-        assert f"Infraestructura: {literal}" in labels, f"{literal} not labeled as infra"
-        assert f"Sin reconocer: {literal}" not in labels, f"{literal} still reads as unrecognized"
+    assert labels == ["Básico"]
     assert resolved == frozenset({ScopeKey.BASIC})
 
 
@@ -234,10 +232,7 @@ def test_known_infrastructure_and_genuinely_unknown_scopes_coexist() -> None:
     # A known-infra literal and a truly unknown one in the same grant must not bleed
     # into each other's classification.
     labels, _resolved = _scope_labels(["business_management", "instagram_future_scope"])
-    assert "Infraestructura: business_management" in labels
-    assert "Sin reconocer: instagram_future_scope" in labels
-    assert "Sin reconocer: business_management" not in labels
-    assert "Infraestructura: instagram_future_scope" not in labels
+    assert labels == ["Otro permiso de Meta"]
 
 
 def test_vm_shows_a_spanish_reason_only_when_disabled() -> None:
@@ -274,7 +269,7 @@ def test_vm_falls_back_when_username_or_brand_is_missing() -> None:
 
 def test_never_verified_connection_reads_honestly() -> None:
     vm = _to_vm(_row(last_verified_at=None), "PuntoServis")
-    assert vm.last_verified_at == "Nunca verificada"
+    assert vm.last_verified_at == "Sin fecha"
 
 
 def test_never_health_checked_connection_reads_honestly() -> None:
@@ -282,7 +277,7 @@ def test_never_health_checked_connection_reads_honestly() -> None:
     "Verificar ahora" click has ever happened. Distinct fallback copy from
     `last_verified_at`'s own — the two must never be conflated."""
     vm = _to_vm(_row(), "PuntoServis")
-    assert vm.last_health_checked_at == "Sin verificar"
+    assert vm.last_health_checked_at == "Todavía no"
     assert vm.last_health_checked_at != vm.last_verified_at
 
 
@@ -291,7 +286,7 @@ def test_health_checked_at_is_formatted_like_verified_at() -> None:
     stored column (`last_health_checked_at`, not `last_verified_at`)."""
     checked_at = datetime(2026, 8, 21, 16, 33, tzinfo=UTC)
     vm = _to_vm(_row(last_health_checked_at=checked_at), "PuntoServis")
-    assert vm.last_health_checked_at == "21 Aug 2026, 16:33"
+    assert vm.last_health_checked_at == "21 ago 2026, 16:33"
 
 
 def test_health_check_click_is_visible_even_when_last_verified_at_is_unchanged() -> None:
@@ -303,7 +298,7 @@ def test_health_check_click_is_visible_even_when_last_verified_at_is_unchanged()
         _row(last_verified_at=unchanged_verified_at, last_health_checked_at=None),
         "PuntoServis",
     )
-    assert vm.last_health_checked_at == "Sin verificar"
+    assert vm.last_health_checked_at == "Todavía no"
 
     vm_after_click = _to_vm(
         _row(
@@ -338,24 +333,24 @@ def test_data_access_warning_soon_within_threshold() -> None:
     delta = DATA_ACCESS_WARNING_THRESHOLD - timedelta(days=4)
     state, message = _data_access_warning(_NOW + delta, now=_NOW)
     assert state == "warning_soon"
-    assert message == f"Acceso a datos vence en {delta.days} días"
+    assert message == f"Meta te pedirá confirmar tu cuenta en {delta.days} días"
 
 
 def test_data_access_warning_today_and_tomorrow_read_naturally() -> None:
     assert _data_access_warning(_NOW + timedelta(hours=2), now=_NOW) == (
         "warning_soon",
-        "Acceso a datos vence hoy",
+        "Meta te pedirá confirmar tu cuenta hoy",
     )
     assert _data_access_warning(_NOW + timedelta(days=1, hours=2), now=_NOW) == (
         "warning_soon",
-        "Acceso a datos vence mañana",
+        "Meta te pedirá confirmar tu cuenta mañana",
     )
 
 
 def test_data_access_warning_overdue_when_passed() -> None:
     state, message = _data_access_warning(_NOW - timedelta(days=1), now=_NOW)
     assert state == "warning_overdue"
-    assert message == "Acceso a datos vencido"
+    assert message == "Meta pide que confirmes tu cuenta: vuelve a conectarla"
 
 
 def test_data_access_warning_never_implies_the_connection_is_broken() -> None:
@@ -381,7 +376,9 @@ def test_vm_wires_the_data_access_warning_from_the_row() -> None:
         _row(data_access_expires_at=datetime.now(UTC) - timedelta(days=1)), "PuntoServis"
     )
     assert vm_overdue.data_access_state == "warning_overdue"
-    assert vm_overdue.data_access_message == "Acceso a datos vencido"
+    assert vm_overdue.data_access_message == (
+        "Meta pide que confirmes tu cuenta: vuelve a conectarla"
+    )
     # The warning never touches status — that is the whole point of keeping it separate.
     assert vm_overdue.status == "active"
 

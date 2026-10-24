@@ -55,20 +55,34 @@ from .connections_vm import (
 _NO_BRAND_LABEL = "Sin marca"
 
 
+_MONTHS_ES = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic")
+
+# m-24842969: the fallbacks the owner reads under «Más detalles» — plain words, never
+# «Nunca verificada» / «Sin verificar».
+NEVER_CONNECTED_AT = "Sin fecha"
+NEVER_CHECKED_AT = "Todavía no"
+
+
+def _format_when(value: datetime) -> str:
+    """«21 ago 2026, 16:33» — Spanish month names whatever the server's locale
+    (`strftime("%b")` printed «Aug»)."""
+    return f"{value.day:02d} {_MONTHS_ES[value.month - 1]} {value.year}, {value:%H:%M}"
+
+
 def _format_verified_at(value: datetime | None) -> str:
     """Pre-format server-side — the frontend never receives a raw datetime var."""
     if value is None:
-        return "Nunca verificada"
-    return value.strftime("%d %b %Y, %H:%M")
+        return NEVER_CONNECTED_AT
+    return _format_when(value)
 
 
 def _format_health_checked_at(value: datetime | None) -> str:
     """QUA-91: same pre-format discipline as `_format_verified_at`, distinct fallback
-    copy — "Sin verificar" reads as "nobody has run a health-check yet", never as
-    "Nunca verificada" (which is `last_verified_at`'s own, unrelated concept)."""
+    copy — «Todavía no» reads as "nobody has pressed «Comprobar ahora» yet", never as
+    `last_verified_at`'s own, unrelated fallback."""
     if value is None:
-        return "Sin verificar"
-    return value.strftime("%d %b %Y, %H:%M")
+        return NEVER_CHECKED_AT
+    return _format_when(value)
 
 
 def _data_access_warning(
@@ -86,40 +100,39 @@ def _data_access_warning(
         return "", ""
     remaining = data_access_expires_at - now
     if remaining.total_seconds() <= 0:
-        return "warning_overdue", "Acceso a datos vencido"
+        return "warning_overdue", "Meta pide que confirmes tu cuenta: vuelve a conectarla"
     if remaining > DATA_ACCESS_WARNING_THRESHOLD:
         return "", ""
     days_left = int(remaining.total_seconds() // 86400)
     if days_left <= 0:
-        message = "Acceso a datos vence hoy"
+        message = "Meta te pedirá confirmar tu cuenta hoy"
     elif days_left == 1:
-        message = "Acceso a datos vence mañana"
+        message = "Meta te pedirá confirmar tu cuenta mañana"
     else:
-        message = f"Acceso a datos vence en {days_left} días"
+        message = f"Meta te pedirá confirmar tu cuenta en {days_left} días"
     return "warning_soon", message
 
 
 def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[ScopeKey]]:
     """Granted Meta scope strings -> (chip labels, resolved abstract keys).
 
-    Literals C-05's table does not know are shown as-is rather than dropped: the real
-    `resolve_scope_keys` surfaces them precisely so a renamed or brand-new Meta scope
-    appears as "unknown" instead of a phantom denial. A scope name is a permission
-    name, not credential material, so it is safe to render.
+    Literals C-05's table does not know are surfaced rather than dropped: the real
+    `resolve_scope_keys` reports them precisely so a renamed or brand-new Meta scope
+    appears as "unknown" instead of a phantom denial.
 
-    QUA-96: an unrecognized literal is further split by `KNOWN_INFRASTRUCTURE_SCOPES` —
-    expected OAuth plumbing (Page enumeration, ADR 25/R4) reads as "Infraestructura: …"
-    instead of the "Sin reconocer: …" alarm text, which stays reserved for a literal
-    that is genuinely new or renamed. `resolve_scope_keys` itself is untouched; this is
+    QUA-96 / m-24842969: an unrecognized literal is split by `KNOWN_INFRASTRUCTURE_SCOPES`
+    — expected OAuth plumbing (Page enumeration, ADR 25/R4) is not shown at all, and a
+    literal that is genuinely new or renamed shows as one «Otro permiso de Meta» chip.
+    `resolve_scope_keys` itself is untouched; this is
     a presentation-only split of its `unrecognized` output.
     """
     resolved, unrecognized = resolve_scope_keys(frozenset(granted_literals))
     labels = [label for key, label in SCOPE_KEY_LABELS.items() if key in resolved]
-    for literal in sorted(unrecognized):
-        if literal in KNOWN_INFRASTRUCTURE_SCOPES:
-            labels.append(f"Infraestructura: {literal}")
-        else:
-            labels.append(f"Sin reconocer: {literal}")
+    # m-24842969: infrastructure scopes are a normal part of the connection and are not
+    # shown; genuinely unknown literals collapse into one owner-facing chip. The raw
+    # names stay in the logs only.
+    if any(literal not in KNOWN_INFRASTRUCTURE_SCOPES for literal in unrecognized):
+        labels.append("Otro permiso de Meta")
     return labels, resolved
 
 

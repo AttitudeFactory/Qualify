@@ -36,7 +36,13 @@ from .connections_provider import (
     disconnect,
     request_support,
 )
-from .connections_vm import ConnectionVM, connect_result_guidance, connect_result_notice
+from .connections_vm import (
+    ConnectionVM,
+    connect_result_guidance,
+    connect_result_notice,
+    continue_after_connect,
+    safe_return_path,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -61,18 +67,18 @@ _SUPPORT_FAILED = (
     "contacto@attitudefactory.co."
 )
 
-_LOAD_FAILED = "No se pudieron cargar las conexiones. Revisa la conexión con la base de datos."
+_LOAD_FAILED = "No pudimos cargar tus redes. Recarga la página en un momento."
 _NO_TENANTS = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-_DISCONNECT_FAILED = "No se pudo desconectar la cuenta. Revisa la conexión con la base de datos."
+_DISCONNECT_FAILED = "No pudimos desconectar la cuenta. Vuelve a intentarlo en un momento."
 # Deliberately says "not found", never "revoked": `ConnectionNotFound` also covers
 # "belongs to another tenant" (RLS makes them the same read), and answering "listo,
 # revocada" to an id the operator does not own is precisely the bug being fixed.
 _NOT_FOUND = "Esa conexión ya no existe. Actualizamos la lista con el estado real."
 _CONNECT_FAILED = "No se pudo iniciar la conexión con Meta. Vuelve a intentarlo en un momento."
-_NO_ACTING_USER = "Este tenant no tiene ningún usuario al que atribuir la conexión."
-_HEALTH_CHECK_FAILED = (
-    "No se pudo verificar el estado de la conexión con Meta. Vuelve a intentarlo en un momento."
+_NO_ACTING_USER = (
+    "No encontramos a la persona dueña de esta cuenta. Pide ayuda al equipo de Qualify."
 )
+_HEALTH_CHECK_FAILED = "No pudimos comprobar tu cuenta con Meta. Vuelve a intentarlo en un momento."
 
 
 #: m-24842961: the query parameter another screen uses to land here with the
@@ -103,6 +109,15 @@ class ConnectionsState(rx.State):
     # QUA-123: the result of the OAuth round trip, read from `?connect=` on arrival.
     connect_notice: str = ""
     connect_notice_tone: str = "info"
+    # m-24842969 (N3/N4): True right after a successful connection — the page shows
+    # «Instagram conectado» with one solid button to the next job instead of a notice.
+    connected_ok: bool = False
+    # Where the owner came from (`?volver=`, internal paths only), kept across the round
+    # trip to Meta: this tab's state survives the redirect, the callback URL does not
+    # carry it. "" = they came straight to Tus redes.
+    return_to: str = ""
+    # «Más detalles» open per card — a list, several cards are on screen at once.
+    open_detail_ids: list[str] = []
     # QUA-202: the guided panel for a dead-end result (`link_required` /
     # `page_access_required`). `guidance_code == ""` means "no panel". The raw counts
     # are kept as ints (-1 = not in the URL) only to attach them to a support request.
@@ -138,6 +153,10 @@ class ConnectionsState(rx.State):
         return not self.is_loading and not self.load_error and len(self.connections) == 0
 
     @rx.var
+    def continue_label(self) -> str:
+        return continue_after_connect(self.return_to)[0]
+
+    @rx.var
     def has_guidance(self) -> bool:
         return self.guidance_code != ""
 
@@ -167,6 +186,14 @@ class ConnectionsState(rx.State):
         """The part of `read_connect_result` that does not need a live router — split so
         it can be exercised without an `EventContext` (see `test_connections_state.py`)."""
         code = str(params.get("connect", "") or "")
+        back = safe_return_path(params.get("volver", ""))
+        if back:
+            self.return_to = back
+        elif not code:
+            # A plain visit (menu, link without `?volver=`) forgets an old origin; the
+            # callback's own load (`?connect=` only) keeps it — that is the point.
+            self.return_to = ""
+        self.connected_ok = code == "active"
         pages = str(params.get("pages", "") or "")
         linked = str(params.get("linked", "") or "")
         guidance = connect_result_guidance(code, pages, linked)
@@ -185,6 +212,28 @@ class ConnectionsState(rx.State):
             # Arriving back from Meta: whatever a support request said earlier in this
             # session is stale next to a fresh result.
             self.support_notice = ""
+
+    @rx.event
+    def continue_after_connect(self) -> rx.event.EventSpec:
+        """«Crear una publicación» / «Seguir publicando» on the «Instagram conectado»
+        panel: back to the origin (`?volver=`, N4) or on to Crear (N3)."""
+        _label, route = continue_after_connect(self.return_to)
+        self.connected_ok = False
+        self.return_to = ""
+        return rx.redirect(route)
+
+    @rx.event
+    def dismiss_connected(self) -> None:
+        """«Ver mis redes»: close the panel and stay on the list."""
+        self.connected_ok = False
+        self.return_to = ""
+
+    @rx.event
+    def toggle_details(self, connection_id: str) -> None:
+        if connection_id in self.open_detail_ids:
+            self.open_detail_ids.remove(connection_id)
+        else:
+            self.open_detail_ids.append(connection_id)
 
     @rx.event
     def toggle_requirement(self, key: str) -> None:
