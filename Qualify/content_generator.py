@@ -22,10 +22,11 @@ import reflex as rx
 
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .creative_state import (
-    _CLIP_DURATIONS,
-    _DURATIONS,
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
+    CLIP_DURATIONS,
+    DURATIONS,
+    SLIDE_SECONDS,
     STOCK_MAX_PICKS,
     CreativeState,
 )
@@ -343,7 +344,9 @@ _CATEGORY_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in CAT
 _VIDEO_TYPE_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in VIDEO_TYPE_OPTIONS}
 _DISCOVER_HEADING = (
     "Descubrir reels",
-    "Los reels con más vistas de tus referentes, solo de tu rubro, para inspirarte o replicarlos.",
+    # what the filter keeps (`referentes/reels_ai.py`, FITS = producto | categoria)
+    "Los reels con más vistas de tus referentes, solo de tu producto o su categoría, "
+    "para inspirarte o replicarlos.",
     "compass",
 )
 _VARIATIONS_HEADING = (
@@ -940,6 +943,7 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
             on_change=lambda value: CreativeState.set_picker_tab(target, value),
             size="1",
             aria_label="De dónde viene",
+            class_name="q-seg-fit",
         )
 
     rest = (("upload", "Subir"), ("pieces", "Publicaciones"))
@@ -2784,12 +2788,12 @@ def _slide_generated_fields() -> rx.Component:
         rx.text("Duración", **muted),
         rx.vstack(
             rx.segmented_control.root(
-                rx.segmented_control.item("5 s", value="5"),
-                rx.segmented_control.item("10 s", value="10"),
+                *_seconds_items(SLIDE_SECONDS),
                 value=current["seconds"],
                 on_change=lambda value: CreativeState.set_slide_field(index, "seconds", value),
                 size="2",
                 width="100%",
+                class_name="q-seg-fit q-seg-fit--nowrap",
             ),
             # § request 2026-10-23: the gallery's video may bring its sound — off by default
             _audio_switch(
@@ -3318,17 +3322,27 @@ def _script_source() -> rx.Component:
     )
 
 
+def _seconds_items(values: tuple[str, ...]) -> list[rx.Component]:
+    """A duration control's options, «15 s»: number and unit joined by a no-break space,
+    so a phone-width segment never splits them over two lines (m-24820845)."""
+    return [rx.segmented_control.item(f"{s}\u00a0s", value=s) for s in values]
+
+
 def _duration_select() -> rx.Component:
-    return rx.hstack(
+    """The avatar's length when Claude writes the script. The label sits above the
+    control, as in `_field`, so the control has the full width and a phone never splits
+    «15 s» over two lines (m-24820845)."""
+    return rx.vstack(
         rx.text("Duración", size="2", weight="medium"),
         rx.segmented_control.root(
-            *(rx.segmented_control.item(f"{s} s", value=s) for s in _DURATIONS),
+            *_seconds_items(DURATIONS),
             value=CreativeState.media_duration,
             on_change=CreativeState.set_media_duration,
+            class_name="q-seg-fit q-seg-fit--nowrap",
         ),
-        spacing="3",
-        align="center",
-        wrap="wrap",
+        spacing="1",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -3586,6 +3600,7 @@ def _section_channel() -> rx.Component:
                 value=CreativeState.effective_format,
                 on_change=CreativeState.set_brief_format,
                 size="2",
+                class_name="q-seg-fit",
             ),
         ),
         # § request 2026-10-14: the script's length is asked here, with the format
@@ -3594,10 +3609,11 @@ def _section_channel() -> rx.Component:
             _field(
                 "Duración",
                 rx.segmented_control.root(
-                    *(rx.segmented_control.item(f"{s} s", value=s) for s in _DURATIONS),
+                    *_seconds_items(DURATIONS),
                     value=CreativeState.media_duration,
                     on_change=CreativeState.set_media_duration,
                     size="2",
+                    class_name="q-seg-fit q-seg-fit--nowrap",
                 ),
             ),
         ),
@@ -3607,10 +3623,11 @@ def _section_channel() -> rx.Component:
             _field(
                 "Duración",
                 rx.segmented_control.root(
-                    *(rx.segmented_control.item(f"{s} s", value=s) for s in _CLIP_DURATIONS),
+                    *_seconds_items(CLIP_DURATIONS),
                     value=CreativeState.clip_duration,
                     on_change=CreativeState.set_clip_duration,
                     size="2",
+                    class_name="q-seg-fit q-seg-fit--nowrap",
                 ),
             ),
         ),
@@ -3997,16 +4014,14 @@ def _view_steps() -> rx.Component:
 
 
 def _summary_row(item: rx.Var[dict[str, str]]) -> rx.Component:
-    """One choice of the piece, and «Editar» back to the view that sets it."""
-    return rx.hstack(
-        rx.text(
-            item["label"],
-            size="2",
-            color=T.TEXT_MUTED,
-            width="10rem",
-            flex_shrink="0",
-        ),
-        rx.text(item["value"], size="2", flex="1", min_width="0", white_space="pre-wrap"),
+    """One choice of the piece, and «Editar» back to the view that sets it. A grid
+    (`.q-cr-summary-row`, assets/qualify-creative.css): label · value · Editar on one
+    line, and on a phone the label with «Editar» on top and the value the full width
+    under them — a 10rem label beside it left ~6 letters a line at 375 px and broke
+    words in half («Product/o», m-24820845)."""
+    return rx.box(
+        rx.text(item["label"], size="2", color=T.TEXT_MUTED, class_name="q-cr-summary-label"),
+        rx.text(item["value"], size="2", class_name="q-cr-summary-value"),
         rx.cond(
             item["index"] != "",
             rx.button(
@@ -4017,15 +4032,12 @@ def _summary_row(item: rx.Var[dict[str, str]]) -> rx.Component:
                 size="1",
                 on_click=CreativeState.go_to_view(item["index"]),
                 aria_label="Editar " + item["label"],
-                flex_shrink="0",
+                class_name="q-cr-summary-edit",
             ),
         ),
-        spacing="3",
-        align="start",
         width="100%",
-        padding_y="0.55rem",
         border_bottom=T.BORDER,
-        wrap=rx.breakpoints(initial="wrap", sm="nowrap"),
+        class_name="q-cr-summary-row",
     )
 
 

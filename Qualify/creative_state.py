@@ -243,7 +243,7 @@ CLIP_MAX_AUDIOS = 3
 #: The lengths a clip can be asked for (§ request 2026-10-23: «que empiece desde 5 seg»).
 #: Seedance 2.0 takes 4–15 s (2.5 up to 30, 1.0 up to 12 — the adapter clamps it); clips
 #: are capped at 15 s.
-_CLIP_DURATIONS = ("5", "10", "15")
+CLIP_DURATIONS = ("5", "10", "15")
 #: What a photo taken from the catalog product is called in the editor.
 _CATALOG_PHOTO = "Foto del catálogo"
 #: What a file of a stock inspiration is called in the editor (§ 2026-10-19: «stock» is
@@ -315,7 +315,8 @@ _SLIDE_SOURCES = ("generated", "animated")
 #: What a slide may carry printed (§ 2026-10-14): nothing or the title — the hook. The
 #: «Botón de acción» left: the scene already holds the button, and the post its CTA.
 _SLIDE_TEXTS = ("none", "hook")
-_SLIDE_SECONDS = ("5", "10")
+#: An animated slide's length — the editor's choices and what `set_slide_field` keeps.
+SLIDE_SECONDS = ("5", "10")
 _CAROUSEL_MIN = 2
 _CAROUSEL_MAX = 10
 #: The gallery (§ request 2026-10-14): exactly three slides, one video at most, no
@@ -559,7 +560,7 @@ def _pill_items(text: str) -> list[str]:
 
 #: The lengths a script / avatar video can be asked for (§ request 2026-10-23: from 5 s);
 #: the brief validates the same set (`qualify_creative.schemas.DURATIONS_SECONDS`).
-_DURATIONS = ("5", "10", "15", "30", "45", "60")
+DURATIONS = ("5", "10", "15", "30", "45", "60")
 _FORMAT_LABELS = {
     "feed_4_5": "Publicación 4:5",
     "feed_1_1": "Publicación cuadrada 1:1",
@@ -770,7 +771,7 @@ class CreativeState(rx.State):
     piece_picker_open: bool = False
     pieces_loading: bool = False
     media_duration: str = "30"
-    #: A clip's length, one of `_CLIP_DURATIONS` (§ request 2026-10-23).
+    #: A clip's length, one of `CLIP_DURATIONS` (§ request 2026-10-23).
     clip_duration: str = "5"
     #: «Con audio» (§ request 2026-10-23): the clip comes with the sound the video
     #: model makes — on, as every clip was before the switch.
@@ -1445,7 +1446,7 @@ class CreativeState(rx.State):
             "scene": None,
             "background": ("1", ""),
             "text": (*_SLIDE_TEXTS, "cta"),
-            "seconds": _SLIDE_SECONDS,
+            "seconds": SLIDE_SECONDS,
             "audio": ("1", ""),
         }
         index = int(index)
@@ -4268,13 +4269,13 @@ class CreativeState(rx.State):
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in _DURATIONS:
+        if value in DURATIONS:
             self.media_duration = value
 
     @rx.event
     def set_clip_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in _CLIP_DURATIONS:
+        if value in CLIP_DURATIONS:
             self.clip_duration = value
 
     @rx.event
