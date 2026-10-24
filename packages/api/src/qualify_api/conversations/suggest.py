@@ -22,6 +22,18 @@ send is still, and only, `ConversationService.reply(..., approval=HumanApproval(
 3. **Cost is provenance.** Model id, revision, tokens and USD are written on the row
    (QUA-144), computed by `claude_tools.Meter` from the response, never estimated.
 
+## A tapped option is context (m-24789472, PR 2)
+
+When the message the draft answers was TAPPED — an Ice Breaker, a quick reply, a button,
+a menu item (`messages.choice_kind` / `choice_payload`, 0082) — the generator receives it
+through the existing `context` slot (`choices.choice_context`: «La persona tocó la
+pregunta inicial «¿Cuánto cuesta?» (QF_PRECIO: Precio)…»), so the reply answers the
+option, not a sentence the person never wrote. The draft records it under
+`grounding["choice"]` — what the model was told, per row. The system prompt, the tool and
+`propose`'s signature are unchanged (followups already fill the same slot), so
+`GENERATOR_VERSION` stays: the version names the generator, the row names its input.
+Still a draft: nothing here answers a tap on its own.
+
 ## Why strict tool use
 
 The model answers through one `strict` tool (`propose_reply`) so the three fields —
@@ -59,6 +71,7 @@ from qualify_api.claude_tools import (
     strict_tool,
     tool_uses,
 )
+from qualify_api.conversations.choices import choice_context
 from qualify_api.conversations.drafts import (
     ConversationDraft,
     DraftPending,
@@ -176,6 +189,12 @@ def transcript(messages: Sequence[MessageRecord], counterpart: str, business: st
         body = (m.text or "").strip() or f"[{m.media_type or 'adjunto'}]"
         lines.append(f"{who}: {body}")
     return "\n".join(lines)
+
+
+def message_context(message: MessageRecord) -> str | None:
+    """What the generator must know about the message it answers that its text does not
+    say: today, that it was a tapped option (m-24789472). `None` for a typed message."""
+    return choice_context(message.choice_kind, message.choice_payload, message.text)
 
 
 def needs_review(proposal: Proposal, grounding: Grounding) -> bool:
@@ -356,8 +375,17 @@ class ConversationDraftService:
                 return pending
         grounding = self.grounding(tenant_id, thread.connection_id)
         counterpart = thread.counterpart_name or thread.counterpart_username or "Cliente"
+        target = verdict.target
+        context = message_context(target)
+        # A typed message calls the generator exactly as before (no `context` at all).
+        situation = {"context": context} if context is not None else {}
         proposal = self.generator.propose(
-            grounding=grounding, messages=messages, counterpart=counterpart
+            grounding=grounding, messages=messages, counterpart=counterpart, **situation
+        )
+        choice = (
+            {"kind": target.choice_kind, "payload": target.choice_payload}
+            if target.choice_kind is not None
+            else None
         )
         draft = new_draft(
             tenant_id=tenant_id,
@@ -376,6 +404,7 @@ class ConversationDraftService:
             grounding={
                 **grounding.as_record(),
                 "unsupported_claims": list(proposal.unsupported_claims),
+                **({"choice": choice} if choice is not None else {}),
             },
         )
         try:
@@ -432,6 +461,7 @@ __all__ = [
     "ThreadNotFound",
     "gate",
     "grounding_from_products",
+    "message_context",
     "needs_review",
     "transcript",
 ]

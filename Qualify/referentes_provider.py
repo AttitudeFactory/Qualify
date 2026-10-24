@@ -122,7 +122,7 @@ def to_phase_dict(stored: StoredDiscoveryPhase) -> dict[str, Any]:
     already takes — so a hit from the database renders exactly like a fresh run."""
     return {
         "key": stored.phase_key,
-        "title": stored.title,
+        "title": creator_discovery.owner_phase_title(stored.phase_key, stored.title),
         "note": stored.note,
         "accounts": [dict(account.card) for account in stored.accounts],
         "credits": stored.credits,

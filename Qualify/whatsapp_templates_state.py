@@ -7,7 +7,7 @@ client, never a token. The number on screen is `WhatsAppState.selected_connectio
 **Loading.** The tab's root `on_mount` calls `ensure_loaded`; the shell keys the tab by
 the selected number, so it fires on tab entry and on every number switch. Guarded by
 `loaded_for`/`loading_for` (React may mount twice in dev). The list is the Postgres
-mirror (no Graph call); «Sincronizar con Meta» is the only read that reaches Meta.
+mirror (no Graph call); «Ver si ya las aprobaron» is the only read that reaches Meta.
 
 **The form** is local and synchronous: every keystroke is a foreground handler and the
 preview/validation are computed vars over plain strings. Nothing reaches Meta until

@@ -691,13 +691,25 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 align_items="start",
             ),
             _details_panel(reel),
+            # Not built yet: it reads as unavailable (neutral, `.q-dr-replicate` in
+            # assets/qualify-creative.css) and says «Muy pronto» on the button itself
+            # (m-24820845). A disabled button fires no pointer events, so the tooltip
+            # hangs on a wrapper for the pointer; it is no tab stop — the button's own
+            # name, «Replicar con mi marca Muy pronto», already says it all.
             rx.tooltip(
-                rx.button(
-                    rx.icon("copy", size=14),
-                    "Replicar con mi marca",
-                    size="2",
-                    width="100%",
-                    disabled=True,
+                rx.el.span(
+                    rx.button(
+                        rx.icon("copy", size=14),
+                        "Replicar con mi marca",
+                        rx.el.span("Muy pronto", class_name="q-dr-soon"),
+                        size="2",
+                        width="100%",
+                        variant="soft",
+                        color_scheme="gray",
+                        disabled=True,
+                        class_name="q-dr-replicate",
+                    ),
+                    class_name="q-dr-replicate-wrap",
                 ),
                 content="Muy pronto: crear tu versión de este reel con tu marca",
             ),
@@ -719,6 +731,8 @@ def _toolbar() -> rx.Component:
             on_change=DiscoverReelsState.set_window,
             size="2",
             aria_label="Periodo",
+            # fits a phone's width (`.q-seg-fit`, assets/qualify.css, m-24820845)
+            class_name="q-seg-fit",
         ),
         rx.cond(
             DiscoverReelsState.shown_iso != "",
