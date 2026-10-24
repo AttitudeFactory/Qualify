@@ -117,6 +117,9 @@ def test_postgres_outbox_round_trips_a_private_reply(seeded: dict[str, UUID]) ->
     item_id = _enqueue(outbox, seeded, comment_id)
     with pytest.raises(PrivateReplyExists):
         _enqueue(outbox, seeded, comment_id)
+    # m-24849131: the screen reads where the send stands, scoped by RLS.
+    assert outbox.status_of(tenant_id=TENANT, item_id=item_id) == "pending"
+    assert outbox.status_of(tenant_id=uuid4(), item_id=item_id) is None
 
     claimed = [
         i
@@ -142,6 +145,7 @@ def test_postgres_outbox_round_trips_a_private_reply(seeded: dict[str, UUID]) ->
         comment_id,
     )
     assert (record.reply_deadline, record.recipient_external_id) == (DEADLINE, "igsid-ana")
+    assert outbox.status_of(tenant_id=TENANT, item_id=item_id) == "sent"
     # Sent: Meta took its one reply for this comment, so nothing more is accepted.
     with pytest.raises(PrivateReplyExists):
         _enqueue(outbox, seeded, comment_id)
@@ -153,6 +157,7 @@ def test_a_failed_private_reply_does_not_block_another(seeded: dict[str, UUID]) 
     item_id = _enqueue(outbox, seeded, comment_id)
     outbox.claim(tenant_id=TENANT, worker_id="t", now=_due(), limit=10_000)
     outbox.mark_failed(tenant_id=TENANT, item_id=item_id, error_code="private_reply_expired")
+    assert outbox.status_of(tenant_id=TENANT, item_id=item_id) == "failed"
     assert _enqueue(outbox, seeded, comment_id) != item_id
 
 

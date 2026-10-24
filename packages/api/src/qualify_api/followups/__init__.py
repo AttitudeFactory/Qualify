@@ -41,12 +41,14 @@ from qualify_api.followups.repository import (
 )
 from qualify_api.followups.service import (
     CapabilityUnavailable,
+    Delivery,
     FollowupService,
     OriginNotSupported,
     RouteOption,
     RouteUnavailable,
     SendOptions,
     UnknownOrigin,
+    delivery_of,
 )
 
 __all__ = [
@@ -58,6 +60,7 @@ __all__ = [
     "CapabilitySpec",
     "CapabilityState",
     "CapabilityUnavailable",
+    "Delivery",
     "Followup",
     "FollowupOpening",
     "FollowupRepository",
@@ -82,5 +85,6 @@ __all__ = [
     "UnknownOrigin",
     "approve_followup",
     "discard_followup",
+    "delivery_of",
     "new_followup",
 ]

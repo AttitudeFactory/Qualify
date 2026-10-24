@@ -16,8 +16,9 @@ through `tenant_session` (`PostgresConversationsStore`):
   carrying the C-05 verdict on the messages scope;
 - the **access and sync state** of one account (`conversation_sync_state`, E1's repo);
 - per thread, the counterpart's **handle** and the last message's **preview** (from
-  `messages`; the profile — name, picture — travels on `ThreadRecord` itself since the
-  sync fetches it);
+  `messages`, with the tap it came from — `choice_kind`/`choice_payload`, m-24789472;
+  the profile — name, picture — travels on `ThreadRecord` itself since the sync
+  fetches it);
 - the thread's **unsent outbox rows** (pending / sending / failed / dead) so a person sees
   what they queued and why it did not go out — through E1's `list_for_thread`;
 - the **acting user** (`AuthState` carries the login email, not a user id) and the
@@ -71,7 +72,7 @@ from __future__ import annotations
 
 import io
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -79,6 +80,7 @@ from uuid import UUID, uuid4
 
 from qualify_api.conversations.contracts import CHANNEL_DM, STICKER_LIKE_HEART, SourceConnection
 from qualify_api.conversations.drafts import ConversationDraft, DraftStatus
+from qualify_api.conversations.interactive import QuickReply, TemplateButton
 from qualify_api.conversations.outbox import (
     ConversationOutboxRepository,
     HumanApproval,
@@ -110,9 +112,13 @@ from .conversations_vm import (
     THREADS_LIMIT,
     AccountVM,
     AttachmentVM,
+    ButtonVM,
+    FeatureVM,
     ThreadExtra,
     UnsentItem,
+    build_feature_vm,
     inbox_accounts,
+    outbox_media_type,
     outbox_text,
 )
 
@@ -150,7 +156,14 @@ class PostgresConversationsStore:
         posted = func.coalesce(Message.posted_at, Message.ingested_at)
         with tenant_session(tenant_id) as session:
             latest = session.execute(
-                select(Message.thread_id, Message.direction, Message.text, Message.media_type)
+                select(
+                    Message.thread_id,
+                    Message.direction,
+                    Message.text,
+                    Message.media_type,
+                    Message.choice_kind,
+                    Message.choice_payload,
+                )
                 .distinct(Message.thread_id)
                 .where(Message.thread_id.in_(ids), Message.deleted_at.is_(None))
                 .order_by(Message.thread_id, posted.desc(), Message.id.desc())
@@ -174,6 +187,8 @@ class PostgresConversationsStore:
                 preview=r.text,
                 preview_direction=r.direction,
                 preview_media_type=r.media_type,
+                preview_choice_kind=r.choice_kind,
+                preview_choice_payload=r.choice_payload,
             )
         for key, username in by_thread.items():
             extras.setdefault(key, ThreadExtra(username=username))
@@ -414,7 +429,7 @@ class ConversationsGateway:
                 text=outbox_text(r.payload),
                 created_at=r.created_at,
                 error_code=r.error_code,
-                media_type=r.media_type,
+                media_type=outbox_media_type(r.media_type, r.payload),
                 media_src=(
                     self._viewer(tenant_id, r.media_object_key, r.media_type, None)
                     if r.media_object_key and r.media_type
@@ -465,13 +480,17 @@ class ConversationsGateway:
         user_id: UUID,
         text: str,
         draft_id: UUID | None = None,
+        quick_replies: Sequence[str] = (),
     ) -> list[UUID]:
         """Queue a human-approved reply — one outbox row per ≤ 1000-char part. The
-        approval is THIS user, NOW, carrying the draft it came from when it did."""
+        approval is THIS user, NOW, carrying the draft it came from when it did.
+        `quick_replies` (m-24789472) are titles; the service hangs them under the last
+        part, after checking their capability and limits."""
         self._owned(tenant_id, connection_id, thread_id)
         return self.service.reply_text(
             tenant_id=tenant_id,
             thread_id=thread_id,
+            quick_replies=[QuickReply(title=t) for t in quick_replies] or None,
             text=text,
             approval=self._approval(user_id, draft_id),
         )
@@ -530,6 +549,37 @@ class ConversationsGateway:
             tenant_id=tenant_id, thread_id=thread_id, media=media, approval=self._approval(user_id)
         )
 
+    def reply_buttons(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        text: str,
+        buttons: Sequence[ButtonVM],
+    ) -> UUID:
+        """Queue a human-approved message with buttons (m-24789472): ONE outbox row,
+        never split. Raises `CapabilityUnavailable` while `structured_templates` is off,
+        `InteractiveMessageError` (640 characters, 1–3 buttons) and `WindowClosed`."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.service.reply_buttons(
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            text=text,
+            buttons=template_buttons(buttons),
+            approval=self._approval(user_id),
+        )
+
+    def features(self) -> tuple[FeatureVM, FeatureVM]:
+        """(quick replies, messages with buttons): whether this deployment sends them,
+        and the plain words when it does not. No database read."""
+        from qualify_api.followups.capabilities import Capability  # noqa: PLC0415
+
+        return (
+            build_feature_vm(self.service.availability(Capability.QUICK_REPLIES)),
+            build_feature_vm(self.service.availability(Capability.STRUCTURED_TEMPLATES)),
+        )
+
     # --- assisted replies (E4) ---------------------------------------------------------
 
     def suggest(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ConversationDraft:
@@ -576,14 +626,17 @@ class ConversationsGateway:
         user_id: UUID | None,
         title: str,
         body: str,
+        buttons: Sequence[ButtonVM] = (),
     ) -> ReplyTemplate:
-        """A new template at the end. Raises `ReplyTemplateError` (Spanish message)."""
+        """A new template at the end, with 0–3 buttons. Raises `ReplyTemplateError`
+        (Spanish message; a button's carries its `index`)."""
         return self.template_service.create(
             tenant_id=tenant_id,
             connection_id=connection_id,
             title=title,
             body=body,
             user_id=user_id,
+            buttons=template_buttons(buttons),
         )
 
     def update_template(
@@ -594,13 +647,16 @@ class ConversationsGateway:
         user_id: UUID | None,
         title: str,
         body: str,
+        buttons: Sequence[ButtonVM] | None = None,
     ) -> ReplyTemplate:
+        """`buttons=None` keeps the template's buttons; `()` removes them."""
         self._owned_template(tenant_id, connection_id, template_id)
         return self.template_service.update(
             tenant_id=tenant_id,
             template_id=template_id,
             title=title,
             body=body,
+            buttons=None if buttons is None else template_buttons(buttons),
             user_id=user_id,
         )
 
@@ -639,6 +695,17 @@ class ConversationsGateway:
         return await self.service.signal(
             tenant_id=tenant_id, thread_id=thread_id, connection=connection, action=action
         )
+
+
+def template_buttons(buttons: Sequence[ButtonVM]) -> tuple[TemplateButton, ...]:
+    """The screen's buttons as the backend's records (a postback keeps its stored
+    payload; a new one gets `QFB_<title>` from the service)."""
+    return tuple(
+        TemplateButton.web_url(b.title, b.url)
+        if b.kind == "web_url"
+        else TemplateButton.postback(b.title, b.payload or None)
+        for b in buttons
+    )
 
 
 _GATEWAY: ConversationsGateway | None = None

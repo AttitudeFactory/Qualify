@@ -37,6 +37,7 @@ from qualify_api.followups import (
     Capabilities,
     Capability,
     CapabilityUnavailable,
+    Delivery,
     Followup,
     FollowupOpening,
     FollowupService,
@@ -52,6 +53,7 @@ from qualify_api.followups import (
     RouteUnavailable,
     SendRoute,
     UnknownOrigin,
+    delivery_of,
 )
 
 T0 = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
@@ -279,7 +281,12 @@ def test_private_reply_is_unavailable_while_its_capability_is_off() -> None:
     followup = world.open().followup
     options = world.service.send_options(tenant_id=TENANT, followup_id=followup.id)
     assert options.private_reply.available is False
-    assert "QUALIFY_COMMENT_PRIVATE_REPLY" in options.private_reply.reason
+    # NAV-11 (m-24849129): the card shows the owner's words, never the switch's name
+    assert options.private_reply.reason == (
+        "Responder en privado a un comentario todavía no está disponible. Mientras tanto, "
+        "contéstale desde Instagram."
+    )
+    assert "QUALIFY_" not in options.private_reply.reason
     with pytest.raises(RouteUnavailable) as exc:
         world.approve(followup.id)
     assert exc.value.options == options
@@ -500,3 +507,75 @@ async def test_a_recipient_other_than_the_thread_is_logged_and_kept(
     assert "igsid-someone-else" not in caplog.text  # ids of people never go to logs
     [row] = world.outbox.rows.values()
     assert row.recipient_external_id == "igsid-someone-else"
+
+
+# --- the delivery the screen waits on (m-24849131, ATENDER-10) ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("pending", Delivery.SENDING),
+        ("sending", Delivery.SENDING),
+        ("sent", Delivery.SENT),
+        ("failed", Delivery.FAILED),
+        ("dead", Delivery.FAILED),
+        ("something-new", Delivery.UNKNOWN),
+        (None, Delivery.UNKNOWN),
+    ],
+)
+def test_an_outbox_status_reads_as_a_delivery(status: str | None, expected: Delivery) -> None:
+    assert delivery_of(status) is expected
+
+
+def test_an_unapproved_followup_has_no_delivery_to_report() -> None:
+    world = World()
+    followup = world.open().followup
+    assert world.service.delivery(tenant_id=TENANT, followup_id=followup.id) is Delivery.UNKNOWN
+
+
+def test_an_approved_message_is_sending_until_the_sender_runs() -> None:
+    world = World()
+    followup = world.open().followup
+    world.approve(followup.id)
+    assert world.service.delivery(tenant_id=TENANT, followup_id=followup.id) is Delivery.SENDING
+
+
+async def test_the_delivery_turns_sent_once_the_sender_ships_it() -> None:
+    world = World()
+    followup = world.open().followup
+    world.approve(followup.id)
+    await world.sender_loop().run_once(TENANT)
+    assert world.service.delivery(tenant_id=TENANT, followup_id=followup.id) is Delivery.SENT
+
+
+async def test_a_refused_send_reads_failed_and_is_not_queued_again() -> None:
+    world = World()
+    followup = world.open().followup
+    world.approve(followup.id)
+    await world.sender_loop(private_replies=False).run_once(TENANT)
+    assert world.service.delivery(tenant_id=TENANT, followup_id=followup.id) is Delivery.FAILED
+    # Reading the outcome re-sends nothing (N13): still one row, still failed.
+    [row] = world.outbox.rows.values()
+    assert row.status == "failed"
+    await world.sender_loop().run_once(TENANT)
+    assert world.channel.sent == []
+
+
+def test_the_outbox_status_is_scoped_to_its_tenant() -> None:
+    world = World()
+    followup = world.open().followup
+    approved = world.approve(followup.id)
+    assert approved.outbox_id is not None
+    assert world.outbox.status_of(tenant_id=TENANT, item_id=approved.outbox_id) == "pending"
+    assert world.outbox.status_of(tenant_id=uuid4(), item_id=approved.outbox_id) is None
+
+
+def test_an_unknown_author_tells_the_owner_where_to_answer() -> None:
+    world = World()
+    with pytest.raises(OriginNotSupported) as exc:
+        world.open(_variant(world, author_external_id=None))
+    assert exc.value.reason == (
+        "Instagram no nos dijo quién escribió este mensaje. "
+        "Contéstale directamente desde Instagram."
+    )

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudieron cargar los contactos. Vuelve a intentarlo en un momento."
 _ACTION_FAILED = "No se pudo guardar el cambio. Vuelve a intentarlo en un momento."
-_REVOKED = "Consentimiento revocado: ese número no recibirá campañas."
+_REVOKED = "Quitamos ese número de la lista: ya no recibirá tus promociones."
 _NOT_ACTIVE = "Ese número ya no tenía un consentimiento activo."
 
 
