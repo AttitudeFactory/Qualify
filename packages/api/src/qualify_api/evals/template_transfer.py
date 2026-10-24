@@ -57,14 +57,10 @@ PAID_BLOCKS = frozenset({"color", "texture"})
 FLAT_PROVIDER = "pillow-flat-texture"
 #: Bumped whenever the flat finish or its checks change (provenance of the flat block).
 FLAT_VERSION = "flat-texture-v1"
-#: The only repository folders a `fixture: true` case may read (relative to the repo
-#: root): Qualify's own email assets and the render samples. Never uploads, the Reflex
-#: app or its build output.
-FIXTURE_ROOTS: tuple[str, ...] = (
-    "assets",
-    "packages/render/public/sample",
-    "packages/api/evals/plantillas_ai/fixtures",
-)
+#: The only repository folder a `fixture: true` case may read (relative to the repo
+#: root): the eval's own generated fixtures. Never uploads, the Reflex app, its build
+#: output, the app's assets or the render samples.
+FIXTURE_ROOTS: tuple[str, ...] = ("packages/api/evals/plantillas_ai/fixtures",)
 
 PROMPTS: Mapping[str, str] = {
     "color": (
@@ -213,7 +209,12 @@ def _mask(raw: Mapping[str, Any], where: str, case_id: str, *, fixture: bool) ->
 
 
 def _cases(
-    block: Mapping[str, Any], name: str, *, needs_text: bool, takes_mask: bool = False
+    block: Mapping[str, Any],
+    name: str,
+    *,
+    needs_text: bool,
+    takes_mask: bool = False,
+    shared_are_fixtures: bool = False,
 ) -> tuple[Case, ...]:
     raw_cases = block.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases:
@@ -234,8 +235,11 @@ def _cases(
             _image_ref(r, f"{where} reference", fixture=fixture)
             for r in raw.get("references") or ()
         )
-        if fixture and not refs:
-            raise CasesError(f"{where} ({image.id}): a fixture case needs its own references")
+        if fixture and not refs and not shared_are_fixtures:
+            raise CasesError(
+                f"{where} ({image.id}): a fixture case needs its own references, or a block "
+                "whose references are fixtures"
+            )
         if "mask" in raw and not takes_mask:
             raise CasesError(f"{where} ({image.id}): only a color case takes a 'mask'")
         cases.append(
@@ -252,11 +256,24 @@ def _cases(
     return tuple(cases)
 
 
+def _fixture_references(block: Mapping[str, Any], name: str) -> bool:
+    """The block-level `fixture_references`: true when every block reference is a repo
+    fixture (under `FIXTURE_ROOTS`, checked like any fixture path). A reference entry
+    itself still may not carry `fixture`."""
+    flag = block.get("fixture_references", False)
+    if not isinstance(flag, bool):
+        raise CasesError(f"block {name!r}: 'fixture_references' must be true or false")
+    return flag
+
+
 def _references(block: Mapping[str, Any], name: str) -> tuple[ImageRef, ...]:
     raw = block.get("references")
     if not isinstance(raw, list) or not raw:
         raise CasesError(f"block {name!r}: 'references' must be a non-empty list")
-    refs = tuple(_image_ref(r, f"block {name!r} reference #{i}") for i, r in enumerate(raw))
+    fixture = _fixture_references(block, name)
+    refs = tuple(
+        _image_ref(r, f"block {name!r} reference #{i}", fixture=fixture) for i, r in enumerate(raw)
+    )
     _unique(refs, f"block {name!r} references")
     return refs
 
@@ -275,9 +292,20 @@ def parse_cases(raw: Mapping[str, Any]) -> CaseSet:
     if "fill" in flat:
         raise CasesError("flat: 'fill' is gone — the flat finish uses the texture references")
     return CaseSet(
-        color=_cases(color, "color", needs_text=False, takes_mask=True),
+        color=_cases(
+            color,
+            "color",
+            needs_text=False,
+            takes_mask=True,
+            shared_are_fixtures=_fixture_references(color, "color"),
+        ),
         color_references=_references(color, "color"),
-        texture=_cases(texture, "texture", needs_text=True),
+        texture=_cases(
+            texture,
+            "texture",
+            needs_text=True,
+            shared_are_fixtures=_fixture_references(texture, "texture"),
+        ),
         texture_references=_references(texture, "texture"),
     )
 
@@ -295,7 +323,8 @@ def build_matrix(
 ) -> list[MatrixItem]:
     """Every item of the chosen blocks: object × color reference, logo × texture, and the
     same logo × texture pairs as flat finishes. `skip_fixtures` drops the `fixture: true`
-    cases and references first; `limit` then keeps the first N remaining cases of each
+    cases first (their own references go with them; a block's fixture references stay,
+    the real cases use them); `limit` then keeps the first N remaining cases of each
     block (fixtures come first in `cases.json`)."""
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1")
@@ -312,10 +341,7 @@ def build_matrix(
             source = tuple(c for c in source if not c.fixture)
         for case in source[:limit]:
             shared = cases.color_references if block == "color" else cases.texture_references
-            refs = case.references or shared
-            if skip_fixtures:
-                refs = tuple(r for r in refs if not r.fixture)
-            for ref in refs:
+            for ref in case.references or shared:
                 items.append(
                     MatrixItem(
                         block,
@@ -339,6 +365,35 @@ def missing_files(items: Iterable[MatrixItem], images_dir: Path, repo_root: Path
             if not path.is_file():
                 missing[path] = None
     return list(missing)
+
+
+#: What each input of an item is, for the missing-files report (by block and position).
+INPUT_ROLES: Mapping[str, tuple[str, str]] = {
+    "color": ("objetos", "referencias de color"),
+    "texture": ("logos", "texturas"),
+    "flat": ("logos", "texturas"),
+}
+MASK_ROLE = "máscaras"
+
+
+def missing_by_role(
+    items: Iterable[MatrixItem], images_dir: Path, repo_root: Path
+) -> dict[str, list[Path]]:
+    """The input files that are not on disk, each once, grouped by what they are
+    (objects, color references, masks, logos, textures), in matrix order."""
+    groups: dict[str, dict[Path, None]] = {}
+    seen: set[Path] = set()
+    for item in items:
+        roles = INPUT_ROLES[item.block]
+        pairs = [(image, roles[min(i, 1)]) for i, image in enumerate(item.images)]
+        if item.mask:
+            pairs.append((item.mask, MASK_ROLE))
+        for image, role in pairs:
+            path = image.resolve(images_dir, repo_root)
+            if path not in seen and not path.is_file():
+                seen.add(path)
+                groups.setdefault(role, {})[path] = None
+    return {role: list(paths) for role, paths in groups.items()}
 
 
 # ---------------------------------------------------------------------------

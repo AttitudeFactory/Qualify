@@ -61,6 +61,32 @@ def _usd(value: str) -> Decimal:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
 
+def _max_reads(value: str) -> int:
+    from qualify_api.evals.legibility_claude import HARD_MAX_READS
+
+    try:
+        reads = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {value!r}") from None
+    if not 1 <= reads <= HARD_MAX_READS:
+        raise argparse.ArgumentTypeError(f"--max-reads must be within 1..{HARD_MAX_READS}")
+    return reads
+
+
+def _reader_usd(value: str) -> Decimal:
+    from qualify_api.evals.legibility_claude import HARD_MAX_USD
+
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        raise argparse.ArgumentTypeError(f"not an amount: {value!r}") from None
+    if not (amount.is_finite() and Decimal(0) < amount <= HARD_MAX_USD):
+        raise argparse.ArgumentTypeError(
+            f"--max-reader-usd must be above 0 and at most {HARD_MAX_USD}"
+        )
+    return amount
+
+
 def build_parser() -> argparse.ArgumentParser:
     from qualify_api.evals.spend_control import DEFAULT_MAX_USD, SEEDREAM_PRO
     from qualify_api.evals.template_transfer import BLOCKS
@@ -98,6 +124,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--i-have-spend-authorization",
         action="store_true",
         help="required for a paid run: the founder authorized this run's spend",
+    )
+    parser.add_argument(
+        "--reader",
+        choices=("none", "claude"),
+        default="none",
+        help="legibility reader of the texture items (paid run only); none: «pendiente»",
+    )
+    parser.add_argument(
+        "--max-reads", type=_max_reads, default=50, help="reader's cap on reads, at most 50"
+    )
+    parser.add_argument(
+        "--max-reader-usd",
+        type=_reader_usd,
+        default=Decimal("0.50"),
+        help="reader's own spending cap, at most 0.50 (apart from --max-usd)",
     )
     return parser
 
@@ -191,7 +232,9 @@ def main(argv: list[str] | None = None) -> int:
     return _paid_run(args, tt, JsonPricingTable)
 
 
-def _plan(args: argparse.Namespace, tt: Any, table: Any) -> tuple[list[Any], list[Path], Any]:
+def _plan(
+    args: argparse.Namespace, tt: Any, table: Any
+) -> tuple[list[Any], dict[str, list[Path]], Any]:
     cases = tt.load_cases(HERE / "cases.json")
     items = tt.build_matrix(
         cases, blocks=args.block or tt.BLOCKS, limit=args.limit, skip_fixtures=args.skip_fixtures
@@ -199,7 +242,7 @@ def _plan(args: argparse.Namespace, tt: Any, table: Any) -> tuple[list[Any], lis
     models = _models(args)
     # layer decomposition stays out: the adapter cannot send it yet (README)
     planned = tt.plan_calls(items, table(tt.PRICING_VERSION), model_ids=models, size=args.size)
-    return planned, tt.missing_files(items, IMAGES_DIR, REPO_ROOT), cases
+    return planned, tt.missing_by_role(items, IMAGES_DIR, REPO_ROOT), cases
 
 
 def _plan_or_exit_code(args: argparse.Namespace, tt: Any, table: Any) -> Any:
@@ -246,21 +289,30 @@ def _plan_and_report(args: argparse.Namespace, tt: Any, table: Any) -> int:
     return 0
 
 
-def _report_missing(missing: Sequence[Path]) -> None:
-    if not missing:
+def _report_missing(missing: Mapping[str, Sequence[Path]]) -> None:
+    """The missing inputs grouped by what they are, so whoever supplies them knows
+    exactly which photo goes where."""
+    total = sum(len(paths) for paths in missing.values())
+    if not total:
         print("\nTodas las imágenes de entrada están en disco.")
         return
-    print(f"\nFaltan {len(missing)} imágenes de entrada (colócalas en imagenes/):")
-    for path in missing:
-        try:
-            shown = path.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
-            shown = str(path)
-        print(f"  - {shown}")
+    print(f"\nFaltan {total} imágenes de entrada (colócalas en imagenes/):")
+    for role, paths in missing.items():
+        print(f"  {role} ({len(paths)}):")
+        for path in paths:
+            try:
+                shown = path.relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                shown = str(path)
+            print(f"    - {shown}")
 
 
 def _paid_run(args: argparse.Namespace, tt: Any, table: Any) -> int:
-    """The paid path: wired, not exercised in m-24849234 PR 1. Exit codes: see `EPILOG`."""
+    """The paid path. Exit codes: see `EPILOG`. Langfuse stays off for this eval
+    (founder, 2026-10-23): tracing is switched off once, here, whatever the reader."""
+    from qualify_shared import observability
+
+    observability.configure(None)
     if not args.i_have_spend_authorization:
         print(
             "Una corrida pagada necesita --i-have-spend-authorization: el fundador autoriza "
@@ -284,8 +336,45 @@ def _paid_run(args: argparse.Namespace, tt: Any, table: Any) -> int:
     if not key:
         print("QUALIFY_BYTEPLUS_ARK_API_KEY is not set", file=sys.stderr)
         return 2
-    report = run_paid(planned, tt, ledger=sc.SpendLedger(args.max_usd), api_key=key, args=args)
+    reader = None
+    if args.reader == "claude":  # only here: past the authorization gate and every check
+        reader = _build_reader(args)
+        if reader is None:
+            return 2
+    report = run_paid(
+        planned,
+        tt,
+        ledger=sc.SpendLedger(args.max_usd),
+        api_key=key,
+        args=args,
+        reader=reader,
+    )
     return exit_code(report)
+
+
+def _build_reader(args: argparse.Namespace) -> Any:
+    """The Claude legibility reader under its own cap (`--max-reads`, `--max-reader-usd`),
+    or None when `QUALIFY_ANTHROPIC_API_KEY` is missing. Tracing is already off
+    (`_paid_run`)."""
+    from qualify_api.claude_tools import API_KEY_ENV
+    from qualify_api.evals.legibility_claude import ClaudeLegibilityReader, ReadBudget
+
+    anthropic_key = os.environ.get(API_KEY_ENV, "").strip()
+    if not anthropic_key:
+        print(f"{API_KEY_ENV} is not set: --reader claude needs it", file=sys.stderr)
+        return None
+    budget = ReadBudget(max_reads=args.max_reads, max_usd=args.max_reader_usd)
+    return ClaudeLegibilityReader(anthropic_key, budget=budget)
+
+
+def _reader_block(reader: Any) -> dict[str, Any]:
+    """The report's `lector`: «ninguno» only without a reader; a reader without its own
+    `report()` is still named."""
+    if reader is None:
+        return {"tipo": "ninguno"}
+    if hasattr(reader, "report"):
+        return dict(reader.report())
+    return {"tipo": type(reader).__name__}
 
 
 def exit_code(report: Mapping[str, Any]) -> int:
@@ -582,6 +671,7 @@ def run_paid(
                 "totales": totals,
                 "stopped": stopped,
                 "error_inesperado": unexpected,
+                "lector": _reader_block(reader),
                 "results_path": _display(results_path, args.results_dir),
                 "salidas": _display(out_dir, args.results_dir),
                 "items": items,
