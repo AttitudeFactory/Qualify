@@ -1,6 +1,6 @@
 # Épica — Qualify en palabras del dueño: navegación y experiencia
 
-`[v2 · 2026-10-23 · product-owner · decisiones del fundador aplicadas]` · **Meegle:** Feature [m-24842956](https://project.larksuite.com/5h2wsx/story/detail/24842956) con 47 historias (Issues) enlazadas por el campo Feature; 7 borradores más esperan revisión antes de cargarse (§4).
+`[v5 · 2026-10-23 · product-owner · segunda ronda de decisiones del fundador]` · **Meegle:** Feature [m-24842956](https://project.larksuite.com/5h2wsx/story/detail/24842956) con 62 historias (Issues) enlazadas por el campo Feature; todas cargadas. Ninguna espera ya una decisión ni una medición: ATENDER-5 (m-24848534) quedó «No por ahora» (aparcada); CREAR-5 (m-24848531) está lista tras la medición del 2026-10-23 (§2b).
 
 **Origen:** pedido del fundador (2026-10-23): «revisa todo el UX de mi sitio, genera un reporte, invoca al product owner y asígnale crear la épica y las historias para mejorar el UX de nuestra app, separa el trabajo por dominio/módulo, debe existir un patrón guideline de navegación por mi app».
 
@@ -15,17 +15,18 @@
 | Dominio | Prefijo | Fuente | Historias | P0 listas |
 |---|---|---|---|---|
 | Navegación e Inicio (transversal) | `[NAV]` | `ux-guia-navegacion.md`, m7 | 9 | 3 |
-| Acceso, tu marca y tus redes | `[MARCA]` | m1 | 7 | 2 |
+| Textos que nacen en el servidor (transversal) | `[BACKEND/copy]` | seguimiento de la ola 1 | 1 | 0 |
+| Acceso, tu marca y tus redes | `[MARCA]` | m1 | 8 | 2 |
 | Tus productos | `[PRODUCTOS]` | m2 | 6 | 1 |
-| Crear publicación | `[CREAR]` | m3 | 6 | 2 |
+| Crear publicación | `[CREAR]` | m3 | 7 | 2 |
 | Aprobar, programar y publicar | `[PUBLICAR]` | m4 | 6 | 2 |
-| Responder a clientes | `[ATENDER]` | m5 | 7 | 2 |
-| WhatsApp | `[WHATSAPP]` | m6 | 8 | 3 |
-| Resultados y menciones | `[RESULTADOS]` | m7 | 5 | 1 |
+| Responder a clientes | `[ATENDER]` | m5 | 11 | 3 |
+| WhatsApp | `[WHATSAPP]` | m6 | 8 | 5 |
+| Resultados y menciones | `[RESULTADOS]` | m7 | 6 | 1 |
 
 ## 2. Decisiones del fundador (decididas 2026-10-23)
 
-El fundador respondió una a una las once decisiones el 2026-10-23; están registradas en [`ux-guia-navegacion.md`](ux-guia-navegacion.md) §7 y N10 (y `qualify-ux` §3 y `perfil-cliente-pyme.md` §2 para la 11). Ninguna historia cargada queda bloqueada por una decisión; los borradores de §4 solo esperan revisión técnica o de costo.
+El fundador respondió una a una las once decisiones el 2026-10-23; están registradas en [`ux-guia-navegacion.md`](ux-guia-navegacion.md) §7 y N10 (y `qualify-ux` §3 y `perfil-cliente-pyme.md` §2 para la 11). Las revisiones técnicas y de costo abrieron tres decisiones nuevas (§4).
 
 | # | Decisión | Qué se decidió | Historias afectadas |
 |---|---|---|---|
@@ -34,14 +35,30 @@ El fundador respondió una a una las once decisiones el 2026-10-23; están regis
 | 3 | Por responder | Uno solo + WhatsApp enlazado como pestaña; el módulo WhatsApp conserva respuesta automática y promociones | ATENDER-1 (m-24842990) |
 | 4 | «Pronto» | Vitrina se elimina por completo; Creadores y Señales se quedan en el menú con «Pronto» en texto (N10 reescrita) | NAV-10 (m-24848515), NAV-1 (m-24842957) |
 | 5 | Celular | Sí: barra inferior (Inicio · Por responder · Crear · Tu semana + «Más»), documentada primero en `docs/design-system.md` | NAV-7 (m-24842964) |
-| 6 | Marca | Mínimo de 5 pasos (negocio y rubro, logo, colores, cómo hablas, redes); el resto a «Mejora tu marca (opcional)»; la app deja de bloquearse | MARCA-4 (borrador) |
+| 6 | Marca | Mínimo de 5 pasos (negocio y rubro, logo, colores, cómo hablas, redes); el resto a «Mejora tu marca (opcional)»; la app deja de bloquearse | MARCA-4 (m-24848529) |
 | 7 | Invitación | Opción (b): avisar antes; con código sigue, sin código deja nombre, negocio y WhatsApp | MARCA-5 (m-24842968) |
-| 8 | Costo | El dueño ve «creaciones del mes» («Te quedan 18 de 30 este mes»), nunca dinero; el costo en dólares solo lo ve el equipo | CREAR-5 (borrador) |
+| 8 | Costo | El dueño ve «creaciones del mes» («Te quedan 18 de 30 este mes»), nunca dinero; el costo en dólares solo lo ve el equipo | CREAR-5 (m-24848531) |
 | 9 | Nombre de «Piezas» | «Por aprobar» | NAV-9 (m-24842958), CREAR-4 (m-24842979), CREAR-3 (m-24842981) |
 | 10 | Moneda en Venezuela | Dólares (USD) por defecto, editable | MARCA-3 (m-24842967) |
-| 11 | Palabras | «reel (video corto)» e «historia»; nunca «story» | CREAR-4 (m-24842979), PUBLICAR-5 (m-24842983), PRODUCTOS-6 (m-24842971), CREAR-2 (borrador) |
+| 11 | Palabras | «reel (video corto)» e «historia»; nunca «story» | CREAR-4 (m-24842979), PUBLICAR-5 (m-24842983), PRODUCTOS-6 (m-24842971), CREAR-2 (m-24848530) |
 
-Vitrina, en palabras del fundador: «vitrina se elimina por completo, no tiene relación con nuestro producto por ahora» → NAV-10 (m-24848515).
+Además, antes de las once: «vitrina se elimina por completo, no tiene relación con nuestro producto por ahora» → NAV-10 (m-24848515).
+
+## 2b. Decisiones del fundador 2026-10-23 (segunda ronda)
+
+El fundador respondió las siete decisiones que habían quedado pendientes (antigua §6, preguntas 1-6, más dos textos). Todas están aplicadas en los tickets de Meegle el mismo día.
+
+| # | Decisión | Qué se decidió | Historias afectadas | Estado en Meegle |
+|---|---|---|---|---|
+| 1 | Respuestas públicas (**enmienda QUA-22**) | Qualify prepara respuestas también para **preguntas y quejas**, no solo para comentarios positivos; el dueño siempre revisa y envía (asistido, nunca autónomo). En las quejas, la propuesta sugiere seguir por mensaje privado. QUA-22 («solo positivos») queda **enmendada**; la fila ADR 21c pasa de [PROPUESTO] a decidida (la escribe el arquitecto) | ATENDER-4b (m-24848533), ATENDER-4a (m-24848532) | ATENDER-4b desbloqueada → Todo |
+| 2 | Clasificar comentarios en segundo plano | **No por ahora (fundador, 2026-10-23)** | ATENDER-5 (m-24848534) | Sigue en Backlog, etiqueta parking-lot |
+| 3a | Presentador de 30 s | El **dueño sí puede crearlo**; usa varias creaciones del mes y, antes de crear, la app le dice cuántas: «Este video con presentador usa 25 de tus creaciones. Te quedarían {n} este mes.» (pesos v1: 30 s = 25, 15 s = 13); con saldo menor que 25 se ofrece la versión de 15 s | CREAR-5 (m-24848531) | Criterios actualizados |
+| 3b | Medición de producción | data-scientist-fde puede hacer **una sola** lectura agregada, de solo lectura, en producción: conteo de creaciones por negocio y por tipo en los últimos 60 días (solo conteos; ni textos ni datos de clientes finales), para fijar la asignación mensual real. **Hecha el 2026-10-23:** [`creaciones-del-mes-medicion.md`](creaciones-del-mes-medicion.md). Solo 3 días de uso, todo de negocios de prueba y solo imagen con texto: **solo el peso de la imagen está confirmado** (1; p95 USD 0,068); los demás pesos salen de la tabla v5 sin uso real. La asignación se queda en 30; volver a medir cuando 3 clientes reales tengan 30 días de uso | CREAR-5 (m-24848531) | Desbloqueada (lista); la segunda medición es seguimiento |
+| 4 | WhatsApp después de 24 h | Que el cliente haya escrito antes cuenta como permiso **solo para retomar su tema** con una plantilla de seguimiento (tipo utilidad, «te escribo por tu pedido…»); las promociones siguen necesitando permiso explícito. Aviso: «Para enviarle promociones, esta persona tiene que aceptar recibirlas.» y, solo si existe una plantilla de utilidad aprobada para pedirlo, el botón «Pedirle que acepte» | WHATSAPP-2 (m-24848535) | Criterios actualizados; sigue lista |
+| 5 | «Reintentar» | Solo si el fallo es pasajero (sin conexión, Instagram caído): «Tu respuesta no salió: Instagram no respondió.» + «Reintentar». Si borraron el comentario: «Borraron ese comentario. Ya no se puede responder.», sin reintentar (textos revisados por UX) | ATENDER-9 (m-24849130) | Reescrita → Todo (ola 2) |
+| 6 | Nombre de «Señales» | Pasa a llamarse **«Oportunidades»** en menú, `h1` y pestaña (N1), sigue con «Pronto» | RESULTADOS-6 (m-24849134), NAV-1 (m-24842957) | Desbloqueada → Todo |
+| 7a | Textos de fallo al responder | Rechazada: «Tu respuesta no salió. Respóndela en Instagram.»; resultado desconocido: «No sabemos si salió. Revísalo en Instagram.» Se aplican directamente en el PR #243 (ATENDER-3, m-24842989) | ATENDER-3 (m-24842989), ATENDER-9 (m-24849130) | ATENDER-8 (m-24842988) no citaba los textos viejos: sin cambios |
+| 7b | Aviso de menciones nuevas (QUA-152) | «Llegaron menciones nuevas.» con el botón «Verlas» | RESULTADOS-2 (m-24842999) | Comentario en el ticket; **seguimiento**: el aviso no existe aún en `main` (PR #246 lo dejó fuera), el texto aplica cuando se construya QUA-152 |
 
 ## 3. Lista de historias
 
@@ -56,13 +73,15 @@ Vitrina, en palabras del fundador: «vitrina se elimina por completo, no tiene r
 | [m-24842962](https://project.larksuite.com/5h2wsx/issue/detail/24842962) | `NAV-4` | Navegación: Inicio en `/` con «Hoy tienes», «Para tu primera publicación» y «Así te fue» | P1 | L | reflex-ui-engineer + backend-engineer | — |
 | [m-24842963](https://project.larksuite.com/5h2wsx/issue/detail/24842963) | `NAV-6` | Navegación: contadores de pendientes en el menú y en la pestaña del navegador (N11) | P1 | M | reflex-ui-engineer + backend-engineer | — |
 | [m-24842964](https://project.larksuite.com/5h2wsx/issue/detail/24842964) | `NAV-7` | Navegación: barra inferior en el celular con Inicio, Por responder, Crear y Tu semana | P2 | M | reflex-ui-engineer | — |
+| [m-24849129](https://project.larksuite.com/5h2wsx/issue/detail/24849129) | `NAV-11` | Textos del servidor: errores y etiquetas que llegan al dueño en inglés o con nombres internos | P1 | S | backend-engineer | — |
 | [m-24842965](https://project.larksuite.com/5h2wsx/issue/detail/24842965) | `MARCA-1` | Tu marca: al terminar, «Tu marca está lista» y el botón «Crear mi primera publicación» | P0 | S | reflex-ui-engineer | — |
 | [m-24842966](https://project.larksuite.com/5h2wsx/issue/detail/24842966) | `MARCA-2` | Tu marca: textos del acceso y del asistente en palabras del dueño (sin Brand Kit, brandboard, insights) | P0 | S | reflex-ui-engineer | — |
 | [m-24842967](https://project.larksuite.com/5h2wsx/issue/detail/24842967) | `MARCA-3` | Acceso: crear la cuenta con cuatro campos con etiqueta y el país en lugar de zona horaria y moneda | P1 | M | reflex-ui-engineer | — |
-| borrador (sin ticket) | `MARCA-4` | Tu marca: lo mínimo en 5 pasos y el resto sin bloquear la app | P1 | L | reflex-ui-engineer | revisión |
-| [m-24842968](https://project.larksuite.com/5h2wsx/issue/detail/24842968) | `MARCA-5` | Acceso: el visitante sin invitación sabe antes de empezar que la necesita | P1 | S | reflex-ui-engineer | — |
+| [m-24848529](https://project.larksuite.com/5h2wsx/issue/detail/24848529) | `MARCA-4` | Tu marca: lo mínimo en 5 pasos y el resto sin bloquear la app | P1 | L | reflex-ui-engineer + creative-engineer | — |
+| [m-24842968](https://project.larksuite.com/5h2wsx/issue/detail/24842968) | `MARCA-5` | Acceso: el visitante sin invitación sabe antes de empezar que la necesita | P1 | M | reflex-ui-engineer + backend-engineer | — |
 | [m-24842969](https://project.larksuite.com/5h2wsx/issue/detail/24842969) | `MARCA-6` | Tus redes: saber de un vistazo si mi Instagram funciona, qué puedo hacer y qué sigue al conectarlo | P1 | M | reflex-ui-engineer | — |
 | [m-24842970](https://project.larksuite.com/5h2wsx/issue/detail/24842970) | `MARCA-7` | Tu marca: «Editar mi marca» abre en el resumen de mi marca, no en el ranking de referentes | P2 | M | reflex-ui-engineer | — |
+| [m-24849135](https://project.larksuite.com/5h2wsx/issue/detail/24849135) | `MARCA-8` | Tu marca: cambiar «¿Eres influencer o una marca?» y «rubro» por palabras más usadas | P2 | S | reflex-ui-engineer | — |
 | [m-24842971](https://project.larksuite.com/5h2wsx/issue/detail/24842971) | `PRODUCTOS-6` | Tus productos: textos y errores en palabras del dueño | P0 | S | reflex-ui-engineer | — |
 | [m-24842972](https://project.larksuite.com/5h2wsx/issue/detail/24842972) | `PRODUCTOS-1` | Tus productos: «Crear publicación con este producto» abre Crear con el producto ya elegido | P1 | M | reflex-ui-engineer | — |
 | [m-24842973](https://project.larksuite.com/5h2wsx/issue/detail/24842973) | `PRODUCTOS-2` | Tus productos: volver a mi publicación con el producto que agregué (N4) | P2 | M | reflex-ui-engineer | — |
@@ -71,10 +90,11 @@ Vitrina, en palabras del fundador: «vitrina se elimina por completo, no tiene r
 | [m-24842977](https://project.larksuite.com/5h2wsx/issue/detail/24842977) | `PRODUCTOS-5` | Tus productos: marcar la foto principal y quitar fotos sin equivocarme | P2 | S | reflex-ui-engineer | — |
 | [m-24842978](https://project.larksuite.com/5h2wsx/issue/detail/24842978) | `CREAR-1` | Crear: al aprobar, «Aprobada. Todavía no se publica.» con el botón «Elegir día y hora» | P0 | S | reflex-ui-engineer | — |
 | [m-24842979](https://project.larksuite.com/5h2wsx/issue/detail/24842979) | `CREAR-4` | Crear: todo dice «publicación» y habla como el dueño (sin POST, caption, CTA, HITL, Brand Kit ni proveedores) | P0 | M | reflex-ui-engineer | — |
-| borrador (sin ticket) | `CREAR-2` | Crear: una publicación en cuatro pasos cortos, lo opcional detrás de «Más opciones» | P1 | L | reflex-ui-engineer | revisión |
+| [m-24848530](https://project.larksuite.com/5h2wsx/issue/detail/24848530) | `CREAR-2` | Crear: una publicación en cuatro pasos cortos, lo opcional detrás de «Más opciones» | P1 | L | reflex-ui-engineer (revisa creative-engineer) | — |
 | [m-24842980](https://project.larksuite.com/5h2wsx/issue/detail/24842980) | `CREAR-6` | Crear: en el celular ver todos los tipos con su explicación y escribir los datos clave sin comas | P1 | S | reflex-ui-engineer | — |
 | [m-24842981](https://project.larksuite.com/5h2wsx/issue/detail/24842981) | `CREAR-3` | Crear: en Por aprobar, estados en texto y un solo botón claro por publicación | P1 | M | reflex-ui-engineer | — |
-| borrador (sin ticket) | `CREAR-5` | Crear: el dueño ve sus creaciones del mes («Te quedan 18 de 30 este mes»), nunca dinero | P2 | M | reflex-ui-engineer + creative-engineer | revisión |
+| [m-24848531](https://project.larksuite.com/5h2wsx/issue/detail/24848531) | `CREAR-5` | Crear: el dueño ve sus creaciones del mes («Te quedan 18 de 30 este mes»), nunca dinero | P2 | M | reflex-ui-engineer + creative-engineer + data-scientist-fde | — (medida 2026-10-23, §2b-3b) |
+| [m-24849133](https://project.larksuite.com/5h2wsx/issue/detail/24849133) | `CREAR-7` | Crear: los títulos «Hashtags» pasan a «Etiquetas» | P2 | S | reflex-ui-engineer | — |
 | [m-24842982](https://project.larksuite.com/5h2wsx/issue/detail/24842982) | `PUBLICAR-1` | Tu semana: en el celular, «Tienes {n} publicaciones aprobadas esperando día y hora» con su botón | P0 | S | reflex-ui-engineer | — |
 | [m-24842983](https://project.larksuite.com/5h2wsx/issue/detail/24842983) | `PUBLICAR-5` | Tu semana y Publicar ahora: textos y errores en español sencillo (sin POST, caption, Stories, Cold/Hot, tenant, R2) | P0 | S | reflex-ui-engineer | — |
 | [m-24842984](https://project.larksuite.com/5h2wsx/issue/detail/24842984) | `PUBLICAR-2` | Tu semana: aprobar o descartar una publicación desde su ficha | P1 | M | reflex-ui-engineer | — |
@@ -83,16 +103,20 @@ Vitrina, en palabras del fundador: «vitrina se elimina por completo, no tiene r
 | [m-24842987](https://project.larksuite.com/5h2wsx/issue/detail/24842987) | `PUBLICAR-6` | Tu semana: volver siempre a mi semana y usarla con el pulgar | P2 | M | reflex-ui-engineer | — |
 | [m-24842988](https://project.larksuite.com/5h2wsx/issue/detail/24842988) | `ATENDER-8` | Atender: comentarios, conversaciones e interesados en palabras del dueño, sin números internos | P0 | S | reflex-ui-engineer | — |
 | [m-24842989](https://project.larksuite.com/5h2wsx/issue/detail/24842989) | `ATENDER-3` | Comentarios: primero las respuestas listas para aprobar; configurar qué revisar, detrás de «Más opciones» | P0 | M | reflex-ui-engineer | — |
-| borrador (sin ticket) | `ATENDER-4` | Comentarios: responder en público cualquier comentario, también preguntas y quejas | P0 | M | backend-engineer + reflex-ui-engineer | revisión |
-| borrador (sin ticket) | `ATENDER-5` | Comentarios: buscar, ordenar y preparar respuestas solos, sin que el dueño tenga la pantalla abierta | P0 | L | backend-engineer + reflex-ui-engineer | revisión |
+| [m-24848532](https://project.larksuite.com/5h2wsx/issue/detail/24848532) | `ATENDER-4a` | Comentarios: medir la clasificación y los borradores de respuesta antes de responder a todos | P0 | M | data-scientist-fde | — |
+| [m-24848533](https://project.larksuite.com/5h2wsx/issue/detail/24848533) | `ATENDER-4b` | Comentarios: responder en público cualquier comentario, también preguntas y quejas | P0 | M | backend-engineer + reflex-ui-engineer | — (QUA-22 enmendada, §2b-1) |
+| [m-24848534](https://project.larksuite.com/5h2wsx/issue/detail/24848534) | `ATENDER-5` | Comentarios: buscar, ordenar y preparar respuestas solos, sin que el dueño tenga la pantalla abierta | P0 | L | backend-engineer + reflex-ui-engineer | «No por ahora» (fundador, 2026-10-23); parking-lot |
 | [m-24842990](https://project.larksuite.com/5h2wsx/issue/detail/24842990) | `ATENDER-1` | Atender: un solo «Por responder» con los pendientes de cada canal y pestañas con su dirección | P1 | L | reflex-ui-engineer + backend-engineer | — |
 | [m-24842991](https://project.larksuite.com/5h2wsx/issue/detail/24842991) | `ATENDER-6` | Quieren comprar: responder en tres pasos cortos y pasar a la siguiente consulta | P1 | M | reflex-ui-engineer | — |
 | [m-24842992](https://project.larksuite.com/5h2wsx/issue/detail/24842992) | `ATENDER-7` | Clientes interesados: escribirles por WhatsApp desde la lista y saber a quién ya contacté | P2 | M | reflex-ui-engineer + backend-engineer | — |
+| [m-24849130](https://project.larksuite.com/5h2wsx/issue/detail/24849130) | `ATENDER-9` | Comentarios: «Reintentar» una respuesta que no salió por un fallo pasajero | P2 | M | backend-engineer + reflex-ui-engineer | — |
+| [m-24849131](https://project.larksuite.com/5h2wsx/issue/detail/24849131) | `ATENDER-10` | Quieren comprar: la tarjeta dice si el mensaje privado salió o falló | P1 | M | reflex-ui-engineer + backend-engineer | — |
+| [m-24849132](https://project.larksuite.com/5h2wsx/issue/detail/24849132) | `ATENDER-11` | Comentarios: un solo aviso de error al ordenar los comentarios | P2 | S | reflex-ui-engineer | — |
 | [m-24842993](https://project.larksuite.com/5h2wsx/issue/detail/24842993) | `WHATSAPP-1` | WhatsApp: con el chat vencido, decir qué pasa y llevar a los mensajes aprobados | P0 | S | reflex-ui-engineer | — |
 | [m-24842994](https://project.larksuite.com/5h2wsx/issue/detail/24842994) | `WHATSAPP-8` | WhatsApp: textos sin opt-in, leads, Marketing, Lanzar ni Revocar; distintivos de los chats explicados | P0 | S | reflex-ui-engineer | — |
 | [m-24842995](https://project.larksuite.com/5h2wsx/issue/detail/24842995) | `WHATSAPP-3` | WhatsApp: publicar el menú automático con un solo botón y saber qué sigue | P0 | M | reflex-ui-engineer | — |
-| borrador (sin ticket) | `WHATSAPP-2` | WhatsApp: enviar un mensaje aprobado desde el chat vencido | P0 | M | backend-engineer + reflex-ui-engineer | revisión |
-| borrador (sin ticket) | `WHATSAPP-4` | WhatsApp: armar el menú automático en cuatro pasos, sin identificadores técnicos | P0 | L | reflex-ui-engineer | revisión |
+| [m-24848535](https://project.larksuite.com/5h2wsx/issue/detail/24848535) | `WHATSAPP-2` | WhatsApp: enviar un mensaje aprobado desde el chat vencido | P0 | M | backend-engineer + reflex-ui-engineer | — |
+| [m-24848536](https://project.larksuite.com/5h2wsx/issue/detail/24848536) | `WHATSAPP-4` | WhatsApp: armar el menú automático en cuatro pasos, sin identificadores técnicos | P0 | L | reflex-ui-engineer + backend-engineer | — |
 | [m-24842996](https://project.larksuite.com/5h2wsx/issue/detail/24842996) | `WHATSAPP-5` | WhatsApp: enviar una promoción en tres pasos (mensaje, a quién, revisar) | P1 | M | reflex-ui-engineer | — |
 | [m-24842997](https://project.larksuite.com/5h2wsx/issue/detail/24842997) | `WHATSAPP-6` | WhatsApp: crear un mensaje de promoción guiado para que lo aprueben a la primera | P1 | M | reflex-ui-engineer | — |
 | [m-24842998](https://project.larksuite.com/5h2wsx/issue/detail/24842998) | `WHATSAPP-7` | WhatsApp: cuatro pestañas con nombres de tareas, «Tu número» en una línea y tablas como tarjetas en el celular | P1 | L | reflex-ui-engineer | — |
@@ -101,24 +125,29 @@ Vitrina, en palabras del fundador: «vitrina se elimina por completo, no tiene r
 | [m-24843001](https://project.larksuite.com/5h2wsx/issue/detail/24843001) | `RESULTADOS-3` | Tu página web: cuántas personas la visitaron y qué arreglar primero, sin entender de analítica | P1 | L | reflex-ui-engineer | — |
 | [m-24843002](https://project.larksuite.com/5h2wsx/issue/detail/24843002) | `RESULTADOS-4` | Tu página web: el equipo conecta Clarity desde Configuración y el dueño nunca ve claves | P1 | M | reflex-ui-engineer | — |
 | [m-24843003](https://project.larksuite.com/5h2wsx/issue/detail/24843003) | `RESULTADOS-5` | Resultados: un solo lugar con Redes, WhatsApp, Tu página web y «Quién habla de ti» | P2 | L | reflex-ui-engineer + backend-engineer | — |
+| [m-24849134](https://project.larksuite.com/5h2wsx/issue/detail/24849134) | `RESULTADOS-6` | Resultados: «Señales» pasa a llamarse «Oportunidades» en menú, título y pestaña | P2 | S | reflex-ui-engineer | — |
 
-## 4. Borradores que esperan revisión antes de cargarse
+## 4. Revisiones de arquitecto y data scientist (2026-10-23)
 
-Regla del PO: lo que necesita revisión de factibilidad (`principal-architect`) o de costo y medición
-(`data-scientist-fde`) no se carga en Meegle hasta pasar esa revisión. Siete historias quedan como
-borrador (texto completo en §8); el hilo principal corre la revisión y el PO carga las que sobrevivan.
+Las siete historias que esperaban revisión **pasaron con cambios**; los cambios están aplicados en
+cada ticket (§8) y ya no queda ningún borrador. ATENDER-4 se separó en ATENDER-4a (m-24848532) (medición) y
+ATENDER-4b (m-24848533) (producto). La revisión también corrigió MARCA-5 (m-24842968): no existe captura de interés, así que
+se escribe en el módulo de leads de un tenant de la casa (`QUALIFY_INTEREST_TENANT_ID`).
 
-| Borrador | Prioridad | Revisión que necesita |
+| Historia | Resultado | Estado |
 |---|---|---|
-| MARCA-4 — marca mínima en 5 pasos | P1 · L | Arquitecto: desbloqueo de `brand_kit_complete` (`auth_state.py:282`) y referentes en segundo plano. Decisión 6 ya tomada (negocio y rubro, logo, colores, cómo hablas, redes) |
-| CREAR-2 — crear en 4 pasos | P1 · L | Arquitecto: reordenar `generator_views` sin romper avatar/video |
-| CREAR-5 — creaciones del mes, nunca dinero | P2 · M | Datasci: cuánto vale una «creación» por tipo de pieza y el tope mensual. Decisión 8 ya tomada |
-| ATENDER-4 — responder en público cualquier comentario | P0 · M | Datasci: el prompt de respuestas para neutros y negativos se mide antes (`qualify-measure`); arquitecto: permiso de comentarios ya concedido en App Review |
-| ATENDER-5 — comentarios ordenados y preparados en segundo plano | P0 · L | Arquitecto: worker nuevo o extendido, idempotencia, presupuesto de llamadas a Meta; datasci: costo de clasificar cada comentario; el fundador aprueba el proceso nuevo en producción con el resultado |
-| WHATSAPP-2 — enviar mensaje aprobado desde el chat vencido | P0 · M | Arquitecto: envío de una plantilla a un contacto (hoy solo en campañas), idempotencia, costo |
-| WHATSAPP-4 — menú automático en 4 pasos | P0 · L | Arquitecto: identificadores generados sin romper menús publicados |
+| MARCA-4 (m-24848529) — marca mínima en 5 pasos | Arquitecto: «Tus redes» primero con «No tengo redes»; `persist_brand_kit(adopt_voice=True)` tras el paso 5; progreso por nombre de paso; sin ADR | Lista |
+| CREAR-2 (m-24848530) — crear en 4 pasos | Arquitecto: lo obligatorio de cada tipo va en el paso 1; criterio «escribir el tema y Siguiente hasta Crear» | Lista |
+| WHATSAPP-2 (m-24848535) — mensaje aprobado desde el chat vencido | Arquitecto: outbox `template_reply` + migración; v1 solo con permiso activo; faltan tarifas de +58 y +598 | Lista (v1) |
+| WHATSAPP-4 (m-24848536) — menú automático en 4 pasos | Arquitecto: identificadores slug + sufijo, nunca se regeneran; depende de WHATSAPP-3 (m-24842995) | Lista |
+| ATENDER-4a (m-24848532) — medir clasificación y borradores | Data scientist: ~400 comentarios, κ ≥ 0,7, umbrales por clase, Haiku 5.5 en lugar de robertuito, ≈ USD 1,5 | Lista |
+| ATENDER-4b (m-24848533) — responder en público cualquier comentario | Arquitecto: `instagram_manage_comments` no concedido en App Review (riesgo para clientes nuevos); la regla de solo positivos es deliberada (QUA-22) | Lista (QUA-22 enmendada, §2b-1); depende de ATENDER-4a (m-24848532) |
+| ATENDER-5 (m-24848534) — comentarios preparados en segundo plano | Arquitecto: sin proceso nuevo (webhook + `conversations-worker`), tope diario 500; depende de QUA-147 y ATENDER-4a (m-24848532) | **No por ahora** (fundador, 2026-10-23); aparcada |
+| CREAR-5 (m-24848531) — creaciones del mes | Data scientist: 1 creación = USD 0,15; pesos versionados; 30 por mes; devolución si falla | Lista: presentador de 30 s para el dueño con aviso previo (§2b-3a); medición hecha, solo el peso de imagen confirmado (§2b-3b) |
 
 ## 5. Orden sugerido, por olas
+
+**Estado de la ola 1 (2026-10-23):** en PRs #235–#249; todos sus tickets en RESOLVED salvo PUBLICAR-5 (m-24842983) y WHATSAPP-8 (m-24842994), que esperan merges y suman los textos del seguimiento. La revisión de la ola dejó siete historias nuevas: NAV-11 (m-24849129), ATENDER-9 (m-24849130), ATENDER-10 (m-24849131), ATENDER-11 (m-24849132), CREAR-7 (m-24849133), RESULTADOS-6 (m-24849134) y MARCA-8 (m-24849135).
 
 **Ola 1 — arreglos rápidos que destraban (P0, listos, sin decisión).** Empezar por NAV-10 (m-24848515)
 (eliminar Vitrina, decisión del fundador 2026-10-23) y enseguida NAV-9 (m-24842958), en ese orden y no en
@@ -139,37 +168,38 @@ paralelo, una rama por dominio.
 | 3 | WHATSAPP-3 (m-24842995) — publicar el menú con un botón | M | `whatsapp_tab_menu.py` |
 | 4 | Textos por dominio: MARCA-2 (m-24842966), PRODUCTOS-6 (m-24842971), CREAR-4 (m-24842979), PUBLICAR-5 (m-24842983), ATENDER-8 (m-24842988), WHATSAPP-8 (m-24842994), RESULTADOS-2 (m-24842999) | S–M | los de cada dominio |
 
-**Ola 2 — guía base, menú nuevo y hubs (P1, listos; decisiones 1-3, 7, 9-11 tomadas).**
+**Ola 2 — guía base, menú nuevo, hubs y lo que pasó la revisión (listos).**
 Primero la base de direcciones y el menú, en este orden: NAV-2 (m-24842960) (`?tab=`) → NAV-1 (m-24842957) (menú del mapa §3,
-Creadores y Señales con «Pronto»; después de NAV-10 (m-24848515) y NAV-9 (m-24842958)). Luego los hubs, en paralelo:
-NAV-4 (m-24842962) (Inicio en `/`, ui + backend) y ATENDER-1 (m-24842990) (Por responder con WhatsApp enlazado, ui + backend);
-mientras no existan, las entradas de NAV-1 (m-24842957) apuntan a la pantalla actual. Junto con ellos, sin
-dependencia entre sí: NAV-3 (m-24842961), NAV-6 (m-24842963), MARCA-3 (m-24842967) (USD por defecto en Venezuela), MARCA-5 (m-24842968) (opción b),
-MARCA-6 (m-24842969); PRODUCTOS-1 (m-24842972), PRODUCTOS-3 (m-24842974), PRODUCTOS-4 (m-24842976); CREAR-3 (m-24842981), CREAR-6 (m-24842980); PUBLICAR-2 (m-24842984), PUBLICAR-3 (m-24842985),
-PUBLICAR-4 (m-24842986); ATENDER-6 (m-24842991); WHATSAPP-5 (m-24842996), WHATSAPP-6 (m-24842997), WHATSAPP-7 (m-24842998); RESULTADOS-1 (m-24843000), RESULTADOS-4 (m-24843002) →
-RESULTADOS-3 (m-24843001). Los borradores P0 de §4 que pasen la revisión (ATENDER-4, ATENDER-5, WHATSAPP-2,
-WHATSAPP-4) suben al frente de esta ola; MARCA-4 y CREAR-2 entran aquí si pasan.
+Creadores y Oportunidades (antes Señales) con «Pronto»; después de NAV-10 (m-24848515) y NAV-9 (m-24842958)). Luego los hubs, en paralelo:
+NAV-4 (m-24842962) (Inicio en `/`, ui + backend) y ATENDER-1 (m-24842990) (Por responder con WhatsApp enlazado, ui + backend).
+Al frente, los P0 que pasaron la revisión: WHATSAPP-2 (m-24848535) (después de WHATSAPP-1 (m-24842993)), WHATSAPP-4 (m-24848536) (después de
+WHATSAPP-3 (m-24842995)) y ATENDER-4a (m-24848532) (data scientist, puede empezar ya), y tras ella ATENDER-4b (m-24848533) (desbloqueada, §2b-1). Con ellos: MARCA-4 (m-24848529) y CREAR-2 (m-24848530) (L).
+Desbloqueadas por la segunda ronda (§2b): ATENDER-9 (m-24849130) («Reintentar» solo en fallos pasajeros, tras ATENDER-3 (m-24842989)) y RESULTADOS-6 (m-24849134) («Oportunidades», tras NAV-1 (m-24842957)).
+Sin dependencia entre sí: NAV-11 (m-24849129) (textos del servidor, backend), ATENDER-10 (m-24849131) (resultado del mensaje privado), NAV-3 (m-24842961), NAV-6 (m-24842963), MARCA-3 (m-24842967), MARCA-5 (m-24842968) (ui + backend), MARCA-6 (m-24842969); PRODUCTOS-1 (m-24842972),
+PRODUCTOS-3 (m-24842974), PRODUCTOS-4 (m-24842976); CREAR-3 (m-24842981), CREAR-6 (m-24842980); PUBLICAR-2 (m-24842984), PUBLICAR-3 (m-24842985), PUBLICAR-4 (m-24842986); ATENDER-6 (m-24842991);
+WHATSAPP-5 (m-24842996), WHATSAPP-6 (m-24842997), WHATSAPP-7 (m-24842998); RESULTADOS-1 (m-24843000), RESULTADOS-4 (m-24843002) → RESULTADOS-3 (m-24843001).
 
 **Ola 3 — lo que depende de la ola 2 (P2).** RESULTADOS-5 (m-24843003) (Resultados con «Quién habla de ti»,
 después de NAV-4 (m-24842962), RESULTADOS-1 (m-24843000) y RESULTADOS-3 (m-24843001)); NAV-7 (m-24842964) (barra inferior: primero el PR que documenta
-el patrón en `docs/design-system.md`, después el código); CREAR-5 si el data-scientist define la
-«creación».
+el patrón en `docs/design-system.md`, después el código). CREAR-5 (m-24848531), lista desde la medición del 2026-10-23 (P2).
+ATENDER-5 (m-24848534) queda fuera de las olas: «No por ahora» (fundador, 2026-10-23).
 
-**Ola 4 — pulido (P2).** PRODUCTOS-2 (m-24842973), PRODUCTOS-5 (m-24842977), PUBLICAR-6 (m-24842987), ATENDER-7 (m-24842992), MARCA-7 (m-24842970).
+**Ola 4 — pulido (P2).** PRODUCTOS-2 (m-24842973), PRODUCTOS-5 (m-24842977), PUBLICAR-6 (m-24842987), ATENDER-7 (m-24842992), MARCA-7 (m-24842970), ATENDER-11 (m-24849132), CREAR-7 (m-24849133) y MARCA-8 (m-24849135) (esta última solo si la validación con dueños la confirma).
 
 El celular (N12) no es una historia aparte: cada historia que toca una pantalla lo trae en sus
 criterios.
 
-## 6. Preguntas abiertas
+## 6. Preguntas abiertas para el fundador
 
-Las once decisiones están tomadas (§2). Queda:
+Las preguntas 1-6 de la v4 están **decididas** (§2b, 2026-10-23). Quedan:
 
-1. **Revisiones de los 7 borradores** (§4): arquitecto para MARCA-4, CREAR-2, ATENDER-4, ATENDER-5,
-   WHATSAPP-2 y WHATSAPP-4; data-scientist para CREAR-5, ATENDER-4 y ATENDER-5.
-2. **«Leads» en el glosario**: `docs/design-system.md` §7.2 todavía dice «lead» y `qualify-ux` §3 lo
-   prohíbe. NAV-9 (m-24842958) y ATENDER-8 (m-24842988) usan «Clientes interesados» («Interesados» en el menú); corregir el
-   glosario en el PR de NAV-9 (m-24842958).
-3. **¿Clarity la usa algún cliente hoy?** Validar con el equipo; por eso RESULTADOS-3 (m-24843001) es P1 y no P0.
+1. ~~Peso del presentador de 30 s~~ — **cerrada (2026-10-23):** el «6» era una ilustración, no una cifra del
+   fundador. Con los pesos v1, 30 s = 25 y 15 s = 13; con saldo menor que 25 se ofrece la de 15 s (CREAR-5 (m-24848531)).
+2. **Fila ADR 21c** (enmienda de QUA-22): la redacta `principal-architect` en `docs/arquitectura.md`; el PO no
+   escribe ADRs.
+3. **«Leads» en el glosario**: `docs/design-system.md` §7.2 todavía dice «lead»; se corrige en el PR de
+   NAV-9 (m-24842958).
+4. **¿Clarity la usa algún cliente hoy?** Por eso RESULTADOS-3 (m-24843001) es P1 y no P0.
 
 ## 7. Fuera de esta épica (aparcado con motivo)
 
@@ -193,8 +223,8 @@ Las once decisiones están tomadas (§2). Queda:
 - Lista para empezar.
 
 Criterios de aceptación:
-- El menú del cliente tiene las 12 entradas de la guía §3, en su orden, más Creadores y Señales; ninguna demo ni herramienta del equipo (N10).
-- Creadores y Señales muestran «Pronto» como texto visible; tocarlas nunca lleva a una pantalla vacía (N10).
+- El menú del cliente tiene las 12 entradas de la guía §3, en su orden, más Creadores y Oportunidades (antes Señales, §2b-6); ninguna demo ni herramienta del equipo (N10).
+- Creadores y Oportunidades muestran «Pronto» como texto visible; tocarlas nunca lleva a una pantalla vacía (N10).
 - Cada entrada del menú, el `h1` de su `page_header` y el título de pestaña `Qualify · <nombre>` son idénticos (N1); una prueba offline lo comprueba recorriendo `NAV_ITEMS`.
 - Abrir `/inbox`, `/conversations`, `/leads`, `/clarity` y `/stories` lleva a su nuevo lugar sin error; ningún enlace guardado se rompe.
 - Las zonas se llaman «Atiende» y «Publica» y usan los mismos tintes `listen` / `publish` de hoy.
@@ -216,7 +246,7 @@ Criterios de aceptación:
 - `grep -ri vitrina Qualify/ assets/` no devuelve nada.
 - `docs/design-system.md` ya no muestra Vitrina en el diagrama ni en el pie del menú, ni la excepción de voseo; `docs/plan-migracion-liquid-glass.md` quita `vitrina_page.py` del lote A.
 
-Fuera de alcance: Creadores y Señales: se quedan con «Pronto» (decisión 4, NAV-1 (m-24842957)). Cualquier otro cambio en el menú (NAV-9 (m-24842958), NAV-1 (m-24842957)).
+Fuera de alcance: Creadores y Oportunidades (antes Señales): se quedan con «Pronto» (decisión 4, NAV-1 (m-24842957)). Cualquier otro cambio en el menú (NAV-9 (m-24842958), NAV-1 (m-24842957)).
 
 Evidencia: Decisión del fundador, 2026-10-23: «vitrina se elimina por completo, no tiene relación con nuestro producto por ahora»; `docs/ux-guia-navegacion.md §3, §7`; `docs/ux-auditoria-2026-10.md T11`; `docs/ux-auditoria-2026-10/m7-escucha-medicion.md hallazgo 6`
 
@@ -333,6 +363,22 @@ Fuera de alcance: Cambiar el cajón actual de escritorio.
 
 Evidencia: `docs/ux-guia-navegacion.md §6; §7 decisión 5`; `docs/ux-auditoria-2026-10.md T10`
 
+### [BACKEND/copy] Textos que nacen en el servidor (transversal)
+
+#### NAV-11 · [m-24849129](https://project.larksuite.com/5h2wsx/issue/detail/24849129) — Textos del servidor: errores y etiquetas que llegan al dueño en inglés o con nombres internos
+
+*Como dueño, quiero que los mensajes que vienen del sistema también estén en mis palabras, para no encontrarme frases en inglés o técnicas en medio de una pantalla ya traducida.*
+
+**P1 · S · backend-engineer**
+- Lista para empezar.
+
+Criterios de aceptación:
+- Las tres cadenas quedan exactamente como en la propuesta y ninguna llega en inglés a la pantalla.
+- Un barrido de `CatalogError(`, `raise …Error("` y etiquetas de campos en `packages/api` lista en el PR cualquier otra cadena que llegue al dueño y la corrige.
+- Pruebas offline actualizadas.
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23); qualify-copy-es; MARCA-2 (m-24842966) — etiquetas aprobadas
+
 ### [MARCA] Acceso, tu marca y tus redes
 
 #### MARCA-1 · [m-24842965](https://project.larksuite.com/5h2wsx/issue/detail/24842965) — Tu marca: al terminar, «Tu marca está lista» y el botón «Crear mi primera publicación»
@@ -347,7 +393,7 @@ Criterios de aceptación:
 - Ya no se aterriza en Menciones al terminar; el texto «Mejorar tu perfil» desaparece.
 - Botones de la tarjeta con área táctil ≥ 44 px (N12).
 
-Fuera de alcance: Acortar el asistente (MARCA-4). Inicio (NAV-4 (m-24842962)): cuando exista, «Seguir después» lleva a Inicio.
+Fuera de alcance: Acortar el asistente (MARCA-4 (m-24848529)). Inicio (NAV-4 (m-24842962)): cuando exista, «Seguir después» lleva a Inicio.
 
 Evidencia: `docs/ux-auditoria-2026-10/m1-acceso-marca-conexiones.md hallazgo 2, historia B3`; `docs/ux-auditoria-2026-10/m7 hallazgo 2`; `docs/ux-auditoria-2026-10.md §3, §4.1`
 
@@ -379,18 +425,20 @@ Criterios de aceptación:
 
 Evidencia: `docs/ux-auditoria-2026-10/m1 hallazgos 7-9, historia A1`
 
-#### MARCA-4 · borrador (sin ticket) — Tu marca: lo mínimo en 5 pasos y el resto sin bloquear la app
+#### MARCA-4 · [m-24848529](https://project.larksuite.com/5h2wsx/issue/detail/24848529) — Tu marca: lo mínimo en 5 pasos y el resto sin bloquear la app
 
 *Como dueño, quiero dejar lista mi marca en 5 pasos cortos, para poder hacer mi primera publicación hoy.*
 
-**P1 · L · reflex-ui-engineer**
-- ⚑ Necesita: Revisión de factibilidad del arquitecto (desbloqueo de `brand_kit_complete` en `auth_state.py` y referentes en segundo plano). La decisión 6 ya está tomada.
+**P1 · L · reflex-ui-engineer + creative-engineer**
+- Revisión: Arquitecto (2026-10-23): pasa con cambios; no necesita ADR.
+- Lista para empezar.
 
 Criterios de aceptación:
-- El camino obligatorio tiene como máximo 5 pasos y «Paso N de M» cuenta solo los que ve ese dueño (N6).
-- Terminado el paso ⑤, todas las pantallas de la app se abren; lo opcional aparece en «Mejora tu marca».
-- Cada paso tiene «Seguir después», que guarda y no pierde datos; «Atrás» conserva lo escrito.
-- No queda ninguna pantalla de espera sin control (referentes en segundo plano).
+- El camino obligatorio tiene exactamente los 5 pasos con nombre y «Paso N de 5» (N6); «No tengo redes» lleva al paso 2 sin prellenar.
+- Después del paso 5, `/create` no muestra ningún aviso de marca incompleta y todas las pantallas se abren.
+- Un borrador guardado a mitad del flujo viejo (manual o conexión) se retoma en el paso nuevo equivalente sin perder datos.
+- Cada paso tiene «Seguir después» y «Atrás» que no pierden lo escrito; no queda ninguna pantalla de espera sin control.
+- Pruebas offline del mapeo de pasos y de `readiness` con los cinco datos mínimos.
 
 Fuera de alcance: Cambiar los modelos o prompts que leen el perfil.
 
@@ -400,14 +448,15 @@ Evidencia: `docs/ux-auditoria-2026-10/m1 hallazgo 3, historia B1`; `docs/ux-guia
 
 *Como visitante sin invitación, quiero saber antes de armar mi marca que necesito una invitación, para no perder 15 minutos de trabajo.*
 
-**P1 · S · reflex-ui-engineer**
+**P1 · M · reflex-ui-engineer + backend-engineer**
+- Revisión: Arquitecto (2026-10-23): la suposición de una captura de interés existente era falsa.
 - Lista para empezar.
 
 Criterios de aceptación:
 - Antes de empezar se lee el aviso exacto de invitación; ningún recorrido termina en «Qualify es solo por invitación» después de armar la marca.
-- Con código válido el asistente sigue; sin código se piden solo nombre, negocio y WhatsApp, con etiqueta visible.
-- Al enviar se ve «Listo. Te escribimos por WhatsApp cuando tu invitación esté lista.» y no se crea ninguna cuenta.
-- El número de WhatsApp no se muestra en logs ni en tickets.
+- Con código válido el asistente sigue; sin código se piden solo nombre, negocio y WhatsApp, con etiqueta visible y la casilla «Acepto que me escriban por WhatsApp» obligatoria.
+- Al enviar se ve «Listo. Te escribimos por WhatsApp cuando tu invitación esté lista.», no se crea ninguna cuenta y la entrada aparece en `/leads` del tenant de la casa.
+- El POST rechaza envíos sin consentimiento, con el campo trampa lleno o por encima del límite; el número no se muestra en logs ni en tickets.
 
 Fuera de alcance: Abrir el registro público (sigue siendo solo por invitación).
 
@@ -440,6 +489,19 @@ Criterios de aceptación:
 - Textos del editor: «Tu marca», «Editar mi marca», «Logo», «promesas que no puedes hacer».
 
 Evidencia: `docs/ux-auditoria-2026-10/m1 hallazgo 12`
+
+#### MARCA-8 · [m-24849135](https://project.larksuite.com/5h2wsx/issue/detail/24849135) — Tu marca: cambiar «¿Eres influencer o una marca?» y «rubro» por palabras más usadas
+
+*Como dueño de un local, quiero que el asistente me pregunte con palabras de todos los días, para no dudar qué contestar.*
+
+**P2 · S · reflex-ui-engineer**
+- Lista para empezar.
+
+Criterios de aceptación:
+- Antes del PR, la validación con al menos dos dueños queda anotada en el ticket; si no se confirma, se cierra sin cambios.
+- Si se confirma, ningún texto visible del asistente dice «influencer» ni «rubro».
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23); `docs/perfil-cliente-pyme.md §5 pregunta 4`
 
 ### [PRODUCTOS] Tus productos
 
@@ -561,18 +623,20 @@ Criterios de aceptación:
 
 Evidencia: `docs/ux-auditoria-2026-10/m3 hallazgos 3, 4, 8, 9, 10, 12, historias B1-B3`; `docs/ux-auditoria-2026-10.md T4, T7`
 
-#### CREAR-2 · borrador (sin ticket) — Crear: una publicación en cuatro pasos cortos, lo opcional detrás de «Más opciones»
+#### CREAR-2 · [m-24848530](https://project.larksuite.com/5h2wsx/issue/detail/24848530) — Crear: una publicación en cuatro pasos cortos, lo opcional detrás de «Más opciones»
 
 *Como dueño, quiero crear una publicación en 4 pasos cortos, para terminarla en 2 minutos desde el celular.*
 
-**P1 · L · reflex-ui-engineer**
-- ⚑ Necesita: Revisión de factibilidad del arquitecto (reordenar `generator_views` en `creative_state.py:425-494` sin romper los tipos de avatar/video).
+**P1 · L · reflex-ui-engineer (revisa creative-engineer)**
+- Revisión: Arquitecto (2026-10-23): pasa con cambios.
+- Lista para empezar.
 
 Criterios de aceptación:
-- `/create` muestra «Paso N de 4» con esos cuatro pasos (N6).
-- Datos clave, qué evitar, campaña, formato y presentador quedan en «Más opciones» con valores rellenados.
-- «Atrás» conserva lo escrito; una segunda publicación con valores por defecto se completa con 3 toques de «Siguiente» y «Crear».
-- A 360 px: una columna, sin desplazamiento lateral, botones ≥ 44 px (N12).
+- `/create` muestra «Paso N de 4» con esos cuatro pasos (N6); lo obligatorio de cada tipo está en el paso 1, nunca detrás de «Más opciones».
+- Con el mismo tipo y formato que la vez anterior, basta escribir el tema y tocar «Siguiente» hasta «Crear».
+- Los «Editar» del resumen llevan al paso correcto; «Atrás» conserva lo escrito.
+- Las pastillas de datos clave dicen si cambian la marca o quedan locales.
+- Se actualizan las pruebas de `test_generator_voice_and_copy.py` (línea 289) para el nuevo orden; a 360 px una columna y botones ≥ 44 px.
 
 Fuera de alcance: Cambios de modelos o prompts de generación.
 
@@ -605,21 +669,41 @@ Criterios de aceptación:
 
 Evidencia: `docs/ux-auditoria-2026-10/m3 hallazgos 5 y 12, historia A3`
 
-#### CREAR-5 · borrador (sin ticket) — Crear: el dueño ve sus creaciones del mes («Te quedan 18 de 30 este mes»), nunca dinero
+#### CREAR-5 · [m-24848531](https://project.larksuite.com/5h2wsx/issue/detail/24848531) — Crear: el dueño ve sus creaciones del mes («Te quedan 18 de 30 este mes»), nunca dinero
 
-*Como dueño con presupuesto chico, quiero saber antes de pedir otra versión si me cuesta y cuánto, en mi moneda, para no llevarme sorpresas.*
+*Como dueño con presupuesto chico, quiero saber antes de crear cuántas de mis creaciones del mes usa y cuántas me quedan, para no llevarme sorpresas.*
 
-**P2 · M · reflex-ui-engineer + creative-engineer**
-- ⚑ Necesita: Revisión del data-scientist-fde: definir cuánto vale una «creación» por tipo de pieza y el tope mensual. La decisión del fundador (8) ya está tomada.
+**P2 · M · reflex-ui-engineer + creative-engineer + data-scientist-fde**
+- Decisión del fundador (2026-10-23, §2b-3a): el dueño sí puede crear el presentador de 30 s, con aviso previo de cuántas creaciones usa.
+- Decisión del fundador (2026-10-23, §2b-3b): una sola lectura agregada de producción (conteo de creaciones por negocio y tipo, 60 días; solo conteos) para fijar la asignación mensual (supuesto: 30).
+- Medición hecha el 2026-10-23 ([`creaciones-del-mes-medicion.md`](creaciones-del-mes-medicion.md)): solo 3 días de uso de negocios de prueba y solo imagen con texto. **Solo el peso de la imagen está confirmado** (1; p95 USD 0,068 < 0,15); los demás pesos salen de la tabla v5 sin uso real. La asignación se queda en 30; volver a medir cuando 3 clientes reales tengan 30 días de uso (seguimiento, no bloquea).
+- Lista para empezar.
+- Revisión: Data scientist (2026-10-23): pasa con cambios.
 
 Criterios de aceptación:
-- El dueño nunca ve montos de dinero ni «créditos» sin número; ve «Te quedan {n} de {total} este mes».
-- El costo en dólares solo se muestra al equipo.
-- Cuánto vale una «creación» (por tipo de pieza) lo define y documenta `data-scientist-fde` antes de construir.
+- Cada pedido muestra las creaciones que usa y las que quedan, con los textos exactos; sin saldo suficiente no se genera nada.
+- El presentador de 30 s lo puede crear el dueño; antes de crear se lee «Este video con presentador usa 25 de tus creaciones. Te quedarían {n} este mes.» con el número del peso versionado.
+- Con saldo menor que 25 se ofrece la versión de 15 s (13 creaciones) en lugar de la de 30 s.
+- Una generación fallida o moderada devuelve las creaciones.
+- La asignación y los pesos se guardan con su versión, y cada cobro registra peso, versión de pesos y versión de la tabla de precios (procedencia).
+- El equipo ve el costo real en dólares por pieza y por mes al lado de las creaciones cobradas; el dueño no ve montos.
 
-Fuera de alcance: Cambiar la tabla de precios versionada (`qualify_creative/pricing_data/`).
+Fuera de alcance: Cambiar la tabla de precios versionada (`qualify_creative/pricing_data/`). Leer textos, piezas o datos de clientes finales en producción. Confirmar los pesos que no son de imagen (segunda medición, seguimiento).
 
 Evidencia: `docs/ux-auditoria-2026-10/m3 hallazgo 6, historia C1`
+
+#### CREAR-7 · [m-24849133](https://project.larksuite.com/5h2wsx/issue/detail/24849133) — Crear: los títulos «Hashtags» pasan a «Etiquetas»
+
+*Como dueño, quiero leer «Etiquetas» en lugar de «Hashtags», para entender cada bloque sin palabras en inglés.*
+
+**P2 · S · reflex-ui-engineer**
+- Lista para empezar.
+
+Criterios de aceptación:
+- Ningún título ni aviso visible de `content_generator.py` y `creative_pages.py` dice «Hashtags».
+- Las cadenas quedan exactamente como en la propuesta.
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23); qualify-copy-es
 
 ### [PUBLICAR] Aprobar, programar y publicar
 
@@ -648,6 +732,7 @@ Criterios de aceptación:
 - Ningún texto visible de `planner_*.py`, `publishing_*.py`, `stories_*.py`, `trending_panel.py` contiene POST, Caption, Story/Stories, Cold, Hot, Likes, Ads, vendor, preview, tenant, R2.
 - Las cadenas quedan exactamente como en la propuesta (decisión 11: «reel (video corto)» e «historia»).
 - No se tocan menú ni títulos de pestaña (NAV-9 (m-24842958)) ni los textos de publicación automática (NAV-8 (m-24842959)).
+- Ningún texto visible de `planner_vm.py` dice Feed, Cold, Hot ni evergreen; la confirmación de programar dice día y hora.
 
 Evidencia: `docs/ux-auditoria-2026-10/m4 H3, H4, H8, historia 7`; `docs/ux-auditoria-2026-10.md T7`
 
@@ -737,36 +822,54 @@ Criterios de aceptación:
 
 Evidencia: `docs/ux-auditoria-2026-10/m5 hallazgos 2 y 10, historia 4`; `docs/ux-auditoria-2026-10.md §3`
 
-#### ATENDER-4 · borrador (sin ticket) — Comentarios: responder en público cualquier comentario, también preguntas y quejas
+#### ATENDER-4a · [m-24848532](https://project.larksuite.com/5h2wsx/issue/detail/24848532) — Comentarios: medir la clasificación y los borradores de respuesta antes de responder a todos
 
-*Como dueño, quiero poder contestar en público cualquier comentario, también preguntas y quejas, para que nadie quede ignorado delante de los demás.*
+*Como dueño, quiero que las respuestas que me propone Qualify para cualquier comentario sean correctas y en mi voz, para aprobarlas sin miedo a decir algo falso.*
 
-**P0 · M · backend-engineer + reflex-ui-engineer**
-- ⚑ Necesita: Revisión del data-scientist-fde: el borrador para comentarios neutros y negativos cambia el prompt de respuestas (medir antes, `qualify-measure`).
-- ⚑ Necesita: Revisión del arquitecto: confirmar que responder en público usa el permiso de comentarios ya concedido (App Review).
+**P0 · M · data-scientist-fde**
+- Revisión: Data scientist (2026-10-23): pasa con cambios; se separa en 4a (medición) y 4b (producto).
+- Lista para empezar.
 
 Criterios de aceptación:
-- Cada comentario ofrece «Responder aquí» y «Escribirle en privado».
-- Se prepara respuesta para comentarios positivos, neutros y negativos; en los negativos se exige editar o confirmar «Revísala antes de aprobar».
-- Nada se envía sin el toque del dueño (N13); el comentario respondido pasa a «Respondidos».
-- El cambio de prompt queda medido y documentado según `qualify-measure`; `just ci-test` en verde con pruebas de RLS.
+- Clasificador: precisión por clase ≥ 0,80 y cobertura ≥ 0,70; cobertura de negativos ≥ 0,90; cobertura de «necesita respuesta» ≥ 0,95.
+- Borradores: 0 datos inventados y 0 en tercera persona; ≥ 90 % usables en positivos y neutros, ≥ 80 % en negativos.
+- Las respuestas sobre precios usan el catálogo (`assisted/grounding.py`) o declinan.
+- Cada borrador guarda modelo, versión del prompt y costo; resultados documentados el mismo día en `docs/respuestas-comentarios-medicion.md`.
+
+Fuera de alcance: Cambiar la pantalla o la regla de respuestas en producción (ATENDER-4b (m-24848533); la regla de solo positivos, QUA-22, quedó enmendada el 2026-10-23, §2b-1).
 
 Evidencia: `docs/ux-auditoria-2026-10/m5 hallazgo 3, historia 5`; `docs/ux-auditoria-2026-10.md §3`
 
-#### ATENDER-5 · borrador (sin ticket) — Comentarios: buscar, ordenar y preparar respuestas solos, sin que el dueño tenga la pantalla abierta
+#### ATENDER-4b · [m-24848533](https://project.larksuite.com/5h2wsx/issue/detail/24848533) — Comentarios: responder en público cualquier comentario, también preguntas y quejas
+
+*Como dueño, quiero poder contestar en público cualquier comentario, también preguntas y quejas, para que nadie quede ignorado delante de los demás.*
+
+**P0 · M · backend-engineer + reflex-ui-engineer** · Depende de: ATENDER-4a (m-24848532), ATENDER-3 (m-24842989)
+- Desbloqueada (fundador, 2026-10-23, §2b-1): **QUA-22 enmendada.** Qualify prepara respuestas también para preguntas y quejas; el dueño siempre revisa y envía; en las quejas la propuesta sugiere seguir por mensaje privado. Hoy `replies/gate.py` y `REPLY_SYSTEM_PROMPT` («sentimiento POSITIVO») lo impiden: esta historia los cambia. La fila ADR 21c la escribe el arquitecto.
+- Revisión: Arquitecto + data scientist (2026-10-23): pasa con cambios.
+
+Criterios de aceptación:
+- Cada comentario ofrece «Responder aquí» y «Escribirle en privado».
+- Se prepara respuesta para positivos, preguntas y quejas con el modelo y prompt de ATENDER-4a (m-24848532); en las quejas se exige editar o confirmar «Revísala antes de aprobar».
+- El borrador de una queja invita a seguir por mensaje privado y no promete nada que el catálogo no diga.
+- Nada se envía sin el toque del dueño (N13); un envío incierto muestra su estado; un comentario borrado no recibe borrador.
+- Cada borrador guarda modelo, versión del prompt y costo; `just ci-test` en verde.
+
+Evidencia: `docs/ux-auditoria-2026-10/m5 hallazgo 3, historia 5`; `docs/ux-auditoria-2026-10.md §3`
+
+#### ATENDER-5 · [m-24848534](https://project.larksuite.com/5h2wsx/issue/detail/24848534) — Comentarios: buscar, ordenar y preparar respuestas solos, sin que el dueño tenga la pantalla abierta
 
 *Como dueño, quiero que los comentarios nuevos se busquen y se ordenen solos, para no tener que pulsar botones antes de ver quién quiere comprar.*
 
-**P0 · L · backend-engineer + reflex-ui-engineer**
-- ⚑ Necesita: Revisión del arquitecto: worker nuevo o extensión de uno existente (`*-worker`), idempotencia y presupuesto de llamadas a Meta.
-- ⚑ Necesita: Revisión de costo del data-scientist-fde: clasificar con Haiku cada comentario sin pantalla abierta.
-- ⚑ Necesita: Decisión del fundador si implica un proceso nuevo en producción.
+**P0 · L · backend-engineer + reflex-ui-engineer** · Depende de: ATENDER-4a (m-24848532)
+- ⚑ **No por ahora (fundador, 2026-10-23, §2b-2).** Aparcada (parking-lot) hasta que el fundador la reabra.
+- Revisión: Arquitecto + data scientist (2026-10-23): pasa con cambios; sin proceso nuevo.
 
 Criterios de aceptación:
-- Un comentario nuevo aparece ordenado y con borrador sin abrir la pantalla, dentro del intervalo acordado con el arquitecto.
+- Un comentario nuevo aparece ordenado y con borrador sin abrir la pantalla: ≤ 2 min con webhook, ≤ 15 min por sondeo.
 - «Analizar sentimiento», «Analizar intención» y «Generar borradores» dejan de ser pasos obligatorios; queda «Buscar ahora».
-- Ningún comentario se responde sin aprobación (N13); el proceso es idempotente y guarda procedencia (modelo y versión del prompt).
-- Costo por comentario medido y documentado antes de activarlo en producción.
+- Ningún comentario se responde sin aprobación (N13); se respeta el tope diario; procedencia (modelo y versión del prompt) en cada fila.
+- Se mide la memoria de robertuito en el worker (o se retira si ATENDER-4a (m-24848532) lo reemplaza) y el costo sobre el volumen real antes de activarlo.
 
 Evidencia: `docs/ux-auditoria-2026-10/m5 hallazgo 6, historia 6`; `docs/ux-auditoria-2026-10.md §3`
 
@@ -816,6 +919,51 @@ Criterios de aceptación:
 
 Evidencia: `docs/ux-auditoria-2026-10/m5 hallazgos 10 y 11, historia 8`
 
+#### ATENDER-9 · [m-24849130](https://project.larksuite.com/5h2wsx/issue/detail/24849130) — Comentarios: «Reintentar» una respuesta que no salió por un fallo pasajero
+
+*Como dueño, quiero poder intentarlo otra vez cuando mi respuesta no salió por un problema pasajero, para que ese cliente no se quede sin contestar.*
+
+**P2 · M · backend-engineer + reflex-ui-engineer** · Depende de: ATENDER-3 (m-24842989)
+- Decidida (fundador, 2026-10-23, §2b-5): «Reintentar» solo si el fallo es pasajero (sin conexión, Instagram caído); si borraron el comentario, se dice y no se ofrece. Lista para empezar (ola 2).
+
+Criterios de aceptación:
+- Un fallo pasajero deja la respuesta visible con «Tu respuesta no salió: Instagram no respondió.» y «Reintentar».
+- Un comentario borrado muestra «Borraron ese comentario. Ya no se puede responder.» y no ofrece «Reintentar».
+- Un rechazo de otro tipo muestra «Tu respuesta no salió. Respóndela en Instagram.» y un resultado desconocido «No sabemos si salió. Revísalo en Instagram.» (textos de §2b-7a), ambos sin «Reintentar».
+- «Reintentar» envía solo tras el toque del dueño (N13) y no duplica si se toca dos veces.
+- Ningún código de error de Meta aparece en pantalla; la clasificación de fallos tiene prueba offline.
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23)
+
+#### ATENDER-10 · [m-24849131](https://project.larksuite.com/5h2wsx/issue/detail/24849131) — Quieren comprar: la tarjeta dice si el mensaje privado salió o falló
+
+*Como dueño, quiero saber si mi mensaje privado le llegó a quien quería comprar, para no creer que respondí cuando no fue así.*
+
+**P1 · M · reflex-ui-engineer + backend-engineer**
+- Lista para empezar.
+
+Criterios de aceptación:
+- Tras aprobar, la tarjeta no desaparece hasta saber el resultado; muestra los textos exactos de éxito o fallo.
+- Un fallo deja la tarjeta visible; nada se reenvía solo (N13).
+- Prueba offline del cambio de estado éxito/fallo.
+
+Fuera de alcance: Botón «Reintentar» (sigue la decisión de ATENDER-9 (m-24849130)).
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23); `docs/ux-auditoria-2026-10/m5 hallazgo 7`
+
+#### ATENDER-11 · [m-24849132](https://project.larksuite.com/5h2wsx/issue/detail/24849132) — Comentarios: un solo aviso de error al ordenar los comentarios
+
+*Como dueño, quiero ver un solo aviso claro si algo falló al ordenar mis comentarios, para saber qué hacer sin leer dos cajas parecidas.*
+
+**P2 · S · reflex-ui-engineer**
+- Lista para empezar.
+
+Criterios de aceptación:
+- Si falla cualquiera de los dos análisis (o ambos), se ve un solo aviso con el texto exacto.
+- Prueba offline con cada combinación de fallos.
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23)
+
 ### [WHATSAPP] WhatsApp
 
 #### WHATSAPP-1 · [m-24842993](https://project.larksuite.com/5h2wsx/issue/detail/24842993) — WhatsApp: con el chat vencido, decir qué pasa y llevar a los mensajes aprobados
@@ -842,6 +990,7 @@ Criterios de aceptación:
 - Ningún texto visible de `whatsapp_*.py` contiene opt-in, leads, Marketing, Lanzar, encola, Revocar, WhatsApp Manager, Sincronizar con Meta, Mediana ni p90.
 - Los distintivos de cada chat se leen en texto con la hora límite.
 - Las cadenas quedan exactamente como en la propuesta.
+- Ningún texto visible dice «en cola», «ventana» ni «mostrador» en el siguiente paso del QR.
 
 Evidencia: `docs/ux-auditoria-2026-10/m6 hallazgos 6, 10 y 12, historia 2`; `docs/ux-auditoria-2026-10.md T7`
 
@@ -859,31 +1008,39 @@ Criterios de aceptación:
 
 Evidencia: `docs/ux-auditoria-2026-10/m6 hallazgo 3, historia 4`; `docs/ux-auditoria-2026-10.md §3`
 
-#### WHATSAPP-2 · borrador (sin ticket) — WhatsApp: enviar un mensaje aprobado desde el chat vencido
+#### WHATSAPP-2 · [m-24848535](https://project.larksuite.com/5h2wsx/issue/detail/24848535) — WhatsApp: enviar un mensaje aprobado desde el chat vencido
 
 *Como dueño, quiero responder a un cliente aunque hayan pasado más de 24 horas, para no perder una venta.*
 
 **P0 · M · backend-engineer + reflex-ui-engineer** · Depende de: WHATSAPP-1 (m-24842993)
-- ⚑ Necesita: Revisión del arquitecto: envío de una plantilla a un solo contacto (hoy solo existe en campañas), idempotencia y costo por conversación.
+- Revisión: Arquitecto (2026-10-23): pasa con cambios; v1 lista.
+- Decisión del fundador (2026-10-23, §2b-4): el chat previo cuenta como permiso solo para retomar su tema con una plantilla de seguimiento (utilidad); las promociones necesitan permiso explícito. El arquitecto confirma al empezar cómo se guarda el origen del permiso.
+- Lista para empezar.
 
 Criterios de aceptación:
 - Con el chat vencido aparece «Enviar un mensaje aprobado»; la lista muestra solo plantillas aprobadas con vista previa.
-- Se envía solo tras tocar «Enviar» (N13); el mensaje aparece en la conversación con su estado.
-- Reintentos no duplican el envío; pruebas offline con RLS en verde.
+- Si la persona escribió antes pero no aceptó promociones, la lista muestra solo mensajes de seguimiento y se lee «Para enviarle promociones, esta persona tiene que aceptar recibirlas.»; ninguna plantilla de promoción se puede elegir.
+- Debajo de ese aviso aparece «Pedirle que acepte» solo si existe una plantilla de utilidad aprobada para pedir el permiso; sin ella, no hay botón. El envío sigue necesitando el toque del dueño (N13).
+- Con permiso explícito activo se listan seguimiento y promociones; el servidor rechaza una promoción a un contacto sin permiso explícito (prueba offline).
+- Se envía solo tras tocar «Enviar» (N13); el mensaje aparece en la conversación con su estado; reintentos con el mismo `request_key` no duplican.
+- La migración es reversible y con RLS; pruebas offline en verde.
+
+Fuera de alcance: Usar el chat previo como permiso para promociones (necesitan permiso explícito, §2b-4). Crear la plantilla para pedir el permiso (si no existe, no se muestra el botón).
 
 Evidencia: `docs/ux-auditoria-2026-10/m6 hallazgo 1, historia 1`
 
-#### WHATSAPP-4 · borrador (sin ticket) — WhatsApp: armar el menú automático en cuatro pasos, sin identificadores técnicos
+#### WHATSAPP-4 · [m-24848536](https://project.larksuite.com/5h2wsx/issue/detail/24848536) — WhatsApp: armar el menú automático en cuatro pasos, sin identificadores técnicos
 
 *Como dueño, quiero armar mi menú automático en 4 pasos cortos con mis textos y mi catálogo, para que WhatsApp atienda lo básico sin que yo aprenda a programar.*
 
-**P0 · L · reflex-ui-engineer**
-- ⚑ Necesita: Revisión de factibilidad del arquitecto: generar identificadores de pasos automáticamente sin romper menús ya publicados.
+**P0 · L · reflex-ui-engineer + backend-engineer** · Depende de: WHATSAPP-3 (m-24842995)
+- Revisión: Arquitecto (2026-10-23): pasa con cambios.
+- Lista para empezar.
 
 Criterios de aceptación:
 - «Paso N de 4», «Atrás» sin perder datos (N6).
-- Ningún identificador técnico visible en el camino principal.
-- Un dueño de prueba termina en ≤ 5 min desde la plantilla (*hipótesis*, perfil §5 pregunta 3).
+- Ningún identificador técnico visible en el camino principal; renombrar un paso no cambia su identificador ni rompe un menú publicado.
+- Se mide cuánto tarda un dueño de prueba desde la plantilla (meta ≤ 5 min, medición, no bloqueo).
 
 Evidencia: `docs/ux-auditoria-2026-10/m6 hallazgo 2, historia 3`; `docs/ux-auditoria-2026-10.md §3`
 
@@ -942,6 +1099,7 @@ Criterios de aceptación:
 - Ningún texto visible de `clarity_*.py`, `signals_page.py`, `components.py` (menciones), `state.py`, `mentions_paging.py` contiene Rage, Scroll, bot, JavaScript, Snapshot, Device, OS, Browser, token, placeholder, Fase, roadmap ni Likes.
 - Las cadenas quedan exactamente como en la propuesta.
 - No se tocan menú ni títulos de pestaña (NAV-9 (m-24842958)); sacar Señales del menú es NAV-1 (m-24842957).
+- Seguimiento (fundador, 2026-10-23, §2b-7b): el aviso de menciones nuevas (QUA-152) dirá «Llegaron menciones nuevas.» con el botón «Verlas»; no existe aún en `main` (PR #246), aplica cuando se construya.
 
 Evidencia: `docs/ux-auditoria-2026-10/m7-escucha-medicion.md hallazgos 4, 7, 11`; `docs/ux-auditoria-2026-10.md T7`
 
@@ -1000,4 +1158,17 @@ Criterios de aceptación:
 - Las redirecciones de `/clarity` y Menciones funcionan; los conteos respetan RLS.
 
 Evidencia: `docs/ux-guia-navegacion.md §3; §7 decisiones 1-2`; `docs/ux-auditoria-2026-10.md T3`; `docs/ux-auditoria-2026-10/m7 «Navegación»`
+
+#### RESULTADOS-6 · [m-24849134](https://project.larksuite.com/5h2wsx/issue/detail/24849134) — Resultados: «Señales» pasa a llamarse «Oportunidades» en menú, título y pestaña
+
+*Como dueño, quiero que esa entrada del menú diga lo que me va a dar, para entender qué viene sin preguntar.*
+
+**P2 · S · reflex-ui-engineer** · Depende de: NAV-1 (m-24842957)
+- Decidida (fundador, 2026-10-23, §2b-6): «Señales» se llama «Oportunidades». Lista para empezar.
+
+Criterios de aceptación:
+- Menú, `h1` y pestaña dicen «Oportunidades» (N1); la entrada muestra «Pronto» como texto y no lleva a una pantalla vacía (N10).
+- Ningún texto visible dice «Señales» (tampoco «Avisos de oportunidad» como título).
+
+Evidencia: Seguimiento de la ola 1 (PRs #235–#249, 2026-10-23); `docs/ux-guia-navegacion.md §4 N1, N10`
 
