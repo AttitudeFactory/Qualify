@@ -655,6 +655,7 @@ def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
         size="72px",
         icon="film",
         has=reel.thumbnail_url != "",
+        custom_attrs={"loading": "lazy"},
     )
 
 
@@ -1600,6 +1601,7 @@ def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
         icon="image",
         alt=draft.media_alt,
         has=draft.media_thumbnail_url != "",
+        custom_attrs={"loading": "lazy"},
     )
 
 
