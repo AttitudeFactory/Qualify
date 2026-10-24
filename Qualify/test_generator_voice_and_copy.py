@@ -1355,6 +1355,39 @@ def test_the_summary_names_every_choice_and_edits_it_in_its_own_view() -> None:
     assert state.gen_problem == ""
 
 
+def test_a_clips_sound_has_its_own_row_and_editar_opens_its_switch() -> None:
+    """UX review 2026-10-24 (N2/N6): «Publicación» no longer mentions the sound; the
+    «Sonido» row's «Editar» lands on step 3 with «Más opciones» open, where it lives."""
+    from .content_generator import _audio_switch
+
+    state = CreativeState()
+    state.choose_category("clip")
+    state.go_to_view(str(len(state.gen_views) - 1))  # the summary
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert "sonido" not in rows["Publicación"]["value"]
+    assert rows["Sonido"]["value"] == ("Con sonido" if state.clip_audio else "Sin sonido")
+    assert rows["Sonido"]["view"] == "channel:more"
+    assert state.campaign_open is False
+    state.edit_view(rows["Sonido"]["view"])
+    assert state.gen_step_key == "how" and state.campaign_open
+    assert not state.show_more_open
+    state.set_clip_audio(not state.clip_audio)
+    state.go_to_view("99")
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert rows["Sonido"]["value"] == ("Con sonido" if state.clip_audio else "Sin sonido")
+    # N12: a named switch, toggled by its text too, with a 44 px target
+    rendered = str(_audio_switch(checked=True, on_change=CreativeState.set_clip_audio))
+    assert "Con sonido" in rendered and "44px" in rendered
+    assert "aria-label" in rendered or "ariaLabel" in rendered
+
+
+def test_only_a_clip_shows_the_sound_row() -> None:
+    state = CreativeState()
+    state.choose_category("video")
+    state.go_to_view(str(len(state.gen_views) - 1))
+    assert "Sonido" not in {row["label"] for row in state.gen_summary}
+
+
 def test_the_animated_avatar_takes_its_character_from_the_brand_kit() -> None:
     """§ request 2026-10-20 (2): «quita lo de abajo… quiero que se obtenga desde el
     brandkit» — nothing to fill in under «Avatar animado»; the character is loaded."""

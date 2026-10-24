@@ -3657,11 +3657,16 @@ def _audio_switch(*, checked: object, on_change: object) -> rx.Component:
     """«Con sonido»: the sound the video model makes with the video (clip and the
     gallery's animated slide)."""
     return rx.vstack(
-        rx.hstack(
-            rx.switch(checked=checked, on_change=on_change, size="2"),
-            rx.text("Con sonido", size="2"),
-            spacing="2",
-            align="center",
+        # UX review (N12): the text toggles the switch too, a ≥ 44 px target with a name
+        rx.el.label(
+            rx.hstack(
+                rx.switch(checked=checked, on_change=on_change, size="2", aria_label="Con sonido"),
+                rx.text("Con sonido", size="2"),
+                spacing="2",
+                align="center",
+                min_height="44px",
+            ),
+            cursor="pointer",
         ),
         rx.text(_AUDIO_HINT, size="1", color=T.TEXT_MUTED),
         spacing="1",

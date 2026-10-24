@@ -3326,7 +3326,8 @@ class CreativeState(rx.State):
         self.gen_step = index
         if base == "rules":
             self.rules_open = True
-        elif base == "campaign":
+        elif base == "campaign" or (base == "channel" and more):
+            # step 3's «Más opciones» holds the campaign and a clip's «Con sonido»
             self.campaign_open = True
         elif more:
             self.show_more_open = True
@@ -4773,7 +4774,7 @@ class CreativeState(rx.State):
         length = (
             f" · {self.media_duration} s"
             if kind == "creator_script"
-            else f" · {self.clip_duration} s · {'con' if self.clip_audio else 'sin'} sonido"
+            else f" · {self.clip_duration} s"
             if kind == "clip"
             else ""
         )
@@ -4782,6 +4783,14 @@ class CreativeState(rx.State):
             f"{content_type} · {_FORMAT_LABELS.get(self.effective_format, '')}{length}",
             "channel",
         )
+        if kind == "clip":
+            # its own row: «Editar» opens step 3's «Más opciones», where the switch is
+            # (UX review 2026-10-24, N2/N6)
+            row(
+                "Sonido",
+                "Con sonido" if self.clip_audio else "Sin sonido",
+                "channel" + SHOW_MORE_SUFFIX,
+            )
         facts = " · ".join(f"{name}: {fact}" for name, fact in self._highlight_pairs())
         row("Datos clave", facts or "Ninguno", "rules")
         if self.brief_must_mention.strip():
