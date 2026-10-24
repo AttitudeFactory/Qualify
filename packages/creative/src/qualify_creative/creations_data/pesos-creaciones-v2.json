@@ -17,6 +17,11 @@
     {"up_to": 7, "weight": 2},
     {"up_to": 10, "weight": 3}
   ],
+  "videos": {
+    "monthly_quota": 4,
+    "offered_seconds": [5, 10],
+    "decided": "founder 2026-10-24: every Seedance video (clip, Seedance avatar, animated carousel slide, clip with a reference video) counts 1 of 4 a month, up to 10 s; it no longer uses creations"
+  },
   "generated_video": {
     "model_id": "dreamina-seedance-2-5-260628",
     "max_output_seconds": 15,

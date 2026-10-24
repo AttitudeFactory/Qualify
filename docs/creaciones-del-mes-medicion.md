@@ -6,6 +6,10 @@ tabla de precios **`v5`** (`packages/creative/src/qualify_creative/pricing_data/
 
 > **Vigentes desde 2026-10-24: `pesos-creaciones-v2` sobre la tabla `v7` (§5, m-24851828).**
 > Las secciones 1 a 4 son la medición de v1 y se conservan como estaban.
+>
+> **Videos del mes (decisión del fundador, 2026-10-24, §6):** el video generado ya no usa
+> creaciones. Cada mes trae **30 creaciones y 4 videos** aparte; cada video cuenta 1, dure 5 o
+> 10 s. Lo que §5.5 y §5.6 dicen del video generado en creaciones quedó reemplazado por §6.
 
 El dueño ve «creaciones del mes» («Te quedan 18 de 30 este mes»), nunca dinero. El equipo ve
 los dólares. Esta página fija cuánto vale cada pedido en creaciones, con qué datos se midió y
@@ -246,7 +250,7 @@ puede bajar los pesos del video con referencia y lleva a `pesos-creaciones-v3`.
 
 - `weight_for(brief)` / `weight_for_request(...)` devuelven el peso y `final_weight`, la parte
   del final. La pantalla y el servicio leen la misma regla.
-- `creation_charges` (migración `0088`, antes `0084`, ahora sobre la cabeza `0087` de `main`)
+- `creation_charges` (migración `0088`, antes `0084`, ahora sobre la cabeza `0086` de `main`, que encadena `0084 → 0087 → 0086`)
   guarda `final_weight`, y además `final_refunded_at` y `final_refund_reason` cuando el final
   falla. La fila sigue en `charged` por su vista previa y el saldo cuenta `weight −
   final_weight`. La devolución se hace una sola vez.
@@ -257,3 +261,104 @@ puede bajar los pesos del video con referencia y lleva a `pesos-creaciones-v3`.
 - El informe del equipo (`creations_report`) cuenta la parte devuelta como devuelta.
 - Pruebas: `packages/creative/tests/test_creations.py`,
   `packages/api/tests/test_creations_ledger.py` y `Qualify/test_creations_of_the_month.py`.
+
+> **Reemplazado por §6** en lo que toca al video generado: ya no hay `final_weight`; lo que
+> se devuelve cuando un final falla es el video.
+
+## 6. Videos del mes: un cupo aparte (decisión del fundador, 2026-10-24)
+
+Fecha: 2026-10-24 · Pesos: **`pesos-creaciones-v2`** sobre la tabla **`v7`** (el mismo archivo
+de §5, con un bloque nuevo `videos`; v2 no se había publicado todavía, así que se completa en
+su lugar en vez de crear una v3). Es la opción D de §5.6.
+
+### 6.1 Qué se decidió
+
+- **Cada mes trae 4 videos, aparte de las 30 creaciones.** Un «video» es todo video generado
+  con Seedance: el clip, el avatar de Seedance, cada diapositiva animada de un carrusel y el
+  clip que sigue un video de referencia.
+- **Cada uno cuenta 1 video**, dure 5 o 10 s, con o sin video de referencia y con o sin sonido.
+  **No usa creaciones.**
+- **No se ofrecen videos de 15 s** (ni más largos): el clip, el avatar de Seedance y la
+  diapositiva animada se piden a 5 o 10 s. Si llega uno más largo (un control viejo o un
+  pedido armado a mano), no se ofrece y no se cobra.
+- **Un carrusel con N diapositivas animadas usa N videos**, más las creaciones del propio
+  carrusel (1, 2 o 3 según sus imágenes, como siempre).
+- **El presentador (OmniHuman) sigue en creaciones**: 5, 9, 13 y 25 para 5, 10, 15 y 30 s.
+- Imágenes, carruseles, plantillas y guiones siguen en creaciones, cupo 30.
+- **Cobro:** se cobra **al crear**. Aprobar no cobra nada. Si el final a 1080p falla, **se
+  devuelve el video**. Reintentar un final que falló no vuelve a cobrar.
+- **El mismo cupo para todos los negocios**, también los que opera el equipo. No hay
+  interruptor por negocio; `QUALIFY_CREATIONS_QUOTA=off` sigue siendo el interruptor de
+  emergencia de toda la instalación.
+- **El dueño nunca ve dinero** (decisión 8).
+
+### 6.2 Lo que lee el dueño
+
+| Dónde | Texto |
+|---|---|
+| Panel lateral de Crear | «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.» |
+| Resumen, antes de un video | «Este video usa 1 de tus 4 videos del mes. Te quedarían {v}.» |
+| Resumen, carrusel con diapositivas animadas | «Esta publicación usa 1 de tus creaciones y 2 de tus 4 videos del mes. Te quedarían 17 de 30 creaciones y 1 video.» |
+| Sin videos este mes (Crear queda desactivado) | «Ya usaste tus 4 videos de este mes. Vuelven el {fecha}.» |
+| Carrusel con más diapositivas animadas que videos | «Esta publicación usa 3 videos y te quedan 2 este mes. Usa menos videos animados o espera al {fecha}, cuando vuelven tus 4.» |
+| «Pedir otra versión» de un video | «La nueva versión usa 1 de tus 4 videos del mes. Te quedarían {v}.» |
+| Un video de más de 10 s | «Este video puede durar 5 o 10 segundos. Elige uno de los dos.» |
+
+{fecha} es el mismo día que ya usan las creaciones: el primero del mes siguiente en la zona
+horaria del negocio («1 de noviembre»); si no se conoce, «el próximo mes».
+
+### 6.3 Cómo se guarda (código)
+
+- `pesos-creaciones-v2.json` → `videos`: `monthly_quota` 4 y `offered_seconds` [5, 10].
+  `weight_for_request` / `weight_for(brief)` devuelven `CreationPrice(weight, videos)`:
+  `weight` son las creaciones y `videos` los videos. El bloque `generated_video` (tokens por
+  segundo × tarifas `v7`) ya no da un peso: queda como **techo en dólares por video** para el
+  equipo (`generated_video_usd`).
+- `creation_charges` (migración `0088`, sobre la cabeza `0086` de `main`, RLS por inquilino):
+  cada cobro guarda `weight`, **`videos`**, `monthly_quota`, **`monthly_video_quota`**,
+  `weights_version` (`pesos-creaciones-v2`) y `pricing_table_version` (`v7`). Sigue siendo
+  idempotente por (`draft_id`, `revision`). `final_weight` desapareció.
+- **Devolución de un final que falla:** el id del video que falló se agrega a
+  `final_refunded_assets` (nunca dos veces el mismo, nunca más que `videos`), con
+  `final_refunded_at` y `final_refund_reason`. La fila sigue en `charged` y el saldo de videos
+  cuenta `videos − cardinality(final_refunded_assets)`. En un carrusel, si falla el final de
+  una diapositiva, vuelve ese video; los otros se quedan cobrados.
+- El cobro toma el mismo candado por marca y revisa creaciones y videos juntos: si falta
+  cualquiera de los dos, no se crea nada (`NotEnoughCreations` con `missing` y
+  `missing_videos`).
+- El informe del equipo (`creations_report`) muestra los videos cobrados y devueltos por pieza
+  y «{n} de 4 videos» por mes.
+
+### 6.4 Lo que cuesta al equipo (techo, tabla `v7`)
+
+| Video (vista previa 480p + final 1080p) | USD p95 por video | 4 videos al mes |
+|---|---:|---:|
+| 5 s, sin referencia | 3,44 | 13,77 |
+| 10 s, sin referencia | 6,82 | 27,27 |
+| 5 s con video de referencia de duración desconocida (se cuentan 30 s) | 14,20 | 56,81 |
+| 10 s con video de referencia de duración desconocida | 16,22 | 64,89 |
+
+Con las 30 creaciones (techo USD 4,50), **el techo por negocio y mes pasa de USD 4,50 a unos
+USD 31,77 sin referencias, y a unos USD 69,39 en el peor caso** (4 videos de 10 s con
+referencia de duración desconocida). Son techos (p95 y la entrada contada también en el final),
+no promedios.
+
+**Para decidir (fundador):** la red de seguridad en dólares de cada marca
+(`creative_engine_config.monthly_budget_cap_usd`) **no se toca en este cambio**. Si se fija en
+1,5 × 4,50 = USD 6,75, como proponía el ticket, **bloquearía los videos** que este cupo
+promete: tendría que quedar por encima del techo de arriba (por ejemplo, USD 75). Y la opción B
+de §5.6 (final a 720p) bajaría el costo de cada video unas 2,4 veces sin tocar el cupo.
+
+### 6.5 Pruebas
+
+- `packages/creative/tests/test_creations.py`: el cupo de 4 y las duraciones 5/10; un clip, un
+  clip con referencia y un avatar de Seedance usan 1 video y 0 creaciones; 15 s no se ofrece;
+  un carrusel usa un video por diapositiva animada; el presentador sigue en creaciones.
+- `packages/api/tests/test_creations_ledger.py`: 4 videos y el quinto se rechaza sin crear
+  nada; el carrusel cobra por diapositiva; el presentador sigue en creaciones sin videos
+  disponibles; un final que falla devuelve 1 video, una sola vez, y su reintento no cobra.
+- `packages/api/tests/test_creation_charges_db.py` (`-m db`): lo mismo contra Postgres, el
+  CHECK de `final_refunded_assets` y el aislamiento por inquilino (RLS, también con
+  `app.tenant_id` vacío).
+- `Qualify/test_creations_of_the_month.py`: los textos de §6.2, el control del clip y del
+  avatar de Seedance (5 y 10 s), Crear desactivado sin videos y ningún texto con dinero.

@@ -11,11 +11,17 @@ with the weight of `qualify_creative.creations` (`pesos-creaciones-v2` over pric
 moderation or is reaped is REFUNDED: the row stays (provenance), `status` turns
 `refunded` and stops counting.
 
-- `final_weight` (v2): a generated video is charged at creation for its 480p preview AND
-  the 1080p final made at approval (founder, 2026-10-24); this column is the part of
-  `weight` that paid for the finals. When a final fails only that part is given back:
-  the row stays `charged`, `final_refunded_at` / `final_refund_reason` record it, and
-  the balance counts `weight − final_weight` for it. 0 = the charge pays no final.
+- `videos` / `monthly_video_quota` (founder, 2026-10-24): generated (Seedance) videos
+  have their own monthly quota (4) apart from the 30 creations — a clip, a Seedance
+  avatar, each animated carousel slide, a clip with a reference video: 1 video each, up
+  to 10 s, and no creations. `weight` is the creations, `videos` the videos, both
+  charged when the piece is created (480p preview + the 1080p final made at approval);
+  nothing is charged at approval. The presenter (OmniHuman) stays in creations.
+- `final_refunded_assets` (uuid[]): a 1080p final that fails gives its video back — the
+  row stays `charged`, the failed video's asset id joins the array (never twice, at most
+  `videos` of them), `final_refunded_at` / `final_refund_reason` record the last one,
+  and the balance counts `videos − cardinality(final_refunded_assets)` for it. The
+  retry of a failed final is never charged again.
 
 - `draft_id` + `revision` say which generation the charge paid for, and are UNIQUE: a
   retried dispatch or a concurrent call can never charge the same generation twice
@@ -23,7 +29,9 @@ moderation or is reaped is REFUNDED: the row stays (provenance), `status` turns
   piece's rows one day, and the month's accounting must not go with it.
 - `period_month` is the first day of the month in the tenant's zone — what «este mes»
   means for the owner. The balance is `monthly_quota − Σ weight` over the month's
-  `charged` rows; `monthly_quota` is recorded on every row with its `weights_version`.
+  `charged` rows; `monthly_quota` and `monthly_video_quota` are recorded on every row
+  with its `weights_version`. The same quota for every business (no per-business
+  switch); `QUALIFY_CREATIONS_QUOTA=off` stays the installation-wide emergency switch.
 - `weight`, `weights_version`, `pricing_table_version` and `request_kind` are the
   provenance the ticket asks for. The real dollars are NOT here: they are already in
   `creative_usage_events` per draft, and the team's report joins both.
@@ -46,6 +54,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 revision = "0088"
@@ -95,7 +104,14 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("refunded_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("final_weight", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column("videos", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column("monthly_video_quota", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column(
+            "final_refunded_assets",
+            ARRAY(PGUUID(as_uuid=True)),
+            server_default=sa.text("'{}'::uuid[]"),
+            nullable=False,
+        ),
         sa.Column("final_refunded_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("final_refund_reason", sa.Text(), nullable=True),
         sa.CheckConstraint("weight >= 0", name="ck_creation_charges_weight"),
@@ -110,12 +126,14 @@ def upgrade() -> None:
             "period_month = date_trunc('month', period_month)::date",
             name="ck_creation_charges_period",
         ),
+        sa.CheckConstraint("videos >= 0", name="ck_creation_charges_videos"),
+        sa.CheckConstraint("monthly_video_quota >= 0", name="ck_creation_charges_video_quota"),
         sa.CheckConstraint(
-            "final_weight >= 0 AND final_weight <= weight",
-            name="ck_creation_charges_final_weight",
+            "cardinality(final_refunded_assets) <= videos",
+            name="ck_creation_charges_final_refunded_assets",
         ),
         sa.CheckConstraint(
-            "final_refunded_at IS NULL OR final_weight > 0",
+            "(final_refunded_at IS NULL) = (cardinality(final_refunded_assets) = 0)",
             name="ck_creation_charges_final_refund",
         ),
         sa.UniqueConstraint("draft_id", "revision", name="uq_creation_charges_generation"),

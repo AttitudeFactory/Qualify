@@ -1518,6 +1518,8 @@ __all__ = [
     "pieces_use_notice",
     "presenter_fallback_text",
     "renewal_day_label",
+    "videos_short_text",
+    "VIDEO_TOO_LONG",
     "gap_vm",
     "status_label",
     "status_tone",
@@ -1707,13 +1709,34 @@ def seen_label(count: int) -> str:
 PRESENTER_TOO_LONG = (
     "Tu guion es muy largo para un video con presentador: acórtalo a unos 30 segundos."
 )
+#: A generated video longer than the table offers (founder, 2026-10-24: up to 10 s).
+VIDEO_TOO_LONG = "Este video puede durar 5 o 10 segundos. Elige uno de los dos."
 
 
-def creations_left_label(left: int, quota: int) -> str:
-    """«Te quedan 18 de 30 este mes» — the month's balance, never money."""
-    if left == 1:
-        return f"Te queda 1 de {quota} este mes"
-    return f"Te quedan {left} de {quota} este mes"
+def creations_left_label(left: int, quota: int, videos_left: int = 0, video_quota: int = 0) -> str:
+    """The month's balance, never money. With a video quota it is the founder's
+    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»;
+    without one, «Te quedan 18 de 30 este mes»."""
+    verb = "Te queda" if left == 1 else "Te quedan"
+    if video_quota > 0:
+        return (
+            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."
+        )
+    return f"{verb} {left} de {quota} este mes"
+
+
+def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews: str = "") -> str:
+    """The month has no video left for this piece (founder, 2026-10-24): «Ya usaste tus
+    4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a carousel with more
+    animated slides than videos left, how many it uses and how many are left."""
+    day = renews or "próximo mes"
+    if videos_left <= 0:
+        return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
+    left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
+    return (
+        f"Esta publicación usa {videos} videos y {left} este mes. "
+        f"Usa menos videos animados o espera al {day}, cuando vuelven tus {video_quota}."
+    )
 
 
 _MONTHS_LONG = (
@@ -1769,11 +1792,29 @@ def creations_use_notice(
     presenter: bool = False,
     video: bool = False,
     subject: str = "",
+    videos: int = 0,
+    videos_left: int = 0,
+    video_quota: int = 0,
 ) -> str:
     """What one request uses, said before it is created. The presenter's sentence is the
     founder's (2026-10-23): «Este video con presentador usa 25 de tus creaciones. Te
-    quedarían {n} este mes.»"""
+    quedarían {n} este mes.»; a generated video's too (2026-10-24): «Este video usa 1
+    de tus 4 videos del mes. Te quedarían {v}.»"""
     after = max(left - weight, 0)
+    if videos > 0:
+        videos_after = max(videos_left - videos, 0)
+        if weight <= 0:
+            what = subject or ("Este video" if videos == 1 else "Esta publicación")
+            return (
+                f"{what} usa {videos} de tus {video_quota} videos del mes. "
+                f"Te quedarían {videos_after}."
+            )
+        what = subject or "Esta publicación"
+        some = "1 video" if videos_after == 1 else f"{videos_after} videos"
+        return (
+            f"{what} usa {weight} de tus creaciones y {videos} de tus {video_quota} videos "
+            f"del mes. Te quedarían {after} de {quota} creaciones y {some}."
+        )
     if presenter:
         return (
             f"Este video con presentador usa {weight} de tus creaciones. "

@@ -325,8 +325,9 @@ class VariationsState(rx.State):
             logger.warning("variations: creations unreadable: %s", type(exc).__name__)
             return
         async with self:
+            # images only here: the month's videos are not this screen's concern
             self.creations_left, self.creations_quota, self.creations_renews = (
-                balance if balance else (-1, 0, "")
+                balance[:3] if balance else (-1, 0, "")
             )
 
     @rx.var

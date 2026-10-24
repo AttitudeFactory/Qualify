@@ -23,6 +23,7 @@ from .creative_vm import (
     pieces_use_notice,
     presenter_fallback_text,
     renewal_day_label,
+    videos_short_text,
 )
 
 
@@ -145,40 +146,153 @@ def test_with_no_quota_wired_the_screen_says_nothing_about_creations() -> None:
     assert state.duration_choices == ["5", "10", "15", "30"]
 
 
-def _clip(left: int, duration: str = "5") -> CreativeState:
+def _clip(left: int, duration: str = "5", videos_left: int = 4) -> CreativeState:
     state = CreativeState()
     state.choose_kind("clip")
     state.clip_duration = duration
     state.media_duration = "15"  # the presenter's length must not price the clip
     state.creations_left, state.creations_quota = left, 30
+    state.videos_left, state.videos_quota = videos_left, 4
+    state.creations_renews = "1 de noviembre"
     return state
 
 
+# -- videos (founder, 2026-10-24): 4 a month, up to 10 s, apart from the 30 creations ----
+
+
+def test_the_video_texts_the_owner_reads() -> None:
+    assert creations_left_label(18, 30, 3, 4) == (
+        "Te quedan 18 de 30 creaciones y 3 de 4 videos este mes."
+    )
+    assert creations_left_label(1, 30, 0, 4) == (
+        "Te queda 1 de 30 creaciones y 0 de 4 videos este mes."
+    )
+    assert creations_use_notice(0, 30, 30, videos=1, videos_left=3, video_quota=4) == (
+        "Este video usa 1 de tus 4 videos del mes. Te quedarían 2."
+    )
+    assert videos_short_text(1, 0, 4, renews="1 de noviembre") == (
+        "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+    )
+    assert (
+        videos_short_text(1, 0, 4) == "Ya usaste tus 4 videos de este mes. Vuelven el próximo mes."
+    )
+    # a carousel with more animated slides than videos left
+    assert videos_short_text(3, 2, 4, renews="1 de noviembre") == (
+        "Esta publicación usa 3 videos y te quedan 2 este mes. Usa menos videos animados o "
+        "espera al 1 de noviembre, cuando vuelven tus 4."
+    )
+    assert creations_use_notice(1, 18, 30, videos=2, videos_left=3, video_quota=4) == (
+        "Esta publicación usa 1 de tus creaciones y 2 de tus 4 videos del mes. "
+        "Te quedarían 17 de 30 creaciones y 1 video."
+    )
+    assert creations_use_notice(
+        0, 30, 30, subject="La nueva versión", videos=1, videos_left=2, video_quota=4
+    ) == ("La nueva versión usa 1 de tus 4 videos del mes. Te quedarían 1.")
+
+
 @pytest.mark.usefixtures("on_summary")
-def test_a_5_second_clip_is_priced_at_5_seconds_preview_and_final() -> None:
-    """UX review 2026-10-24 §Pesos 1: `clip_duration`, not `media_duration`."""
+def test_a_clip_uses_one_video_and_no_creations() -> None:
+    for duration in ("5", "10"):
+        state = _clip(30, duration=duration, videos_left=3)
+        price = state._creations_price()
+        assert price is not None and (price.weight, price.videos) == (0, 1)
+        assert state._creations_problem() == ""
+        assert state.gen_creations_notice == (
+            "Este video usa 1 de tus 4 videos del mes. Te quedarían 2."
+        )
+        assert state.creations_left_text == (
+            "Te quedan 30 de 30 creaciones y 3 de 4 videos este mes."
+        )
+
+
+@pytest.mark.usefixtures("on_summary")
+def test_with_no_video_left_crear_is_refused_with_the_day_they_come_back() -> None:
+    state = _clip(30, videos_left=0)
+    assert state._creations_problem() == (
+        "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+    )
+    assert state._form_problem() != ""  # Crear refuses
+    assert state.gen_creations_notice == ""
+    # with no creations left a clip still goes: it uses none
+    assert _clip(0, videos_left=1)._creations_problem() == ""
+
+
+def test_the_clip_offers_5_and_10_seconds_never_15() -> None:
+    assert _clip(30).clip_duration_choices == ["5", "10"]
+    assert _clip(-1).clip_duration_choices == ["5", "10"]  # no quota wired
+    assert _clip(30, videos_left=0).clip_duration_choices == ["5", "10"]
     state = _clip(30)
+    state.set_clip_duration("15")  # a stale control, or a crafted event
+    assert state.clip_duration == "5"
+    # a reference video does not change what it uses
+    state.clip_videos = [{"key": "uploads/t/ref.mp4", "name": "ref.mp4", "source": "upload"}]
     price = state._creations_price()
-    assert price is not None
-    assert (price.weight, price.final_weight) == (23, 19)
+    assert price is not None and (price.weight, price.videos) == (0, 1)
+
+
+def test_an_avatar_on_seedance_offers_5_and_10_seconds_and_uses_a_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(creative_state, "configured_video_engine", lambda: "seedance")
+    state = CreativeState()
+    state.creations_left, state.creations_quota = 30, 30
+    state.videos_left, state.videos_quota = 4, 4
+    state.media_duration = "30"
+    state.choose_kind("avatar_video")
+    assert state.duration_choices == ["5", "10"]
+    assert state.media_duration == "10"  # a length no longer offered is not left chosen
+    state.set_media_duration("15")
+    assert state.media_duration == "10"
+    price = state._creations_price()
+    assert price is not None and (price.weight, price.videos) == (0, 1)
+
+
+@pytest.mark.usefixtures("on_summary")
+def test_a_carousel_uses_one_video_per_animated_slide() -> None:
+    state = CreativeState()
+    state.choose_kind("carousel")
+    state.creations_left, state.creations_quota = 18, 30
+    state.videos_left, state.videos_quota = 2, 4
+    state.creations_renews = "1 de noviembre"
+    state.carousel_slides = [
+        {"source": "generated", "seconds": "5"},
+        {"source": "animated", "seconds": "5"},
+        {"source": "animated", "seconds": "10"},
+    ]
+    price = state._creations_price()
+    assert price is not None and (price.weight, price.videos) == (1, 2)
+    assert state._creations_problem() == ""
     assert state.gen_creations_notice == (
-        "Este video usa 23 de tus creaciones. Te quedarían 7 de 30."
+        "Esta publicación usa 1 de tus creaciones y 2 de tus 4 videos del mes. "
+        "Te quedarían 17 de 30 creaciones y 0 videos."
+    )
+    state.carousel_slides = [*state.carousel_slides, {"source": "animated", "seconds": "5"}]
+    assert state._creations_problem() == (
+        "Esta publicación usa 3 videos y te quedan 2 este mes. Usa menos videos animados o "
+        "espera al 1 de noviembre, cuando vuelven tus 4."
     )
 
 
 @pytest.mark.usefixtures("on_summary")
-def test_the_clip_offers_only_the_lengths_the_month_pays_for() -> None:
-    assert _clip(30).clip_duration_choices == ["5"]  # 10 s = 46, 15 s = 68
-    assert _clip(-1).clip_duration_choices == ["5", "10", "15"]  # no quota wired
-    state = _clip(30, duration="15")
-    state._fit_duration()
-    assert state.clip_duration == "5"
-    # with a reference video of unknown length even the 5 s is out of reach: the
-    # control keeps the shortest and the summary says what is missing
-    state = _clip(30)
-    state.clip_videos = [{"key": "uploads/t/ref.mp4", "name": "ref.mp4", "source": "upload"}]
-    assert state.clip_duration_choices == ["5"]
-    assert state._creations_problem().startswith("Te faltan 65 creaciones este mes.")
+def test_the_presenter_stays_in_creations_with_no_video_left() -> None:
+    state = _presenter(30, duration="15")
+    state.videos_left, state.videos_quota = 0, 4
+    assert state._creations_problem() == ""
+    assert state.gen_creations_notice == (
+        "Este video con presentador usa 13 de tus creaciones. Te quedarían 17 este mes."
+    )
+
+
+def test_the_video_texts_show_no_money() -> None:
+    for text in (
+        creations_left_label(18, 30, 3, 4),
+        creations_use_notice(0, 30, 30, videos=1, videos_left=3, video_quota=4),
+        creations_use_notice(1, 18, 30, videos=2, videos_left=3, video_quota=4),
+        videos_short_text(1, 0, 4, renews="1 de noviembre"),
+        videos_short_text(3, 2, 4),
+    ):
+        for banned in ("$", "USD", "crédito", "dólar", "Coste"):
+            assert banned not in text
 
 
 def test_the_sound_does_not_change_what_a_clip_uses() -> None:

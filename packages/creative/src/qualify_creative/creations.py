@@ -9,12 +9,20 @@ literals here: a new weight is a new file, and every charge records the version 
 priced with. `pesos-creaciones-v1` (pricing `v5`) is kept as it was;
 `pesos-creaciones-v2` (pricing `v7`, m-24851828) is in force.
 
-v2 prices a generated (Seedance 2.5) video from the pricing table itself: tokens per
-second at the preview's 480p and the final's 1080p times the `v7` rates (with or
-without input video), so the weight cannot drift from the table it cites. Everything
-is charged when the piece is CREATED — the 480p preview and the 1080p final made at
-approval (founder, 2026-10-24) — and `CreationPrice.final_weight` says which part paid
-for the final, the only part given back when the final fails.
+**Videos have their own quota (founder, 2026-10-24).** Every Seedance-generated video —
+a plain clip, the Seedance avatar, each animated carousel slide, a clip that follows a
+reference video — counts as ONE of the month's videos (`pesos-creaciones-v2` →
+`videos.monthly_quota`, 4), whatever its length up to `videos.offered_seconds` (5 or
+10 s; 15 s is not offered), and uses no creations. A carousel with N animated slides
+uses N videos plus its own creations. The talking presenter (OmniHuman) stays in
+creations. A video is charged when the piece is CREATED (its 480p preview and the
+1080p final made at approval); nothing is charged at approval, and a final that fails
+gives its video back (`CreationPrice.videos`, the ledger's `refund_final`).
+
+`VideoRates` still prices a generated video off the pricing table (`v7` tokens per
+second at 480p and 1080p, with or without input video): it is the team's USD ceiling
+per video (`generated_video_usd`), not a weight — and the v1 table, which had no video
+quota, still prices clips in creations by its own steps.
 
 `weight_for_request` is the one rule. The screen calls it with what the form holds (to
 say «Este video con presentador usa 25 de tus creaciones» BEFORE anything is created);
@@ -62,6 +70,9 @@ CHARS_PER_SECOND = 15.0
 _GENERATED_VIDEO_MAX_SECONDS = 15
 #: An animated carousel slide's default length (`CarouselSlide.seconds`).
 _SLIDE_SECONDS = 5
+
+#: The kinds that are a Seedance-generated video when not a talking presenter.
+_AVATAR_KINDS = (ContentKind.AVATAR_VIDEO.value, ContentKind.ANIMATED_AVATAR_VIDEO.value)
 
 
 class CreationNotOffered(ValueError):
@@ -116,6 +127,19 @@ class VideoRates:
 
 
 @dataclass(frozen=True)
+class VideoQuota:
+    """v2 (founder, 2026-10-24): the month's generated videos, apart from creations."""
+
+    monthly_quota: int
+    #: The lengths a generated video is offered at (5 and 10 s); each counts as 1.
+    offered_seconds: tuple[int, ...]
+
+    @property
+    def max_seconds(self) -> int:
+        return self.offered_seconds[-1]
+
+
+@dataclass(frozen=True)
 class CreationWeights:
     """One versioned weights table (`creations_data/<version>.json`)."""
 
@@ -127,9 +151,26 @@ class CreationWeights:
     carousel_by_images: tuple[_Step, ...]
     generated_video_by_seconds: tuple[_Step, ...]
     presenter_by_seconds: tuple[_Step, ...]
-    #: v2 (pricing v7): the generated video priced from the table; None in v1, which
-    #: priced it by `generated_video_by_seconds` with no separate final.
+    #: v2 (pricing v7): the generated video's USD priced from the table (the team's
+    #: ceiling per video); None in v1.
     video_rates: VideoRates | None = None
+    #: v2: generated videos have their own monthly quota and use no creations; None in
+    #: v1, which priced them in creations by `generated_video_by_seconds`.
+    videos: VideoQuota | None = None
+
+    @property
+    def monthly_video_quota(self) -> int:
+        """How many generated videos a month brings (0 when the table has no quota)."""
+        return 0 if self.videos is None else self.videos.monthly_quota
+
+    def video(self, seconds: int) -> int:
+        """v2: one generated video — 1 of the month's videos at any offered length; a
+        longer one (15 s and up) is not offered."""
+        if self.videos is None:
+            raise CreationNotOffered(f"{self.version} has no video quota")
+        if seconds > self.videos.max_seconds:
+            raise CreationNotOffered(f"no video of {seconds} s is offered")
+        return 1
 
     def flat_weight(self, key: str) -> int:
         try:
@@ -147,26 +188,20 @@ class CreationWeights:
     def carousel(self, images: int) -> int:
         return self._stepped(self.carousel_by_images, max(images, 1), "a carousel")
 
-    def _creations(self, usd: Decimal) -> int:
-        return max(1, math.ceil(usd / self.usd_per_creation))
-
-    def generated_video_split(
+    def generated_video_usd(
         self,
         seconds: int,
         *,
         reference_videos: int = 0,
         input_video_seconds: float | None = None,
         audio: bool = False,
-    ) -> tuple[int, int]:
-        """(weight, final_weight) of one generated video: the whole weight is charged
-        when the piece is created; `final_weight` is the part of it that paid for the
-        1080p final (0 in v1, which had no separate final). A reference video whose
-        length is not known is priced at the most a task takes."""
+    ) -> Decimal:
+        """v2: what one generated video costs the team at p95 (480p preview + 1080p
+        final, USD) — the ceiling one of the month's videos stands for. A reference
+        video whose length is not known is priced at the most a task takes."""
         rates = self.video_rates
         if rates is None:
-            clamped = min(max(seconds, 1), _GENERATED_VIDEO_MAX_SECONDS)
-            steps = self.generated_video_by_seconds
-            return self._stepped(steps, clamped, "a generated video"), 0
+            raise KeyError(f"{self.version} prices no generated video in USD")
         source = 0.0
         if reference_videos > 0:
             source = (
@@ -175,15 +210,12 @@ class CreationWeights:
                 else max(input_video_seconds, 0.0)
             )
         preview, final = rates.cost(seconds, input_video_seconds=source, audio=audio)
-        weight = self._creations(preview + final)
-        return weight, weight - self._creations(preview)
+        return preview + final
 
-    def generated_video(
-        self, seconds: int, *, reference_videos: int = 0, input_video_seconds: float | None = None
-    ) -> int:
-        return self.generated_video_split(
-            seconds, reference_videos=reference_videos, input_video_seconds=input_video_seconds
-        )[0]
+    def generated_video(self, seconds: int) -> int:
+        """v1 only: a generated video in creations, by its steps (clamped to 15 s)."""
+        clamped = min(max(seconds, 1), _GENERATED_VIDEO_MAX_SECONDS)
+        return self._stepped(self.generated_video_by_seconds, clamped, "a generated video")
 
     def presenter(self, seconds: int) -> int:
         return self._stepped(self.presenter_by_seconds, max(seconds, 1), "a presenter")
@@ -253,6 +285,7 @@ def load_weights(version: str = CREATIONS_WEIGHTS_VERSION) -> CreationWeights:
         raise ValueError(f"{path.name} declares {raw.get('version')!r}, expected {version!r}")
     pricing_version = str(raw["pricing_table_version"])
     video = raw.get("generated_video")
+    videos = raw.get("videos")
     return CreationWeights(
         version=version,
         pricing_table_version=pricing_version,
@@ -263,24 +296,28 @@ def load_weights(version: str = CREATIONS_WEIGHTS_VERSION) -> CreationWeights:
         generated_video_by_seconds=_steps(raw.get("generated_video_by_seconds", [])),
         presenter_by_seconds=_steps(raw["presenter_by_seconds"]),
         video_rates=None if video is None else _video_rates(video, pricing_version),
+        videos=None
+        if videos is None
+        else VideoQuota(
+            monthly_quota=int(videos["monthly_quota"]),
+            offered_seconds=tuple(sorted(int(s) for s in videos["offered_seconds"])),
+        ),
     )
 
 
 @dataclass(frozen=True)
 class CreationPrice:
-    """What one request costs in creations, and what it is (for the charge's row)."""
+    """What one request costs — creations and (v2) generated videos — and what it is
+    (for the charge's row)."""
 
     request_kind: str
+    #: Creations (of the month's 30).
     weight: int
     #: The presenter's length the weight was read for (None for any other request).
     presenter_seconds: int | None = None
-    #: The part of `weight` that paid for 1080p finals (v2): charged at creation with
-    #: the rest, and the only part given back when a final fails. 0 = no final.
-    final_weight: int = 0
-
-    @property
-    def preview_weight(self) -> int:
-        return self.weight - self.final_weight
+    #: v2: how many of the month's generated videos it uses (a clip 1, a carousel one
+    #: per animated slide). Charged at creation; a failed 1080p final gives its back.
+    videos: int = 0
 
     @property
     def is_presenter(self) -> bool:
@@ -319,12 +356,11 @@ def weight_for_request(
 
     - an image: 1 (its other version too); as a carousel, by how many images it makes;
     - a script for a real person, a template (still or video): 1;
-    - a gallery: by its generated stills, plus each animated slide as a generated video
-      (`animated_slide_references`, same order: whether it follows a reference video);
-    - a clip, or an avatar on Seedance: a generated video of its length (for a clip,
-      `duration_seconds` is the CLIP's length), preview + 1080p final, plus the input
-      seconds of its reference videos (`reference_video_seconds`; unknown = the most a
-      task takes);
+    - a gallery: by its generated stills, plus (v2) one of the month's videos per
+      animated slide — with or without a reference video;
+    - a clip, or an avatar on Seedance: (v2) one of the month's videos and no
+      creations, at 5 or 10 s (for a clip `duration_seconds` is the CLIP's length);
+      longer is `CreationNotOffered`. The v1 table priced them in creations;
     - a talking presenter: by its length — the operator's own script's estimate, else the
       length asked; longer than the table's longest row is `CreationNotOffered` (v2:
       5, 10, 15 and 30 s only).
@@ -339,33 +375,34 @@ def weight_for_request(
             return CreationPrice(REQUEST_CAROUSEL, table.carousel(carousel_images))
         key = REQUEST_IMAGE_REDO if redo else REQUEST_IMAGE
         return CreationPrice(key, table.flat_weight(key))
+    # the reference videos, their length and the sound no longer change what a video
+    # uses (v2: 1 each); they still price the team's USD (`generated_video_usd`)
+    del animated_slide_references, reference_videos, reference_video_seconds, audio
     if kind == ContentKind.CAROUSEL.value:
-        weight, final = table.carousel(generated_slides), 0
-        references = (*animated_slide_references, *(False,) * len(animated_slide_seconds))
-        for seconds, referenced in zip(animated_slide_seconds, references, strict=False):
-            slide, slide_final = table.generated_video_split(
-                seconds, reference_videos=1 if referenced else 0
-            )
-            weight, final = weight + slide, final + slide_final
-        return CreationPrice(REQUEST_CAROUSEL, weight, final_weight=final)
+        weight = table.carousel(generated_slides)
+        if table.videos is None:
+            weight += sum(table.generated_video(s) for s in animated_slide_seconds)
+            return CreationPrice(REQUEST_CAROUSEL, weight)
+        videos = sum(table.video(s) for s in animated_slide_seconds)
+        return CreationPrice(REQUEST_CAROUSEL, weight, videos=videos)
     if kind == ContentKind.CLIP.value:
-        weight, final = table.generated_video_split(
-            duration_seconds,
-            reference_videos=reference_videos,
-            input_video_seconds=reference_video_seconds,
-            audio=audio,
-        )
-        return CreationPrice(REQUEST_GENERATED_VIDEO, weight, final_weight=final)
+        return _generated_video_price(table, duration_seconds)
     if is_presenter_request(kind, video_engine):
         seconds = own_script_seconds(own_script_chars) if own_script_chars else duration_seconds
         # priced at the row it falls in: a 22 s script is a 30 s presenter
         weight = table.presenter(seconds)
         bucket = next(s.up_to for s in table.presenter_by_seconds if seconds <= s.up_to)
         return CreationPrice(REQUEST_PRESENTER, weight, presenter_seconds=bucket)
-    if kind in (ContentKind.AVATAR_VIDEO.value, ContentKind.ANIMATED_AVATAR_VIDEO.value):
-        weight, final = table.generated_video_split(duration_seconds, audio=audio)
-        return CreationPrice(REQUEST_GENERATED_VIDEO, weight, final_weight=final)
+    if kind in _AVATAR_KINDS:
+        return _generated_video_price(table, duration_seconds)
     raise CreationNotOffered(f"no weight for kind {kind!r}")
+
+
+def _generated_video_price(table: CreationWeights, seconds: int) -> CreationPrice:
+    """One Seedance video: v2 one of the month's videos (no creations); v1 creations."""
+    if table.videos is None:
+        return CreationPrice(REQUEST_GENERATED_VIDEO, table.generated_video(seconds))
+    return CreationPrice(REQUEST_GENERATED_VIDEO, 0, videos=table.video(seconds))
 
 
 def weight_for(
@@ -391,8 +428,6 @@ def weight_for(
         generated_slides=sum(1 for s in slides if s.source is SlideSource.GENERATED),
         animated_slide_seconds=tuple(s.seconds or _SLIDE_SECONDS for s in animated),
         animated_slide_references=tuple(bool(s.reference_video_key) for s in animated),
-        # the brief does not carry the reference videos' length: priced at the most a
-        # task takes, so the charge is never below what the vendor bills
         reference_videos=len(media.clip_video_keys) if clip else 0,
         audio=media.clip_audio if clip else False,
         redo=redo,
@@ -413,6 +448,7 @@ __all__ = [
     "CreationNotOffered",
     "CreationPrice",
     "CreationWeights",
+    "VideoQuota",
     "VideoRates",
     "is_presenter_request",
     "load_weights",

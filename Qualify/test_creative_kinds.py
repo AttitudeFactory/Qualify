@@ -414,18 +414,18 @@ def test_a_piece_without_images_is_template_only(monkeypatch: pytest.MonkeyPatch
 
 def test_a_clip_brief_carries_the_chosen_length(monkeypatch: pytest.MonkeyPatch) -> None:
     """§ request 2026-10-23: «un límite de tiempo en los clips … desde 5 seg» — 5 s by
-    default, 10 or 15 when picked, and nothing else."""
+    default, 10 when picked, and nothing else (founder 2026-10-24: 15 s is not offered)."""
     state = CreativeState()
     assert state.clip_duration == "5"
     assert _submit(monkeypatch, "clip", state._clip_media()).media.duration_seconds == 5
     state.set_clip_duration("10")
     brief = _submit(monkeypatch, "clip", state._clip_media())
     assert brief.kind is ContentKind.CLIP and brief.media.duration_seconds == 10
-    for unknown in ("30", "4", "", []):
+    for unknown in ("30", "15", ["15"], "4", "", []):
         state.set_clip_duration(unknown)
         assert state.clip_duration == "10"
-    state.set_clip_duration(["15"])
-    assert state.clip_duration == "15"
+    state.set_clip_duration(["5"])
+    assert state.clip_duration == "5"
 
 
 def test_a_clip_comes_with_sound_unless_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:

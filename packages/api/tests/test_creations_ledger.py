@@ -326,7 +326,7 @@ def test_the_team_sees_the_real_dollars_next_to_the_creations() -> None:
     assert "pesos-creaciones-v1/v5" in text
 
 
-# -- v2 (m-24851828): preview + final charged at creation, the final's part refunded ---
+# -- videos (founder, 2026-10-24): their own quota of 4, charged at creation ---------------
 
 
 def _clip(seconds: int = 5):  # noqa: ANN202
@@ -338,54 +338,102 @@ def _clip(seconds: int = 5):  # noqa: ANN202
     )
 
 
-def test_a_clip_is_charged_whole_at_creation_with_its_final_part_recorded() -> None:
+def _balance(ledger: InMemoryCreationsLedger):  # noqa: ANN202
+    return ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID)
+
+
+def test_a_clip_uses_one_video_and_no_creations() -> None:
     ledger = InMemoryCreationsLedger()
     service, _, _ = _service(ledger)
     draft_id = service.create_draft(
-        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(5), user_id=USER_ID
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(10), user_id=USER_ID
     )
     price = ledger.rows[(draft_id, 1)].price
-    # a 5 s clip at its own length: 4 for the 480p preview + 19 for the 1080p final
-    assert (price.request_kind, price.weight, price.final_weight) == ("generated_video", 23, 19)
-    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 7
+    assert (price.request_kind, price.weight, price.videos) == ("generated_video", 0, 1)
+    balance = _balance(ledger)
+    assert (balance.left, balance.quota) == (30, 30)
+    assert (balance.videos_left, balance.video_quota) == (3, 4)
 
 
-def test_a_10_second_clip_does_not_fit_a_whole_month() -> None:
+def test_four_videos_then_the_fifth_is_refused_and_nothing_is_created() -> None:
     ledger = InMemoryCreationsLedger()
-    service, repo, _ = _service(ledger)
+    service, repo, dispatcher = _service(ledger)
+    for seconds in (5, 10, 5, 10):
+        service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(seconds), user_id=USER_ID
+        )
+    assert _balance(ledger).videos_left == 0
+    assert len(repo.drafts) == 4
     with pytest.raises(NotEnoughCreations) as refused:
         service.create_draft(
-            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(10), user_id=USER_ID
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_clip(5), user_id=USER_ID
         )
-    assert (refused.value.weight, refused.value.left) == (46, 30)
-    assert repo.drafts == {}
+    assert (refused.value.missing, refused.value.missing_videos) == (0, 1)
+    assert len(repo.drafts) == 4 and len(dispatcher.calls) == 4
+    # the creations are untouched: an image still goes through
+    service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID
+    )
+    assert _balance(ledger).left == 29
 
 
-def test_refund_final_gives_back_only_the_final_part_once() -> None:
+def test_a_carousel_charges_one_video_per_animated_slide() -> None:
+    ledger = InMemoryCreationsLedger(videos_used=2)
+    three = CreationPrice("carousel", 1, videos=3)
+    with pytest.raises(NotEnoughCreations) as refused:
+        ledger.charge(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=uuid4(), revision=1, price=three
+        )
+    assert (refused.value.videos, refused.value.videos_left) == (3, 2)
+    assert ledger.rows == {}
+    two = CreationPrice("carousel", 1, videos=2)
+    assert ledger.charge(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=uuid4(), revision=1, price=two
+    )
+    assert (_balance(ledger).left, _balance(ledger).videos_left) == (29, 0)
+
+
+def test_the_presenter_stays_in_creations() -> None:
+    ledger = InMemoryCreationsLedger(videos_used=4)  # no video left this month
+    service, _, _ = _service(ledger)
+    draft_id = service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_presenter(15), user_id=USER_ID
+    )
+    price = ledger.rows[(draft_id, 1)].price
+    assert (price.request_kind, price.weight, price.videos) == ("presenter", 13, 0)
+    assert (_balance(ledger).left, _balance(ledger).videos_left) == (17, 0)
+
+
+def test_refund_final_gives_back_one_video_per_failed_final_once() -> None:
     ledger = InMemoryCreationsLedger()
     draft = uuid4()
-    clip = CreationPrice("generated_video", 23, final_weight=19)
-    ledger.charge(tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, price=clip)
-    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 7
+    slides = CreationPrice("carousel", 1, videos=2)
+    ledger.charge(tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, price=slides)
+    assert _balance(ledger).videos_left == 2
+    first, second = uuid4(), uuid4()
     assert ledger.refund_final(
-        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="provider_error"
+        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="provider_error", asset_ids=(first,)
     )
-    # the preview's 4 stay charged; the row stays `charged` with the refund recorded
-    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 26
+    # one slide's final failed: its video comes back, the creations stay charged
+    assert (_balance(ledger).left, _balance(ledger).videos_left) == (29, 3)
     row = ledger.rows[(draft, 1)]
-    assert (row.status, row.final_refunded, row.final_reason) == (
-        CHARGED,
-        True,
-        "provider_error",
-    )
+    assert (row.status, row.videos_given_back, row.final_reason) == (CHARGED, 1, "provider_error")
+    # the same final failing again gives nothing more
     assert not ledger.refund_final(
-        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="provider_error"
+        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="again", asset_ids=(first,)
     )
-    assert ledger.balance(tenant_id=TENANT_ID, brand_id=BRAND_ID).left == 26
-    # a charge with no final has nothing of the kind to give
+    assert _balance(ledger).videos_left == 3
+    # the other slide, then nothing beyond the charge's videos
+    assert ledger.refund_final(
+        tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="x", asset_ids=(second, uuid4())
+    )
+    assert _balance(ledger).videos_left == 4
+    # a charge with no video has nothing of the kind to give
     image = uuid4()
     ledger.charge(tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=image, revision=1, price=IMAGE)
-    assert not ledger.refund_final(tenant_id=TENANT_ID, draft_id=image, revision=1, reason="x")
+    assert not ledger.refund_final(
+        tenant_id=TENANT_ID, draft_id=image, revision=1, reason="x", asset_ids=(uuid4(),)
+    )
 
 
 def _final_setup(fail: bool):  # noqa: ANN202
@@ -401,45 +449,45 @@ def _final_setup(fail: bool):  # noqa: ANN202
         brand_id=repo.drafts[draft_id].brand_id,
         draft_id=draft_id,
         revision=repo.drafts[draft_id].revision,
-        price=CreationPrice("generated_video", 23, final_weight=19),
+        price=CreationPrice("generated_video", 0, videos=1),
     )
     return ledger, service, repo, draft_id, variant_id, finals
 
 
-def _left(ledger: InMemoryCreationsLedger, repo, draft_id) -> int:  # noqa: ANN001
+def _videos_left(ledger: InMemoryCreationsLedger, repo, draft_id) -> int:  # noqa: ANN001
     brand = repo.drafts[draft_id].brand_id
-    return ledger.balance(tenant_id=TENANT_ID, brand_id=brand).left
+    return ledger.balance(tenant_id=TENANT_ID, brand_id=brand).videos_left
 
 
-def test_approving_charges_nothing_more_and_a_final_that_comes_out_keeps_it_all() -> None:
+def test_approving_charges_nothing_and_a_final_that_comes_out_keeps_the_video() -> None:
     ledger, service, repo, draft_id, variant_id, _ = _final_setup(fail=False)
-    assert _left(ledger, repo, draft_id) == 7
+    assert _videos_left(ledger, repo, draft_id) == 3
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
-    assert _left(ledger, repo, draft_id) == 7  # nothing is charged at approval
+    assert _videos_left(ledger, repo, draft_id) == 3  # nothing is charged at approval
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _left(ledger, repo, draft_id) == 7
+    assert _videos_left(ledger, repo, draft_id) == 3
 
 
-def test_a_failed_final_gives_back_its_part_and_its_retry_is_not_charged_again() -> None:
+def test_a_failed_final_gives_its_video_back_and_its_retry_is_free() -> None:
     ledger, service, repo, draft_id, variant_id, finals = _final_setup(fail=True)
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    # the vendor failed the 1080p final: its 19 come back, the preview's 4 stay
-    assert _left(ledger, repo, draft_id) == 26
+    # the vendor failed the 1080p final: the video comes back
+    assert _videos_left(ledger, repo, draft_id) == 4
     (row,) = ledger.rows.values()
-    assert row.status == CHARGED and row.final_refunded
+    assert row.status == CHARGED and row.videos_given_back == 1
     assert row.final_reason == "ModelArk falló."
     # failing again gives nothing more; the retry that comes out is not charged again
     service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _left(ledger, repo, draft_id) == 26
+    assert _videos_left(ledger, repo, draft_id) == 4
     finals.fail = False
     service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _left(ledger, repo, draft_id) == 26
+    assert _videos_left(ledger, repo, draft_id) == 4
 
 
-def test_a_final_that_breaks_in_our_code_gives_back_its_part_too() -> None:
+def test_a_final_that_breaks_in_our_code_gives_its_video_back_too() -> None:
     from . import test_content_service_final as tf
 
     class Exploding(tf.FakeFinals):
@@ -450,33 +498,35 @@ def test_a_final_that_breaks_in_our_code_gives_back_its_part_too() -> None:
     service._media = Exploding()  # type: ignore[assignment]
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _left(ledger, repo, draft_id) == 26
+    assert _videos_left(ledger, repo, draft_id) == 4
     (row,) = ledger.rows.values()
     assert row.final_reason == "final_failed"
 
 
-def test_the_report_counts_a_refunded_final_as_given_back() -> None:
+def test_the_report_counts_a_refunded_final_as_a_video_given_back() -> None:
     draft = uuid4()
     at = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
     charge = ChargeRow(
         brand_id=BRAND_ID,
         draft_id=draft,
         revision=1,
-        request_kind="generated_video",
-        weight=23,
+        request_kind="carousel",
+        weight=1,
         status=CHARGED,
         weights_version="pesos-creaciones-v2",
         pricing_table_version="v7",
         period_month=date(2026, 10, 1),
         charged_at=at,
-        final_weight=19,
-        final_refunded=True,
+        videos=3,
+        videos_given_back=1,
     )
-    pieces, months = build_report([charge], {draft: Decimal("0.60")}, quota=30)
+    pieces, months = build_report([charge], {draft: Decimal("7.10")}, quota=30, video_quota=4)
     (piece,) = pieces
-    assert (piece.creations_charged, piece.creations_refunded) == (4, 19)
-    assert months[0].creations_used == 4
-    assert "pesos-creaciones-v2/v7" in render(pieces, months)
+    assert (piece.creations_charged, piece.videos_charged, piece.videos_refunded) == (1, 2, 1)
+    assert (months[0].creations_used, months[0].videos_used) == (1, 2)
+    text = render(pieces, months)
+    assert "pesos-creaciones-v2/v7" in text
+    assert "videos 2, devueltos 1" in text and "2 de 4 videos" in text
 
 
 # -- «Variaciones»: the batch is all or nothing --------------------------------------------

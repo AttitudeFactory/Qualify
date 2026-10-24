@@ -710,8 +710,9 @@ class CreationCharge(Base):
     """One charged generation in «creaciones del mes» (0088, CREAR-5 m-24848531): its
     weight and the versions that priced it. A refund keeps the row and turns its status;
     the dollars stay in `creative_usage_events`, joined by `draft_id` for the team.
-    `final_weight` (v2, m-24851828) is the part of `weight` that paid for the 1080p
-    finals; a failed final gives back only that part (`final_refunded_at`)."""
+    `videos` (founder, 2026-10-24) is how many of the month's generated videos it used
+    (their own quota, `monthly_video_quota`); a failed 1080p final gives its video back
+    by adding its asset to `final_refunded_assets`."""
 
     __tablename__ = "creation_charges"
     __table_args__ = (
@@ -744,7 +745,13 @@ class CreationCharge(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    final_weight: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    videos: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    monthly_video_quota: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    final_refunded_assets: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PGUUID(as_uuid=True)), nullable=False, server_default=text("'{}'::uuid[]")
+    )
     final_refunded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

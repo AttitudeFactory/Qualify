@@ -124,6 +124,7 @@ from .creative_vm import (
     PRESENTER_TOO_LONG,
     SHORT_ADVICE_SIMPLER,
     VIDEO_DRAFT,
+    VIDEO_TOO_LONG,
     VIDEO_TYPE_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
@@ -151,6 +152,7 @@ from .creative_vm import (
     presenter_fallback_text,
     remove_phrase,
     seen_label,
+    videos_short_text,
 )
 from .gallery_state import schedule_readiness
 from .pending_state import PendingState
@@ -285,9 +287,9 @@ CLIP_MAX_VIDEOS = 3
 STOCK_MAX_PICKS = 6
 CLIP_MAX_AUDIOS = 3
 #: The lengths a clip can be asked for (§ request 2026-10-23: «que empiece desde 5 seg»).
-#: Seedance 2.0 takes 4–15 s (2.5 up to 30, 1.0 up to 12 — the adapter clamps it); clips
-#: are capped at 15 s.
-CLIP_DURATIONS = ("5", "10", "15")
+#: Founder, 2026-10-24: a generated video is 5 or 10 s and counts as one of the month's
+#: videos; 15 s is not offered (`pesos-creaciones-v2` → `videos.offered_seconds`).
+CLIP_DURATIONS = ("5", "10")
 #: What a photo taken from the catalog product is called in the editor.
 _CATALOG_PHOTO = "Foto del catálogo"
 #: What a file of a stock inspiration is called in the editor (§ 2026-10-19: «stock» is
@@ -4544,7 +4546,7 @@ class CreativeState(rx.State):
         if self._is_presenter():
             if value in self._duration_choices():
                 self.media_duration = self.presenter_duration = value
-        elif value in DURATIONS:
+        elif value in self._duration_choices():
             self.media_duration = value
 
     @rx.event
@@ -4855,6 +4857,19 @@ class CreativeState(rx.State):
     creations_quota: int = 0
     #: The day it renews, as the owner reads it («1 de noviembre»; "" = unknown).
     creations_renews: str = ""
+    #: The month's generated videos (founder, 2026-10-24; 0 quota = none wired).
+    videos_left: int = 0
+    videos_quota: int = 0
+
+    def _videos_short(self, price: CreationPrice) -> str:
+        """What a piece whose videos the month cannot pay says ("" = it can)."""
+        if self.creations_left < 0 or self.videos_quota <= 0 or price.videos <= 0:
+            return ""
+        if price.videos <= self.videos_left:
+            return ""
+        return videos_short_text(
+            price.videos, self.videos_left, self.videos_quota, renews=self.creations_renews
+        )
 
     def _not_enough_text(self, missing: int) -> str:
         """«Te faltan N…» plus what to do now: something simpler — only when anything is
@@ -4926,17 +4941,19 @@ class CreativeState(rx.State):
         if price is None:
             if self._is_presenter() and not (self.own_script_on and self.own_script.strip()):
                 return _PRESENTER_LENGTHS
-            return PRESENTER_TOO_LONG
+            return PRESENTER_TOO_LONG if self._is_presenter() else VIDEO_TOO_LONG
         if price.weight > self.creations_left:
             return self._not_enough_text(price.weight - self.creations_left)
-        return ""
+        return self._videos_short(price)
 
     @rx.var
     def creations_left_text(self) -> str:
         """«Te quedan 18 de 30 este mes» ("" with no quota)."""
         if self.creations_left < 0:
             return ""
-        return creations_left_label(self.creations_left, self.creations_quota)
+        return creations_left_label(
+            self.creations_left, self.creations_quota, self.videos_left, self.videos_quota
+        )
 
     @rx.var(cache=False)
     def gen_creations_notice(self) -> str:
@@ -4946,7 +4963,7 @@ class CreativeState(rx.State):
         if self.creations_left < 0 or not self._on_summary():
             return ""
         price = self._creations_price()
-        if price is None or price.weight > self.creations_left:
+        if price is None or price.weight > self.creations_left or self._videos_short(price):
             return ""
         video = self.brief_kind in ("clip", "avatar_video", "animated_avatar_video") or (
             self.gen_category == "ad"
@@ -4957,6 +4974,9 @@ class CreativeState(rx.State):
             self.creations_quota,
             presenter=price.is_presenter,
             video=video,
+            videos=price.videos if self.videos_quota > 0 else 0,
+            videos_left=self.videos_left,
+            video_quota=self.videos_quota,
         )
 
     @rx.var(cache=False)
@@ -4984,10 +5004,17 @@ class CreativeState(rx.State):
 
     def _duration_choices(self) -> list[str]:
         """v2 (founder, 2026-10-24): a presenter is offered at 5, 10, 15 and 30 s only —
-        the rows of the weights table; 45 and 60 s are never offered."""
+        the rows of the weights table; 45 and 60 s are never offered. An avatar on
+        Seedance is a generated video: 5 or 10 s, one of the month's videos."""
+        table = load_weights()
+        if self.brief_kind in ("avatar_video", "animated_avatar_video") and not (
+            self._is_presenter()
+        ):
+            if table.videos is not None:
+                return [str(s) for s in table.videos.offered_seconds]
+            return list(DURATIONS)
         if not is_presenter_request(self.brief_kind, self.video_engine):
             return list(DURATIONS)
-        table = load_weights()
         lengths = [step.up_to for step in table.presenter_by_seconds]
         if self.creations_left >= 0:
             fits = [s for s in lengths if table.presenter(s) <= self.creations_left]
@@ -4996,20 +5023,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_duration_choices(self) -> list[str]:
-        """A clip's lengths (5/10/15 s) the month can pay for, priced as preview + final
-        with its references (`pesos-creaciones-v2`) — at least the shortest, so the
-        control never empties and the summary says what is missing."""
+        """A clip's lengths: 5 or 10 s, each one of the month's videos whatever its
+        length or references (founder, 2026-10-24) — so the month never narrows them;
+        when no video is left the summary says so."""
         return self._clip_duration_choices()
 
     def _clip_duration_choices(self) -> list[str]:
-        if self.brief_kind != "clip" or self.creations_left < 0:
-            return list(CLIP_DURATIONS)
-        fits = []
-        for value in CLIP_DURATIONS:
-            price = self._price_for(int(value))
-            if price is not None and price.weight <= self.creations_left:
-                fits.append(value)
-        return fits or list(CLIP_DURATIONS[:1])
+        return list(CLIP_DURATIONS)
 
     @rx.event
     def use_short_presenter(self) -> None:
@@ -5029,8 +5049,15 @@ class CreativeState(rx.State):
         async with self:
             if balance is None:
                 self.creations_left, self.creations_quota, self.creations_renews = -1, 0, ""
+                self.videos_left, self.videos_quota = 0, 0
             else:
-                self.creations_left, self.creations_quota, self.creations_renews = balance
+                (
+                    self.creations_left,
+                    self.creations_quota,
+                    self.creations_renews,
+                    self.videos_left,
+                    self.videos_quota,
+                ) = balance
                 self._fit_duration()
 
     # -- «Resumen» (§ request 2026-10-20): every option's last view, where Generar is ------
@@ -5534,12 +5561,18 @@ class CreativeState(rx.State):
             await self._refresh_creations(tenant_id, brand_id)
             async with self:
                 self.is_submitting = False
-                self.create_error = self._not_enough_text(exc.missing)
+                self.create_error = (
+                    self._not_enough_text(exc.missing)
+                    if exc.missing
+                    else videos_short_text(
+                        exc.videos, exc.videos_left, self.videos_quota, renews=self.creations_renews
+                    )
+                )
             return None
         except CreationNotOffered:
             async with self:
                 self.is_submitting = False
-                self.create_error = PRESENTER_TOO_LONG
+                self.create_error = PRESENTER_TOO_LONG if self._is_presenter() else VIDEO_TOO_LONG
             return None
         except (ValidationError, ValueError) as exc:
             # the validators' messages only — never `input_value`, which holds the form
@@ -5979,13 +6012,28 @@ class CreativeState(rx.State):
             if quote is None:
                 self.regen_creations_text, self.regen_creations_short = "", False
                 return
-            weight, left, quota, renews = quote
-            self.regen_creations_short = weight > left
-            self.regen_creations_text = (
-                not_enough_creations_text(weight - left, quota=quota, renews=renews)
-                if weight > left
-                else creations_use_notice(weight, left, quota, subject="La nueva versión")
-            )
+            weight, left, quota, renews, videos, videos_left, video_quota = quote
+            videos = videos if video_quota > 0 else 0
+            videos_short = videos > videos_left
+            self.regen_creations_short = weight > left or videos_short
+            if weight > left:
+                self.regen_creations_text = not_enough_creations_text(
+                    weight - left, quota=quota, renews=renews
+                )
+            elif videos_short:
+                self.regen_creations_text = videos_short_text(
+                    videos, videos_left, video_quota, renews=renews
+                )
+            else:
+                self.regen_creations_text = creations_use_notice(
+                    weight,
+                    left,
+                    quota,
+                    subject="La nueva versión",
+                    videos=videos,
+                    videos_left=videos_left,
+                    video_quota=video_quota,
+                )
 
     @staticmethod
     async def _schedule_readiness(tenant_id: UUID, draft_id: str) -> tuple[bool, str]:
@@ -6192,6 +6240,10 @@ class CreativeState(rx.State):
                     self.regen_creations_text
                     if self.regen_creations_short
                     else not_enough_creations_text(exc.missing)
+                    if exc.missing
+                    else videos_short_text(
+                        exc.videos, exc.videos_left, load_weights().monthly_video_quota
+                    )
                 )
             return
         except SQLAlchemyError as exc:

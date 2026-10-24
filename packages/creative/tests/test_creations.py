@@ -68,7 +68,8 @@ def test_the_measured_weights_v1_are_kept() -> None:
         weight_for_request("clip", duration_seconds=s, weights=v1).weight for s in (5, 10, 15)
     ] == [3, 5, 6]
     clip = weight_for_request("clip", duration_seconds=5, weights=v1)
-    assert clip.final_weight == 0  # v1 had no separate final
+    assert clip.videos == 0  # v1 had no video quota: clips were creations
+    assert load_weights(V1).monthly_video_quota == 0
     assert weight_for_request("clip", duration_seconds=30, weights=v1).weight == 6
     assert weight_for_request("avatar_video", duration_seconds=5, weights=v1).weight == 13
     assert weight_for_request("avatar_video", duration_seconds=30, weights=v1).weight == 25
@@ -86,23 +87,31 @@ def test_the_weights_v2() -> None:
         2,
         3,
     ]
-    clips = [weight_for_request("clip", duration_seconds=s) for s in (5, 10, 15)]
-    assert [(c.weight, c.preview_weight, c.final_weight) for c in clips] == [
-        (23, 4, 19),
-        (46, 8, 38),
-        (68, 12, 56),
+    # founder 2026-10-24: a generated clip is 1 of the month's 4 videos, no creations
+    clips = [weight_for_request("clip", duration_seconds=s) for s in (5, 10)]
+    assert [(c.request_kind, c.weight, c.videos) for c in clips] == [
+        (REQUEST_GENERATED_VIDEO, 0, 1),
+        (REQUEST_GENERATED_VIDEO, 0, 1),
     ]
     presenters = [weight_for_request("avatar_video", duration_seconds=s) for s in (5, 10, 15, 30)]
     assert [p.weight for p in presenters] == [5, 9, 13, 25]
-    # OmniHuman has no preview/final: nothing is given back separately
-    assert {p.final_weight for p in presenters} == {0}
+    # the presenter (OmniHuman) stays in creations: it uses no video
+    assert {p.videos for p in presenters} == {0}
 
 
-def test_a_5_second_clip_is_priced_as_5_seconds_not_15() -> None:
-    """UX review 2026-10-24 §Pesos 1: the clip's own length, never the presenter's."""
-    five = weight_for_request("clip", duration_seconds=5)
-    fifteen = weight_for_request("clip", duration_seconds=15)
-    assert five.weight == 23 and fifteen.weight == 68
+def test_videos_have_their_own_monthly_quota() -> None:
+    """Founder 2026-10-24: 4 videos a month, each up to 10 s, apart from the 30."""
+    weights = load_weights()
+    assert weights.monthly_video_quota == 4
+    assert weights.videos is not None and weights.videos.offered_seconds == (5, 10)
+    assert weights.monthly_quota == 30
+
+
+def test_a_15_second_clip_is_not_offered() -> None:
+    """Founder 2026-10-24: 5 or 10 s; 15 s clips are not offered (nor anything longer)."""
+    for seconds in (15, 30):
+        with pytest.raises(CreationNotOffered):
+            weight_for_request("clip", duration_seconds=seconds)
 
 
 def test_the_v2_video_rates_come_from_pricing_table_v7() -> None:
@@ -133,31 +142,34 @@ def test_the_v2_video_rates_come_from_pricing_table_v7() -> None:
         assert step.weight == math.ceil(usd / Decimal("0.15"))
 
 
-def test_a_reference_video_is_priced_with_its_input_seconds() -> None:
+def test_a_clip_with_a_reference_video_is_still_one_video() -> None:
+    """Founder 2026-10-24: a clip with a reference video counts as 1, whatever its input."""
+    for seconds in (None, 3, 7.33):
+        price = weight_for_request(
+            "clip", duration_seconds=10, reference_videos=1, reference_video_seconds=seconds
+        )
+        assert (price.weight, price.videos) == (0, 1)
+
+
+def test_the_team_still_sees_what_a_video_costs_in_dollars() -> None:
     """docs/modelos-generativos/seedance-2-5.md: the input video's seconds are billed at
-    the with-video rate; an unknown length is priced at the most a task takes (30 s)."""
-    measured = weight_for_request(
-        "clip", duration_seconds=5, reference_videos=1, reference_video_seconds=7.33
-    )
-    assert (measured.weight, measured.final_weight) == (34, 28)
-    unknown = weight_for_request("clip", duration_seconds=5, reference_videos=1)
-    assert unknown.weight == 95
-    short = weight_for_request(
-        "clip", duration_seconds=5, reference_videos=1, reference_video_seconds=3
-    )
-    assert short.weight == 22  # the cheaper with-video rate, plus 3 s of input
+    the with-video rate; an unknown length is priced at the most a task takes (30 s).
+    It is the team's ceiling per video, never a weight."""
+    weights = load_weights()
+    five, ten = weights.generated_video_usd(5), weights.generated_video_usd(10)
+    assert Decimal("3") < five < ten < Decimal("7")
+    measured = weights.generated_video_usd(5, reference_videos=1, input_video_seconds=7.33)
+    unknown = weights.generated_video_usd(5, reference_videos=1)
+    assert five < measured < unknown
+    # v7 has one rate with or without «Con audio»
+    assert weights.generated_video_usd(10, audio=True) == ten
 
 
-def test_the_sound_does_not_change_the_weight() -> None:
-    """v7 has one rate with or without «Con audio» and SD25-001 billed no extra tokens."""
-    for seconds in (5, 10, 15):
+def test_the_sound_does_not_change_what_a_clip_uses() -> None:
+    for seconds in (5, 10):
         loud = weight_for_request("clip", duration_seconds=seconds, audio=True)
         silent = weight_for_request("clip", duration_seconds=seconds, audio=False)
         assert loud == silent
-
-
-def test_a_clip_longer_than_the_table_prices_is_priced_at_its_longest() -> None:
-    assert weight_for_request("clip", duration_seconds=30).weight == 68
 
 
 def test_a_presenter_of_45_or_60_seconds_is_not_offered() -> None:
@@ -184,29 +196,30 @@ def test_the_operators_own_script_is_priced_by_how_long_it_reads() -> None:
 
 
 def test_an_avatar_on_seedance_is_a_generated_video_not_a_presenter() -> None:
-    price = weight_for_request(
-        "avatar_video", duration_seconds=15, video_engine=VideoEngine.SEEDANCE.value
-    )
-    assert (price.request_kind, price.weight, price.final_weight) == (
-        REQUEST_GENERATED_VIDEO,
-        68,
-        56,
-    )
+    seedance = VideoEngine.SEEDANCE.value
+    for kind in ("avatar_video", "animated_avatar_video"):
+        price = weight_for_request(kind, duration_seconds=10, video_engine=seedance)
+        assert (price.request_kind, price.weight, price.videos) == (REQUEST_GENERATED_VIDEO, 0, 1)
+        with pytest.raises(CreationNotOffered):
+            weight_for_request(kind, duration_seconds=15, video_engine=seedance)
 
 
-def test_a_gallery_pays_its_stills_and_each_animated_slide() -> None:
-    assert weight_for_request("carousel", generated_slides=3).weight == 1
-    # two stills (1) + one animated 5 s slide (23, of which 19 pay its final)
+def test_a_carousel_uses_one_video_per_animated_slide() -> None:
+    """Founder 2026-10-24: a carousel with N animated slides uses N videos; the carousel
+    itself stays in creations."""
+    assert weight_for_request("carousel", generated_slides=3).videos == 0
     price = weight_for_request("carousel", generated_slides=2, animated_slide_seconds=(5,))
-    assert (price.request_kind, price.weight, price.final_weight) == (REQUEST_CAROUSEL, 24, 19)
-    # an animated slide that follows a reference video of unknown length
-    referenced = weight_for_request(
+    assert (price.request_kind, price.weight, price.videos) == (REQUEST_CAROUSEL, 1, 1)
+    three = weight_for_request(
         "carousel",
         generated_slides=2,
-        animated_slide_seconds=(5,),
-        animated_slide_references=(True,),
+        animated_slide_seconds=(5, 10, 5),
+        animated_slide_references=(True, False, True),
     )
-    assert referenced.weight == 1 + 95
+    assert (three.weight, three.videos) == (1, 3)
+    # a slide longer than 10 s is not offered
+    with pytest.raises(CreationNotOffered):
+        weight_for_request("carousel", animated_slide_seconds=(15,))
     # only reused pieces: still the copy, never free
     assert weight_for_request("carousel").weight == 1
 
@@ -256,15 +269,14 @@ def test_the_charge_reads_the_same_rule_off_the_stored_brief() -> None:
     )
     assert weight_for(presenter).weight == 25
     clip = _brief(ContentKind.CLIP, fmt=ContentFormat.REELS_9_16, duration_seconds=5)
-    assert (weight_for(clip).weight, weight_for(clip).final_weight) == (23, 19)
+    assert (weight_for(clip).weight, weight_for(clip).videos) == (0, 1)
     referenced = _brief(
         ContentKind.CLIP,
         fmt=ContentFormat.REELS_9_16,
-        duration_seconds=5,
+        duration_seconds=10,
         clip_video_keys=("uploads/t/ref.mp4",),
     )
-    # the brief carries no length for the reference video: the most a task takes
-    assert weight_for(referenced).weight == 95
+    assert (weight_for(referenced).weight, weight_for(referenced).videos) == (0, 1)
 
 
 def test_the_data_file_matches_the_measurement_doc_name() -> None:
