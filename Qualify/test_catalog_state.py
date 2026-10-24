@@ -339,13 +339,13 @@ def test_crear_publicacion_waits_for_the_upload_to_finish() -> None:
 
 async def test_the_services_spanish_refusal_shows_as_the_form_error(monkeypatch) -> None:
     def fake_create(*args: Any, **kwargs: Any) -> UUID:
-        raise CatalogError("a product needs a name")
+        raise CatalogError("El producto necesita un nombre.")
 
     monkeypatch.setattr(catalog_state_module, "create_product", fake_create)
     state = _state(monkeypatch)
     state.new_name = "X"
     await _drain(CatalogState.submit_new_product.fn(state))
-    assert state.form_error == "a product needs a name"
+    assert state.form_error == "El producto necesita un nombre."
     assert state.saving is False
 
 
@@ -465,7 +465,7 @@ async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
 
     def fake_add_media(tenant_id: UUID, product_id: UUID, *, data: bytes, filename: str) -> None:
         if filename.endswith(".mov"):
-            raise CatalogError("el video no se pudo procesar: ffmpeg")
+            raise CatalogError("No pudimos abrir este video. Prueba con otro archivo.")
         stored.append((tenant_id, product_id, data, filename))
 
     refreshed = {"n": 0}
@@ -505,7 +505,7 @@ async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
 
     assert [(f, d) for _t, _p, d, f in stored] == [("a.jpg", b"jpg-bytes")]
     assert stored[0][0] == _TENANT_ID and stored[0][1] == _PRODUCT_ID
-    assert "clip.mov" in state.upload_error and "ffmpeg" in state.upload_error
+    assert "clip.mov" in state.upload_error and "No pudimos abrir este video" in state.upload_error
     assert not good.exists() and not bad.exists()  # staging is cleaned either way
     assert state.uploading is False and state._pending == []
     assert refreshed["n"] == 1

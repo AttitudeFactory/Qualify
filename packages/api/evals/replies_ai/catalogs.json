@@ -1,0 +1,27 @@
+{
+  "_comment": "FICTIONAL businesses for the synthetic smoke set (ATENDER-4a, m-24848532). Not clients; no real tenant data.",
+  "arepera": {
+    "business_name": "La Arepera de Rosa",
+    "products": [
+      {"name": "Arepa de queso", "price": "$8.000 COP", "price_amount": "8000", "currency": "COP", "category": "Arepas", "description": "Arepa de maíz amarillo rellena de queso costeño"},
+      {"name": "Arepa reina pepiada", "price": "$12.000 COP", "price_amount": "12000", "currency": "COP", "category": "Arepas", "description": "Pollo, aguacate y mayonesa"},
+      {"name": "Jugo de lulo", "price": "$5.000 COP", "price_amount": "5000", "currency": "COP", "category": "Bebidas", "description": "Natural, en agua o en leche"}
+    ]
+  },
+  "dulces": {
+    "business_name": "Dulces Mariela",
+    "products": [
+      {"name": "Torta tres leches", "price": "$25", "price_amount": "25", "currency": "USD", "category": "Tortas", "description": "Para 12 personas"},
+      {"name": "Quesillo", "price": "$15", "price_amount": "15", "currency": "USD", "category": "Postres", "description": "Molde mediano"},
+      {"name": "Tequeños de fiesta (50 u.)", "price": "$20", "price_amount": "20", "currency": "USD", "category": "Pasapalos", "description": ""}
+    ]
+  },
+  "pizzeria": {
+    "business_name": "Pizzería del Puerto",
+    "products": [
+      {"name": "Muzzarella", "price": "$450 UYU", "price_amount": "450", "currency": "UYU", "category": "Pizzas", "description": "8 porciones"},
+      {"name": "Fainá", "price": "$120 UYU", "price_amount": "120", "currency": "UYU", "category": "Acompañamientos", "description": ""},
+      {"name": "Chivito al pan", "price": "$520 UYU", "price_amount": "520", "currency": "UYU", "category": "Chivitos", "description": "Con papas fritas"}
+    ]
+  }
+}

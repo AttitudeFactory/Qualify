@@ -91,14 +91,14 @@ def _card_menu(event) -> rx.Component:
                 size="1",
                 variant="ghost",
                 color_scheme="gray",
-                aria_label="Acciones del evento",
+                aria_label="Acciones de la publicación",
             ),
         ),
         rx.dropdown_menu.content(
             rx.dropdown_menu.item("Ver detalle", on_click=PlannerState.open_detail(event.event_id)),
             rx.cond(
                 event.detail_href != "",
-                rx.dropdown_menu.item("Ver POST", on_click=rx.redirect(event.detail_href)),
+                rx.dropdown_menu.item("Ver publicación", on_click=rx.redirect(event.detail_href)),
             ),
             rx.cond(
                 event.can_modify,
@@ -712,7 +712,7 @@ def _post_option(post) -> rx.Component:
         actions=rx.hstack(
             rx.cond(
                 post.detail_href != "",
-                rx.link(rx.text("Ver POST", size="1"), href=post.detail_href),
+                rx.link(rx.text("Ver publicación", size="1"), href=post.detail_href),
             ),
             rx.spacer(),
             rx.button(
@@ -1206,7 +1206,7 @@ def planner_index() -> rx.Component:
     return app_shell(
         page_header(
             "Tu semana",
-            "Qué se publica, cuándo y en qué cuenta.",
+            "Tus publicaciones de la semana, listas para aprobar y programar.",
             _view_toggle(),
             _assign_button(),
         ),
