@@ -52,6 +52,7 @@ class FakeMeegle:
         self.comments: list[tuple[int, str]] = []
         self.operations: list[tuple[int, str, str, str]] = []
         self.refuse_operate: Exception | None = None
+        self.keys: dict[str, str] = dict(KEYS)  # the type's fields, by display name
 
     def query(self, ids: list[int]) -> list[WorkItem]:
         return [self.items[i] for i in ids if i in self.items]
@@ -78,7 +79,7 @@ class FakeMeegle:
                 "select" if name == "Estado Qualify" else "text",
                 STATUS_OPTIONS if name == "Estado Qualify" else (),
             )
-            for name, key in KEYS.items()
+            for name, key in self.keys.items()
         ]
 
     def workflow(self, work_item_id: int) -> list[WorkflowNode]:
@@ -168,6 +169,71 @@ def engine(meegle: FakeMeegle, invites: Invites) -> OnboardingEngine:
 # --------------------------------------------------------------------------------------
 # Datos completed → invitation
 # --------------------------------------------------------------------------------------
+
+
+def _with_instagram(meegle: FakeMeegle, value: Any) -> None:
+    meegle.keys["Cuenta de Instagram"] = "f_instagram"
+    meegle.items[ITEM].fields["f_instagram"] = value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "@LaNona.Arepera",
+        "https://www.instagram.com/lanona.arepera/?igsh=abc123",
+        {"doc_text": " lanona.arepera ", "doc": "{...}"},
+    ],
+)
+def test_datos_reads_the_instagram_account_normalized(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, value: Any
+) -> None:
+    _with_instagram(meegle, value)
+    result = engine.start_invitation(ITEM)
+    assert result.ok and result.instagram_handle == "lanona.arepera"
+    assert engine.instagram_handle(meegle.items[ITEM]) == "lanona.arepera"
+    # read only: nothing about Instagram is written back or passed to the invite (PB-4)
+    ((_, pairs),) = meegle.updates
+    assert "f_instagram" not in pairs
+    (created,) = invites.created
+    assert "lanona" not in repr(created)
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "no tengo", "https://facebook.com/x"])
+def test_an_empty_or_invalid_instagram_never_breaks_the_invitation(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, value: Any
+) -> None:
+    _with_instagram(meegle, value)
+    result = engine.start_invitation(ITEM)
+    assert result.ok and result.instagram_handle is None
+    assert len(invites.sent) == 1 and len(meegle.updates) == 1
+
+
+def test_a_type_without_the_instagram_field_still_invites(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    assert "Cuenta de Instagram" not in meegle.keys  # the founder has not created it yet
+    result = engine.start_invitation(ITEM)
+    assert result.ok and result.instagram_handle is None
+    assert len(invites.sent) == 1
+
+
+def test_the_legacy_instagram_tiktok_field_is_never_read(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Instagram / TikTok"] = "field_7ec111"
+    meegle.items[ITEM].fields["field_7ec111"] = "@legacy"
+    _with_instagram(meegle, "")
+    result = engine.start_invitation(ITEM)
+    assert result.ok and result.instagram_handle is None
+
+
+def test_a_failed_invitation_still_reports_the_instagram_account(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    _with_instagram(meegle, "@lanona")
+    invites.send_raises = MailError("boom")
+    result = engine.start_invitation(ITEM)
+    assert not result.ok and result.instagram_handle == "lanona"
 
 
 def test_datos_creates_the_invite_mails_it_and_writes_back(

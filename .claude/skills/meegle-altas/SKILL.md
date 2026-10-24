@@ -22,7 +22,7 @@ through the CLI/MCP. Do not confuse its write formats with the Open API the engi
 | Web host for links | `https://project.larksuite.com/5h2wsx/…` (Issues `/issue/detail/<id>`, Features `/story/detail/<id>`, Altas `/alta_cliente/detail/<id>`) |
 | Type «Alta de cliente» | `6ad27a818d034c2af89a26d1` (api name `alta_cliente`), node flow |
 | Nodes | Start → **Datos** → **Invitada** → **Registrada** → Kit de marca listo → Primera publicación (last two are completed by hand today) |
-| Fields a person fills | Correo `field_29cd26` · Nombre de la persona `field_c8031e` · Nota personal `field_3282f4` (name = the business) |
+| Fields a person fills | Correo `field_29cd26` · Nombre de la persona `field_c8031e` · Nota personal `field_3282f4` (name = the business) · **Cuenta de Instagram** `field_dbfee5` (single-line text, optional, in the detail and creation layouts; m-24852194). Legacy «Instagram / TikTok» `field_7ec111` also exists — **unused, never read by Qualify** |
 | Fields Qualify writes | Estado Qualify `field_4c0e3a` · Enlace `field_030caa` · Vence `field_e41757` · Registrada el `field_2428e7` · Tenant `field_79b2e5` · Qualify ref `field_bad786` (= `signup_invites.id`) |
 | Estado Qualify options | pendiente `nn3fbfvn_` · invitada `wfs1n6zlv` · entregada `02oruntuu` · abierta `0ogw11wex` · rebotó `6kw6hd1cl` · registrada `g8fvke61g` · vencida `7rpgqmjod` · error `sl5hpvl2l` |
 | Acting user (`X-User-Key`) | Herwin `7697105028321938981` (until the «Qualify bot» member of D1 exists) |
@@ -32,6 +32,16 @@ through the CLI/MCP. Do not confuse its write formats with the Open API the engi
 The engine resolves fields/nodes **by display name** (`SchemaResolver`), so renaming a field or node in
 Meegle breaks it (the event retries, then dies with the name in `last_error`). Rename only together with
 `QUALIFY_MEEGLE_FIELD_*` / `QUALIFY_MEEGLE_NODE_*`.
+
+**Cuenta de Instagram is the one optional field** (`MeegleNames.instagram`, override
+`QUALIFY_MEEGLE_FIELD_INSTAGRAM`): if the type lacks it, or it is empty or not an account, the
+invitation goes out exactly as before and nothing is retried. `OnboardingEngine.start_invitation`
+returns it normalized in `InvitationResult.instagram_handle` (`qualify_api.meegle.instagram.
+normalize_instagram_handle`: `@Usuario`, `usuario`, `https://www.instagram.com/usuario/`,
+`instagram.com/usuario?igsh=…` → `usuario`; anything else → `None`). It is read only — nothing acts
+on it until the Brand Kit prefill (PB-4, m-24852198). The field was created in the UI on
+2026-10-24 (Space Configuration → «Alta de cliente» → Fields, plus the detail and creation
+layouts, §3). Do not read the legacy «Instagram / TikTok» field: it is unused.
 
 ## 2. Operating an alta (what to tell the founder)
 
