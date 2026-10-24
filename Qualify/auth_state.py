@@ -423,6 +423,7 @@ class AuthState(rx.State):
         """Drop the Brand Kit's in-memory draft (cached brand id, wizard cursor, staged
         files) when the tenant behind it changes without a logout."""
         from .brand_documents import BrandDocumentState
+        from .brand_minimal import BrandMinimalState
         from .creative_state import CreativeState
         from .creative_wizard_pages import BrandConnectState, BrandWizardState
         from .voice_lab import VoiceLabState
@@ -431,6 +432,7 @@ class AuthState(rx.State):
             CreativeState,
             BrandWizardState,
             BrandConnectState,
+            BrandMinimalState,
             BrandDocumentState,
             VoiceLabState,
         ):
@@ -809,6 +811,7 @@ class AuthState(rx.State):
             # the next login on this browser. Imported here, not at module top: these
             # modules read AuthState, and a top-level import would be circular.
             from .brand_documents import BrandDocumentState
+            from .brand_minimal import BrandMinimalState
             from .campaign_state import CampaignState
             from .canva_state import CanvaState
             from .catalog_state import CatalogState
@@ -866,6 +869,8 @@ class AuthState(rx.State):
                 # logs in next on this browser.
                 BrandWizardState,
                 BrandConnectState,
+                # m-24848529: the five steps' cursor and example phrase
+                BrandMinimalState,
                 # The wizard's staged brief / brandboard and their pending proposals
                 # (request 2026-09-25) — tenant files and tenant kit values.
                 BrandDocumentState,
