@@ -19,10 +19,10 @@ from qualify_api.referentes import (
     NewDiscoveredAccount,
     NewDiscoveryPhase,
 )
+from qualify_api.referentes import scrapecreators_client as sc
 from qualify_api.referentes.reels_ai import ReelReview, ReelToReview
 
 from . import reels_discovery as rd
-from . import scrapecreators_client as sc
 
 TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 NOW = 1_800_000_000.0
