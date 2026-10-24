@@ -499,11 +499,14 @@ def test_the_gallery_card_offers_the_same_name_as_the_approved_card() -> None:
     import json
 
     from . import creative_pages
+    from .planner_vm import CARD_STATES
     from .test_campaigns_ui import _PostVar
 
     rendered = str(creative_pages._gallery_card(_PostVar))
-    assert json.dumps("Elegir día y hora")[1:-1] in rendered
-    assert '"Programar"' not in rendered
+    # m-24842981: the card's one main button comes from its state's view-model
+    assert CARD_STATES["ready"].action_label == creative_pages.APPROVED_SCHEDULE
+    assert "card_action_label" in rendered
+    assert '"Programar"' not in rendered and json.dumps("Programar") not in rendered
 
 
 async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(

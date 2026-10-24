@@ -1,7 +1,8 @@
 """State for `/drafts` — the POST gallery (QUA-118).
 
-Every POST of the brand as a card with its derived state (Borrador · Por completar ·
-Listo · Usado · Desechado), filters by state and category, and «Asignar», which hands
+Every POST of the brand as a card with its state in words (Por revisar · Le falta algo ·
+Lista para programar · Ya salió · Descartada · Creándose, m-24842981), filters by that
+state and by category, and «Programar», which hands
 the POST to the Planificador's own drawer (`/planner?post=<id>`) — the gallery never
 plans anything itself and never duplicates the assign flow.
 
@@ -25,6 +26,7 @@ from .creative_provider import acting_user_id, approve_draft, draft_detail, reje
 # it is not out yet — live with `approval_notice`; re-exported for the screens' tests.
 from .creative_vm import (  # noqa: F401
     APPROVED_NOT_READY_TOAST,
+    APPROVED_OPEN_ACTION,
     APPROVED_TOAST,
     APPROVED_TOAST_ACTION,
     approval_notice,
@@ -106,8 +108,8 @@ class GalleryState(rx.State):
         """How many POSTs each state filter would show — the number on each chip."""
         counts = {value: 0 for value, _label in GALLERY_STATE_FILTERS}
         counts[GALLERY_FILTER_ALL] = len(self.posts)
-        for post in self.posts:
-            counts[post.gallery_state] = counts.get(post.gallery_state, 0) + 1
+        for post in self.posts:  # by the card's state (m-24842981), as the filters
+            counts[post.card_state] = counts.get(post.card_state, 0) + 1
         return counts
 
     @rx.var
@@ -241,6 +243,16 @@ class GalleryState(rx.State):
                 action={
                     "label": APPROVED_TOAST_ACTION,
                     "on_click": rx.redirect(f"/planner?post={post_id}"),
+                },
+            )
+        elif notice.offer_open:
+            # m-24842981 (finding 8): its final is being made or could not be ordered —
+            # the publication's own page says when it is ready and offers to try again.
+            yield getattr(rx.toast, notice.kind)(
+                notice.text,
+                action={
+                    "label": APPROVED_OPEN_ACTION,
+                    "on_click": rx.redirect(f"/drafts/{post_id}"),
                 },
             )
         else:
