@@ -1789,7 +1789,7 @@ def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews
         return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
     left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
     return (
-        f"Al aprobarla, esta publicación usa {videos} videos y este mes {left}. "
+        f"Esta publicación usa {videos} videos y este mes {left}. "
         f"Tus {video_quota} videos vuelven el {day}."
     )
 

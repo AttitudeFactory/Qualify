@@ -394,7 +394,7 @@ Fecha: 2026-10-24 (segunda decisión del día, tras revisar el modo borrador) ·
      («Te quedaría 1.» en singular). Reemplaza la línea «Este video usa 1 de tus 4 videos…»
      que salía al crear.
    - **Carrusel con N diapositivas animadas: N videos al aprobar, todo o nada.** Si quedan
-     menos de N, no se aprueba y se dice: «Al aprobarla, esta publicación usa 3 videos y este
+     menos de N, no se aprueba y se dice: «Esta publicación usa 3 videos y este
      mes te quedan 2. Tus 4 videos vuelven el {fecha}.» El botón «Aprobar» queda desactivado
      con esa frase encima. (No se aprueba a medias: un carrusel con diapositivas sin video
      final no se puede publicar.)

@@ -1089,7 +1089,7 @@ def _gallery_card(post) -> rx.Component:
                 post.expiry_note != "",
                 rx.hstack(
                     rx.icon("clock", size=13, flex_shrink="0"),
-                    rx.text(post.expiry_note, size="1"),
+                    rx.text(post.expiry_note, size="2"),
                     class_name="q-gcard-note",
                     align="start",
                     spacing="1",
@@ -1526,8 +1526,10 @@ def _video_draft_notice() -> rx.Component:
                 wrap="wrap",
             ),
             # «Apruébala antes del jueves 30 de octubre para tener el video final.»
+            # hidden while approving is blocked for want of videos: a deadline next to a
+            # button that cannot be pressed reads as a contradiction (UX review)
             rx.cond(
-                video.expiry_note != "",
+                (video.expiry_note != "") & ~CreativeState.approve_videos_short,
                 rx.text(video.expiry_note, size="2", weight="medium"),
             ),
             spacing="2",

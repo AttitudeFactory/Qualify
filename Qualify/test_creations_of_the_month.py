@@ -196,7 +196,7 @@ def test_the_video_texts_the_owner_reads() -> None:
     )
     # a carousel whose animated slides need more videos than are left: all or nothing
     assert videos_short_text(3, 2, 4, renews="1 de noviembre") == (
-        "Al aprobarla, esta publicación usa 3 videos y este mes te quedan 2. "
+        "Esta publicación usa 3 videos y este mes te quedan 2. "
         "Tus 4 videos vuelven el 1 de noviembre."
     )
 
