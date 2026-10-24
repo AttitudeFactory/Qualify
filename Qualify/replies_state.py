@@ -67,6 +67,7 @@ from qualify_api.replies.service import RegenerationRefused, UnknownDraft
 
 from .auth_state import AuthState
 from .inbox_state import InboxState
+from .pending_state import PendingState
 from .replies_provider import (
     DraftVM,
     acting_user,
@@ -394,6 +395,7 @@ class RepliesState(rx.State):
                 self.reviewed_draft_ids = [i for i in self.reviewed_draft_ids if i != draft_id]
 
         yield RepliesState.load_pending_drafts
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         # A refusal or a transport failure at Meta does not raise: the service settles the
         # draft as `send_failed` / `send_ambiguous` and returns it. Only `sent` is «Listo».
         if sent.status != "sent":
@@ -446,6 +448,7 @@ class RepliesState(rx.State):
 
         yield RepliesState.load_pending_drafts
         yield rx.toast.success("Respuesta descartada.", duration=_RESULT_TOAST_DURATION_MS)
+        yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     @rx.event(background=True)
     async def regenerate(self, draft_id: str) -> AsyncGenerator[rx.event.EventSpec, None]:

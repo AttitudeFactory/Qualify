@@ -175,7 +175,7 @@ class PublicReferenceLinks:
 
         import redis
         from qualify_shared.objects.config import R2Settings
-        from qualify_shared.objects.gate import ObjectGate
+        from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
         from qualify_shared.objects.keys import tenant_prefix
         from qualify_shared.objects.s3 import R2ObjectStore
 
@@ -187,7 +187,22 @@ class PublicReferenceLinks:
         digest = hashlib.sha256(data).hexdigest()[:32]
         suffix = key.rsplit(".", 1)[-1].lower() if "." in key else "bin"
         object_key = f"{tenant_prefix(tenant_id)}creative-refs/{digest}.{suffix}"
-        gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type)
+        # The key is content-addressed, so an object already there holds these same bytes.
+        # Writing it again is not just waste: the bucket's object-lock retention refuses
+        # an overwrite (`ObjectLockedByBucketPolicy`), which broke every reuse of a file.
+        # Only a definite answer skips the write: when R2 cannot say (403, 503, a timeout)
+        # the bytes are put as they always were.
+        try:
+            stored = gate.object_size(tenant_id, object_key)
+        except ObjectNotFound:
+            stored = None
+        except Exception as exc:  # noqa: BLE001 — unknown: the put decides
+            logger.warning(
+                "reference %s: R2 size unknown: %s: %s", object_key, type(exc).__name__, exc
+            )
+            stored = None
+        if stored != len(data):
+            gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type)
         tokens = MediaTokenStore(
             redis.Redis.from_url(redis_url(), decode_responses=True), ttl_seconds=self._ttl
         )
@@ -204,8 +219,11 @@ DEFAULT_RENDER_URL = "http://localhost:3200"
 #: v4 (2026-10-13) adds claude-opus-5-5 — the copy model since that day — and
 #: claude-opus-4-8, a server-side fallback target, to everything v3 had (v3 added the
 #: BytePlus ModelArk rates). v5 (2026-10-16) adds OmniHuman and Seed Speech — the talking
-#: presenter after HeyGen. A published version is never edited.
-PRICING_VERSION = "v5"
+#: presenter after HeyGen. v6 (2026-10-23) is the m-24849234 eval's table (Seedream 5.0
+#: pro/flash), which production skips. v7 (2026-10-23) is v6 plus Seedance 2.5's «with
+#: video input» rates (6.40/M at 480p/720p, 7.00/M at 1080p), measured on live drafts
+#: with a reference video. A published version is never edited.
+PRICING_VERSION = "v7"
 
 #: Where uploads and generated media live — the app's upload directory, the same one
 #: Reflex serves (`rx.get_upload_dir()`, overridable with `REFLEX_UPLOADED_FILES_DIR`).
@@ -369,6 +387,8 @@ def production_content_service() -> ContentService:
             # (VideoEngine.SEEDANCE) by Seedream + Seedance
             generated_ad_images=True,
             seedance_resolution=seedance_resolution,
+            # m-24820142: a model with a draft mode (2.5) makes 480p drafts first
+            seedance_model=seedance_model,
             # § 2026-10-09: a carousel reuses only THIS brand's pieces, and fits its
             # video slides to the feed with PyAV (no ffmpeg binary in the image)
             pieces=DbPieceFiles(),
@@ -381,7 +401,7 @@ def production_content_service() -> ContentService:
             reference_links=PublicReferenceLinks(),
         ),
     )
-    service.dispatcher = InlineDispatcher(service.run_generation)
+    service.dispatcher = InlineDispatcher(service.run_generation, service.run_finalize)
     return service
 
 

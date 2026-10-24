@@ -75,8 +75,25 @@ def test_a_clean_variant_passes_every_gate(items: list[dict[str, Any]]) -> None:
         "reglas_ok": 1.0,
         "largos_ok": 1.0,
         "restricciones_ok": 1.0,
+        "caption_ajustada": 0.0,
         "puertas_ok": 1.0,
     }
+
+
+def test_a_caption_a_little_over_is_fitted_first_like_production(
+    items: list[dict[str, Any]],
+) -> None:
+    # Review 2026-10-23: production runs `fit_caption` before the hard rules; the eval
+    # judged the raw caption and failed what production would have saved.
+    case = _case(items, "hel-01")
+    limit = case["kit"]["length_targets"]["caption_max_chars"]
+    base = _variant()["payload"]["caption"]
+    words = (base + " ") * (limit // len(base) + 2)
+    over = words[: limit + 3].rstrip()
+    over = over + "x" * (limit + 3 - len(over))
+    scores = _scores(gates(case, {"variants": [_variant(caption=over), _variant()]}, None, {}))
+    assert scores["reglas_ok"] == 1.0
+    assert scores["caption_ajustada"] == 0.5
 
 
 def test_each_gate_catches_its_own_failure(items: list[dict[str, Any]]) -> None:
