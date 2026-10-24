@@ -965,7 +965,7 @@ class InboxState(rx.State):
         ]
 
     @rx.event(background=True)
-    async def analyze_new_comments(self) -> None:
+    async def analyze_new_comments(self) -> rx.event.EventHandler | None:
         """m-24852204: prioritize what the sync just brought — sentiment, commercial intent
         and the «Quieren comprar» queries — without the owner asking. Chained by
         `sync_comments` after a successful pass only; never calls `sync_now`. Runs in this
@@ -973,7 +973,8 @@ class InboxState(rx.State):
         underneath), so neither the event loop nor the page load waits for it. Silent by
         design: no toast, no error — an unavailable model or a failed pass is logged by
         the runner and retried by the webhook worker's sweep. Re-reads the screen only
-        when something new was recorded, and only if the same account is still open."""
+        when something new was recorded, and only if the same account is still open;
+        then refreshes the tab counts so new buyers show in «Quieren comprar»."""
         async with self:
             if self.is_analyzing_comments:
                 return
@@ -993,11 +994,17 @@ class InboxState(rx.State):
             async with self:
                 self.is_analyzing_comments = False
         if not changed:
-            return
+            return None
         async with self:
             still_same_account = self.selected_connection_id == connection_id
         if still_same_account:
             await self._refresh_after_write(tenant_id, connection_id)
+        # UX review (m-24852204): the toast that named new buyers is gone, so the tab
+        # counts («Quieren comprar») must catch up on their own. Imported here because
+        # `responder_state` imports this module.
+        from .responder_state import ResponderState  # noqa: PLC0415
+
+        return ResponderState.load_counts
 
     @rx.event(background=True)
     async def reply_by_dm(self, message_id: str) -> rx.event.EventSpec | None:

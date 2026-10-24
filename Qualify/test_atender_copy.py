@@ -122,7 +122,7 @@ def test_no_prioritize_button_remains() -> None:
 
 
 def test_the_filters_and_summary_use_the_new_words() -> None:
-    assert ("PENDING", "Sin revisar") in inbox_page._SENTIMENT_FILTER_OPTIONS
+    assert ("PENDING", "En revisión") in inbox_page._SENTIMENT_FILTER_OPTIONS
     # Two selectors side by side: each «all» says what it is about.
     assert inbox_page._SENTIMENT_FILTER_OPTIONS[0][1] == "Todos los tonos"
     assert [label for _, label in inbox_page._INTENT_FILTER_OPTIONS] == [

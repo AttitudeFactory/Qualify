@@ -286,6 +286,8 @@ def test_the_analysis_is_silent_resets_in_a_finally_and_rereads_only_when_needed
     refresh = source.index("await self._refresh_after_write(tenant_id, connection_id)")
     assert refresh > source.index("if not changed:")
     assert refresh > source.index("still_same_account = self.selected_connection_id")
+    # UX review: new buyers reach the «Quieren comprar» count without a reload.
+    assert source.index("return ResponderState.load_counts") > refresh
 
 
 def test_there_is_no_prioritize_button_nor_copy_about_it() -> None:

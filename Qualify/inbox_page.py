@@ -582,7 +582,7 @@ def _global_summary_stats() -> rx.Component:
             stat_card("Positivos", InboxState.global_summary.positive, "ok"),
             stat_card("Neutros", InboxState.global_summary.neutral, "neutral"),
             stat_card("Negativos", InboxState.global_summary.negative, "error"),
-            stat_card("Sin revisar", InboxState.global_summary.not_analyzed, "neutral"),
+            stat_card("En revisión", InboxState.global_summary.not_analyzed, "neutral"),
             columns=rx.breakpoints(initial="2", md="5"),
             spacing="3",
             width="100%",
@@ -680,7 +680,7 @@ def _reel_sentiment_chips(reel: ReelSummaryVM) -> rx.Component:
         tone_badge("Positivos " + reel.positive.to_string(), "ok"),
         tone_badge("Neutros " + reel.neutral.to_string(), "neutral"),
         tone_badge("Negativos " + reel.negative.to_string(), "error"),
-        tone_badge("Sin revisar " + reel.not_analyzed.to_string(), "neutral"),
+        tone_badge("En revisión " + reel.not_analyzed.to_string(), "neutral"),
         spacing="2",
         wrap="wrap",
     )
@@ -871,7 +871,7 @@ _SENTIMENT_FILTER_OPTIONS = [
     ("POS", "Positivos"),
     ("NEU", "Neutros"),
     ("NEG", "Negativos"),
-    ("PENDING", "Sin revisar"),
+    ("PENDING", "En revisión"),
 ]
 
 

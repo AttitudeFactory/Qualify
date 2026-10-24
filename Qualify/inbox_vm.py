@@ -159,7 +159,7 @@ class CommentVM:
     `comment_sentiment_results` row exists yet for the model version this deployment
     runs today, pre-coerced here (never a raw `None` reaching the client) so
     `ui.sentiment_badge` can match on the four states directly. The page renders `""`
-    as «Sin revisar» — it must NEVER be shown as NEU (QUA-92's explicit requirement).
+    as «En revisión» — it must NEVER be shown as NEU (QUA-92's explicit requirement).
     `score_display` is pre-formatted (`"0.87"`) and empty exactly when
     `sentiment_label` is empty — same "no raw nullable reaching a `str` field"
     convention every other VM in this module follows.
