@@ -246,12 +246,15 @@ def _list_pane() -> rx.Component:
 
 
 def _back_button() -> rx.Component:
-    return rx.icon_button(
-        rx.icon("arrow-left", size=T.ICON_MD),
+    """Phone only (the list and the conversation share one pane there). N7: the
+    button names where it goes — «‹ Chats», never a bare arrow."""
+    return rx.button(
+        rx.icon("chevron-left", size=T.ICON_MD),
+        "Chats",
         on_click=S.back_to_list,
         variant="ghost",
         size="2",
-        aria_label="Volver a las conversaciones",
+        min_height="44px",
         class_name="q-wa-chats__back",
         **T.tone_scheme("neutral"),
     )

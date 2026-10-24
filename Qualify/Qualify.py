@@ -249,7 +249,7 @@ app.add_page(
 app.add_page(
     inbox_index,
     route="/inbox",
-    on_load=[AuthState.require_login, InboxState.load_screen],
+    on_load=[AuthState.require_login, InboxState.enter_screen],
     title="Qualify · Comentarios",
 )
 # QUA-226: the private inbox of the connected accounts (Instagram Direct first).

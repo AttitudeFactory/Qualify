@@ -35,9 +35,31 @@ from qualify_api.followups.repository import FollowupTrigger, SendRoute
 from qualify_api.followups.service import RouteOption
 from qualify_api.followups.workspace import FollowupCard, surface_label
 
+from .nav_url import with_query
+
 VIEW_MESSAGES: Final = "messages"
 VIEW_QUERIES: Final = "queries"
 VIEWS: Final = (VIEW_MESSAGES, VIEW_QUERIES)
+
+# N5 (m-24842960): the active view lives in the address, in the owner's words.
+CONVERSATIONS_ROUTE: Final = "/conversations"
+VIEW_PARAM: Final = "vista"
+VIEW_SLUGS: Final = {VIEW_MESSAGES: "mensajes", VIEW_QUERIES: "consultas"}
+
+
+def view_from_param(slug: str) -> str:
+    """`?vista=consultas` → `VIEW_QUERIES`; anything else (absent, junk) → `VIEW_MESSAGES`."""
+    for view, known in VIEW_SLUGS.items():
+        if slug == known:
+            return view
+    return VIEW_MESSAGES
+
+
+def view_url(view: str) -> str:
+    """The address of a view: `/conversations?vista=consultas`."""
+    slug = VIEW_SLUGS.get(view, VIEW_SLUGS[VIEW_MESSAGES])
+    return with_query(CONVERSATIONS_ROUTE, **{VIEW_PARAM: slug})
+
 
 ROUTE_LABELS: Final = {
     SendRoute.DM: "Mensaje directo",
