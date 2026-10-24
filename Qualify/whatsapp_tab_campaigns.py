@@ -1,6 +1,6 @@
-"""`/whatsapp` → Campañas tab (WA-20, QUA-219): the number's marketing campaigns, the
-«Nueva campaña» wizard (plantilla → variables → audiencia → ritmo → revisar) and the
-campaign detail (summary, sends, «Cancelar campaña»).
+"""`/whatsapp` → Campañas tab (WA-20, QUA-219): the number's promotions, the «Enviar una
+promoción» wizard in three steps (m-24842996: mensaje → a quién → revisar) and the
+promotion's detail (summary, sends, «Ver respuestas en Chats», «Cancelar»).
 
 Same hook as the other tabs: rendered only while active, inside the shell's box keyed by
 the number; the root's `on_mount` loads. The page never talks to the provider.
@@ -24,21 +24,22 @@ from .ui import (
     skeleton_rows,
     stat_card,
     stepper,
-    tag,
 )
 from .ui import tokens as T
 from .whatsapp_campaigns_state import WhatsAppCampaignsState as S
 from .whatsapp_campaigns_vm import (
-    MAX_PER_MINUTE,
+    PACE_OPTIONS,
     PAYMENT_FAILED,
     PAYMENT_NOTICE,
+    PER_USER_LIMIT_NOTICE,
     RATE_CARD_NOTICE,
+    SCOPE_ALL,
+    SCOPE_SINCE,
+    SEE_REPLIES,
     SENDER_NOTICE,
     STEP_AUDIENCE,
-    STEP_PACING,
+    STEP_MESSAGE,
     STEP_REVIEW,
-    STEP_TEMPLATE,
-    STEP_VARIABLES,
     STEPS,
     CampaignRowVM,
     EstimateVM,
@@ -139,11 +140,15 @@ def _list() -> rx.Component:
             _campaigns_table(),
             empty_state(
                 "megaphone",
-                "Aún no hay campañas en este número",
-                "Una campaña envía una plantilla aprobada a tus contactos que aceptaron recibir "
-                "tus mensajes, al ritmo que elijas, y te muestra cuántos la recibieron y leyeron.",
+                "Aún no enviaste promociones desde este número",
+                "Envía un mensaje aprobado a los clientes que aceptaron recibir tus "
+                "promociones y mira cuántos lo recibieron y leyeron.",
                 action=rx.button(
-                    rx.icon("plus", size=16), "Nueva campaña", on_click=S.open_wizard, size="3"
+                    rx.icon("plus", size=16),
+                    "Enviar una promoción",
+                    on_click=S.open_wizard,
+                    size="3",
+                    **_TAP,
                 ),
             ),
         ),
@@ -159,8 +164,12 @@ def _list() -> rx.Component:
 # Shared: the estimate
 # ======================================================================================
 
+# N12: every target of the wizard is at least 44 px tall on a phone.
+_TAP = {"min_height": "44px"}
 
-def _estimate_block(e: EstimateVM) -> rx.Component:
+
+def _estimate_block(e: EstimateVM, duration: rx.Var[str] | None = None) -> rx.Component:
+    """How many, how long (when given) and about how much — the review's three facts."""
     return rx.vstack(
         rx.cond(
             e.placeholder,
@@ -169,7 +178,7 @@ def _estimate_block(e: EstimateVM) -> rx.Component:
                     rx.text(RATE_CARD_NOTICE, weight="bold"),
                     rx.text(
                         "Las tarifas de Meta por país aún no están cargadas en Qualify; el "
-                        "valor de abajo es un orden de magnitud, no lo que Meta cobrará.",
+                        "valor de abajo es una idea del costo, no lo que Meta cobrará.",
                         size="1",
                     ),
                     spacing="1",
@@ -181,14 +190,15 @@ def _estimate_block(e: EstimateVM) -> rx.Component:
             rx.fragment(),
         ),
         rx.grid(
-            stat_card("Destinatarios", e.recipients, tone="neutral"),
+            stat_card("Personas", e.recipients, tone="neutral"),
+            *([stat_card("Tarda", duration, tone="neutral")] if duration is not None else []),
             stat_card(
-                "Costo estimado",
+                "Costo aproximado",
                 e.cost_label,
                 tone="neutral",
-                hint="Meta cobra por mensaje entregado, según el país y la categoría.",
+                hint="Meta cobra por mensaje entregado, según el país.",
             ),
-            columns=rx.breakpoints(initial="1", sm="2"),
+            columns=rx.breakpoints(initial="1", sm="3" if duration is not None else "2"),
             spacing="3",
             width="100%",
         ),
@@ -200,31 +210,33 @@ def _estimate_block(e: EstimateVM) -> rx.Component:
 
 
 # ======================================================================================
-# Wizard steps
+# Wizard steps (m-24842996: Mensaje → A quién → Revisar)
 # ======================================================================================
 
 
 def _template_choice(t: TemplateVM) -> rx.Component:
+    """One approved message: what the client will read first, its name second."""
     selected = S.w_template_id == t.template_id
     return choice_card(
         rx.hstack(
             rx.vstack(
+                rx.text(
+                    t.body_text,
+                    size="2",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    style={
+                        "display": "-webkit-box",
+                        "-webkit-line-clamp": "3",
+                        "-webkit-box-orient": "vertical",
+                    },
+                ),
                 rx.hstack(
-                    mono(t.name, weight="medium"),
-                    tag(t.category_label),
-                    rx.text(t.language_label, size="1", color=T.TEXT_MUTED),
+                    rx.text(t.name, size="1", color=T.TEXT_MUTED),
+                    rx.text(t.language_label, size="1", color=T.TEXT_FAINT),
                     spacing="2",
                     align="center",
                     wrap="wrap",
-                ),
-                rx.text(
-                    t.body_text,
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                    max_width="32rem",
                 ),
                 rx.cond(
                     ~t.sendable,
@@ -232,7 +244,7 @@ def _template_choice(t: TemplateVM) -> rx.Component:
                         rx.cond(
                             t.wizard_block != "",
                             t.wizard_block,
-                            "Aún no está aprobada por Meta.",
+                            "Aún no está aprobado por WhatsApp.",
                         ),
                         size="1",
                         color=T.TEXT_FAINT,
@@ -242,9 +254,8 @@ def _template_choice(t: TemplateVM) -> rx.Component:
                 spacing="1",
                 align_items="start",
                 min_width="0",
+                flex="1",
             ),
-            rx.spacer(),
-            tone_pill(t.status_label, t.status_tone),
             rx.cond(selected, choice_card_check(), rx.fragment()),
             align="start",
             width="100%",
@@ -256,47 +267,7 @@ def _template_choice(t: TemplateVM) -> rx.Component:
         padding="0.75rem 1rem",
         width="100%",
         text_align="left",
-    )
-
-
-def _step_template() -> rx.Component:
-    return rx.vstack(
-        field(
-            "Nombre de la campaña",
-            rx.input(
-                value=S.w_name,
-                on_change=S.set_w_name,
-                placeholder="Ej.: Promo de octubre",
-                max_length=120,
-                width="100%",
-            ),
-            "Solo lo ve tu equipo.",
-        ),
-        field(
-            "Plantilla",
-            rx.cond(
-                S.templates_loading,
-                skeleton_rows(3, height="3.5rem"),
-                rx.cond(
-                    S.has_sendable_templates,
-                    rx.vstack(
-                        rx.foreach(S.templates, _template_choice),
-                        spacing="2",
-                        width="100%",
-                        role="radiogroup",
-                        aria_label="Plantilla",
-                    ),
-                    callout(
-                        "Este número aún no tiene plantillas aprobadas. Crea una en «Plantillas» "
-                        "y espera la aprobación de Meta (puede tardar hasta 24 h).",
-                        "info",
-                    ),
-                ),
-            ),
-        ),
-        spacing="4",
-        width="100%",
-        align_items="start",
+        **_TAP,
     )
 
 
@@ -308,30 +279,98 @@ def _variable_input(v: VariableFieldVM) -> rx.Component:
             on_change=lambda value: S.set_value(v.id, value),
             placeholder=rx.cond(v.example != "", "Ej.: " + v.example, ""),
             width="100%",
+            size="3",
         ),
     )
 
 
-def _step_variables() -> rx.Component:
+def _step_message() -> rx.Component:
+    """① ¿Qué mensaje envías? — an approved message, its blanks, an optional name."""
     return rx.vstack(
+        rx.heading("¿Qué mensaje envías?", size="4", as_="h3"),
+        rx.cond(
+            S.templates_loading,
+            skeleton_rows(3, height="3.5rem"),
+            rx.cond(
+                S.has_sendable_templates,
+                rx.vstack(
+                    rx.text(
+                        "Para una promoción, WhatsApp solo deja enviar mensajes que ya aprobó.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.vstack(
+                        rx.foreach(S.templates, _template_choice),
+                        spacing="2",
+                        width="100%",
+                        role="radiogroup",
+                        aria_label="Mensaje aprobado",
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
+                callout(
+                    "Aún no tienes mensajes aprobados en este número. Crea uno en «Plantillas» "
+                    "y espera la aprobación de WhatsApp (puede tardar hasta 24 horas).",
+                    "info",
+                ),
+            ),
+        ),
         rx.cond(
             S.variable_inputs.length() > 0,
             rx.vstack(
+                rx.text("Completa el mensaje", size="2", weight="medium"),
                 rx.text(
-                    "El mismo valor va a todos los destinatarios de la campaña.",
-                    size="2",
+                    "Lo que escribas aquí le llega igual a todas las personas.",
+                    size="1",
                     color=T.TEXT_MUTED,
                 ),
                 rx.foreach(S.variable_inputs, _variable_input),
-                spacing="3",
+                spacing="2",
                 width="100%",
                 align_items="start",
             ),
-            callout("Esta plantilla no tiene variables: no hay nada que completar.", "info"),
+            rx.fragment(),
         ),
-        spacing="3",
+        rx.cond(
+            S.w_template_id != "",
+            field(
+                "Nombre para reconocerla (opcional)",
+                rx.input(
+                    value=S.w_name,
+                    on_change=S.set_w_name,
+                    placeholder="Ej.: Promo de octubre",
+                    max_length=120,
+                    width="100%",
+                    size="3",
+                ),
+                "Solo lo ves tú. Si lo dejas vacío, la llamamos con la fecha de hoy.",
+            ),
+            rx.fragment(),
+        ),
+        spacing="4",
         width="100%",
         align_items="start",
+    )
+
+
+def _scope_choice(value: str, title: rx.Var[str] | str) -> rx.Component:
+    selected = S.w_scope == value
+    return choice_card(
+        rx.hstack(
+            rx.text(title, size="2", weight="medium", flex="1"),
+            rx.cond(selected, choice_card_check(), rx.fragment()),
+            align="center",
+            width="100%",
+            spacing="2",
+        ),
+        selected=selected,
+        on_select=S.set_scope(value),
+        padding="0.75rem 1rem",
+        width="100%",
+        text_align="left",
+        **_TAP,
     )
 
 
@@ -344,18 +383,14 @@ def _source_check(key: str, label: str) -> rx.Component:
         label,
         checked=S.w_sources.contains(key),
         on_change=lambda _checked: S.toggle_source(key),
-        size="2",
+        size="3",
+        min_height="44px",
     )
 
 
-def _step_audience() -> rx.Component:
+def _more_filters() -> rx.Component:
+    """«Más filtros»: brand, where they joined from, until when, country prefixes."""
     return rx.vstack(
-        rx.text(
-            "Solo contactos que aceptaron recibir tus mensajes. Deja un filtro vacío para no "
-            "filtrar por él.",
-            size="2",
-            color=T.TEXT_MUTED,
-        ),
         field(
             "Marca",
             rx.select.root(
@@ -363,45 +398,133 @@ def _step_audience() -> rx.Component:
                 rx.select.content(rx.foreach(S.brand_options, _brand_item)),
                 value=S.w_brand,
                 on_change=S.set_brand,
+                size="3",
             ),
         ),
         field(
-            "Origen del consentimiento",
+            "Cómo se sumaron",
             rx.flex(
                 *[_source_check(key, label) for key, label in SOURCES],
-                gap="4",
-                wrap="wrap",
+                direction="column",
+                gap="1",
             ),
-            "Sin marcar ninguno, entran todos los orígenes.",
-        ),
-        rx.grid(
-            field(
-                "Capturado desde",
-                rx.input(type="date", value=S.w_from, on_change=S.set_w_from, width="100%"),
-            ),
-            field(
-                "Capturado hasta",
-                rx.input(type="date", value=S.w_to, on_change=S.set_w_to, width="100%"),
-            ),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="3",
-            width="100%",
+            "Sin marcar ninguno, entran todos.",
         ),
         field(
-            "Prefijos de país",
+            "Se sumaron hasta",
+            rx.input(type="date", value=S.w_to, on_change=S.set_w_to, width="100%", size="3"),
+        ),
+        field(
+            "Solo números de estos países",
             rx.input(
                 value=S.w_prefixes,
                 on_change=S.set_w_prefixes,
-                placeholder="+57, +52",
+                placeholder="+57, +58",
                 width="100%",
+                size="3",
             ),
-            "Separados por comas. Vacío = todos los países.",
+            "Escribe el prefijo de cada país (como +57), separados por comas. Vacío = todos.",
         ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _pace_choice(value: str, label: str) -> rx.Component:
+    selected = S.w_pace == value
+    return choice_card(
+        rx.hstack(
+            rx.text(label, size="2", flex="1"),
+            rx.cond(selected, choice_card_check(), rx.fragment()),
+            align="center",
+            width="100%",
+            spacing="2",
+        ),
+        selected=selected,
+        on_select=S.set_w_pace(value),
+        padding="0.6rem 1rem",
+        width="100%",
+        text_align="left",
+        **_TAP,
+    )
+
+
+def _more_options() -> rx.Component:
+    """«Más opciones»: how fast it goes out — a choice, 30 per minute by default."""
+    return rx.vstack(
+        rx.text(
+            "Enviar de a poco cuida tu número: si muchos lo bloquean o lo reportan, WhatsApp "
+            "baja cuántos mensajes puedes enviar.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        rx.vstack(
+            *[_pace_choice(key, label) for key, label in PACE_OPTIONS],
+            spacing="2",
+            width="100%",
+            role="radiogroup",
+            aria_label="Qué tan rápido se envía",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _fold(title: rx.Var[str] | str, value: str, content: rx.Component) -> rx.Component:
+    return rx.accordion.root(
+        rx.accordion.item(
+            header=title,
+            content=content,
+            value=value,
+            # N12: the fold's header is a thumb-sized target at 360 px.
+            style={"& button": {"min_height": "44px", "width": "100%"}},
+        ),
+        collapsible=True,
+        variant="ghost",
+        width="100%",
+    )
+
+
+def _step_audience() -> rx.Component:
+    """② ¿A quién? — everyone who accepted by default; the rest folded away."""
+    return rx.vstack(
+        rx.heading("¿A quién se la envías?", size="4", as_="h3"),
+        rx.text(
+            "Solo le llega a quien aceptó recibir tus promociones.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.vstack(
+            _scope_choice(SCOPE_ALL, S.everyone_text),
+            _scope_choice(SCOPE_SINCE, "Solo a los que se sumaron desde…"),
+            spacing="2",
+            width="100%",
+            role="radiogroup",
+            aria_label="A quién",
+        ),
+        rx.cond(
+            S.w_scope == SCOPE_SINCE,
+            field(
+                "Se sumaron desde",
+                rx.input(
+                    type="date", value=S.w_from, on_change=S.set_w_from, width="100%", size="3"
+                ),
+            ),
+            rx.fragment(),
+        ),
+        _fold(
+            rx.cond(S.has_more_filters, "Más filtros (en uso)", "Más filtros"),
+            "filters",
+            _more_filters(),
+        ),
+        _fold("Más opciones", "options", _more_options()),
         card(
             rx.hstack(
                 rx.cond(S.counting, loading_spinner("sm"), rx.icon("users", size=T.ICON_MD)),
                 rx.text(
-                    rx.cond(S.counting, "Contando contactos…", S.audience_label),
+                    rx.cond(S.counting, "Contando personas…", S.audience_label),
                     size="2",
                     weight="medium",
                 ),
@@ -409,33 +532,7 @@ def _step_audience() -> rx.Component:
                 spacing="2",
             ),
             padding="0.75rem 1rem",
-        ),
-        spacing="4",
-        width="100%",
-        align_items="start",
-    )
-
-
-def _step_pacing() -> rx.Component:
-    return rx.vstack(
-        field(
-            "Mensajes por minuto",
-            rx.input(
-                value=S.w_rate,
-                on_change=S.set_w_rate,
-                type="number",
-                min="1",
-                max=str(MAX_PER_MINUTE),
-                width="10rem",
-            ),
-            "Un ritmo bajo cuida la calidad del número: si muchos lo bloquean o lo reportan, "
-            "Meta baja su límite de envíos.",
-        ),
-        rx.cond(S.pacing_label != "", rx.text(S.pacing_label, size="2"), rx.fragment()),
-        callout(
-            "Si alguien ya recibió muchas promociones esta semana, WhatsApp no le entrega la "
-            "tuya y no se te cobra.",
-            "info",
+            width="100%",
         ),
         spacing="3",
         width="100%",
@@ -444,24 +541,32 @@ def _step_pacing() -> rx.Component:
 
 
 def _step_review() -> rx.Component:
+    """③ Revisa y envía — how many, how long, about how much. Nothing leaves before
+    «Enviar ahora» (N13)."""
     t = S.selected_template
     return rx.vstack(
+        rx.heading("Revisa y envía", size="4", as_="h3"),
         card(
             rx.vstack(
-                kv("Campaña", S.w_name),
-                kv("Plantilla", t.option_label),
-                kv("Destinatarios", S.audience_label),
-                kv("Ritmo", S.rate_text),
+                rx.text("El mensaje", size="1", color=T.TEXT_MUTED),
+                rx.text(t.body_text, size="2", white_space="pre-wrap"),
+                rx.divider(),
+                kv("A quién", S.audience_label),
+                kv("Nombre", S.review_name),
                 spacing="2",
                 width="100%",
+                align_items="start",
             ),
             padding="1rem 1.25rem",
+            width="100%",
         ),
-        _estimate_block(S.w_estimate),
+        _estimate_block(S.w_estimate, S.review_duration),
+        rx.text(S.pace_text, size="2"),
+        callout(PER_USER_LIMIT_NOTICE, "info"),
         callout(PAYMENT_NOTICE, "info", icon="credit-card"),
         rx.text(
-            "Guardada como borrador. «Enviar ahora» empieza a enviar; cerrar este panel la deja "
-            "en la lista para enviarla después.",
+            "Nada se envía hasta que toques «Enviar ahora». Si cierras este panel, la "
+            "promoción queda guardada en la lista sin enviar.",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -474,25 +579,27 @@ def _step_review() -> rx.Component:
 def _wizard_footer() -> rx.Component:
     return rx.vstack(
         rx.cond(S.w_error != "", tone_banner(S.w_error, S.w_error_tone), rx.fragment()),
+        rx.cond(
+            (S.step < STEP_REVIEW) & (S.step_problem != ""),
+            rx.text(S.step_problem, size="1", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
         rx.hstack(
             rx.cond(
-                (S.step > STEP_TEMPLATE) & (S.step < STEP_REVIEW),
+                S.step > STEP_MESSAGE,
                 rx.button(
                     rx.icon("chevron-left", size=16),
                     "Atrás",
                     on_click=S.back,
                     variant="soft",
-                    size="2",
+                    size="3",
+                    disabled=S.launching | S.w_busy,
+                    **_TAP,
                     **T.tone_scheme("neutral"),
                 ),
                 rx.fragment(),
             ),
-            rx.text(
-                rx.cond(S.step < STEP_REVIEW, S.step_problem, ""),
-                size="1",
-                color=T.TEXT_MUTED,
-                flex="1",
-            ),
+            rx.spacer(),
             rx.cond(
                 S.step == STEP_REVIEW,
                 rx.button(
@@ -500,15 +607,17 @@ def _wizard_footer() -> rx.Component:
                     "Enviar ahora",
                     on_click=S.launch_campaign(S.w_campaign_id),
                     loading=S.launching,
-                    size="2",
+                    size="3",
+                    **_TAP,
                 ),
                 rx.button(
-                    rx.cond(S.step == STEP_PACING, "Guardar y revisar", "Siguiente"),
+                    rx.cond(S.step == STEP_AUDIENCE, "Revisar", "Siguiente"),
                     rx.icon("chevron-right", size=16),
                     on_click=S.next_step,
                     loading=S.w_busy,
                     disabled=S.step_problem != "",
-                    size="2",
+                    size="3",
+                    **_TAP,
                 ),
             ),
             align="center",
@@ -523,6 +632,14 @@ def _wizard_footer() -> rx.Component:
 def campaign_wizard() -> rx.Component:
     return drawer(
         rx.vstack(
+            rx.text(
+                "Paso ",
+                S.step + 1,
+                f" de {len(STEPS)}",
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+            ),
             stepper(
                 list(STEPS),
                 current=S.step,
@@ -531,23 +648,21 @@ def campaign_wizard() -> rx.Component:
             ),
             rx.match(
                 S.step,
-                (STEP_TEMPLATE, _step_template()),
-                (STEP_VARIABLES, _step_variables()),
+                (STEP_MESSAGE, _step_message()),
                 (STEP_AUDIENCE, _step_audience()),
-                (STEP_PACING, _step_pacing()),
                 (STEP_REVIEW, _step_review()),
-                _step_template(),
+                _step_message(),
             ),
-            spacing="5",
+            spacing="4",
             width="100%",
             align_items="start",
         ),
         open=S.wizard_open,
         on_open_change=S.set_wizard_open,
-        title="Nueva campaña",
+        title="Enviar una promoción",
         description=(
-            "Una plantilla aprobada, a tus contactos que aceptaron recibir tus mensajes, al "
-            "ritmo que elijas."
+            "Elige el mensaje, a quién se lo envías y revisa. Nada sale hasta que toques "
+            "«Enviar ahora»."
         ),
         footer=_wizard_footer(),
         width="40rem",
@@ -586,6 +701,19 @@ def _detail_body() -> rx.Component:
     row = d.row
     return rx.vstack(
         tone_banner(S.detail_banner, S.detail_banner_tone),
+        # N3: the next step after «Enviar ahora» is a solid button, right under the notice.
+        rx.cond(
+            S.detail_launched,
+            rx.button(
+                rx.icon("message-circle", size=16),
+                SEE_REPLIES,
+                on_click=S.see_replies,
+                size="3",
+                width=rx.breakpoints(initial="100%", sm="auto"),
+                **_TAP,
+            ),
+            rx.fragment(),
+        ),
         rx.hstack(
             tone_pill(row.status_label, row.status_tone),
             mono(row.template_label, size="1", color=T.TEXT_MUTED),
@@ -660,17 +788,20 @@ def _detail_footer() -> rx.Component:
             confirm_action(
                 rx.button(
                     rx.icon("circle-stop", size=16),
-                    "Cancelar campaña",
+                    "Detener promoción",
                     loading=S.cancelling,
                     variant="soft",
-                    size="2",
+                    size="3",
+                    **_TAP,
                     **T.tone_scheme("error"),
                 ),
-                title="Cancelar campaña",
+                title="¿Detener la promoción?",
                 description="Los envíos que aún no salieron se retiran; los que ya salieron "
-                "no se pueden deshacer. Una campaña cancelada no se puede reanudar.",
-                verb="Cancelar campaña",
-                dismiss="Seguir con la campaña",
+                "no se pueden deshacer. Una promoción detenida no se puede reanudar.",
+                verb="Sí, detenerla",
+                dismiss=rx.cond(
+                    d.row.status == "running", "Seguir enviando", "Seguir con la promoción"
+                ),
                 on_confirm=S.cancel_campaign,
             ),
             rx.fragment(),
@@ -682,7 +813,8 @@ def _detail_footer() -> rx.Component:
                 "Enviar ahora",
                 on_click=S.launch_campaign(S.detail_id),
                 loading=S.launching,
-                size="2",
+                size="3",
+                **_TAP,
             ),
             rx.fragment(),
         ),
@@ -706,7 +838,7 @@ def campaign_detail() -> rx.Component:
         ),
         open=S.detail_open,
         on_open_change=S.set_detail_open,
-        title=rx.cond(S.detail.row.name != "", S.detail.row.name, "Campaña"),
+        title=rx.cond(S.detail.row.name != "", S.detail.row.name, "Promoción"),
         footer=_detail_footer(),
         width="44rem",
         icon="megaphone",
@@ -724,11 +856,17 @@ def campaigns_tab() -> rx.Component:
         section_head(
             "Campañas",
             ghost_refresh("Actualizar", S.reload),
-            rx.button(rx.icon("plus", size=16), "Nueva campaña", on_click=S.open_wizard, size="2"),
+            rx.button(
+                rx.icon("plus", size=16),
+                "Enviar una promoción",
+                on_click=S.open_wizard,
+                size="3",
+                **_TAP,
+            ),
         ),
         rx.text(
-            "Envía una plantilla aprobada a tus contactos que aceptaron recibir tus mensajes. "
-            "Los costos son estimados; Meta cobra por mensaje entregado.",
+            "Envía un mensaje aprobado a los clientes que aceptaron recibir tus promociones. "
+            "Los costos son aproximados; Meta cobra por mensaje entregado.",
             size="2",
             color=T.TEXT_MUTED,
         ),
