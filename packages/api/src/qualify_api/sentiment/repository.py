@@ -188,6 +188,10 @@ class ReelSummary:
     # and format (`IMAGE`/`VIDEO`/`CAROUSEL_ALBUM`), persisted on the same row by QUA-146.
     media_product_type: str | None = None
     media_type: str | None = None
+    # m-24852202 (0089): the picture kept in R2 for this media (`inbox.thumbnails`), and
+    # its content type. `None` = none stored; the screen falls back to the live list.
+    thumbnail_key: str | None = None
+    thumbnail_content_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -348,6 +352,8 @@ class MemorySentimentRepository:
             tuple[UUID, str],
             tuple[datetime | None, str | None, str | None, str | None, str | None],
         ] = {}
+        # Same key -> (thumbnail_key, thumbnail_content_type), m-24852202.
+        self._thumbnails: dict[tuple[UUID, str], tuple[str | None, str | None]] = {}
         # (message_id, intent version key) of every comment whose intent signal is
         # commercial — mirrors `comment_intent_results.commercial_intent` (m-24789644),
         # read only by `list_comments_for_thread`'s `commercial_intent` filter.
@@ -364,6 +370,8 @@ class MemorySentimentRepository:
         permalink: str | None = None,
         media_product_type: str | None = None,
         media_type: str | None = None,
+        thumbnail_key: str | None = None,
+        thumbnail_content_type: str | None = None,
     ) -> None:
         """Test-only helper mirroring `InboxRepository.set_media_monitored` — a toggle,
         not an event log: calling this twice for the same `(connection_id,
@@ -376,6 +384,10 @@ class MemorySentimentRepository:
             permalink,
             media_product_type,
             media_type,
+        )
+        self._thumbnails[(connection_id, external_media_id)] = (
+            thumbnail_key,
+            thumbnail_content_type,
         )
 
     def seed_message(
@@ -543,6 +555,7 @@ class MemorySentimentRepository:
             posted_at_meta, caption, permalink, product_type, media_type = self._media_metadata.get(
                 media_key, (None, None, None, None, None)
             )
+            thumb_key, thumb_type = self._thumbnails.get(media_key, (None, None))
             summaries.append(
                 ReelSummary(
                     thread_id=thread_id,
@@ -559,6 +572,8 @@ class MemorySentimentRepository:
                     permalink=permalink,
                     media_product_type=product_type,
                     media_type=media_type,
+                    thumbnail_key=thumb_key,
+                    thumbnail_content_type=thumb_type,
                 )
             )
         summaries.sort(key=lambda s: (s.last_message_at, s.thread_id), reverse=True)
@@ -793,7 +808,8 @@ class PostgresSentimentRepository:
                 SELECT t.id, t.external_thread_id, t.last_message_at,
                   COALESCE(mm.is_monitored, false) AS is_monitored,
                   mm.media_posted_at, mm.caption, mm.permalink,
-                  mm.media_product_type, mm.media_type
+                  mm.media_product_type, mm.media_type,
+                  mm.thumbnail_key, mm.thumbnail_content_type
                 FROM threads t
                 LEFT JOIN monitored_media mm
                   ON mm.connection_id = t.connection_id
@@ -894,6 +910,8 @@ class PostgresSentimentRepository:
                         permalink=row.permalink,
                         media_product_type=row.media_product_type,
                         media_type=row.media_type,
+                        thumbnail_key=row.thumbnail_key,
+                        thumbnail_content_type=row.thumbnail_content_type,
                     )
                 )
             return tuple(summaries)

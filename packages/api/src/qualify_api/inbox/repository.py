@@ -46,7 +46,7 @@ from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from qualify_shared.social.ig_shapes import SHAPE_VERSION, IGComment
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.inbox.models import InboxMetaCallLog, Message, MonitoredMedia, Thread
@@ -80,6 +80,10 @@ class MonitoredMediaRecord:
     # QUA-146 (0049): Meta's value verbatim — read with `inbox.media_type`, never parsed
     # here, so an unrecognized format reaches the caller exactly as stored.
     media_type: str | None = None
+    # m-24852202 (0089): the picture copied into R2 (`inbox.thumbnails`); `None` = none.
+    thumbnail_key: str | None = None
+    thumbnail_content_type: str | None = None
+    thumbnail_source: str | None = None
 
     def state(self, now: datetime) -> MonitoringState:
         return effective_state(
@@ -171,6 +175,30 @@ class InboxRepository(Protocol):
         other metadata is already complete, and clears the last failed attempt. Touches
         nothing else — not the caption, the date, `metadata_fetched_at` or `is_monitored`.
         A missing row is a no-op."""
+        ...
+
+    def record_media_thumbnail(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        key: str,
+        content_type: str,
+        source: str,
+        stored_at: datetime,
+    ) -> bool:
+        """m-24852202: keeps the media's stored picture. Only fills an EMPTY slot — a row
+        that already has a key is left as is and `False` returned (idempotent: a second
+        store never replaces the first). `False` too when the row does not exist."""
+        ...
+
+    def list_media_missing_thumbnail(
+        self, *, tenant_id: UUID, connection_id: UUID, limit: int
+    ) -> tuple[str, ...]:
+        """m-24852202: up to `limit` media ids of this connection with no stored picture,
+        monitored or not (an expired publication keeps its comments on screen), for the
+        backfill command. Ordered by `external_media_id` (deterministic)."""
         ...
 
     def upsert_comment(
@@ -341,6 +369,35 @@ class MemoryInboxRepository:
             self._monitored[key] = replace(
                 row, media_type=media_type, metadata_attempted_at=fetched_at, metadata_error=None
             )
+
+    def record_media_thumbnail(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        key: str,
+        content_type: str,
+        source: str,
+        stored_at: datetime,
+    ) -> bool:
+        row_key = (connection_id, external_media_id)
+        row = self._monitored.get(row_key)
+        if row is None or row.thumbnail_key is not None:
+            return False
+        self._monitored[row_key] = replace(
+            row, thumbnail_key=key, thumbnail_content_type=content_type, thumbnail_source=source
+        )
+        return True
+
+    def list_media_missing_thumbnail(
+        self, *, tenant_id: UUID, connection_id: UUID, limit: int
+    ) -> tuple[str, ...]:
+        return tuple(
+            media_id
+            for (conn_id, media_id), row in sorted(self._monitored.items(), key=lambda kv: kv[0][1])
+            if conn_id == connection_id and row.thumbnail_key is None
+        )[:limit]
 
     def upsert_comment(
         self,
@@ -560,6 +617,51 @@ class PostgresInboxRepository:
             row.updated_at = datetime.now(UTC)
             session.flush()
 
+    def record_media_thumbnail(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        key: str,
+        content_type: str,
+        source: str,
+        stored_at: datetime,
+    ) -> bool:
+        # One UPDATE guarded by `thumbnail_key IS NULL`: two concurrent stores of the same
+        # media can never both win, and a stored picture is never replaced.
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                update(MonitoredMedia)
+                .where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.external_media_id == external_media_id,
+                    MonitoredMedia.thumbnail_key.is_(None),
+                )
+                .values(
+                    thumbnail_key=key,
+                    thumbnail_content_type=content_type,
+                    thumbnail_source=source,
+                    thumbnail_stored_at=stored_at,
+                )
+            )
+            return bool(result.rowcount)
+
+    def list_media_missing_thumbnail(
+        self, *, tenant_id: UUID, connection_id: UUID, limit: int
+    ) -> tuple[str, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(MonitoredMedia.external_media_id)
+                .where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.thumbnail_key.is_(None),
+                )
+                .order_by(MonitoredMedia.external_media_id)
+                .limit(limit)
+            ).all()
+            return tuple(rows)
+
     def upsert_comment(
         self,
         *,
@@ -744,6 +846,9 @@ def _record_from_row(row: MonitoredMedia) -> MonitoredMediaRecord:
         metadata_attempted_at=row.metadata_attempted_at,
         metadata_error=MetadataFetchError(row.metadata_error) if row.metadata_error else None,
         media_type=row.media_type,
+        thumbnail_key=row.thumbnail_key,
+        thumbnail_content_type=row.thumbnail_content_type,
+        thumbnail_source=row.thumbnail_source,
     )
 
 

@@ -184,6 +184,12 @@ conversations-seed *args:
 story-probe *args:
     uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
 
+# m-24852202: optional, one-off — keep in R2 the picture of publications monitored before
+# pictures were stored. One Meta read per publication (200/hour ledger); idempotent.
+#   just inbox-thumbs-backfill --tenant <uuid> --connection <uuid> [--limit 50]
+inbox-thumbs-backfill *args:
+    uv run --no-sync python -m qualify_api.inbox.thumbnails_backfill {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main

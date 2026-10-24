@@ -115,7 +115,8 @@ def test_a_reply_card_shows_who_commented_and_the_publication() -> None:
     assert "_draft_publication_thumb(draft)" in card
     assert card.index('"@" + draft.author_username') < card.index("draft.comment_text")
     thumb = _src(inbox_page._draft_publication_thumb)
-    assert "media_thumb(draft.media_thumbnail_url" in thumb
+    assert "viewable_src(draft.media_thumbnail_url)" in thumb  # m-24852202: R2 or Meta
+    assert 'has=draft.media_thumbnail_url != ""' in thumb
     assert "alt=draft.media_alt" in thumb
 
 

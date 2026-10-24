@@ -169,12 +169,15 @@ class DraftRecord:
     # `comment_reply_drafts`: the comment's author (`messages.author_username`), the
     # publication's media id (the comment thread's `external_thread_id`) and its caption
     # (`monitored_media.caption`). `""` where a caller did not join for them — only
-    # `list_pending_drafts` (and `create_draft`, from its candidate) populate them. The
-    # thumbnail is NOT here: the inbox has no stored picture (Meta's URLs expire); the
-    # UI cross-references `external_media_id` with the candidates it already loaded.
+    # `list_pending_drafts` (and `create_draft`, from its candidate) populate them.
+    # m-24852202: the publication's picture kept in R2 (`monitored_media.thumbnail_key`,
+    # `""` when none) — else the UI cross-references `external_media_id` with the
+    # candidates it already loaded.
     author_username: str = ""
     external_media_id: str = ""
     media_caption: str = ""
+    media_thumbnail_key: str = ""
+    media_thumbnail_content_type: str = ""
 
     @property
     def is_settled(self) -> bool:
@@ -328,6 +331,8 @@ def _row_to_record(
     author_username: str = "",
     external_media_id: str = "",
     media_caption: str = "",
+    media_thumbnail_key: str = "",
+    media_thumbnail_content_type: str = "",
 ) -> DraftRecord:
     """The read-time context (`comment_text`, author, media) defaults to `""` — see
     `DraftRecord`'s field comments for which callers bother to join for it."""
@@ -364,6 +369,8 @@ def _row_to_record(
         author_username=author_username,
         external_media_id=external_media_id,
         media_caption=media_caption,
+        media_thumbnail_key=media_thumbnail_key,
+        media_thumbnail_content_type=media_thumbnail_content_type,
     )
 
 
@@ -554,7 +561,14 @@ def _with_context_select() -> Any:
     """A draft with what its card shows: the comment (text, author), the publication's
     media id (the comment thread's `external_thread_id`) and, outer, its caption."""
     return (
-        select(CommentReplyDraft, Message, Thread.external_thread_id, MonitoredMedia.caption)
+        select(
+            CommentReplyDraft,
+            Message,
+            Thread.external_thread_id,
+            MonitoredMedia.caption,
+            MonitoredMedia.thumbnail_key,
+            MonitoredMedia.thumbnail_content_type,
+        )
         .join(Message, Message.id == CommentReplyDraft.message_id)
         .join(Thread, Thread.id == Message.thread_id)
         .outerjoin(
@@ -573,8 +587,10 @@ def _records_with_context(rows: Any) -> tuple[DraftRecord, ...]:
             author_username=message.author_username or "",
             external_media_id=media_id or "",
             media_caption=caption or "",
+            media_thumbnail_key=thumb_key or "",
+            media_thumbnail_content_type=thumb_type or "",
         )
-        for draft, message, media_id, caption in rows
+        for draft, message, media_id, caption, thumb_key, thumb_type in rows
     )
 
 

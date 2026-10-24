@@ -84,6 +84,15 @@ class MonitoredMedia(Base):
     # value is kept, and interpreted only by `qualify_api.inbox.media_type`. NULL = not
     # read yet (0049 backfilled `VIDEO` on Reels only).
     media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # m-24852202 (0089): the publication's picture, copied once into R2 under the
+    # tenant prefix (`inbox.thumbnails`). All four NULL = no picture stored; the CHECK
+    # `ck_monitored_media_thumbnail` keeps them together.
+    thumbnail_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_stored_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Thread(Base):
