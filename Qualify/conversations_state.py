@@ -80,9 +80,14 @@ from qualify_api.conversations.contracts import (
     UnknownChannel,
 )
 from qualify_api.conversations.drafts import DraftStatus, InvalidDraftTransition, UnknownDraft
+from qualify_api.conversations.interactive import InteractiveMessageError
 from qualify_api.conversations.outbox import ApprovalRequired
 from qualify_api.conversations.repository import MessageRecord
-from qualify_api.conversations.service import ThreadNotFound, WindowClosed
+from qualify_api.conversations.service import (
+    CapabilityUnavailable,
+    ThreadNotFound,
+    WindowClosed,
+)
 from qualify_api.conversations.suggest import SuggestionRefused
 from qualify_api.conversations.templates import (
     ERR_TEMPLATE_NOT_FOUND,
@@ -94,12 +99,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from .auth_state import AuthState
 from .conversations_provider import gateway
 from .conversations_vm import (
+    BUTTON_LINK,
+    BUTTON_REPLY,
     DEFAULT_FILTER,
     EMPTY_ACCESS,
     EMPTY_ACCOUNT,
     EMPTY_ATTACHMENT,
     EMPTY_DRAFT,
     EMPTY_THREAD,
+    FEATURE_OFF,
     FILTER_ALL,
     FILTER_ANSWERED,
     FILTER_KEYS,
@@ -107,7 +115,11 @@ from .conversations_vm import (
     FILTER_PENDING,
     FILTER_READ,
     HEART_TEXT,
+    MAX_BUTTON_TEXT_CHARS,
+    MAX_QUICK_REPLIES,
+    MAX_QUICK_REPLY_TITLE_CHARS,
     MAX_TEMPLATE_BODY_CHARS,
+    MAX_TEMPLATE_BUTTONS,
     MAX_TEMPLATE_TITLE_CHARS,
     MAX_TEMPLATES_PER_ACCOUNT,
     MEDIA_AUDIO,
@@ -117,26 +129,34 @@ from .conversations_vm import (
     AccessVM,
     AccountVM,
     AttachmentVM,
+    ButtonVM,
     DraftVM,
+    FeatureVM,
     MessageVM,
     TemplateVM,
     ThreadRowVM,
     UnsentItem,
+    add_quick_reply,
     attention_pill,
     build_access_vm,
+    build_button_vms,
     build_conversation,
     build_draft_vm,
     build_template_rows,
     build_thread_row,
+    buttons_body_error,
     char_counter,
     classify_attachment,
     composer_enabled,
+    composer_interactive_error,
     filter_counts,
     filter_from_param,
     filter_label,
     filter_threads,
     moved_order,
     newly_pending,
+    quick_replies_counter,
+    remove_at,
     reply_as_label,
     reply_parts_hint,
     reply_sent_message,
@@ -189,6 +209,10 @@ _TEMPLATE_CREATED = "Plantilla creada."
 _TEMPLATE_SAVED = "Cambios guardados."
 _TEMPLATE_DELETED = "Plantilla borrada."
 _TOAST_MS = 4000
+
+
+class _NoSession(Exception):
+    """No tenant or ids to act on (never a subclass of a backend refusal)."""
 
 
 def _suggest_failure_words(exc: Exception) -> str:
@@ -306,6 +330,18 @@ class ConversationsState(rx.State):
     template_saving: bool = False
     template_confirm_delete_id: str = ""
     templates_working: bool = False
+    # m-24789472 (phase 3): the form's buttons (0–3).
+    template_form_buttons: list[ButtonVM] = []
+
+    # -- quick replies and buttons in the composer (m-24789472, phase 3) ------------------
+    quick_replies_feature: FeatureVM = FEATURE_OFF
+    buttons_feature: FeatureVM = FEATURE_OFF
+    quick_replies_open: bool = False
+    quick_replies: list[str] = []
+    quick_reply_input: str = ""
+    quick_reply_error: str = ""
+    # The picked template's buttons: a read-only preview under the box.
+    applied_buttons: list[ButtonVM] = []
 
     # -- backend only -------------------------------------------------------------------
     _zone_name: str = ""
@@ -420,6 +456,13 @@ class ConversationsState(rx.State):
 
     @rx.var
     def compose_error(self) -> str:
+        interactive = composer_interactive_error(
+            self.draft_text,
+            quick_replies=len(self.quick_replies_to_send),
+            buttons_will_send=self.buttons_will_send,
+        )
+        if interactive:
+            return interactive
         if self.attachment.object_key and not self.draft_text.strip():
             return ""
         return validate_reply(self.draft_text)
@@ -428,11 +471,54 @@ class ConversationsState(rx.State):
     def compose_hint(self) -> str:
         """What sits under the box: in how many messages a long text goes out, else the
         validation message once the person typed something (an empty box needs no
-        scolding: «Responder» is off)."""
+        scolding: «Responder» is off). A message with buttons is never split."""
+        if self.compose_error and (self.draft_text.strip() or self.quick_replies):
+            return self.compose_error
+        if self.buttons_will_send:
+            return ""
         parts = reply_parts_hint(self.draft_text)
         if parts:
             return parts
         return self.compose_error if self.draft_text.strip() else ""
+
+    # -- quick replies and buttons (m-24789472, phase 3) ---------------------------------
+
+    @rx.var
+    def has_applied_buttons(self) -> bool:
+        return len(self.applied_buttons) > 0
+
+    @rx.var
+    def buttons_will_send(self) -> bool:
+        """The picked template's buttons go out with the reply (`reply_buttons`) only
+        while messages with buttons are on; otherwise the text goes out alone, and the
+        composer says so before the person sends."""
+        return len(self.applied_buttons) > 0 and self.buttons_feature.enabled
+
+    @rx.var
+    def buttons_dropped_notice(self) -> bool:
+        return len(self.applied_buttons) > 0 and not self.buttons_feature.enabled
+
+    @rx.var
+    def can_add_quick_replies(self) -> bool:
+        """The «Respuestas rápidas» editor accepts options: the feature is on and the
+        message is not one with buttons (Instagram takes one or the other)."""
+        return self.quick_replies_feature.enabled and not self.buttons_will_send
+
+    @rx.var
+    def quick_replies_to_send(self) -> list[str]:
+        return list(self.quick_replies) if self.can_add_quick_replies else []
+
+    @rx.var
+    def quick_replies_count_label(self) -> str:
+        return quick_replies_counter(len(self.quick_replies))
+
+    @rx.var
+    def quick_reply_input_counter(self) -> str:
+        return char_counter(self.quick_reply_input, MAX_QUICK_REPLY_TITLE_CHARS)
+
+    @rx.var
+    def quick_replies_at_limit(self) -> bool:
+        return len(self.quick_replies) >= MAX_QUICK_REPLIES
 
     @rx.var
     def can_send(self) -> bool:
@@ -506,7 +592,22 @@ class ConversationsState(rx.State):
 
     @rx.var
     def template_body_counter(self) -> str:
-        return char_counter(self.template_form_body, MAX_TEMPLATE_BODY_CHARS)
+        """«120/1000», or «120/640» once the template has buttons (one message)."""
+        limit = MAX_BUTTON_TEXT_CHARS if self.template_form_buttons else MAX_TEMPLATE_BODY_CHARS
+        return char_counter(self.template_form_body, limit)
+
+    @rx.var
+    def template_form_body_error(self) -> str:
+        """The 640 rule, inline under the message while the person types."""
+        return buttons_body_error(self.template_form_body, bool(self.template_form_buttons))
+
+    @rx.var
+    def template_form_buttons_counter(self) -> str:
+        return f"{len(self.template_form_buttons)}/{MAX_TEMPLATE_BUTTONS}"
+
+    @rx.var
+    def template_form_buttons_full(self) -> bool:
+        return len(self.template_form_buttons) >= MAX_TEMPLATE_BUTTONS
 
     @rx.var
     def templates_account_label(self) -> str:
@@ -552,6 +653,7 @@ class ConversationsState(rx.State):
         self.template_form_body = ""
         self.template_form_error = ""
         self.template_saving = False
+        self.template_form_buttons = []
 
     def _reset_list(self) -> None:
         self._reset_templates()
@@ -586,6 +688,16 @@ class ConversationsState(rx.State):
         self.applied_unresolved = []
         self.applied_blanks = []
         self.templates_menu_open = False
+        self._clear_interactive()
+
+    def _clear_interactive(self) -> None:
+        """What rides with the reply being written: its quick replies and the picked
+        template's buttons (a new conversation, a sent reply)."""
+        self.quick_replies = []
+        self.quick_reply_input = ""
+        self.quick_reply_error = ""
+        self.quick_replies_open = False
+        self.applied_buttons = []
 
     def _render_conversation(self) -> None:
         self.messages = build_conversation(
@@ -644,6 +756,8 @@ class ConversationsState(rx.State):
         try:
             zone_name = await asyncio.to_thread(gw.timezone, tenant_id)
             accounts = await asyncio.to_thread(gw.accounts, tenant_id)
+            # m-24789472: which interactive messages this deployment sends (no DB read).
+            quick_feature, buttons_feature = gw.features()
         except _DB_ERRORS as exc:
             logger.error("conversations accounts failed: %s", type(exc).__name__)
             async with self:
@@ -653,6 +767,8 @@ class ConversationsState(rx.State):
             return
         async with self:
             self._zone_name = zone_name
+            self.quick_replies_feature = quick_feature
+            self.buttons_feature = buttons_feature
             self.accounts = accounts
             self.accounts_loading = False
             self.accounts_loaded = True
@@ -1146,6 +1262,7 @@ class ConversationsState(rx.State):
             self.draft_text = self.suggestion.text
             self.applied_unresolved = []
             self.applied_blanks = []
+            self.applied_buttons = []  # the template's buttons left with its text
         yield rx.toast.success(_SUGGEST_READY, duration=_TOAST_MS)
 
     @rx.event(background=True)
@@ -1233,7 +1350,7 @@ class ConversationsState(rx.State):
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             user = await self._acting_user(tenant_id)
             if user is None:
                 async with self:
@@ -1243,7 +1360,7 @@ class ConversationsState(rx.State):
             await asyncio.to_thread(
                 gateway().reply, tenant_id, connection, thread, user, HEART_TEXT
             )
-        except PermissionError:
+        except _NoSession:
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SESSION, "error")
@@ -1275,13 +1392,17 @@ class ConversationsState(rx.State):
             text = self.draft_text.strip()
             attachment = self.attachment
             suggestion = self.suggestion
+            # m-24789472: a picked template's buttons (when that feature is on) or the
+            # quick replies written for this message — never both (`quick_replies_to_send`).
+            buttons = list(self.applied_buttons) if self.buttons_will_send else []
+            quick_replies = list(self.quick_replies_to_send)
             thread_id, connection_id = self.open_thread_id, self.selected_connection_id
             tenant_id = await self._tenant()
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         gw = gateway()
         try:
             if tenant_id is None or thread is None or connection is None:
-                raise PermissionError
+                raise _NoSession
             user = await self._acting_user(tenant_id)
             if user is None:
                 async with self:
@@ -1295,11 +1416,22 @@ class ConversationsState(rx.State):
                 await asyncio.to_thread(
                     gw.reply_media, tenant_id, connection, thread, user, attachment
                 )
-            if text:
+            if text and buttons:
                 await asyncio.to_thread(
-                    gw.reply, tenant_id, connection, thread, user, text, draft_id
+                    gw.reply_buttons, tenant_id, connection, thread, user, text, buttons
                 )
-        except PermissionError:
+            elif text:
+                await asyncio.to_thread(
+                    gw.reply,
+                    tenant_id,
+                    connection,
+                    thread,
+                    user,
+                    text,
+                    draft_id,
+                    quick_replies=quick_replies,
+                )
+        except _NoSession:
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SESSION, "error")
@@ -1320,6 +1452,18 @@ class ConversationsState(rx.State):
             async with self:
                 self.sending = False
                 self._set_banner(_NO_SENDER, "warn")
+            return
+        except CapabilityUnavailable as off:
+            # The deployment switched the feature off after the screen loaded.
+            async with self:
+                self.sending = False
+                self._set_banner(off.message, "warn")
+            return
+        except InteractiveMessageError as refusal:
+            # A ValueError too: caught first so its own sentence is shown.
+            async with self:
+                self.sending = False
+                self._set_banner(refusal.message, "warn")
             return
         except ApprovalRequired:
             # Unreachable from here (the provider always builds the approval); worded
@@ -1347,6 +1491,7 @@ class ConversationsState(rx.State):
                 self.suggestion = EMPTY_DRAFT
                 self.applied_unresolved = []
                 self.applied_blanks = []
+                self._clear_interactive()
                 self._typing_sent_at = 0.0
             row = self.open_thread if self.open_thread_id == thread_id else EMPTY_THREAD
             who = row.handle or row.title
@@ -1466,6 +1611,9 @@ class ConversationsState(rx.State):
             self.draft_text = rendered.text
             self.applied_unresolved = list(rendered.unresolved)
             self.applied_blanks = list(rendered.blanks)
+            # m-24789472: its buttons, a read-only preview; they go with the reply only
+            # while messages with buttons are on (`buttons_will_send`).
+            self.applied_buttons = build_button_vms(getattr(rendered, "buttons", ()) or ())
             self.templates_menu_open = False
         if suggestion_id is not None:
             await self._discard_draft(tenant_id, suggestion_id)
@@ -1511,6 +1659,7 @@ class ConversationsState(rx.State):
                 self.template_editing_id = t.template_id
                 self.template_form_title = t.title
                 self.template_form_body = t.body
+                self.template_form_buttons = list(t.buttons)
                 return
 
     @rx.event
@@ -1526,6 +1675,82 @@ class ConversationsState(rx.State):
     def set_template_form_body(self, value: str) -> None:
         self.template_form_body = value if isinstance(value, str) else ""
         self.template_form_error = ""
+
+    # -- the form's buttons (m-24789472, phase 3) ---------------------------------------
+
+    @rx.event
+    def add_template_button(self) -> None:
+        if len(self.template_form_buttons) >= MAX_TEMPLATE_BUTTONS:
+            return
+        self.template_form_buttons = [
+            *self.template_form_buttons,
+            ButtonVM(kind=BUTTON_REPLY, title=""),
+        ]
+        self.template_form_error = ""
+
+    @rx.event
+    def remove_template_button(self, index: int) -> None:
+        self.template_form_buttons = remove_at(self.template_form_buttons, index)
+        self.template_form_error = ""
+
+    def _edit_button(self, index: int, **changes: str) -> None:
+        if not isinstance(index, int) or not 0 <= index < len(self.template_form_buttons):
+            return
+        buttons = list(self.template_form_buttons)
+        buttons[index] = dataclasses.replace(buttons[index], **changes)
+        self.template_form_buttons = buttons
+        self.template_form_error = ""
+
+    @rx.event
+    def set_template_button_kind(self, index: int, kind: str) -> None:
+        if kind in (BUTTON_REPLY, BUTTON_LINK):
+            # A reply button has no link; a link button keeps no stale reply payload.
+            self._edit_button(index, kind=kind, url="", payload="")
+
+    @rx.event
+    def set_template_button_title(self, index: int, value: str) -> None:
+        text = value if isinstance(value, str) else ""
+        self._edit_button(index, title=text)
+
+    @rx.event
+    def set_template_button_url(self, index: int, value: str) -> None:
+        self._edit_button(index, url=value.strip() if isinstance(value, str) else "")
+
+    # ==================================================================================
+    # Quick replies and the picked template's buttons, in the composer (phase 3)
+    # ==================================================================================
+
+    @rx.event
+    def toggle_quick_replies(self) -> None:
+        self.quick_replies_open = not self.quick_replies_open
+        self.quick_reply_error = ""
+
+    @rx.event
+    def set_quick_reply_input(self, value: str) -> None:
+        self.quick_reply_input = value if isinstance(value, str) else ""
+        self.quick_reply_error = ""
+
+    @rx.event
+    def add_quick_reply(self, _form: dict | None = None) -> None:
+        """«Agregar» (or Enter in the field): one more option under the message, or the
+        reason it cannot be added — the same sentence the service would refuse with."""
+        if not self.can_add_quick_replies:
+            return
+        replies, error = add_quick_reply(self.quick_replies, self.quick_reply_input)
+        self.quick_replies = replies
+        self.quick_reply_error = error
+        if not error:
+            self.quick_reply_input = ""
+
+    @rx.event
+    def remove_quick_reply(self, index: int) -> None:
+        self.quick_replies = remove_at(self.quick_replies, index)
+        self.quick_reply_error = ""
+
+    @rx.event
+    def drop_applied_buttons(self) -> None:
+        """«Enviar sin botones»: the text stays, the buttons leave the reply."""
+        self.applied_buttons = []
 
     async def _template_context(self) -> tuple[UUID, UUID] | None:
         """(tenant, account) — call under `async with self`. None without a session."""
@@ -1545,6 +1770,7 @@ class ConversationsState(rx.State):
             self.template_form_error = ""
             editing = self.template_editing_id
             title, body = self.template_form_title, self.template_form_body
+            buttons = list(self.template_form_buttons)
             context = await self._template_context()
             connection_id = self.selected_connection_id
         if context is None:
@@ -1560,12 +1786,13 @@ class ConversationsState(rx.State):
                 template = _uuid(editing)
                 if template is None:
                     raise ReplyTemplateNotFound(ERR_TEMPLATE_NOT_FOUND)
+                # The form always holds the buttons as they should end up: `[]` removes.
                 await asyncio.to_thread(
-                    gw.update_template, tenant_id, connection, template, user, title, body
+                    gw.update_template, tenant_id, connection, template, user, title, body, buttons
                 )
             else:
                 await asyncio.to_thread(
-                    gw.create_template, tenant_id, connection, user, title, body
+                    gw.create_template, tenant_id, connection, user, title, body, buttons
                 )
             library = await asyncio.to_thread(gw.templates, tenant_id, connection)
         except ReplyTemplateError as refusal:

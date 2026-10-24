@@ -4,13 +4,18 @@ The screen where the founder puts the real products of a brand with their real p
 and short clips — the one input the template engine cannot invent. Three blocks on one
 page, design-system §9.1 (`app_shell(page_header, page_body)`):
 
-1. **Agregar producto** — a card with the form (name, category, description). Opens
-   from the header's one solid action. No price: the founder dropped it from the
-   catalog (2026-10-19); prices already stored stay in the DB, unused by this screen.
-2. **The editor** of the selected product — its fields, and its media: an upload zone
-   that takes photos AND short videos (both normalized at upload by the service), the
-   tiles with a "Principal" badge, "Hacer principal" and "Quitar".
-3. **The grid** of products as cards: primary photo, name, category, counts.
+1. **Agregar producto** — a drawer in three steps (m-24842974): the photo first (the
+   phone's camera or gallery), then the name and an optional price (category and
+   description behind «Más detalles»), then «Listo» with the two next moves. Opens from
+   the header's one solid action; on a phone the drawer is the whole screen.
+2. **The editor** of the selected product — a drawer too (m-24842976): the whole
+   screen on a phone, with its own address (`/catalog?producto=<id>`, N5) so the phone's
+   «atrás» closes it and leaves the list where it was. Its fields, and its media: an
+   upload zone that takes photos AND short videos (both normalized at upload by the
+   service), the tiles with a "Principal" badge, "Hacer principal" and "Quitar". Leaving
+   with unsaved changes asks «¿Salir sin guardar?» first.
+3. **The grid** of products as cards: primary photo, name, category, counts — each card
+   a real button that says «Editar» in words (never only on hover).
 
 Media keys render through `rx.get_upload_url`, like every upload the generator makes:
 the catalog writes to the same store (`catalog_provider`).
@@ -22,9 +27,21 @@ import reflex as rx
 
 from .catalog_state import CatalogState
 from .catalog_vm import (
-    CURRENCY_OPTIONS,
+    LEAVE_DISCARD,
+    LEAVE_SAVE,
+    LEAVE_STAY,
+    LEAVE_TITLE,
+    MAIN_CURRENCIES,
     MEDIA_ACCEPT,
+    MISSING_PHOTO,
+    NEW_PRODUCT_STEP_ICONS,
+    NEW_PRODUCT_STEPS,
     NO_CURRENCY,
+    OTHER_CURRENCIES,
+    OTHER_CURRENCY_GROUP,
+    STEP_DONE,
+    STEP_NAME,
+    STEP_PHOTO,
     ProductMediaVM,
     ProductVM,
 )
@@ -34,6 +51,7 @@ from .ui import (
     asset_script,
     callout,
     card,
+    drawer,
     dropzone,
     empty_state,
     media_thumb,
@@ -42,10 +60,14 @@ from .ui import (
     progress_panel,
     section,
     skeleton_card,
+    stepper,
     tag,
     tone_badge,
 )
 from .ui import tokens as T
+
+#: N12: every control of the «Agregar producto» flow is at least this tall on a phone.
+_TOUCH_MIN = "44px"
 
 
 def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Component:
@@ -57,6 +79,29 @@ def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Com
         spacing="1",
         width="100%",
         align_items="start",
+    )
+
+
+def _currency_select(currency: rx.Var[str], on_currency: object) -> rx.Component:
+    """m-24842974: the currency reads by its name («Pesos colombianos (COP)»), starts on
+    the business's own, and the four of our markets come first; the rest sit under
+    «Otra moneda». «Sin moneda» stays a real choice (the price prints bare)."""
+    return rx.select.root(
+        rx.select.trigger(aria_label="Moneda", min_height=_TOUCH_MIN, width="100%"),
+        rx.select.content(
+            rx.select.group(
+                *[rx.select.item(name, value=code) for code, name in MAIN_CURRENCIES],
+                rx.select.item(NO_CURRENCY, value=NO_CURRENCY),
+            ),
+            rx.select.separator(),
+            rx.select.group(
+                rx.select.label(OTHER_CURRENCY_GROUP),
+                *[rx.select.item(name, value=code) for code, name in OTHER_CURRENCIES],
+            ),
+        ),
+        value=rx.cond(currency == "", NO_CURRENCY, currency),
+        on_change=on_currency,
+        size="3",
     )
 
 
@@ -77,18 +122,17 @@ def _price_field(
                 on_change=on_amount,
                 placeholder="Ej.: 89990",
                 input_mode="decimal",
-                width="100%",
+                size="3",
+                min_height=_TOUCH_MIN,
+                flex="1 1 8rem",
+                min_width="0",
             ),
-            rx.select(
-                list(CURRENCY_OPTIONS),
-                value=rx.cond(currency == "", NO_CURRENCY, currency),
-                on_change=on_currency,
-                width="8rem",
-            ),
+            _currency_select(currency, on_currency),
             spacing="2",
             width="100%",
-            max_width="24rem",  # a price is a short number: not a field across the page
+            max_width="30rem",  # a price is a short number: not a field across the page
             align="center",
+            wrap="wrap",
         ),
         "Opcional. Si lo dejas vacío, la publicación no muestra precio. Si lo escribes, "
         "sale tal cual.",
@@ -160,83 +204,320 @@ def _product_fields(
 # -- Agregar producto --------------------------------------------------------------------
 
 
-def _new_product_form() -> rx.Component:
-    return card(
-        rx.form(
+def _photo_step() -> rx.Component:
+    """① La foto: one big tap target that opens the phone's camera or gallery. No
+    «arrastra», no «haz clic», no formats — those only appear when a file is refused."""
+    return rx.vstack(
+        dropzone(
             rx.vstack(
-                rx.hstack(
-                    rx.heading("Agregar producto", size="4", as_="h2"),
-                    rx.spacer(),
-                    rx.button(
-                        rx.icon("x", size=T.ICON_SM),
-                        variant="ghost",
-                        color_scheme=T.tone_scale("neutral"),
-                        size="1",
-                        type="button",
-                        on_click=CatalogState.close_form,
-                        aria_label="Cerrar",
+                rx.icon("camera", size=T.ICON_LG, color=T.TEXT_MUTED),
+                rx.text(
+                    "Toca para tomar una foto o elegirla de tu galería",
+                    size="3",
+                    weight="medium",
+                    text_align="center",
+                ),
+                rx.text(
+                    "Fotos o videos cortos (hasta 15 segundos).",
+                    size="2",
+                    text_align="center",
+                    color=T.TEXT_MUTED,
+                ),
+                align="center",
+                spacing="2",
+                padding_y="1.5rem",
+            ),
+            upload_id="catalog_new_media",
+            accept=MEDIA_ACCEPT,
+            multiple=True,
+            max_files=12,
+            on_drop=CatalogState.handle_new_media(rx.upload_files(upload_id="catalog_new_media")),
+            on_drop_rejected=CatalogState.new_media_rejected,
+        ),
+        rx.cond(
+            CatalogState.new_media_error != "",
+            callout(CatalogState.new_media_error, "error"),
+        ),
+        rx.cond(
+            CatalogState.new_previews.length() > 0,
+            rx.box(
+                rx.foreach(CatalogState.new_previews, _new_file_tile),
+                display="grid",
+                grid_template_columns="repeat(auto-fill, minmax(8.5rem, 1fr))",
+                gap="0.6rem",
+                width="100%",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _name_step() -> rx.Component:
+    """② ¿Cómo se llama?: the name (the only must) and the price; category and
+    description wait behind «Más detalles». Every field keeps what was typed when the
+    owner goes back to the photo (N6)."""
+    return rx.vstack(
+        _field(
+            "Nombre",
+            rx.input(
+                value=CatalogState.new_name,
+                on_change=CatalogState.set_new_name,
+                placeholder="Ej.: Shawarma mixto",
+                size="3",
+                min_height=_TOUCH_MIN,
+                width="100%",
+                auto_focus=True,
+            ),
+            "Es lo único obligatorio.",
+        ),
+        _price_field(
+            CatalogState.new_price,
+            CatalogState.set_new_price,
+            CatalogState.new_currency,
+            CatalogState.set_new_currency,
+        ),
+        rx.button(
+            rx.cond(
+                CatalogState.new_details_open,
+                rx.icon("chevron-up", size=T.ICON_SM),
+                rx.icon("chevron-down", size=T.ICON_SM),
+            ),
+            "Más detalles",
+            variant="ghost",
+            color_scheme="gray",
+            size="3",
+            type="button",
+            min_height=_TOUCH_MIN,
+            on_click=CatalogState.toggle_new_details,
+            aria_expanded=rx.cond(CatalogState.new_details_open, "true", "false"),
+        ),
+        rx.cond(
+            CatalogState.new_details_open,
+            rx.vstack(
+                _field(
+                    "Categoría",
+                    rx.input(
+                        value=CatalogState.new_category,
+                        on_change=CatalogState.set_new_category,
+                        placeholder="Ej.: shawarmas, helados, combos",
+                        size="3",
+                        min_height=_TOUCH_MIN,
+                        width="100%",
                     ),
-                    width="100%",
-                    align="center",
+                    "Agrupa productos parecidos.",
                 ),
-                _product_fields(
-                    name=CatalogState.new_name,
-                    on_name=CatalogState.set_new_name,
-                    category=CatalogState.new_category,
-                    on_category=CatalogState.set_new_category,
-                    description=CatalogState.new_description,
-                    on_description=CatalogState.set_new_description,
-                    price=CatalogState.new_price,
-                    on_price=CatalogState.set_new_price,
-                    currency=CatalogState.new_currency,
-                    on_currency=CatalogState.set_new_currency,
-                    name_autofocus=True,
+                _field(
+                    "Descripción",
+                    rx.text_area(
+                        value=CatalogState.new_description,
+                        on_change=CatalogState.set_new_description,
+                        placeholder="Qué lleva, para quién es, qué lo hace distinto.",
+                        rows="3",
+                        size="3",
+                        width="100%",
+                    ),
+                    "Nos ayuda a escribir el texto de la publicación. No se copia tal cual.",
                 ),
-                _new_media_field(),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            CatalogState.form_error != "",
+            rx.text(CatalogState.form_error, size="2", color=T.tone_color("error", 11)),
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _done_step() -> rx.Component:
+    """③ Listo: what happened, what is still missing, and the two next moves."""
+    return rx.vstack(
+        callout(
+            "«" + CatalogState.created_name + "» ya está en tus productos.",
+            "ok",
+        ),
+        rx.cond(
+            ~CatalogState.created_has_media,
+            rx.hstack(
+                tone_badge(MISSING_PHOTO, "warn", icon="camera"),
+                rx.text(
+                    "Súbele una foto para poder usarlo en tus publicaciones.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+        ),
+        rx.cond(CatalogState.uploading, _upload_progress()),
+        rx.cond(
+            CatalogState.created_has_media & (CatalogState.upload_error != ""),
+            callout(CatalogState.upload_error, "error"),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _new_product_footer() -> rx.Component:
+    """One column of full-width buttons on a phone, the verb last (§7)."""
+    big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
+    return rx.box(
+        rx.match(
+            CatalogState.new_step,
+            (
+                STEP_PHOTO,
                 rx.cond(
-                    CatalogState.form_error != "",
-                    rx.text(CatalogState.form_error, size="1", color=T.tone_color("error", 11)),
-                ),
-                rx.hstack(
-                    rx.spacer(),
-                    # the pair every dialog of the system uses (§7): Cancelar soft, with
-                    # its icon, the same size as the verb beside it
+                    CatalogState.new_previews.length() > 0,
                     rx.button(
-                        rx.icon("x", size=T.ICON_SM),
-                        "Cancelar",
+                        "Siguiente",
+                        rx.icon("arrow-right", size=T.ICON_SM),
+                        type="button",
+                        on_click=CatalogState.next_new_step,
+                        **big,
+                    ),
+                    rx.button(
+                        "Sin foto por ahora",
+                        rx.icon("arrow-right", size=T.ICON_SM),
                         variant="soft",
                         color_scheme="gray",
-                        size="2",
                         type="button",
-                        on_click=CatalogState.close_form,
+                        on_click=CatalogState.next_new_step,
+                        **big,
+                    ),
+                ),
+            ),
+            (
+                STEP_NAME,
+                rx.fragment(
+                    rx.button(
+                        rx.icon("arrow-left", size=T.ICON_SM),
+                        "Atrás",
+                        variant="soft",
+                        color_scheme="gray",
+                        type="button",
+                        on_click=CatalogState.back_new_step,
+                        **big,
                     ),
                     rx.button(
-                        rx.icon("plus", size=T.ICON_SM),
-                        "Crear producto",
-                        size="2",
-                        type="submit",
+                        rx.icon("check", size=T.ICON_SM),
+                        "Guardar producto",
+                        type="button",
+                        on_click=CatalogState.submit_new_product,
                         loading=CatalogState.saving,
                         disabled=CatalogState.new_name.strip() == "",
+                        **big,
                     ),
-                    width="100%",
-                    spacing="2",
                 ),
-                spacing="4",
-                width="100%",
-                align_items="start",
             ),
-            on_submit=CatalogState.submit_new_product,
-            reset_on_submit=False,
+            (
+                STEP_DONE,
+                rx.fragment(
+                    rx.button(
+                        rx.icon("plus", size=T.ICON_SM),
+                        "Agregar otro producto",
+                        variant="soft",
+                        type="button",
+                        on_click=CatalogState.add_another_product,
+                        **big,
+                    ),
+                    # Live only once the photos are in; while they upload it says so;
+                    # with no photo (or a failed upload) it leads straight to adding one.
+                    rx.cond(
+                        CatalogState.created_ready,
+                        rx.link(
+                            rx.button(
+                                rx.icon("sparkles", size=T.ICON_SM),
+                                "Crear publicación",
+                                type="button",
+                                **big,
+                            ),
+                            href=CatalogState.created_href,
+                            width="100%",
+                        ),
+                        rx.cond(
+                            CatalogState.created_preparing,
+                            rx.button(
+                                rx.icon("hourglass", size=T.ICON_SM),
+                                "Preparando tu foto…",
+                                type="button",
+                                disabled=True,
+                                **big,
+                            ),
+                            rx.button(
+                                rx.icon("camera", size=T.ICON_SM),
+                                "Subirle una foto",
+                                type="button",
+                                on_click=CatalogState.upload_photo_for_created,
+                                **big,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        display="grid",
+        grid_template_columns=rx.breakpoints(initial="minmax(0, 1fr)", sm="repeat(2, 1fr)"),
+        gap="0.75rem",
+        width="100%",
+    )
+
+
+def _new_product_drawer() -> rx.Component:
+    """«Agregar producto» in three steps (m-24842974), in the system's drawer: the whole
+    screen on a phone, a panel on the right on a computer. The stepper only shows where
+    the owner is; «Atrás» and «Siguiente» are the targets (≥ 44 px, N12)."""
+    return drawer(
+        rx.vstack(
+            rx.box(
+                stepper(
+                    list(NEW_PRODUCT_STEPS),
+                    current=CatalogState.new_step,
+                    completed=CatalogState.new_steps_done,
+                    icons=list(NEW_PRODUCT_STEP_ICONS),
+                ),
+                class_name="q-stepper-wrap",
+                # On a phone «Paso N de 3» and the heading say where the owner is: the
+                # bar would push the tap area below the fold.
+                display=rx.breakpoints(initial="none", sm="block"),
+            ),
+            rx.vstack(
+                rx.text(CatalogState.new_step_counter, size="2", color=T.TEXT_MUTED),
+                rx.heading(CatalogState.new_step_title, size="5", as_="h3"),
+                spacing="1",
+                width="100%",
+            ),
+            rx.match(
+                CatalogState.new_step,
+                (STEP_PHOTO, _photo_step()),
+                (STEP_NAME, _name_step()),
+                (STEP_DONE, _done_step()),
+                _photo_step(),
+            ),
+            spacing="4",
             width="100%",
         ),
-        padding="1.25rem 1.5rem",
+        open=CatalogState.form_open,
+        on_open_change=CatalogState.set_form_open,
+        title="Agregar producto",
+        description="La foto, el nombre y listo. Lo demás lo puedes completar después.",
+        footer=_new_product_footer(),
+        width="34rem",
+        icon="package-plus",
     )
 
 
 def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
     """One file waiting in the form, as the editor will show it (request 2026-10-22: the
     picture, not its name): the thumbnail — or the kit's frame with a clip / file glyph —
-    and under it the name and the × that takes it out before anything is uploaded."""
+    and under it «Quitar», which takes it out before anything is uploaded. The phone's
+    file name is never shown (it means nothing to the owner); it stays for screen readers."""
     return rx.box(
         media_thumb(
             rx.get_upload_url(row["key"]),
@@ -248,28 +529,18 @@ def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
             icon=rx.cond(row["kind"] == "video", "film", "file-image"),
         ),
         rx.hstack(
-            rx.text(
-                row["name"],
-                size="1",
-                color=T.TEXT_MUTED,
-                white_space="nowrap",
-                overflow="hidden",
-                text_overflow="ellipsis",
-                min_width="0",
-                title=row["name"],
-            ),
             rx.spacer(),
-            rx.tooltip(
-                rx.icon_button(
-                    rx.icon("x", size=12),
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="1",
-                    type="button",
-                    on_click=CatalogState.remove_new_file(index),
-                    aria_label="Quitar " + row["name"],
-                ),
-                content="Quitar",
+            rx.button(
+                rx.icon("x", size=T.ICON_SM),
+                rx.text("Quitar", size="1"),
+                variant="ghost",
+                color_scheme="gray",
+                size="3",
+                type="button",
+                min_width=_TOUCH_MIN,
+                min_height=_TOUCH_MIN,
+                on_click=CatalogState.remove_new_file(index),
+                aria_label="Quitar " + row["name"],
             ),
             class_name="q-catalog-tile-foot",
             align="center",
@@ -279,57 +550,6 @@ def _new_file_tile(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
         class_name="q-catalog-tile",
         key=row["key"] + row["name"],
         width="100%",
-    )
-
-
-def _new_media_field() -> rx.Component:
-    """Photos and videos right in the form (§ request 2026-10-19: «no me deja poner la
-    imagen de una vez»): they wait as chips and are processed as soon as the product is
-    created — the editor that opens shows their progress."""
-    return _field(
-        "Fotos y videos",
-        rx.vstack(
-            dropzone(
-                rx.vstack(
-                    rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
-                    rx.text(
-                        "Toca para tomar una foto o elegirla de tu galería",
-                        size="1",
-                        text_align="center",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.text(
-                        "Fotos o videos cortos (hasta 15 segundos). Se guardan al crear el "
-                        "producto.",
-                        size="1",
-                        text_align="center",
-                        color=T.TEXT_FAINT,
-                    ),
-                    align="center",
-                    spacing="1",
-                ),
-                upload_id="catalog_new_media",
-                accept=MEDIA_ACCEPT,
-                multiple=True,
-                max_files=12,
-                on_drop=CatalogState.handle_new_media(
-                    rx.upload_files(upload_id="catalog_new_media")
-                ),
-                variant="compact",
-            ),
-            rx.cond(
-                CatalogState.new_previews.length() > 0,
-                rx.box(
-                    rx.foreach(CatalogState.new_previews, _new_file_tile),
-                    display="grid",
-                    grid_template_columns="repeat(auto-fill, minmax(8.5rem, 1fr))",
-                    gap="0.6rem",
-                    width="100%",
-                ),
-            ),
-            spacing="2",
-            width="100%",
-        ),
     )
 
 
@@ -457,6 +677,7 @@ def _upload_zone() -> rx.Component:
         multiple=True,
         max_files=12,
         on_drop=CatalogState.handle_media_upload(rx.upload_files(upload_id="catalog_media")),
+        on_drop_rejected=CatalogState.media_rejected,
         variant="compact",
     )
 
@@ -533,116 +754,170 @@ def _media_block() -> rx.Component:
     )
 
 
-def _editor() -> rx.Component:
-    """The selected product: its picture and name up top, then two panels — the fields
-    (with «Guardar cambios» under them) and its media — side by side from `lg`."""
+def _editor_body() -> rx.Component:
+    """The selected product in its drawer: what it carries (price, photos), then the
+    fields, then its media — one column, so it reads the same at 360 px and on a
+    computer."""
     product = CatalogState.selected
-    return card(
+    return rx.vstack(
+        rx.hstack(
+            media_thumb(
+                rx.get_upload_url(product.primary_photo_key),
+                has=product.primary_photo_key != "",
+                size="3.25rem",
+                alt=product.name,
+                icon="package",
+            ),
+            rx.hstack(
+                rx.cond(
+                    product.price_label != "",
+                    tone_badge(product.price_label, "ok", icon="tag"),
+                ),
+                rx.cond(
+                    product.photo_count == 0,
+                    tone_badge(MISSING_PHOTO, "warn", icon="camera"),
+                    tone_badge(product.counts_label, "neutral"),
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+                min_width="0",
+            ),
+            width="100%",
+            align="center",
+            spacing="3",
+        ),
         rx.vstack(
             rx.hstack(
-                media_thumb(
-                    rx.get_upload_url(product.primary_photo_key),
-                    has=product.primary_photo_key != "",
-                    size="3.25rem",
-                    alt=product.name,
-                    icon="package",
-                ),
-                rx.vstack(
-                    rx.heading(product.name, size="4", as_="h2"),
-                    rx.hstack(
-                        rx.cond(
-                            product.price_label != "",
-                            tone_badge(product.price_label, "ok", icon="tag"),
-                        ),
-                        tone_badge(product.counts_label, "neutral"),
-                        spacing="2",
-                        align="center",
-                        wrap="wrap",
-                    ),
-                    spacing="1",
-                    align_items="start",
-                    min_width="0",
-                ),
-                rx.spacer(),
-                # request 2026-10-22: a product can be deleted from here (a dialog first:
-                # it leaves every list; the pieces already made keep their provenance)
-                rx.button(
-                    rx.icon("trash-2", size=T.ICON_SM),
-                    "Eliminar",
-                    variant="soft",
-                    size="1",
-                    on_click=CatalogState.ask_delete_product,
-                    **T.tone_scheme("error"),
-                ),
-                rx.button(
-                    rx.icon("x", size=T.ICON_SM),
-                    "Cerrar",
-                    variant="soft",
-                    color_scheme="gray",
-                    size="1",
-                    on_click=CatalogState.close_editor,
-                ),
-                width="100%",
-                align="center",
+                rx.icon("pencil-line", size=T.ICON_SM, color=T.TEXT_MUTED),
+                rx.text("Datos del producto", size="2", weight="medium"),
                 spacing="2",
-                wrap="wrap",
+                align="center",
             ),
-            rx.box(
-                rx.vstack(
-                    rx.hstack(
-                        rx.icon("pencil-line", size=T.ICON_SM, color=T.TEXT_MUTED),
-                        rx.text("Datos del producto", size="2", weight="medium"),
-                        spacing="2",
-                        align="center",
-                    ),
-                    _product_fields(
-                        name=CatalogState.edit_name,
-                        on_name=CatalogState.set_edit_name,
-                        category=CatalogState.edit_category,
-                        on_category=CatalogState.set_edit_category,
-                        description=CatalogState.edit_description,
-                        on_description=CatalogState.set_edit_description,
-                        price=CatalogState.edit_price,
-                        on_price=CatalogState.set_edit_price,
-                        currency=CatalogState.edit_currency,
-                        on_currency=CatalogState.set_edit_currency,
-                    ),
-                    rx.cond(
-                        CatalogState.edit_error != "",
-                        rx.text(CatalogState.edit_error, size="1", color=T.tone_color("error", 11)),
-                    ),
-                    rx.hstack(
-                        rx.spacer(),
-                        # soft: the screen's one solid action is "Agregar producto" (§5.5)
-                        rx.button(
-                            rx.icon("save", size=T.ICON_SM),
-                            "Guardar cambios",
-                            variant="soft",
-                            size="2",
-                            on_click=CatalogState.save_product,
-                            loading=CatalogState.edit_saving,
-                        ),
-                        width="100%",
-                    ),
-                    spacing="3",
-                    width="100%",
-                    align_items="start",
-                    class_name="q-catalog-panel",
-                ),
-                rx.vstack(_media_block(), class_name="q-catalog-panel", width="100%"),
-                display="grid",
-                grid_template_columns=rx.breakpoints(
-                    initial="minmax(0, 1fr)", lg="minmax(0, 1fr) 24rem"
-                ),
-                gap="1rem",
-                width="100%",
+            _product_fields(
+                name=CatalogState.edit_name,
+                on_name=CatalogState.set_edit_name,
+                category=CatalogState.edit_category,
+                on_category=CatalogState.set_edit_category,
+                description=CatalogState.edit_description,
+                on_description=CatalogState.set_edit_description,
+                price=CatalogState.edit_price,
+                on_price=CatalogState.set_edit_price,
+                currency=CatalogState.edit_currency,
+                on_currency=CatalogState.set_edit_currency,
             ),
-            spacing="4",
+            rx.cond(
+                CatalogState.edit_error != "",
+                callout(CatalogState.edit_error, "error"),
+            ),
+            spacing="3",
             width="100%",
             align_items="start",
+            class_name="q-catalog-panel",
         ),
-        padding="1.25rem 1.5rem",
+        rx.vstack(_media_block(), class_name="q-catalog-panel", width="100%"),
+        spacing="4",
+        width="100%",
+        align_items="start",
         key=CatalogState.selected_id,
+    )
+
+
+def _editor_footer() -> rx.Component:
+    """«Eliminar» first, the verb last (§7); one full-width column on a phone (N12)."""
+    big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
+    return rx.box(
+        # request 2026-10-22: a product can be deleted from here (a dialog first: it
+        # leaves every list; the pieces already made keep their provenance)
+        rx.button(
+            rx.icon("trash-2", size=T.ICON_SM),
+            "Eliminar producto",
+            variant="soft",
+            type="button",
+            on_click=CatalogState.ask_delete_product,
+            disabled=CatalogState.edit_saving,
+            **T.tone_scheme("error"),
+            **big,
+        ),
+        rx.button(
+            rx.icon("save", size=T.ICON_SM),
+            "Guardar cambios",
+            type="button",
+            on_click=CatalogState.save_product,
+            loading=CatalogState.edit_saving,
+            **big,
+        ),
+        display="grid",
+        grid_template_columns=rx.breakpoints(initial="minmax(0, 1fr)", sm="repeat(2, 1fr)"),
+        gap="0.75rem",
+        width="100%",
+    )
+
+
+def _editor_drawer() -> rx.Component:
+    """m-24842976: the product opens in the system's drawer — the whole screen on a
+    phone, a panel on the right on a computer. Its ×, Esc and the backdrop all go
+    through `request_close`, which asks before dropping unsaved changes."""
+    return drawer(
+        rx.cond(CatalogState.editor_open, _editor_body()),
+        open=CatalogState.editor_open,
+        on_open_change=CatalogState.set_editor_open,
+        title=CatalogState.edit_title,
+        description="Los cambios se guardan al tocar «Guardar cambios». Las fotos, al subirlas.",
+        footer=_editor_footer(),
+        width="40rem",
+        icon="package",
+    )
+
+
+def _leave_dialog() -> rx.Component:
+    """«¿Salir sin guardar?» (DS §6.2, m-24842976): the safe answer («Volver») first
+    and on Esc, «Guardar y salir» as the verb, and leaving without the changes as the
+    destructive one. Stacked full-width on a phone (N12)."""
+    big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(LEAVE_TITLE),
+            rx.alert_dialog.description(CatalogState.leave_text, size="2"),
+            rx.box(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        rx.icon("arrow-left", size=T.ICON_SM),
+                        LEAVE_STAY,
+                        variant="soft",
+                        color_scheme="gray",
+                        type="button",
+                        **big,
+                    ),
+                ),
+                rx.button(
+                    rx.icon("trash-2", size=T.ICON_SM),
+                    LEAVE_DISCARD,
+                    variant="soft",
+                    type="button",
+                    on_click=CatalogState.discard_and_leave,
+                    **T.tone_scheme("error"),
+                    **big,
+                ),
+                rx.button(
+                    rx.icon("save", size=T.ICON_SM),
+                    LEAVE_SAVE,
+                    type="button",
+                    on_click=CatalogState.save_and_leave,
+                    **big,
+                ),
+                display="grid",
+                grid_template_columns=rx.breakpoints(
+                    initial="minmax(0, 1fr)", sm="repeat(3, minmax(0, 1fr))"
+                ),
+                gap="0.75rem",
+                margin_top="1.25rem",
+                width="100%",
+            ),
+            max_width="34rem",
+        ),
+        open=CatalogState.leave_open,
+        on_open_change=CatalogState.set_leave_open,
     )
 
 
@@ -662,14 +937,16 @@ def _delete_product_dialog() -> rx.Component:
                         "Volver",
                         variant="soft",
                         color_scheme="gray",
-                        size="2",
+                        size="3",
+                        min_height=_TOUCH_MIN,
                     ),
                 ),
                 rx.alert_dialog.action(
                     rx.button(
                         rx.icon("trash-2", size=15),
                         "Sí, eliminar",
-                        size="2",
+                        size="3",
+                        min_height=_TOUCH_MIN,
                         on_click=CatalogState.confirm_delete_product,
                         **T.tone_scheme("error"),
                     ),
@@ -677,6 +954,7 @@ def _delete_product_dialog() -> rx.Component:
                 justify="end",
                 gap="0.75rem",
                 margin_top="1.25rem",
+                wrap="wrap",
             ),
             max_width="28rem",
         ),
@@ -702,8 +980,12 @@ def _thumb(product: rx.Var[ProductVM]) -> rx.Component:
 
 
 def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
+    """m-24842976: the card is a real ``<button>`` on the system's choice-card material
+    (the same `.q-choice-card` look as `ui.choice_card`, without its radio role: a tap
+    here opens, it does not choose), announced as «Editar {producto}», with «Editar»
+    written on it — nothing depends on hovering."""
     selected = CatalogState.selected_id == product.product_id
-    return card(
+    return rx.el.button(
         rx.vstack(
             _thumb(product),
             rx.text(
@@ -725,12 +1007,16 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
                     tone_badge(product.price_label, "ok", icon="tag"),
                 ),
                 rx.spacer(),
-                rx.text(
-                    product.counts_label,
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    class_name="q-nums",
-                    white_space="nowrap",
+                rx.cond(
+                    product.photo_count == 0,
+                    tone_badge(MISSING_PHOTO, "warn", icon="camera"),
+                    rx.text(
+                        product.counts_label,
+                        size="1",
+                        color=T.TEXT_MUTED,
+                        class_name="q-nums",
+                        white_space="nowrap",
+                    ),
                 ),
                 # m-24803289: the row wraps instead of pushing past the card's edge
                 # when tag + price + counts are wider than the grid's column.
@@ -740,33 +1026,27 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
                 align="center",
                 row_gap="0.35rem",
             ),
+            rx.hstack(
+                rx.icon("pencil", size=T.ICON_SM),
+                rx.text("Editar", size="2", weight="medium"),
+                spacing="1",
+                align="center",
+                color=T.tone_color("accent", 11),
+                aria_hidden="true",
+            ),
             spacing="2",
             width="100%",
             min_width="0",
             align_items="start",
         ),
-        # The whole card is the button (no nested control): the chip only says what the
-        # tap does, with «Editar» on hover (request 2026-10-22). It sits on the picture's
-        # top-right corner, out of the meta row, so it can never overflow the card
-        # (m-24803289).
-        rx.tooltip(
-            rx.box(
-                rx.icon("pencil", size=T.ICON_SM),
-                class_name="q-catalog-edit",
-                aria_hidden="true",
-            ),
-            content="Editar",
-        ),
-        interactive=True,
-        position="relative",
+        type="button",
+        aria_label="Editar " + product.name,
+        aria_current=rx.cond(selected, "true", "false"),
         on_click=CatalogState.select_product(product.product_id),
+        class_name=rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card"),
         padding="0.75rem",
-        # The selected card is ringed and washed in the accent by the sheet
-        # (`.q-card[data-selected]`), so it keeps the card material.
-        data_selected=rx.cond(selected, "true", "false"),
+        min_width="0",
         key=product.product_id,
-        role="button",
-        aria_pressed=rx.cond(selected, "true", "false"),
     )
 
 
@@ -814,7 +1094,6 @@ def catalog_index() -> rx.Component:
                 "Agregar producto",
                 size="2",
                 on_click=CatalogState.open_form,
-                disabled=CatalogState.form_open,
             ),
             badge=rx.cond(
                 CatalogState.has_products,
@@ -847,8 +1126,9 @@ def catalog_index() -> rx.Component:
                 (CatalogState.upload_error != "") & (CatalogState.selected_id == ""),
                 callout(CatalogState.upload_error, "error"),
             ),
-            rx.cond(CatalogState.form_open, _new_product_form()),
-            rx.cond(CatalogState.selected, _editor()),
+            _new_product_drawer(),
+            _editor_drawer(),
+            _leave_dialog(),
             _delete_product_dialog(),
             rx.cond(
                 CatalogState.loading,
@@ -860,7 +1140,7 @@ def catalog_index() -> rx.Component:
                         _grid(),
                         description="Toca uno para editarlo y subirle fotos.",
                     ),
-                    rx.cond(~CatalogState.form_open, _empty()),
+                    _empty(),
                 ),
             ),
         ),

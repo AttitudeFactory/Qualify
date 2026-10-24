@@ -21,13 +21,17 @@ from uuid import UUID
 from qualify_api.catalog.service import CatalogError, CatalogService
 from qualify_api.creative.composition import media_root
 from qualify_api.creative.media import LocalMediaStore
+from qualify_api.tenancy.models import Tenant
 from qualify_creative.video import FfmpegVideoNormalizer
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import select
 
 from .catalog_vm import ProductVM, build_product_vm
 
 __all__ = [
     "CatalogError",
     "add_media",
+    "business_currency",
     "create_product",
     "deactivate_product",
     "list_products",
@@ -42,6 +46,16 @@ __all__ = [
 def _service() -> CatalogService:
     """One service per process: the store root and the ffmpeg wrapper are stateless."""
     return CatalogService(store=LocalMediaStore(media_root()), video=FfmpegVideoNormalizer())
+
+
+def business_currency(tenant_id: UUID) -> str:
+    """The currency the business chose at signup (`tenants.currency`), read under the
+    tenant's own RLS: the «Agregar producto» form starts with it (m-24842974)."""
+    with tenant_session(tenant_id) as session:
+        code = session.execute(
+            select(Tenant.currency).where(Tenant.id == tenant_id)
+        ).scalar_one_or_none()
+    return code or ""
 
 
 def list_products(tenant_id: UUID, brand_id: UUID) -> tuple[ProductVM, ...]:
