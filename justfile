@@ -112,6 +112,12 @@ webhook-purge-account account *args:
 webhook-requeue-comments *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --requeue-comments {{args}}
 
+# m-24789472: requeue Instagram postbacks (Ice Breakers, buttons, menu) recorded as
+# `unsupported` before Conversaciones read them. Dry run unless --execute.
+#   just webhook-requeue-postbacks [--account <ig_account_id>] [--execute]
+webhook-requeue-postbacks *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-postbacks {{args}}
+
 # WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
 # reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
 # sends for real, prints only the wamid(s).
@@ -345,9 +351,19 @@ eval-documentos *args:
 eval-escenas *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/run_experiment.py {{args}}
 
+# m-24849234: Seedream 5.0 pro color/texture matrix. `--dry-run` quotes it and sends nothing;
+# a paid run needs --i-have-spend-authorization (the founder authorizes each one).
+eval-plantillas *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py {{args}}
+
 # The scene images from Langfuse to packages/api/evals/scenes_ai/imagenes/ (git-ignored).
 eval-escenas-imagenes:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/scenes_ai/export_images.py
+
+# ATENDER-4a (m-24848532): comment triage (Haiku 5.5) + public drafts for any comment.
+# `--agreement` is free (κ only); `--classify`, `--baseline` and `--drafts` call Claude.
+eval-replies *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/replies_ai/run_experiment.py {{args}}
 
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}

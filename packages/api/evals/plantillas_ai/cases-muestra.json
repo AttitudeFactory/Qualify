@@ -1,0 +1,84 @@
+{
+  "_doc": "Sample of the m-24849234 eval for the Lite vs Pro comparison (README «Procedimiento de comparación Lite vs Pro», step 4): 3 of the founder's own product photos x the 3 palettes, and 5 fictional wordmarks x 2 textures (flat finishes for the same pairs, free). Same rules as cases.json. Run with --cases packages/api/evals/plantillas_ai/cases-muestra.json.",
+  "blocks": {
+    "color": {
+      "fixture_references": true,
+      "references": [
+        {
+          "id": "paleta-menta-coral-cobre",
+          "path": "packages/api/evals/plantillas_ai/fixtures/paleta-menta-coral-cobre.png"
+        },
+        {
+          "id": "paleta-azul-arena-terracota",
+          "path": "packages/api/evals/plantillas_ai/fixtures/paleta-azul-arena-terracota.png"
+        },
+        {
+          "id": "paleta-lavanda-oliva-mostaza",
+          "path": "packages/api/evals/plantillas_ai/fixtures/paleta-lavanda-oliva-mostaza.png"
+        }
+      ],
+      "cases": [
+        {
+          "id": "taza-ceramica-blanca",
+          "path": "color/objetos/taza-ceramica-blanca.jpg"
+        },
+        {
+          "id": "botella-acero",
+          "path": "color/objetos/botella-acero.jpg"
+        },
+        {
+          "id": "zapatilla-lona",
+          "path": "color/objetos/zapatilla-lona.jpg"
+        }
+      ]
+    },
+    "texture": {
+      "fixture_references": true,
+      "references": [
+        {
+          "id": "textura-rayas-cobre",
+          "path": "packages/api/evals/plantillas_ai/fixtures/textura-rayas-cobre.png"
+        },
+        {
+          "id": "textura-marmol-vetas",
+          "path": "packages/api/evals/plantillas_ai/fixtures/textura-marmol-vetas.png"
+        }
+      ],
+      "cases": [
+        {
+          "id": "fix-luma",
+          "path": "packages/api/evals/plantillas_ai/fixtures/luma-wordmark.png",
+          "fixture": true,
+          "expected_text": "LUMA"
+        },
+        {
+          "id": "fix-nucleo",
+          "path": "packages/api/evals/plantillas_ai/fixtures/marca-nucleo.png",
+          "fixture": true,
+          "expected_text": "NÚCLEO"
+        },
+        {
+          "id": "fix-cafe-rio",
+          "path": "packages/api/evals/plantillas_ai/fixtures/marca-cafe-rio.png",
+          "fixture": true,
+          "expected_text": "CAFÉ RÍO"
+        },
+        {
+          "id": "fix-pina",
+          "path": "packages/api/evals/plantillas_ai/fixtures/marca-pina.png",
+          "fixture": true,
+          "expected_text": "PIÑA"
+        },
+        {
+          "id": "fix-ovo",
+          "path": "packages/api/evals/plantillas_ai/fixtures/marca-ovo.png",
+          "fixture": true,
+          "expected_text": "OVO"
+        }
+      ]
+    },
+    "flat": {
+      "source_block": "texture"
+    }
+  }
+}

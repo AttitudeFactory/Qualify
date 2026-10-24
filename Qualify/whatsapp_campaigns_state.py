@@ -52,6 +52,7 @@ from .whatsapp_campaigns_provider import (
 )
 from .whatsapp_campaigns_vm import (
     ALL_BRANDS,
+    AUDIENCE_NONE,
     DEFAULT_MAX_PER_MINUTE,
     EMPTY_DETAIL,
     EMPTY_ESTIMATE,
@@ -239,7 +240,7 @@ class WhatsAppCampaignsState(rx.State):
             if self.counting or self.audience_count < 0:
                 return "Contando contactos…"
             if self.audience_count == 0:
-                return "Ningún contacto con opt-in activo cumple estos filtros."
+                return AUDIENCE_NONE
             return ""
         if step == STEP_PACING:
             return validate_pacing(self.w_rate)[1]

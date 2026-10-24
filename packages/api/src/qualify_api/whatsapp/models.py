@@ -39,7 +39,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from qualify_api.tenancy.models import Base
 
-OUTBOX_KINDS: tuple[str, ...] = ("reply", "automation", "campaign_send")
+# 0087 (m-24848535) adds `template_reply`: an approved template sent from a chat.
+OUTBOX_KINDS: tuple[str, ...] = ("reply", "automation", "campaign_send", "template_reply")
+# 0087: the template categories a `template_reply` may carry (authentication never).
+TEMPLATE_REPLY_CATEGORIES: tuple[str, ...] = ("utility", "marketing")
 OUTBOX_STATUSES: tuple[str, ...] = ("pending", "sending", "sent", "failed", "dead")
 DELIVERY_STATUSES: tuple[str, ...] = ("sent", "delivered", "read", "failed")
 # 0061: `messages.media_type` (CHECK `ck_message_media_type`; the ORM copy lives on
@@ -205,6 +208,21 @@ class WhatsAppOutboxItem(Base):
         CheckConstraint(f"kind IN ({_sql_list(OUTBOX_KINDS)})", name="ck_wa_outbox_kind"),
         CheckConstraint(f"status IN ({_sql_list(OUTBOX_STATUSES)})", name="ck_wa_outbox_status"),
         CheckConstraint("attempts >= 0", name="ck_wa_outbox_attempts"),
+        # 0087 (m-24848535): the template reply's shape and its idempotency key.
+        CheckConstraint(
+            "template_category IS NULL OR template_category IN ('utility', 'marketing')",
+            name="ck_wa_outbox_template_category",
+        ),
+        CheckConstraint(
+            "kind <> 'template_reply' OR (thread_id IS NOT NULL AND request_key IS NOT NULL"
+            " AND template_id IS NOT NULL AND template_category IS NOT NULL)",
+            name="ck_wa_outbox_template_reply",
+        ),
+        CheckConstraint(
+            "request_key IS NULL OR length(btrim(request_key)) > 0",
+            name="ck_wa_outbox_request_key_not_blank",
+        ),
+        UniqueConstraint("tenant_id", "request_key", name="uq_wa_outbox_request_key"),
         Index("ix_wa_outbox_tenant", "tenant_id"),
         Index("ix_wa_outbox_claim", "status", "next_attempt_at"),
         Index(
@@ -237,6 +255,11 @@ class WhatsAppOutboxItem(Base):
     )
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 0087 (m-24848535) — only a `template_reply` fills these.
+    request_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    template_category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class WhatsAppMenu(Base):

@@ -357,21 +357,33 @@ def _connected_body() -> rx.Component:
     )
 
 
-def _body() -> rx.Component:
-    return page_body(
+def _body(wrapped: bool = True) -> rx.Component:
+    """`wrapped=False` returns the content without the page gutter, for the «Comentarios»
+    tab of «Por responder» (m-24842990), which already sits inside a `page_body`."""
+    content = rx.cond(
+        InboxState.connections_error != "",
+        _connections_error(),
         rx.cond(
-            InboxState.connections_error != "",
-            _connections_error(),
+            InboxState.is_loading_connections,
+            _card_skeleton(),
             rx.cond(
-                InboxState.is_loading_connections,
-                _card_skeleton(),
-                rx.cond(
-                    ~InboxState.has_connections,
-                    _no_connections_state(),
-                    _connected_body(),
-                ),
+                ~InboxState.has_connections,
+                _no_connections_state(),
+                _connected_body(),
             ),
         ),
+    )
+    return page_body(content) if wrapped else content
+
+
+def comments_tab() -> rx.Component:
+    """m-24842990: the «Comentarios» tab of «Por responder». The account selector moves
+    from the page header to the top of the tab."""
+    return rx.vstack(
+        rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
+        _body(wrapped=False),
+        spacing="4",
+        width="100%",
     )
 
 

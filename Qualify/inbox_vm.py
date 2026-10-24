@@ -19,17 +19,18 @@ from typing import Final
 
 from qualify_api.inbox.media_type import MediaType, known_media_type
 
-from .nav_url import with_query
+from .responder_vm import TAB_COMMENTS, tab_href
 
-# N5 (m-24842960): a publication's comments have their own address,
-# `/inbox?publicacion=<thread id>`; the list is plain `/inbox`.
-INBOX_ROUTE: Final = "/inbox"
+# N5 (m-24842960): a publication's comments have their own address. Since m-24842990
+# the comments live in the «Comentarios» tab of «Por responder»:
+# `/responder?tab=comentarios&publicacion=<thread id>`; the list is the plain tab. The old
+# `/inbox` (with its query) only redirects there.
 POST_PARAM: Final = "publicacion"
 
 
 def inbox_url(thread_id: str = "") -> str:
     """The list (`thread_id` empty) or one publication's comments."""
-    return with_query(INBOX_ROUTE, **{POST_PARAM: thread_id})
+    return tab_href(TAB_COMMENTS, **{POST_PARAM: thread_id})
 
 
 # QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
