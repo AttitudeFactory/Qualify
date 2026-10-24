@@ -5,6 +5,10 @@ only by a real login — QUA-66), blocking work off the event loop, only VM whit
 serialized. The one extra rule here: the API-token form field is write-only — it is
 sent to the service on save and immediately cleared; it never round-trips from the
 server.
+
+RESULTADOS-4 (m-24843002): the connection form moved from the reading screen to
+Configuración (`settings_page.py`), which calls `load_config` on mount. The reading
+screen only reads; it never renders a configuration field.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from qualify_api.clarity import (
     ClarityUnauthorized,
     RefreshBudgetExhausted,
 )
+from qualify_api.support import InvalidSupportRequest
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -30,8 +35,10 @@ from .clarity_provider import (
     config_for,
     latest_snapshot_for,
     refresh_snapshot,
+    request_website_connection,
     save_config,
 )
+from .clarity_vm import ANSWER_NO, ANSWER_YES, website_step
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -41,17 +48,30 @@ _NO_TENANTS = "Tu sesión se cerró. Vuelve a entrar para ver tu página web."
 _SAVE_FAILED = "No pudimos guardar la conexión. Inténtalo de nuevo en unos minutos."
 _SAVE_BLANK = "Escribe el código del proyecto y la clave de acceso para poder guardar."
 _TOKEN_REJECTED = (
-    "Clarity no aceptó la clave de acceso. Crea una nueva en Clarity "
-    "(«Settings» → «Data Export») y pégala aquí."
+    "No pudimos leer los datos de tu página web. En Configuración, pídele al equipo de "
+    "Qualify que la vuelva a conectar."
 )
 _QUOTA_MS = "Clarity no permite más consultas por hoy. Vuelve a intentarlo mañana."
 _BUDGET_SPENT = (
     "Ya usaste las actualizaciones de hoy. Te mostramos los últimos datos guardados; "
     "mañana puedes actualizar otra vez."
 )
-_NOT_CONFIGURED = "Primero conecta tu página web con Clarity (arriba) y luego actualiza."
+_NOT_CONFIGURED = "Tu página web todavía no está conectada. Conéctala en Configuración."
 _REFRESH_FAILED = "Clarity no respondió. Inténtalo de nuevo en unos minutos."
-_SAVED = "Conexión guardada. Ahora pulsa «Actualizar desde Clarity»."
+_SAVED = "Listo, tu página web quedó conectada."
+_TEAM_SENT = (
+    "Listo, le escribimos al equipo (solicitud #{reference}). Te contactarán a {email} "
+    "en menos de un día hábil."
+)
+_TEAM_SAVED = (
+    "Tu solicitud #{reference} quedó registrada. Te escribiremos a {email} en cuanto una "
+    "persona del equipo la tome."
+)
+_TEAM_NO_EMAIL = "No encontramos el correo de tu cuenta. Escríbenos a contacto@attitudefactory.co."
+_TEAM_FAILED = (
+    "No pudimos enviar tu solicitud. Vuelve a intentarlo en un momento o escríbenos a "
+    "contacto@attitudefactory.co."
+)
 _REFRESHED = "Listo: estos son los datos más recientes de tu página web."
 
 # The select shows the owner's words; the Data Export API wants its own names.
@@ -67,6 +87,15 @@ class ClarityState(rx.State):
     config: ClarityConfigVM = ClarityConfigVM(configured=False, project_id="", remaining_budget=0)
     snapshot: SnapshotVM = SnapshotVM(fetched_at="", window="", dimensions="")
     has_snapshot: bool = False
+    # Whether `config` reflects the database yet — the reading screen must not flash
+    # «no está conectada» before the first load lands.
+    config_loaded: bool = False
+
+    # Configuración's «¿Tu negocio tiene página web?» — UI only, never persisted.
+    website_answer: str = ""
+    is_requesting_team: bool = False
+    team_notice: str = ""
+    team_error: str = ""
 
     # Write-only form fields (see module docstring).
     form_project_id: str = ""
@@ -93,6 +122,15 @@ class ClarityState(rx.State):
         if not self.config.project_id:
             return ""
         return f"https://clarity.microsoft.com/projects/view/{self.config.project_id}/dashboard"
+
+    @rx.var
+    def website_view(self) -> str:
+        return website_step(configured=self.config.configured, answer=self.website_answer)
+
+    @rx.var
+    def show_not_connected(self) -> bool:
+        """The reading screen's «no está conectada» panel, once the config is known."""
+        return self.config_loaded and not self.config.configured and not self.load_error
 
     @rx.var
     def has_actions(self) -> bool:
@@ -134,10 +172,94 @@ class ClarityState(rx.State):
             auth = await self.get_state(AuthState)
             if session_tenant_id == auth.session_tenant_id:
                 self.config = config
+                self.config_loaded = True
                 self.form_project_id = config.project_id
                 self.snapshot = snapshot or SnapshotVM(fetched_at="", window="", dimensions="")
                 self.has_snapshot = snapshot is not None
                 self.is_loading = False
+
+    @rx.event(background=True)
+    async def load_config(self) -> None:
+        """Configuración's «Tu página web» block: only the connection status, never the
+        snapshot and never an API request."""
+        async with self:
+            self.action_error = ""
+            self.action_notice = ""
+            self.team_error = ""
+            self.team_notice = ""
+            self.form_api_token = ""
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            return
+        try:
+            config = await asyncio.to_thread(config_for, resolved)
+        except SQLAlchemyError as exc:
+            logger.error("clarity config load failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _LOAD_FAILED
+            return
+
+        async with self:
+            auth = await self.get_state(AuthState)
+            if session_tenant_id == auth.session_tenant_id:
+                self.config = config
+                self.config_loaded = True
+                self.form_project_id = config.project_id
+
+    @rx.event(background=True)
+    async def request_team(self) -> None:
+        """«Escribir al equipo»: one tap files a ticket with the session's email."""
+        async with self:
+            if self.is_requesting_team or self.team_notice:
+                return  # a double tap, or a second tap after «Listo», must not file two tickets
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            email = (auth.user_email or "").strip()
+            self.team_error = ""
+            self.team_notice = ""
+            if "@" not in email:
+                self.team_error = _TEAM_NO_EMAIL
+                return
+            self.is_requesting_team = True
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            async with self:
+                self.is_requesting_team = False
+                self.team_error = _NO_TENANTS
+            return
+
+        try:
+            ticket = await asyncio.to_thread(
+                request_website_connection, resolved, contact_email=email
+            )
+        except InvalidSupportRequest:
+            async with self:
+                self.is_requesting_team = False
+                self.team_error = _TEAM_NO_EMAIL
+            return
+        except SQLAlchemyError as exc:
+            logger.error("website connection request failed: %s", type(exc).__name__)
+            async with self:
+                self.is_requesting_team = False
+                self.team_error = _TEAM_FAILED
+            return
+
+        template = _TEAM_SENT if ticket.notified else _TEAM_SAVED
+        async with self:
+            self.is_requesting_team = False
+            self.team_notice = template.format(reference=ticket.reference, email=email)
+
+    @rx.event
+    def answer_has_website(self) -> None:
+        self.website_answer = ANSWER_YES
+
+    @rx.event
+    def answer_no_website(self) -> None:
+        self.website_answer = ANSWER_NO
 
     @rx.event(background=True)
     async def save_settings(self) -> None:

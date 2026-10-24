@@ -3,10 +3,13 @@ Clarity's Data Export API.
 
 Layout, insight-first: refresh controls with the remaining daily budget → headline
 health stats → "qué atender ahora" (per-URL recommendations derived from the friction
-metrics) → one traffic-light card per friction signal → raw per-metric tables and the
-project configuration folded into accordions at the end. The config card surfaces at
-the top only while the tenant has nothing configured. Reads come from the cached
-snapshot; only the explicit button spends a live API request.
+metrics) → one traffic-light card per friction signal → raw per-metric tables folded
+into an accordion at the end. Reads come from the cached snapshot; only the explicit
+button spends a live API request.
+
+RESULTADOS-4 (m-24843002): this is a reading screen only. The connection form (project
+code + access key) lives in Configuración (`settings_page.py`); while nothing is
+connected this screen says so and points there, with no field of any kind.
 
 Every surface is `ui.card` (the card material, plan D5), every state a `signal_pill`
 or `tone_badge` by tone, every persistent message a `ui.callout` — design-system
@@ -27,7 +30,6 @@ from .ui import (
     page_body,
     page_header,
     section,
-    signal_pill,
     skeleton_rows,
     stat_card,
     tag,
@@ -40,61 +42,6 @@ def _topbar() -> rx.Component:
     return page_header(
         "Tu página web",
         "Cuántas personas visitan tu página web y qué miran.",
-    )
-
-
-def _config_card() -> rx.Component:
-    return card(
-        rx.vstack(
-            rx.hstack(
-                rx.icon("settings-2", size=16),
-                rx.heading("Conexión con Clarity", size="3", as_="h2"),
-                rx.cond(
-                    ClarityState.config.configured,
-                    signal_pill("Conectada", "ok"),
-                    signal_pill("Falta conectar", "warn"),
-                ),
-                spacing="2",
-                align="center",
-            ),
-            rx.text(
-                "Pega el código del proyecto y una clave de acceso de Clarity "
-                "(en Clarity: «Settings» → «Data Export»). "
-                "Guardamos la clave protegida y no la volvemos a mostrar.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            rx.hstack(
-                rx.input(
-                    placeholder="Código del proyecto (p. ej. abc123xyz)",
-                    value=ClarityState.form_project_id,
-                    on_change=ClarityState.set_form_project_id,
-                    width="14rem",
-                ),
-                rx.input(
-                    placeholder="Clave de acceso",
-                    value=ClarityState.form_api_token,
-                    on_change=ClarityState.set_form_api_token,
-                    type="password",
-                    width="22rem",
-                ),
-                # Saving the project is the one step the whole screen waits on while
-                # nothing is configured; `soft` once the screen's solid is the refresh.
-                rx.button(
-                    "Guardar",
-                    on_click=ClarityState.save_settings,
-                    loading=ClarityState.is_saving,
-                    variant="soft",
-                    size="2",
-                ),
-                spacing="2",
-                align="center",
-                wrap="wrap",
-            ),
-            spacing="3",
-            align_items="start",
-            width="100%",
-        ),
     )
 
 
@@ -323,7 +270,7 @@ def _empty_state() -> rx.Component:
     return empty_state(
         "bar-chart-3",
         "Todavía no hay datos de tu página web",
-        "Conecta Clarity arriba y pulsa «Actualizar desde Clarity». "
+        "Pulsa «Actualizar desde Clarity» para traer los primeros datos. "
         "Puedes actualizar hasta 10 veces al día; entre una y otra verás "
         "los últimos datos guardados.",
         # N8 (m-24842961): the step before the data — connect first, then bring it.
@@ -337,10 +284,25 @@ def _empty_state() -> rx.Component:
                 variant="soft",
                 size="3",
             ),
+            # RESULTADOS-4 (m-24843002): connecting lives in Configuración, never here.
             rx.link(
-                rx.button("Conectar Clarity", variant="soft", size="3"),
-                href="#" + _CONFIG_ANCHOR,
+                rx.button("Ir a Configuración", variant="soft", size="3", min_height="44px"),
+                href="/settings#tu-pagina-web",
             ),
+        ),
+    )
+
+
+def _not_connected() -> rx.Component:
+    """No configured project: say so and point at Configuración — never a form here."""
+    return empty_state(
+        "globe",
+        "Tu página web todavía no está conectada",
+        "No es obligatorio: Qualify te funciona igual solo con tus redes. Si tienes página "
+        "web, en Configuración puedes pedirle al equipo de Qualify que la conecte.",
+        action=rx.link(
+            rx.button("Ir a Configuración", size="3", min_height="44px"),
+            href="/settings#tu-pagina-web",
         ),
     )
 
@@ -387,44 +349,21 @@ def _snapshot_view() -> rx.Component:
     )
 
 
-_CONFIG_ANCHOR = "clarity-config"
-
-
-def _config_section() -> rx.Component:
-    """Prominent while unconfigured; folded away once a project is connected. Its id is
-    where the empty state's «Conectar Clarity» lands (N8)."""
-    return rx.box(_config_section_body(), id=_CONFIG_ANCHOR, width="100%")
-
-
-def _config_section_body() -> rx.Component:
-    return rx.cond(
-        ClarityState.config.configured,
-        rx.accordion.root(
-            rx.accordion.item(
-                header="Conexión con Clarity",
-                content=_config_card(),
-                value="config",
-            ),
-            collapsible=True,
-            variant="ghost",
-            width="100%",
-        ),
-        _config_card(),
-    )
-
-
 def _body() -> rx.Component:
     return page_body(
-        _config_section(),
-        _refresh_controls(),
+        rx.cond(ClarityState.config.configured, _refresh_controls(), rx.fragment()),
         _messages(),
         rx.cond(
             ClarityState.load_error != "",
             callout(ClarityState.load_error, "error"),
             rx.cond(
-                ClarityState.is_loading,
+                ClarityState.is_loading | ~ClarityState.config_loaded,
                 skeleton_rows(3),
-                rx.cond(ClarityState.show_empty_state, _empty_state(), _snapshot_view()),
+                rx.cond(
+                    ClarityState.show_not_connected,
+                    _not_connected(),
+                    rx.cond(ClarityState.show_empty_state, _empty_state(), _snapshot_view()),
+                ),
             ),
         ),
     )
