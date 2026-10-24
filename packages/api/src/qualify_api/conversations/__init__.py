@@ -35,6 +35,9 @@ on the catalog, decided by a person) closed the ticket's scope the same evening.
 - `templates` — m-24789472: the per-account library of text templates the composer
   starts a reply from (0079), with `{nombre}`/`{marca}` rendering. Never sends: the text
   leaves only through `reply_text` and the approved outbox.
+- `choices` / `ice_breakers` / `ice_breakers_client` — m-24789472: what a person tapped
+  (0082), and each account's «preguntas iniciales» (0083): edited here, published to
+  Instagram's Messenger Profile by a person, behind the `ice_breakers` capability.
 - `composition` — production wiring; the one place the channel implementation is chosen.
 
 Blocked outside the code (see the ticket): `instagram_manage_messages` is not requested

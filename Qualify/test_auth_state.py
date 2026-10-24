@@ -304,6 +304,8 @@ def test_logout_resets_every_business_state() -> None:
         "BrandWizardState",
         "BrandConnectState",
         "CatalogState",
+        # m-24789472: «Preguntas iniciales» (draft questions per Instagram account)
+        "IceBreakersState",
     ):
         assert state_name in source, f"logout does not reset {state_name}"
 

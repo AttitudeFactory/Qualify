@@ -820,6 +820,7 @@ class AuthState(rx.State):
             from .discover_reels import DiscoverReelsState
             from .followups_state import FollowupsState
             from .gallery_state import GalleryState
+            from .ice_breakers_state import IceBreakersState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .planner_state import PlannerState
@@ -892,6 +893,9 @@ class AuthState(rx.State):
                 ConversationsState,
                 # m-24789646: «Consultas desde comentarios» (cards, drafts being edited)
                 FollowupsState,
+                # m-24789472: «Preguntas iniciales» — the account's draft questions, its
+                # status and the acting user's id
+                IceBreakersState,
                 # WA-16: the number's menus, the open editor draft and the preview chat
                 WhatsAppMenuState,
                 # WA-18: templates, opt-ins, campaigns and the Conexión metrics block
