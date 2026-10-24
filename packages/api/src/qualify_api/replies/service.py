@@ -37,6 +37,7 @@ from uuid import UUID
 
 from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.assisted.grounding import Grounding, GroundingProvider
+from qualify_api.claude_tools import CallStats
 from qualify_api.intent.contract import IntentClass
 from qualify_api.intent.reliability import class_reliability
 from qualify_api.replies.client import CommentReplyClient, CommentReplyError
@@ -142,6 +143,27 @@ class _Composed:
     provenance: DraftProvenance | None
 
 
+def _sentiment_provenance(
+    provider: object, intent_result_id: UUID | None
+) -> DraftProvenance | None:
+    """Model, tokens and cost of the thank-you draft when the provider reports them
+    (`ClaudeReplyDraftProvider.last_stats`; ATENDER-4a, m-24848532). A provider that does
+    not (the HF one, test fakes) keeps the previous behaviour: only the intent link."""
+    stats = getattr(provider, "last_stats", None)
+    if not isinstance(stats, CallStats):
+        if intent_result_id is None:
+            return None
+        return DraftProvenance(intent_result_id=intent_result_id)
+    return DraftProvenance(
+        model_id=stats.model_id,
+        model_revision=stats.model_revision,
+        input_tokens=stats.input_tokens,
+        output_tokens=stats.output_tokens,
+        cost_usd=cost_decimal(stats.cost_usd),
+        intent_result_id=intent_result_id,
+    )
+
+
 @dataclass
 class _BatchCache:
     """Per-call memo: one catalog read per connection and one reliability read per
@@ -224,12 +246,11 @@ class ReplyService:
             text = self._sentiment_provider().draft_reply(
                 comment_text=candidate.text, business_name=self._business_name
             )
-            provenance = (
-                DraftProvenance(intent_result_id=candidate.intent_result_id)
-                if candidate.intent_result_id is not None
-                else None
+            return _Composed(
+                text,
+                self._generator_version,
+                _sentiment_provenance(self._sentiment_provider(), candidate.intent_result_id),
             )
-            return _Composed(text, self._generator_version, provenance)
 
         if self._grounded is None or self._grounding is None:
             raise RuntimeError(

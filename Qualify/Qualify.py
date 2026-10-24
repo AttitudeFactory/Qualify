@@ -26,8 +26,6 @@ from .clarity_state import ClarityState
 from .components import filter_bar, mentions_body, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
-from .conversations_page import conversations_index
-from .conversations_state import ConversationsState
 from .creative_pages import (
     create_index,
     draft_detail_index,
@@ -42,12 +40,10 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
-from .followups_state import FollowupsState
+from .creators_page import creators_index
 from .gallery_state import GalleryState
-from .inbox_page import inbox_index
-from .inbox_state import InboxState
-from .leads_page import leads_index
-from .leads_state import LeadsState
+from .home_page import home_index
+from .home_state import HomeState
 from .piece_download import router as piece_download_router
 from .planner_page import planner_index
 from .planner_state import PlannerState
@@ -55,6 +51,8 @@ from .publish_hub_state import PublishHubState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
 from .r2_media import router as r2_media_router
+from .responder_page import legacy_redirect, responder_index
+from .responder_state import ResponderState
 from .settings_page import settings_index
 from .signals_page import signals_index
 from .state import DashboardState
@@ -92,7 +90,10 @@ avatar_api.include_router(r2_media_router)
 avatar_api.include_router(piece_download_router)
 
 
-def index() -> rx.Component:
+def mentions_index() -> rx.Component:
+    """Menciones (m-24842962): no longer the home — Inicio is `/` now (founder decision
+    1, 2026-10-23). It keeps its own stable route until Resultados › «Quién habla de
+    ti» (m-24843003) hosts it."""
     return app_shell(
         topbar(),
         page_body(stats_row(), filter_bar(), mentions_body()),
@@ -209,9 +210,18 @@ app.add_page(
 # Every business page requires a session: `require_login` runs FIRST in each on_load
 # chain and redirects to /login when there is none. The loads behind it also refuse on
 # their own when no tenant is present — the guard is UX, RLS + AuthState is the wall.
+# m-24842962 (NAV-4, N2): `/` is Inicio — login, a finished brand and the old storefront
+# link all land here. An anonymous visitor is still sent to the Brand Kit's first view.
 app.add_page(
-    index,
-    on_load=[AuthState.require_login_or_brand_start, DashboardState.load_mentions],
+    home_index,
+    route="/",
+    on_load=[AuthState.require_login_or_brand_start, HomeState.load],
+    title="Qualify · Inicio",
+)
+app.add_page(
+    mentions_index,
+    route="/menciones",
+    on_load=[AuthState.require_login, DashboardState.load_mentions],
     title="Qualify · Menciones",
 )
 app.add_page(
@@ -246,23 +256,35 @@ app.add_page(
     ],
     title="Qualify · Publicar ahora",
 )
+# m-24842990 (ATENDER-1, founder decision 3): one «Por responder» with a tab per channel
+# (`?tab=`). `enter_page` reads the tab and loads only its list (Comentarios, the private
+# inbox, the commercial queries, the leads), plus the pending counts.
 app.add_page(
-    inbox_index,
+    responder_index,
+    route="/responder",
+    on_load=[AuthState.require_login, ResponderState.enter_page],
+    title="Qualify · Por responder",
+)
+# The old addresses of those lists stay as compatibility routes so saved links do not
+# break (ux-guia-navegacion §3): each only redirects to its tab, keeping its query
+# (`/conversations?consulta=<id>` lands on that card in «Quieren comprar»). Their titles
+# stay while the menu (NAV lane) still names them.
+app.add_page(
+    legacy_redirect,
     route="/inbox",
-    on_load=[AuthState.require_login, InboxState.load_screen],
+    on_load=ResponderState.redirect_legacy,
     title="Qualify · Comentarios",
 )
-# QUA-226: the private inbox of the connected accounts (Instagram Direct first).
 app.add_page(
-    conversations_index,
+    legacy_redirect,
     route="/conversations",
-    on_load=[AuthState.require_login, ConversationsState.enter_page, FollowupsState.enter_page],
+    on_load=ResponderState.redirect_legacy,
     title="Qualify · Conversaciones",
 )
 app.add_page(
-    leads_index,
+    legacy_redirect,
     route="/leads",
-    on_load=[AuthState.require_login, LeadsState.load_leads],
+    on_load=ResponderState.redirect_legacy,
     title="Qualify · Clientes interesados",
 )
 app.add_page(
@@ -271,13 +293,19 @@ app.add_page(
     on_load=[AuthState.require_login, ClarityState.load],
     title="Qualify · Tu página web",
 )
-# Fase 3 placeholder (see signals_page.py's module docstring) — static, no load beyond
-# the session gate. Reached today only from the Brand Kit connect flow's final screen.
+# The two «Pronto» screens of the menu (N10, NAV-1 m-24842957): static, no load beyond
+# the session gate; each says what is coming and links to something that works today.
 app.add_page(
     signals_index,
     route="/signals",
     on_load=[AuthState.require_login],
-    title="Qualify · Señales",
+    title="Qualify · Oportunidades",
+)
+app.add_page(
+    creators_index,
+    route="/creadores",
+    on_load=[AuthState.require_login],
+    title="Qualify · Creadores",
 )
 app.add_page(
     settings_index,

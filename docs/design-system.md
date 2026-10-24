@@ -211,31 +211,31 @@ El Lab es dark-only: el oscuro es su material «liquid» al pie de la letra (bla
   │  ◎ Qualify │ │                                                │
   └────────────┘ │ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
   ┌────────────┐ │ │stat_card │ │stat_card │ │stat_card │  ← page_body (gutter PAGE_X)
-  │ Tus redes  │ │ └──────────┘ └──────────┘ └──────────┘         │
+  │ Inicio     │ │ └──────────┘ └──────────┘ └──────────┘         │
   └────────────┘ │ callout (si hay error de acción)               │
   ┌────────────┐ │ ┌────────────────────────────────────────────┐ │
-  │ ESCUCHAS   │ │ │ card / tabla / lista …                     │ │
-  │ Menciones  │ │ └────────────────────────────────────────────┘ │
-  │ Comentarios│ │                                                │
-  │ Creadores ·│ │                                                │
-  │ Señales   ·│ │                                                │
+  │ ATIENDE    │ │ │ card / tabla / lista …                     │ │
+  │ Por respond│ │ └────────────────────────────────────────────┘ │
+  │ WhatsApp   │ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ PUBLICAS   │ │                                                │
+  │ PUBLICA    │ │                                                │
   │ Crear publ.│ │                                                │
   │ Por aprobar│ │                                                │
   │ Tu semana  │ │                                                │
   │ Publ. ahora│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ Interesados│ │                                                │
+  │ Resultados │ │                                                │
+  │ Creadores ·│ │  (· = «Pronto», en texto)                      │
+  │ Oportunid.·│ │                                                │
   └────────────┘ │                                                │
   ┌────────────┐ │                                                │
-  │ NEGOCIO    │ │                                                │
-  │ Tu pág. web│ │                                                │
+  │ TU NEGOCIO │ │                                                │
   │ Tu marca   │ │                                                │
   │ Tus product│ │                                                │
-  │ Config.   ·│ │                                                │
+  │ Tus redes  │ │                                                │
+  │ Config.    │ │                                                │
   │ ───────────│ │                                                │
   │ ⇥ Salir    │ │                                                │
   └────────────┘ └────────────────────────────────────────────────┘
@@ -258,16 +258,18 @@ def leads_index() -> rx.Component:
 
 ### 4.2 El sidebar: vidrio líquido, zonas y modo zen
 
-El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son los dos ejes del producto (`docs/index.md`): lo que dice el mercado y lo que dice el negocio.
+El menú sigue el mapa de `docs/ux-guia-navegacion.md` §3 (NAV-1, m-24842957): está ordenado por los **trabajos del dueño** —qué me toca hoy, atender, publicar, cómo me va— y al pie lo que se toca poco. Las dos zonas teñidas son las mismas dos de antes, con nombre nuevo y el mismo tinte («Escuchas» → **Atiende**, «Publicas» → **Publica**).
 
 | Isla | Contiene | Tinte (lavado bajo el vidrio) |
 |---|---|---|
 | Negocio (arriba) | nombre del tenant, «Supported by ◎ Qualify» → `LANDING_URL`, control de zen | neutra |
-| Base | Tus redes — habilita las dos zonas, así que no pertenece a ninguna | neutra |
-| **Escuchas** (inbound) | Menciones · Comentarios · Conversaciones · Creadores · Señales | `accent` alfa 3, línea alfa 6 |
-| **Publicas** (outbound) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
-| Suelta | Interesados (página «Clientes interesados») | neutra |
-| **Negocio** (pie) | Tu página web · Tu marca · Tus productos · Configuración · Salir | neutra |
+| Inicio | Inicio (`/`) | neutra |
+| **Atiende** (`listen`) | Por responder · WhatsApp | `accent` alfa 3, línea alfa 6 |
+| **Publica** (`publish`) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
+| Resultados | Resultados · Creadores «Pronto» · Oportunidades «Pronto» | neutra |
+| **Tu negocio** (pie) | Tu marca · Tus productos · Tus redes · Configuración · Salir | neutra |
+
+**Entradas «Pronto» (N10):** llevan la palabra «Pronto» en texto (`tone_badge("Pronto", "neutral")`, que el modo zen oculta junto con la etiqueta) y **siempre son un enlace**: abren su propia pantalla, que dice qué viene y ofrece un botón a algo que funciona hoy (`empty_state(action=)`). Nunca una fila muerta ni una pantalla vacía. Ninguna demo ni herramienta del equipo (`/design`) entra al menú del cliente.
 
 **El menú es vidrio líquido** (`assets/qualify.css` «Liquid glass menu» + `assets/glass-nav.js`; adaptado de `real-liquid-glass-os-effect.html`, un dock horizontal, a nuestras islas verticales):
 
@@ -281,7 +283,7 @@ El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son lo
 Tres reglas que sostienen esto:
 
 1. **El tinte es superficie, no señal.** Se queda en alfa 3 (lavado) y alfa 6 (línea): agrupa, pero no puede confundirse con un estado (P1/P2). Subirlo es una decisión consciente, no un ajuste.
-2. **Tu página web, Tu marca y Tus productos viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, o son lo que la marca *es*, no conversación.
+2. **Resultados y Tu negocio viven fuera de las zonas de color**: miden cómo le va al negocio o son lo que el negocio *es*, no conversación ni publicación.
 3. **Salir es el único control de sesión** (`1 login = 1 negocio`, sin switch). Sin sesión (`/design`) el nombre cae a «Qualify».
 
 **Zen** (`NavState.zen`, botón en la isla del negocio o `⌘ .`): el rail se contrae a 72 px con muelle, las etiquetas se **revelan con máscara** (`clip-path`) en vez de fundirse, y el nombre aparece en la etiqueta de vidrio de arriba. Todo el colapso es **una clase** (`q-zen`) en el `nav`: las reglas viven en `assets/qualify.css`, no en condicionales de Python — así el navegador puede animarlo y no hay dos árboles que mantener. El estado vive en la sesión del servidor, nunca en el navegador: persistir en el cliente exigiría clave namespaced por tenant y purga en logout (regla firmada), y para un modo de vista no compensa.
@@ -464,7 +466,7 @@ Si el tenant no configuró (Clarity sin proyecto), la configuración sube arriba
 | earned mention | **mención** | post, publicación ajena |
 | own media a monitorear | **contenido** / **Reel** | inbox, media |
 | DM/comentario recibido | **mensaje** / **comentario** | thread |
-| lead | **cliente interesado** (menú: «Interesados») | lead, prospecto, contacto |
+| lead | **cliente interesado** (pestaña «Interesados» de Por responder) | lead, prospecto, contacto |
 | creator | **creador** | influencer (salvo copy de marketing) |
 | señal derivada | **señal** | evento, alerta (alerta = una señal que exige acción) |
 | Fecha de verificación | "Verificada: …" | "Last verified" |

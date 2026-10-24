@@ -52,6 +52,9 @@ LIST_BUTTON_MAX_LEN = 20
 BODY_MAX_LEN = 1024
 HEADER_MAX_LEN = 60
 FOOTER_MAX_LEN = 60
+# A step's display name (m-24848536): what the owner reads and renames; never sent to
+# WhatsApp and never used for routing — the node id is the stable key.
+STEP_TITLE_MAX_LEN = 60
 
 # Reserved option ids the engine owns inside `order_summary` and `collect` nodes.
 ORDER_CONFIRM_ID = "confirm"
@@ -197,7 +200,16 @@ class EntryConfig(_Model):
 # --- Nodes -----------------------------------------------------------------------
 
 
-class _InteractiveNode(_Model):
+class _Step(_Model):
+    """Every node carries an optional `title`: the step's name in the editor. Renaming a
+    step edits this and nothing else, so the node id — what every arrow, keyword and
+    published WhatsApp shortcut points at — never changes (m-24848536). The engine
+    ignores it; definitions saved before it existed validate unchanged."""
+
+    title: str | None = Field(default=None, max_length=STEP_TITLE_MAX_LEN)
+
+
+class _InteractiveNode(_Step):
     body: str = Field(min_length=1, max_length=BODY_MAX_LEN)
     header: str | None = Field(default=None, max_length=HEADER_MAX_LEN)
     footer: str | None = Field(default=None, max_length=FOOTER_MAX_LEN)
@@ -211,7 +223,7 @@ class Option(_Model):
     next: str
 
 
-class TextNode(_Model):
+class TextNode(_Step):
     """Say `body`; then continue to `next` if set, otherwise end the menu session
     (the thread returns to idle and the next message re-enters through `entry`)."""
 
@@ -287,7 +299,7 @@ class ProductsNode(_InteractiveNode):
         return {self.next_after_pick}
 
 
-class OrderSummaryNode(_Model):
+class OrderSummaryNode(_Step):
     """Renders `context.order` as lines plus `body` with `{total}` substituted, and
     three fixed buttons (`confirm` / `add_more` / `cancel`, ids owned by the engine).
     `confirm_next` must lead to a `handoff` — the order is always closed by a person
@@ -316,7 +328,7 @@ class OrderSummaryNode(_Model):
         return {self.confirm_next, self.add_more_next, self.cancel_next}
 
 
-class CollectNode(_Model):
+class CollectNode(_Step):
     """Ask `prompt`, validate the answer, store it under `context.collected[field]`,
     continue to `next`. `yes_no` is rendered as two buttons and also accepts typed
     sí/no; `phone` accepts 7–15 digits with optional `+` and separators."""
@@ -336,7 +348,7 @@ class CollectNode(_Model):
         return {self.next}
 
 
-class HandoffNode(_Model):
+class HandoffNode(_Step):
     """Say `message`, hand the thread to a person and pause the menu on it."""
 
     kind: Literal["handoff"]
@@ -463,6 +475,7 @@ __all__ = [
     "MAX_LIST_ROWS",
     "MAX_LIST_SECTIONS",
     "NO_ID",
+    "STEP_TITLE_MAX_LEN",
     "ORDER_ADD_MORE_ID",
     "ORDER_CANCEL_ID",
     "ORDER_CONFIRM_ID",

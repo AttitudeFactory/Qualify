@@ -62,7 +62,7 @@ from qualify_api.followups.repository import (
     OriginKind,
     UnknownFollowup,
 )
-from qualify_api.followups.service import FollowupService, SendOptions
+from qualify_api.followups.service import Delivery, FollowupService, SendOptions
 from qualify_api.intent.contract import (
     COMMERCIAL_CLASSES,
     INTENT_CLASS_LABELS,
@@ -350,6 +350,11 @@ class FollowupWorkspace:
             else:
                 self._decide(tenant_id, draft, DraftStatus.EDITED, sent, user_id)
         return approved
+
+    def delivery(self, *, tenant_id: UUID, followup_id: UUID) -> Delivery:
+        """m-24849131 (ATENDER-10): whether the approved message went out — what the card
+        waits on before it says «Listo» or that it failed."""
+        return self._service.delivery(tenant_id=tenant_id, followup_id=followup_id)
 
     def discard(self, *, tenant_id: UUID, followup_id: UUID, user_id: UUID) -> Followup:
         followup = self._followup(tenant_id, followup_id)

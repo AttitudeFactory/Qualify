@@ -33,6 +33,7 @@ from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.service import (
     ApprovalBlocked,
     BrandNotReady,
+    DraftExpired,
     RouteBlockedByPolicy,
     UnknownDraft,
     UnknownVariant,
@@ -68,6 +69,7 @@ from .campaign_provider import (
 )
 from .campaign_provider import error_message as campaign_error_message
 from .creative_provider import (
+    FINAL_POLL_WINDOW_SECONDS,
     acting_user_id,
     approve_draft,
     approve_voice,
@@ -81,12 +83,14 @@ from .creative_provider import (
     draft_detail,
     edit_variant,
     enhance_generator_context,
+    final_video_state,
     list_drafts,
     load_kit_form,
     load_voice_screen,
     preview_brief_prompt,
     propose_voice,
     reject_draft,
+    retry_final,
     route_options_for,
     save_kit,
     submit_brief,
@@ -94,12 +98,19 @@ from .creative_provider import (
     voice_options,
 )
 from .creative_vm import (
+    APPROVE_VERSION_LABEL,
     CAPTION_LIMIT,
     CATEGORY_OPTIONS,
     CTA_SUGGESTIONS,
+    FINAL_POLL_CONTINUE,
+    FINAL_POLL_DONE,
+    FINAL_POLL_FAILED,
+    FINAL_READY_NOT_READY,
+    FINAL_READY_TEXT,
     HASHTAG_LIMIT,
     HOOK_LIMIT,
     KIND_LABELS,
+    VIDEO_DRAFT,
     VIDEO_TYPE_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
@@ -110,10 +121,13 @@ from .creative_vm import (
     RouteOptionVM,
     VoiceProposalVM,
     add_phrase,
+    approval_notice,
     caption_hashtag_suggestions,
     caption_keywords,
     content_type_options,
     cta_list,
+    final_pending_note,
+    final_poll_step,
     format_ctas,
     format_hashtags,
     hashtag_list,
@@ -121,7 +135,7 @@ from .creative_vm import (
     remove_phrase,
     seen_label,
 )
-from .gallery_state import APPROVED_NOT_READY_TOAST, APPROVED_TOAST, schedule_readiness
+from .gallery_state import schedule_readiness
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
 from .stock_provider import (
@@ -177,8 +191,26 @@ _STALE_PROPOSAL = "Esa propuesta ya no está vigente. Recargamos el estado real.
 _BRIEF_NOT_READY = (
     "Completa tu marca (colores, logo y forma de hablar) para que todo salga con tu estilo."
 )
-_ROUTE_BLOCKED = "Esa ruta de imagen está bloqueada para esta marca: "
-_BRIEF_INVALID = "El encargo no se puede ejecutar: "
+_ROUTE_BLOCKED = (
+    "Tu marca no permite crear la imagen de esa forma. Elige otra opción para la imagen."
+)
+# ImagePolicy.reason_for's fallback says the same thing again: never append it.
+_ROUTE_BLOCKED_DEFAULT_DETAIL = "No habilitada para esta marca."
+
+
+def route_blocked_text(detail: str) -> str:
+    """What the owner reads when the brand's image policy refuses a route."""
+    detail = (detail or "").strip()
+    if not detail or detail == _ROUTE_BLOCKED_DEFAULT_DETAIL:
+        return _ROUTE_BLOCKED
+    return f"{_ROUTE_BLOCKED} {detail}"
+
+
+#: NAV-11 (m-24849129): the brief's own refusal is an English invariant ("a template needs
+#: at least one product photo"), so the owner reads this and the log keeps the detail.
+_BRIEF_INVALID = (
+    "Falta algo para crear esta publicación. Revisa lo que elegiste y vuelve a intentarlo."
+)
 #: «Potenciar con IA» (§ request 2026-10-20): what the operator reads around it.
 _ENHANCE_MIN_CHARS = 8
 #: The animated avatar with nothing in the Brand Kit to make its character from.
@@ -234,9 +266,10 @@ CLIP_MAX_VIDEOS = 3
 #: How many stock hits the product screen takes at once (§ request 2026-10-19).
 STOCK_MAX_PICKS = 6
 CLIP_MAX_AUDIOS = 3
-#: What a clip asks Seedance for: the longest the model allows — 12 s on 1.0, 15 s on
-#: 2.x (the adapter clamps it).
-_CLIP_SECONDS = 15
+#: The lengths a clip can be asked for (§ request 2026-10-23: «que empiece desde 5 seg»).
+#: Seedance 2.0 takes 4–15 s (2.5 up to 30, 1.0 up to 12 — the adapter clamps it); clips
+#: are capped at 15 s.
+CLIP_DURATIONS = ("5", "10", "15")
 #: What a photo taken from the catalog product is called in the editor.
 _CATALOG_PHOTO = "Foto del catálogo"
 #: What a file of a stock inspiration is called in the editor (§ 2026-10-19: «stock» is
@@ -308,7 +341,8 @@ _SLIDE_SOURCES = ("generated", "animated")
 #: What a slide may carry printed (§ 2026-10-14): nothing or the title — the hook. The
 #: «Botón de acción» left: the scene already holds the button, and the post its CTA.
 _SLIDE_TEXTS = ("none", "hook")
-_SLIDE_SECONDS = ("5", "10")
+#: An animated slide's length — the editor's choices and what `set_slide_field` keeps.
+SLIDE_SECONDS = ("5", "10")
 _CAROUSEL_MIN = 2
 _CAROUSEL_MAX = 10
 #: The gallery (§ request 2026-10-14): exactly three slides, one video at most, no
@@ -453,6 +487,8 @@ def _new_slide(source: str, *, text: str = "none") -> dict[str, str]:
         # an animated slide's motion reference (§ 2026-10-19): followed, never shown
         "ref_key": "",
         "ref_name": "",
+        # an animated slide with the sound the video model makes (§ 2026-10-23): off
+        "audio": "",
     }
 
 
@@ -613,7 +649,9 @@ def _pill_items(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-_DURATIONS = ("15", "30", "45", "60")
+#: The lengths a script / avatar video can be asked for (§ request 2026-10-23: from 5 s);
+#: the brief validates the same set (`qualify_creative.schemas.DURATIONS_SECONDS`).
+DURATIONS = ("5", "10", "15", "30", "45", "60")
 _FORMAT_LABELS = {
     "feed_4_5": "Publicación 4:5",
     "feed_1_1": "Publicación cuadrada 1:1",
@@ -671,6 +709,10 @@ _POLL_TIMEOUT = (
 _POLL_DELAYS = (1.0, 2.0, 4.0)
 _POLL_CAP_SECONDS = 5.0
 _POLL_BUDGET_SECONDS = 300.0
+#: m-24820142: a 1080p final is polled every few seconds, until it is settled or turns
+#: retryable (`creative_provider.FINAL_POLL_WINDOW_SECONDS`: past the stale threshold).
+_FINAL_POLL_SECONDS = 5.0
+_FINAL_POLL_BUDGET_SECONDS = float(FINAL_POLL_WINDOW_SECONDS)
 
 #: The generation stages the progress indicator names (§6.4: a real per-stage
 #: indicator, not a blind spinner). The MVP pipeline generates copy, then verifies.
@@ -824,6 +866,11 @@ class CreativeState(rx.State):
     piece_picker_open: bool = False
     pieces_loading: bool = False
     media_duration: str = "30"
+    #: A clip's length, one of `CLIP_DURATIONS` (§ request 2026-10-23).
+    clip_duration: str = "5"
+    #: «Con audio» (§ request 2026-10-23): the clip comes with the sound the video
+    #: model makes — on, as every clip was before the switch.
+    clip_audio: bool = True
     #: The advertising image: the scene the image model will be asked for. Its photos
     #: (product, background) are optional since 2026-10-12 — the mode (`AdImageMode`)
     #: is derived from what was uploaded (`_ad_mode`), not picked.
@@ -1053,6 +1100,8 @@ class CreativeState(rx.State):
     poll_timed_out: bool = False
     poll_elapsed_label: str = ""
     _polling_draft_id: str = ""
+    #: m-24820142: the draft whose 1080p final is being polled ("" = none).
+    _final_polling_id: str = ""
 
     # -- computed -----------------------------------------------------------
 
@@ -1289,6 +1338,15 @@ class CreativeState(rx.State):
         )
 
     @rx.var
+    def approve_label(self) -> str:
+        """«Aprobar esta versión» over a Seedance 2.5 draft (m-24820142): approving it
+        also orders its 1080p final."""
+        draft = self.draft
+        if draft is not None and draft.video_draft.state == VIDEO_DRAFT:
+            return APPROVE_VERSION_LABEL
+        return "Aprobar"
+
+    @rx.var
     def kind_is_video(self) -> bool:
         return self.brief_kind in ("avatar_video", "animated_avatar_video")
 
@@ -1375,9 +1433,12 @@ class CreativeState(rx.State):
                         "text",
                         "ref_key",
                         "ref_name",
+                        "audio",
                     )
                 }
             )
+            if source != "animated":
+                slide["audio"] = ""  # only the video has sound of its own
         slides = [dict(s) for s in self.carousel_slides]
         slides[index] = slide
         self.carousel_slides = slides
@@ -1425,6 +1486,8 @@ class CreativeState(rx.State):
         if index < 0:
             return {}
         row = dict(self.carousel_slides[index])
+        # a slide made before «Con audio» (2026-10-23) reads as silent, not undefined
+        row.setdefault("audio", "")
         row["n"] = str(index + 1)
         row["first"] = "1" if index == 0 else ""
         row["last"] = "1" if index == len(self.carousel_slides) - 1 else ""
@@ -1487,7 +1550,8 @@ class CreativeState(rx.State):
             "scene": None,
             "background": ("1", ""),
             "text": (*_SLIDE_TEXTS, "cta"),
-            "seconds": _SLIDE_SECONDS,
+            "seconds": SLIDE_SECONDS,
+            "audio": ("1", ""),
         }
         index = int(index)
         if field not in allowed or not 0 <= index < len(self.carousel_slides):
@@ -1507,6 +1571,8 @@ class CreativeState(rx.State):
             value = value if value in ("hook", "cta") else "cta"
         elif value == "cta" and field == "text":
             return  # not offered on a generated slide: its scene holds the button
+        if field == "audio" and value and source != "animated":
+            return  # only the gallery's video has sound of its own (§ 2026-10-23)
         self._replace_slide(index, **{field: value})
         if field == "text" and value == "hook":
             # the title is the same hook on every slide: it goes on one only (2026-10-14)
@@ -1530,6 +1596,15 @@ class CreativeState(rx.State):
         if 0 <= index < len(self.carousel_slides):
             current = self.carousel_slides[index].get("background", "1")
             self.set_slide_field(index, "background", "" if current else "1")
+
+    @rx.event
+    def toggle_slide_audio(self, index: int) -> None:
+        """«Con audio» on the animated slide (§ request 2026-10-23): its video comes with
+        the sound the video model makes for it."""
+        index = int(index)
+        if 0 <= index < len(self.carousel_slides):
+            current = self.carousel_slides[index].get("audio", "")
+            self.set_slide_field(index, "audio", "" if current else "1")
 
     @rx.event
     async def handle_slide_reference_upload(self, files: list[rx.UploadFile]) -> None:
@@ -1678,7 +1753,10 @@ class CreativeState(rx.State):
                     "seconds": int(slide.get("seconds", "5")),
                     # only an animated slide follows a motion reference (2026-10-19)
                     **(
-                        {"reference_video_key": slide.get("ref_key") or None}
+                        {
+                            "reference_video_key": slide.get("ref_key") or None,
+                            "audio": bool(slide.get("audio")),
+                        }
                         if slide["source"] == "animated"
                         else {}
                     ),
@@ -3307,7 +3385,8 @@ class CreativeState(rx.State):
     def _clip_media(self) -> dict[str, object]:
         """A clip's brief media: its frames and references, nothing else."""
         return {
-            "duration_seconds": _CLIP_SECONDS,
+            "duration_seconds": int(self.clip_duration),
+            "clip_audio": self.clip_audio,
             "clip_first_frame_key": self.clip_first_frame_key or None,
             "clip_last_frame_key": (
                 self.clip_last_frame_key or None if self.clip_first_frame_key else None
@@ -3367,7 +3446,8 @@ class CreativeState(rx.State):
         self.gen_step = index
         if base == "rules":
             self.rules_open = True
-        elif base == "campaign":
+        elif base == "campaign" or (base == "channel" and more):
+            # step 3's «Más opciones» holds the campaign and a clip's «Con sonido»
             self.campaign_open = True
         elif more:
             self.show_more_open = True
@@ -4398,8 +4478,19 @@ class CreativeState(rx.State):
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in _DURATIONS:
+        if value in DURATIONS:
             self.media_duration = value
+
+    @rx.event
+    def set_clip_duration(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in CLIP_DURATIONS:
+            self.clip_duration = value
+
+    @rx.event
+    def set_clip_audio(self, value: bool) -> None:
+        """«Con audio» for a clip (§ request 2026-10-23)."""
+        self.clip_audio = bool(value)
 
     async def _save_uploads(self, files: list[rx.UploadFile]) -> list[tuple[str, str]]:
         """Store uploaded files under the tenant's namespace; `(key, name)` each. Sets
@@ -4801,12 +4892,26 @@ class CreativeState(rx.State):
         content_type = dict((opt.value, opt.label) for opt in content_type_options()).get(
             self.brief_content_type, ""
         )
-        length = f" · {self.media_duration} s" if kind == "creator_script" else ""
+        length = (
+            f" · {self.media_duration} s"
+            if kind == "creator_script"
+            else f" · {self.clip_duration} s"
+            if kind == "clip"
+            else ""
+        )
         row(
             "Publicación",
             f"{content_type} · {_FORMAT_LABELS.get(self.effective_format, '')}{length}",
             "channel",
         )
+        if kind == "clip":
+            # its own row: «Editar» opens step 3's «Más opciones», where the switch is
+            # (UX review 2026-10-24, N2/N6)
+            row(
+                "Sonido",
+                "Con sonido" if self.clip_audio else "Sin sonido",
+                "channel" + SHOW_MORE_SUFFIX,
+            )
         facts = " · ".join(f"{name}: {fact}" for name, fact in self._highlight_pairs())
         row("Datos clave", facts or "Ninguno", "rules")
         if self.brief_must_mention.strip():
@@ -4966,6 +5071,8 @@ class CreativeState(rx.State):
         self.clip_videos = []
         self.clip_sequence = []
         self.clip_audios = []
+        self.clip_audio = True
+        self.clip_duration = "5"
 
     @rx.event
     def select_route(self, key: str) -> None:
@@ -5169,12 +5276,19 @@ class CreativeState(rx.State):
         except RouteBlockedByPolicy as exc:
             async with self:
                 self.is_submitting = False
-                self.create_error = _ROUTE_BLOCKED + exc.detail
+                self.create_error = route_blocked_text(exc.detail)
             return None
         except (ValidationError, ValueError) as exc:
+            # the validators' messages only — never `input_value`, which holds the form
+            why = (
+                "; ".join(str(e.get("msg", "")) for e in exc.errors())
+                if isinstance(exc, ValidationError)
+                else str(exc)
+            )
+            logger.warning("brief refused: %s", why[:300])
             async with self:
                 self.is_submitting = False
-                self.create_error = _BRIEF_INVALID + str(exc).splitlines()[0]
+                self.create_error = _BRIEF_INVALID
             return None
         except SQLAlchemyError as exc:
             logger.error("submit brief failed: %s", type(exc).__name__)
@@ -5231,6 +5345,23 @@ class CreativeState(rx.State):
         if self.selected_variant_id not in current:
             self.selected_variant_id = vm.variants[0].variant_id if vm.variants else ""
         self._fill_edit_fields()
+
+    def _refresh_video(self, vm: DraftVM) -> None:
+        """The piece on screen read again while its 1080p final is made (m-24820142):
+        its media, badge and draft state change — the operator's edits in progress
+        (caption, hook, CTA, hashtags) and the AI hashtag suggestions are left exactly
+        as they are (`_fill_edit_fields` runs only when the operator opens the editor or
+        a piece is loaded, never from a poll)."""
+        self.draft = vm
+
+    def _final_poll_on_screen(self, polling_id: str) -> bool:
+        """Whether the final poll for `polling_id` still owns the slot AND its piece is
+        the one the page shows: a poll for a piece no longer on screen stops, silently."""
+        return (
+            self._final_polling_id == polling_id
+            and self.draft is not None
+            and self.draft.draft_id == polling_id
+        )
 
     def _fill_edit_fields(self) -> None:
         for variant in self.draft.variants if self.draft is not None else ():
@@ -5290,8 +5421,12 @@ class CreativeState(rx.State):
             should_poll = vm.is_drafting and self._polling_draft_id != str(draft_id)
             if should_poll:
                 self._polling_draft_id = str(draft_id)
+            # m-24820142: a final still being made when the piece is opened
+            final_poll = self._starts_final_poll(vm)
         if should_poll:
             yield CreativeState.poll_draft
+        if final_poll:
+            yield CreativeState.poll_final
         if vm.status not in _HISTORY_STATUSES:  # before approval it helps no decision
             return
         word, help_text = await _history_texts(tenant_id, draft_id)
@@ -5490,28 +5625,32 @@ class CreativeState(rx.State):
             async with self:
                 self.action_error = exc.detail
             return
+        except DraftExpired as exc:
+            # m-24820142: a 480p draft too old to make its final — the operator regenerates
+            async with self:
+                self.action_error = exc.detail
+            return
         except SQLAlchemyError as exc:
             logger.error("approve failed: %s", type(exc).__name__)
             async with self:
                 self.action_error = _DB_ERROR
             return
-        # m-24842978: «Elegir día y hora» only for a publication Tu semana can plan. The
-        # same reader as the gallery; if it cannot be read the way is offered anyway and
-        # Tu semana, the real gate, says what is missing.
-        try:
-            gallery = await asyncio.to_thread(load_gallery, tenant_id)
-            ready, note = schedule_readiness(list(gallery.posts), str(draft_uuid))
-        except Exception as exc:  # noqa: BLE001 — the approval already stands
-            logger.warning("readiness after approve failed: %s", type(exc).__name__)
-            ready, note = True, ""
+        ready, note = await self._schedule_readiness(tenant_id, str(draft_uuid))
         async with self:
             self._apply_detail(vm)
             self.just_approved = True
             self.approved_ready = ready
             self.approved_note = note
+            start_poll = self._starts_final_poll(vm)
         # The toast goes with the card, never instead of it — and it never says or
-        # suggests the publication is already out.
-        yield rx.toast.success(APPROVED_TOAST if ready else APPROVED_NOT_READY_TOAST)
+        # suggests the publication is already out. It follows the piece, not whether a
+        # poll had to start (one may already run for it): a 1080p final being made or
+        # that could not be ordered comes first (m-24820142), and then no day and time
+        # is offered — the card says why (`approved_hold_note`).
+        notice = approval_notice(vm.video_draft, ready=ready)
+        yield getattr(rx.toast, notice.kind)(notice.text)
+        if start_poll:
+            yield CreativeState.poll_final
 
     @rx.var
     def show_approved_next(self) -> bool:
@@ -5519,6 +5658,23 @@ class CreativeState(rx.State):
         screen approved the draft, and only while it is still approved (saving an edit
         sends it back to review)."""
         return self.just_approved and self.draft is not None and self.draft.status == "approved"
+
+    @rx.var
+    def approved_can_schedule(self) -> bool:
+        """«Elegir día y hora» on the «Aprobada» card: the publication can be planned
+        (m-24842978) and its own video does not hold it back — a 1080p final being made
+        or that could not be ordered cannot be scheduled yet (m-24820142)."""
+        draft = self.draft
+        held = draft is not None and bool(final_pending_note(draft.video_draft))
+        return self.approved_ready and not held
+
+    @rx.var
+    def approved_hold_note(self) -> str:
+        """Why the «Aprobada» card offers no day and time: the final's own words first,
+        then the evaluator's (`approved_note`)."""
+        draft = self.draft
+        held = final_pending_note(draft.video_draft) if draft is not None else ""
+        return held or self.approved_note
 
     @rx.event
     def go_schedule(self):
@@ -5529,10 +5685,166 @@ class CreativeState(rx.State):
         return rx.redirect(f"/planner?post={self.draft.draft_id}")
 
     @rx.event
+    def go_publish_now(self):
+        """«Publicar ahora» (m-24842985): the same drawer with «Ahora» already chosen. It
+        still waits for the owner's «Programar» there — nothing goes out from here."""
+        if self.draft is None:
+            return None
+        return rx.redirect(f"/planner?post={self.draft.draft_id}&cuando=ahora")
+
+    @rx.event
     def go_create_another(self):
         """«Crear otra publicación»: back to the start of the generator."""
         self.just_approved = False
         return rx.redirect("/create")
+
+    @staticmethod
+    async def _schedule_readiness(tenant_id: UUID, draft_id: str) -> tuple[bool, str]:
+        """m-24842978: «Elegir día y hora» only for a publication Tu semana can plan. The
+        same reader as the gallery; if it cannot be read the way is offered anyway and
+        Tu semana, the real gate, says what is missing."""
+        try:
+            gallery = await asyncio.to_thread(load_gallery, tenant_id)
+            return schedule_readiness(list(gallery.posts), draft_id)
+        except Exception as exc:  # noqa: BLE001 — the approval already stands
+            logger.warning("readiness after approve failed: %s", type(exc).__name__)
+            return True, ""
+
+    def _starts_final_poll(self, vm: DraftVM) -> bool:
+        """Whether `vm` has a 1080p final being made that nobody polls yet — and claim
+        it (m-24820142)."""
+        if not vm.video_draft.rendering:
+            return False
+        if self._final_polling_id == vm.draft_id:
+            return False
+        self._final_polling_id = vm.draft_id
+        return True
+
+    @rx.event(background=True)
+    async def retry_final_render(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Reintentar video final» (m-24820142): order again a final that failed."""
+        async with self:
+            self.action_error = ""
+            draft_uuid = self._route_draft_id()
+        if draft_uuid is None:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.action_error = _NO_SESSION
+            return
+        tenant_id, _, _ = ids
+        try:
+            vm = await asyncio.to_thread(retry_final, tenant_id, draft_uuid)
+        except UnknownDraft:
+            async with self:
+                self.action_error = _DRAFT_GONE
+            return
+        except InvalidTransition:
+            async with self:
+                self.action_error = (
+                    "Primero aprueba la publicación; después preparamos el video final."
+                )
+            return
+        except DraftExpired as exc:
+            async with self:
+                self.action_error = exc.detail
+            return
+        except SQLAlchemyError as exc:
+            logger.error("final retry failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _DB_ERROR
+            return
+        async with self:
+            self._apply_detail(vm)
+            rendering = self._starts_final_poll(vm)
+        if rendering:
+            yield CreativeState.poll_final
+
+    @rx.event(background=True)
+    async def poll_final(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Watch the piece on screen every few seconds while its 1080p final is made
+        (m-24820142), and say when it lands or fails.
+
+        Each tick reads only the piece's draft-video state (`final_video_state`: the
+        draft row and its draft videos); the whole piece is read again only when that
+        state changes, when the poll ends, or on its last tick — and then only the
+        video parts of the screen are refreshed (`_refresh_video`), never the
+        operator's edits in progress. One poll at a time (`_final_polling_id`), and only
+        for the piece the page shows: checked on every tick, so when another piece is
+        opened (with or without a final of its own) or another poll takes the slot this
+        one stops without a word — no toast lands on a piece that is not on screen.
+        Bounded by `_FINAL_POLL_BUDGET_SECONDS`, which outlasts the stale threshold: a
+        final a dead process left turns retryable inside the window, and the last tick
+        refreshes the piece so «Reintentar» shows without a reload."""
+        async with self:
+            polling_id = self._final_polling_id
+            shown = (
+                self.draft.video_draft
+                if self.draft is not None and self.draft.draft_id == polling_id
+                else None
+            )
+        draft_id = tenant_uuid(polling_id)
+        if draft_id is None:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self._final_polling_id = ""
+            return
+        tenant_id, _, _ = ids
+        started = time.monotonic()
+        try:
+            while True:
+                await asyncio.sleep(_FINAL_POLL_SECONDS)
+                last_tick = time.monotonic() - started >= _FINAL_POLL_BUDGET_SECONDS
+                async with self:
+                    if not self._final_poll_on_screen(polling_id):
+                        return  # another piece is on screen, or another poll took over
+                try:
+                    video = await asyncio.to_thread(final_video_state, tenant_id, draft_id)
+                except SQLAlchemyError as exc:
+                    logger.error("final poll failed: %s", type(exc).__name__)
+                    if last_tick:
+                        return
+                    continue
+                if video is None:
+                    return
+                step = final_poll_step(video)
+                if video != shown or step != FINAL_POLL_CONTINUE or last_tick:
+                    try:
+                        vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
+                    except SQLAlchemyError as exc:
+                        logger.error("final poll reload failed: %s", type(exc).__name__)
+                        vm = None
+                    async with self:
+                        if not self._final_poll_on_screen(polling_id):
+                            return
+                        if vm is not None:
+                            self._refresh_video(vm)
+                            shown = video
+                if step == FINAL_POLL_CONTINUE:
+                    if last_tick:
+                        return
+                    continue
+                if step == FINAL_POLL_DONE:
+                    # the final no longer holds the publication back: the «Aprobada»
+                    # card asks Tu semana's reader again whether it can be planned now
+                    # (m-24842978), and offers «Elegir día y hora» only then
+                    ready, note = await self._schedule_readiness(tenant_id, polling_id)
+                    async with self:
+                        if not self._final_poll_on_screen(polling_id):
+                            return
+                        self.approved_ready = ready
+                        self.approved_note = note
+                    yield rx.toast.success(FINAL_READY_TEXT if ready else FINAL_READY_NOT_READY)
+                elif step == FINAL_POLL_FAILED:
+                    yield rx.toast.error("No pudimos generar el video final. Puedes reintentarlo.")
+                return
+        finally:
+            async with self:
+                if self._final_polling_id == polling_id:
+                    self._final_polling_id = ""
 
     @rx.event
     def ask_reject(self, regenerate: bool) -> None:
