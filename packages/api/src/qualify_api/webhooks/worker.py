@@ -5,14 +5,20 @@
     python -m qualify_api.webhooks.worker --purge [--execute]
     python -m qualify_api.webhooks.worker --purge-account <ig_account_id> [--execute]
     python -m qualify_api.webhooks.worker --requeue-comments [--account <ig_id>] [--execute]
+    python -m qualify_api.webhooks.worker --requeue-postbacks [--account <ig_id>] [--execute]
 
 (`just webhook-tick`, `just webhook-worker`, `just webhook-purge …`,
-`just webhook-requeue-comments`.)
+`just webhook-requeue-comments`, `just webhook-requeue-postbacks`.)
 
 `--requeue-comments` puts Instagram `comments` changes recorded as `unsupported` before the
 `instagram:comments` handler existed back in the queue, so the next batches turn the ones
 that @mention the account into mentions. Dry run (a count) unless `--execute`; idempotent
 (`WebhookQueue.requeue_unsupported_comments`).
+
+`--requeue-postbacks` does the same for Instagram `postback` items (Ice Breakers, template
+buttons, menu items) recorded as `unsupported` before the `instagram:messages` handler read
+them (m-24789472): the next batches turn them into inbound messages of Conversaciones,
+one per `mid`, and reply to none of them (`WebhookQueue.requeue_unsupported_postbacks`).
 
 In production the loop runs as the `webhook-worker` service of
 `deploy/docker-compose.prod.yml`. Locally it runs only when someone starts it, against
@@ -90,12 +96,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="requeue Instagram comments recorded as unsupported (dry run unless --execute)",
     )
-    parser.add_argument(
-        "--execute", action="store_true", help="really apply (purges and --requeue-comments)"
+    mode.add_argument(
+        "--requeue-postbacks",
+        action="store_true",
+        help="requeue Instagram postbacks recorded as unsupported (dry run unless --execute)",
     )
     parser.add_argument(
-        "--account", metavar="IG_ACCOUNT_ID", help="--requeue-comments: only this account"
+        "--execute", action="store_true", help="really apply (purges and the --requeue-* modes)"
     )
+    parser.add_argument("--account", metavar="IG_ACCOUNT_ID", help="--requeue-*: only this account")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH)
     return parser
@@ -169,11 +178,12 @@ async def _run_loop(*, interval: int, limit: int) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.execute and not (args.purge or args.purge_account or args.requeue_comments):
-        print("--execute only applies to --purge / --purge-account / --requeue-comments")
+    requeue = args.requeue_comments or args.requeue_postbacks
+    if args.execute and not (args.purge or args.purge_account or requeue):
+        print("--execute only applies to --purge / --purge-account / --requeue-*")
         return 2
-    if args.account and not args.requeue_comments:
-        print("--account only applies to --requeue-comments")
+    if args.account and not requeue:
+        print("--account only applies to --requeue-comments / --requeue-postbacks")
         return 2
     if args.interval < MIN_INTERVAL_SECONDS:
         print(f"--interval must be at least {MIN_INTERVAL_SECONDS}")
@@ -197,6 +207,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         verb = "requeued" if args.execute else "would requeue (dry run)"
         print(f"instagram comments: {verb} events={count}")
+        return 0
+    if args.requeue_postbacks:
+        count = WebhookQueue().requeue_unsupported_postbacks(
+            now=datetime.now(UTC), execute=args.execute, entry_id=args.account
+        )
+        verb = "requeued" if args.execute else "would requeue (dry run)"
+        print(f"instagram postbacks: {verb} events={count}")
         return 0
     if args.once:
         report = asyncio.run(production_processor(worker_id=worker_id()).run_once(limit=args.limit))

@@ -503,3 +503,17 @@ def test_a_clip_copy_writes_its_story_in_three_shots() -> None:
     text = rendered.stable_prefix + rendered.volatile_suffix
     assert "exactly 3 objects" in text and "the hook, the development, the payoff" in text
     assert "tells a story" in text
+
+
+def test_the_caption_is_asked_below_the_hard_limit_and_told_the_limit() -> None:
+    """2026-10-22: told «between 80 and 600», the model wrote 601 and the run died.
+    The prompt now aims at 90 % and names the real cap."""
+    kit = make_kit(length_targets=LengthTargets(caption_min_chars=80, caption_max_chars=600))
+    prefix = render(kit=kit).stable_prefix
+    assert "Caption length: between 80 and 540 characters. Hard limit: 600 characters" in prefix
+
+
+def test_the_caption_target_never_drops_below_the_minimum() -> None:
+    from qualify_creative.brand.render import caption_target_chars
+
+    assert caption_target_chars(LengthTargets(caption_min_chars=95, caption_max_chars=100)) == 95

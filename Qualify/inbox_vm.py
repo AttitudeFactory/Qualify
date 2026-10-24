@@ -19,6 +19,19 @@ from typing import Final
 
 from qualify_api.inbox.media_type import MediaType, known_media_type
 
+from .nav_url import with_query
+
+# N5 (m-24842960): a publication's comments have their own address,
+# `/inbox?publicacion=<thread id>`; the list is plain `/inbox`.
+INBOX_ROUTE: Final = "/inbox"
+POST_PARAM: Final = "publicacion"
+
+
+def inbox_url(thread_id: str = "") -> str:
+    """The list (`thread_id` empty) or one publication's comments."""
+    return with_query(INBOX_ROUTE, **{POST_PARAM: thread_id})
+
+
 # QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
 # label. Computed server-side (`inbox_provider`) from the shared rule
 # (`qualify_api.inbox.monitoring.effective_state`); the page only matches on them.
