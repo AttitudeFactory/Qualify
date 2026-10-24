@@ -90,6 +90,9 @@ class InviteView:
     email: str
     expires_at: datetime
     business_name: str = ""
+    #: The «Alta de cliente» item it came from (0064); opens that Alta's reserved Brand
+    #: Kit draft (`auth.drafts`, PB-0). Never shown to the screen.
+    meegle_work_item_id: int | None = None
 
 
 def _hash(token: str) -> str:
@@ -203,6 +206,7 @@ def lookup_invite(token: str) -> InviteView | None:
             email=invite.email,
             expires_at=invite.expires_at,
             business_name=invite.business_name or "",
+            meegle_work_item_id=invite.meegle_work_item_id,
         )
 
 
