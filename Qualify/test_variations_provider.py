@@ -285,3 +285,29 @@ def test_a_template_preset_is_refused_before_paying_when_the_service_lacks_its_v
     assert provider.template_problem(preset, held_now, manifests) is None
     assert "no está disponible" in (provider.template_problem(preset, None, manifests) or "")
     assert isinstance(TemplateManifest, type)  # the registry's rows are real manifests
+
+
+def test_approving_says_whether_a_1080p_final_is_being_made(
+    service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-24820142: the approved piece comes back as its draft videos' state — a final
+    rendering, one that could not be ordered (review round 3: `can_retry`, so the
+    screen never says «aprobada» alone), or none."""
+    import time
+    from types import SimpleNamespace
+
+    def approved(params: dict[str, Any]) -> Any:
+        return lambda **_: SimpleNamespace(
+            status="approved", media=[SimpleNamespace(params=params)]
+        )
+
+    rendering = {"draft": {"status": "rendering", "rendering_at": time.time()}}
+    monkeypatch.setattr(service, "approve_angle", approved(rendering), raising=False)
+    assert provider.approve_variation_angle(TENANT, str(uuid4()), USER).rendering
+    failed = {"draft": {"status": "failed", "error": "No se llegó a pedir."}}
+    monkeypatch.setattr(service, "approve_angle", approved(failed), raising=False)
+    video = provider.approve_variation_angle(TENANT, str(uuid4()), USER)
+    assert video.can_retry and not video.rendering
+    monkeypatch.setattr(service, "approve_angle", approved({}), raising=False)
+    video = provider.approve_variation_angle(TENANT, str(uuid4()), USER)
+    assert video.state == "" and not video.can_retry

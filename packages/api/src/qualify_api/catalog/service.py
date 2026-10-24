@@ -18,6 +18,7 @@ Same shape as the other services: keyword-only UUID identity, all tenant data th
 from __future__ import annotations
 
 import io
+import logging
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -40,6 +41,8 @@ from qualify_api.catalog.models import (
 from qualify_api.catalog.read import price_label
 from qualify_api.creative.media import MediaStore
 
+logger = logging.getLogger(__name__)
+
 MAX_MEDIA_PER_PRODUCT = 12
 
 
@@ -48,7 +51,20 @@ class UnknownProduct(KeyError):
 
 
 class CatalogError(ValueError):
-    pass
+    """A refusal the owner reads as it is: `args[0]` is shown on the catalog screen
+    (`Qualify/catalog_state.py`), so it is always Spanish, in the owner's words, and never
+    carries a library's exception text (NAV-11, m-24849129)."""
+
+
+#: What the owner reads for each refusal (qualify-copy-es; NAV-11, m-24849129).
+NAME_REQUIRED_TEXT = "El producto necesita un nombre."
+MEDIA_FULL_TEXT = (
+    f"Cada producto puede tener hasta {MAX_MEDIA_PER_PRODUCT} fotos o videos. "
+    "Quita alguno para subir otro."
+)
+VIDEO_UNAVAILABLE_TEXT = "Por ahora no podemos recibir videos. Sube una foto."
+VIDEO_UNREADABLE_TEXT = "No pudimos abrir este video. Prueba con otro archivo."
+PHOTO_UNREADABLE_TEXT = "No pudimos abrir esta foto. Prueba con otro archivo."
 
 
 @dataclass(frozen=True)
@@ -169,7 +185,7 @@ class CatalogService:
     ) -> UUID:
         clean = name.strip()
         if not clean:
-            raise CatalogError("a product needs a name")
+            raise CatalogError(NAME_REQUIRED_TEXT)
         with tenant_session(tenant_id) as session:
             base = slugify(clean)
             taken = set(
@@ -225,7 +241,7 @@ class CatalogService:
                 raise UnknownProduct(str(product_id))
             if name is not None:
                 if not name.strip():
-                    raise CatalogError("a product needs a name")
+                    raise CatalogError(NAME_REQUIRED_TEXT)
                 row.name = name.strip()
             if price_amount is not ...:
                 row.price_amount = price_amount  # type: ignore[assignment]
@@ -264,15 +280,16 @@ class CatalogService:
                 )
             )
         if len(existing) >= MAX_MEDIA_PER_PRODUCT:
-            raise CatalogError(f"a product holds at most {MAX_MEDIA_PER_PRODUCT} files")
+            raise CatalogError(MEDIA_FULL_TEXT)
 
         if is_video_filename(filename):
             if self._video is None:
-                raise CatalogError("video uploads are not available (no normalizer configured)")
+                raise CatalogError(VIDEO_UNAVAILABLE_TEXT)
             try:
                 clip = self._video.normalize(data, filename=filename)
             except Exception as exc:
-                raise CatalogError(f"el video no se pudo procesar: {exc}") from exc
+                logger.warning("catalog video normalize failed: %s", type(exc).__name__)
+                raise CatalogError(VIDEO_UNREADABLE_TEXT) from exc
             media_type = MEDIA_TYPE_VIDEO
             payload, content_type, ext = clip.data, clip.content_type, clip.extension
             width, height, duration = (
@@ -285,7 +302,8 @@ class CatalogService:
                 image = load_normalized(data)
                 payload = export_for_instagram(image)
             except Exception as exc:
-                raise CatalogError(f"la foto no se pudo leer: {exc}") from exc
+                logger.warning("catalog photo normalize failed: %s", type(exc).__name__)
+                raise CatalogError(PHOTO_UNREADABLE_TEXT) from exc
             from PIL import Image  # noqa: PLC0415
 
             with Image.open(io.BytesIO(payload)) as exported:

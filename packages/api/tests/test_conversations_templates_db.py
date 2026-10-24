@@ -301,3 +301,142 @@ def test_no_template_operation_writes_the_outbox(seeded) -> None:
     )
     service.delete(tenant_id=TENANT, template_id=created.id)
     assert _outbox_rows(conn) == 0
+
+
+# --- m-24789472, phase 3 (0084): templates with buttons -----------------------------------
+
+_POSTBACK = {"type": "postback", "title": "Precios", "payload": "QFB_PRECIOS"}
+_LINK = {"type": "web_url", "title": "Ver catálogo", "url": "https://polette.co"}
+
+
+def test_buttons_round_trip_and_old_templates_still_load(seeded) -> None:
+    from qualify_api.conversations.interactive import TemplateButton  # noqa: PLC0415
+    from qualify_api.conversations.templates import KIND_BUTTONS, KIND_TEXT  # noqa: PLC0415
+
+    conn = seeded["connection"]
+    service = _service()
+    # The seeded defaults and a template written without the column are text templates.
+    with tenant_session(TENANT) as session:
+        session.execute(
+            text(
+                "INSERT INTO conversation_reply_templates "
+                "(tenant_id, connection_id, title, body, position) "
+                "VALUES (:t, :c, 'Viejo', 'Texto de antes', 50)"
+            ),
+            {"t": TENANT, "c": conn},
+        )
+    library = service.list_for_connection(tenant_id=TENANT, connection_id=conn)
+    assert library and all(t.kind == KIND_TEXT and t.buttons == () for t in library)
+    assert "Viejo" in [t.title for t in library]
+
+    created = service.create(
+        tenant_id=TENANT,
+        connection_id=conn,
+        title="Con botones",
+        body="¿Qué quieres ver de {marca}?",
+        user_id=seeded["user"],
+        buttons=[
+            TemplateButton.web_url("Ver catálogo", "https://polette.co"),
+            TemplateButton.postback("Precios"),
+        ],
+    )
+    with tenant_session(TENANT) as session:
+        stored = session.get(ConversationReplyTemplate, created.id)
+        assert stored is not None and stored.buttons == [_LINK, _POSTBACK]
+    loaded = PostgresReplyTemplateRepository().get_template(
+        tenant_id=TENANT, template_id=created.id
+    )
+    assert loaded is not None and loaded.kind == KIND_BUTTONS
+    assert loaded.buttons == created.buttons
+
+    kept = service.update(
+        tenant_id=TENANT, template_id=created.id, title="Con botones", body="Mira:", user_id=None
+    )
+    assert kept.buttons == created.buttons
+    removed = service.update(
+        tenant_id=TENANT,
+        template_id=created.id,
+        title="Sin botones",
+        body="x" * 1000,
+        user_id=None,
+        buttons=(),
+    )
+    assert removed.kind == KIND_TEXT
+    with tenant_session(TENANT) as session:
+        assert session.get(ConversationReplyTemplate, created.id).buttons is None
+    # Another tenant still sees none of it (0079's policy, unchanged by 0084).
+    assert (
+        PostgresReplyTemplateRepository().get_template(tenant_id=OTHER, template_id=created.id)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("buttons", "body"),
+    [
+        ([], "ok"),
+        ([_POSTBACK, _LINK, {**_POSTBACK, "title": "B"}, {**_POSTBACK, "title": "C"}], "ok"),
+        ({"type": "postback"}, "ok"),
+        ([{**_POSTBACK, "payload": "PRECIOS"}], "ok"),
+        ([{"type": "postback", "title": "Sin payload"}], "ok"),
+        ([{**_LINK, "url": "http://polette.co"}], "ok"),
+        ([{"type": "web_url", "title": "Sin enlace"}], "ok"),
+        ([{**_POSTBACK, "title": "b" * 21}], "ok"),
+        ([{**_POSTBACK, "title": ""}], "ok"),
+        ([{"type": "phone_number", "title": "Llamar", "payload": "+57"}], "ok"),
+        (["texto"], "ok"),
+        ([_POSTBACK], "x" * 641),
+    ],
+)
+def test_0084_checks_refuse_what_the_service_refuses(seeded, buttons, body) -> None:
+    import json  # noqa: PLC0415
+
+    with pytest.raises(IntegrityError), tenant_session(TENANT) as session:
+        session.execute(
+            text(
+                "INSERT INTO conversation_reply_templates "
+                "(tenant_id, connection_id, title, body, position, buttons) "
+                "VALUES (:t, :c, 'x', :body, 60, CAST(:buttons AS jsonb))"
+            ),
+            {"t": TENANT, "c": seeded["connection"], "body": body, "buttons": json.dumps(buttons)},
+        )
+
+
+def test_0084_accepts_the_shapes_the_service_writes(seeded) -> None:
+    import json  # noqa: PLC0415
+
+    with tenant_session(TENANT) as session:
+        session.execute(
+            text(
+                "INSERT INTO conversation_reply_templates "
+                "(tenant_id, connection_id, title, body, position, buttons) "
+                "VALUES (:t, :c, 'x', :body, 61, CAST(:buttons AS jsonb))"
+            ),
+            {
+                "t": TENANT,
+                "c": seeded["connection"],
+                "body": "x" * 640,
+                "buttons": json.dumps([_LINK, _POSTBACK, {**_POSTBACK, "title": "b" * 20}]),
+            },
+        )
+
+
+def test_rls_is_still_enabled_and_forced_after_0084() -> None:
+    with admin_session() as session:
+        row = session.execute(
+            text(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE relname = 'conversation_reply_templates'"
+            )
+        ).one()
+        policies = (
+            session.execute(
+                text(
+                    "SELECT qual FROM pg_policies WHERE tablename = 'conversation_reply_templates'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert tuple(row) == (True, True)
+    assert len(policies) == 1 and "NULLIF" in policies[0]

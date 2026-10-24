@@ -727,7 +727,7 @@
   width: 100%;
 }
 .q-panel-actions:empty { display: none; }
-.q-panel-actions .rt-Button { width: 100%; }
+.q-panel-actions .rt-Button { width: 100%; min-height: 44px; }
 
 /* «Contenido» step: header panel and the legend box. */
 .q-step-panel {
@@ -942,3 +942,19 @@
 .q-dest-dot--sm { width: 1rem; height: 1rem; }
 .q-chip-line .q-ch { width: 13px; height: 13px; border-radius: 3px; }
 .q-chip-line .q-temp--mini { padding: 0.1rem 0.22rem; }
+
+/* ── m-24842985 (PUBLICAR-3, N6/N12): «¿Cuándo sale?» — «Elegir día y hora» | «Ahora»,
+   then «Más opciones» folded. On a phone the two choices share the row, every one of
+   them, the time controls and the fold's header are ≥ 44 px targets. ─────────────── */
+.q-when-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; width: 100%; }
+.q-when-choice .q-choice { justify-content: center; min-height: 2.5rem; font-size: 0.85rem; }
+.q-plan-more .rt-AccordionTrigger { padding-inline: 0; font-weight: 600; }
+@media (max-width: 640px) {
+  .q-when-choice .q-choice,
+  .q-plan-card .q-ampm,
+  .q-plan-card .rt-SelectTrigger,
+  .q-plan-card .rt-TextFieldRoot,
+  .q-plan-more .rt-AccordionTrigger,
+  .q-plan-more .rt-Button { min-height: 44px; }
+  .q-plan-link { display: inline-flex; align-items: center; min-height: 44px; }
+}

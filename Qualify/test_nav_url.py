@@ -72,8 +72,8 @@ def test_conversations_view_round_trips_in_the_owners_words() -> None:
 
 def test_inbox_detail_address() -> None:
     thread_id = str(uuid4())
-    assert inbox_url() == "/inbox"
-    assert inbox_url(thread_id) == f"/inbox?publicacion={thread_id}"
+    assert inbox_url() == "/responder?tab=comentarios"
+    assert inbox_url(thread_id) == f"/responder?tab=comentarios&publicacion={thread_id}"
 
 
 # --- the writing side, for real ---------------------------------------------------------
@@ -111,7 +111,8 @@ def test_inbox_back_to_the_list_writes_the_list_address() -> None:
     spec = InboxState.back_to_reel_list.fn(state)  # type: ignore[attr-defined]
     assert state.selected_thread_id == ""
     script = _script_of(spec)
-    assert '"/inbox"' in script and "replaceState" in script  # «atrás» never reopens it
+    # «atrás» never reopens it
+    assert '"/responder?tab=comentarios"' in script and "replaceState" in script
 
 
 def test_inbox_back_from_a_publication_keeps_the_loaded_list() -> None:
@@ -180,8 +181,12 @@ def test_routes_run_the_entry_handlers_on_load() -> None:
         return source[start : source.index(")", source.index("on_load", start)) + 1]
 
     assert "WhatsAppState.enter_page" in block("    whatsapp_index,")
-    assert "FollowupsState.enter_page" in block("    conversations_index,")
-    assert "InboxState.enter_screen" in block("    inbox_index,")
+    # m-24842990: the comments and the private inbox are tabs of «Por responder»; its
+    # entry hands each tab over to that list's own entry handler.
+    assert "ResponderState.enter_page" in block("    responder_index,")
+    responder = (_HERE / "responder_state.py").read_text()
+    assert "FollowupsState.enter_page" in responder
+    assert "InboxState.enter_screen" in responder
 
 
 # --- N7: back links say where they go ---------------------------------------------------

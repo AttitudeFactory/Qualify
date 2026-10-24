@@ -33,6 +33,10 @@ _GUIDE_MAP = [
     "Tu semana",
     "Publicar ahora",
     "Resultados",
+    # Interim (NAV-4, m-24842962): Menciones left `/` but its place inside Resultados ›
+    # «Quién habla de ti» comes with RESULTADOS-5 (m-24843003); until then it is listed
+    # next to Resultados. Drop this line the day RESULTADOS-5 lands.
+    "Menciones",
     "Tu marca",
     "Tus productos",
     "Tus redes",
@@ -64,7 +68,7 @@ def test_the_menu_has_the_twelve_entries_of_the_guide_in_order() -> None:
 
 def test_creadores_and_oportunidades_are_the_only_soon_entries() -> None:
     assert [label for label, _icon, _route, enabled in NAV_ITEMS if not enabled] == _SOON
-    assert [label for label, *_ in NAV_RESULTS] == ["Resultados", *_SOON]
+    assert [label for label, *_ in NAV_RESULTS] == ["Resultados", "Menciones", *_SOON]
 
 
 def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
