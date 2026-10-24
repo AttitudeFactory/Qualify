@@ -130,212 +130,212 @@
     "17900000000000005": [
       {
         "id": "17800000000000100",
-        "text": "Comentario de prueba 1",
+        "text": "¿Tienen para llevar?",
         "username": "cliente.demo11",
         "minutes_ago": 60,
         "like_count": 0
       },
       {
         "id": "17800000000000101",
-        "text": "Comentario de prueba 2",
+        "text": "¿Aceptan transferencia?",
         "username": "cliente.demo12",
-        "minutes_ago": 61,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000102",
-        "text": "Comentario de prueba 3",
-        "username": "cliente.demo13",
-        "minutes_ago": 62,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000103",
-        "text": "Comentario de prueba 4",
-        "username": "cliente.demo14",
-        "minutes_ago": 63,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000104",
-        "text": "Comentario de prueba 5",
-        "username": "cliente.demo15",
-        "minutes_ago": 64,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000105",
-        "text": "Comentario de prueba 6",
-        "username": "cliente.demo11",
-        "minutes_ago": 65,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000106",
-        "text": "Comentario de prueba 7",
-        "username": "cliente.demo12",
-        "minutes_ago": 66,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000107",
-        "text": "Comentario de prueba 8",
-        "username": "cliente.demo13",
         "minutes_ago": 67,
         "like_count": 0
       },
       {
-        "id": "17800000000000108",
-        "text": "Comentario de prueba 9",
-        "username": "cliente.demo14",
-        "minutes_ago": 68,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000109",
-        "text": "Comentario de prueba 10",
-        "username": "cliente.demo15",
-        "minutes_ago": 69,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000110",
-        "text": "Comentario de prueba 11",
-        "username": "cliente.demo11",
-        "minutes_ago": 70,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000111",
-        "text": "Comentario de prueba 12",
-        "username": "cliente.demo12",
-        "minutes_ago": 71,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000112",
-        "text": "Comentario de prueba 13",
+        "id": "17800000000000102",
+        "text": "Lo mejor del barrio",
         "username": "cliente.demo13",
-        "minutes_ago": 72,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000113",
-        "text": "Comentario de prueba 14",
-        "username": "cliente.demo14",
-        "minutes_ago": 73,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000114",
-        "text": "Comentario de prueba 15",
-        "username": "cliente.demo15",
         "minutes_ago": 74,
         "like_count": 0
       },
       {
-        "id": "17800000000000115",
-        "text": "Comentario de prueba 16",
-        "username": "cliente.demo11",
-        "minutes_ago": 75,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000116",
-        "text": "Comentario de prueba 17",
-        "username": "cliente.demo12",
-        "minutes_ago": 76,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000117",
-        "text": "Comentario de prueba 18",
-        "username": "cliente.demo13",
-        "minutes_ago": 77,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000118",
-        "text": "Comentario de prueba 19",
+        "id": "17800000000000103",
+        "text": "¿A qué hora cierran hoy?",
         "username": "cliente.demo14",
-        "minutes_ago": 78,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000119",
-        "text": "Comentario de prueba 20",
-        "username": "cliente.demo15",
-        "minutes_ago": 79,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000120",
-        "text": "Comentario de prueba 21",
-        "username": "cliente.demo11",
-        "minutes_ago": 80,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000121",
-        "text": "Comentario de prueba 22",
-        "username": "cliente.demo12",
         "minutes_ago": 81,
         "like_count": 0
       },
       {
-        "id": "17800000000000122",
-        "text": "Comentario de prueba 23",
-        "username": "cliente.demo13",
-        "minutes_ago": 82,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000123",
-        "text": "Comentario de prueba 24",
-        "username": "cliente.demo14",
-        "minutes_ago": 83,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000124",
-        "text": "Comentario de prueba 25",
+        "id": "17800000000000104",
+        "text": "Me lo recomendaron, voy mañana",
         "username": "cliente.demo15",
-        "minutes_ago": 84,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000125",
-        "text": "Comentario de prueba 26",
-        "username": "cliente.demo11",
-        "minutes_ago": 85,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000126",
-        "text": "Comentario de prueba 27",
-        "username": "cliente.demo12",
-        "minutes_ago": 86,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000127",
-        "text": "Comentario de prueba 28",
-        "username": "cliente.demo13",
-        "minutes_ago": 87,
-        "like_count": 0
-      },
-      {
-        "id": "17800000000000128",
-        "text": "Comentario de prueba 29",
-        "username": "cliente.demo14",
         "minutes_ago": 88,
         "like_count": 0
       },
       {
-        "id": "17800000000000129",
-        "text": "Comentario de prueba 30",
+        "id": "17800000000000105",
+        "text": "¿Cuánto vale el envío?",
+        "username": "cliente.demo16",
+        "minutes_ago": 95,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000106",
+        "text": "¿El combo 2 sigue a 45.000?",
+        "username": "cliente.demo17",
+        "minutes_ago": 102,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000107",
+        "text": "Qué limpia se ve la cocina",
+        "username": "cliente.demo18",
+        "minutes_ago": 109,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000108",
+        "text": "¿Tienen sin azúcar?",
+        "username": "cliente.demo19",
+        "minutes_ago": 116,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000109",
+        "text": "Ayer pedí y llegó frío",
+        "username": "cliente.demo11",
+        "minutes_ago": 123,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000110",
+        "text": "¿Hacen pedidos para eventos?",
+        "username": "cliente.demo12",
+        "minutes_ago": 130,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000111",
+        "text": "Delicioso todo 👏",
+        "username": "cliente.demo13",
+        "minutes_ago": 137,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000112",
+        "text": "¿Dónde queda la sede nueva?",
+        "username": "cliente.demo14",
+        "minutes_ago": 144,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000113",
+        "text": "¿Puedo pagar con tarjeta?",
         "username": "cliente.demo15",
-        "minutes_ago": 89,
+        "minutes_ago": 151,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000114",
+        "text": "Siempre atienden muy bien",
+        "username": "cliente.demo16",
+        "minutes_ago": 158,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000115",
+        "text": "¿Tienen para llevar?",
+        "username": "cliente.demo17",
+        "minutes_ago": 165,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000116",
+        "text": "¿Aceptan transferencia?",
+        "username": "cliente.demo18",
+        "minutes_ago": 172,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000117",
+        "text": "Lo mejor del barrio",
+        "username": "cliente.demo19",
+        "minutes_ago": 179,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000118",
+        "text": "¿A qué hora cierran hoy?",
+        "username": "cliente.demo11",
+        "minutes_ago": 186,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000119",
+        "text": "Me lo recomendaron, voy mañana",
+        "username": "cliente.demo12",
+        "minutes_ago": 193,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000120",
+        "text": "¿Cuánto vale el envío?",
+        "username": "cliente.demo13",
+        "minutes_ago": 200,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000121",
+        "text": "¿El combo 2 sigue a 45.000?",
+        "username": "cliente.demo14",
+        "minutes_ago": 207,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000122",
+        "text": "Qué limpia se ve la cocina",
+        "username": "cliente.demo15",
+        "minutes_ago": 214,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000123",
+        "text": "¿Tienen sin azúcar?",
+        "username": "cliente.demo16",
+        "minutes_ago": 221,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000124",
+        "text": "Ayer pedí y llegó frío",
+        "username": "cliente.demo17",
+        "minutes_ago": 228,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000125",
+        "text": "¿Hacen pedidos para eventos?",
+        "username": "cliente.demo18",
+        "minutes_ago": 235,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000126",
+        "text": "Delicioso todo 👏",
+        "username": "cliente.demo19",
+        "minutes_ago": 242,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000127",
+        "text": "¿Dónde queda la sede nueva?",
+        "username": "cliente.demo11",
+        "minutes_ago": 249,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000128",
+        "text": "¿Puedo pagar con tarjeta?",
+        "username": "cliente.demo12",
+        "minutes_ago": 256,
+        "like_count": 0
+      },
+      {
+        "id": "17800000000000129",
+        "text": "Siempre atienden muy bien",
+        "username": "cliente.demo13",
+        "minutes_ago": 263,
         "like_count": 0
       }
     ]
