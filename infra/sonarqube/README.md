@@ -1,5 +1,10 @@
 # SonarQube Community Build — autoalojado, costo cero
 
+> **RETIRADO el 2026-10-24 (ADR 40, `docs/adr-40-sonar-langfuse-gestionados.md`).** El análisis
+> pasa a **SonarQube Cloud** (`https://sonarcloud.io`); `.github/workflows/sonar.yml` ya no usa
+> este servidor ni el secreto `SONAR_HOST_URL`. Esta carpeta se borra cuando SonarQube Cloud haya
+> analizado `main` una vez. Lo de abajo queda solo como referencia histórica.
+
 Servidor de análisis estático para el repo `Qualify`. Es la **Community Build** de
 SonarQube (gratuita, open source, antes llamada *Community Edition*): analiza **una sola
 rama** por proyecto y **no decora pull requests** — ambas cosas empiezan en Developer
