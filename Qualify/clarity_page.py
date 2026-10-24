@@ -1,11 +1,12 @@
 """Clarity analytics screen — the tenant's website behavior read from Microsoft
 Clarity's Data Export API.
 
-Layout, insight-first: refresh controls with the remaining daily budget → headline
-health stats → "qué atender ahora" (per-URL recommendations derived from the friction
-metrics) → one traffic-light card per friction signal → raw per-metric tables folded
-into an accordion at the end. Reads come from the cached snapshot; only the explicit
-button spends a live API request.
+RESULTADOS-3 (m-24843001), what the owner reads, in order: when the data is from and
+that it updates itself → «Últimos 3 días»: visits and people → «Qué arreglar primero»:
+only the urgent problems, each with «Avisar al equipo», then «Lo demás está bien» →
+everything else (traffic-light cards per signal, the raw tables) folded under «Ver todos
+los números». No window/breakdown selector, no refresh button, no quota: `load` reads
+Clarity on its own at most once a day.
 
 RESULTADOS-4 (m-24843002): this is a reading screen only. The connection form (project
 code + access key) lives in Configuración (`settings_page.py`); while nothing is
@@ -20,74 +21,34 @@ from __future__ import annotations
 
 import reflex as rx
 
+from . import clarity_vm as W
 from .clarity_provider import ActionItemVM, FrictionCardVM, MetricTableVM
-from .clarity_state import DAYS_CHOICES, DIMENSION_CHOICES, ClarityState
+from .clarity_state import ClarityState
 from .ui import (
     app_shell,
     callout,
     card,
     empty_state,
+    loading_spinner,
     page_body,
     page_header,
     section,
     skeleton_rows,
     stat_card,
-    tag,
     tone_badge,
 )
 from .ui import tokens as T
 
 
 def _topbar() -> rx.Component:
-    return page_header(
-        "Tu página web",
-        "Cuántas personas visitan tu página web y qué miran.",
-    )
-
-
-def _refresh_controls() -> rx.Component:
-    return rx.hstack(
-        rx.text("Últimos", size="2", color=T.TEXT_MUTED),
-        rx.select(
-            DAYS_CHOICES,
-            value=ClarityState.refresh_days,
-            on_change=ClarityState.set_refresh_days,
-            size="2",
-            width="4.5rem",
-        ),
-        rx.text("días · Ver por:", size="2", color=T.TEXT_MUTED),
-        rx.select(
-            DIMENSION_CHOICES,
-            value=ClarityState.refresh_dimension,
-            on_change=ClarityState.set_refresh_dimension,
-            size="2",
-            width="11rem",
-        ),
-        # The page's one solid action (P3): spend a live request.
-        rx.button(
-            rx.icon("refresh-cw", size=14),
-            "Actualizar desde Clarity",
-            on_click=ClarityState.refresh_from_clarity,
-            loading=ClarityState.is_refreshing,
-            disabled=~ClarityState.config.configured,
-            size="2",
-        ),
-        tone_badge(
-            ClarityState.config.remaining_budget.to_string() + " actualizaciones disponibles hoy",
-            "info",
-            icon="gauge",
-        ),
-        spacing="2",
-        align="center",
-        wrap="wrap",
-        width="100%",
-    )
+    # The literal title: `test_nav_one_name` checks menu, header and tab say the same.
+    return page_header("Tu página web", W.PAGE_SUBTITLE)
 
 
 def _stat_card(stat: list[str]) -> rx.Component:
     # `stat_card` casts a Var value with `to_string()`, which JSON-encodes a string
     # Var (quotes included); the figure is already text, so it goes in as an element.
-    return rx.box(stat_card(stat[0], rx.el.span(stat[1]), "accent"), min_width="10rem")
+    return rx.box(stat_card(stat[0], rx.el.span(stat[1]), "accent"), flex="1", min_width="9rem")
 
 
 def _friction_badge(card_vm: FrictionCardVM) -> rx.Component:
@@ -135,67 +96,69 @@ def _friction_card(card_vm: FrictionCardVM) -> rx.Component:
     )
 
 
-def _action_item(item: ActionItemVM) -> rx.Component:
+def _alert_button(item: ActionItemVM) -> rx.Component:
+    """«Avisar al equipo» — or, once sent, a calm confirmation in its place."""
+    return rx.cond(
+        ClarityState.alerted.contains(item.title),
+        tone_badge(W.WARNED_TEAM, "ok", icon="check"),
+        rx.button(
+            rx.icon("life-buoy", size=16),
+            W.WARN_TEAM,
+            on_click=ClarityState.alert_team_about(item.title),
+            loading=ClarityState.alerting == item.title,
+            disabled=ClarityState.alerting != "",
+            size="3",
+            min_height="44px",
+            variant="soft",
+        ),
+    )
+
+
+def _urgent_item(item: ActionItemVM) -> rx.Component:
     return card(
-        rx.hstack(
-            rx.cond(
-                item.severity == "alta",
-                tone_badge("Urgente", "error", icon="triangle-alert"),
-                tone_badge("Puede esperar", "warn"),
-            ),
-            rx.vstack(
-                rx.text(item.title, size="2", weight="medium"),
-                rx.text(item.detail, size="1", color=T.TEXT_MUTED),
-                spacing="1",
-                align_items="start",
-            ),
-            spacing="3",
-            align="start",
+        rx.vstack(
+            tone_badge(W.URGENT, "error", icon="triangle-alert"),
+            rx.text(item.title, size="2", weight="medium", word_break="break-word"),
+            rx.text(item.detail, size="2", color=T.TEXT_MUTED),
+            _alert_button(item),
+            spacing="2",
+            align_items="start",
             width="100%",
         ),
     )
 
 
-def _actions_section() -> rx.Component:
-    return section(
-        "Qué arreglar primero",
-        rx.cond(
-            ClarityState.has_actions,
-            rx.vstack(
-                rx.foreach(ClarityState.snapshot.actions, _action_item),
-                spacing="2",
-                width="100%",
-            ),
-            callout(
-                "En estos días nadie tuvo problemas con tu página: "
-                "no hay nada urgente que arreglar.",
-                "ok",
-            ),
-        ),
-        actions=[
-            rx.cond(
-                ClarityState.clarity_dashboard_url != "",
-                rx.link(
-                    rx.hstack(
-                        rx.text("Ver grabaciones en Clarity", size="1"),
-                        rx.icon("external-link", size=12),
-                        spacing="1",
-                        align="center",
-                    ),
-                    href=ClarityState.clarity_dashboard_url,
-                    is_external=True,
-                ),
-                rx.fragment(),
-            )
-        ],
+def _all_good() -> rx.Component:
+    return rx.hstack(
+        rx.icon("check", size=16, color=T.TEXT_MUTED),
+        rx.text(W.ALL_GOOD, size="2", color=T.TEXT_MUTED),
+        spacing="2",
+        align="center",
     )
 
 
-def _health_section() -> rx.Component:
+def _actions_section() -> rx.Component:
     return section(
-        "Cómo está tu página",
+        W.FIX_FIRST,
+        rx.cond(
+            ClarityState.has_urgent,
+            rx.vstack(
+                rx.foreach(ClarityState.snapshot.urgent, _urgent_item),
+                _all_good(),
+                spacing="2",
+                width="100%",
+            ),
+            callout(W.NOTHING_URGENT, "ok"),
+        ),
+    )
+
+
+def _visits_section() -> rx.Component:
+    """«Últimos 3 días»: visits and people — the two numbers the owner asked for."""
+    return section(
+        ClarityState.snapshot.window,
         rx.hstack(
-            rx.foreach(ClarityState.snapshot.stats, _stat_card),
+            rx.foreach(ClarityState.snapshot.headline, _stat_card),
             spacing="3",
             wrap="wrap",
             width="100%",
@@ -205,12 +168,37 @@ def _health_section() -> rx.Component:
             callout(ClarityState.snapshot.traffic_note, "info"),
             rx.fragment(),
         ),
+    )
+
+
+def _detail_numbers() -> rx.Component:
+    """Everything beyond the two headline numbers, for whoever wants to dig."""
+    return rx.vstack(
+        rx.hstack(
+            rx.foreach(ClarityState.snapshot.stats, _stat_card),
+            spacing="3",
+            wrap="wrap",
+            width="100%",
+        ),
         rx.hstack(
             rx.foreach(ClarityState.snapshot.friction, _friction_card),
             spacing="3",
             wrap="wrap",
             width="100%",
         ),
+        rx.foreach(ClarityState.snapshot.tables, _metric_table),
+        rx.cond(
+            ClarityState.clarity_dashboard_url != "",
+            rx.link(
+                W.RECORDINGS_LINK,
+                href=ClarityState.clarity_dashboard_url,
+                is_external=True,
+                size="2",
+            ),
+            rx.fragment(),
+        ),
+        spacing="3",
+        width="100%",
     )
 
 
@@ -218,17 +206,24 @@ def _snapshot_caption() -> rx.Component:
     return rx.hstack(
         rx.icon("clock", size=14, color=T.TEXT_FAINT),
         rx.text(
-            "Datos del " + ClarityState.snapshot.fetched_at + " · " + ClarityState.snapshot.window,
+            ClarityState.snapshot.date_line + " " + W.UPDATES_DAILY,
             size="1",
             color=T.TEXT_MUTED,
         ),
         rx.cond(
-            ClarityState.snapshot.dimensions != "",
-            tag(ClarityState.snapshot.dimensions),
+            ClarityState.is_refreshing,
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text(W.LOOKING_TODAY, size="1", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+                role="status",
+            ),
             rx.fragment(),
         ),
         spacing="2",
         align="center",
+        wrap="wrap",
     )
 
 
@@ -269,27 +264,9 @@ def _metric_table(table: MetricTableVM) -> rx.Component:
 def _empty_state() -> rx.Component:
     return empty_state(
         "bar-chart-3",
-        "Todavía no hay datos de tu página web",
-        "Pulsa «Actualizar desde Clarity» para traer los primeros datos. "
-        "Puedes actualizar hasta 10 veces al día; entre una y otra verás "
-        "los últimos datos guardados.",
-        # N8 (m-24842961): the step before the data — connect first, then bring it.
-        action=rx.cond(
-            ClarityState.config.configured,
-            rx.button(
-                rx.icon("refresh-cw", size=16),
-                "Actualizar desde Clarity",
-                on_click=ClarityState.refresh_from_clarity,
-                loading=ClarityState.is_refreshing,
-                variant="soft",
-                size="3",
-            ),
-            # RESULTADOS-4 (m-24843002): connecting lives in Configuración, never here.
-            rx.link(
-                rx.button("Ir a Configuración", variant="soft", size="3", min_height="44px"),
-                href="/settings#tu-pagina-web",
-            ),
-        ),
+        W.NO_DATA_TITLE,
+        W.NO_DATA_BODY,
+        action=rx.link(rx.button(W.BACK_HOME, size="3", min_height="44px"), href="/"),
     )
 
 
@@ -297,11 +274,10 @@ def _not_connected() -> rx.Component:
     """No configured project: say so and point at Configuración — never a form here."""
     return empty_state(
         "globe",
-        "Tu página web todavía no está conectada",
-        "No es obligatorio: Qualify te funciona igual solo con tus redes. Si tienes página "
-        "web, en Configuración puedes pedirle al equipo de Qualify que la conecte.",
+        W.NOT_CONNECTED_TITLE,
+        W.NOT_CONNECTED_BODY,
         action=rx.link(
-            rx.button("Ir a Configuración", size="3", min_height="44px"),
+            rx.button(W.GO_TO_SETTINGS, size="3", min_height="44px"),
             href="/settings#tu-pagina-web",
         ),
     )
@@ -312,6 +288,14 @@ def _messages() -> rx.Component:
         rx.cond(
             ClarityState.action_error != "",
             callout(ClarityState.action_error, "error"),
+            rx.fragment(),
+        ),
+        rx.cond(
+            ClarityState.token_rejected,
+            rx.link(
+                rx.button(W.GO_TO_SETTINGS, size="3", min_height="44px"),
+                href="/settings#tu-pagina-web",
+            ),
             rx.fragment(),
         ),
         rx.cond(
@@ -327,16 +311,12 @@ def _messages() -> rx.Component:
 def _snapshot_view() -> rx.Component:
     return rx.vstack(
         _snapshot_caption(),
-        _health_section(),
+        _visits_section(),
         _actions_section(),
         rx.accordion.root(
             rx.accordion.item(
-                header="Ver todos los números",
-                content=rx.vstack(
-                    rx.foreach(ClarityState.snapshot.tables, _metric_table),
-                    spacing="3",
-                    width="100%",
-                ),
+                header=W.ALL_NUMBERS,
+                content=_detail_numbers(),
                 value="raw",
             ),
             collapsible=True,
@@ -351,7 +331,6 @@ def _snapshot_view() -> rx.Component:
 
 def _body() -> rx.Component:
     return page_body(
-        rx.cond(ClarityState.config.configured, _refresh_controls(), rx.fragment()),
         _messages(),
         rx.cond(
             ClarityState.load_error != "",
@@ -362,7 +341,11 @@ def _body() -> rx.Component:
                 rx.cond(
                     ClarityState.show_not_connected,
                     _not_connected(),
-                    rx.cond(ClarityState.show_empty_state, _empty_state(), _snapshot_view()),
+                    rx.cond(
+                        ClarityState.show_empty_state,
+                        rx.cond(ClarityState.is_refreshing, skeleton_rows(3), _empty_state()),
+                        _snapshot_view(),
+                    ),
                 ),
             ),
         ),
