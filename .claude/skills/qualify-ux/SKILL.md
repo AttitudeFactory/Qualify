@@ -118,6 +118,24 @@ Every screen follows `docs/ux-guia-navegacion.md` (rules N1–N13: one name per 
 ends with the next step, everything has its own URL, no dead-end empty states, «volver» says where,
 assisted never autonomous). Cite the rule number in findings («incumple N3»).
 
+## 5c. «¿Dónde estoy?» — run it on every route you review
+
+Checked **in the browser** (`ux-designer` rule 7), on load *and* after moving by tapping the menu
+without reloading, on desktop and at 360 px:
+
+1. **Exactly one menu entry is lit** (sidebar and bottom bar agree), including sub-screens
+   (`/drafts/<id>` lights «Por aprobar»; opened from Tu semana → «Tu semana») and routes that
+   redirect. Lit = `aria-current="page"` + accent colour + weight 600, never the glass capsule alone.
+   Known trap: `router.page.path` is the route *pattern* (`/index` for «/», `/drafts/[draft_id]`);
+   compare against the browser path (`router.url.path`) — m-24852260.
+2. **Tab title = menu entry = `h1`** (N1).
+3. **Back says where and does not scroll away** (N7); the phone/browser back returns one step or
+   closes the panel, never leaves the module (N5).
+4. **In a flow: the step is visible without scrolling** («Paso N de M», M real) and the primary
+   action is in reach at the bottom (N6; `docs/ux-navegacion-pasos-2026-10-24.md`).
+
+A review that skipped this section says so in its first line.
+
 ## 6. Reporting on a PR
 
 The UX review runs **locally, before the PR is opened** (never in GitHub Actions — founder,
