@@ -670,7 +670,7 @@ def _detail_footer() -> rx.Component:
                 description="Los envíos que aún no salieron se retiran; los que ya salieron "
                 "no se pueden deshacer. Una campaña cancelada no se puede reanudar.",
                 verb="Cancelar campaña",
-                dismiss="Volver",
+                dismiss="Seguir con la campaña",
                 on_confirm=S.cancel_campaign,
             ),
             rx.fragment(),
