@@ -12,7 +12,7 @@ applies its default — POSITIONAL (`{{1}}`, `{{2}}`) — and would reject a nam
 `build_components` numbers the names in order of first appearance (a repeated name reuses
 its number) and sends `example.body_text` in that order: what Meta reviews is exactly
 what the preview showed. Templates authored in WhatsApp Manager with named parameters
-come back through «Sincronizar con Meta» untouched; `send_variables` reads both styles.
+come back through «Ver si ya las aprobaron» untouched; `send_variables` reads both styles.
 
 Meta's rules surfaced here (template-management, read 2026-10-14): name = lowercase
 letters, digits and `_`; header ≤ 60 chars, body ≤ 1024, footer ≤ 60; a body cannot start
@@ -46,13 +46,13 @@ CATEGORY_AUTHENTICATION = "authentication"
 CATEGORIES: tuple[tuple[str, str, str], ...] = (
     (
         CATEGORY_MARKETING,
-        "Marketing",
-        "Promociones, novedades y ofertas. Solo a contactos con opt-in; Meta limita "
-        "cuántas recibe cada persona.",
+        "Promociones",
+        "Promociones, novedades y ofertas. Solo a contactos que aceptaron recibir tus "
+        "mensajes; Meta limita cuántas recibe cada persona.",
     ),
     (
         CATEGORY_UTILITY,
-        "Utilidad",
+        "Avisos de pedidos",
         "Avisos sobre algo que el cliente ya pidió: su pedido, su reserva, su pago.",
     ),
     (
@@ -97,11 +97,12 @@ BUTTON_KIND_KEYS: frozenset[str] = frozenset(key for key, _ in BUTTON_KINDS)
 
 REVIEW_NOTICE = (
     "Meta revisa cada plantilla antes de que puedas usarla; la revisión puede tardar "
-    "hasta 24 h. El estado se actualiza solo, o con «Sincronizar con Meta»."
+    "hasta 24 h. El estado se actualiza solo, o con «Ver si ya las aprobaron»."
 )
 AUTHENTICATION_NOTICE = (
     "Las plantillas de autenticación usan el formato fijo de Meta (un código de un solo "
-    "uso). Créalas en WhatsApp Manager y luego pulsa «Sincronizar con Meta»."
+    "uso). Créalas desde tu cuenta de WhatsApp Business en Meta y luego pulsa «Ver si ya "
+    "las aprobaron»."
 )
 
 # --------------------------------------------------------------------------------------
@@ -135,7 +136,7 @@ _QUALITY: dict[str, tuple[str, str]] = {
 # `rejected_reason` enum (template-management «Rejection reasons»).
 _REJECTION: dict[str, str] = {
     "INVALID_FORMAT": "Formato inválido",
-    "PROMOTIONAL": "Contenido promocional en una categoría que no es Marketing",
+    "PROMOTIONAL": "Contenido promocional en un tipo que no es Promociones",
     "INCORRECT_CATEGORY": "La categoría no corresponde al contenido",
     "TAG_CONTENT_MISMATCH": "La categoría no corresponde al contenido",
     "ABUSIVE_CONTENT": "Contenido que infringe las políticas de WhatsApp",
@@ -601,4 +602,4 @@ def preview_buttons(form: TemplateForm) -> list[str]:
 def sync_report_message(listed: int, created: int, updated: int) -> str:
     if listed == 0:
         return "Meta no tiene plantillas para este número todavía."
-    return f"Sincronizado con Meta: {listed} plantillas ({created} nuevas, {updated} actualizadas)."
+    return f"Revisamos con Meta: {listed} plantillas ({created} nuevas, {updated} actualizadas)."

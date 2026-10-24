@@ -202,13 +202,16 @@ class FollowupService:
         if origin.deleted:
             raise OriginNotSupported("El mensaje se borró en Instagram.")
         if not origin.author_external_id:
-            raise OriginNotSupported("Meta no dio el identificador de quien lo escribió.")
+            raise OriginNotSupported(
+                "Instagram no nos dijo quién escribió este mensaje. "
+                "Contéstale directamente desde Instagram."
+            )
         if origin.channel == COMMENT_CHANNEL:
             return OriginKind.COMMENT
         if origin.channel == CHANNEL_DM:
             availability = self._capabilities.availability(Capability.STORY_REPLY_CONTEXT)
             if not availability.enabled:
-                raise OriginNotSupported(availability.reason)
+                raise OriginNotSupported(availability.owner_reason)
             # Only a DM Meta marked as a reply to a story (0075) is a story reply; any
             # other DM is already a conversation and is answered there.
             if not origin.is_story_reply:
@@ -265,7 +268,7 @@ class FollowupService:
             return RouteOption(route, False, None, REASON_PRIVATE_REPLY_NOT_A_COMMENT)
         availability = self._capabilities.availability(Capability.COMMENT_PRIVATE_REPLY)
         if not availability.enabled:
-            return RouteOption(route, False, None, availability.reason)
+            return RouteOption(route, False, None, availability.owner_reason)
         return _option(
             route, private_reply_window(origin.posted_at, now), REASON_PRIVATE_REPLY_EXPIRED
         )
