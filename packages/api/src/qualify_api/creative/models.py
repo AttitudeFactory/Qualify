@@ -767,6 +767,50 @@ class CreationCharge(Base):
     final_refund_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class CreativeVendorTask(Base):
+    """One asynchronous vendor task a generation created (0090, m-24852154): recorded the
+    moment the vendor accepts it, so a task that outlives our wait — BytePlus's queue, a
+    deploy killing the thread — is resumed by its id and never submitted again nor lost
+    while billed. `slot` names the call inside the generation ('video', 'clip',
+    'slide-3', 'final:<asset id>'); `context` keeps what a resumed run reuses (the copy
+    the video was made from). `status` leaves 'pending' once the run settles it."""
+
+    __tablename__ = "creative_vendor_tasks"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_creative_vendor_tasks_revision"),
+        CheckConstraint(
+            "status IN ('pending','succeeded','failed')", name="ck_creative_vendor_tasks_status"
+        ),
+        UniqueConstraint("draft_id", "revision", "slot", name="uq_creative_vendor_tasks_slot"),
+        Index("ix_creative_vendor_tasks_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    slot: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    vendor_task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    pipeline_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    context: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 # `creative_angle_sets` / `creative_angles` vocabularies (0070, ticket 24803289). Strings
 # with CHECK constraints, same contract style as `template_runs`.
 ANGLE_SET_STATUSES: tuple[str, ...] = (

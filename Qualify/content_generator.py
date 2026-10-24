@@ -30,7 +30,13 @@ from .creative_state import (
     STOCK_MAX_PICKS,
     CreativeState,
 )
-from .creative_vm import CATEGORY_OPTIONS, PHRASE_LIMIT, PHRASE_LIMIT_HINT, VIDEO_TYPE_OPTIONS
+from .creative_vm import (
+    CATEGORY_OPTIONS,
+    PHRASE_LIMIT,
+    PHRASE_LIMIT_HINT,
+    VIDEO_TYPE_OPTIONS,
+    WAITING_VENDOR_TEXT,
+)
 from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
     _CONTROL_RADIUS,
     _asset_script,
@@ -4853,10 +4859,16 @@ def _waiting() -> rx.Component:
             creep_seconds=60,
         ),
         rx.cond(
-            CreativeState.gen_timed_out,
-            callout(
-                "Está tardando más de lo normal. Revisa la publicación más tarde en Por aprobar.",
-                "warn",
+            CreativeState.gen_waiting_vendor,
+            # m-24852154: true now — the video lands in Por aprobar on its own
+            callout(WAITING_VENDOR_TEXT, "warn"),
+            rx.cond(
+                CreativeState.gen_timed_out,
+                callout(
+                    "Está tardando más de lo normal, pero sigue en preparación. Cuando "
+                    "esté lista, aparecerá en Por aprobar.",
+                    "warn",
+                ),
             ),
         ),
     )

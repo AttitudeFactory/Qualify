@@ -130,6 +130,8 @@ class MeegleNames:
     email: str = "Correo"
     person_name: str = "Nombre de la persona"
     note: str = "Nota personal"
+    # optional: absent from the type, or empty, the invitation goes out as before (PB-1)
+    instagram: str = "Cuenta de Instagram"
     # fields Qualify writes
     status: str = "Estado Qualify"
     invite_link: str = "Enlace de invitación"

@@ -55,13 +55,14 @@ Every write carries its MIME type (`MediaWrite.content_type` → `image_assets.c
 
 from __future__ import annotations
 
+import contextvars
 import io
 import json
 import logging
 import math
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -71,6 +72,7 @@ from uuid import UUID, uuid4
 from qualify_creative.adapters.byteplus_ark import (
     DEFAULT_SEEDANCE_MODEL,
     DRAFT_RESOLUTION,
+    RESUME_TASK_PARAM,
     output_dimensions,
     seedance_family,
     video_cost_usd,
@@ -110,6 +112,7 @@ from qualify_creative.providers import (
     GenerationResult,
     PricingTable,
     RenderedPrompt,
+    VendorTaskObserver,
 )
 from qualify_creative.render import (
     PostFacts,
@@ -153,6 +156,7 @@ from .draft_mode import (
     kept_raw_final,
 )
 from .pieces import PieceFile, PieceFiles
+from .vendor_tasks import VendorTaskBinding
 from .voice_access import ResolvedVoice, VoiceRefused, default_public_voice
 
 logger = logging.getLogger(__name__)
@@ -324,6 +328,9 @@ class MediaOutcome:
     template_run: TemplateRunWrite | None = None
     partial_failures: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: tuple[MediaWarning, ...] = ()
+    #: m-24852154: a vendor task outlived this run's wait. Its id is recorded
+    #: (`vendor_tasks`); the piece is still in progress — neither made nor failed.
+    pending: bool = False
 
     @property
     def spent_usd(self) -> Decimal:
@@ -357,6 +364,9 @@ class FinalOutcome:
     #: What a failed final leaves in its draft block for the next try — the paid raw
     #: 1080p file (`raw_final`), so a retry finishes it instead of paying again.
     draft_changes: Mapping[str, Any] | None = None
+    #: m-24852154: the final's task outlived this run's wait — still `rendering`, its
+    #: task recorded; a retry resumes it instead of ordering (and paying) another.
+    pending: bool = False
 
     @property
     def spent_usd(self) -> Decimal:
@@ -674,9 +684,16 @@ MODEL_NOT_OPEN_TEXT = (
 )
 FILTERED_TEXT = "La pieza no pasó el filtro de contenido. Cambia la descripción o las fotos."
 REAL_PERSON_TEXT = "No podemos usar fotos de personas reales como referencia. Usa otra foto."
-SLOW_TEXT = "Está tardando más de lo normal. Revisa Borradores en un rato."
+#: OmniHuman's wait ran out (its recovery is a later phase, m-24852154 out of scope):
+#: the piece failed and says so, without promising it will show up later.
+PRESENTER_SLOW_TEXT = (
+    "El video con presentador tardó demasiado y no se pudo terminar. Inténtalo de nuevo "
+    "en unos minutos."
+)
 RATE_LIMITED_TEXT = "Hay muchas generaciones en curso. Inténtalo en unos minutos."
 GENERIC_FAILURE_TEXT = "No se pudo generar la pieza. Inténtalo de nuevo."
+#: m-24852154: a video recovered after a long wait that the vendor failed or expired.
+RESUMED_VIDEO_FAILED_TEXT = "No se pudo terminar el video. Inténtalo de nuevo."
 BUDGET_TEXT = "Se alcanzó el límite de gasto de la marca."
 NO_TEMPLATE_TEXT = "No hay una plantilla para esta pieza."
 
@@ -695,7 +712,7 @@ _AVATAR_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("code 50510", "code 50511", "code 50512"), FILTERED_TEXT),  # content pre-filter
     (("code 50400", "code 50401", "HTTP 401", "HTTP 403"), UNAVAILABLE_TEXT),
     (("code 45000000", "permission denied"), UNAVAILABLE_TEXT),
-    (("OmniHumanTimeout",), SLOW_TEXT),
+    (("OmniHumanTimeout",), PRESENTER_SLOW_TEXT),
     (("concurrency", "HTTP 429", "code 50429"), RATE_LIMITED_TEXT),
     (("provider not registered",), UNAVAILABLE_TEXT),
 )
@@ -721,7 +738,6 @@ _ARK_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("AccountOverdue", "ServiceOverdue", "InvalidAccountStatus"), UNAVAILABLE_TEXT),
     (("PrivacyInformation",), REAL_PERSON_TEXT),
     (("SensitiveContentDetected",), FILTERED_TEXT),
-    (("ArkTaskTimeout",), SLOW_TEXT),
     (("RateLimit", "HTTP 429"), RATE_LIMITED_TEXT),
     (("provider not registered",), UNAVAILABLE_TEXT),
 )
@@ -1000,6 +1016,47 @@ def _http_download(url: str) -> bytes:
             return bytes(buffer)
 
 
+class _MediaPending(Exception):
+    """A Seedance task outlived the wait (`ArkTaskTimeout`, m-24852154): its id was
+    recorded when ModelArk accepted it, and the run stops here without failing — the
+    piece stays in progress and a later run resumes the task."""
+
+
+@dataclass
+class _TaskRun:
+    """This thread's vendor-task binding for one `produce`/`finalize` run, and how many
+    Seedance tasks it has asked for so far (the slot of the next one)."""
+
+    tasks: VendorTaskBinding
+    calls: int = 0
+
+    def next_slot(self) -> str:
+        self.calls += 1
+        return f"{SEEDANCE}-{self.calls}"
+
+
+#: Set by `produce`/`finalize` for the length of one run, in its own thread (the
+#: dispatcher runs each generation in a thread of its own): `_run` reads it, so no call
+#: site down the pipeline has to carry it.
+_TASK_RUN: contextvars.ContextVar[_TaskRun | None] = contextvars.ContextVar(
+    "creative_vendor_tasks", default=None
+)
+
+
+def _task_verdict(hops: Sequence[Any], *, succeeded: bool) -> str:
+    """What a Seedance call says about its task: "succeeded", "failed" (ModelArk ended
+    it `failed`/`cancelled`/`expired`, or no longer knows it), "pending" (the wait ran
+    out — the task goes on), or "" (nothing about the task: a key, a budget block…)."""
+    if succeeded:
+        return "succeeded"
+    reasons = [str(getattr(h, "reason", "") or "") for h in hops]
+    if any("ArkTaskTimeout" in r for r in reasons):
+        return "pending"
+    if any("ArkTaskFailed" in r or "HTTP 404" in r for r in reasons):
+        return "failed"
+    return ""
+
+
 class _MediaFailed(Exception):
     """`detail` is what the operator reads; `raw` (the vendor's / service's own text,
     when there is one) only reaches the log."""
@@ -1189,11 +1246,31 @@ class MediaProducer:
         budget: BudgetContext,
         revision: int = 1,
         heartbeat: Callable[[], None] | None = None,
+        vendor_tasks: VendorTaskBinding | None = None,
     ) -> MediaOutcome:
         """Never raises for a vendor or file problem: the outcome carries the failure,
         and the usage of whatever was already paid for. `revision` is the draft's — what
         keeps each generation's R2 copy apart. `heartbeat` is called after every file
-        kept (m-24852156: the reaper's sign of life)."""
+        kept (m-24852156: the reaper's sign of life). `vendor_tasks` (m-24852154) records
+        every Seedance task as ModelArk accepts it and resumes the ones this generation
+        already created; a task that outlives the wait makes the outcome `pending`."""
+        token = _TASK_RUN.set(_TaskRun(vendor_tasks) if vendor_tasks is not None else None)
+        try:
+            return self._produce(tenant_id, draft_id, brief, kit, copy, budget, revision, heartbeat)
+        finally:
+            _TASK_RUN.reset(token)
+
+    def _produce(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        copy: CopyPayload,
+        budget: BudgetContext,
+        revision: int,
+        heartbeat: Callable[[], None] | None,
+    ) -> MediaOutcome:
         usage: list[MediaUsage] = []
         malformed, foreign = _key_problems(tenant_id, brief, kit)
         if malformed:
@@ -1274,6 +1351,9 @@ class MediaProducer:
                 media = self._clip(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             else:
                 media = ()
+        except _MediaPending as exc:
+            logger.warning("creative media for draft %s waits for its vendor: %s", draft_id, exc)
+            return MediaOutcome(usage=tuple(usage), pending=True, warnings=tuple(warnings))
         except _MediaFailed as exc:
             logger.warning(
                 "creative media for draft %s failed: %s", draft_id, exc.raw or exc.detail
@@ -1308,6 +1388,7 @@ class MediaProducer:
         budget: BudgetContext,
         revision: int,
         on_raw_kept: RawFinalKept | None = None,
+        vendor_tasks: VendorTaskBinding | None = None,
     ) -> FinalOutcome:
         """The 1080p final of one draft video (m-24820142), finished the way the draft
         was, as the row that replaces it. `asset` is the draft's `image_assets` row
@@ -1329,6 +1410,7 @@ class MediaProducer:
                 failure=FailureReason.INVALID_PARAMETERS.value, detail=DRAFT_EXPIRED_TEXT
             )
         kept: dict[str, Any] = {}
+        token = _TASK_RUN.set(_TaskRun(vendor_tasks) if vendor_tasks is not None else None)
         try:
             media = self._final_video(
                 tenant_id,
@@ -1343,6 +1425,9 @@ class MediaProducer:
                 kept,
                 on_raw_kept,
             )
+        except _MediaPending as exc:
+            logger.warning("final of draft %s waits for its vendor: %s", draft_id, exc)
+            return FinalOutcome(usage=tuple(usage), pending=True, draft_changes=kept or None)
         except _MediaFailed as exc:
             logger.warning("final of draft %s failed: %s", draft_id, exc.raw or exc.detail)
             return FinalOutcome(
@@ -1359,6 +1444,8 @@ class MediaProducer:
                 detail=ark_failure_text(f"{type(exc).__name__}: {exc}"),
                 draft_changes=kept or None,
             )
+        finally:
+            _TASK_RUN.reset(token)
         # the raw file rides along on success too: when writing the final in place fails,
         # the failure the service writes instead still keeps it for the retry
         return FinalOutcome(media=media, usage=tuple(usage), draft_changes=kept or None)
@@ -1804,6 +1891,41 @@ class MediaProducer:
             logger.info("brand name unreadable: %s", type(exc).__name__)
             return ""
 
+    def await_vendor_tasks(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        tasks: Sequence[tuple[str, str, str]],
+        budget: BudgetContext,
+        on_task: Callable[[str], VendorTaskObserver] | None = None,
+    ) -> tuple[str, dict[str, str]]:
+        """Wait for tasks a generation already created — `(slot, task id, model)` — before
+        its resumed run rebuilds the piece (m-24852154): nothing is paid again while
+        they are still in BytePlus's queue. Returns ("pending" | "done", the verdict
+        per slot: "succeeded" / "failed"). One task still waiting → "pending" at once."""
+        verdicts: dict[str, str] = {}
+        for slot, task_id, model in tasks:
+            request = GenerationRequest(
+                task=GenerationTask.SCENE_VIDEO,
+                rendered_prompt=RenderedPrompt("", "", ""),
+                # the prompt only lets the estimate parse; nothing is created
+                params={"model": model, "prompt": "resume", RESUME_TASK_PARAM: task_id},
+                observer=on_task(slot) if on_task is not None else None,
+            )
+            outcome = self._router.run(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                chain=(SEEDANCE,),
+                request=request,
+                budget=budget,
+            )
+            verdict = _task_verdict(outcome.hops, succeeded=outcome.result is not None)
+            if verdict == "pending":
+                return "pending", verdicts
+            verdicts[slot] = verdict or "failed"
+        return "done", verdicts
+
     def _remaining(self, budget: BudgetContext, usage: list[MediaUsage]) -> BudgetContext:
         spent = sum((u.cost_usd for u in usage), Decimal(0))
         return BudgetContext(remaining_usd=budget.remaining_usd - spent, hard_stop=budget.hard_stop)
@@ -1820,7 +1942,23 @@ class MediaProducer:
         failure_text: Callable[[str], str] | None = None,
     ) -> Any:
         """One vendor call through the router (key + budget pre-flight); the failure in
-        the operator's words (`failure_text`, ModelArk's by default)."""
+        the operator's words (`failure_text`, ModelArk's by default).
+
+        A Seedance call inside a run with vendor tasks (m-24852154) takes its slot: the
+        task this generation already created for it is resumed, never created again; a
+        new one is recorded the moment ModelArk accepts it; one that outlives the wait
+        raises `_MediaPending`, and the vendor's own verdict settles the slot."""
+        run = _TASK_RUN.get() if link == SEEDANCE else None
+        slot = run.next_slot() if run is not None else ""
+        if run is not None:
+            params = dict(request.params)
+            resume = run.tasks.resume_id(slot)
+            if resume:
+                params[RESUME_TASK_PARAM] = resume
+            model = str(params.get("model") or self._seedance_model)
+            request = replace(
+                request, params=params, observer=run.tasks.observer(slot, SEEDANCE, model)
+            )
         outcome = self._router.run(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -1828,6 +1966,12 @@ class MediaProducer:
             request=request,
             budget=self._remaining(budget, usage),
         )
+        if run is not None:
+            verdict = _task_verdict(outcome.hops, succeeded=outcome.result is not None)
+            if verdict == "pending":
+                raise _MediaPending("; ".join(h.reason or h.action.value for h in outcome.hops))
+            if verdict:
+                run.tasks.settle(slot, verdict)
         if outcome.result is None:
             blocked = any(h.action is HopAction.BUDGET_BLOCKED for h in outcome.hops)
             detail = "; ".join(h.reason or h.action.value for h in outcome.hops)
