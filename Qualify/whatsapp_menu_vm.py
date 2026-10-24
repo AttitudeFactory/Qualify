@@ -1189,7 +1189,7 @@ PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de responder y este toma su
 PUBLISH_CONFIRM_PAUSED = (
     "Tu menú está en pausa: después de publicar, tócalo en «Reanudar el menú» para que responda."
 )
-NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para el mostrador"
+NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para tu local o tus redes"
 # Publishing keeps the pause (the backend does not touch it): «listo» would be false.
 PUBLISHED_BUT_PAUSED = "Publicamos el menú, pero está en pausa: no responde hasta que lo reanudes."
 RESUME_BUTTON = "Reanudar el menú"

@@ -52,7 +52,7 @@ PRINTED_CTA_MAX = 32
 #: `byteplus_speech.MAX_TEXT_CHARS`), so a 60-second piece never gets near its limit.
 SCRIPT_MAX = 2000
 #: Target lengths a video / script can be asked for, in seconds.
-DURATIONS_SECONDS = (15, 30, 45, 60)
+DURATIONS_SECONDS = (5, 10, 15, 30, 45, 60)
 #: Product images per brief — a carousel is at most 10 slides on Instagram.
 MAX_PRODUCT_IMAGES = 10
 #: Brand Kit elements (not the logo) one piece may draw on (§ request 2026-10-06).
@@ -398,11 +398,17 @@ class CarouselSlide(BaseModel):
     #: videos solo para referencia»): a video whose camera and rhythm Seedance follows
     #: — never shown itself. Upload-store, piece or stock key.
     reference_video_key: str | None = None
+    #: An animated slide with the sound Seedance makes for it (§ request 2026-10-23:
+    #: «generar el clip con audio, igual la galería») — ambience and voices, kept through
+    #: the fitter and the draft's final. Off: silent, as every slide was before.
+    audio: bool = False
 
     @model_validator(mode="after")
     def _source_has_its_inputs(self) -> CarouselSlide:
         if self.reference_video_key and self.source is not SlideSource.ANIMATED:
             raise ValueError("only an animated slide takes a reference video")
+        if self.audio and self.source is not SlideSource.ANIMATED:
+            raise ValueError("only an animated slide has sound of its own")
         if self.source is SlideSource.EXISTING:
             if not self.object_key:
                 raise ValueError("an existing slide needs the piece's file")
@@ -522,6 +528,10 @@ class MediaInputs(BaseModel):
     clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
+    #: Clip (§ request 2026-10-23): the sound Seedance makes with the video. On by
+    #: default — what every clip had before the switch; a model without audio (1.0)
+    #: makes it silent either way.
+    clip_audio: bool = True
 
     @property
     def clip_has_references(self) -> bool:

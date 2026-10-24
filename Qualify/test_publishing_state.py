@@ -551,7 +551,7 @@ def test_carousel_stage_label_names_the_first_unfinished_child() -> None:
         ChildStatusVM(position=0, status="finished"),
         ChildStatusVM(position=1, status="processing"),
     ]
-    assert state.carousel_stage_label == "Procesando video 2 de 2 en Meta"
+    assert state.carousel_stage_label == "Preparando video 2 de 2 en Instagram"
 
 
 def test_carousel_stage_label_falls_back_once_every_child_is_finished() -> None:

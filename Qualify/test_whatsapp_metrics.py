@@ -106,7 +106,7 @@ def test_chart_geometry() -> None:
     ]
     assert vm.bars[0].tooltip == "1 oct: 100 enviados · 90 entregados"
     assert vm.delivery_rate == "93 %" and vm.has_traffic
-    assert vm.costs[0].category == "Marketing" and vm.cost_total == "USD 1,68"
+    assert vm.costs[0].category == "Promociones" and vm.cost_total == "USD 1,68"
 
 
 async def test_conversation_metrics_provider() -> None:

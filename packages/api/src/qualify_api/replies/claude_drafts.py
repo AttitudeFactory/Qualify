@@ -12,7 +12,8 @@ only user content. Nothing but the model's text answer leaves this class.
 
 Model choice (`claude-api` skill, 2026-10): `claude-haiku-5-5` at $0.10 / $0.50 per
 million input/output tokens. Haiku 5.5 thinks by default; `effort: "low"` keeps a one-
-or two-sentence reply cheap. Cost per call is logged until QUA-144 gives it a home.
+or two-sentence reply cheap. Cost per call is logged and kept in `last_stats`, which
+the service stores on the draft (ATENDER-4a, m-24848532).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Any
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    CallStats,
     ClaudeToolError,
     ClientFactory,
     Meter,
@@ -58,6 +60,10 @@ class ClaudeReplyDraftProvider:
         self._client_factory = client_factory
         self._api_key = api_key
         self._client: Any = None
+        #: Model, tokens and cost of the last `draft_reply` — what the service stores on
+        #: the draft (ATENDER-4a, m-24848532: every draft records model, prompt version
+        #: and cost). None before the first call or when the call failed.
+        self.last_stats: CallStats | None = None
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -68,6 +74,7 @@ class ClaudeReplyDraftProvider:
     def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
         from qualify_models.providers import REPLY_SYSTEM_PROMPT  # noqa: PLC0415
 
+        self.last_stats = None
         business_line = f" El negocio se llama {business_name}." if business_name else ""
         kwargs: dict[str, Any] = {
             "model": self._config.model_id,
@@ -82,6 +89,7 @@ class ClaudeReplyDraftProvider:
         meter = Meter(self._config)
         meter.add(response)
         stats = meter.stats()
+        self.last_stats = stats
         logger.info(
             "reply_draft model=%s input_tokens=%d output_tokens=%d cost_usd=%.6f",
             stats.model_revision or stats.model_id,

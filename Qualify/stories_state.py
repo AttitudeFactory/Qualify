@@ -61,26 +61,32 @@ from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
-_NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
+_NO_TENANT = "No encontramos tu negocio en esta sesión. Cierra sesión y vuelve a entrar."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
-_NO_FILE = "Sube el video o la imagen de la Story antes de publicar."
+_NO_FILE = "Sube el video o la imagen de la historia antes de publicar."
 _UNSUPPORTED_FORMAT = (
-    "Formato no soportado. Usa MP4 o MOV para video, o JPG/JPEG para imagen de la Story."
+    "Ese archivo no se puede publicar como historia. Sube una foto o un video tal como salen "
+    "de la cámara de tu celular."
 )
 # Same wording `publishing_state.py` uses for its own magic-byte rejection.
 _UNSUPPORTED_IMAGE_FORMAT = (
-    "El archivo no es un JPEG válido. Solo se aceptan imágenes JPEG (.jpg/.jpeg) — "
-    "PNG, WebP, GIF y HEIC no son compatibles con Instagram."
+    "Esta foto no se puede usar tal cual. Desde tu celular, compártela como “JPG” o "
+    "haz una captura de pantalla y súbela."
 )
 _BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro archivo."
-_NOT_CONFIGURED = "El almacenamiento (R2) todavía no está configurado en este entorno."
+_NOT_CONFIGURED = (
+    "No podemos subir archivos en este momento. Inténtalo en unos minutos; si sigue, escríbenos."
+)
 _TOO_LARGE = "El video supera el tamaño máximo permitido (300 MB)."
 _IMAGE_TOO_LARGE = "La imagen supera el tamaño máximo permitido (8 MB)."
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
-_POLL_FAILED = "No se pudo consultar el estado de la publicación."
-_WAIT_EXPLANATION = "Meta está procesando la Story. Esto puede tardar varios minutos."
+_POLL_FAILED = (
+    "No sabemos todavía si se publicó. Revisa tu Instagram en unos minutos antes de "
+    "volver a intentarlo, para no publicarlo dos veces."
+)
+_WAIT_EXPLANATION = "Instagram está preparando tu historia. Puede tardar unos minutos."
 
 _MP4_CONTENT_TYPE = "video/mp4"
 _MOV_CONTENT_TYPE = "video/quicktime"
@@ -98,12 +104,12 @@ _RESULT_TOAST_DURATION_MS = 6000
 
 
 def _success_toast() -> rx.event.EventSpec:
-    return rx.toast.success("¡Story publicada en Instagram!", duration=_RESULT_TOAST_DURATION_MS)
+    return rx.toast.success("¡Historia publicada en Instagram!", duration=_RESULT_TOAST_DURATION_MS)
 
 
 def _failure_toast(message: str) -> rx.event.EventSpec:
     return rx.toast.error(
-        "No se pudo publicar la Story", description=message, duration=_RESULT_TOAST_DURATION_MS
+        "No se pudo publicar la historia", description=message, duration=_RESULT_TOAST_DURATION_MS
     )
 
 
@@ -315,7 +321,7 @@ class StoriesState(rx.State):
                 "Prueba desde Chrome (Android) o Safari (iPhone)."
             )
         if result == "no_file":
-            return rx.toast.error("Sube el video o la imagen de la Story antes de compartir.")
+            return rx.toast.error("Sube el video o la imagen de la historia antes de compartir.")
         if result == "cannot_share_file":
             return rx.toast.error(
                 "Este navegador no puede compartir este archivo (formato o tamaño no soportado)."

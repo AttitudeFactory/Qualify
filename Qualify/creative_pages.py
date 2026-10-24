@@ -22,6 +22,8 @@ from .creative_vm import (
     AI_LABEL_HINT,
     HARD_RULES_HINT,
     PURGED_TEXT,
+    VIDEO_DRAFT,
+    VIDEO_FINAL,
     CopyVariantVM,
     GapVM,
     MediaVM,
@@ -52,6 +54,7 @@ from .ui import (
     loading_spinner,
     page_body,
     page_header,
+    signal_pill,
     skeleton_rows,
     tone_badge,
 )
@@ -1382,6 +1385,44 @@ def _retention_notice() -> rx.Component:
     )
 
 
+def _video_draft_notice() -> rx.Component:
+    """m-24820142: a Seedance 2.5 piece's video is a 480p draft until its approval makes
+    the 1080p final — the badge says which, the note what happens, and a failed final
+    offers to try again."""
+    video = CreativeState.draft.video_draft
+
+    def toned(tone: str) -> rx.Component:
+        # the pill and the callout take their tone as a plain string
+        return rx.hstack(
+            signal_pill(video.badge, tone),
+            rx.box(callout(video.note, tone), flex="1"),
+            align="center",
+            spacing="3",
+            flex="1",
+        )
+
+    return rx.cond(
+        (video.state != "") & (video.state != VIDEO_FINAL),
+        rx.hstack(
+            rx.match(video.tone, ("error", toned("error")), ("warn", toned("warn")), toned("info")),
+            rx.cond(
+                video.can_retry,
+                rx.button(
+                    rx.icon("refresh-cw", size=15),
+                    "Reintentar video final",
+                    variant="soft",
+                    size="2",
+                    on_click=CreativeState.retry_final_render,
+                ),
+            ),
+            align="center",
+            spacing="3",
+            width="100%",
+            wrap="wrap",
+        ),
+    )
+
+
 def _purged_media() -> rx.Component:
     """m-24828907: the files left R2 after 3 months; the row, copy and history stay."""
     return rx.center(
@@ -2063,8 +2104,8 @@ def _decision_card(
     *,
     tone: str,
     icon: str,
-    title: str,
-    text: str,
+    title: str | rx.Var,
+    text: str | rx.Var,
     button: rx.Component,
 ) -> rx.Component:
     """One way to decide on the draft: what it does, in a sentence, right above the
@@ -2157,8 +2198,9 @@ _TAP_MIN_HEIGHT = "2.75rem"
 def _approved_next() -> rx.Component:
     """After approving (m-24842978, N3): say plainly that it is not out yet and take the
     owner straight to choosing when it goes out — Tu semana opens on this publication.
-    If it cannot go out yet, say what is missing instead of offering that way."""
-    ready = CreativeState.approved_ready
+    If it cannot go out yet, say what is missing instead of offering that way — its
+    1080p final still being made or failed included (m-24820142)."""
+    ready = CreativeState.approved_can_schedule
     return _card(
         rx.hstack(
             rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
@@ -2173,7 +2215,7 @@ def _approved_next() -> rx.Component:
             align="center",
             spacing="2",
         ),
-        rx.cond(~ready, readiness_note(CreativeState.approved_note)),
+        rx.cond(~ready, readiness_note(CreativeState.approved_hold_note)),
         rx.flex(
             rx.cond(
                 ready,
@@ -2269,11 +2311,17 @@ def _decision_bar_or_nothing() -> rx.Component:
                 _decision_card(
                     tone="green",
                     icon="circle-check",
-                    title="Aprobar",
-                    text="Te quedas con esta versión. Después eliges el día y la hora en que sale.",
+                    title=CreativeState.approve_label,
+                    text=rx.cond(
+                        draft.video_draft.state == VIDEO_DRAFT,
+                        "Te quedas con esta versión y generamos el video final a 1080p "
+                        "desde este borrador. Consume créditos. Cuando esté listo eliges "
+                        "el día y la hora en que sale.",
+                        "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
+                    ),
                     button=rx.button(
                         rx.icon("circle-check", size=15),
-                        "Aprobar",
+                        CreativeState.approve_label,
                         size="2",
                         width="100%",
                         min_height=_TAP_MIN_HEIGHT,
@@ -2466,6 +2514,7 @@ def draft_detail_index() -> rx.Component:
                         ),
                         _campaign_field(),
                         _retention_notice(),
+                        _video_draft_notice(),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),

@@ -23,6 +23,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -32,6 +33,7 @@ from .auth_state import AuthState
 from .catalog_provider import (
     CatalogError,
     add_media,
+    business_currency,
     create_product,
     deactivate_product,
     list_products,
@@ -39,7 +41,20 @@ from .catalog_provider import (
     reorder_media,
     update_product,
 )
-from .catalog_vm import ProductVM, currency_from_choice, parse_price_input
+from .catalog_vm import (
+    NEW_PRODUCT_STEP_TITLES,
+    NEW_PRODUCT_STEPS,
+    STEP_DONE,
+    STEP_NAME,
+    STEP_PHOTO,
+    ProductVM,
+    business_default_currency,
+    currency_from_choice,
+    parse_price_input,
+    rejection_message,
+    step_counter,
+    steps_done,
+)
 from .creative_provider import acting_user_id, default_brand_id
 from .tenant import tenant_uuid
 
@@ -51,8 +66,6 @@ _DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
 _PRODUCT_GONE = "Ese producto ya no está en tu catálogo. Actualiza la página."
-_CREATED = "Producto creado. Tócalo para editarlo o subirle fotos."
-_CREATED_WITH_FILES = "Producto creado. Guardando sus fotos…"
 _SAVED = "Cambios guardados."
 _ORDER_SAVED = "Orden guardado: la primera foto es la principal."
 _DELETED = "Producto eliminado."
@@ -63,8 +76,9 @@ _TOAST_MS = 4000
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
 _STAGING = "catalog_staging"
 #: A parked file older than this was orphaned (a closed tab, a crashed ingest): the next
-#: `load_catalog` deletes it.
-_STAGING_TTL_S = 6 * 60 * 60
+#: `load_catalog` deletes it. A day, not hours: closing «Agregar producto» halfway keeps
+#: the photos already chosen (N6), so a reload must not sweep them from under the form.
+_STAGING_TTL_S = 24 * 60 * 60
 
 
 class CatalogState(rx.State):
@@ -97,6 +111,20 @@ class CatalogState(rx.State):
     #: like, which a browser cannot draw before the ingest converts them).
     new_previews: list[dict[str, str]] = []
     _new_pending: list[list[str]] = []
+    #: m-24842974 — «Agregar producto» is three steps in a drawer: the photo
+    #: (`STEP_PHOTO`), the name and price (`STEP_NAME`), and «Listo» (`STEP_DONE`).
+    #: Going back never clears what was typed: the fields live here, not in the step.
+    new_step: int = STEP_PHOTO
+    #: «Más detalles» (category and description) unfolded in the name step.
+    new_details_open: bool = False
+    #: A file the photo step refused, in the owner's words (formats only appear here).
+    new_media_error: str = ""
+    #: The product the «Listo» step talks about.
+    created_product_id: str = ""
+    created_name: str = ""
+    created_has_media: bool = False
+    #: The business's own currency (`tenants.currency`): what a new product starts with.
+    _business_currency: str = ""
 
     # -- the selected product's editor -------------------------------------------------
     selected_id: str = ""
@@ -146,6 +174,39 @@ class CatalogState(rx.State):
     def product_count_label(self) -> str:
         n = len(self.products)
         return "1 producto" if n == 1 else f"{n} productos"
+
+    @rx.var
+    def new_step_counter(self) -> str:
+        return step_counter(self.new_step)
+
+    @rx.var
+    def new_step_title(self) -> str:
+        return NEW_PRODUCT_STEP_TITLES[min(max(self.new_step, 0), len(NEW_PRODUCT_STEPS) - 1)]
+
+    @rx.var
+    def new_steps_done(self) -> list[bool]:
+        return steps_done(self.new_step)
+
+    @rx.var
+    def created_href(self) -> str:
+        """Where «Crear publicación» goes: Crear with this product already chosen."""
+        return f"/create?producto={self.created_product_id}" if self.created_product_id else ""
+
+    @rx.var
+    def created_ready(self) -> bool:
+        """«Crear publicación» is live only once the new product's photos are in: saved
+        with files, nothing still uploading or queued, and no upload failure."""
+        return (
+            self.created_has_media
+            and not self.uploading
+            and self.upload_total == 0
+            and self.upload_error == ""
+        )
+
+    @rx.var
+    def created_preparing(self) -> bool:
+        """The new product's photos are still on their way: «Preparando tu foto…»."""
+        return self.created_has_media and (self.uploading or self.upload_total > 0)
 
     @rx.var
     def upload_progress(self) -> int:
@@ -203,6 +264,7 @@ class CatalogState(rx.State):
         await asyncio.to_thread(_sweep_staging, tenant_id)
         try:
             products = await asyncio.to_thread(list_products, tenant_id, brand_id)
+            currency = await asyncio.to_thread(business_currency, tenant_id)
         except SQLAlchemyError as exc:
             logger.error("catalog load failed: %s", type(exc).__name__)
             async with self:
@@ -212,6 +274,9 @@ class CatalogState(rx.State):
         async with self:
             self.products = list(products)
             self.loading = False
+            self._business_currency = business_default_currency(currency)
+            if not self.form_open and not self.new_price:
+                self.new_currency = self._business_currency
             if self.selected_id and self.selected is None:
                 self.selected_id = ""
 
@@ -236,12 +301,99 @@ class CatalogState(rx.State):
     def open_form(self) -> None:
         self.form_open = True
         self.form_error = ""
+        self.new_media_error = ""
+        if self.new_step == STEP_DONE:
+            self._reset_new_form()
+        if not self.new_price and not self.new_currency:
+            self.new_currency = self._business_currency
 
     @rx.event
     def close_form(self) -> None:
         self.form_open = False
         self.form_error = ""
+        self.new_media_error = ""
+        if self.new_step == STEP_DONE:
+            self._drop_new_files()
+            self._reset_new_form()
+        else:
+            # N6: what was typed AND the photos already chosen stay for the next time
+            # the form opens (the photos are the hardest part to repeat); the step does not
+            self.new_step = STEP_PHOTO
+
+    @rx.event
+    def upload_photo_for_created(self) -> None:
+        """«Subirle una foto» from «Listo»: close the drawer and open the new product's
+        editor, where its photos go (on a phone the list is hidden behind the drawer)."""
+        product_id = self.created_product_id
+        self.close_form()
+        if product_id:
+            self.selected_id = ""
+            self.select_product(product_id)
+
+    @rx.event
+    def set_form_open(self, value: bool) -> None:
+        """The drawer's own close (Esc, the ×, the backdrop)."""
+        if value:
+            self.open_form()
+        else:
+            self.close_form()
+
+    def _reset_new_form(self) -> None:
+        self.new_step = STEP_PHOTO
+        self.new_details_open = False
+        self.new_name = ""
+        self.new_description = ""
+        self.new_category = ""
+        self.new_price = ""
+        self.new_currency = self._business_currency
+        self.form_error = ""
+        self.new_media_error = ""
+        self.created_product_id = ""
+        self.created_name = ""
+        self.created_has_media = False
+
+    @rx.event
+    def add_another_product(self) -> None:
+        """«Agregar otro producto» from the «Listo» step: a clean first step."""
         self._drop_new_files()
+        self._reset_new_form()
+        self.form_open = True
+
+    @rx.event
+    def go_to_new_step(self, index: int) -> None:
+        """The stepper: back to the photo or forward to the name — never away from
+        «Listo» once the product exists, and never to «Listo» before it does."""
+        index = int(index)
+        if self.new_step == STEP_DONE or index not in (STEP_PHOTO, STEP_NAME):
+            return
+        self.new_step = index
+        self.form_error = ""
+
+    @rx.event
+    def next_new_step(self) -> None:
+        """«Siguiente» and «Sin foto por ahora»: the photo step is never a gate."""
+        if self.new_step == STEP_PHOTO:
+            self.new_step = STEP_NAME
+            self.new_media_error = ""
+
+    @rx.event
+    def back_new_step(self) -> None:
+        """«Atrás» (N6): back to the photo with every typed field kept."""
+        if self.new_step == STEP_NAME:
+            self.new_step = STEP_PHOTO
+            self.form_error = ""
+
+    @rx.event
+    def toggle_new_details(self) -> None:
+        self.new_details_open = not self.new_details_open
+
+    @rx.event
+    def new_media_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        self.new_media_error = rejection_message(rejected)
+
+    @rx.event
+    def media_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        self.upload_error = rejection_message(rejected)
 
     def _drop_new_files(self) -> None:
         for path_str, _ in self._new_pending:
@@ -261,6 +413,7 @@ class CatalogState(rx.State):
     async def handle_new_media(self, files: list[rx.UploadFile]) -> None:
         """The form's own drop zone: the files wait (FOREGROUND, parked like the
         editor's) until «Crear producto», then go through the same ingest."""
+        self.new_media_error = ""
         parked = await self._park(files)
         if parked:
             self._new_pending = [*self._new_pending, *parked]
@@ -353,19 +506,24 @@ class CatalogState(rx.State):
         await self._refresh(tenant_id, brand_id)
         async with self:
             self.saving = False
-            self.form_open = False
+            # m-24842974: the drawer stays open on «Listo», which says what happened and
+            # offers the two next moves; the typed fields are spent.
+            self.new_step = STEP_DONE
+            self.created_product_id = str(product_id)
+            self.created_name = name.strip()
+            self.new_details_open = False
             self.new_name = ""
             self.new_description = ""
             self.new_category = ""
             self.new_price = ""
-            self.new_currency = ""
+            self.new_currency = self._business_currency
             files = self._new_pending
+            self.created_has_media = bool(files)
             self.new_previews = []
             # The editor does NOT open on the new product (request 2026-10-22): only its
             # card shows, and a tap on the card opens the editor. The files dropped in
-            # the form still follow it — their progress shows at page level.
+            # the form still follow it — their progress shows in «Listo».
             self.selected_id = ""
-            created = _CREATED_WITH_FILES if files else _CREATED
             self._new_pending = []
             self.new_files = []
             if files:
@@ -376,8 +534,6 @@ class CatalogState(rx.State):
                 self.upload_done = 0
                 self.upload_total = len(self._pending)
                 self.upload_error = ""
-        # a transient confirmation, bottom right (request 2026-10-22: not a band up top)
-        yield rx.toast.success(created, duration=_TOAST_MS)
         if files:
             yield CatalogState.ingest_pending
 

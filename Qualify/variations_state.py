@@ -35,6 +35,7 @@ import reflex as rx
 
 from .auth_state import AuthState
 from .creative_provider import acting_user_id, catalog_products, default_brand_id
+from .creative_vm import approval_notice
 from .tenant import tenant_uuid
 from .variations_provider import (
     approve_variation_angle,
@@ -74,6 +75,11 @@ _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."
 _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."
 _APPROVED = "Pieza aprobada."
+#: m-24820142: where the approved piece is followed when its 1080p final is being made
+#: or could not be ordered (`creative_vm.approval_notice`).
+_APPROVED_ELSEWHERE = "Ábrela en Por aprobar"
+#: `approval_notice` kinds → this screen's toast tones.
+_NOTICE_TONES = {"success": "ok", "error": "error", "info": "info"}
 _RETRYING = "Reintentando esa pieza."
 _REGENERATING = "Generando otra toma de ese escenario."
 _EDITED = "Propuesta guardada. La próxima pieza de ese ángulo saldrá del nuevo texto."
@@ -717,7 +723,7 @@ class VariationsState(rx.State):
                 self.error = _NO_SESSION
             return
         try:
-            await asyncio.to_thread(approve_variation_angle, tenant_id, angle_id, user_id)
+            video = await asyncio.to_thread(approve_variation_angle, tenant_id, angle_id, user_id)
         except Exception as exc:  # noqa: BLE001 — turned into words for the operator
             logger.warning("variations: approval refused: %s", type(exc).__name__)
             async with self:
@@ -728,7 +734,10 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
-        yield _toast(_APPROVED, "ok")
+        # the piece's own notice (m-24820142): its final renders, could not be ordered, or
+        # there is none to wait for — the same choice every screen that approves makes
+        notice = approval_notice(video, approved=_APPROVED, elsewhere=_APPROVED_ELSEWHERE)
+        yield _toast(notice.text, _NOTICE_TONES.get(notice.kind, "info"))
 
     @rx.event(background=True)
     async def regenerate_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:
