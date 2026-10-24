@@ -39,6 +39,11 @@ ROOT=${QUALIFY_REMOTE_ROOT:-/opt/qualify}
 ENV_FILE=$ROOT/.env.prod
 IMAGE_PREFIX=${QUALIFY_IMAGE_PREFIX:-ghcr.io/attitudefactory/}
 KEEP_RELEASES=5
+# Image sets (app/web/deploy/render) kept on disk: the live release and the one before it,
+# so a rollback to the previous sha needs no pull. Older release dirs stay (they are a few
+# KB and `ls releases/` is how the runbook finds a sha); rolling back to one of those pulls
+# its images from GHCR again, which the script does first anyway.
+KEEP_IMAGES=2
 
 die() { echo "server-deploy: $*" >&2; exit 1; }
 
@@ -161,13 +166,27 @@ touch "$release"
     as_root "rm -rf /releases/$old" && echo "    pruned $old" \
       || echo "server-deploy: WARN could not prune release $old" >&2
   done
-# Tagged images are not "dangling", so `image prune` alone would keep every sha ever
-# deployed (the app image's /app layer is ~0.5 GB per commit). Drop the tags of releases
-# pruned above; rolling back to one of them pulls it from GHCR again.
+# Images. Tagged images are not "dangling", so `image prune` alone would keep every sha ever
+# deployed (qualify-app is ~2.9 GB, its /app layer ~0.5 GB unique per commit) — 10 GB of
+# images measured 2026-10-24 (m-24852229). Keep only the image sets of the newest
+# KEEP_IMAGES releases (the live one was touched above, so it is first); drop the tags of
+# every other sha, plus the `:latest` tags a Mac-side `just deploy` builds on the server.
+# `docker image rm` without -f refuses an image a container still uses, which is the guard
+# for anything running; nothing outside the qualify-* repositories is named here, so
+# Pedidos' and the edge proxy's images are never candidates. Volumes are never pruned.
+echo "==> Pruning images (keeping the image sets of $KEEP_IMAGES releases)"
+keep=$(cd "$ROOT/releases" && ls -1t | { grep -v '^\.' || true; } | head -n "$KEEP_IMAGES")
 for image in qualify-app qualify-web qualify-deploy qualify-render; do
   docker image ls --format '{{.Tag}}' "$IMAGE_PREFIX$image" | while read -r tag; do
-    [[ $tag =~ ^[0-9a-f]{40}$ && ! -d $ROOT/releases/$tag ]] || continue
-    docker image rm "$IMAGE_PREFIX$image:$tag" >/dev/null || true
+    [[ $tag =~ ^[0-9a-f]{40}$ && $tag != "$sha" ]] || continue
+    grep -qxF "$tag" <<<"$keep" && continue
+    docker image rm "$IMAGE_PREFIX$image:$tag" >/dev/null 2>&1 && echo "    untagged $image:${tag:0:12}" || true
   done
+  docker image rm "$image:latest" >/dev/null 2>&1 && echo "    untagged $image:latest" || true
 done
 docker image prune -f >/dev/null || true
+# BuildKit cache. CI builds in GitHub, so this cache comes from builds ON the server:
+# `just deploy` (5.9 GB measured 2026-10-24) and Pedidos' local image. Entries unused for
+# 24 h go; a build from the last day keeps its cache. Best effort, like everything here.
+docker builder prune -f --filter until=24h >/dev/null 2>&1 || true
+echo "==> Disk after pruning: $(df -h "$ROOT" | awk 'NR==2 {print $3 " used, " $4 " free (" $5 ")"}')"
