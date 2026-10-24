@@ -291,3 +291,85 @@ def test_postgres_only_through_tenant_session() -> None:
     for name in ("agents", "user_id_for_email", "thread_context", "unsent", "timezone"):
         method = getattr(whatsapp_chats_provider.PostgresChatsStore, name)
         assert "tenant_session(tenant_id)" in inspect.getsource(method), name
+
+
+# --- m-24848535: an approved message from an expired chat ---------------------------
+
+
+def _template_world(world: World) -> Any:
+    from qualify_api.whatsapp.optins import MemoryOptInRepository, OptInService
+    from qualify_api.whatsapp.template_reply import TemplateReplyService
+    from qualify_api.whatsapp.templates import MemoryTemplateRepository, TemplateRecord
+
+    templates = MemoryTemplateRepository(clock=lambda: NOW)
+    templates.add_number(tenant_id=TENANT, connection_id=NUMBER, waba_id="w1", phone_row_id=uuid4())
+    optins = OptInService(MemoryOptInRepository(), clock=lambda: NOW)
+    world.gateway = ChatsGateway(
+        service=world.service,
+        store=world.store,
+        clock=lambda: NOW,
+        template_replies=TemplateReplyService(
+            world.service, templates, optins, world.outbox, clock=lambda: NOW
+        ),
+    )
+
+    def add(name: str, category: str, body: str) -> UUID:
+        record = TemplateRecord(
+            id=uuid4(),
+            tenant_id=TENANT,
+            waba_id="w1",
+            name=name,
+            language="es",
+            category=category,
+            status="APPROVED",
+            components=[{"type": "BODY", "text": body}],
+        )
+        templates.insert(record)
+        return record.id
+
+    return add
+
+
+def test_expired_chat_lists_followups_and_sends_once_per_key(world: World) -> None:
+    add = _template_world(world)
+    followup = add("seguimiento_pedido", "utility", "Hola {{1}}, ¿seguimos con tu pedido?")
+    add("promo_octubre", "marketing", "2x1 este fin de semana")
+    thread_id = world.thread(inbound_ago=timedelta(days=2))
+
+    options = world.gateway.template_options(TENANT, NUMBER, thread_id)
+    assert [o.template_id for o in options.options] == [followup]
+    assert options.promotions_blocked
+    assert options.options[0].preview == "Hola Laura, ¿seguimos con tu pedido?"
+
+    first = world.gateway.send_template(
+        TENANT, NUMBER, thread_id, USER, followup, {"body:1": "Laura"}, "key-1"
+    )
+    again = world.gateway.send_template(
+        TENANT, NUMBER, thread_id, USER, followup, {"body:1": "Laura"}, "key-1"
+    )
+    assert first == again
+    assert len(world.outbox.rows) == 1
+    assert world.outbox.rows[first].kind == "template_reply"
+
+
+def test_expired_chat_refuses_a_promotion_without_consent(world: World) -> None:
+    from qualify_api.whatsapp.template_reply import PromotionNeedsConsent
+
+    add = _template_world(world)
+    promo = add("promo_octubre", "marketing", "2x1 este fin de semana")
+    thread_id = world.thread(inbound_ago=timedelta(days=2))
+
+    with pytest.raises(PromotionNeedsConsent):
+        world.gateway.send_template(TENANT, NUMBER, thread_id, USER, promo, {}, "key-1")
+    assert world.outbox.rows == {}
+
+
+def test_template_calls_are_scoped_to_the_number(world: World) -> None:
+    add = _template_world(world)
+    followup = add("seguimiento_pedido", "utility", "Hola")
+    foreign = world.thread(number=OTHER_NUMBER, inbound_ago=timedelta(days=2))
+    with pytest.raises(ThreadNotFound):
+        world.gateway.template_options(TENANT, NUMBER, foreign)
+    with pytest.raises(ThreadNotFound):
+        world.gateway.send_template(TENANT, NUMBER, foreign, USER, followup, {}, "k")
+    assert world.outbox.rows == {}

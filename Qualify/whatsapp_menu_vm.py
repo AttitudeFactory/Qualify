@@ -48,6 +48,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
+from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_COMMANDS,
@@ -122,6 +123,27 @@ _DEFAULT_COLLECT_ERROR = "No pude entender tu respuesta."
 _DEFAULT_YES = "Sí"
 _DEFAULT_NO = "No"
 _DEFAULT_REASON = "customer_request"
+_DEFAULT_FIELD = "respuesta"
+
+# What a question stores, in the owner's words (m-24848536: no «Se guarda como» with an
+# identifier). The keys are the ones Chats already labels (`whatsapp_chats_vm.
+# _COLLECTED_LABELS`); an older menu's own key still shows, humanized, in Chats.
+COLLECT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("direccion", "Dirección"),
+    ("barrio", "Barrio"),
+    ("nombre", "Nombre"),
+    ("telefono", "Teléfono"),
+    ("metodo_pago", "Método de pago"),
+    ("notas", "Notas"),
+    (_DEFAULT_FIELD, "Otra respuesta"),
+)
+
+# Why a step hands the chat to a person — Chats shows it; the owner picks a phrase.
+HANDOFF_REASONS: tuple[tuple[str, str], ...] = (
+    ("customer_request", "El cliente pidió hablar con alguien"),
+    ("order_confirmed", "El cliente confirmó un pedido"),
+    ("unknown_input", "El menú no entendió al cliente"),
+)
 _DEFAULT_SECTION = "Opciones"
 
 
@@ -173,6 +195,7 @@ class NodeForm:
 
     node_id: str
     kind: str
+    title: str = ""  # the step's name (schema `title`); renaming edits only this
     body: str = ""
     header: str = ""
     footer: str = ""
@@ -199,6 +222,8 @@ class NodeForm:
     errors: dict[str, str] = field(default_factory=dict)
     has_issue: bool = False
     kind_label: str = ""
+    label: str = ""  # what the editor shows for the step (`node_label`), never the id
+    unused: bool = False  # nothing leads here: not the entry, a button nor another step
 
 
 @dataclass(frozen=True)
@@ -215,9 +240,9 @@ class MenuForm:
     menu_errors: list[str] = field(default_factory=list)
 
 
-def new_node(kind: str, node_id: str) -> NodeForm:
+def new_node(kind: str, node_id: str, title: str = "") -> NodeForm:
     """A fresh step of `kind` with the schema's defaults filled in."""
-    return apply_kind_defaults(NodeForm(node_id=node_id, kind=kind))
+    return apply_kind_defaults(NodeForm(node_id=node_id, kind=kind, title=title))
 
 
 def apply_kind_defaults(node: NodeForm) -> NodeForm:
@@ -251,6 +276,7 @@ def apply_kind_defaults(node: NodeForm) -> NodeForm:
         return replace(
             node,
             validation=node.validation or "text",
+            field_name=keep(node.field_name, _DEFAULT_FIELD),
             error_message=keep(node.error_message, _DEFAULT_COLLECT_ERROR),
             yes_label=keep(node.yes_label, _DEFAULT_YES),
             no_label=keep(node.no_label, _DEFAULT_NO),
@@ -260,30 +286,23 @@ def apply_kind_defaults(node: NodeForm) -> NodeForm:
     return node
 
 
-def new_option(node: NodeForm) -> OptionForm:
-    """A new button/row with an id unique inside the step."""
+def new_option(node: NodeForm, label: str = "", next_node: str = "") -> OptionForm:
+    """A new button/row with a generated id unique inside the step (never shown)."""
     taken = {o.option_id for o in node.options}
-    n = len(node.options) + 1
-    while f"opcion_{n}" in taken:
-        n += 1
     section = node.options[-1].section if node.options else _DEFAULT_SECTION
     return OptionForm(
-        option_id=f"opcion_{n}",
-        label="",
+        option_id=new_option_id(label or "boton", taken),
+        label=label,
         description="",
-        next="",
+        next=next_node,
         section=section if node.kind == KIND_LIST else "",
     )
 
 
-def unique_node_id(form: MenuForm, base: str) -> str:
-    taken = {n.node_id for n in form.nodes}
-    if base not in taken:
-        return base
-    n = 2
-    while f"{base}_{n}" in taken:
-        n += 1
-    return f"{base}_{n}"
+def fresh_node_id(form: MenuForm, label: str) -> str:
+    """A generated id (slug of `label` + random suffix) unused in `form`. Ids are made
+    once, at creation, and never regenerated (m-24848536)."""
+    return new_node_id(label, {n.node_id for n in form.nodes})
 
 
 def empty_form() -> MenuForm:
@@ -297,7 +316,7 @@ def empty_form() -> MenuForm:
         keywords=[],
         ice_breakers=[],
         commands=[],
-        nodes=[new_node(KIND_TEXT, "inicio")],
+        nodes=[new_node(KIND_TEXT, "inicio", "Saludo")],
     )
 
 
@@ -316,7 +335,7 @@ def _s(value: str | None) -> str:
 
 
 def _node_to_form(node_id: str, node: Any) -> NodeForm:
-    base = NodeForm(node_id=node_id, kind=node.kind)
+    base = NodeForm(node_id=node_id, kind=node.kind, title=_s(getattr(node, "title", None)))
     if isinstance(node, TextNode):
         base = replace(base, body=node.body, next=node.next or NONE_VALUE)
     elif isinstance(node, ButtonsNode):
@@ -486,6 +505,7 @@ class _LocMap:
     node_index: dict[str, int]
     list_rows: dict[str, dict[tuple[int, int], int]]
     section_first_row: dict[str, dict[int, int]]
+    node_titles: dict[str, str] = field(default_factory=dict)  # id → the owner's name
 
 
 def _sections(options: Sequence[OptionForm]) -> tuple[list[dict[str, Any]], dict, dict]:
@@ -569,6 +589,7 @@ def _node_payload(node: NodeForm) -> tuple[dict[str, Any], dict, dict]:
         }
     else:  # handoff, or an unknown kind the schema will refuse
         payload = {"kind": kind, "message": node.body, "reason": node.reason}
+    payload["title"] = _opt(node.title)
     return payload, rows_at, first_row
 
 
@@ -592,6 +613,7 @@ def _build_payload(form: MenuForm) -> tuple[dict[str, Any], _LocMap]:
     node_index: dict[str, int] = {}
     list_rows: dict[str, dict[tuple[int, int], int]] = {}
     section_first_row: dict[str, dict[int, int]] = {}
+    node_titles: dict[str, str] = {}
     for index, node in enumerate(form.nodes):
         node_id = node.node_id.strip()
         if not node_id or node_id in nodes:
@@ -601,6 +623,7 @@ def _build_payload(form: MenuForm) -> tuple[dict[str, Any], _LocMap]:
         node_index[node_id] = index
         list_rows[node_id] = rows_at
         section_first_row[node_id] = first_row
+        node_titles[node_id] = node.title.strip()
     payload = {
         "version": 1,
         "start_node": form.start_node,
@@ -614,7 +637,7 @@ def _build_payload(form: MenuForm) -> tuple[dict[str, Any], _LocMap]:
         },
         "nodes": nodes,
     }
-    return payload, _LocMap(node_index, list_rows, section_first_row)
+    return payload, _LocMap(node_index, list_rows, section_first_row, node_titles)
 
 
 # --------------------------------------------------------------------------------------
@@ -863,14 +886,26 @@ def _place_node_error(
     errors.row(errors.nodes, index, _NODE_FIELD_ALIASES.get(head, str(head)), message)
 
 
+DANGLING_STEP: Final = (
+    "Un botón lleva a un paso que ya no existe. Elige a dónde lleva en «Más opciones (avanzado)»."
+)
+
+
 def _place_structural(errors: _Errors, locmap: _LocMap, message: str) -> None:
     """The model validator's whole-menu errors (loc `()`), parsed back to a field."""
     if "start_node" in message and "is not a node" in message:
         errors.entry_field("start_node", PICK_A_STEP)
         return
     if message.startswith("dangling node references"):
-        for source, target in re.findall(r"(\S+) -> '([^']*)'", message):
-            text = f"Lleva a «{target}», un paso que no existe."
+        for source, _target in re.findall(r"(\S+) -> '([^']*)'", message):
+            # Never the missing step's id: the owner only knows steps by their name.
+            name = locmap.node_titles.get(source, "")
+            text = (
+                f"El paso «{name}» lleva a un paso que ya no existe. Elige otro en "
+                "«Más opciones (avanzado)»."
+                if name
+                else DANGLING_STEP
+            )
             if source == "entry":
                 errors.entry_field("_entry", text)
             elif source in locmap.node_index:
@@ -960,8 +995,33 @@ def validate_form(form: MenuForm) -> FormResult:
     return FormResult(_annotate(form, errors), definition, errors.count)
 
 
+def referenced_node_ids(form: MenuForm) -> set[str]:
+    """Every step id something leads to: the entry (start, fallback, keywords, ice
+    breakers, commands), a button/row, or another step's «siguiente»."""
+    refs = {form.start_node, form.fallback_node}
+    refs.update(kw.node for kw in form.keywords)
+    refs.update(ib.node for ib in form.ice_breakers)
+    refs.update(c.node for c in form.commands)
+    for node in form.nodes:
+        refs.update(
+            (
+                node.next,
+                node.next_after_pick,
+                node.confirm_next,
+                node.add_more_next,
+                node.cancel_next,
+            )
+        )
+        refs.update(o.next for o in node.options)
+    refs.discard("")
+    refs.discard(NONE_VALUE)
+    return refs
+
+
 def _annotate(form: MenuForm, errors: _Errors) -> MenuForm:
     nodes: list[NodeForm] = []
+    labels = node_labels(form.nodes)
+    referenced = referenced_node_ids(form)
     for i, node in enumerate(form.nodes):
         options = [
             replace(option, errors=dict(errors.options.get((i, j), {})))
@@ -975,6 +1035,8 @@ def _annotate(form: MenuForm, errors: _Errors) -> MenuForm:
                 errors=node_errors,
                 has_issue=bool(node_errors) or any(o.errors for o in options),
                 kind_label=KIND_LABELS.get(node.kind, node.kind),
+                label=labels[i],
+                unused=node.node_id.strip() not in referenced,
             )
         )
     return replace(
@@ -1009,45 +1071,6 @@ def issues_summary(count: int) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def rename_node(form: MenuForm, index: int, new_id: str) -> MenuForm:
-    """Change a step's id and carry every reference to it along — but only while both the
-    old and the new id are unambiguous; a collision leaves the references for the
-    validation to flag instead of silently stealing another step's arrows."""
-    if not 0 <= index < len(form.nodes):
-        return form
-    old_id = form.nodes[index].node_id
-    nodes = list(form.nodes)
-    nodes[index] = replace(nodes[index], node_id=new_id)
-    others = [n.node_id for k, n in enumerate(form.nodes) if k != index]
-    if not old_id or old_id in others or new_id in others or not new_id:
-        return replace(form, nodes=nodes)
-
-    def move(value: str) -> str:
-        return new_id if value == old_id else value
-
-    nodes = [
-        replace(
-            n,
-            next=move(n.next),
-            next_after_pick=move(n.next_after_pick),
-            confirm_next=move(n.confirm_next),
-            add_more_next=move(n.add_more_next),
-            cancel_next=move(n.cancel_next),
-            options=[replace(o, next=move(o.next)) for o in n.options],
-        )
-        for n in nodes
-    ]
-    return replace(
-        form,
-        nodes=nodes,
-        start_node=move(form.start_node),
-        fallback_node=move(form.fallback_node),
-        keywords=[replace(k, node=move(k.node)) for k in form.keywords],
-        ice_breakers=[replace(i, node=move(i.node)) for i in form.ice_breakers],
-        commands=[replace(c, node=move(c.node)) for c in form.commands],
-    )
-
-
 def change_kind(node: NodeForm, kind: str) -> NodeForm:
     """Switch a step's kind keeping its text and options; list rows get a section."""
     if kind not in KIND_KEYS or kind == node.kind:
@@ -1056,6 +1079,608 @@ def change_kind(node: NodeForm, kind: str) -> NodeForm:
     if kind == KIND_LIST:
         options = [replace(o, section=o.section or _DEFAULT_SECTION) for o in options]
     return apply_kind_defaults(replace(node, kind=kind, options=options))
+
+
+# --------------------------------------------------------------------------------------
+# Step names (m-24848536): what the editor shows instead of an identifier
+# --------------------------------------------------------------------------------------
+
+_KIND_FALLBACK_TITLES: dict[str, str] = {
+    KIND_PRODUCTS: "Tus productos",
+    KIND_ORDER_SUMMARY: "Resumen del pedido",
+    KIND_HANDOFF: "Pasar a una persona",
+    KIND_COLLECT: "Pregunta",
+}
+_EXCERPT_LEN = 40
+
+
+def excerpt(text: str, limit: int = _EXCERPT_LEN) -> str:
+    """The first non-empty line of `text`, without WhatsApp's `*bold*` marks, cut to
+    `limit` characters with «…»."""
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    line = line.replace("*", "").strip()
+    return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+
+
+def node_label(node: NodeForm) -> str:
+    """A step's name: its title; else the start of its text; else what kind it is."""
+    if node.title.strip():
+        return node.title.strip()
+    if node.kind in (KIND_TEXT, KIND_BUTTONS, KIND_LIST, KIND_COLLECT) and node.body.strip():
+        return excerpt(node.body)
+    return _KIND_FALLBACK_TITLES.get(node.kind, KIND_LABELS.get(node.kind, "Paso"))
+
+
+def node_labels(nodes: Sequence[NodeForm]) -> list[str]:
+    """`node_label` for every step, made unique with « (2)», « (3)»… so two steps never
+    read the same in a «Lleva a» list."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for node in nodes:
+        label = node_label(node)
+        count = seen.get(label, 0) + 1
+        seen[label] = count
+        out.append(label if count == 1 else f"{label} ({count})")
+    return out
+
+
+@dataclass(frozen=True)
+class NodeChoiceVM:
+    """One entry of a «Lleva a» select: the value is the id, the owner reads the name."""
+
+    node_id: str
+    label: str
+
+
+def node_choices(nodes: Sequence[NodeForm], *, handoffs_only: bool = False) -> list[NodeChoiceVM]:
+    labels = node_labels(nodes)
+    return [
+        NodeChoiceVM(node.node_id, labels[i])
+        for i, node in enumerate(nodes)
+        if node.node_id.strip() and (not handoffs_only or node.kind == KIND_HANDOFF)
+    ]
+
+
+# --------------------------------------------------------------------------------------
+# The menu in four steps (m-24848536)
+# --------------------------------------------------------------------------------------
+#
+# A guided view over the SAME form the advanced editor edits: every guided edit is a pure
+# `MenuForm -> MenuForm` function, so «Atrás», «Más opciones (avanzado)» and back never
+# lose anything, and the schema stays the one authority on validity. The four steps map
+# onto the template's shape (`BIANKI_DEMO_MENU`):
+#
+#   1 ¿Cómo saludas?          → entry.welcome
+#   2 ¿Qué botones ve…?       → the start step's text and its (up to 3) buttons; each
+#                                button shows products, answers with a message, or hands
+#                                the chat to the owner
+#   3 Tus productos           → the catalog step's text; on confirm: ask the address or not
+#   4 Pruébalo y publícalo    → review in words + the preview + «Publicar en mi WhatsApp»
+#
+# Steps a guided edit needs (the catalog chain, «hablar con una persona», a message) are
+# created with generated ids (`ids.new_node_id`) and never renamed by id.
+
+GUIDED_STEPS: Final = 4
+GUIDED_TITLES: tuple[str, ...] = (
+    "¿Cómo saludas?",
+    "¿Qué botones ve al escribirte?",
+    "Tus productos",
+    "Pruébalo y publícalo",
+)
+GUIDED_HELP: tuple[str, ...] = (
+    "Es lo primero que lee tu cliente cuando te escribe.",
+    "Debajo del saludo, tu cliente ve hasta 3 botones. Elige qué pasa al tocar cada uno.",
+    "Tu cliente elige de tu catálogo, con su precio, y arma su pedido.",
+    "Pruébalo como si fueras tu cliente. Cuando te guste, publícalo en tu WhatsApp.",
+)
+
+ACTION_PRODUCTS: Final = "products"
+ACTION_TEXT: Final = "text"
+ACTION_PERSON: Final = "person"
+ACTION_MORE: Final = "more"  # a template sub-menu: kept, edited in «Más opciones»
+GUIDED_ACTIONS: tuple[tuple[str, str], ...] = (
+    (ACTION_PRODUCTS, "Mostrar mis productos"),
+    (ACTION_TEXT, "Responder con un mensaje"),
+    (ACTION_PERSON, "Pasarme el chat"),
+)
+ACTION_MORE_LABEL: Final = "Mostrar más botones"
+
+ADDRESS_ASK: Final = "ask"
+ADDRESS_SKIP: Final = "skip"
+
+_ADDRESS_FIELD = "direccion"
+
+# Step 3 → Catálogo saves first (guide N6); «Guardar y seguir después» says why it is off.
+CATALOG_SAVED_HINT: Final = "Guardamos tu menú. Cuando termines, vuelve a WhatsApp → Menú."
+CATALOG_FIX_FIRST: Final = (
+    "Corrige lo marcado en rojo antes de salir, o se pierde lo que escribiste."
+)
+SAVE_NEEDS_FIX: Final = "Para guardar, completa lo marcado en rojo."
+SAVE_NOTHING_NEW: Final = "Ya está guardado. Puedes salir y seguir después."
+BUTTON_LABEL_MAX: Final = 20  # WhatsApp cuts a reply button's text at 20 characters
+_ADDRESS_PROMPT = "¿A qué dirección te lo llevamos? Escríbela completa, con barrio."
+_ADDRESS_ERROR = "Necesito la dirección escrita para poder tomar el pedido."
+_PERSON_TITLE = "Hablar con una persona"
+_PERSON_MESSAGE = "Te paso con una persona del equipo; en un momento te responden."
+_DEFAULT_QUESTION = "¿Qué quieres hacer?"
+_DEFAULT_PERSON_BUTTON = "Hablar con alguien"
+
+# The template's catalog chain, cloned (with fresh ids) into a menu that lacks one.
+_ORDER_CHAIN: tuple[str, ...] = (
+    "productos",
+    "agregado",
+    "resumen",
+    "direccion",
+    "pedido_confirmado",
+    "cancelado",
+)
+_SUMMARY_CHAIN: tuple[str, ...] = ("resumen", "direccion", "pedido_confirmado")
+
+
+@dataclass(frozen=True)
+class GuidedButtonVM:
+    label: str
+    action: str  # ACTION_*; "" when the button leads nowhere yet
+    text: str  # the message, when action == ACTION_TEXT
+    more_summary: str  # «Horario · Ubicación · Volver», when action == ACTION_MORE
+    label_error: str
+    text_error: str
+
+
+@dataclass(frozen=True)
+class GuidedVM:
+    uses_buttons: bool  # the start step is a «Botones» step
+    greeting: str
+    greeting_error: str
+    question: str
+    question_error: str
+    buttons: list[GuidedButtonVM]
+    buttons_full: bool
+    can_remove_button: bool
+    has_products: bool
+    products_intro: str
+    products_intro_error: str
+    has_order: bool
+    address_choice: str  # ADDRESS_ASK / ADDRESS_SKIP
+    address_prompt: str
+    address_error: str
+    hidden_issues: int  # problems only «Más opciones (avanzado)» shows
+    # Something to fix in step 1 / 2 / 3 — step 4 links back to each one.
+    greeting_issue: bool = False
+    buttons_issue: bool = False
+    products_issue: bool = False
+
+
+EMPTY_GUIDED = GuidedVM(
+    uses_buttons=False,
+    greeting="",
+    greeting_error="",
+    question="",
+    question_error="",
+    buttons=[],
+    buttons_full=False,
+    can_remove_button=False,
+    has_products=False,
+    products_intro="",
+    products_intro_error="",
+    has_order=False,
+    address_choice=ADDRESS_SKIP,
+    address_prompt="",
+    address_error="",
+    hidden_issues=0,
+)
+
+
+@dataclass(frozen=True)
+class CatalogRowVM:
+    name: str
+    price: str  # PRE-FORMATTED («COP 18.000») or «Sin precio»
+
+
+def catalog_rows(items: Sequence[CatalogItem]) -> list[CatalogRowVM]:
+    return [
+        CatalogRowVM(
+            name=i.name,
+            price=(
+                format_money(i.price_amount, i.price_currency)
+                if i.price_amount is not None
+                else "Sin precio"
+            ),
+        )
+        for i in items
+    ]
+
+
+def _find(form: MenuForm, node_id: str) -> int | None:
+    return next((i for i, n in enumerate(form.nodes) if n.node_id == node_id), None)
+
+
+def _first_kind(form: MenuForm, kind: str) -> int | None:
+    return next((i for i, n in enumerate(form.nodes) if n.kind == kind), None)
+
+
+def _person_index(form: MenuForm) -> int | None:
+    handoffs = [i for i, n in enumerate(form.nodes) if n.kind == KIND_HANDOFF]
+    for i in handoffs:
+        if form.nodes[i].reason == "customer_request":
+            return i
+    return next((i for i in handoffs if form.nodes[i].reason != "order_confirmed"), None)
+
+
+def _set_node(form: MenuForm, index: int, **changes: Any) -> MenuForm:
+    nodes = list(form.nodes)
+    nodes[index] = replace(nodes[index], **changes)
+    return replace(form, nodes=nodes)
+
+
+def _start(form: MenuForm) -> int | None:
+    return _find(form, form.start_node)
+
+
+def _button_action(form: MenuForm, option: OptionForm) -> str:
+    index = _find(form, option.next)
+    if index is None:
+        return ""
+    kind = form.nodes[index].kind
+    if kind == KIND_PRODUCTS:
+        return ACTION_PRODUCTS
+    if kind == KIND_HANDOFF:
+        return ACTION_PERSON
+    if kind == KIND_TEXT:
+        return ACTION_TEXT
+    return ACTION_MORE
+
+
+def guided_view(form: MenuForm, error_count: int = 0) -> GuidedVM:
+    """The four steps' fields read off an annotated form (`validate_form(...).form`),
+    with the Spanish messages of exactly the fields the steps show; `error_count` (the
+    form's total) minus those is what only the advanced editor can show."""
+    shown = 0
+
+    def err(errors: Mapping[str, str], key: str) -> str:
+        nonlocal shown
+        message = errors.get(key, "")
+        if message:
+            shown += 1
+        return message
+
+    greeting_error = err(form.entry_errors, "welcome")
+    start_i = _start(form)
+    start = form.nodes[start_i] if start_i is not None else None
+    uses_buttons = start is not None and start.kind == KIND_BUTTONS
+    question_error = err(start.errors, "body") if start is not None else ""
+    buttons: list[GuidedButtonVM] = []
+    counted_texts: set[int] = set()
+    if start is not None and uses_buttons:
+        for option in start.options:
+            action = _button_action(form, option)
+            target_i = _find(form, option.next)
+            target = form.nodes[target_i] if target_i is not None else None
+            text = target.body if target is not None and action == ACTION_TEXT else ""
+            text_error = ""
+            if target is not None and action == ACTION_TEXT:
+                text_error = target.errors.get("body", "")
+                if text_error and target_i not in counted_texts:
+                    shown += 1
+                    counted_texts.add(target_i)  # type: ignore[arg-type]
+            more = ""
+            if target is not None and action == ACTION_MORE:
+                more = " · ".join(o.label for o in target.options if o.label.strip())
+            label_error = err(option.errors, "label") or err(option.errors, "next")
+            buttons.append(
+                GuidedButtonVM(option.label, action, text, more, label_error, text_error)
+            )
+    products_i = _first_kind(form, KIND_PRODUCTS)
+    products = form.nodes[products_i] if products_i is not None else None
+    products_intro_error = err(products.errors, "body") if products is not None else ""
+    order_i = _first_kind(form, KIND_ORDER_SUMMARY)
+    address_choice, address_prompt, address_error = ADDRESS_SKIP, "", ""
+    if order_i is not None:
+        confirm_i = _find(form, form.nodes[order_i].confirm_next)
+        if confirm_i is not None and form.nodes[confirm_i].kind == KIND_COLLECT:
+            address_choice = ADDRESS_ASK
+            address_prompt = form.nodes[confirm_i].body
+            address_error = err(form.nodes[confirm_i].errors, "body")
+    return GuidedVM(
+        uses_buttons=uses_buttons,
+        greeting=form.welcome,
+        greeting_error=greeting_error,
+        question=start.body if start is not None else "",
+        question_error=question_error,
+        buttons=buttons,
+        buttons_full=len(buttons) >= MAX_BUTTONS,
+        can_remove_button=len(buttons) > 1,
+        has_products=products is not None,
+        products_intro=products.body if products is not None else "",
+        products_intro_error=products_intro_error,
+        has_order=order_i is not None,
+        address_choice=address_choice,
+        address_prompt=address_prompt,
+        address_error=address_error,
+        hidden_issues=max(0, error_count - shown),
+        greeting_issue=bool(greeting_error),
+        buttons_issue=bool(question_error) or any(b.label_error or b.text_error for b in buttons),
+        products_issue=bool(products_intro_error or address_error),
+    )
+
+
+def _template_nodes() -> dict[str, NodeForm]:
+    return {n.node_id: n for n in definition_to_form(BIANKI_DEMO_MENU).nodes}
+
+
+def _remap(node: NodeForm, mapped: Mapping[str, str]) -> NodeForm:
+    def move(value: str) -> str:
+        return mapped.get(value, value)
+
+    return replace(
+        node,
+        node_id=mapped[node.node_id],
+        next=move(node.next),
+        next_after_pick=move(node.next_after_pick),
+        confirm_next=move(node.confirm_next),
+        add_more_next=move(node.add_more_next),
+        cancel_next=move(node.cancel_next),
+        options=[replace(o, next=move(o.next)) for o in node.options],
+    )
+
+
+def ensure_products(form: MenuForm) -> tuple[MenuForm, str]:
+    """The menu's catalog step, cloning the template's chain (catalog → added → order
+    summary → address → «pedido confirmado») with fresh ids when the menu has none. A
+    menu that already has an order summary keeps it: only the catalog steps are added."""
+    found = _first_kind(form, KIND_PRODUCTS)
+    if found is not None:
+        return form, form.nodes[found].node_id
+    template = _template_nodes()
+    mapped: dict[str, str] = {}
+    summary_i = _first_kind(form, KIND_ORDER_SUMMARY)
+    wanted = list(_ORDER_CHAIN)
+    if summary_i is not None:
+        mapped["resumen"] = form.nodes[summary_i].node_id
+        wanted = [w for w in wanted if w not in _SUMMARY_CHAIN]
+    taken = {n.node_id for n in form.nodes}
+    for template_id in wanted:
+        new_id = new_node_id(template[template_id].title or template_id, taken)
+        taken.add(new_id)
+        mapped[template_id] = new_id
+    added = [_remap(template[t], mapped) for t in wanted]
+    return replace(form, nodes=[*form.nodes, *added]), mapped["productos"]
+
+
+def ensure_person(form: MenuForm) -> tuple[MenuForm, str]:
+    """The «hablar con una persona» step, created when the menu has none."""
+    found = _person_index(form)
+    if found is not None:
+        return form, form.nodes[found].node_id
+    node = replace(
+        new_node(KIND_HANDOFF, fresh_node_id(form, _PERSON_TITLE), _PERSON_TITLE),
+        body=_PERSON_MESSAGE,
+        reason="customer_request",
+    )
+    return replace(form, nodes=[*form.nodes, node]), node.node_id
+
+
+def guided_set_greeting(form: MenuForm, text: str) -> MenuForm:
+    return replace(form, welcome=text)
+
+
+def guided_set_question(form: MenuForm, text: str) -> MenuForm:
+    index = _start(form)
+    return form if index is None else _set_node(form, index, body=text)
+
+
+def _start_options(form: MenuForm) -> tuple[int, list[OptionForm]] | None:
+    index = _start(form)
+    if index is None or form.nodes[index].kind != KIND_BUTTONS:
+        return None
+    return index, list(form.nodes[index].options)
+
+
+def guided_set_button_label(form: MenuForm, button: int, label: str) -> MenuForm:
+    found = _start_options(form)
+    if found is None or not 0 <= button < len(found[1]):
+        return form
+    index, options = found
+    options[button] = replace(options[button], label=label)
+    return _set_node(form, index, options=options)
+
+
+def guided_set_button_action(form: MenuForm, button: int, action: str) -> MenuForm:
+    """Point a start button at the catalog, a message, or the owner. A new message
+    step is created (generated id, the button's text as its name) unless the button
+    already leads to one; nothing is deleted, so switching back keeps what was typed."""
+    found = _start_options(form)
+    if found is None or not 0 <= button < len(found[1]):
+        return form
+    option = found[1][button]
+    if action == ACTION_PRODUCTS:
+        form, target = ensure_products(form)
+    elif action == ACTION_PERSON:
+        form, target = ensure_person(form)
+    elif action == ACTION_TEXT:
+        if _button_action(form, option) == ACTION_TEXT:
+            return form
+        title = option.label.strip() or "Respuesta"
+        # Back to «Responder con un mensaje»: reuse the message this button had before
+        # (same name, nothing leads to it any more) instead of piling up copies.
+        referenced = referenced_node_ids(form)
+        previous = next(
+            (
+                n.node_id
+                for n in form.nodes
+                if n.kind == KIND_TEXT
+                and n.title.strip() == title
+                and n.node_id.strip() not in referenced
+            ),
+            None,
+        )
+        if previous is not None:
+            target = previous
+        else:
+            node = new_node(KIND_TEXT, fresh_node_id(form, title), title)
+            form, target = replace(form, nodes=[*form.nodes, node]), node.node_id
+    else:
+        return form
+    index, options = _start_options(form)  # type: ignore[misc]
+    options[button] = replace(options[button], next=target)
+    return _set_node(form, index, options=options)
+
+
+def guided_set_button_text(form: MenuForm, button: int, text: str) -> MenuForm:
+    found = _start_options(form)
+    if found is None or not 0 <= button < len(found[1]):
+        return form
+    option = found[1][button]
+    target = _find(form, option.next)
+    if target is None or form.nodes[target].kind != KIND_TEXT:
+        return form
+    return _set_node(form, target, body=text)
+
+
+def guided_add_button(form: MenuForm) -> MenuForm:
+    """A new start button (at most 3) that hands the chat to the owner until changed."""
+    found = _start_options(form)
+    if found is None or len(found[1]) >= MAX_BUTTONS:
+        return form
+    form, person = ensure_person(form)
+    index, options = _start_options(form)  # type: ignore[misc]
+    options.append(new_option(form.nodes[index], next_node=person))
+    return _set_node(form, index, options=options)
+
+
+def guided_remove_button(form: MenuForm, button: int) -> MenuForm:
+    found = _start_options(form)
+    if found is None or len(found[1]) <= 1 or not 0 <= button < len(found[1]):
+        return form
+    index, options = found
+    options.pop(button)
+    return _set_node(form, index, options=options)
+
+
+def guided_use_buttons(form: MenuForm) -> MenuForm:
+    """Turn the start step into a «Botones» step (keeping its text) with one button to
+    the owner — for a menu started empty."""
+    index = _start(form)
+    if index is None or form.nodes[index].kind == KIND_BUTTONS:
+        return form
+    start = change_kind(form.nodes[index], KIND_BUTTONS)
+    if not start.body.strip():
+        start = replace(start, body=_DEFAULT_QUESTION)
+    nodes = list(form.nodes)
+    nodes[index] = start
+    form, person = ensure_person(replace(form, nodes=nodes))
+    if not form.nodes[index].options:
+        option = new_option(form.nodes[index], _DEFAULT_PERSON_BUTTON, person)
+        form = _set_node(form, index, options=[option])
+    return form
+
+
+def guided_set_products_intro(form: MenuForm, text: str) -> MenuForm:
+    index = _first_kind(form, KIND_PRODUCTS)
+    return form if index is None else _set_node(form, index, body=text)
+
+
+def guided_set_address(form: MenuForm, choice: str) -> MenuForm:
+    """«Al confirmar el pedido»: «Pedir dirección» puts an address question between
+    «Confirmar» and the hand-off; «No pedir nada» goes straight to the hand-off. The
+    question step is kept when skipped, so choosing it again brings its text back."""
+    order_i = _first_kind(form, KIND_ORDER_SUMMARY)
+    if order_i is None or choice not in (ADDRESS_ASK, ADDRESS_SKIP):
+        return form
+    order = form.nodes[order_i]
+    confirm_i = _find(form, order.confirm_next)
+    asking = confirm_i is not None and form.nodes[confirm_i].kind == KIND_COLLECT
+    if choice == ADDRESS_SKIP:
+        if not asking:
+            return form
+        return _set_node(form, order_i, confirm_next=form.nodes[confirm_i].next)  # type: ignore[index]
+    if asking:
+        return form
+    leftover = next(
+        (
+            i
+            for i, n in enumerate(form.nodes)
+            if n.kind == KIND_COLLECT and n.field_name == _ADDRESS_FIELD
+        ),
+        None,
+    )
+    if leftover is None:
+        title = "Pedir la dirección"
+        question = replace(
+            new_node(KIND_COLLECT, fresh_node_id(form, title), title),
+            body=_ADDRESS_PROMPT,
+            field_name=_ADDRESS_FIELD,
+            error_message=_ADDRESS_ERROR,
+            next=order.confirm_next,
+        )
+        form = replace(form, nodes=[*form.nodes, question])
+        question_id = question.node_id
+    else:
+        form = _set_node(form, leftover, next=order.confirm_next)
+        question_id = form.nodes[leftover].node_id
+    return _set_node(form, order_i, confirm_next=question_id)
+
+
+def guided_set_address_prompt(form: MenuForm, text: str) -> MenuForm:
+    order_i = _first_kind(form, KIND_ORDER_SUMMARY)
+    if order_i is None:
+        return form
+    confirm_i = _find(form, form.nodes[order_i].confirm_next)
+    if confirm_i is None or form.nodes[confirm_i].kind != KIND_COLLECT:
+        return form
+    return _set_node(form, confirm_i, body=text)
+
+
+def guided_step_label(step: int) -> str:
+    return f"Paso {step} de {GUIDED_STEPS}"
+
+
+def _button_does(button: GuidedButtonVM) -> str:
+    if button.action == ACTION_PRODUCTS:
+        return "muestra tus productos con su precio"
+    if button.action == ACTION_PERSON:
+        return "te pasa el chat para que respondas tú"
+    if button.action == ACTION_TEXT:
+        return f"responde «{excerpt(button.text)}»" if button.text.strip() else "aún sin mensaje"
+    if button.action == ACTION_MORE:
+        return (
+            f"muestra más botones ({button.more_summary})"
+            if button.more_summary
+            else ("muestra más botones")
+        )
+    return "aún no hace nada"
+
+
+def guided_review(view: GuidedVM, catalog_count: int) -> list[str]:
+    """Step 4's review, in words (guide N6): what the customer gets, button by button,
+    and who closes the order (always the owner — guide N13)."""
+    lines: list[str] = []
+    if view.greeting.strip():
+        lines.append(f"Saluda: «{excerpt(view.greeting, 80)}»")
+    else:
+        lines.append("No manda un saludo propio: empieza con la pregunta.")
+    if view.uses_buttons:
+        labels = [b.label.strip() for b in view.buttons if b.label.strip()]
+        noun = "botón" if len(labels) == 1 else "botones"
+        listed = ", ".join(f"«{label}»" for label in labels)
+        lines.append(f"Pregunta «{excerpt(view.question, 60)}» con {len(labels)} {noun}: {listed}.")
+        for button in view.buttons:
+            if button.label.strip():
+                lines.append(f"«{button.label.strip()}» {_button_does(button)}.")
+    if view.has_products:
+        if catalog_count == 0:
+            lines.append("Tu catálogo está vacío: agrega tus productos para que te puedan pedir.")
+        else:
+            noun = "producto" if catalog_count == 1 else "productos"
+            lines.append(f"Muestra tus {catalog_count} {noun} con su precio.")
+    if view.has_order:
+        if view.address_choice == ADDRESS_ASK:
+            lines.append(
+                "Al confirmar un pedido, pide la dirección y te pasa el chat para que lo cierres."
+            )
+        else:
+            lines.append("Al confirmar un pedido, te pasa el chat para que lo cierres.")
+    return lines
 
 
 # --------------------------------------------------------------------------------------
@@ -1189,7 +1814,7 @@ PUBLISH_CONFIRM_REPLACES = "Tu menú «{name}» deja de responder y este toma su
 PUBLISH_CONFIRM_PAUSED = (
     "Tu menú está en pausa: después de publicar, tócalo en «Reanudar el menú» para que responda."
 )
-NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para el mostrador"
+NEXT_STEP_QR = "Haz que te escriban: crea tu código QR para tu local o tus redes"
 # Publishing keeps the pause (the backend does not touch it): «listo» would be false.
 PUBLISHED_BUT_PAUSED = "Publicamos el menú, pero está en pausa: no responde hasta que lo reanudes."
 RESUME_BUTTON = "Reanudar el menú"
@@ -1411,8 +2036,22 @@ def catalog_note(count: int, brand: str) -> str:
 
 
 __all__ = [
+    "ACTION_MORE",
+    "ACTION_MORE_LABEL",
+    "ACTION_PERSON",
+    "ACTION_PRODUCTS",
+    "ACTION_TEXT",
+    "ADDRESS_ASK",
+    "ADDRESS_SKIP",
+    "COLLECT_FIELDS",
     "COLLECT_VALIDATIONS",
+    "EMPTY_GUIDED",
     "EMPTY_MENU",
+    "GUIDED_ACTIONS",
+    "GUIDED_HELP",
+    "GUIDED_STEPS",
+    "GUIDED_TITLES",
+    "HANDOFF_REASONS",
     "KIND_BUTTONS",
     "KIND_COLLECT",
     "KIND_HANDOFF",
@@ -1422,33 +2061,37 @@ __all__ = [
     "KIND_PRODUCTS",
     "KIND_TEXT",
     "MAX_LIST_SECTIONS",
-    "NODE_KINDS",
     "NEXT_STEP_QR",
+    "NODE_KINDS",
     "NONE_VALUE",
+    "PUBLISHED_BUT_PAUSED",
     "PUBLISH_BUTTON",
     "PUBLISH_CONFIRM",
     "PUBLISH_CONFIRM_BACK_TO",
     "PUBLISH_CONFIRM_BUTTON",
     "PUBLISH_CONFIRM_PAUSED",
-    "PUBLISHED_BUT_PAUSED",
+    "PUBLISH_CONFIRM_REPLACES",
     "PUBLISH_CONFIRM_RESEND",
+    "PUBLISH_CONFIRM_SAVES",
     "PUBLISH_CONFIRM_STARTS_WITH",
     "PUBLISH_PARTIAL",
-    "PUBLISH_CONFIRM_REPLACES",
-    "PUBLISH_CONFIRM_SAVES",
     "REPLY_BUTTON",
     "REPLY_LIST",
     "RESUME_BUTTON",
     "SAVE_ONLY_BUTTON",
     "TEMPLATE_EMPTY",
     "TEMPLATE_FAST_FOOD",
+    "CatalogRowVM",
     "CommandForm",
     "FormResult",
+    "GuidedButtonVM",
+    "GuidedVM",
     "IceBreakerForm",
     "KeywordForm",
     "MenuForm",
     "MenuSummaryVM",
     "MenuVersionVM",
+    "NodeChoiceVM",
     "NodeForm",
     "OptionForm",
     "PreviewChoiceVM",
@@ -1460,24 +2103,44 @@ __all__ = [
     "build_version_vm",
     "can_publish",
     "catalog_note",
+    "catalog_rows",
     "change_kind",
     "definition_to_form",
     "empty_form",
+    "ensure_person",
+    "ensure_products",
+    "excerpt",
     "flow_order",
     "form_to_payload",
+    "fresh_node_id",
+    "guided_add_button",
+    "guided_remove_button",
+    "guided_review",
+    "guided_set_address",
+    "guided_set_address_prompt",
+    "guided_set_button_action",
+    "guided_set_button_label",
+    "guided_set_button_text",
+    "guided_set_greeting",
+    "guided_set_products_intro",
+    "guided_set_question",
+    "guided_step_label",
+    "guided_use_buttons",
+    "guided_view",
     "handoff_note",
     "issues_summary",
     "menu_status",
     "new_node",
     "new_option",
+    "node_choices",
+    "node_label",
+    "node_labels",
     "order_lines",
     "preview_turn",
     "publish_confirm_lines",
     "publish_notice",
-    "rename_node",
     "template_definition",
     "translate_error",
-    "unique_node_id",
     "validate_form",
     "validate_menu_name",
 ]

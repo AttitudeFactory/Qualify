@@ -1,0 +1,593 @@
+{
+  "golden": "synthetic_smoke.jsonl",
+  "golden_sha256": "72015740d21f775858a0cd1904d7af6d7d048c657064dba3dd15e89859b535f3",
+  "split": "test",
+  "comments": 40,
+  "synthetic": true,
+  "agreement": {
+    "double_labeled": 0,
+    "min_double_labeled": 50,
+    "min_kappa": 0.7,
+    "kappa": {
+      "sentiment": null,
+      "kind": null,
+      "needs_reply": null
+    },
+    "status": "pending"
+  },
+  "drafts": {
+    "drafts": 40,
+    "errors": 0,
+    "price_failures": 0,
+    "auto_flags": {
+      "invented": 10,
+      "third_person": 0
+    },
+    "reviewed": 0,
+    "invented": 0,
+    "third_person": 0,
+    "promises_or_admits": 0,
+    "opening": {
+      "top": "qué bueno que",
+      "share": 0.2,
+      "max_share": 0.2,
+      "repeated": false
+    },
+    "usable_rate": {
+      "pos": null,
+      "neu": null,
+      "neg": null
+    },
+    "usable_bars": {
+      "pos": 0.9,
+      "neu": 0.9,
+      "neg": 0.8
+    },
+    "cost_usd": 0.006569,
+    "cost_usd_per_draft": 0.00016422,
+    "status": "pending",
+    "rows": [
+      {
+        "comment": "Riquísimas las arepas, atención de primera",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué bueno que te gustaron las arepas y que la atención te pareció de primera! Gracias por contarnos, nos alegra mucho. 😊",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001127,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "El jugo de lulo está buenísimo 🙌",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué bueno que te gustó el jugo de lulo! Nos alegra mucho saberlo 🙌",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001059,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Gracias por atendernos tan bien anoche",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué bonito leer eso! Nos alegra mucho que hayan disfrutado su noche con nosotros. 😊",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001077,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Hermosa la torta, todos la amaron 😍",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué bueno que la torta les gustó tanto! Nos alegra mucho que la hayan disfrutado. 😊",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001047,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Los tequeños volaron en la fiesta, éxito total",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué alegría saber que los tequeños volaron en la fiesta! Gracias por contarnos, nos encanta que hayan sido un éxito 🎉",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00011090000000000001,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Mariela eres una artista!!",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué lindas palabras, muchas gracias! Nos alegra mucho que te gusten nuestros dulces 🤍",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.000217,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Qué buena muzza, che 🍕",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué bueno que te gustó la muzza! Gracias por contarnos 🍕",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 9.779999999999999e-05,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Riquísimo el chivito, abundante y caliente",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué bueno que te gustó el chivito al pan, y que llegó abundante y caliente! Gracias por contarnos 😊",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00010570000000000001,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Volvimos y otra vez 10 puntos",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Qué alegría que hayan vuelto y que la experiencia les haya gustado tanto! Gracias por seguir confiando en nosotros. 🙌",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001095,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Siempre lo mejor 👏👏",
+        "golden_sentiment": "pos",
+        "golden_kind": "praise",
+        "draft": "¡Muchas gracias por tus palabras, nos alegra mucho! 🙌",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001005,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¿Precio de la reina pepiada?",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "¡Qué buena pregunta! No compartimos precios por aquí, pero escríbenos por mensaje privado y te damos la información con gusto.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00011509999999999999,
+        "price": "declined",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¿Dónde quedan?",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "¡Qué bueno que nos escribes! Escríbenos por mensaje privado y te ayudamos con la ubicación.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001343,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Buenas tardes, ¿aceptan Nequi?",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "¡Buenas tardes! Para saber qué medios de pago recibimos, escríbenos por mensaje privado y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002747,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¿Hacen tortas para 30 personas?",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "Gracias por preguntar. Nuestra torta tres leches es para 12 personas, y para un grupo de 30 escríbenos por mensaje privado y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001862,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Cuánto los tequeños x50",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "Gracias por preguntar por los tequeños de fiesta 🙌 Para darte el precio, escríbenos por mensaje privado y te lo confirmamos enseguida.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00011659999999999999,
+        "price": "declined",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¡Qué belleza! ¿hacen envíos a Valencia?",
+        "golden_sentiment": "pos",
+        "golden_kind": "question",
+        "draft": "¡Qué bueno que te gusta! Para saber si llegamos a Valencia, escríbenos por mensaje privado y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.000182,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¿Tienen chivito vegetariano?",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "Gracias por preguntar. Escríbenos por mensaje privado y te contamos qué opciones tenemos para ti.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001786,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¿Cuánto sale la muzza? se ve tremenda",
+        "golden_sentiment": "pos",
+        "golden_kind": "question",
+        "draft": "¡Qué bueno que te gusta cómo se ve la muzzarella! Para consultarnos el precio, escríbenos por mensaje privado y te respondemos con gusto.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001176,
+        "price": "declined",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "¿Hasta cuándo hay que esperar para que contesten un pedido?",
+        "golden_sentiment": "neg",
+        "golden_kind": "question",
+        "draft": "Entendemos que esperar sea molesto. Escríbenos por mensaje privado con los datos de tu pedido y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.000253,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "dm",
+        "golden_sentiment": "neu",
+        "golden_kind": "question",
+        "draft": "¡Hola! Escríbenos por mensaje privado y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002172,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Me llegó la arepa sin queso, ¿así venden?",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos lo que pasó con tu arepa. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001121,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Pésima atención, la muchacha de la caja ni saludó",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos mucho lo que pasó. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00011059999999999999,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Pagué el domicilio y nunca llegó",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos mucho lo que pasó. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001266,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "La torta estaba seca, no la recomiendo",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos que la torta no haya estado como esperabas. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001094,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Me dijeron que estaba lista a las 3 y a las 5 todavía nada",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos la espera y las molestias que esto te haya causado. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001501,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Muy caro el quesillo para ese tamaño",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos que el precio no te haya parecido el adecuado. Escríbenos por mensaje privado y lo conversamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.000203,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Pedí sin cebolla y vino lleno de cebolla",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos lo que pasó con tu pedido. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001084,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Tardaron una hora y media, un desastre",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos la demora y la mala experiencia. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001073,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "La fainá estaba quemada, qué lástima",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos que la fainá no haya llegado como esperabas. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001099,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Qué bueno sería que respondieran los comentarios 🙄",
+        "golden_sentiment": "neg",
+        "golden_kind": "complaint",
+        "draft": "Lamentamos que sientas que no te hemos respondido. Escríbenos por mensaje privado y lo revisamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00020569999999999999,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "@sofi_m para tu cumple",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "¡Qué lindo detalle! Gracias por compartirlo con nosotros. Si quieres encargar algo para la celebración, escríbenos por mensaje privado y lo vemos contigo. 🎂",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002663,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "@andres vamos el viernes",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "¡Qué bueno leerlo! Gracias por contarnos, esperamos verte pronto por la Pizzería 🙂",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002366,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Gana dinero desde casa, escríbeme",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "Gracias por pasarte por nuestra publicación. Si te apetece probar nuestras arepas o el jugo de lulo, aquí estamos. 😊",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00027039999999999996,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "jajaja @nico mirá vos",
+        "golden_sentiment": "pos",
+        "golden_kind": "other",
+        "draft": "¡Jaja, gracias por compartirlo con nosotros! 😄",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.00015780000000000001,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "🔥",
+        "golden_sentiment": "pos",
+        "golden_kind": "other",
+        "draft": "¡Gracias por el apoyo! 🔥 Nos alegra que te guste lo que hacemos.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001037,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Yo pedí la semana pasada",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "Gracias por contarnos. Si necesitas algo sobre tu pedido, escríbenos por mensaje privado y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002878,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "@vale_23 esto es lo que te dije",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "¡Gracias por compartirlo! Si quieres saber más sobre nuestras arepas o el jugo de lulo, escríbenos por mensaje privado.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002608,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Segunda",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "¡Gracias por pasarte por aquí! Si nos cuentas un poco más por mensaje privado, con gusto te ayudamos.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002355,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "Mi vecino dice que antes era mejor @ana",
+        "golden_sentiment": "neg",
+        "golden_kind": "other",
+        "draft": "Gracias por contarnos tu opinión. Nos importa mucho lo que piensas, así que escríbenos por mensaje privado y lo conversamos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0002927,
+        "price": "n/a",
+        "invented_flags": [
+          "model_unsupported"
+        ],
+        "third_person_flags": [],
+        "error": ""
+      },
+      {
+        "comment": "listo",
+        "golden_sentiment": "neu",
+        "golden_kind": "other",
+        "draft": "¡Gracias por pasar por nuestra publicación! Si quieres consultarnos algo, escríbenos por mensaje privado y lo vemos contigo.",
+        "model_id": "claude-haiku-5-5",
+        "prompt_version": "atender4a.2:claude-haiku-5-5",
+        "cost_usd": 0.0001663,
+        "price": "n/a",
+        "invented_flags": [],
+        "third_person_flags": [],
+        "error": ""
+      }
+    ],
+    "review_sheet": "20261023-143235-revision.csv"
+  }
+}

@@ -29,18 +29,18 @@ def _revoke_action(o: OptInVM) -> rx.Component:
     return confirm_action(
         rx.button(
             rx.icon("user-x", size=T.ICON_SM),
-            "Revocar",
+            "Quitar de la lista",
             loading=S.revoking_phone == o.phone,
             variant="soft",
             size="1",
             **T.tone_scheme("neutral"),
         ),
-        title="Revocar consentimiento",
+        title="Quitar de la lista",
         description=rx.text(
             rx.text.strong(o.phone),
             " deja de recibir campañas. Solo vuelve a estar activo si da un consentimiento nuevo.",
         ),
-        verb="Revocar",
+        verb="Quitar de la lista",
         on_confirm=S.revoke_phone(o.phone),
     )
 
@@ -122,7 +122,8 @@ def _list() -> rx.Component:
                 "users",
                 "Aún no hay contactos con consentimiento",
                 "Solo puedes enviar campañas a quien aceptó recibir mensajes de WhatsApp de "
-                "tu negocio. Impórtalos del formulario de leads o agrégalos a mano.",
+                "tu negocio. Impórtalos del formulario de clientes interesados o agrégalos a "
+                "mano.",
             ),
         ),
         rx.cond(
@@ -137,18 +138,18 @@ def _import_action() -> rx.Component:
     return confirm_action(
         rx.button(
             rx.icon("download", size=16),
-            "Importar del formulario de leads",
+            "Importar del formulario de clientes interesados",
             loading=S.importing,
             on_click=S.prepare_import,
             variant="soft",
             size="2",
             **T.tone_scheme("neutral"),
         ),
-        title="Importar del formulario de leads",
+        title="Importar del formulario de clientes interesados",
         description=rx.vstack(
             rx.text(IMPORT_CONDITION, weight="medium"),
             rx.text(
-                "Cada lead con consentimiento se agrega con el texto del formulario y la "
+                "Cada cliente interesado que aceptó se agrega con el texto del formulario y la "
                 "fecha en que lo aceptó. Quien escribió STOP después no se reactiva.",
                 size="2",
                 color=T.TEXT_MUTED,
@@ -162,7 +163,9 @@ def _import_action() -> rx.Component:
                     width="100%",
                 ),
                 rx.text(
-                    "Tu negocio aún no tiene formulario de leads.", size="2", color=T.TEXT_MUTED
+                    "Tu negocio aún no tiene formulario de clientes interesados.",
+                    size="2",
+                    color=T.TEXT_MUTED,
                 ),
             ),
             spacing="3",
@@ -239,8 +242,8 @@ def contacts_tab() -> rx.Component:
             ),
         ),
         rx.text(
-            "Solo estos números pueden recibir tus campañas de marketing. Quien escribe STOP, "
-            "BAJA o CANCELAR queda revocado solo.",
+            "Solo estos números pueden recibir tus promociones. Si alguien responde BAJA, "
+            "deja de recibir tus promociones.",
             size="2",
             color=T.TEXT_MUTED,
         ),

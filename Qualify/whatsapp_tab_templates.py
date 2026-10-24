@@ -144,9 +144,10 @@ def _list() -> rx.Component:
             empty_state(
                 "file-text",
                 "Aún no hay plantillas en este número",
-                "Las plantillas son los mensajes que puedes enviar fuera de la ventana de "
-                "24 h, como una campaña. Crea la primera, o sincroniza las que ya tienes "
-                "en WhatsApp Manager.",
+                "Estos mensajes, una vez que Meta los aprueba, te sirven para escribirle a un "
+                "cliente después de 24 horas o para enviar una promoción. Crea el primero. "
+                "Si ya tienes mensajes aprobados en Meta, toca «Ver si ya las aprobaron» y "
+                "aparecerán aquí.",
                 action=rx.button(
                     rx.icon("plus", size=16), "Nueva plantilla", on_click=S.open_form, size="3"
                 ),
@@ -476,7 +477,7 @@ def templates_tab() -> rx.Component:
         tone_banner(S.banner, S.banner_tone),
         section_head(
             "Plantillas",
-            ghost_refresh("Sincronizar con Meta", S.sync, loading=S.syncing),
+            ghost_refresh("Ver si ya las aprobaron", S.sync, loading=S.syncing),
             rx.button(rx.icon("plus", size=16), "Nueva plantilla", on_click=S.open_form, size="2"),
         ),
         rx.text(

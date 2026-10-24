@@ -24,6 +24,9 @@ from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
+    CLIP_DURATIONS,
+    DURATIONS,
+    SLIDE_SECONDS,
     STOCK_MAX_PICKS,
     CreativeState,
 )
@@ -341,7 +344,9 @@ _CATEGORY_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in CAT
 _VIDEO_TYPE_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in VIDEO_TYPE_OPTIONS}
 _DISCOVER_HEADING = (
     "Descubrir reels",
-    "Los reels con más vistas de tus referentes, solo de tu rubro, para inspirarte o replicarlos.",
+    # what the filter keeps (`referentes/reels_ai.py`, FITS = producto | categoria)
+    "Los reels con más vistas de tus referentes, solo de tu producto o su categoría, "
+    "para inspirarte o replicarlos.",
     "compass",
 )
 _VARIATIONS_HEADING = (
@@ -938,6 +943,7 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
             on_change=lambda value: CreativeState.set_picker_tab(target, value),
             size="1",
             aria_label="De dónde viene",
+            class_name="q-seg-fit",
         )
 
     rest = (("upload", "Subir"), ("pieces", "Publicaciones"))
@@ -2780,12 +2786,21 @@ def _slide_generated_fields() -> rx.Component:
     )
     length = _slide_panel(
         rx.text("Duración", **muted),
-        rx.segmented_control.root(
-            rx.segmented_control.item("5 s", value="5"),
-            rx.segmented_control.item("10 s", value="10"),
-            value=current["seconds"],
-            on_change=lambda value: CreativeState.set_slide_field(index, "seconds", value),
-            size="2",
+        rx.vstack(
+            rx.segmented_control.root(
+                *_seconds_items(SLIDE_SECONDS),
+                value=current["seconds"],
+                on_change=lambda value: CreativeState.set_slide_field(index, "seconds", value),
+                size="2",
+                width="100%",
+                class_name="q-seg-fit q-seg-fit--nowrap",
+            ),
+            # § request 2026-10-23: the gallery's video may bring its sound — off by default
+            _audio_switch(
+                checked=current["audio"] != "",
+                on_change=lambda _: CreativeState.toggle_slide_audio(index),
+            ),
+            spacing="3",
             width="100%",
         ),
         width="100%",
@@ -3281,13 +3296,20 @@ def _script_source() -> rx.Component:
     """Claude writes the script to the chosen length, or the operator writes it and the
     avatar reads it word for word."""
     return rx.vstack(
-        rx.hstack(
-            rx.switch(
-                checked=CreativeState.own_script_on, on_change=CreativeState.set_own_script_on
+        # UX review (N12): the text toggles the switch too, a ≥ 44 px target with a name
+        rx.el.label(
+            rx.hstack(
+                rx.switch(
+                    checked=CreativeState.own_script_on,
+                    on_change=CreativeState.set_own_script_on,
+                    aria_label="Escribir mi propio guion",
+                ),
+                rx.text("Escribir mi propio guion", size="2"),
+                spacing="2",
+                align="center",
+                min_height="44px",
             ),
-            rx.text("Escribir mi propio guion", size="2"),
-            spacing="2",
-            align="center",
+            cursor="pointer",
         ),
         rx.cond(
             CreativeState.own_script_on,
@@ -3307,17 +3329,27 @@ def _script_source() -> rx.Component:
     )
 
 
+def _seconds_items(values: tuple[str, ...]) -> list[rx.Component]:
+    """A duration control's options, «15 s»: number and unit joined by a no-break space,
+    so a phone-width segment never splits them over two lines (m-24820845)."""
+    return [rx.segmented_control.item(f"{s}\u00a0s", value=s) for s in values]
+
+
 def _duration_select() -> rx.Component:
-    return rx.hstack(
+    """The avatar's length when Claude writes the script. The label sits above the
+    control, as in `_field`, so the control has the full width and a phone never splits
+    «15 s» over two lines (m-24820845)."""
+    return rx.vstack(
         rx.text("Duración", size="2", weight="medium"),
         rx.segmented_control.root(
-            *(rx.segmented_control.item(f"{s} s", value=s) for s in ("15", "30", "45", "60")),
+            *_seconds_items(DURATIONS),
             value=CreativeState.media_duration,
             on_change=CreativeState.set_media_duration,
+            class_name="q-seg-fit q-seg-fit--nowrap",
         ),
-        spacing="3",
-        align="center",
-        wrap="wrap",
+        spacing="1",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -3549,10 +3581,10 @@ def _section_channel() -> rx.Component:
     # default.
     return _section(
         "channel",
-        "¿Dónde se publica?",
-        "De qué trata y en qué formato.",
+        "¿Cómo la quieres?",
+        "El formato en que sale. Ya elegimos uno por ti; cámbialo si quieres.",
         _field(
-            "De qué trata",
+            "Tipo de publicación",
             rx.select.root(
                 rx.select.trigger(width="100%"),
                 rx.select.content(
@@ -3565,16 +3597,21 @@ def _section_channel() -> rx.Component:
                 on_change=CreativeState.set_content_type,
             ),
         ),
+        # UX review (N12): one option per line, so a long name such as «Reel (video
+        # corto) 9:16» never pushes the screen sideways at 360 px
         _field(
             "Formato",
-            rx.segmented_control.root(
+            rx.radio_group.root(
                 rx.foreach(
                     CreativeState.format_options,
-                    lambda option: rx.segmented_control.item(option[1], value=option[0]),
+                    lambda option: rx.radio_group.item(
+                        option[1], value=option[0], min_height="44px"
+                    ),
                 ),
                 value=CreativeState.effective_format,
                 on_change=CreativeState.set_brief_format,
-                size="2",
+                size="3",
+                aria_label="Formato",
             ),
         ),
         # § request 2026-10-14: the script's length is asked here, with the format
@@ -3583,16 +3620,57 @@ def _section_channel() -> rx.Component:
             _field(
                 "Duración",
                 rx.segmented_control.root(
-                    *(
-                        rx.segmented_control.item(f"{s} s", value=s)
-                        for s in ("15", "30", "45", "60")
-                    ),
+                    *_seconds_items(DURATIONS),
                     value=CreativeState.media_duration,
                     on_change=CreativeState.set_media_duration,
                     size="2",
+                    class_name="q-seg-fit q-seg-fit--nowrap",
                 ),
             ),
         ),
+        # § request 2026-10-23: a clip's length, from 5 s up to 15 s
+        rx.cond(
+            CreativeState.brief_kind == "clip",
+            _field(
+                "Duración",
+                rx.segmented_control.root(
+                    *_seconds_items(CLIP_DURATIONS),
+                    value=CreativeState.clip_duration,
+                    on_change=CreativeState.set_clip_duration,
+                    size="2",
+                    class_name="q-seg-fit q-seg-fit--nowrap",
+                ),
+            ),
+        ),
+        # The clip's «Con sonido» (§ request 2026-10-23) is behind «Más opciones» in
+        # `_step_how` (UX review 2026-10-24, finding 4).
+    )
+
+
+#: What «Con sonido» adds (§ request 2026-10-23; wording from the UX review 2026-10-24,
+#: finding 4 — no line about models that make no sound: a kind that cannot bring sound
+#: does not show the switch).
+_AUDIO_HINT = "Sonido de ambiente y voces, creados junto con el video."
+
+
+def _audio_switch(*, checked: object, on_change: object) -> rx.Component:
+    """«Con sonido»: the sound the video model makes with the video (clip and the
+    gallery's animated slide)."""
+    return rx.vstack(
+        # UX review (N12): the text toggles the switch too, a ≥ 44 px target with a name
+        rx.el.label(
+            rx.hstack(
+                rx.switch(checked=checked, on_change=on_change, size="2", aria_label="Con sonido"),
+                rx.text("Con sonido", size="2"),
+                spacing="2",
+                align="center",
+                min_height="44px",
+            ),
+            cursor="pointer",
+        ),
+        rx.text(_AUDIO_HINT, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
     )
 
 
@@ -3662,7 +3740,7 @@ _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
         "Imágenes generadas, videos animados o publicaciones que ya hiciste, en el orden "
         "en que salen.",
     ),
-    "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
+    "video": ("El fondo", "Qué se ve detrás del avatar y, si quieres, un video de referencia."),
     "clip": (
         "Fotogramas",
         "La imagen con la que empieza el clip y, si quieres, con la que termina.",
@@ -3695,17 +3773,29 @@ def _section_details() -> rx.Component:
             ("template", _template_details()),
             ("carousel", _carousel_section()),
             rx.vstack(
-                _script_source(),
-                rx.divider(),
+                # CREAR-2: the script is asked in step 2, «Qué decir»
                 _field_label(
                     "Fondo y productos",
                     "Se componen en una sola imagen detrás del avatar.",
                 ),
                 _images_section(),
-                # § request 2026-10-20: no «Referencia» view of its own for an avatar
+                # § request 2026-10-20: no «Referencia» view of its own for an avatar; UX
+                # review (N6): it and the brand resources are folded under «Más opciones»
                 rx.divider(),
-                _field_label("Video de referencia (opcional)", _REFERENCE_HINT),
-                _reference_body(),
+                _more_options(
+                    CreativeState.show_more_open,
+                    CreativeState.toggle_show_more,
+                    "Un video de referencia y tus fotos de marca. Puedes crear sin tocarlos.",
+                    rx.vstack(
+                        _field_label("Video de referencia (opcional)", _REFERENCE_HINT),
+                        _reference_body(),
+                        rx.cond(CreativeState.brand_media_items.length() > 0, rx.divider()),
+                        _brand_resources(),
+                        spacing="4",
+                        align_items="start",
+                        width="100%",
+                    ),
+                ),
                 spacing="4",
                 align_items="start",
                 width="100%",
@@ -3715,8 +3805,11 @@ def _section_details() -> rx.Component:
         # record with whatever they have
         # nor does a clip here: it takes only a logo, in its own «Referencias» view
         # (§ request 2026-10-20)
+        # an avatar's are behind its «Más opciones», above
         rx.cond(
-            (CreativeState.brief_kind != "creator_script") & (CreativeState.brief_kind != "clip"),
+            (CreativeState.brief_kind != "creator_script")
+            & (CreativeState.brief_kind != "clip")
+            & (CreativeState.gen_category != "video"),
             rx.fragment(
                 rx.cond(CreativeState.brand_media_items.length() > 0, rx.divider()),
                 _brand_resources(),
@@ -3761,6 +3854,13 @@ def _section_rules() -> rx.Component:
                 "Lo que la publicación tiene que destacar tal cual: el precio, un descuento, una "
                 "fecha, un código… La IA los usa exactos, sin cambiarlos ni inventar otros.",
                 size="1",
+                color=T.TEXT_MUTED,
+            ),
+            # CREAR-2: these facts never edit the brand
+            rx.text(
+                "Solo para esta publicación: tu marca no cambia.",
+                size="1",
+                weight="medium",
                 color=T.TEXT_MUTED,
             ),
             spacing="0",
@@ -3932,26 +4032,155 @@ def _view_step(step: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _view_steps() -> rx.Component:
-    return rx.box(
-        rx.foreach(CreativeState.gen_view_steps, _view_step),
-        class_name="q-stepper",
-        role="list",
-        aria_label="Pasos",
+    """The four steps (CREAR-2) and «Paso N de M» (N6)."""
+    return rx.vstack(
+        rx.text(
+            CreativeState.gen_step_count,
+            size="1",
+            weight="medium",
+            color=T.TEXT_MUTED,
+            aria_live="polite",
+        ),
+        rx.box(
+            rx.foreach(CreativeState.gen_view_steps, _view_step),
+            class_name="q-stepper",
+            role="list",
+            aria_label="Pasos",
+            width="100%",
+        ),
+        spacing="2",
         width="100%",
+        align_items="start",
+    )
+
+
+def _has_view(view: str) -> rx.Var[bool]:
+    return CreativeState.gen_step_views.contains(view)
+
+
+def _step_show() -> rx.Component:
+    """① Qué mostrar: Avatar's types, the references, the presenter and the kind's own
+    section — everything a kind cannot do without (CREAR-2)."""
+    return rx.vstack(
+        rx.cond(_has_view("avatar_type"), _avatar_type_view()),
+        rx.cond(
+            _has_view("reference"),
+            rx.cond(
+                CreativeState.gen_category == "clip",
+                _clip_references_view(),
+                _reference_view(),
+            ),
+        ),
+        rx.cond(_has_view("presenter"), _section_presenter()),
+        rx.cond(_has_view("details"), _section_details()),
+        spacing="6",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _step_say() -> rx.Component:
+    """② Qué decir: the context, «Mejorar mi texto», for an avatar its script, and
+    «Datos clave» behind «Más opciones»."""
+    return rx.vstack(
+        _section_topic(),
+        rx.cond(
+            CreativeState.gen_category == "video",
+            rx.vstack(
+                rx.divider(),
+                _field_label("El guion", "Lo escribimos con tu texto, o lo escribes tú."),
+                _script_source(),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        rx.divider(),
+        # UX review: the price or a promotion are what the piece says
+        _more_options(
+            CreativeState.rules_open,
+            CreativeState.toggle_rules,
+            "El precio o una promoción, y qué decir o evitar. Puedes crear sin tocarlos.",
+            _section_rules(),
+        ),
+        spacing="5",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _more_options(
+    is_open: rx.Var[bool],
+    toggle: rx.event.EventHandler,
+    hint: str | rx.Var[str],
+    body: rx.Component,
+) -> rx.Component:
+    """«Más opciones» (N6): a step's optional fields, folded until the owner opens them,
+    with a hint of what is inside while it is closed."""
+    return rx.vstack(
+        rx.button(
+            rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
+            "Más opciones",
+            variant="ghost",
+            color_scheme="gray",
+            size="3",
+            min_height="44px",
+            on_click=toggle,
+            aria_expanded=rx.cond(is_open, "true", "false"),
+        ),
+        rx.cond(~is_open, rx.text(hint, size="1", color=T.TEXT_MUTED)),
+        rx.cond(is_open, body),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _step_how() -> rx.Component:
+    """③ Cómo la quieres: format and length; behind «Más opciones» the campaign and,
+    for a clip, «Con sonido» (UX review 2026-10-24, finding 4)."""
+    is_clip = CreativeState.brief_kind == "clip"
+    return rx.vstack(
+        _section_channel(),
+        rx.divider(),
+        _more_options(
+            CreativeState.campaign_open,
+            CreativeState.toggle_campaign_open,
+            rx.cond(
+                is_clip,
+                "El sonido del video y la campaña. Puedes crear sin tocarlos.",
+                "Agrupa esta publicación en una campaña. Puedes crear sin tocarla.",
+            ),
+            rx.vstack(
+                # § request 2026-10-23: «generar el clip con audio» — on by default
+                rx.cond(
+                    is_clip,
+                    _audio_switch(
+                        checked=CreativeState.clip_audio,
+                        on_change=CreativeState.set_clip_audio,
+                    ),
+                ),
+                _campaign_view(),
+                spacing="4",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        spacing="5",
+        width="100%",
+        align_items="start",
     )
 
 
 def _summary_row(item: rx.Var[dict[str, str]]) -> rx.Component:
-    """One choice of the piece, and «Editar» back to the view that sets it."""
-    return rx.hstack(
-        rx.text(
-            item["label"],
-            size="2",
-            color=T.TEXT_MUTED,
-            width="10rem",
-            flex_shrink="0",
-        ),
-        rx.text(item["value"], size="2", flex="1", min_width="0", white_space="pre-wrap"),
+    """One choice of the piece, and «Editar» back to the view that sets it. A grid
+    (`.q-cr-summary-row`, assets/qualify-creative.css): label · value · Editar on one
+    line, and on a phone the label with «Editar» on top and the value the full width
+    under them — a 10rem label beside it left ~6 letters a line at 375 px and broke
+    words in half («Product/o», m-24820845)."""
+    return rx.box(
+        rx.text(item["label"], size="2", color=T.TEXT_MUTED, class_name="q-cr-summary-label"),
+        rx.text(item["value"], size="2", class_name="q-cr-summary-value"),
         rx.cond(
             item["index"] != "",
             rx.button(
@@ -3960,17 +4189,15 @@ def _summary_row(item: rx.Var[dict[str, str]]) -> rx.Component:
                 variant="ghost",
                 color_scheme="gray",
                 size="1",
-                on_click=CreativeState.go_to_view(item["index"]),
+                on_click=CreativeState.edit_view(item["view"]),
                 aria_label="Editar " + item["label"],
-                flex_shrink="0",
+                min_height="44px",
+                class_name="q-cr-summary-edit",
             ),
         ),
-        spacing="3",
-        align="start",
         width="100%",
-        padding_y="0.55rem",
         border_bottom=T.BORDER,
-        wrap=rx.breakpoints(initial="wrap", sm="nowrap"),
+        class_name="q-cr-summary-row",
     )
 
 
@@ -3980,9 +4207,10 @@ def _summary_view() -> rx.Component:
     Generar from running. Generar is in its footer."""
     return rx.vstack(
         rx.vstack(
-            rx.heading("Resumen", size="4", as_="h3"),
+            rx.heading("Revisa y crea", size="4", as_="h3"),
             rx.text(
-                "Revisa lo que vamos a crear. Si algo no está bien, edítalo antes de generar.",
+                "Revisa lo que vamos a crear. Crear no publica nada: después la revisas y tú "
+                "decides si sale.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -4022,6 +4250,7 @@ def _view_nav() -> rx.Component:
                     color_scheme="gray",
                     size="3",
                     radius=_CONTROL_RADIUS,
+                    min_height="44px",
                     on_click=CreativeState.prev_view,
                 ),
             ),
@@ -4030,9 +4259,10 @@ def _view_nav() -> rx.Component:
                 CreativeState.gen_is_last_view,
                 rx.button(
                     rx.icon("sparkles", size=T.ICON_SM),
-                    rx.cond(CreativeState.gen_generating, "Generando…", "Generar"),
+                    rx.cond(CreativeState.gen_generating, "Creando…", "Crear"),
                     size="3",
                     radius=_CONTROL_RADIUS,
+                    min_height="44px",
                     on_click=CreativeState.submit_generator_form,
                     loading=CreativeState.is_submitting,
                     disabled=CreativeState.gen_generating,
@@ -4042,6 +4272,7 @@ def _view_nav() -> rx.Component:
                     rx.icon("arrow-right", size=T.ICON_SM),
                     size="3",
                     radius=_CONTROL_RADIUS,
+                    min_height="44px",
                     on_click=CreativeState.next_view,
                 ),
             ),
@@ -4056,37 +4287,25 @@ def _view_nav() -> rx.Component:
 
 
 def _create_view() -> rx.Component:
-    """The chosen option, one view at a time (§ request 2026-10-14: "estilo view" instead
-    of the long scroll): the step bar, the view in front, and its navigation right under
-    it — never sticky (§ 2026-10-14, «siempre debajo del contenido»)."""
+    """The chosen option in four short steps (CREAR-2 m-24848530): the step bar, the
+    step in front, and its navigation right under it — never sticky (§ 2026-10-14,
+    «siempre debajo del contenido»)."""
     return card(
         rx.vstack(
             _view_steps(),
             rx.box(
                 rx.match(
-                    CreativeState.gen_view,
-                    ("avatar_type", _avatar_type_view()),
-                    (
-                        "reference",
-                        rx.cond(
-                            CreativeState.gen_category == "clip",
-                            _clip_references_view(),
-                            _reference_view(),
-                        ),
-                    ),
-                    ("topic", _section_topic()),
-                    ("channel", _section_channel()),
-                    ("presenter", _section_presenter()),
-                    ("details", _section_details()),
-                    ("campaign", _campaign_view()),
-                    ("summary", _summary_view()),
-                    _section_rules(),
+                    CreativeState.gen_step_key,
+                    ("show", _step_show()),
+                    ("say", _step_say()),
+                    ("how", _step_how()),
+                    _summary_view(),
                 ),
                 width="100%",
                 max_width="52rem",
                 margin_x="auto",
                 class_name="q-settle",
-                key=CreativeState.gen_view,
+                key=CreativeState.gen_step_key,
             ),
             _view_nav(),
             spacing="5",
