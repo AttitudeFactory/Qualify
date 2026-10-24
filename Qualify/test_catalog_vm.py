@@ -342,3 +342,45 @@ def test_the_leave_dialog_and_the_card_name_the_product() -> None:
     assert (LEAVE_STAY, LEAVE_SAVE) == ("Volver", "Guardar y salir")
     assert leave_description(" Helado ") == "Los cambios de «Helado» se van a perder."
     assert PRODUCT_QUERY == "producto"
+
+
+# -- m-24842977 ------------------------------------------------------------------------
+
+
+def test_product_count_label_says_how_many_lack_a_photo() -> None:
+    from .catalog_vm import product_count_label
+
+    assert product_count_label(1, 0) == "1 producto"
+    assert product_count_label(3, 0) == "3 productos"
+    assert product_count_label(3, 1) == "3 productos · 1 sin foto"
+    assert product_count_label(5, 2) == "5 productos · 2 sin foto"
+
+
+def test_missing_photo_filter_label() -> None:
+    from .catalog_vm import missing_photo_filter_label
+
+    assert missing_photo_filter_label(1, active=False) == "Ver el que no tiene foto"
+    assert missing_photo_filter_label(2, active=False) == "Ver los 2 sin foto"
+    assert missing_photo_filter_label(2, active=True) == "Ver todos los productos"
+
+
+def test_remove_media_words() -> None:
+    from .catalog_vm import remove_media_description, remove_media_title
+
+    assert remove_media_title("image") == "¿Quitar esta foto?"
+    assert remove_media_title("video") == "¿Quitar este video?"
+    plain = remove_media_description("image", is_primary=False)
+    assert plain.startswith("Esta foto ya no se usará") and "principal" not in plain
+    with_other = remove_media_description("image", is_primary=True, has_other_photo=True)
+    assert with_other.endswith("La siguiente foto pasa a ser la principal.")
+    only = remove_media_description("image", is_primary=True, has_other_photo=False)
+    assert only.endswith("Tu producto quedará sin foto hasta que subas otra.")
+    assert "Si tienes" not in with_other + only
+    video = remove_media_description("video", is_primary=False)
+    assert video.startswith("Este video") and "principal" not in video
+
+
+def test_no_photo_label_carries_pixel_sizes() -> None:
+    for w, h in ((1080, 1350), (320, 240), (None, None)):
+        assert "×" not in media_meta_label("image", w, h, None)
+        assert "px" not in media_meta_label("image", w, h, None)
