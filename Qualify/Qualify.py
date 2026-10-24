@@ -40,6 +40,7 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .creators_page import creators_index
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
@@ -292,13 +293,19 @@ app.add_page(
     on_load=[AuthState.require_login, ClarityState.load],
     title="Qualify · Tu página web",
 )
-# Fase 3 placeholder (see signals_page.py's module docstring) — static, no load beyond
-# the session gate. Reached today only from the Brand Kit connect flow's final screen.
+# The two «Pronto» screens of the menu (N10, NAV-1 m-24842957): static, no load beyond
+# the session gate; each says what is coming and links to something that works today.
 app.add_page(
     signals_index,
     route="/signals",
     on_load=[AuthState.require_login],
-    title="Qualify · Señales",
+    title="Qualify · Oportunidades",
+)
+app.add_page(
+    creators_index,
+    route="/creadores",
+    on_load=[AuthState.require_login],
+    title="Qualify · Creadores",
 )
 app.add_page(
     settings_index,
