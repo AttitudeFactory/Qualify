@@ -13,11 +13,13 @@ asserted by a plain unit test (`test_connections.py`).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .capabilities import (
     CAPABILITY_DISABLED_REASONS,
     CAPABILITY_LABELS,
+    Capability,
     CapabilityVerdict,
 )
 
@@ -25,6 +27,32 @@ from .capabilities import (
 # "pending" exists in the FSM but is transient (mid-OAuth) and not listed here as a
 # steady display state; the three below are what a loaded connection shows.
 ConnectionStatus = str  # "active" | "degraded" | "revoked"
+
+# m-24842969 (MARCA-6): the card's state in the owner's words — (label, tone, icon). Text
+# always, never colour alone; the FSM words («Degradada», «Revocada») never reach a screen.
+STATUS_LABELS: dict[str, tuple[str, str, str]] = {
+    "active": ("Funciona", "ok", "circle-check"),
+    "degraded": ("Hay que volver a conectarla", "warn", "triangle-alert"),
+    "revoked": ("Desconectada", "error", "circle-x"),
+}
+
+# m-24842969: what the owner can DO with the account, as short verbs for the «Puedes:» /
+# «Todavía no puedes:» lines. `None` = not a thing the owner does (the basic permission
+# everything rests on; the comment analysis that runs behind «ver comentarios»).
+OWNER_ABILITIES: dict[Capability, str | None] = {
+    Capability.CONNECT_ACCOUNT: None,
+    Capability.PUBLISH_CONTENT: "publicar",
+    Capability.READ_COMMENTS: "ver comentarios",
+    Capability.ANALYZE_COMMENTS: None,
+    Capability.REPLY_COMMENTS: "responder comentarios",
+    Capability.MANAGE_DMS: "ver mensajes",
+    Capability.READ_INSIGHTS: "ver tus resultados",
+    Capability.WA_SEND: "enviar mensajes de WhatsApp",
+    Capability.WA_TEMPLATES: "preparar mensajes para tus clientes",
+    Capability.WA_AUTOMATION: "mostrar tu menú de opciones",
+}
+
+ABILITY_SEPARATOR = " · "
 
 
 @dataclass(frozen=True)
@@ -74,7 +102,7 @@ class ConnectionVM:
     # Conflating the two is exactly the UX gap this field closes: before it existed, a
     # click ran /debug_token for real but nothing on screen changed. PRE-FORMATTED
     # server-side, same discipline as `last_verified_at`.
-    last_health_checked_at: str = "Sin verificar"
+    last_health_checked_at: str = "Todavía no"
     enabled_capabilities: list[CapabilityVM] = field(default_factory=list)
     disabled_capabilities: list[CapabilityVM] = field(default_factory=list)
     # QUA-91: the data-access-window warning, INDEPENDENT of `status`/the FSM. Empty
@@ -96,6 +124,14 @@ class ConnectionVM:
     # m-24840590: what this account is missing and which guide step fixes it.
     # Derived from the stored scope NAMES (never the token) — see `connection_hints`.
     hints: list[ConnectionHintVM] = field(default_factory=list)
+    # m-24842969: the two lines the owner reads first, pre-joined server-side
+    # («publicar · ver comentarios · ver mensajes»). Empty unless the account works:
+    # a card that has to be reconnected says so in its banner instead.
+    can_do: str = ""
+    cannot_do: str = ""
+    # The guide step «Cómo activarlo» opens (a `CONNECT_REQUIREMENTS` key); "" when the
+    # fix is not in the owner's hands (WhatsApp: the Qualify team connects the number).
+    cannot_step_key: str = ""
 
 
 # WA-05: a WhatsApp number is connected by an administrator with a system-user token
@@ -132,6 +168,43 @@ def _capability_vm(verdict: CapabilityVerdict) -> CapabilityVM:
     )
 
 
+def _abilities(caps: list[CapabilityVM]) -> list[str]:
+    """The owner's verbs for these capabilities, in matrix order, without repeats."""
+    phrases: list[str] = []
+    for cap in caps:
+        phrase = OWNER_ABILITIES.get(Capability(cap.key))
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def ability_lines(
+    *,
+    platform: str,
+    status: ConnectionStatus,
+    enabled: list[CapabilityVM],
+    disabled: list[CapabilityVM],
+) -> tuple[str, str, str]:
+    """(`can_do`, `cannot_do`, `cannot_step_key`) for a card (m-24842969).
+
+    Only a working account gets them. «Cómo activarlo» goes to the guide step that fixes
+    what is missing: the messages step when only the messages are off (that one also
+    needs a switch inside Instagram), the permissions step otherwise."""
+    if status != "active":
+        return "", "", ""
+    can = _abilities(enabled)
+    cannot = [phrase for phrase in _abilities(disabled) if phrase not in can]
+    step = ""
+    if cannot and platform != "whatsapp":
+        only_messages = all(
+            cap.key == str(Capability.MANAGE_DMS)
+            for cap in disabled
+            if OWNER_ABILITIES.get(Capability(cap.key))
+        )
+        step = "messages" if only_messages else "permissions"
+    return ABILITY_SEPARATOR.join(can), ABILITY_SEPARATOR.join(cannot), step
+
+
 def build_connection_vm(
     *,
     connection_id: str,
@@ -142,7 +215,7 @@ def build_connection_vm(
     last_verified_at: str,
     granted_scope_labels: list[str],
     verdicts: tuple[CapabilityVerdict, ...],
-    last_health_checked_at: str = "Sin verificar",
+    last_health_checked_at: str = "Todavía no",
     data_access_state: str = "",
     data_access_message: str = "",
     hints: list[ConnectionHintVM] | None = None,
@@ -161,6 +234,9 @@ def build_connection_vm(
         if vm.provisional and vm.enabled:
             provisional_shown = True
         (enabled if vm.enabled else disabled).append(vm)
+    can_do, cannot_do, cannot_step_key = ability_lines(
+        platform=platform, status=status, enabled=enabled, disabled=disabled
+    )
     return ConnectionVM(
         id=connection_id,
         platform=platform,
@@ -176,6 +252,9 @@ def build_connection_vm(
         data_access_state=data_access_state,
         data_access_message=data_access_message,
         hints=list(hints or []),
+        can_do=can_do,
+        cannot_do=cannot_do,
+        cannot_step_key=cannot_step_key,
     )
 
 
@@ -184,10 +263,13 @@ def build_connection_vm(
 # `denied` — so this table is the whole contract. Each entry is (message, tone); the tone
 # is a design-system tone (`ok`/`warn`/`info`), never a raw colour.
 CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
-    "active": ("Cuenta conectada. Ya aparece en la lista con sus permisos.", "ok"),
+    # m-24842969: «active» renders as the «Instagram conectado» panel (N3), not this line;
+    # the text stays as the fallback a notice-only consumer would show.
+    "active": ("Instagram conectado.", "ok"),
     "degraded": (
-        "La cuenta se conectó, pero Meta no confirmó el acceso. "
-        "Usa «Verificar ahora» en su tarjeta en unos minutos.",
+        "La cuenta se conectó, pero Meta todavía no confirma el acceso. "
+        "Si en unos minutos su tarjeta sigue diciendo «Hay que volver a conectarla», "
+        "toca «Volver a conectar».",
         "warn",
     ),
     "link_required": (
@@ -207,6 +289,39 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
         "warn",
     ),
 }
+
+
+# m-24842969 (N3/N4): after a successful connection, one solid button to the next job.
+CONNECTED_TITLE = "Instagram conectado"
+CONNECTED_BODY = "Ya puedes preparar tus publicaciones aquí. Antes de que salgan, tú las apruebas."
+CREATE_ROUTE = "/create"
+_RETURN_LABELS: tuple[tuple[str, str], ...] = (
+    ("/create", "Crear una publicación"),
+    ("/publish", "Seguir publicando"),
+)
+_SAFE_RETURN = re.compile(r"^/[a-z0-9][a-z0-9/_-]*$")
+
+
+def safe_return_path(raw: object) -> str:
+    """A `?volver=` value kept only when it is a path inside the app (N4): «/create»,
+    «/publish». Anything else — another site, «//host», a scheme, a query — is dropped:
+    the value arrives in the URL and is later used as a redirect target."""
+    value = str(raw or "").strip()
+    if len(value) > 64 or "//" in value or not _SAFE_RETURN.match(value):
+        return ""
+    if value == "/connections" or value.startswith("/connections/"):
+        return ""
+    return value
+
+
+def continue_after_connect(return_to: str) -> tuple[str, str]:
+    """(label, route) of the «Instagram conectado» solid button: back to where the owner
+    came from (`?volver=`), or on to «Crear una publicación» when they came straight here."""
+    route = safe_return_path(return_to) or CREATE_ROUTE
+    for prefix, label in _RETURN_LABELS:
+        if route == prefix or route.startswith(prefix + "/"):
+            return label, route
+    return "Seguir donde estabas", route
 
 
 def connect_result_notice(code: str) -> tuple[str, str]:
@@ -294,7 +409,7 @@ CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
         steps=[
             "En la tarjeta de tu cuenta, pulsa «Volver a conectar».",
             "Acepta los permisos nuevos que te pida Meta.",
-            "Revisa que la función aparezca en «Disponible» en la tarjeta.",
+            "Revisa que la función aparezca en «Puedes:» en la tarjeta.",
         ],
     ),
 ]

@@ -68,7 +68,7 @@ from .campaign_provider import (
     suggested_color,
 )
 from .campaign_provider import error_message as campaign_error_message
-from .catalog_vm import product_id_from_query
+from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from_query
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
     acting_user_id,
@@ -2657,8 +2657,13 @@ class CreativeState(rx.State):
             campaigns = None
         async with self:
             self.readiness = verdict
+            # N4 (m-24842973): back on /create (from «Agregar producto») the route the
+            # owner had open stays open; only a first visit takes the type's default.
+            returning = bool(self.route_options)
             self.route_options = list(options)
-            self._select_default_route()
+            enabled = {opt.key for opt in self.route_options if opt.enabled}
+            if not (returning and self.selected_route in enabled):
+                self._select_default_route()
             self.kit_voice_missing = voice_missing
             self.brand_media_items = assets
             if campaigns is not None:
@@ -3645,9 +3650,18 @@ class CreativeState(rx.State):
         tenant's product, a deleted one or a malformed id is ignored without an error,
         and the screen opens as usual on the product picker."""
         try:
-            wanted = product_id_from_query(self.router.url.query_parameters)
+            params = self.router.url.query_parameters
         except AttributeError:  # no router outside a request (tests, background start)
-            wanted = ""
+            params = {}
+        wanted = product_id_from_query(params)
+        variations = create_mode_from_query(params) == VARIATIONS_MODE
+        if variations:
+            # m-24842973 (N4): back from «Agregar producto» in Variaciones — the centre
+            # reopens on Variaciones (`VariationsState.load_from_query` picks the new
+            # product there). Whatever the owner had chosen and written here stays.
+            self.gen_mode = "variations"
+            if self.product_confirmed:
+                return
         if not wanted or not any(i.get("id") == wanted for i in self.catalog_items):
             return
         self.product_tab = "catalog"

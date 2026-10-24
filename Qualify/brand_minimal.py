@@ -446,6 +446,7 @@ def _step_socials() -> rx.Component:
             ),
             rx.vstack(
                 _connect_step_account(),
+                rx.text(vm.PUBLIC_READ_NOTE, size="2", color=T.TEXT_MUTED, text_align="center"),
                 rx.text("¿Todavía no tienes redes?", size="2", color=T.TEXT_MUTED),
                 _wide_button("No tengo redes", "arrow-right", BrandMinimalState.skip_socials),
                 spacing="3",

@@ -45,6 +45,9 @@ from .catalog_vm import (
     REMOVE_CONFIRM,
     REMOVE_MEDIA,
     REMOVE_STAY,
+    RETURN_HINT,
+    RETURN_LABEL,
+    RETURN_WITHOUT_LABEL,
     SAVING_PHOTOS_REASON,
     STEP_DONE,
     STEP_NAME,
@@ -372,6 +375,29 @@ def _done_step() -> rx.Component:
     )
 
 
+def _photo_step_next(big: dict[str, str]) -> rx.Component:
+    """① Foto's verb: «Siguiente» with photos, «Sin foto por ahora» without."""
+    return rx.cond(
+        CatalogState.new_previews.length() > 0,
+        rx.button(
+            "Siguiente",
+            rx.icon("arrow-right", size=T.ICON_SM),
+            type="button",
+            on_click=CatalogState.next_new_step,
+            **big,
+        ),
+        rx.button(
+            "Sin foto por ahora",
+            rx.icon("arrow-right", size=T.ICON_SM),
+            variant="soft",
+            color_scheme="gray",
+            type="button",
+            on_click=CatalogState.next_new_step,
+            **big,
+        ),
+    )
+
+
 def _new_product_footer() -> rx.Component:
     """One column of full-width buttons on a phone, the verb last (§7)."""
     big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
@@ -380,24 +406,25 @@ def _new_product_footer() -> rx.Component:
             CatalogState.new_step,
             (
                 STEP_PHOTO,
-                rx.cond(
-                    CatalogState.new_previews.length() > 0,
-                    rx.button(
-                        "Siguiente",
-                        rx.icon("arrow-right", size=T.ICON_SM),
-                        type="button",
-                        on_click=CatalogState.next_new_step,
-                        **big,
+                rx.fragment(
+                    # Coming from a publication (m-24842973, N4): the soft way back,
+                    # naming its destination, before the verb (§7).
+                    rx.cond(
+                        CatalogState.returning,
+                        rx.link(
+                            rx.button(
+                                rx.icon("arrow-left", size=T.ICON_SM),
+                                RETURN_WITHOUT_LABEL,
+                                variant="soft",
+                                color_scheme="gray",
+                                type="button",
+                                **big,
+                            ),
+                            href=CatalogState.return_to,
+                            width="100%",
+                        ),
                     ),
-                    rx.button(
-                        "Sin foto por ahora",
-                        rx.icon("arrow-right", size=T.ICON_SM),
-                        variant="soft",
-                        color_scheme="gray",
-                        type="button",
-                        on_click=CatalogState.next_new_step,
-                        **big,
-                    ),
+                    _photo_step_next(big),
                 ),
             ),
             (
@@ -440,8 +467,13 @@ def _new_product_footer() -> rx.Component:
                         CatalogState.created_ready,
                         rx.link(
                             rx.button(
-                                rx.icon("sparkles", size=T.ICON_SM),
-                                "Crear publicación",
+                                rx.icon(
+                                    rx.cond(CatalogState.returning, "arrow-left", "sparkles"),
+                                    size=T.ICON_SM,
+                                ),
+                                # m-24842973 (N4): back to the publication the owner left,
+                                # with this product chosen and their step as they left it
+                                rx.cond(CatalogState.returning, RETURN_LABEL, "Crear publicación"),
                                 type="button",
                                 **big,
                             ),
@@ -499,6 +531,11 @@ def _new_product_drawer() -> rx.Component:
                 rx.heading(CatalogState.new_step_title, size="5", as_="h3"),
                 spacing="1",
                 width="100%",
+            ),
+            # m-24842973 (N4): saving takes the owner back to the publication they left
+            rx.cond(
+                CatalogState.returning & (CatalogState.new_step != STEP_DONE),
+                callout(RETURN_HINT, "info", icon="arrow-left"),
             ),
             rx.match(
                 CatalogState.new_step,
@@ -773,15 +810,18 @@ def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
     """The editor's «Crear publicación con este producto» (m-24842972): soft, in the
     editor's footer above «Guardar cambios», a real link to `/create?producto=<id>` so
     the generator opens with this product chosen. Off with its reason said under it
-    («Primero súbele una foto», never hover-only, N12) while the product has no photo."""
-    label = "Crear publicación con este producto"
+    («Primero súbele una foto», never hover-only, N12) while the product has no photo.
+    When the owner came from a publication (`?volver=`, m-24842973) it says «Volver a tu
+    publicación» and goes back there with this product chosen (N4)."""
+    label = rx.cond(CatalogState.returning, RETURN_LABEL, "Crear publicación con este producto")
+    icon = rx.icon(rx.cond(CatalogState.returning, "arrow-left", "sparkles"), size=T.ICON_SM)
     big = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
     return rx.vstack(
         rx.cond(
             product.photo_count > 0,
             rx.link(
                 rx.button(
-                    rx.icon("sparkles", size=T.ICON_SM),
+                    icon,
                     label,
                     variant="soft",
                     type="button",
@@ -791,7 +831,7 @@ def _create_with_product_button(product: rx.Var[ProductVM]) -> rx.Component:
                 width="100%",
             ),
             rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
+                icon,
                 label,
                 variant="soft",
                 type="button",
@@ -1262,6 +1302,22 @@ def catalog_index() -> rx.Component:
             rx.cond(
                 (CatalogState.upload_error != "") & (CatalogState.selected_id == ""),
                 callout(CatalogState.upload_error, "error"),
+            ),
+            # m-24842973 (N4): came from a publication and closed the form — one soft
+            # way back that names its destination (N7)
+            rx.cond(
+                CatalogState.returning & ~CatalogState.form_open,
+                rx.link(
+                    rx.button(
+                        rx.icon("arrow-left", size=T.ICON_SM),
+                        RETURN_LABEL,
+                        variant="soft",
+                        color_scheme=T.tone_scale("neutral"),
+                        size="3",
+                        min_height=_TOUCH_MIN,
+                    ),
+                    href=CatalogState.return_to,
+                ),
             ),
             _new_product_drawer(),
             _editor_drawer(),

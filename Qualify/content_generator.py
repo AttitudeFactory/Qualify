@@ -21,6 +21,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
+from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
@@ -1592,19 +1593,25 @@ def _product_screen() -> rx.Component:
                     align_items="start",
                 ),
                 rx.spacer(),
+                # m-24842973 (N4): the product that is missing is added in Tus
+                # productos, and saving it comes back here with it chosen.
                 rx.link(
-                    rx.hstack(
-                        rx.icon("package", size=14),
-                        rx.text("Ir al catálogo", size="2"),
-                        spacing="1",
-                        align="center",
+                    rx.button(
+                        rx.icon("plus", size=T.ICON_SM),
+                        ADD_PRODUCT_LABEL,
+                        variant="soft",
+                        size="3",
+                        width=rx.breakpoints(initial="100%", sm="auto"),
                     ),
-                    href="/catalog",
+                    href=new_product_href(CREATE_RETURN_PATH),
                     flex_shrink="0",
+                    width=rx.breakpoints(initial="100%", sm="auto"),
                 ),
                 width="100%",
                 align="start",
                 spacing="3",
+                # 360 px (N12): the button drops under the heading instead of squeezing it
+                wrap="wrap",
             ),
             rx.cond(
                 inspiration,
@@ -1649,12 +1656,13 @@ def _catalog_product_grid() -> rx.Component:
                     empty_state(
                         "package",
                         "Aún no hay productos en tu catálogo",
-                        "Crea el producto en Tus productos con sus fotos, o usa una inspiración: "
-                        "imágenes y videos que ilustran lo que vendes.",
-                        # N8 (m-24842961). Coming back with it chosen is PRODUCTOS-2 (N4).
+                        "Agrega tu producto con sus fotos y vuelves aquí con él ya elegido. "
+                        "También puedes usar una inspiración: imágenes y videos que ilustran "
+                        "lo que vendes.",
+                        # N8 (m-24842961); coming back with it chosen (m-24842973, N4)
                         action=rx.link(
-                            rx.button(rx.icon("plus", size=16), "Agregar producto", size="3"),
-                            href="/catalog",
+                            rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
+                            href=new_product_href(CREATE_RETURN_PATH),
                         ),
                     ),
                 ),

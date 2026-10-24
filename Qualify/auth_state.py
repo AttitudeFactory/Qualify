@@ -67,6 +67,8 @@ from qualify_api.tenancy.locale import LocaleInvalid, resolve_locale
 from reflex.config import get_config
 from sqlalchemy.exc import SQLAlchemyError
 
+from .access_vm import ACCESS_DOWN, CODE_DEAD, CODE_EMPTY, invite_token_from_text
+
 logger = logging.getLogger(__name__)
 
 _BAD_CREDENTIALS = "Correo o contraseña incorrectos."  # one message for every cause, on purpose
@@ -244,6 +246,8 @@ class AuthState(rx.State):
     invite_state: str = ""
     invite_email: str = ""
     invite_business: str = ""
+    #: MARCA-5 (m-24842968): the code typed on the access gate did not open anything.
+    invite_code_error: str = ""
 
     # The Brand Kit before login (§ request 2026-10-02): the draft tenant provisioned for
     # the email typed on /brand/start. Set ONLY by `start_brand_kit` and read ONLY by the
@@ -365,9 +369,48 @@ class AuthState(rx.State):
         """`on_load` of /brand/start: someone already in (login or draft) goes on."""
         self.guest_error = ""
         self.guest_has_account = False
+        self.invite_code_error = ""
+        self.signup_open = signup_open()
         if self.session_tenant_id or self.guest_tenant_id:
             return rx.redirect("/brand")
         return None
+
+    @rx.event(background=True)
+    async def redeem_invite_code(self, form_data: dict):
+        """MARCA-5 (m-24842968, founder decision 7b): the access gate's «Tengo mi
+        código». A usable invite becomes this session's invite (the same custody as the
+        emailed link: the token stays backend-only) and the visitor goes on — into the
+        Brand Kit, saved under the invite's email, from /brand/start; straight to the
+        form from the signup page (`next` = "signup"). A code that opens nothing says so
+        and how to get a good one."""
+        token = invite_token_from_text(str(form_data.get("code", "")))
+        to_signup = str(form_data.get("next", "")) == "signup"
+        if not token:
+            async with self:
+                self.invite_code_error = CODE_EMPTY
+            return
+        async with self:
+            self.is_authenticating = True
+            self.invite_code_error = ""
+        try:
+            email, business = await asyncio.to_thread(_invite_blocking, token)
+        except SQLAlchemyError as exc:
+            logger.error("invite code lookup failed: %s", type(exc).__name__)
+            async with self:
+                self.is_authenticating = False
+                self.invite_code_error = ACCESS_DOWN
+            return
+        async with self:
+            self.is_authenticating = False
+            if not email:
+                self.invite_code_error = CODE_DEAD
+                return
+            self._invite_token = token
+            self.invite_email = email
+            self.invite_business = business
+            self.invite_state = "ok"
+        if not to_signup:
+            yield AuthState.start_brand_kit({"email": email})
 
     @rx.event(background=True)
     async def start_brand_kit(self, form_data: dict):

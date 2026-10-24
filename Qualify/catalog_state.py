@@ -24,6 +24,7 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -45,6 +46,7 @@ from .catalog_vm import (
     NEW_PRODUCT_STEP_TITLES,
     NEW_PRODUCT_STEPS,
     PRODUCT_QUERY,
+    RETURN_PARAM,
     STEP_DONE,
     STEP_NAME,
     STEP_PHOTO,
@@ -56,12 +58,15 @@ from .catalog_vm import (
     editor_is_dirty,
     leave_description,
     missing_photo_filter_label,
+    opens_new_product_form,
     parse_price_input,
     product_count_label,
     products_to_show,
     rejection_message,
     remove_media_description,
     remove_media_title,
+    return_path_from_query,
+    return_with_product_href,
     step_counter,
     steps_done,
 )
@@ -162,6 +167,11 @@ class CatalogState(rx.State):
     #: The editor was opened from the list in this tab (a history entry of the bare list
     #: sits behind it), so closing it can step back instead of navigating forward.
     _opened_in_app: bool = False
+
+    # -- «Volver a tu publicación» (m-24842973, N4) -------------------------------------
+    #: The app route the owner came from to add a product (`?volver=`, made safe by
+    #: `catalog_vm.safe_return_path`); "" when they came from the menu.
+    return_to: str = ""
 
     # -- media uploads ----------------------------------------------------------------
     uploading: bool = False
@@ -293,16 +303,30 @@ class CatalogState(rx.State):
 
     @rx.var
     def created_href(self) -> str:
-        """Where «Crear publicación» goes: Crear with this product already chosen."""
-        if not self.created_product_id:
-            return ""
-        return create_with_product_href(self.created_product_id)
+        """Where «Crear publicación» goes: Crear with this product already chosen — or,
+        when the owner came from a publication, back there with it (m-24842973, N4)."""
+        return self._with_product_href(self.created_product_id)
 
     @rx.var
     def selected_create_href(self) -> str:
         """The editor's «Crear publicación con este producto» (m-24842972):
-        `/create?producto=<id>`."""
-        return create_with_product_href(self.selected_id) if self.selected_id else ""
+        `/create?producto=<id>` — or back to the publication the owner came from, with
+        this product (m-24842973, N4)."""
+        return self._with_product_href(self.selected_id)
+
+    @rx.var
+    def returning(self) -> bool:
+        """The owner came here from a publication to add a product (`?volver=`)."""
+        return self.return_to != ""
+
+    def _with_product_href(self, product_id: str) -> str:
+        if not product_id:
+            return ""
+        if self.return_to:
+            back = return_with_product_href(self.return_to, product_id)
+            if back:
+                return back
+        return create_with_product_href(product_id)
 
     @rx.var
     def created_ready(self) -> bool:
@@ -371,8 +395,11 @@ class CatalogState(rx.State):
         async with self:
             self.loading = not self.products
             self.error = ""
+            arrival = self._read_return_query()
             if self.products:
                 self._sync_url(final=False)
+        for event in arrival:  # the address loses `?nuevo=1`
+            yield event
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -400,6 +427,29 @@ class CatalogState(rx.State):
             follow = self._sync_url(final=True)
         for event in follow:
             yield event
+
+    def _read_return_query(self) -> list[rx.event.EventSpec]:
+        """«Agregar producto» from Crear or Variaciones (m-24842973, N4) lands here as
+        `/catalog?nuevo=1&volver=<ruta>`: the form opens and «Listo» offers «Volver a
+        tu publicación». Only one of the app's own routes is kept as the way back
+        (`safe_return_path`). Moving to a product's editor (`?producto=`, N5) keeps it;
+        a visit from the menu (neither) forgets it. `?nuevo=1` comes off the address
+        once the form is open, so «atrás» from an editor does not reopen it."""
+        try:
+            params = self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router outside a request (tests)
+            params = {}
+        back = return_path_from_query(params)
+        if back:
+            self.return_to = back
+        elif not self._url_product():
+            self.return_to = ""
+        if not (back and opens_new_product_form(params)):
+            return []
+        if not self.form_open:
+            self.selected_id = ""
+            self.open_form()
+        return [rx.redirect(f"{_CATALOG_PATH}?{urlencode({RETURN_PARAM: back})}", replace=True)]
 
     async def _refresh(self, tenant_id: UUID, brand_id: UUID) -> None:
         """Re-read the list after a write (the service is the source of truth for
