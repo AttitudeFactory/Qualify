@@ -989,6 +989,11 @@ class PostOptionVM:
     card_action_label: str = "Ver"
     history_word: str = ""
     history_help: str = ""
+    # founder 2026-10-24: a vista previa waiting for approval says until when
+    # («Apruébala antes del jueves 30 de octubre para tener el video final.»); once it
+    # expired, the card offers «Crearla otra vez».
+    expiry_note: str = ""
+    preview_expired: bool = False
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1279,6 +1284,8 @@ def build_post_option(
     retention_state: str = "",
     purge_days_left: int | None = None,
     final_rendering: bool = False,
+    expiry_note: str = "",
+    preview_expired: bool = False,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1338,6 +1345,8 @@ def build_post_option(
         card_action=card.action if card is not None else CARD_ACTION_VIEW,
         card_action_label=card.action_label if card is not None else "Ver",
         history_word=history_word(times_published) if shows_history else "",
+        expiry_note=expiry_note,
+        preview_expired=preview_expired and lifecycle_status == "generated",
         history_help=history_help(times_published) if shows_history else "",
     )
 

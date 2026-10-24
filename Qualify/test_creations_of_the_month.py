@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from qualify_creative.creations import weight_for_request
@@ -15,6 +16,7 @@ from . import creative_state
 from .creative_state import CreativeState
 from .creative_vm import (
     SHORT_ADVICE_SIMPLER,
+    approval_videos_notice,
     build_route_options,
     creations_left_label,
     creations_use_notice,
@@ -22,6 +24,8 @@ from .creative_vm import (
     not_enough_creations_text,
     pieces_use_notice,
     presenter_fallback_text,
+    previews_left_label,
+    previews_short_text,
     renewal_day_label,
     videos_short_text,
 )
@@ -146,106 +150,105 @@ def test_with_no_quota_wired_the_screen_says_nothing_about_creations() -> None:
     assert state.duration_choices == ["5", "10", "15", "30"]
 
 
-def _clip(left: int, duration: str = "5", videos_left: int = 4) -> CreativeState:
+def _clip(
+    left: int, duration: str = "5", videos_left: int = 4, previews_left: int = 20
+) -> CreativeState:
     state = CreativeState()
     state.choose_kind("clip")
     state.clip_duration = duration
     state.media_duration = "15"  # the presenter's length must not price the clip
     state.creations_left, state.creations_quota = left, 30
     state.videos_left, state.videos_quota = videos_left, 4
+    state.previews_left, state.previews_quota = previews_left, 20
     state.creations_renews = "1 de noviembre"
     return state
 
 
-# -- videos (founder, 2026-10-24): 4 a month, up to 10 s, apart from the 30 creations ----
+# -- videos at approval, vistas previas at creation (founder, 2026-10-24) -----------------
 
 
 def test_the_video_texts_the_owner_reads() -> None:
-    assert creations_left_label(18, 30, 3, 4) == (
+    assert creations_left_label(18, 30, 3, 4, 12, 20) == (
         "Te quedan 18 de 30 creaciones y 3 de 4 videos este mes."
     )
-    assert creations_left_label(1, 30, 0, 4) == (
-        "Te queda 1 de 30 creaciones y 0 de 4 videos este mes."
+    # the vistas previas only when few are left
+    assert creations_left_label(18, 30, 3, 4, 5, 20) == (
+        "Te quedan 18 de 30 creaciones y 3 de 4 videos este mes. "
+        "Te quedan 5 vistas previas este mes."
     )
-    assert creations_use_notice(0, 30, 30, videos=1, videos_left=3, video_quota=4) == (
-        "Este video usa 1 de tus 4 videos del mes. Te quedarían 2."
+    assert previews_left_label(1, 20) == "Te queda 1 vista previa este mes."
+    assert previews_left_label(6, 20) == ""
+    assert previews_short_text(1, 0, 20, renews="1 de noviembre") == (
+        "Ya usaste tus 20 vistas previas de este mes. Vuelven el 1 de noviembre."
+    )
+    assert previews_short_text(3, 2, 20, renews="1 de noviembre") == (
+        "Esta publicación usa 3 vistas previas y este mes te quedan 2. Quita 1 video "
+        "animado o espera al 1 de noviembre, cuando vuelven tus 20."
+    )
+    assert approval_videos_notice(1, 4, 4) == (
+        "Al aprobar usas 1 de tus 4 videos del mes. Te quedarían 3."
+    )
+    assert approval_videos_notice(1, 2, 4) == (
+        "Al aprobar usas 1 de tus 4 videos del mes. Te quedaría 1."
     )
     assert videos_short_text(1, 0, 4, renews="1 de noviembre") == (
         "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
     )
-    assert (
-        videos_short_text(1, 0, 4) == "Ya usaste tus 4 videos de este mes. Vuelven el próximo mes."
-    )
-    # a carousel with more animated slides than videos left
+    # a carousel whose animated slides need more videos than are left: all or nothing
     assert videos_short_text(3, 2, 4, renews="1 de noviembre") == (
-        "Esta publicación usa 3 videos y este mes te quedan 2. Quita 1 video animado o "
-        "espera al 1 de noviembre, cuando vuelven tus 4."
+        "Al aprobarla, esta publicación usa 3 videos y este mes te quedan 2. "
+        "Tus 4 videos vuelven el 1 de noviembre."
     )
-    assert videos_short_text(3, 1, 4, renews="1 de noviembre") == (
-        "Esta publicación usa 3 videos y este mes te queda 1. Quita 2 videos animados o "
-        "espera al 1 de noviembre, cuando vuelven tus 4."
-    )
-    assert creations_use_notice(1, 18, 30, videos=2, videos_left=3, video_quota=4) == (
-        "Esta publicación usa 1 creación y 2 videos. Te quedarían 17 de 30 creaciones y "
-        "1 de 4 videos."
-    )
-    # «Te quedaría 1» in the singular (UX review 2026-10-24)
-    assert creations_use_notice(
-        0, 30, 30, subject="La nueva versión", videos=1, videos_left=2, video_quota=4
-    ) == ("La nueva versión usa 1 de tus 4 videos del mes. Te quedaría 1.")
 
 
 @pytest.mark.usefixtures("on_summary")
-def test_a_clip_uses_one_video_and_no_creations() -> None:
+def test_creating_a_clip_says_nothing_about_videos_and_uses_no_creations() -> None:
     for duration in ("5", "10"):
         state = _clip(30, duration=duration, videos_left=3)
         price = state._creations_price()
         assert price is not None and (price.weight, price.videos) == (0, 1)
         assert state._creations_problem() == ""
-        assert state.gen_creations_notice == (
-            "Este video usa 1 de tus 4 videos del mes. Te quedarían 2."
-        )
-        assert state.creations_left_text == (
-            "Te quedan 30 de 30 creaciones y 3 de 4 videos este mes."
-        )
+        # the video is said before approving, not here
+        assert state.gen_creations_notice == ""
+    # with no video left the vista previa can still be made: videos wait for approval
+    assert _clip(30, videos_left=0)._creations_problem() == ""
 
 
 @pytest.mark.usefixtures("on_summary")
-def test_with_no_video_left_crear_is_refused_with_the_day_they_come_back() -> None:
-    state = _clip(30, videos_left=0)
+def test_with_no_vista_previa_left_a_video_is_refused_and_an_image_still_works() -> None:
+    state = _clip(30, previews_left=0)
     assert state._creations_problem() == (
-        "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+        "Ya usaste tus 20 vistas previas de este mes. Vuelven el 1 de noviembre."
     )
     assert state._form_problem() != ""  # Crear refuses
-    assert state.gen_creations_notice == ""
-    # with no creations left a clip still goes: it uses none
-    assert _clip(0, videos_left=1)._creations_problem() == ""
+    image = CreativeState()
+    image.choose_category("image")
+    image.creations_left, image.creations_quota = 18, 30
+    image.previews_left, image.previews_quota = 0, 20
+    assert image._creations_problem() == ""
 
 
 def test_the_clip_offers_5_and_10_seconds_never_15() -> None:
     assert _clip(30).clip_duration_choices == ["5", "10"]
     assert _clip(-1).clip_duration_choices == ["5", "10"]  # no quota wired
-    assert _clip(30, videos_left=0).clip_duration_choices == ["5", "10"]
     state = _clip(30)
     state.set_clip_duration("15")  # a stale control, or a crafted event
     assert state.clip_duration == "5"
-    # a reference video does not change what it uses
     state.clip_videos = [{"key": "uploads/t/ref.mp4", "name": "ref.mp4", "source": "upload"}]
     price = state._creations_price()
     assert price is not None and (price.weight, price.videos) == (0, 1)
 
 
-def test_an_avatar_on_seedance_offers_5_and_10_seconds_and_uses_a_video(
+def test_an_avatar_on_seedance_offers_5_and_10_seconds_and_makes_a_video(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(creative_state, "configured_video_engine", lambda: "seedance")
     state = CreativeState()
     state.creations_left, state.creations_quota = 30, 30
-    state.videos_left, state.videos_quota = 4, 4
     state.media_duration = "30"
     state.choose_kind("avatar_video")
     assert state.duration_choices == ["5", "10"]
-    assert state.media_duration == "10"  # a length no longer offered is not left chosen
+    assert state.media_duration == "10"
     state.set_media_duration("15")
     assert state.media_duration == "10"
     price = state._creations_price()
@@ -253,11 +256,11 @@ def test_an_avatar_on_seedance_offers_5_and_10_seconds_and_uses_a_video(
 
 
 @pytest.mark.usefixtures("on_summary")
-def test_a_carousel_uses_one_video_per_animated_slide() -> None:
+def test_a_carousel_uses_one_vista_previa_per_animated_slide() -> None:
     state = CreativeState()
     state.choose_kind("carousel")
     state.creations_left, state.creations_quota = 18, 30
-    state.videos_left, state.videos_quota = 2, 4
+    state.previews_left, state.previews_quota = 2, 20
     state.creations_renews = "1 de noviembre"
     state.carousel_slides = [
         {"source": "generated", "seconds": "5"},
@@ -268,13 +271,12 @@ def test_a_carousel_uses_one_video_per_animated_slide() -> None:
     assert price is not None and (price.weight, price.videos) == (1, 2)
     assert state._creations_problem() == ""
     assert state.gen_creations_notice == (
-        "Esta publicación usa 1 creación y 2 videos. Te quedarían 17 de 30 creaciones y "
-        "0 de 4 videos."
+        "Esta publicación usa 1 de tus creaciones. Te quedarían 17 de 30."
     )
     state.carousel_slides = [*state.carousel_slides, {"source": "animated", "seconds": "5"}]
     assert state._creations_problem() == (
-        "Esta publicación usa 3 videos y este mes te quedan 2. Quita 1 video animado o "
-        "espera al 1 de noviembre, cuando vuelven tus 4."
+        "Esta publicación usa 3 vistas previas y este mes te quedan 2. Quita 1 video "
+        "animado o espera al 1 de noviembre, cuando vuelven tus 20."
     )
 
 
@@ -282,22 +284,140 @@ def test_a_carousel_uses_one_video_per_animated_slide() -> None:
 def test_the_presenter_stays_in_creations_with_no_video_left() -> None:
     state = _presenter(30, duration="15")
     state.videos_left, state.videos_quota = 0, 4
+    state.previews_left, state.previews_quota = 0, 20
     assert state._creations_problem() == ""
     assert state.gen_creations_notice == (
         "Este video con presentador usa 13 de tus creaciones. Te quedarían 17 este mes."
     )
 
 
-def test_the_video_texts_show_no_money() -> None:
+def test_before_approving_the_piece_says_what_it_uses_and_refuses_at_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Founder 2026-10-24: «Al aprobar usas 1 de tus 4 videos del mes. Te quedarían {v}.»;
+    with none left, approval is disabled and says when they come back."""
+    import asyncio
+
+    state = CreativeState()
+
+    class _Ctx:
+        async def __aenter__(self):  # noqa: ANN204
+            return state
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(CreativeState, "__aenter__", _Ctx.__aenter__, raising=False)
+    monkeypatch.setattr(CreativeState, "__aexit__", _Ctx.__aexit__, raising=False)
+
+    def load(quote: tuple[int, int, int, str] | None) -> None:
+        monkeypatch.setattr(creative_state, "approval_videos", lambda *_: quote)
+        asyncio.run(state._load_approval_videos(uuid4(), uuid4()))
+
+    load((1, 3, 4, "1 de noviembre"))
+    assert state.approve_videos_text == "Al aprobar usas 1 de tus 4 videos del mes. Te quedarían 2."
+    assert not state.approve_videos_short
+    load((1, 0, 4, "1 de noviembre"))
+    assert state.approve_videos_text == (
+        "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+    )
+    assert state.approve_videos_short
+    load(None)  # an image, or no quota: nothing is said
+    assert (state.approve_videos_text, state.approve_videos_short) == ("", False)
+
+
+def test_the_expiry_date_and_crearla_otra_vez() -> None:
+    """Founder 2026-10-24: «Apruébala antes del {día} {fecha} para tener el video final.»"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from .creative_vm import RECREATE_LABEL, VIDEO_EXPIRED, VideoDraftVM, draft_expiry_text
+
+    when = datetime(2026, 10, 30, 9, 0, tzinfo=ZoneInfo("America/Bogota"))
+    assert draft_expiry_text(when) == (
+        "Apruébala antes del viernes 30 de octubre para tener el video final."
+    )
+    assert draft_expiry_text(None) == ""
+    assert RECREATE_LABEL == "Crearla otra vez"
+    assert VideoDraftVM(VIDEO_EXPIRED, "", "warn", "").expired
+
+
+def test_the_piece_page_shows_the_expiry_in_the_business_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    from . import creative_provider, inbox_provider
+    from .creative_vm import video_draft_vm
+
+    monkeypatch.setattr(inbox_provider, "tenant_zone", lambda _t: ZoneInfo("America/Bogota"))
+    # created 2026-10-23 15:00 UTC → expires 2026-10-30 15:00 UTC = 10:00 in Bogotá
+    params = [{"draft": {"status": "draft", "created_at": 1792767600}}]
+    video = creative_provider._with_expiry(
+        uuid4(), video_draft_vm("draft", None), params, approved=False
+    )
+    assert video.expiry_note == (
+        "Apruébala antes del viernes 30 de octubre para tener el video final."
+    )
+    # nothing once approved
+    approved = creative_provider._with_expiry(
+        uuid4(), video_draft_vm("draft", None, approved=True), params, approved=True
+    )
+    assert approved.expiry_note == ""
+
+
+def test_the_por_aprobar_card_carries_the_expiry_and_crearla_otra_vez() -> None:
+    from .planner_vm import build_post_option
+
+    common = {
+        "post_id": "p1",
+        "title": "Smash",
+        "caption_excerpt": "",
+        "thumbnail_url": None,
+        "category": "reels",
+        "approval": "pending",
+        "detail_href": "/drafts/p1",
+        "is_publishable": False,
+        "unpublishable_reason": "",
+        "gallery_state": "needs_action",
+        "lifecycle_status": "generated",
+    }
+    note = "Apruébala antes del viernes 30 de octubre para tener el video final."
+    card = build_post_option(**common, expiry_note=note)
+    assert (card.expiry_note, card.preview_expired) == (note, False)
+    expired = build_post_option(**common, preview_expired=True)
+    assert expired.preview_expired
+    # an approved piece never offers to make it again
+    approved = build_post_option(**{**common, "lifecycle_status": "approved"}, preview_expired=True)
+    assert not approved.preview_expired
+
+
+def test_the_video_texts_show_no_money_nor_technical_words() -> None:
+    from datetime import datetime
+
+    from .creative_vm import draft_expiry_text
+
     for text in (
-        creations_left_label(18, 30, 3, 4),
-        creations_use_notice(0, 30, 30, videos=1, videos_left=3, video_quota=4),
-        creations_use_notice(1, 18, 30, videos=2, videos_left=3, video_quota=4),
+        creations_left_label(18, 30, 3, 4, 2, 20),
+        approval_videos_notice(1, 3, 4),
         videos_short_text(1, 0, 4, renews="1 de noviembre"),
         videos_short_text(3, 2, 4),
+        previews_short_text(1, 0, 20, renews="1 de noviembre"),
+        previews_short_text(3, 2, 20),
+        draft_expiry_text(datetime(2026, 10, 30)),
     ):
-        for banned in ("$", "USD", "crédito", "dólar", "Coste"):
-            assert banned not in text
+        for banned in (
+            "$",
+            "USD",
+            "crédito",
+            "dólar",
+            "Coste",
+            "borrador",
+            "draft",
+            "480p",
+            "1080p",
+        ):
+            assert banned not in text, (banned, text)
 
 
 def test_the_sound_does_not_change_what_a_clip_uses() -> None:

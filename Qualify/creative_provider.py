@@ -35,7 +35,12 @@ from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import media_root, production_content_service
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
-from qualify_api.creative.draft_mode import FINAL_STALE_SECONDS, draft_rendering, draft_summary
+from qualify_api.creative.draft_mode import (
+    FINAL_STALE_SECONDS,
+    draft_expires_at,
+    draft_rendering,
+    draft_summary,
+)
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
 from qualify_api.creative.piece_export import (
     archive_name,
@@ -74,6 +79,8 @@ from sqlalchemy import func, select
 
 from .connections_provider import acting_user_id
 from .creative_vm import (
+    VIDEO_DRAFT,
+    VIDEO_FAILED,
     CopyVariantVM,
     DraftSummaryVM,
     DraftVM,
@@ -92,6 +99,7 @@ from .creative_vm import (
     build_route_options,
     build_variant_vm,
     build_voice_proposal_vm,
+    draft_expiry_text,
     draft_kind_label,
     failure_label,
     purged_label,
@@ -106,7 +114,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "acting_user_id",
+    "approval_videos",
     "creations_balance",
+    "recreate_draft",
     "regeneration_creations",
     "approve_draft",
     "approve_voice",
@@ -791,10 +801,15 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
     approved = detail.status == "approved"
     vm = dataclasses.replace(
         vm,
-        video_draft=video_draft_vm(
-            # approved with a video still at its draft: its final was never ordered
-            *draft_summary(video_params, approved=approved),
-            still_rendering=draft_rendering(video_params),
+        video_draft=_with_expiry(
+            tenant_id,
+            video_draft_vm(
+                # approved with a video still at its draft: its final was never ordered
+                *draft_summary(video_params, approved=approved),
+                still_rendering=draft_rendering(video_params),
+                approved=approved,
+            ),
+            video_params,
             approved=approved,
         ),
     )
@@ -979,11 +994,14 @@ def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UU
     return _detail_to_vm(tenant_id, detail)
 
 
-def creations_balance(tenant_id: UUID, brand_id: UUID) -> tuple[int, int, str, int, int] | None:
-    """«Creaciones del mes» (CREAR-5): (left, quota, renews, videos_left, video_quota) —
-    `renews` the day the quota renews as the owner reads it («1 de noviembre», "" when
-    unknown); the videos are the month's generated videos (founder, 2026-10-24) — or
-    None when no quota is wired: the screens then say nothing about creations."""
+def creations_balance(
+    tenant_id: UUID, brand_id: UUID
+) -> tuple[int, int, str, int, int, int, int] | None:
+    """«Creaciones del mes» (CREAR-5): (left, quota, renews, videos_left, video_quota,
+    previews_left, preview_quota) — `renews` the day the quota renews as the owner reads
+    it («1 de noviembre», "" when unknown); the videos and vistas previas are the month's
+    (founder, 2026-10-24) — or None when no quota is wired: the screens then say nothing
+    about creations."""
     balance = production_content_service().creations_balance(tenant_id=tenant_id, brand_id=brand_id)
     if balance is None:
         return None
@@ -993,14 +1011,37 @@ def creations_balance(tenant_id: UUID, brand_id: UUID) -> tuple[int, int, str, i
         renewal_day_label(balance.renews_on),
         balance.videos_left,
         balance.video_quota,
+        balance.previews_left,
+        balance.preview_quota,
     )
+
+
+def approval_videos(tenant_id: UUID, draft_id: UUID) -> tuple[int, int, int, str] | None:
+    """What approving a piece uses of the month's videos (founder, 2026-10-24):
+    (videos, videos_left, video_quota, renews), or None when it makes no video, is not
+    waiting for approval, or no quota is wired."""
+    quote = production_content_service().approval_videos(tenant_id=tenant_id, draft_id=draft_id)
+    if quote is None:
+        return None
+    videos, balance = quote
+    return videos, balance.videos_left, balance.video_quota, renewal_day_label(balance.renews_on)
+
+
+def recreate_draft(tenant_id: UUID, draft_id: UUID, user_id: UUID) -> str:
+    """«Crearla otra vez»: a new piece from an expired one's request (one vista previa
+    per video). Raises `NotEnoughCreations` when the month cannot pay it."""
+    new_id = production_content_service().recreate(
+        tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
+    )
+    return str(new_id)
 
 
 def regeneration_creations(
     tenant_id: UUID, brand_id: UUID, draft_id: UUID
 ) -> tuple[int, int, int, str, int, int, int] | None:
-    """What «Pedir otra versión» of a draft uses: (weight, left, quota, renews, videos,
-    videos_left, video_quota), or None."""
+    """What «Pedir otra versión» of a draft uses: (weight, left, quota, renews, previews,
+    previews_left, preview_quota) — a video's new version is a new vista previa per
+    video, never a video (those are counted at approval) — or None."""
     service = production_content_service()
     price = service.regeneration_price(tenant_id=tenant_id, draft_id=draft_id)
     balance = service.creations_balance(tenant_id=tenant_id, brand_id=brand_id)
@@ -1011,9 +1052,9 @@ def regeneration_creations(
         balance.left,
         balance.quota,
         renewal_day_label(balance.renews_on),
-        price.videos,
-        balance.videos_left,
-        balance.video_quota,
+        price.videos if balance.preview_quota > 0 else 0,
+        balance.previews_left,
+        balance.preview_quota,
     )
 
 
@@ -1038,11 +1079,38 @@ def final_video_state(tenant_id: UUID, draft_id: UUID) -> VideoDraftVM | None:
     if state is None:
         return None
     status, params = state
-    return video_draft_vm(
-        *draft_summary(list(params), approved=status == "approved"),
-        still_rendering=draft_rendering(list(params)),
-        approved=status == "approved",
+    approved = status == "approved"
+    return _with_expiry(
+        tenant_id,
+        video_draft_vm(
+            *draft_summary(list(params), approved=approved),
+            still_rendering=draft_rendering(list(params)),
+            approved=approved,
+        ),
+        list(params),
+        approved=approved,
     )
+
+
+def _with_expiry(
+    tenant_id: UUID,
+    video: VideoDraftVM,
+    params: list[Mapping[str, object] | None],
+    *,
+    approved: bool,
+) -> VideoDraftVM:
+    """A vista previa still waiting for approval says until when (founder, 2026-10-24):
+    «Apruébala antes del jueves 30 de octubre para tener el video final.», in the
+    business's zone. Nothing once approved, expired, or without a date."""
+    if approved or video.state not in (VIDEO_DRAFT, VIDEO_FAILED):
+        return video
+    ends = draft_expires_at(params)
+    if ends is None:
+        return video
+    from .inbox_provider import tenant_zone  # noqa: PLC0415 — keeps the import graph flat
+
+    when = datetime.fromtimestamp(ends, tz=UTC).astimezone(tenant_zone(tenant_id))
+    return dataclasses.replace(video, expiry_note=draft_expiry_text(when))
 
 
 def reject_draft(

@@ -2169,14 +2169,25 @@ class ContentService:
         drafts = self._waiting_drafts(tenant_id, draft_id)
         if any(draft_expired(draft_state(asset.params) or {}) for asset in drafts):
             raise DraftExpired()
-        self._repo.set_approved(
-            tenant_id=tenant_id,
-            draft_id=draft_id,
-            new_status=new_status,
-            variant_id=variant_id,
-            user_id=user_id,
-            approved_at=datetime.now(UTC),
-        )
+        # CREAR-5 (founder, 2026-10-24): approving orders the finals, and that is when
+        # the piece's videos are counted — all or nothing; without enough videos left
+        # (`NotEnoughCreations`) nothing is written and the piece waits as it was
+        videos = self._charge_videos(tenant_id, record)
+        try:
+            self._repo.set_approved(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                new_status=new_status,
+                variant_id=variant_id,
+                user_id=user_id,
+                approved_at=datetime.now(UTC),
+            )
+        except Exception:
+            if videos and self._creations is not None:
+                self._creations.uncharge_videos(
+                    tenant_id=tenant_id, draft_id=draft_id, revision=record.revision
+                )
+            raise
         # the operator's verdict, on the generation's Langfuse trace (plan §8)
         review.score_approval(
             draft_id=draft_id,
@@ -2192,6 +2203,61 @@ class ContentService:
             # «Final pendiente» with «Reintentar» (`final_retryable(approved=True)`)
             logger.exception("draft %s approved, but its finals could not be ordered", draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
+    def _videos_of(self, tenant_id: UUID, record: DraftRecord) -> int:
+        """How many of the month's videos approving this generation uses: its Seedance
+        videos (a clip 1, a carousel one per animated slide) — 0 for anything else, or
+        without a quota."""
+        if self._creations is None:
+            return 0
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None:
+            return 0
+        try:
+            return weight_for(brief).videos
+        except CreationNotOffered:
+            return 0
+
+    def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> int:
+        videos = self._videos_of(tenant_id, record)
+        if videos and self._creations is not None:
+            self._creations.charge_videos(
+                tenant_id=tenant_id,
+                brand_id=record.brand_id,
+                draft_id=record.id,
+                revision=record.revision,
+                videos=videos,
+            )
+        return videos
+
+    def approval_videos(
+        self, *, tenant_id: UUID, draft_id: UUID
+    ) -> tuple[int, CreationsBalance] | None:
+        """What approving this piece uses of the month's videos, with the balance — for
+        «Al aprobar usas 1 de tus 4 videos del mes» before the owner approves. None when
+        no quota is wired, the piece makes no video, or it is not waiting for approval."""
+        if self._creations is None:
+            return None
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record is None or record.status != GENERATED:
+            return None
+        videos = self._videos_of(tenant_id, record)
+        if not videos:
+            return None
+        return videos, self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
+
+    def recreate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> UUID:
+        """«Crearla otra vez» (founder, 2026-10-24): a piece whose vista previa expired is
+        made again as a NEW piece from the same brief — it uses one vista previa per video
+        (`create_draft` charges and refuses as any creation). The expired one stays as it
+        was: nothing is charged for it."""
+        record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None:
+            raise UnknownDraft(f"draft {draft_id} has no readable brief")
+        return self.create_draft(
+            tenant_id=tenant_id, brand_id=record.brand_id, brief=brief, user_id=user_id
+        )
 
     # -- Seedance 2.5 finals (m-24820142) -----------------------------------------------
 

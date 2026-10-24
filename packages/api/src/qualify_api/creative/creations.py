@@ -3,39 +3,48 @@ when a generation is asked for, the refund when it does not come out.
 
 The weights are `qualify_creative.creations` (versioned data). This module only keeps the
 account: one `creation_charges` row per generation (`draft_id` + `revision`, unique), the
-balance = the month's quota − the weights still `charged`, and a refund that turns a row
+balance = the month's quota − what is still `charged`, and a refund that turns a row
 `refunded` (never deleted — provenance). «Este mes» is the calendar month in the tenant's
 zone, the one the owner lives in.
 
-- `charge` takes a per-brand advisory lock, re-reads the month and inserts in one
-  transaction, so two asks at once cannot both spend the last creations; a generation
-  already charged is not charged again (idempotent by its unique key).
-- `refund` is idempotent too: only a `charged` row turns.
-- **Videos (founder, 2026-10-24).** Generated (Seedance) videos have their own monthly
-  quota (`monthly_video_quota`, 4) apart from the 30 creations: a charge records
-  `videos` next to its `weight`, and the balance says both. The same quota for every
-  business; `QUALIFY_CREATIONS_QUOTA=off` stays the installation-wide emergency switch.
-- `refund_final` gives back the video of a 1080p final that fails: the row stays
-  `charged`, the failed video's asset joins `final_refunded_assets` (at most `videos` of
-  them), `final_refunded_at` and why are recorded, and the balance stops counting it.
-  Idempotent per video: the same final failing again gives nothing more, and a retried
-  final that then comes out is not charged again — the failure was ours or the
-  vendor's, never the owner's.
-- The dollar cap of `creative_engine_config` stays as the team's safety net; the owner
-  never sees money (decision 8).
+Three counters per month (founder, 2026-10-24), none of them money:
+
+- **creaciones** (30): images, carousels, templates, scripts, the presenter — charged at
+  creation (`weight`).
+- **vistas previas** (20): each Seedance draft made — a clip, a Seedance avatar, each
+  animated carousel slide, each «Pedir otra versión» of them — charged at creation
+  (`previews`). Like the creations, they come back only when the generation does not
+  come out (`refund`); discarding, rejecting or letting a draft expire gives nothing back.
+- **videos** (4): charged when the owner APPROVES the piece and its final is ordered
+  (`charge_videos`: `videos`, `videos_period_month` — the month of the approval). A
+  draft discarded, rejected or expired costs no video. A 1080p final that fails gives
+  its video back (`refund_final`, once per video asset); a retried final is free.
+
+- Every charge takes a per-brand advisory lock, re-reads the month and writes in one
+  transaction, so two asks at once cannot both spend the last of anything; a generation
+  already charged is not charged again (idempotent by its unique key), nor are its
+  videos.
+- The same quota for every business; `QUALIFY_CREATIONS_QUOTA=off` stays the
+  installation-wide emergency switch. The dollar cap of `creative_engine_config` stays
+  the team's safety net; the owner never sees money (decision 8).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from qualify_creative.creations import CreationPrice, CreationWeights, load_weights
+from qualify_creative.creations import (
+    REQUEST_GENERATED_VIDEO,
+    CreationPrice,
+    CreationWeights,
+    load_weights,
+)
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -51,28 +60,66 @@ REFUNDED = "refunded"
 
 
 class NotEnoughCreations(Exception):
-    """The month's balance cannot pay for the request — its creations, or (v2) its
-    generated videos: nothing was created."""
+    """The month cannot pay for the request — its creations, its vistas previas (at
+    creation) or its videos (at approval): nothing was created or approved."""
 
     def __init__(
-        self, *, weight: int, left: int, videos: int = 0, videos_left: int | None = None
+        self,
+        *,
+        weight: int = 0,
+        left: int = 0,
+        videos: int = 0,
+        videos_left: int | None = None,
+        previews: int = 0,
+        previews_left: int | None = None,
     ) -> None:
         super().__init__(
-            f"needs {weight} creations ({left} left) and {videos} videos ({videos_left} left)"
+            f"needs {weight} creations ({left} left), {previews} previews "
+            f"({previews_left} left), {videos} videos ({videos_left} left)"
         )
         self.weight = weight
         self.left = left
         self.videos = videos
         self.videos_left = videos if videos_left is None else videos_left
+        self.previews = previews
+        self.previews_left = previews if previews_left is None else previews_left
 
     @property
     def missing(self) -> int:
-        """Creations missing (0 when only videos are)."""
+        """Creations missing (0 when only previews or videos are)."""
         return max(self.weight - self.left, 0)
+
+    @property
+    def missing_previews(self) -> int:
+        return max(self.previews - self.previews_left, 0)
 
     @property
     def missing_videos(self) -> int:
         return max(self.videos - self.videos_left, 0)
+
+
+@dataclass(frozen=True)
+class MonthlyQuota:
+    """What one brand's month brings: creations, videos and vistas previas."""
+
+    creations: int
+    videos: int
+    previews: int
+
+
+def quota_for(
+    *, tenant_id: UUID, brand_id: UUID, period: date, weights: CreationWeights
+) -> MonthlyQuota:
+    """THE one place a brand's monthly quota is decided (principal-architect,
+    2026-10-24): today the base of the weights table, the same for every business
+    (founder, 2026-10-24). Grants (a later migration) add to it here and nowhere else.
+    Pure; `session`-free on purpose so a grants reader can be passed in later."""
+    del tenant_id, brand_id, period  # the base quota does not depend on them yet
+    return MonthlyQuota(
+        creations=weights.monthly_quota,
+        videos=weights.monthly_video_quota,
+        previews=weights.monthly_preview_quota,
+    )
 
 
 def not_enough_text(missing: int) -> str:
@@ -85,7 +132,7 @@ def not_enough_text(missing: int) -> str:
 @dataclass(frozen=True)
 class CreationsBalance:
     """What the owner reads: «Te quedan {left} de {quota} creaciones y {videos_left} de
-    {video_quota} videos este mes»."""
+    {video_quota} videos este mes» (and the vistas previas when few are left)."""
 
     quota: int
     used: int
@@ -93,9 +140,12 @@ class CreationsBalance:
     #: The day the quota renews (the next month's first day, tenant's timezone); None
     #: when the ledger does not know the tenant's month.
     renews_on: date | None = None
-    #: v2: the month's generated videos (0 = the table has no video quota).
+    #: v2: the month's videos (counted at approval) and vistas previas (at creation);
+    #: a quota of 0 = the table has none.
     video_quota: int = 0
     videos_used: int = 0
+    preview_quota: int = 0
+    previews_used: int = 0
 
     @property
     def left(self) -> int:
@@ -105,16 +155,31 @@ class CreationsBalance:
     def videos_left(self) -> int:
         return max(self.video_quota - self.videos_used, 0)
 
-    def can_pay(self, weight: int, videos: int = 0) -> bool:
-        return weight <= self.left and videos <= self.videos_left
+    @property
+    def previews_left(self) -> int:
+        return max(self.preview_quota - self.previews_used, 0)
+
+    def can_pay(self, weight: int, previews: int = 0) -> bool:
+        """At creation: the creations and the vistas previas (videos wait for approval)."""
+        previews_ok = self.preview_quota <= 0 or previews <= self.previews_left
+        return weight <= self.left and previews_ok
 
     def shortfall(self, price: CreationPrice) -> NotEnoughCreations | None:
-        """Why the month cannot pay `price`, or None when it can."""
+        """Why the month cannot pay `price` AT CREATION, or None when it can."""
         if self.can_pay(price.weight, price.videos):
             return None
         return NotEnoughCreations(
-            weight=price.weight, left=self.left, videos=price.videos, videos_left=self.videos_left
+            weight=price.weight,
+            left=self.left,
+            previews=price.videos if self.preview_quota > 0 else 0,
+            previews_left=self.previews_left,
         )
+
+    def video_shortfall(self, videos: int) -> NotEnoughCreations | None:
+        """Why the month cannot pay `videos` AT APPROVAL — all or nothing — or None."""
+        if self.video_quota <= 0 or videos <= self.videos_left:
+            return None
+        return NotEnoughCreations(videos=videos, videos_left=self.videos_left)
 
 
 class CreationsLedger(Protocol):
@@ -129,12 +194,24 @@ class CreationsLedger(Protocol):
         revision: int,
         price: CreationPrice,
     ) -> bool:
-        """Charge one generation; False when it was already charged. Raises
-        `NotEnoughCreations` when the month cannot pay for it."""
+        """Charge one generation at creation (creations + vistas previas); False when it
+        was already charged. Raises `NotEnoughCreations` when the month cannot pay."""
+        ...
+
+    def charge_videos(
+        self, *, tenant_id: UUID, brand_id: UUID, draft_id: UUID, revision: int, videos: int
+    ) -> bool:
+        """Charge a generation's videos at approval, all or nothing; False when they were
+        already charged. Raises `NotEnoughCreations` when the month has not enough."""
+        ...
+
+    def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
+        """Undo `charge_videos` when the approval could not be written."""
         ...
 
     def refund(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
-        """Give back one generation's creations; False when nothing was charged."""
+        """Give back one generation's creations and vistas previas; False when nothing
+        was charged."""
         ...
 
     def refund_final(
@@ -147,8 +224,8 @@ class CreationsLedger(Protocol):
         asset_ids: Sequence[UUID],
     ) -> bool:
         """Give back the video of each failed final (`asset_ids`, one per video); False
-        when there is none to give (no videos, each already given, or the whole charge
-        refunded)."""
+        when there is none to give (no videos charged, each already given, or the whole
+        charge refunded)."""
         ...
 
 
@@ -174,6 +251,19 @@ def _brand_lock_key(brand_id: UUID) -> int:
     return int.from_bytes(brand_id.bytes[:8], "big", signed=True)
 
 
+def _given_back(already: list[UUID], asset_ids: Sequence[UUID], videos: int) -> list[UUID] | None:
+    """The failed finals' assets after adding `asset_ids` — one video back per asset,
+    never the same asset twice, never more than the charge's `videos`. None when nothing
+    new is given."""
+    given = list(already)
+    for asset_id in asset_ids:
+        if len(given) >= videos:
+            break
+        if asset_id not in given:
+            given.append(asset_id)
+    return None if len(given) == len(already) else given
+
+
 class PostgresCreationsLedger:
     def __init__(
         self,
@@ -189,40 +279,52 @@ class PostgresCreationsLedger:
         zone = tenant.timezone if tenant is not None and tenant.timezone else "UTC"
         return month_start(self._clock(), zone)
 
-    @staticmethod
-    def _used(session: Session, tenant_id: UUID, brand_id: UUID, period: date) -> tuple[int, int]:
-        """(creations, videos) the month's `charged` rows still take — a video whose final
-        failed was given back (`final_refunded_assets`) and is not counted."""
-        videos = func.greatest(
-            CreationCharge.videos
-            - func.coalesce(func.cardinality(CreationCharge.final_refunded_assets), 0),
-            0,
+    def _balance(
+        self, session: Session, tenant_id: UUID, brand_id: UUID, period: date
+    ) -> CreationsBalance:
+        """The month's three counters: creations and vistas previas by the month they
+        were asked in; videos by the month they were approved in, less the ones a
+        failed final gave back (`final_refunded_assets`)."""
+        mine = (
+            CreationCharge.tenant_id == tenant_id,
+            CreationCharge.brand_id == brand_id,
+            CreationCharge.status == CHARGED,
         )
-        row = session.execute(
+        made = session.execute(
             select(
                 func.coalesce(func.sum(CreationCharge.weight), 0),
-                func.coalesce(func.sum(videos), 0),
-            ).where(
-                CreationCharge.tenant_id == tenant_id,
-                CreationCharge.brand_id == brand_id,
-                CreationCharge.period_month == period,
-                CreationCharge.status == CHARGED,
-            )
+                func.coalesce(func.sum(CreationCharge.previews), 0),
+            ).where(*mine, CreationCharge.period_month == period)
         ).one()
-        return int(row[0] or 0), int(row[1] or 0)
+        given_back = func.coalesce(func.cardinality(CreationCharge.final_refunded_assets), 0)
+        videos = session.scalar(
+            select(
+                func.coalesce(func.sum(func.greatest(CreationCharge.videos - given_back, 0)), 0)
+            ).where(*mine, CreationCharge.videos_period_month == period)
+        )
+        quota = quota_for(
+            tenant_id=tenant_id, brand_id=brand_id, period=period, weights=self._weights
+        )
+        return CreationsBalance(
+            quota=quota.creations,
+            used=int(made[0] or 0),
+            weights_version=self._weights.version,
+            renews_on=next_month_start(period),
+            video_quota=quota.videos,
+            videos_used=int(videos or 0),
+            preview_quota=quota.previews,
+            previews_used=int(made[1] or 0),
+        )
+
+    def _lock(self, session: Session, brand_id: UUID) -> None:
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": _brand_lock_key(brand_id)}
+        )
 
     def balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance:
         with tenant_session(tenant_id) as session:
             period = self._period(session, tenant_id)
-            used, videos_used = self._used(session, tenant_id, brand_id, period)
-        return CreationsBalance(
-            quota=self._weights.monthly_quota,
-            used=used,
-            weights_version=self._weights.version,
-            renews_on=next_month_start(period),
-            video_quota=self._weights.monthly_video_quota,
-            videos_used=videos_used,
-        )
+            return self._balance(session, tenant_id, brand_id, period)
 
     def charge(
         self,
@@ -234,9 +336,7 @@ class PostgresCreationsLedger:
         price: CreationPrice,
     ) -> bool:
         with tenant_session(tenant_id) as session:
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _brand_lock_key(brand_id)}
-            )
+            self._lock(session, brand_id)
             already = session.scalar(
                 select(CreationCharge.id).where(
                     CreationCharge.draft_id == draft_id, CreationCharge.revision == revision
@@ -245,37 +345,93 @@ class PostgresCreationsLedger:
             if already is not None:
                 return False
             period = self._period(session, tenant_id)
-            used, videos_used = self._used(session, tenant_id, brand_id, period)
-            balance = CreationsBalance(
-                quota=self._weights.monthly_quota,
-                used=used,
-                weights_version=self._weights.version,
-                video_quota=self._weights.monthly_video_quota,
-                videos_used=videos_used,
-            )
-            short = balance.shortfall(price)
+            short = self._balance(session, tenant_id, brand_id, period).shortfall(price)
             if short is not None:
                 raise short
             result = session.execute(
                 insert(CreationCharge)
-                .values(
-                    tenant_id=tenant_id,
-                    brand_id=brand_id,
-                    draft_id=draft_id,
-                    revision=revision,
-                    request_kind=price.request_kind,
-                    weight=price.weight,
-                    videos=price.videos,
-                    monthly_quota=self._weights.monthly_quota,
-                    monthly_video_quota=self._weights.monthly_video_quota,
-                    weights_version=self._weights.version,
-                    pricing_table_version=self._weights.pricing_table_version,
-                    period_month=period,
-                    status=CHARGED,
-                )
+                .values(**self._row(tenant_id, brand_id, draft_id, revision, price, period))
                 .on_conflict_do_nothing(constraint="uq_creation_charges_generation")
             )
             return bool(result.rowcount)
+
+    def _row(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        draft_id: UUID,
+        revision: int,
+        price: CreationPrice,
+        period: date,
+    ) -> dict[str, object]:
+        return {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "draft_id": draft_id,
+            "revision": revision,
+            "request_kind": price.request_kind,
+            "weight": price.weight,
+            "previews": price.videos if self._weights.monthly_preview_quota > 0 else 0,
+            "monthly_quota": self._weights.monthly_quota,
+            "monthly_preview_quota": self._weights.monthly_preview_quota,
+            "monthly_video_quota": self._weights.monthly_video_quota,
+            "weights_version": self._weights.version,
+            "pricing_table_version": self._weights.pricing_table_version,
+            "period_month": period,
+            "status": CHARGED,
+        }
+
+    def charge_videos(
+        self, *, tenant_id: UUID, brand_id: UUID, draft_id: UUID, revision: int, videos: int
+    ) -> bool:
+        if videos <= 0:
+            return False
+        with tenant_session(tenant_id) as session:
+            self._lock(session, brand_id)
+            row = session.scalar(
+                select(CreationCharge)
+                .where(CreationCharge.draft_id == draft_id, CreationCharge.revision == revision)
+                .with_for_update()
+            )
+            if row is not None and (row.videos > 0 or row.status != CHARGED):
+                return False
+            period = self._period(session, tenant_id)
+            short = self._balance(session, tenant_id, brand_id, period).video_shortfall(videos)
+            if short is not None:
+                raise short
+            if row is None:
+                # a piece created before the quota (or with it switched off): its row
+                # is written now, with nothing charged at creation
+                price = CreationPrice(REQUEST_GENERATED_VIDEO, 0)
+                values = self._row(tenant_id, brand_id, draft_id, revision, price, period)
+                row = CreationCharge(**{**values, "previews": 0})
+                session.add(row)
+            row.videos = videos
+            row.monthly_video_quota = self._weights.monthly_video_quota
+            row.videos_period_month = period
+            row.videos_charged_at = self._clock()
+            return True
+
+    def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
+        with tenant_session(tenant_id) as session:
+            row = session.scalar(
+                select(CreationCharge)
+                .where(
+                    CreationCharge.draft_id == draft_id,
+                    CreationCharge.revision == revision,
+                    CreationCharge.videos > 0,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                return False
+            row.videos = 0
+            row.videos_period_month = None
+            row.videos_charged_at = None
+            row.final_refunded_assets = []
+            row.final_refunded_at = None
+            row.final_refund_reason = None
+            return True
 
     def refund(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
         with tenant_session(tenant_id) as session:
@@ -310,19 +466,6 @@ class PostgresCreationsLedger:
             row.final_refunded_at = self._clock()
             row.final_refund_reason = reason[:200]
             return True
-
-
-def _given_back(already: list[UUID], asset_ids: Sequence[UUID], videos: int) -> list[UUID] | None:
-    """The failed finals' assets after adding `asset_ids` — one video back per asset,
-    never the same asset twice, never more than the charge's `videos`. None when nothing
-    new is given."""
-    given = list(already)
-    for asset_id in asset_ids:
-        if len(given) >= videos:
-            break
-        if asset_id not in given:
-            given.append(asset_id)
-    return None if len(given) == len(already) else given
 
 
 def refund_in_session(
@@ -360,27 +503,35 @@ class _MemoryRow:
     price: CreationPrice
     status: str = CHARGED
     reason: str | None = None
-    final_refunded_assets: list[UUID] | None = None
+    #: The videos charged at approval (0 until then).
+    videos: int = 0
+    final_refunded_assets: list[UUID] = field(default_factory=list)
     final_reason: str | None = None
 
     @property
     def videos_given_back(self) -> int:
-        return len(self.final_refunded_assets or ())
+        return len(self.final_refunded_assets)
 
     @property
     def counted_videos(self) -> int:
-        return max(self.price.videos - self.videos_given_back, 0)
+        return max(self.videos - self.videos_given_back, 0)
 
 
 class InMemoryCreationsLedger:
-    """The same contract without a database — for tests and local fakes."""
+    """The same contract without a database — for tests and local fakes (one month)."""
 
     def __init__(
-        self, *, weights: CreationWeights | None = None, used: int = 0, videos_used: int = 0
+        self,
+        *,
+        weights: CreationWeights | None = None,
+        used: int = 0,
+        videos_used: int = 0,
+        previews_used: int = 0,
     ) -> None:
         self._weights = weights or load_weights()
         self._opening = used
         self._opening_videos = videos_used
+        self._opening_previews = previews_used
         self.rows: dict[tuple[UUID, int], _MemoryRow] = {}
 
     def _charged(self, brand_id: UUID) -> list[_MemoryRow]:
@@ -388,12 +539,19 @@ class InMemoryCreationsLedger:
 
     def balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance:
         rows = self._charged(brand_id)
+        quota = quota_for(
+            tenant_id=tenant_id, brand_id=brand_id, period=date.min, weights=self._weights
+        )
+        previews = quota.previews > 0
         return CreationsBalance(
-            quota=self._weights.monthly_quota,
+            quota=quota.creations,
             used=self._opening + sum(row.price.weight for row in rows),
             weights_version=self._weights.version,
-            video_quota=self._weights.monthly_video_quota,
+            video_quota=quota.videos,
             videos_used=self._opening_videos + sum(row.counted_videos for row in rows),
+            preview_quota=quota.previews,
+            previews_used=self._opening_previews
+            + (sum(row.price.videos for row in rows) if previews else 0),
         )
 
     def charge(
@@ -411,6 +569,31 @@ class InMemoryCreationsLedger:
         if short is not None:
             raise short
         self.rows[(draft_id, revision)] = _MemoryRow(brand_id=brand_id, price=price)
+        return True
+
+    def charge_videos(
+        self, *, tenant_id: UUID, brand_id: UUID, draft_id: UUID, revision: int, videos: int
+    ) -> bool:
+        if videos <= 0:
+            return False
+        row = self.rows.get((draft_id, revision))
+        if row is not None and (row.videos > 0 or row.status != CHARGED):
+            return False
+        short = self.balance(tenant_id=tenant_id, brand_id=brand_id).video_shortfall(videos)
+        if short is not None:
+            raise short
+        if row is None:
+            row = _MemoryRow(brand_id=brand_id, price=CreationPrice(REQUEST_GENERATED_VIDEO, 0))
+            self.rows[(draft_id, revision)] = row
+        row.videos = videos
+        return True
+
+    def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
+        row = self.rows.get((draft_id, revision))
+        if row is None or row.videos <= 0:
+            return False
+        row.videos = 0
+        row.final_refunded_assets = []
         return True
 
     def refund(self, *, tenant_id: UUID, draft_id: UUID, revision: int, reason: str) -> bool:
@@ -431,9 +614,9 @@ class InMemoryCreationsLedger:
         asset_ids: Sequence[UUID],
     ) -> bool:
         row = self.rows.get((draft_id, revision))
-        if row is None or row.status != CHARGED or row.price.videos <= 0:
+        if row is None or row.status != CHARGED or row.videos <= 0:
             return False
-        given = _given_back(list(row.final_refunded_assets or ()), asset_ids, row.price.videos)
+        given = _given_back(row.final_refunded_assets, asset_ids, row.videos)
         if given is None:
             return False
         row.final_refunded_assets = given
@@ -447,9 +630,12 @@ __all__ = [
     "CreationsBalance",
     "CreationsLedger",
     "InMemoryCreationsLedger",
+    "MonthlyQuota",
     "NotEnoughCreations",
     "PostgresCreationsLedger",
     "month_start",
+    "next_month_start",
     "not_enough_text",
+    "quota_for",
     "refund_in_session",
 ]

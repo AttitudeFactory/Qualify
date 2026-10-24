@@ -11,12 +11,16 @@ with the weight of `qualify_creative.creations` (`pesos-creaciones-v2` over pric
 moderation or is reaped is REFUNDED: the row stays (provenance), `status` turns
 `refunded` and stops counting.
 
-- `videos` / `monthly_video_quota` (founder, 2026-10-24): generated (Seedance) videos
-  have their own monthly quota (4) apart from the 30 creations — a clip, a Seedance
-  avatar, each animated carousel slide, a clip with a reference video: 1 video each, up
-  to 10 s, and no creations. `weight` is the creations, `videos` the videos, both
-  charged when the piece is created (480p preview + the 1080p final made at approval);
-  nothing is charged at approval. The presenter (OmniHuman) stays in creations.
+- `previews` / `monthly_preview_quota` (founder, 2026-10-24): each Seedance draft made
+  (a clip, a Seedance avatar, each animated carousel slide, each «Pedir otra versión»
+  of them) is one of the month's 20 «vistas previas», charged at creation with the row
+  and given back only with it (a generation that does not come out).
+- `videos` / `monthly_video_quota` / `videos_period_month` / `videos_charged_at`
+  (founder, 2026-10-24): the same Seedance videos count against their own monthly quota
+  (4, up to 10 s each, no creations) when the owner APPROVES the piece and its final is
+  ordered — 0 / NULL until then, so a draft discarded, rejected or expired costs no
+  video. `videos_period_month` is the month of the approval (the balance counts videos
+  by it). The presenter (OmniHuman) stays in creations.
 - `final_refunded_assets` (uuid[]): a 1080p final that fails gives its video back — the
   row stays `charged`, the failed video's asset id joins the array (never twice, at most
   `videos` of them), `final_refunded_at` / `final_refund_reason` record the last one,
@@ -104,8 +108,14 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("refunded_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("previews", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column(
+            "monthly_preview_quota", sa.Integer(), server_default=sa.text("0"), nullable=False
+        ),
         sa.Column("videos", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("monthly_video_quota", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column("videos_period_month", sa.Date(), nullable=True),
+        sa.Column("videos_charged_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "final_refunded_assets",
             ARRAY(PGUUID(as_uuid=True)),
@@ -126,7 +136,19 @@ def upgrade() -> None:
             "period_month = date_trunc('month', period_month)::date",
             name="ck_creation_charges_period",
         ),
+        sa.CheckConstraint("previews >= 0", name="ck_creation_charges_previews"),
+        sa.CheckConstraint("monthly_preview_quota >= 0", name="ck_creation_charges_preview_quota"),
         sa.CheckConstraint("videos >= 0", name="ck_creation_charges_videos"),
+        sa.CheckConstraint(
+            "(videos > 0) = (videos_charged_at IS NOT NULL)"
+            " AND (videos > 0) = (videos_period_month IS NOT NULL)",
+            name="ck_creation_charges_videos_charged",
+        ),
+        sa.CheckConstraint(
+            "videos_period_month IS NULL"
+            " OR videos_period_month = date_trunc('month', videos_period_month)::date",
+            name="ck_creation_charges_videos_period",
+        ),
         sa.CheckConstraint("monthly_video_quota >= 0", name="ck_creation_charges_video_quota"),
         sa.CheckConstraint(
             "cardinality(final_refunded_assets) <= videos",
@@ -145,12 +167,19 @@ def upgrade() -> None:
         "creation_charges",
         ["tenant_id", "brand_id", "period_month"],
     )
+    # the month's videos, counted by the month they were approved in
+    op.create_index(
+        "ix_creation_charges_brand_videos_month",
+        "creation_charges",
+        ["tenant_id", "brand_id", "videos_period_month"],
+    )
     op.execute("GRANT SELECT, INSERT, UPDATE ON creation_charges TO qualify_app;")
     # Deliberately nothing for qualify_webhook_worker or qualify_admin.
     _enable_tenant_rls("creation_charges")
 
 
 def downgrade() -> None:
+    op.drop_index("ix_creation_charges_brand_videos_month", table_name="creation_charges")
     op.drop_index("ix_creation_charges_brand_month", table_name="creation_charges")
     op.drop_index("ix_creation_charges_tenant", table_name="creation_charges")
     op.drop_table("creation_charges")

@@ -20,7 +20,8 @@
   "videos": {
     "monthly_quota": 4,
     "offered_seconds": [5, 10],
-    "decided": "founder 2026-10-24: every Seedance video (clip, Seedance avatar, animated carousel slide, clip with a reference video) counts 1 of 4 a month, up to 10 s; it no longer uses creations"
+    "monthly_preview_quota": 20,
+    "decided": "founder 2026-10-24: every Seedance video (clip, Seedance avatar, animated carousel slide, clip with a reference video) counts 1 of 4 videos a month, up to 10 s, charged when the owner APPROVES (the final is ordered); each draft made counts 1 of 20 vistas previas a month, charged at creation; videos use no creations"
   },
   "generated_video": {
     "model_id": "dreamina-seedance-2-5-260628",

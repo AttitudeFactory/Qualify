@@ -42,9 +42,11 @@ class ChargeRow:
     pricing_table_version: str
     period_month: date
     charged_at: datetime
-    #: v2: the generated videos it used, and how many came back because a final failed.
+    #: v2: the videos charged at approval, how many came back because a final failed,
+    #: and the vistas previas charged at creation.
     videos: int = 0
     videos_given_back: int = 0
+    previews: int = 0
 
     @property
     def counted(self) -> int:
@@ -70,6 +72,7 @@ class PieceLine:
     versions: str
     videos_charged: int = 0
     videos_refunded: int = 0
+    previews_charged: int = 0
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,7 @@ def build_report(
                 ),
                 videos_charged=sum(r.counted_videos for r in rows),
                 videos_refunded=sum(r.videos - r.counted_videos for r in rows),
+                previews_charged=sum(r.previews for r in rows if r.status == CHARGED),
             )
         )
         months[(rows[0].brand_id, rows[0].period_month)].extend(rows)
@@ -147,6 +151,8 @@ def render(pieces: Iterable[PieceLine], months: Iterable[MonthLine]) -> str:
         if p.videos_charged or p.videos_refunded:
             back = f", devueltos {p.videos_refunded}" if p.videos_refunded else ""
             videos = f"  videos {p.videos_charged}{back}"
+        if p.previews_charged:
+            videos += f"  vistas previas {p.previews_charged}"
         lines.append(
             f"  {p.first_charged_at:%Y-%m-%d %H:%M}  {str(p.draft_id)[:8]}  "
             f"{p.request_kind:<16} {p.creations_charged:>3}{refunded}{videos}  "
@@ -187,6 +193,7 @@ def _fetch(tenant_id: UUID, month: date | None) -> tuple[list[ChargeRow], dict[U
                 charged_at=c.charged_at,
                 videos=c.videos,
                 videos_given_back=len(c.final_refunded_assets or ()),
+                previews=c.previews,
             )
             for c in session.scalars(query)
         ]

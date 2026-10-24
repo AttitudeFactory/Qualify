@@ -58,34 +58,71 @@ def _charge(ledger: PostgresCreationsLedger, brand: UUID, price: CreationPrice) 
     return draft
 
 
-def test_four_videos_then_blocked_and_the_creations_untouched() -> None:
+def _approve(ledger: PostgresCreationsLedger, brand: UUID, draft: UUID, videos: int = 1) -> bool:
+    return ledger.charge_videos(
+        tenant_id=TENANT_A, brand_id=brand, draft_id=draft, revision=1, videos=videos
+    )
+
+
+def test_creation_charges_a_vista_previa_and_approval_the_video() -> None:
     ledger = PostgresCreationsLedger()
     brand = _brand(TENANT_A)
-    drafts = [_charge(ledger, brand, CLIP) for _ in range(4)]
+    drafts = [_charge(ledger, brand, CLIP) for _ in range(5)]
     balance = ledger.balance(tenant_id=TENANT_A, brand_id=brand)
-    assert (balance.left, balance.videos_left, balance.video_quota) == (30, 0, 4)
+    # five vistas previas, no video yet: discarding them costs no video
+    assert (balance.left, balance.previews_left, balance.videos_left) == (30, 15, 4)
+    for draft in drafts[:4]:
+        assert _approve(ledger, brand, draft)
+    assert not _approve(ledger, brand, drafts[0])  # approving twice counts once
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 0
     with pytest.raises(NotEnoughCreations) as refused:
-        _charge(ledger, brand, CLIP)
+        _approve(ledger, brand, drafts[4])
     assert (refused.value.missing, refused.value.missing_videos) == (0, 1)
-    # the same generation is never charged twice
-    assert not ledger.charge(
-        tenant_id=TENANT_A, brand_id=brand, draft_id=drafts[0], revision=1, price=CLIP
-    )
     # an image still goes through: creations and videos are apart
     _charge(ledger, brand, CreationPrice("image", 1))
     assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).left == 29
     with tenant_session(TENANT_A) as session:
         row = session.scalar(select(CreationCharge).where(CreationCharge.draft_id == drafts[0]))
         assert row is not None
-        assert (row.videos, row.weight, row.monthly_video_quota, row.monthly_quota) == (1, 0, 4, 30)
+        assert (row.previews, row.videos, row.weight) == (1, 1, 0)
+        assert (row.monthly_preview_quota, row.monthly_video_quota, row.monthly_quota) == (
+            20,
+            4,
+            30,
+        )
+        assert row.videos_period_month is not None and row.videos_charged_at is not None
         assert (row.weights_version, row.pricing_table_version) == ("pesos-creaciones-v2", "v7")
-        assert row.final_refunded_assets == []
+        unapproved = session.scalar(
+            select(CreationCharge).where(CreationCharge.draft_id == drafts[4])
+        )
+        assert unapproved is not None and unapproved.videos == 0
+        assert unapproved.videos_period_month is None
+
+
+def test_the_preview_cap_is_20() -> None:
+    ledger = PostgresCreationsLedger()
+    brand = _brand(TENANT_A)
+    _charge(ledger, brand, CreationPrice("carousel", 1, videos=10))
+    _charge(ledger, brand, CreationPrice("carousel", 1, videos=10))
+    with pytest.raises(NotEnoughCreations) as refused:
+        _charge(ledger, brand, CLIP)
+    assert (refused.value.missing_previews, refused.value.previews_left) == (1, 0)
+
+
+def test_an_approval_that_could_not_be_written_is_uncharged() -> None:
+    ledger = PostgresCreationsLedger()
+    brand = _brand(TENANT_A)
+    draft = _charge(ledger, brand, CLIP)
+    assert _approve(ledger, brand, draft)
+    assert ledger.uncharge_videos(tenant_id=TENANT_A, draft_id=draft, revision=1)
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 4
 
 
 def test_a_failed_final_gives_back_one_video_per_asset_once() -> None:
     ledger = PostgresCreationsLedger()
     brand = _brand(TENANT_A)
     draft = _charge(ledger, brand, CreationPrice("carousel", 1, videos=2))
+    assert _approve(ledger, brand, draft, videos=2)
     first, second = uuid4(), uuid4()
     assert ledger.refund_final(
         tenant_id=TENANT_A, draft_id=draft, revision=1, reason="ModelArk falló.", asset_ids=(first,)
@@ -110,6 +147,7 @@ def test_more_refunded_finals_than_videos_is_refused_by_the_database() -> None:
     ledger = PostgresCreationsLedger()
     brand = _brand(TENANT_A)
     draft = _charge(ledger, brand, CLIP)
+    assert _approve(ledger, brand, draft)
     with pytest.raises(IntegrityError), tenant_session(TENANT_A) as session:
         session.execute(
             update(CreationCharge)

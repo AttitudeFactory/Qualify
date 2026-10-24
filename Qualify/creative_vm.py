@@ -20,7 +20,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
@@ -1001,6 +1001,14 @@ class VideoDraftVM:
     #: A final is being made (this one, or another video of the piece while this
     #: state shows one that failed): the screen polls until none is left.
     rendering: bool = False
+    #: «Apruébala antes del jueves 30 de octubre para tener el video final.» — while
+    #: the vista previa waits for approval (founder, 2026-10-24); "" otherwise.
+    expiry_note: str = ""
+
+    @property
+    def expired(self) -> bool:
+        """The vista previa can no longer give its video final: «Crearla otra vez»."""
+        return self.state == VIDEO_EXPIRED
 
 
 #: A piece without Seedance 2.5 draft videos.
@@ -1519,6 +1527,12 @@ __all__ = [
     "presenter_fallback_text",
     "renewal_day_label",
     "videos_short_text",
+    "previews_short_text",
+    "previews_left_label",
+    "approval_videos_notice",
+    "draft_expiry_text",
+    "RECREATE_LABEL",
+    "PREVIEWS_SHOWN_AT",
     "VIDEO_TOO_LONG",
     "gap_vm",
     "status_label",
@@ -1713,32 +1727,98 @@ PRESENTER_TOO_LONG = (
 VIDEO_TOO_LONG = "Este video puede durar 5 o 10 segundos. Cámbialo en Duración."
 
 
-def creations_left_label(left: int, quota: int, videos_left: int = 0, video_quota: int = 0) -> str:
+#: The «vistas previas» are only mentioned when this few are left (founder, 2026-10-24).
+PREVIEWS_SHOWN_AT = 5
+
+
+def previews_left_label(previews_left: int, preview_quota: int) -> str:
+    """«Te quedan {p} vistas previas este mes.» — only when few are left ("" otherwise)."""
+    if preview_quota <= 0 or previews_left > PREVIEWS_SHOWN_AT:
+        return ""
+    if previews_left == 1:
+        return "Te queda 1 vista previa este mes."
+    return f"Te quedan {previews_left} vistas previas este mes."
+
+
+def creations_left_label(
+    left: int,
+    quota: int,
+    videos_left: int = 0,
+    video_quota: int = 0,
+    previews_left: int = 0,
+    preview_quota: int = 0,
+) -> str:
     """The month's balance, never money. With a video quota it is the founder's
-    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»;
-    without one, «Te quedan 18 de 30 este mes»."""
+    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»,
+    plus the vistas previas when few are left; without one, «Te quedan 18 de 30 este
+    mes»."""
     verb = "Te queda" if left == 1 else "Te quedan"
     if video_quota > 0:
-        return (
+        text = (
             f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."
         )
+        previews = previews_left_label(previews_left, preview_quota)
+        return f"{text} {previews}" if previews else text
     return f"{verb} {left} de {quota} este mes"
 
 
+def previews_short_text(
+    previews: int, previews_left: int, preview_quota: int, *, renews: str = ""
+) -> str:
+    """No vista previa left for this piece (founder, 2026-10-24): «Ya usaste tus 20
+    vistas previas de este mes. Vuelven el 1 de noviembre.» — or, for a carousel with
+    more animated slides than vistas previas left, how many to take out."""
+    day = renews or "próximo mes"
+    if previews_left <= 0:
+        return f"Ya usaste tus {preview_quota} vistas previas de este mes. Vuelven el {day}."
+    left = "te queda 1" if previews_left == 1 else f"te quedan {previews_left}"
+    drop = previews - previews_left
+    remove = "Quita 1 video animado" if drop == 1 else f"Quita {drop} videos animados"
+    return (
+        f"Esta publicación usa {previews} vistas previas y este mes {left}. "
+        f"{remove} o espera al {day}, cuando vuelven tus {preview_quota}."
+    )
+
+
 def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews: str = "") -> str:
-    """The month has no video left for this piece (founder, 2026-10-24): «Ya usaste tus
-    4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a carousel with more
-    animated slides than videos left, how many it uses and how many are left."""
+    """Approving cannot pay this piece's videos — all or nothing (founder, 2026-10-24):
+    «Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a
+    carousel with more animated slides than videos left, how many it uses."""
     day = renews or "próximo mes"
     if videos_left <= 0:
         return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
     left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
-    drop = videos - videos_left
-    remove = "Quita 1 video animado" if drop == 1 else f"Quita {drop} videos animados"
     return (
-        f"Esta publicación usa {videos} videos y este mes {left}. "
-        f"{remove} o espera al {day}, cuando vuelven tus {video_quota}."
+        f"Al aprobarla, esta publicación usa {videos} videos y este mes {left}. "
+        f"Tus {video_quota} videos vuelven el {day}."
     )
+
+
+def approval_videos_notice(videos: int, videos_left: int, video_quota: int) -> str:
+    """Before approving (founder, 2026-10-24): «Al aprobar usas 1 de tus 4 videos del
+    mes. Te quedarían {v}.» — «Te quedaría 1.» in the singular."""
+    after = max(videos_left - videos, 0)
+    remain = "Te quedaría" if after == 1 else "Te quedarían"
+    return f"Al aprobar usas {videos} de tus {video_quota} videos del mes. {remain} {after}."
+
+
+_WEEKDAYS_LONG = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+def draft_expiry_text(expires: datetime | None) -> str:
+    """«Apruébala antes del jueves 30 de octubre para tener el video final.» — the day
+    the vista previa stops being able to give the video final, in the business's zone
+    ("" when unknown)."""
+    if expires is None:
+        return ""
+    return (
+        f"Apruébala antes del {_WEEKDAYS_LONG[expires.weekday()]} {expires.day} de "
+        f"{_MONTHS_LONG[expires.month - 1]} para tener el video final."
+    )
+
+
+#: The expired piece's way out (founder, 2026-10-24): a new piece from the same request.
+RECREATE_LABEL = "Crearla otra vez"
 
 
 _MONTHS_LONG = (
@@ -1794,31 +1874,12 @@ def creations_use_notice(
     presenter: bool = False,
     video: bool = False,
     subject: str = "",
-    videos: int = 0,
-    videos_left: int = 0,
-    video_quota: int = 0,
 ) -> str:
-    """What one request uses, said before it is created. The presenter's sentence is the
-    founder's (2026-10-23): «Este video con presentador usa 25 de tus creaciones. Te
-    quedarían {n} este mes.»; a generated video's too (2026-10-24): «Este video usa 1
-    de tus 4 videos del mes. Te quedarían {v}.»"""
+    """What one request uses of the creations, said before it is created. The
+    presenter's sentence is the founder's (2026-10-23): «Este video con presentador usa
+    25 de tus creaciones. Te quedarían {n} este mes.» A generated video's videos are
+    said before APPROVING (`approval_videos_notice`), not here."""
     after = max(left - weight, 0)
-    if videos > 0:
-        videos_after = max(videos_left - videos, 0)
-        if weight <= 0:
-            what = subject or ("Este video" if videos == 1 else "Esta publicación")
-            remain = "Te quedaría" if videos_after == 1 else "Te quedarían"
-            return (
-                f"{what} usa {videos} de tus {video_quota} videos del mes. {remain} {videos_after}."
-            )
-        what = subject or "Esta publicación"
-        uses = "1 creación" if weight == 1 else f"{weight} creaciones"
-        clips = "1 video" if videos == 1 else f"{videos} videos"
-        remain = "Te quedaría" if after == 1 else "Te quedarían"
-        return (
-            f"{what} usa {uses} y {clips}. {remain} {after} de {quota} creaciones y "
-            f"{videos_after} de {video_quota} videos."
-        )
     if presenter:
         return (
             f"Este video con presentador usa {weight} de tus creaciones. "

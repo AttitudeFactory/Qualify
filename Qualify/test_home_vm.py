@@ -230,3 +230,21 @@ def test_home_copy_has_no_english() -> None:
             continue  # docstrings and comments in English, by convention
         for word in _ENGLISH:
             assert word.lower() not in text.lower().split(), (word, text)
+
+
+def test_videos_about_to_expire_show_on_today_and_open_por_aprobar() -> None:
+    """Founder 2026-10-24: from 2 days before a vista previa expires, Inicio says so and
+    links to «Por aprobar» filtered."""
+    from .home_vm import videos_expiring_label
+
+    assert videos_expiring_label(1) == "1 video vence pronto"
+    assert videos_expiring_label(3) == "3 videos vencen pronto"
+    vm = build_home_vm(HomeCounts(videos_expiring_soon=2, **_SET_UP))
+    (card,) = vm.today
+    assert (card.key, card.label, card.href) == (
+        "expiring",
+        "2 videos vencen pronto",
+        DRAFTS_TO_APPROVE_URL,
+    )
+    assert gallery_filter_from_param(DRAFTS_TO_APPROVE_URL.split("=", 1)[1]) == "needs_action"
+    assert all(c.key != "expiring" for c in build_home_vm(HomeCounts(**_SET_UP)).today)

@@ -17,10 +17,21 @@ import logging
 from uuid import UUID
 
 import reflex as rx
+from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.service import ApprovalBlocked, DraftExpired
+from qualify_creative.creations import load_weights
 
 from .auth_state import AuthState
-from .creative_provider import acting_user_id, approve_draft, draft_detail, reject_draft
+from .creative_provider import (
+    acting_user_id,
+    approval_videos,
+    approve_draft,
+    creations_balance,
+    default_brand_id,
+    draft_detail,
+    recreate_draft,
+    reject_draft,
+)
 
 # m-24842978: the same words here and on the publication's own page after approving —
 # it is not out yet — live with `approval_notice`; re-exported for the screens' tests.
@@ -30,6 +41,8 @@ from .creative_vm import (  # noqa: F401
     APPROVED_TOAST,
     APPROVED_TOAST_ACTION,
     approval_notice,
+    previews_short_text,
+    videos_short_text,
 )
 from .pending_state import PendingState
 from .planner_provider import load_gallery
@@ -52,6 +65,36 @@ _REVIEW_FAILED = "No se pudo completar. Abre la publicación y vuelve a intentar
 _NO_PASSING_VARIANT = (
     "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
 )
+
+
+def approval_refused_text(tenant_id: UUID, draft_id: UUID, exc: NotEnoughCreations) -> str:
+    """Why a card's «Aprobar» was refused for want of videos (founder, 2026-10-24) — with
+    the day they come back when it can be read. Blocking (DB)."""
+    try:
+        quote = approval_videos(tenant_id, draft_id)
+    except Exception:  # noqa: BLE001 — the words still say what happened
+        quote = None
+    if quote is not None:
+        videos, left, quota, renews = quote
+        return videos_short_text(videos, left, quota, renews=renews)
+    return videos_short_text(exc.videos, exc.videos_left, load_weights().monthly_video_quota)
+
+
+def recreate_refused_text(tenant_id: UUID, exc: NotEnoughCreations) -> str:
+    """Why «Crearla otra vez» was refused: no vista previa (or creation) left. Blocking."""
+    renews = ""
+    try:
+        brand_id = default_brand_id(tenant_id)
+        balance = creations_balance(tenant_id, brand_id) if brand_id else None
+        renews = balance[2] if balance else ""
+    except Exception:  # noqa: BLE001 — the words still say what happened
+        renews = ""
+    if exc.missing:
+        when = renews or "próximo mes"
+        return f"Te faltan {exc.missing} creaciones este mes. El {when} se renuevan tus 30."
+    return previews_short_text(
+        exc.previews, exc.previews_left, load_weights().monthly_preview_quota, renews=renews
+    )
 
 
 def schedule_readiness(posts: list[PostOptionVM], post_id: str) -> tuple[bool, str]:
@@ -213,6 +256,13 @@ class GalleryState(rx.State):
                 self.busy_post_id = ""
             yield rx.toast.error(exc.detail)
             return
+        except NotEnoughCreations as exc:
+            # founder 2026-10-24: approving counts the videos — none left, none approved
+            text = await asyncio.to_thread(approval_refused_text, tenant_id, UUID(post_id), exc)
+            async with self:
+                self.busy_post_id = ""
+            yield rx.toast.warning(text)
+            return
         except Exception as exc:  # noqa: BLE001 — one card's failure never breaks the grid
             logger.warning("gallery quick approve failed: %s", type(exc).__name__)
             async with self:
@@ -260,6 +310,40 @@ class GalleryState(rx.State):
         if data is None:
             yield GalleryState.load
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
+
+    @rx.event(background=True)
+    async def recreate_post(self, post_id: str):
+        """«Crearla otra vez» on a card whose vista previa expired (founder, 2026-10-24):
+        a new piece from the same request, opened at once (one vista previa per video)."""
+        async with self:
+            if self.busy_post_id:
+                return
+            self.busy_post_id = post_id
+        tenant_id = await self._tenant()
+        try:
+            if tenant_id is None:
+                raise LookupError("no tenant")
+            user_id = await asyncio.to_thread(acting_user_id, tenant_id)
+            if user_id is None:
+                raise LookupError("no user")
+            new_id = await asyncio.to_thread(recreate_draft, tenant_id, UUID(post_id), user_id)
+        except NotEnoughCreations as exc:
+            assert tenant_id is not None
+            text = await asyncio.to_thread(recreate_refused_text, tenant_id, exc)
+            async with self:
+                self.busy_post_id = ""
+            yield rx.toast.warning(text)
+            return
+        except Exception as exc:  # noqa: BLE001 — one card's failure never breaks the grid
+            logger.warning("gallery recreate failed: %s", type(exc).__name__)
+            async with self:
+                self.busy_post_id = ""
+            yield rx.toast.error(_REVIEW_FAILED)
+            return
+        async with self:
+            self.busy_post_id = ""
+        yield PendingState.refresh_now
+        yield rx.redirect(f"/drafts/{new_id}")
 
     @rx.event
     def ask_reject_post(self, post_id: str, title: str) -> None:

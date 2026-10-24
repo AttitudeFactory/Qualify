@@ -80,6 +80,7 @@ from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
     acting_user_id,
+    approval_videos,
     approve_draft,
     approve_voice,
     brand_character,
@@ -99,6 +100,7 @@ from .creative_provider import (
     load_voice_screen,
     preview_brief_prompt,
     propose_voice,
+    recreate_draft,
     regeneration_creations,
     reject_draft,
     retry_final,
@@ -136,6 +138,7 @@ from .creative_vm import (
     VoiceProposalVM,
     add_phrase,
     approval_notice,
+    approval_videos_notice,
     caption_hashtag_suggestions,
     caption_keywords,
     content_type_options,
@@ -150,6 +153,8 @@ from .creative_vm import (
     not_enough_creations_text,
     phrase_list,
     presenter_fallback_text,
+    previews_left_label,
+    previews_short_text,
     remove_phrase,
     seen_label,
     videos_short_text,
@@ -1363,6 +1368,8 @@ class CreativeState(rx.State):
             and variant.passed
             and not self.edit_blocking
             and not self.edit_mode
+            # founder 2026-10-24: approving counts the videos — not without enough left
+            and not self.approve_videos_short
         )
 
     @rx.var
@@ -4857,18 +4864,22 @@ class CreativeState(rx.State):
     creations_quota: int = 0
     #: The day it renews, as the owner reads it («1 de noviembre»; "" = unknown).
     creations_renews: str = ""
-    #: The month's generated videos (founder, 2026-10-24; 0 quota = none wired).
+    #: The month's videos (counted at approval) and vistas previas (at creation) —
+    #: founder, 2026-10-24; a quota of 0 = none wired.
     videos_left: int = 0
     videos_quota: int = 0
+    previews_left: int = 0
+    previews_quota: int = 0
 
-    def _videos_short(self, price: CreationPrice) -> str:
-        """What a piece whose videos the month cannot pay says ("" = it can)."""
-        if self.creations_left < 0 or self.videos_quota <= 0 or price.videos <= 0:
+    def _previews_short(self, price: CreationPrice) -> str:
+        """What a video whose vistas previas the month cannot pay says ("" = it can).
+        Its videos are not asked here: they are counted when the owner approves."""
+        if self.creations_left < 0 or self.previews_quota <= 0 or price.videos <= 0:
             return ""
-        if price.videos <= self.videos_left:
+        if price.videos <= self.previews_left:
             return ""
-        return videos_short_text(
-            price.videos, self.videos_left, self.videos_quota, renews=self.creations_renews
+        return previews_short_text(
+            price.videos, self.previews_left, self.previews_quota, renews=self.creations_renews
         )
 
     def _not_enough_text(self, missing: int) -> str:
@@ -4944,7 +4955,7 @@ class CreativeState(rx.State):
             return PRESENTER_TOO_LONG if self._is_presenter() else VIDEO_TOO_LONG
         if price.weight > self.creations_left:
             return self._not_enough_text(price.weight - self.creations_left)
-        return self._videos_short(price)
+        return self._previews_short(price)
 
     @rx.var
     def creations_left_text(self) -> str:
@@ -4952,7 +4963,12 @@ class CreativeState(rx.State):
         if self.creations_left < 0:
             return ""
         return creations_left_label(
-            self.creations_left, self.creations_quota, self.videos_left, self.videos_quota
+            self.creations_left,
+            self.creations_quota,
+            self.videos_left,
+            self.videos_quota,
+            self.previews_left,
+            self.previews_quota,
         )
 
     @rx.var(cache=False)
@@ -4963,7 +4979,11 @@ class CreativeState(rx.State):
         if self.creations_left < 0 or not self._on_summary():
             return ""
         price = self._creations_price()
-        if price is None or price.weight > self.creations_left or self._videos_short(price):
+        if price is None or price.weight > self.creations_left or self._previews_short(price):
+            return ""
+        if price.weight <= 0:
+            # a generated video uses no creations: its video is counted, and said, at
+            # approval («Al aprobar usas 1 de tus 4 videos del mes»)
             return ""
         video = self.brief_kind in ("clip", "avatar_video", "animated_avatar_video") or (
             self.gen_category == "ad"
@@ -4974,9 +4994,6 @@ class CreativeState(rx.State):
             self.creations_quota,
             presenter=price.is_presenter,
             video=video,
-            videos=price.videos if self.videos_quota > 0 else 0,
-            videos_left=self.videos_left,
-            video_quota=self.videos_quota,
         )
 
     @rx.var(cache=False)
@@ -5050,6 +5067,7 @@ class CreativeState(rx.State):
             if balance is None:
                 self.creations_left, self.creations_quota, self.creations_renews = -1, 0, ""
                 self.videos_left, self.videos_quota = 0, 0
+                self.previews_left, self.previews_quota = 0, 0
             else:
                 (
                     self.creations_left,
@@ -5057,6 +5075,8 @@ class CreativeState(rx.State):
                     self.creations_renews,
                     self.videos_left,
                     self.videos_quota,
+                    self.previews_left,
+                    self.previews_quota,
                 ) = balance
                 self._fit_duration()
 
@@ -5564,8 +5584,11 @@ class CreativeState(rx.State):
                 self.create_error = (
                     self._not_enough_text(exc.missing)
                     if exc.missing
-                    else videos_short_text(
-                        exc.videos, exc.videos_left, self.videos_quota, renews=self.creations_renews
+                    else previews_short_text(
+                        exc.previews,
+                        exc.previews_left,
+                        self.previews_quota,
+                        renews=self.creations_renews,
                     )
                 )
             return None
@@ -5721,6 +5744,7 @@ class CreativeState(rx.State):
             # m-24820142: a final still being made when the piece is opened
             final_poll = self._starts_final_poll(vm)
         await self._load_regen_creations(tenant_id, brand_id, draft_id)
+        await self._load_approval_videos(tenant_id, draft_id)
         if should_poll:
             yield CreativeState.poll_draft
         if final_poll:
@@ -5928,6 +5952,15 @@ class CreativeState(rx.State):
             async with self:
                 self.action_error = exc.detail
             return
+        except NotEnoughCreations as exc:
+            # founder 2026-10-24: approving counts the videos, all or nothing — without
+            # enough left nothing was approved and the piece waits as it was
+            await self._load_approval_videos(tenant_id, draft_uuid)
+            async with self:
+                self.action_error = self.approve_videos_text or videos_short_text(
+                    exc.videos, exc.videos_left, load_weights().monthly_video_quota
+                )
+            return
         except SQLAlchemyError as exc:
             logger.error("approve failed: %s", type(exc).__name__)
             async with self:
@@ -5950,6 +5983,74 @@ class CreativeState(rx.State):
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
         if start_poll:
             yield CreativeState.poll_final
+
+    #: Before approving a piece with videos (founder, 2026-10-24): «Al aprobar usas 1 de
+    #: tus 4 videos del mes. Te quedarían {v}.» — or why it cannot be approved yet.
+    approve_videos_text: str = ""
+    approve_videos_short: bool = False
+
+    async def _load_approval_videos(self, tenant_id: UUID, draft_id: UUID) -> None:
+        try:
+            quote = await asyncio.to_thread(approval_videos, tenant_id, draft_id)
+        except Exception as exc:  # noqa: BLE001 — the service still refuses what it cannot pay
+            logger.warning("approval videos unreadable: %s", type(exc).__name__)
+            quote = None
+        async with self:
+            if quote is None:
+                self.approve_videos_text, self.approve_videos_short = "", False
+                return
+            videos, left, quota, renews = quote
+            self.approve_videos_short = quota > 0 and videos > left
+            self.approve_videos_text = (
+                videos_short_text(videos, left, quota, renews=renews)
+                if self.approve_videos_short
+                else approval_videos_notice(videos, left, quota)
+                if quota > 0
+                else ""
+            )
+
+    @rx.event(background=True)
+    async def recreate_expired(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Crearla otra vez» (founder, 2026-10-24): the vista previa expired, so a new
+        piece is made from the same request (one vista previa per video) and opened."""
+        async with self:
+            self.action_error = ""
+            draft_uuid = self._route_draft_id()
+        if draft_uuid is None:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.action_error = _NO_SESSION
+            return
+        tenant_id, brand_id, user_id = ids
+        try:
+            new_id = await asyncio.to_thread(recreate_draft, tenant_id, draft_uuid, user_id)
+        except NotEnoughCreations as exc:
+            await self._refresh_creations(tenant_id, brand_id)
+            async with self:
+                self.action_error = (
+                    self._not_enough_text(exc.missing)
+                    if exc.missing
+                    else previews_short_text(
+                        exc.previews,
+                        exc.previews_left,
+                        self.previews_quota or load_weights().monthly_preview_quota,
+                        renews=self.creations_renews,
+                    )
+                )
+            return
+        except (UnknownDraft, BrandNotReady):
+            async with self:
+                self.action_error = _DRAFT_GONE
+            return
+        except SQLAlchemyError as exc:
+            logger.error("recreate failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _DB_ERROR
+            return
+        yield PendingState.refresh_now
+        yield rx.redirect(f"/drafts/{new_id}")
 
     @rx.var
     def show_approved_next(self) -> bool:
@@ -6012,27 +6113,26 @@ class CreativeState(rx.State):
             if quote is None:
                 self.regen_creations_text, self.regen_creations_short = "", False
                 return
-            weight, left, quota, renews, videos, videos_left, video_quota = quote
-            videos = videos if video_quota > 0 else 0
-            videos_short = videos > videos_left
-            self.regen_creations_short = weight > left or videos_short
+            weight, left, quota, renews, previews, previews_left, preview_quota = quote
+            previews = previews if preview_quota > 0 else 0
+            previews_short = previews > previews_left
+            self.regen_creations_short = weight > left or previews_short
             if weight > left:
                 self.regen_creations_text = not_enough_creations_text(
                     weight - left, quota=quota, renews=renews
                 )
-            elif videos_short:
-                self.regen_creations_text = videos_short_text(
-                    videos, videos_left, video_quota, renews=renews
+            elif previews_short:
+                self.regen_creations_text = previews_short_text(
+                    previews, previews_left, preview_quota, renews=renews
+                )
+            elif weight > 0:
+                self.regen_creations_text = creations_use_notice(
+                    weight, left, quota, subject="La nueva versión"
                 )
             else:
-                self.regen_creations_text = creations_use_notice(
-                    weight,
-                    left,
-                    quota,
-                    subject="La nueva versión",
-                    videos=videos,
-                    videos_left=videos_left,
-                    video_quota=video_quota,
+                # a video's new version: a vista previa, said only when few are left
+                self.regen_creations_text = previews_left_label(
+                    previews_left - previews, preview_quota
                 )
 
     @staticmethod
@@ -6241,10 +6341,10 @@ class CreativeState(rx.State):
                     if self.regen_creations_short
                     else not_enough_creations_text(exc.missing)
                     if exc.missing
-                    else videos_short_text(
-                        exc.videos,
-                        exc.videos_left,
-                        load_weights().monthly_video_quota,
+                    else previews_short_text(
+                        exc.previews,
+                        exc.previews_left,
+                        load_weights().monthly_preview_quota,
                         renews=self.creations_renews,
                     )
                 )

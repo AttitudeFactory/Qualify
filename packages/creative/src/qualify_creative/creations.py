@@ -15,9 +15,11 @@ reference video — counts as ONE of the month's videos (`pesos-creaciones-v2` �
 `videos.monthly_quota`, 4), whatever its length up to `videos.offered_seconds` (5 or
 10 s; 15 s is not offered), and uses no creations. A carousel with N animated slides
 uses N videos plus its own creations. The talking presenter (OmniHuman) stays in
-creations. A video is charged when the piece is CREATED (its 480p preview and the
-1080p final made at approval); nothing is charged at approval, and a final that fails
-gives its video back (`CreationPrice.videos`, the ledger's `refund_final`).
+creations. The video is counted when the owner APPROVES the piece (its final is
+ordered) — a draft discarded, rejected or expired costs no video — and a final that
+fails gives its video back. Each draft made counts as one of the month's «vistas
+previas» (`videos.monthly_preview_quota`, 20), charged at creation (`CreationPrice.videos`
+is both: N previews at creation, N videos at approval).
 
 `VideoRates` still prices a generated video off the pricing table (`v7` tokens per
 second at 480p and 1080p, with or without input video): it is the team's USD ceiling
@@ -133,6 +135,8 @@ class VideoQuota:
     monthly_quota: int
     #: The lengths a generated video is offered at (5 and 10 s); each counts as 1.
     offered_seconds: tuple[int, ...]
+    #: How many drafts («vistas previas») a month brings (20); each draft counts 1.
+    monthly_preview_quota: int = 0
 
     @property
     def max_seconds(self) -> int:
@@ -162,6 +166,11 @@ class CreationWeights:
     def monthly_video_quota(self) -> int:
         """How many generated videos a month brings (0 when the table has no quota)."""
         return 0 if self.videos is None else self.videos.monthly_quota
+
+    @property
+    def monthly_preview_quota(self) -> int:
+        """How many «vistas previas» (drafts) a month brings (0 = no cap)."""
+        return 0 if self.videos is None else self.videos.monthly_preview_quota
 
     def video(self, seconds: int) -> int:
         """v2: one generated video — 1 of the month's videos at any offered length; a
@@ -301,6 +310,7 @@ def load_weights(version: str = CREATIONS_WEIGHTS_VERSION) -> CreationWeights:
         else VideoQuota(
             monthly_quota=int(videos["monthly_quota"]),
             offered_seconds=tuple(sorted(int(s) for s in videos["offered_seconds"])),
+            monthly_preview_quota=int(videos.get("monthly_preview_quota", 0)),
         ),
     )
 
@@ -315,8 +325,9 @@ class CreationPrice:
     weight: int
     #: The presenter's length the weight was read for (None for any other request).
     presenter_seconds: int | None = None
-    #: v2: how many of the month's generated videos it uses (a clip 1, a carousel one
-    #: per animated slide). Charged at creation; a failed 1080p final gives its back.
+    #: v2: how many Seedance videos it makes (a clip 1, a carousel one per animated
+    #: slide): that many «vistas previas» charged at creation, and that many of the
+    #: month's videos charged when the owner approves. A failed final gives its back.
     videos: int = 0
 
     @property
