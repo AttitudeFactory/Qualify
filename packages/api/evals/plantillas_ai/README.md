@@ -3,7 +3,9 @@
 Ticket Meegle **m-24849234** («Pruebas: Seedream 5.0 pro para transferir colores a un objeto y
 aplicar textura a un logo»). El **PR 1** trajo la matriz, el costo y los candados de gasto; el
 **PR 2** trae el acabado plano real y las métricas locales (máscara, trazo, paleta Lab, fondo,
-legibilidad sin lector). Todavía no se llama a ningún proveedor.
+legibilidad sin lector). El **PR 3, parte A** (sin costo) trae el material ficticio completo,
+el lector de legibilidad con Claude bajo su propio tope y el informe de faltantes por tipo; la
+sonda y el piloto pagados los corre después el hilo principal con la autorización del fundador.
 
 ## Para qué
 
@@ -24,30 +26,43 @@ tiene que superar.
 
 | Bloque | Qué | Ítems | Modelo |
 |---|---|---|---|
-| `color` | 10 objetos × 3 referencias de color, más 2 casos de prueba del repo | 32 | Seedream 5.0 pro |
-| `texture` | 10 logos o textos × 5 texturas, más 2 casos de prueba del repo | 52 | Seedream 5.0 pro |
-| `flat` | los mismos pares logo × textura en acabado plano: 10 × 5, más 2 casos de prueba | 52 | Pillow (costo 0) |
+| `color` | 8 fotos propias × 3 paletas, más 2 objetos sintéticos con su paleta | 26 | Seedream 5.0 pro |
+| `texture` | 8 marcas ficticias × 5 texturas, más 2 marcas piloto con su textura | 42 | Seedream 5.0 pro |
+| `flat` | los mismos pares marca × textura en acabado plano | 42 | Pillow (costo 0) |
 
-- Las rutas son relativas a `imagenes/` (en `.gitignore`: los archivos se ponen a mano). Los
-  nombres actuales describen la imagen que falta conseguir.
-- Los casos con `fixture: true` apuntan a archivos que ya están en git, con sus propias
-  referencias. Van primero, así `--limit 2` usa solo archivos reales: en color, el disco
-  sintético con su máscara (`fix-objeto-disco`) y `packages/render/public/sample/photo-1.jpg`,
-  los dos con la paleta menta/coral/cobre; en textura, la palabra «LUMA» con la textura de rayas
-  (`fix-luma`) y `assets/qualify-icon-email.png` (los dos con transparencia real).
-- **Casos de prueba sintéticos** en `fixtures/`, regenerables con
-  `uv run --no-sync python packages/api/evals/plantillas_ai/fixtures/make_fixtures.py`: la
-  palabra ficticia «LUMA» (DejaVuSans del repositorio, 1118 × 363 px, transparencia real), una
-  textura de rayas cobre de 128 px, una paleta de tres franjas (menta, coral, cobre) y un
-  «objeto» (un disco azul sobre un degradado) con su máscara exacta. Ninguno pesa más de 13 KB.
-- **Lista cerrada de carpetas para los fixtures** (`FIXTURE_ROOTS` en `template_transfer.py`):
-  solo `assets/`, `packages/render/public/sample/` y `packages/api/evals/plantillas_ai/fixtures/`,
-  relativas a la raíz del repositorio. Una
-  ruta fuera de ellas (subidas de clientes como `uploaded_files/...`, `Qualify/...`, `.web/...`
-  o cualquier otra carpeta del repositorio) es una matriz inválida: código 2 en el simulacro y
-  la corrida pagada nunca llega a enviar nada. `fixture: true` solo se acepta en un caso; sus
-  referencias lo heredan, y la clave se rechaza en una referencia del caso o del bloque. El
-  simulacro imprime, bajo cada fila de fixture, las rutas del repositorio que lee.
+- **Solo material propio de Attitude Factory o ficticio** (decisión del fundador, 2026-10-23).
+  Las fotos de muestra de Remotion (`packages/render/public/sample/photo-*.jpg`) **no se usan**:
+  su licencia no está documentada; ya no aparecen en `cases.json` y su carpeta salió de la lista
+  de fixtures.
+- **Las 8 fotos de objetos las pone el fundador:** son fotos reales de productos propios, en
+  `imagenes/color/objetos/` (en `.gitignore`, no van al repositorio). El simulacro lista
+  exactamente cuáles faltan, agrupadas por tipo (objetos, máscaras, referencias de color, logos,
+  texturas). Hoy faltan solo esas 8; todo lo demás está en git.
+- **Material sintético** en `fixtures/`, regenerable byte a byte con
+  `uv run --no-sync python packages/api/evals/plantillas_ai/fixtures/make_fixtures.py` (semillas
+  fijas, sin metadatos, ninguno pasa de 13 KB):
+  - 10 marcas ficticias con transparencia real, en la DejaVuSans del repositorio: «LUMA»,
+    «NÚCLEO», «CAFÉ RÍO», «PIÑA», «OVO», «VELMORA», «QUIRALUNA», «ZANTERIO» y dos de trazo
+    fino (solo contorno): «LÍNEA» (3 px) y «ARRECIFAL» (2 px). Nombres inventados.
+  - 5 texturas de 128 px hechas por código: rayas cobre, puntos mostaza, mármol con vetas,
+    metal cepillado y tejido de cesta.
+  - 3 paletas de tres franjas: menta/coral/cobre, azul/arena/terracota, lavanda/oliva/mostaza.
+  - 2 «objetos» con su máscara exacta: un disco azul y un rombo naranja, sobre degradados.
+- **Casos piloto:** van primero, así `--limit 2` usa solo archivos del repositorio: en color, el
+  disco con la paleta menta/coral/cobre y el rombo con la azul/arena/terracota; en textura,
+  «LUMA» con las rayas y «NÚCLEO» con los puntos. Las otras 8 marcas y las 8 fotos usan las
+  referencias del bloque (5 texturas, 3 paletas).
+- **«ARRECIFAL» es un caso difícil a propósito:** su contorno de 2 px queda en ~1.4 px a 1080 y el
+  acabado plano no aprueba (IoU 0.887). Las otras 9 marcas aprueban.
+- **Una sola carpeta permitida para los fixtures** (`FIXTURE_ROOTS` en `template_transfer.py`):
+  `packages/api/evals/plantillas_ai/fixtures/`, relativa a la raíz del repositorio. Una ruta
+  fuera de ella (subidas de clientes como `uploaded_files/...`, `Qualify/...`, `.web/...`,
+  `assets/`, las muestras de Remotion o cualquier otra carpeta) es una matriz
+  inválida: código 2 en el simulacro y la corrida pagada nunca llega a enviar nada.
+  `fixture: true` solo se acepta en un caso (sus referencias lo heredan); un bloque cuyas
+  referencias son fixtures lo dice una vez con `fixture_references: true`, y la clave
+  `fixture` sigue rechazada en cada referencia. El simulacro imprime, bajo cada fila de
+  fixture, las rutas del repositorio que lee.
 - `--configs` no admite el mismo modelo dos veces (código 2 antes de planificar).
 - Cada logo lleva `expected_text`: lo que la verificación de legibilidad tendrá que leer.
 - Un caso de color puede llevar `mask`: la ruta de la máscara del objeto (blanco = objeto), con
@@ -55,7 +70,7 @@ tiene que superar.
   caso es `fixture: true`). Un caso de textura con `mask` es una matriz inválida.
 - El bloque `flat` ya no lleva `fill` (el color plano provisional del PR 1): usa las texturas
   del bloque `texture`.
-- Solo marcas ficticias o material propio de Qualify. Ninguna foto ni logo de un cliente.
+- Ninguna foto ni logo de un cliente.
 
 ## Cómo se corre (simulacro, sin gasto)
 
@@ -74,6 +89,13 @@ uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry
 uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry-run --block texture --size 2K
 ```
 
+El modelo objetivo sigue siendo Seedream 5.0 pro (el valor por defecto de `--configs`). Mientras
+la cuenta no lo tenga activado, la variante exploratoria con 5.0 lite es:
+
+```bash
+uv run --no-sync python packages/api/evals/plantillas_ai/run_experiment.py --dry-run --limit 2 --configs seedream-5-0-lite-260128 --size 2K
+```
+
 El simulacro arma toda la matriz, cotiza cada llamada, imprime la tabla y los totales, y lista
 las imágenes que faltan sin fallar. **No hace ninguna solicitud de red**: un gancho de auditoría
 de Python bloquea y cuenta cualquier conexión o consulta DNS mientras dura, y al final imprime
@@ -83,10 +105,11 @@ Opciones: `--limit N` (primeros N casos de cada bloque), `--block color|texture|
 (repetible), `--configs` (ids de modelo separados por coma; por defecto
 `dola-seedream-5-0-pro-260628`; el modelo va explícito en cada solicitud), `--size` (`1K` por
 defecto; `1.5K`, `2K` o `AnchoxAlto`), `--max-usd` (tope, por defecto 10), `--env-file`,
-`--results-dir`, `--skip-fixtures` (deja fuera los casos y referencias `fixture: true`; sin
-ellos la matriz completa son 80 llamadas pagadas, USD 3.84 a 1K: color 30 por USD 1.44,
-textura 50 por USD 2.40, y 50 acabados planos gratis). El simulacro no genera ni mide ninguna
-imagen: solo cotiza.
+`--results-dir`, `--skip-fixtures` (deja fuera los casos `fixture: true` y sus referencias
+propias; las paletas del bloque se quedan porque las fotos reales las usan: quedan las 24
+llamadas de color de las fotos del fundador, USD 1.152 a 1K), y los del lector (más abajo):
+`--reader`, `--max-reads`, `--max-reader-usd`. El simulacro no genera, no mide ni lee ninguna
+imagen: solo cotiza. La matriz completa son 110 ítems, 68 pagados: USD 3.264 a 1K.
 
 La tabla muestra todos los ítems de los bloques elegidos, con su origen (`fixture` o `real`)
 y si las opciones actuales lo incluyen; el costo se suma solo para los incluidos.
@@ -94,7 +117,8 @@ y si las opciones actuales lo incluyen; el costo se suma solo para los incluidos
 ## Corrida pagada
 
 **Gasta dinero real y el fundador la autoriza cada vez.** No arranca sin
-`--i-have-spend-authorization`. En este PR la ruta está conectada pero no se ha ejecutado.
+`--i-have-spend-authorization`. Se ejecutó por primera vez el 2026-10-23, con 5.0 lite (ver
+«Corridas registradas»).
 
 Antes de la primera solicitud la corrida se niega a empezar si: falta un precio en la tabla
 (código 3), o con código 2 si falta una imagen de entrada, si el máximo de la corrida pasa el
@@ -133,6 +157,51 @@ Códigos de salida (también en `--help`):
 | 4 | El simulacro detectó un intento de red (bloqueado) |
 | 5 | El tope detuvo la corrida, o el libro de gasto dio una alerta (exceso, dinero retenido) |
 | 6 | Ningún ítem pagado salió bien (todos fallaron o se omitieron) |
+
+## Corridas registradas
+
+**Evaluación exploratoria de `seedream-5-0-lite-260128` a 2K, no de 5.0 pro.** El intento con
+`dola-seedream-5-0-pro-260628` respondió `HTTP 404 ModelNotOpen`: la cuenta no tiene activado
+el modelo (id de solicitud `021792797677254718115c1869987166c12ff7f50db9b4e196ec6`, en el
+primer informe). Con 5.0 lite se usaron los mismos prompts (`plantillas-ai-v1`), sin `<bbox>` ni
+capas (5.0 lite no tiene ninguna de las dos), solo con el material ficticio de `fixtures/` y sin
+lecturas de Claude. El modelo devolvió la revisión `seedream-5-0-260128`.
+
+| Informe (`results/`) | Modelo | Ítems (pagados / gratis) | Gastado | Resultado |
+|---|---|---|---|---|
+| `20261023-192110-896122.json` | 5.0 pro, 1K | 1 (1 / 0) | USD 0 | Error 404 `ModelNotOpen`; la reserva de USD 0.048 se liberó |
+| `20261023-192510-482582.json` | 5.0 lite, 2K (sonda) | 1 (1 / 0) | USD 0.035 | Hecho: «LUMA» con rayas cobre |
+| `20261023-192557-350988.json` | 5.0 lite, 2K (piloto, `--limit 2`) | 6 (4 / 2) | USD 0.140 | 6 de 6 hechos |
+
+Gasto real total: **USD 0.175 de los USD 0.25 autorizados** (topes de USD 0.05 para el intento
+con pro y la sonda, y de USD 0.20 para el piloto). En las corridas con 5.0 lite cada reserva se
+liquidó con lo que cobró BytePlus (5 reservas, 5 liquidaciones); no hubo exceso sobre la reserva
+ni sobre el tope, y nada quedó retenido.
+
+**Resultados observados** (informes y revisión visual del fundador):
+
+- **Textura:** la forma de las letras se conserva y no falta ninguna; la textura queda dentro de
+  las letras, sobre fondo blanco, plana (sin volumen 3D). La tilde de la «Ú» de «NÚCLEO» salió
+  sin textura. El proveedor aceptó el logo como PNG con transparencia: el criterio queda
+  verificado para 5.0 lite.
+- **Color:** la forma del objeto se conserva y el fondo se parece al original, pero 5.0 lite
+  copió la composición de la paleta de referencia (tres franjas verticales dentro del objeto) en
+  lugar de transferir solo sus colores. ΔE de paleta 9.03 (disco) y 8.59 (rombo), dentro del
+  umbral provisional de 10; PSNR del fondo antes de recomponer 24.78 dB y 24.06 dB.
+- **Acabado plano:** «LUMA» IoU 0.984, trazo mínimo 34 px, 4 / 4 piezas; «NÚCLEO» IoU 0.989,
+  trazo mínimo 12 px, 7 / 7 piezas. Los dos aprueban.
+
+**Limitaciones:** es 5.0 lite, no pro; los objetos son sintéticos (faltan las 8 fotos propias);
+no hay control por región; el ejecutor no registra la latencia de cada llamada; la legibilidad
+quedó «pendiente» (el lector está implementado, pero no se ejecutó).
+
+**Casos pendientes:** 24 de color (8 fotos × 3 paletas), 40 de textura y 40 de acabado plano.
+Ajustes de prompt para probar después: en color, «usa los colores, no la composición»; en
+textura, una variante «con volumen».
+
+Las imágenes generadas quedan en `imagenes/salidas/<sello>/` (en `.gitignore`) y no se publican.
+
+Ficha del modelo con esta prueba: [`docs/modelos-generativos/seedream-5-0-lite.md`](../../../../docs/modelos-generativos/seedream-5-0-lite.md).
 
 ## Métricas locales (PR 2)
 
@@ -205,14 +274,33 @@ simulacro.
   (`resultado_redimensionado`). Una máscara de otro tamaño que la foto es un error de medida:
   queda en `metricas_error` y la imagen generada se conserva.
 
-### Legibilidad (solo la parte local) — criterio «Aplicar textura con volumen»
+### Legibilidad — criterio «Aplicar textura con volumen»
 
 `LegibilityReader` (un protocolo con `read_text(imagen) -> texto`), `exact_match` y un
 `FakeReader` determinista para las pruebas. La comparación usa Unicode NFC, no distingue
 mayúsculas y colapsa los espacios; los acentos, la «ñ» y los signos («¡», «!») sí cuentan
-(«ÑAPA» leído como «NAPA» no coincide). Sin lector configurado, cada ítem de textura queda con
-`legibilidad: {"metricas_version": "metricas-v1", "estado": "pendiente"}`. El lector con la visión de Claude es del PR 3: aquí no
-se importa ni se llama a Anthropic.
+(«ÑAPA» leído como «NAPA» no coincide). Si la primera lectura no coincide se lee **una vez
+más** (el reintento único del ticket); el registro guarda `leido`, `coincide`, `reintento` y
+`lecturas`. Sin lector, cada ítem de textura queda con `estado: "pendiente"`.
+
+**Lector con Claude** (`qualify_api/evals/legibility_claude.py`, PR 3): `--reader claude`, solo
+en la corrida pagada y después de `--i-have-spend-authorization` y de todas las comprobaciones
+(en el simulacro nunca se crea). Usa `claude-sonnet-5` con esfuerzo bajo, una herramienta
+estricta `transcribir_texto` y la instrucción, en español, de transcribir exactamente el texto
+visible sin corregirlo ni adivinarlo (`legibilidad-claude-v1`). Necesita
+`QUALIFY_ANTHROPIC_API_KEY`; sin ella la corrida sale con código 2. Langfuse queda apagado
+para este experimento: el proceso quita sus claves antes de la primera llamada.
+
+**Su tope es aparte del de Seedream** (`--max-reads`, por defecto y como máximo 50;
+`--max-reader-usd`, por defecto y como máximo USD 0.50). Antes de cada lectura se reserva su
+peor caso y se niega la que pasaría cualquiera de los dos topes, sin enviar nada
+(`ReadBudgetExceeded`; el ítem queda «sin lectura», o conserva la primera si lo negado fue el
+reintento). El peor caso es acotado: la imagen se reduce a 1092 px de lado (≤ ~1600 tokens de
+imagen), la entrada se cuenta como 4000 tokens al precio de escritura de caché (1.25 × USD 2
+por millón) y la salida está limitada por `max_tokens = 2048` (× USD 10 por millón): USD 0.0305
+por lectura. Después se liquida con el uso real; si la solicitud falla sin respuesta, con el
+peor caso. El reintento cuenta como una lectura más. El informe lleva un bloque `lector`
+(modelo, versión de prompt, lecturas, gastado, retenido, topes).
 
 ## Modelo de costo
 
@@ -237,7 +325,7 @@ Fuente: <https://docs.byteplus.com/en/docs/modelark/model-pricing> («Last updat
 - Solo se cobran las imágenes generadas con éxito; una moderada o fallida no se cobra. Si falla
   una capa, falla toda la solicitud.
 - Cada ítem pagado de la matriz lleva 2 imágenes de entrada: **USD 0.048 a 1K** y **USD 0.093 a
-  2K**. La matriz completa (84 ítems pagados) estima **USD 4.032 a 1K** y **USD 7.812 a 2K**.
+  2K**. La matriz completa (68 ítems pagados) estima **USD 3.264 a 1K** y **USD 6.324 a 2K**.
 - **Descomposición en capas — cotizada, pero no enviable aún por el adaptador:** el
   cotizador (`quote(..., layer_decomposition=True)`) y sus pruebas la cubren, pero el
   experimento no tiene opción para pedirla, porque `SeedreamImageAdapter` no envía
@@ -258,15 +346,15 @@ Fuente: <https://docs.byteplus.com/en/docs/modelark/model-pricing> («Last updat
 
 ## Lo que traen los PR siguientes
 
-Para el PR 3:
+Para el PR 3, parte B (la corre el hilo principal con la autorización del fundador):
 
-- El lector de legibilidad con la visión de Claude (implementa `LegibilityReader`; si no
-  coincide, se descarta y se reintenta una vez, como pide el ticket).
-- Los logos, fotos de objetos, referencias de color y texturas reales (ficticios o con
-  licencia), con las máscaras de los objetos (la máscara local con BiRefNet de
-  `photo/segment.py`).
-- La corrida pagada autorizada sobre los casos de prueba (`--limit 2`) y luego la matriz
-  completa, con la ficha del modelo en `docs/modelos-generativos/` el mismo día.
+- La sonda y el piloto pagados ya corrieron con 5.0 lite (ver «Corridas registradas»); falta
+  repetirlos con 5.0 pro cuando se active en la cuenta, con `--reader claude`, y la ficha del
+  modelo en `docs/modelos-generativos/` el mismo día.
+- Registrar la latencia de cada solicitud: el tiempo de reloj de cada llamada al proveedor en el
+  registro del ítem (por ejemplo, `latencia_s`), para comparar modelos y tamaños.
+- Las 8 fotos de productos propios del fundador (y, si hacen falta, sus máscaras con BiRefNet
+  de `photo/segment.py`) antes de pasar del piloto.
 - Acordar el umbral de ΔE de la paleta (hoy 10, provisional) con los resultados.
 
 Después:
@@ -297,6 +385,11 @@ Después:
 12. El guardián de red del simulacro es un *audit hook* de Python (`sys.addaudithook`): se
     instala una vez por proceso y no se puede quitar (fuera del simulacro no hace nada), y no
     ve código nativo que abra sockets sin pasar por el módulo `socket`.
+13. Limpieza pendiente de la revisión del PR 3: un ayudante común de bloques de imagen en
+    `claude_tools` (hoy `legibility_claude` toma el de `font_ai`); la transparencia de una
+    paleta PNG en `downscaled_png`; la redacción del aviso cuando falta un fixture; los topes del
+    lector definidos en tres lugares (constantes, argumentos y `ReadBudget`); y el bucle de
+    `ImageDraw.Draw` por columna al dibujar el rombo en `make_fixtures.py`.
 
 ## Dependencias abiertas
 
@@ -306,6 +399,7 @@ Después:
   preautorizado que cede datos a BytePlus. Solo van imágenes ficticias, de stock con licencia o
   propias de Qualify; ninguna foto ni logo de un cliente. Para usar material de clientes primero
   hace falta un endpoint personalizado (`ep-…`) no autorizado, con su propia fila de precios.
-  Falta conseguir las 10 fotos de objetos, 3 referencias de color, 10 logos y 5 texturas.
+  Marcas, texturas, paletas y los 2 objetos sintéticos ya están en `fixtures/`; faltan solo
+  las 8 fotos de productos propios del fundador.
 - **Autorización de gasto:** el fundador autoriza cada corrida pagada y su tope (máximo
   USD 10).

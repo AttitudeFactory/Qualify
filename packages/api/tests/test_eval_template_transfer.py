@@ -115,6 +115,7 @@ def _texture_flat_cases(tmp_path: Path) -> tt.CaseSet:
         {"id": "logo-roto", "path": "roto.png", "expected_text": "ROTO"},
         {"id": "logo-sano", "path": "sano.png", "expected_text": "SANO"},
     ]
+    raw["blocks"]["texture"]["fixture_references"] = False
     raw["blocks"]["texture"]["references"] = [{"id": "tex", "path": "tex.png"}]
     (tmp_path / "tex.png").write_bytes(_bytes(Image.new("RGB", (8, 8), (200, 120, 40)), "PNG"))
     logo = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
@@ -129,32 +130,34 @@ def test_matrix_shape(cases: tt.CaseSet) -> None:
     items = tt.build_matrix(cases)
     by_block = {b: [i for i in items if i.block == b] for b in tt.BLOCKS}
     # 10 objects x 3 color references + 2 fixtures with their own reference
-    assert len(by_block["color"]) == 10 * 3 + 2
+    # 8 founder photos x 3 palettes + 2 synthetic objects with their own palette
+    assert len(by_block["color"]) == 8 * 3 + 2
     # 10 logos x 5 textures + 2 fixtures
-    assert len(by_block["texture"]) == 10 * 5 + 2
+    # 8 wordmarks x 5 textures + the 2 pilot wordmarks with their own texture
+    assert len(by_block["texture"]) == 8 * 5 + 2
     # the same logo x texture pairs as flat finishes
-    assert len(by_block["flat"]) == 10 * 5 + 2
+    assert len(by_block["flat"]) == 8 * 5 + 2
     assert len({i.id for i in items}) == len(items)
     assert all(i.expected_text for i in by_block["texture"] + by_block["flat"])
     assert sum(1 for c in cases.color if c.fixture) == 2
-    assert sum(1 for c in cases.texture if c.fixture) == 2
+    assert sum(1 for c in cases.texture if c.fixture) == 10
 
 
 def test_plan_totals_per_block_and_size(cases: tt.CaseSet) -> None:
     items = tt.build_matrix(cases)
     one_k = tt.plan_calls(items, V6, model_ids=[PRO], size="1K")
     two_k = tt.plan_calls(items, V6, model_ids=[PRO], size="2K")
-    assert tt.total_usd(one_k) == Decimal("0.048") * 84
-    assert tt.total_usd(two_k) == Decimal("0.093") * 84
+    assert tt.total_usd(one_k) == Decimal("0.048") * 68
+    assert tt.total_usd(two_k) == Decimal("0.093") * 68
     assert all(p.cost_usd == 0 for p in one_k if p.item.block == "flat")
     assert tt.total_usd(two_k) <= sc.MAX_USD_CEILING
     two_models = tt.plan_calls(items, V6, model_ids=[PRO, LITE], size="2K")
-    assert len(two_models) == 84 * 2 + 52  # flat runs once, not per model
+    assert len(two_models) == 68 * 2 + 42  # flat runs once, not per model
 
 
 def test_limit_and_block_selection(cases: tt.CaseSet) -> None:
     items = tt.build_matrix(cases, blocks=["texture"], limit=2)
-    assert [i.case_id for i in items] == ["fix-luma", "fix-qualify-icono"]
+    assert [i.case_id for i in items] == ["fix-luma", "fix-nucleo"]
     assert tt.missing_files(items, EVAL_DIR / "imagenes", REPO_ROOT) == []
     with pytest.raises(ValueError):
         tt.build_matrix(cases, blocks=["sepia"])
@@ -165,7 +168,7 @@ def test_limit_and_block_selection(cases: tt.CaseSet) -> None:
 def test_missing_files_are_listed_once(tmp_path: Path, cases: tt.CaseSet) -> None:
     items = tt.build_matrix(cases, blocks=["color"])
     missing = tt.missing_files(items, tmp_path, REPO_ROOT)
-    assert len(missing) == 10 + 3  # objects + the shared references, each once
+    assert len(missing) == 8  # the founder's object photos; palettes are repo fixtures
     assert all(str(p).startswith(str(tmp_path)) for p in missing)
 
 
@@ -178,7 +181,11 @@ def test_missing_files_are_listed_once(tmp_path: Path, cases: tt.CaseSet) -> Non
         lambda r: r["blocks"]["color"]["cases"][2].update(path="../x.jpg"),
         lambda r: r["blocks"]["color"]["cases"][2].update(path=r"\abs\x.jpg"),
         lambda r: r["blocks"]["color"]["cases"][2].update(path=r"\Users\x\p.jpg"),
-        lambda r: r["blocks"]["color"]["cases"][0].pop("references"),
+        lambda r: (
+            r["blocks"]["color"].update(fixture_references=False),
+            r["blocks"]["color"]["cases"][0].pop("references"),
+        ),
+        lambda r: r["blocks"]["color"].update(fixture_references="yes"),
         lambda r: r["blocks"]["flat"].update(source_block="color"),
         lambda r: r["blocks"]["flat"].update(fill="red"),
         lambda r: r["blocks"].pop("flat"),
@@ -190,7 +197,7 @@ def test_missing_files_are_listed_once(tmp_path: Path, cases: tt.CaseSet) -> Non
         lambda r: r["blocks"]["color"]["cases"][2].update(id=".."),
         lambda r: r["blocks"]["texture"]["references"][0].update(id="c:x"),
         lambda r: r["blocks"]["texture"]["references"].append(
-            {"id": "textura-neon-rosa", "path": "x"}
+            dict(r["blocks"]["texture"]["references"][0])
         ),
     ],
 )
@@ -212,7 +219,7 @@ def test_dry_run_end_to_end_sends_nothing(
     assert runner.main(["--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "Solicitudes de red: 0" in out
-    assert "estimado USD 4.0320" in out  # 84 paid items x 0.048 at 1K
+    assert "estimado USD 3.2640" in out  # 68 paid items x 0.048 at 1K
     assert "Faltan" in out  # placeholder files are reported, not fatal
     assert no_http == []
 
@@ -275,11 +282,11 @@ def test_paid_path_with_a_test_double(tmp_path: Path, monkeypatch: pytest.Monkey
     assert body["image"][0].startswith("data:image/png;base64,")  # the logo keeps its alpha
     assert body["image"][1].startswith("data:image/jpeg;base64,")
     assert '"LUMA"' in body["prompt"]
-    record = report["items"][f"texture:fix-luma+fix-textura-rayas-cobre@{PRO}"]
+    record = report["items"][f"texture:fix-luma+textura-rayas-cobre@{PRO}"]
     assert record["prompt_version"] == tt.PROMPT_VERSION and record["pricing_version"] == "v6"
     assert record["legibilidad"]["estado"] == "pendiente"  # no reader configured
     assert record["legibilidad"]["metricas_version"] == "metricas-v1"
-    flat = report["items"][f"flat:fix-luma+fix-textura-rayas-cobre@{tt.FLAT_PROVIDER}"]
+    flat = report["items"][f"flat:fix-luma+textura-rayas-cobre@{tt.FLAT_PROVIDER}"]
     assert flat["prompt_version"] == tt.FLAT_VERSION
     assert flat["metricas"]["aprobado"] is True and flat["metricas"]["tamano"][0] == 1080
     assert len(list(tmp_path.rglob("*.png"))) == 1 and len(list(tmp_path.rglob("*.jpg"))) == 1
@@ -380,16 +387,15 @@ def test_skip_fixtures_removes_exactly_the_fixture_items(cases: tt.CaseSet) -> N
     kept = tt.build_matrix(cases, skip_fixtures=True)
     assert {i.id for i in full} - {i.id for i in kept} == {i.id for i in full if i.fixture}
     assert not any(i.fixture for i in kept)
-    assert not any(img.fixture for i in kept for img in i.images)
+    # the real photos keep the block's palettes, which are repo fixtures
+    assert all(i.images[1].fixture and not i.images[0].fixture for i in kept)
     planned = tt.plan_calls(kept, V6, model_ids=[PRO], size="1K")
     by_block = {b: [p for p in planned if p.item.block == b] for b in tt.BLOCKS}
-    assert len(by_block["color"]) == 30 and tt.total_usd(by_block["color"]) == Decimal("1.44")
-    assert len(by_block["texture"]) == 50
-    assert tt.total_usd(by_block["texture"]) == Decimal("2.40")
-    assert len(by_block["flat"]) == 50 and tt.total_usd(by_block["flat"]) == 0
-    assert tt.total_usd(planned) == Decimal("3.84")
-    limited = tt.build_matrix(cases, blocks=["texture"], limit=1, skip_fixtures=True)
-    assert {i.case_id for i in limited} == {"logo-brasa-norte"}
+    assert len(by_block["color"]) == 24 and tt.total_usd(by_block["color"]) == Decimal("1.152")
+    assert by_block["texture"] == [] and by_block["flat"] == []  # every wordmark is a fixture
+    assert tt.total_usd(planned) == Decimal("1.152")
+    limited = tt.build_matrix(cases, blocks=["color"], limit=1, skip_fixtures=True)
+    assert {i.case_id for i in limited} == {"taza-ceramica-blanca"}
 
 
 def test_dry_run_shows_included_and_excluded(
@@ -397,11 +403,11 @@ def test_dry_run_shows_included_and_excluded(
 ) -> None:
     assert _runner().main(["--dry-run", "--skip-fixtures"]) == 0
     out = capsys.readouterr().out
-    assert "Incluidos 130 ítems, excluidos 6 (6 fixture, 0 reales)" in out
-    assert "estimado USD 3.8400" in out and "(80 pagadas)" in out
+    assert "Incluidos 24 ítems, excluidos 86 (86 fixture, 0 reales)" in out
+    assert "estimado USD 1.1520" in out and "(24 pagadas)" in out
     rows = [line for line in out.splitlines() if line.startswith(("color ", "texture ", "flat "))]
     fixture_rows = [r for r in rows if " fixture " in r]
-    assert len(fixture_rows) == 6 and all(" no " in r for r in fixture_rows)
+    assert len(fixture_rows) == 86 and all(" no " in r for r in fixture_rows)
     assert all(" sí " in r for r in rows if " real " in r)
     assert no_http == []
 
@@ -680,7 +686,7 @@ UPLOAD = "uploaded_files/uploads/x/logo/logotipo"
 
 
 def _fixture_case(raw: dict[str, Any]) -> dict[str, Any]:
-    return raw["blocks"]["texture"]["cases"][0]  # fix-qualify-icono, a fixture case
+    return raw["blocks"]["texture"]["cases"][0]  # fix-luma, a fixture case
 
 
 @pytest.mark.parametrize(
@@ -691,12 +697,17 @@ def _fixture_case(raw: dict[str, Any]) -> dict[str, Any]:
         lambda r: _fixture_case(r).update(path=".web/public/logo.png"),
         lambda r: _fixture_case(r).update(path="packages/render/public/otro.png"),
         lambda r: _fixture_case(r).update(path="assets"),
+        lambda r: _fixture_case(r).update(path="assets/qualify-icon-email.png"),  # not a root
         lambda r: _fixture_case(r)["references"][0].update(path=UPLOAD),
         lambda r: _fixture_case(r)["references"][0].update(fixture=True),
         lambda r: _fixture_case(r)["references"][0].update(fixture=True, path=UPLOAD),
         lambda r: r["blocks"]["texture"]["references"][0].update(fixture=True, path=UPLOAD),
         lambda r: r["blocks"]["texture"]["references"][0].update(fixture=False),
         lambda r: _fixture_case(r).update(fixture="yes"),
+        # the Remotion samples are no longer a fixture root (licence undocumented)
+        lambda r: _fixture_case(r).update(path="packages/render/public/sample/photo-1.jpg"),
+        lambda r: r["blocks"]["color"]["references"][0].update(path=UPLOAD),
+        lambda r: r["blocks"]["texture"]["references"][0].update(path="Qualify/x.png"),
     ],
 )
 def test_fixtures_are_allowlisted(breaker: Any) -> None:
@@ -729,8 +740,12 @@ def test_dry_run_prints_the_fixture_paths(
 ) -> None:
     assert _runner().main(["--dry-run", "--limit", "2"]) == 0
     out = capsys.readouterr().out
-    assert "rutas: packages/render/public/sample/photo-1.jpg, " in out
-    assert "rutas: assets/qualify-icon-email.png, packages/render/public/sample/photo-1.jpg" in out
+    fx = "packages/api/evals/plantillas_ai/fixtures/"
+    disc = ("objeto-disco.png", "paleta-menta-coral-cobre.png", "objeto-disco-mascara.png")
+    assert "rutas: " + ", ".join(fx + name for name in disc) in out
+    luma = ("luma-wordmark.png", "textura-rayas-cobre.png")
+    assert "rutas: " + ", ".join(fx + name for name in luma) in out
+    assert "render/public" not in out
     assert no_http == []
 
 
@@ -766,7 +781,7 @@ def test_color_cases_take_an_optional_mask(cases: tt.CaseSet) -> None:
         "packages/api/evals/plantillas_ai/fixtures/objeto-disco-mascara.png",
         fixture=True,
     )
-    assert all(c.mask is None for c in cases.color if c.id != "fix-objeto-disco")
+    assert all((c.mask is not None) == c.fixture for c in cases.color)  # synthetic objects
     items = tt.build_matrix(cases, blocks=["color"], limit=1)
     assert items[0].mask == disc.mask
     assert tt.missing_files(items, EVAL_DIR / "imagenes", REPO_ROOT) == []
@@ -802,8 +817,12 @@ def test_invalid_masks_are_rejected(breaker: Any) -> None:
 
 
 def test_the_eval_fixtures_root_is_allowlisted() -> None:
-    assert tt.FIXTURE_ROOTS[:2] == ("assets", "packages/render/public/sample")
-    assert "packages/api/evals/plantillas_ai/fixtures" in tt.FIXTURE_ROOTS
+    assert tt.FIXTURE_ROOTS == ("packages/api/evals/plantillas_ai/fixtures",)
+    with pytest.raises(tt.CasesError, match="outside the fixture roots"):
+        tt.ImageRef("x", "assets/qualify-icon-email.png", fixture=True).resolve(
+            EVAL_DIR / "imagenes", REPO_ROOT
+        )
+    assert "render/public" not in (EVAL_DIR / "cases.json").read_text(encoding="utf-8")
     for name in ("make_fixtures.py", "luma-wordmark.png", "objeto-disco-mascara.png"):
         assert (EVAL_DIR / "fixtures" / name).is_file()
     for png in (EVAL_DIR / "fixtures").glob("*.png"):
@@ -831,9 +850,9 @@ def test_full_dry_run_counts_the_flat_finishes(
     monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)
     assert runner.main(["--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "Incluidos 136 ítems, excluidos 0" in out
-    assert "flat      52 llamadas   estimado USD 0.0000" in out
-    assert "(84 pagadas)   estimado USD 4.0320" in out
+    assert "Incluidos 110 ítems, excluidos 0" in out
+    assert "flat      42 llamadas   estimado USD 0.0000" in out
+    assert "(68 pagadas)   estimado USD 3.2640" in out
     assert "objeto-disco-mascara.png" in out  # the fixture row shows its mask path
     assert "Solicitudes de red: 0" in out and no_http == []
 
@@ -855,15 +874,15 @@ def test_paid_color_items_get_metrics_and_a_recomposed_image(
         args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
         inner_transport=httpx.MockTransport(lambda _r: _ok()),
     )
-    disc = report["items"][f"color:fix-objeto-disco+fix-paleta-menta-coral-cobre@{PRO}"]
-    photo = report["items"][f"color:fix-muestra-1+fix-paleta-menta-coral-cobre@{PRO}"]
-    assert disc["estado"] == photo["estado"] == "hecho"
+    disc = report["items"][f"color:fix-objeto-disco+paleta-menta-coral-cobre@{PRO}"]
+    rhombus = report["items"][f"color:fix-objeto-rombo+paleta-azul-arena-terracota@{PRO}"]
+    assert disc["estado"] == rhombus["estado"] == "hecho"
     assert disc["metricas"]["origen_mascara"] == "mask"
     assert disc["metricas"]["metricas_version"] == "metricas-v1"
     assert disc["metricas"]["borde_recompuesto_psnr_db"] is None  # the fixture mask is hard
     assert disc["metricas"]["resultado_redimensionado"] is True  # the 8x8 double
-    assert photo["metricas"]["origen_mascara"] == "none"  # PR 3 flags it
-    assert len(list(tmp_path.rglob("*~recompuesto.png"))) == 1
+    assert rhombus["metricas"]["origen_mascara"] == "mask"
+    assert len(list(tmp_path.rglob("*~recompuesto.png"))) == 2
 
 
 def test_a_failed_metric_keeps_the_generated_image(
@@ -921,5 +940,121 @@ def test_a_configured_reader_checks_the_texture_items(
         "estado": "leido",
         "leido": "luma",
         "coincide": True,
+        "reintento": False,
+        "lecturas": ["luma"],
     }
     assert len(reader.calls) == 1
+
+
+# --- PR 3 part A: missing files by role, the reader flags, the authorization gate -----
+
+
+def test_missing_inputs_are_grouped_by_role(tmp_path: Path, cases: tt.CaseSet) -> None:
+    raw = _raw()
+    raw["blocks"]["color"]["cases"][2]["mask"] = "color/mascaras/taza.png"
+    groups = tt.missing_by_role(tt.build_matrix(tt.parse_cases(raw)), tmp_path, REPO_ROOT)
+    assert list(groups) == ["objetos", "máscaras"]
+    assert len(groups["objetos"]) == 8 and len(groups["máscaras"]) == 1
+    real = _texture_flat_cases(tmp_path)  # textures under tmp_path: tex.png exists
+    (tmp_path / "tex.png").unlink()
+    logos = tt.missing_by_role(tt.build_matrix(real, blocks=["texture"]), tmp_path, REPO_ROOT)
+    assert set(logos) == {"texturas"} and len(logos["texturas"]) == 1
+
+
+def test_the_dry_run_lists_exactly_the_founders_photos(
+    no_http: list[httpx.Request], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _runner().main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "Faltan 8 imágenes de entrada" in out and "  objetos (8):" in out
+    for role in ("logos", "texturas", "referencias de color", "máscaras"):
+        assert f"  {role} (" not in out
+    assert out.count("/imagenes/color/objetos/") == 8
+    assert no_http == []
+
+
+def test_reader_flags_have_hard_caps() -> None:
+    parser = _runner().build_parser()
+    args = parser.parse_args([])
+    assert args.reader == "none" and args.max_reads == 50
+    assert args.max_reader_usd == Decimal("0.50")
+    for bad in (["--max-reads", "51"], ["--max-reads", "0"], ["--max-reader-usd", "0.51"]):
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(bad)
+        assert exc.value.code == 2
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--reader", "gpt"])
+
+
+def test_the_reader_is_never_built_without_authorization(
+    no_http: list[httpx.Request], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+
+    def never(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the reader was built without spend authorization")
+
+    monkeypatch.setattr(runner, "_build_reader", never)
+    assert runner.main(["--reader", "claude", "--limit", "1"]) == 2
+    assert runner.main(["--reader", "claude", "--dry-run", "--limit", "1"]) == 0
+    assert no_http == []
+
+
+def test_build_reader_needs_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api import claude_tools
+    from qualify_api.evals.legibility_claude import ClaudeLegibilityReader
+
+    runner = _runner()
+    args = runner.build_parser().parse_args(
+        ["--reader", "claude", "--max-reads", "7", "--max-reader-usd", "0.2"]
+    )
+    monkeypatch.delenv(claude_tools.API_KEY_ENV, raising=False)
+    assert runner._build_reader(args) is None
+    monkeypatch.setenv(claude_tools.API_KEY_ENV, "dummy-not-a-key")
+    monkeypatch.setattr(claude_tools, "default_client", lambda _key: object())
+    reader = runner._build_reader(args)
+    assert isinstance(reader, ClaudeLegibilityReader)
+    assert reader.budget.max_reads == 7 and reader.budget.max_usd == Decimal("0.2")
+
+
+@pytest.mark.parametrize("reader", ["none", "claude"])
+def test_the_paid_path_never_builds_a_langfuse_client(
+    reader: str, no_http: list[httpx.Request], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_shared import observability
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-dummy")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-dummy")
+    observability.reset()
+    try:
+        runner = _runner()
+        assert runner.main(["--reader", reader, "--limit", "1"]) == 2  # no authorization
+        assert observability.enabled() is False  # configured off: no client from the env
+    finally:
+        observability.reset()
+    assert no_http == []
+
+
+def test_the_report_names_a_reader_without_its_own_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.evals.image_metrics import FakeReader
+
+    runner = _runner()
+    assert runner._reader_block(None) == {"tipo": "ninguno"}
+    assert runner._reader_block(FakeReader()) == {"tipo": "FakeReader"}
+    monkeypatch.setattr(runner, "IMAGES_DIR", tmp_path)
+    cases = tt.load_cases(EVAL_DIR / "cases.json")
+    planned = tt.plan_calls(
+        tt.build_matrix(cases, blocks=["texture"], limit=1), V6, model_ids=[PRO], size="1K"
+    )
+    report = runner.run_paid(
+        planned,
+        tt,
+        ledger=sc.SpendLedger(Decimal("1")),
+        api_key="dummy",
+        args=runner.build_parser().parse_args(["--results-dir", str(tmp_path / "res")]),
+        inner_transport=httpx.MockTransport(lambda _r: _ok()),
+        reader=FakeReader(default="LUMA"),
+    )
+    assert report["lector"] == {"tipo": "FakeReader"}

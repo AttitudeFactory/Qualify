@@ -23,7 +23,7 @@ import io
 import math
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -546,6 +546,11 @@ def _tuples(palette: np.ndarray) -> tuple[tuple[float, float, float], ...]:
 # Legibility (local part: the reader backed by Claude's vision is PR 3)
 
 
+class ReaderUnavailable(RuntimeError):
+    """The reader cannot read now (e.g. its budget is spent): the item stays without a
+    reading instead of failing."""
+
+
 class LegibilityReader(Protocol):
     def read_text(self, image_bytes: bytes) -> str:
         """The text the image shows, as read."""
@@ -566,30 +571,71 @@ def exact_match(expected: str, read: str) -> bool:
 
 
 def legibility_record(
-    reader: LegibilityReader | None, image_bytes: bytes, expected: str | None
+    reader: LegibilityReader | None,
+    image_bytes: bytes,
+    expected: str | None,
+    *,
+    retry: bool = True,
 ) -> dict[str, object]:
-    """What the run records for a texture item: `pendiente` without a reader."""
+    """What the run records for a texture item: `pendiente` without a reader; else the
+    reading, whether it matches `expected` and, on a mismatch, ONE more reading (the
+    ticket's single retry — a read like any other, it counts against the reader's
+    budget). A reader that cannot read (`ReaderUnavailable`) leaves the item «sin
+    lectura», or keeps the first reading when only the retry was refused; any other error
+    on the retry keeps the first reading too and is recorded as `reintento_error`."""
+    base: dict[str, object] = {"metricas_version": METRICS_VERSION}
     if reader is None or expected is None:
-        return {"metricas_version": METRICS_VERSION, "estado": "pendiente"}
-    read = reader.read_text(image_bytes)
-    return {
-        "metricas_version": METRICS_VERSION,
+        return {**base, "estado": "pendiente"}
+    try:
+        first = reader.read_text(image_bytes)
+    except ReaderUnavailable as exc:
+        return {**base, "estado": "sin lectura", "motivo": str(exc)[:200]}
+    record: dict[str, object] = {
+        **base,
         "estado": "leido",
-        "leido": read,
-        "coincide": exact_match(expected, read),
+        "leido": first,
+        "coincide": exact_match(expected, first),
+        "reintento": False,
+        "lecturas": [first],
     }
+    if record["coincide"] or not retry:
+        return record
+    try:
+        second = reader.read_text(image_bytes)
+    except ReaderUnavailable as exc:
+        record["motivo_sin_reintento"] = str(exc)[:200]
+        return record
+    except Exception as exc:  # noqa: BLE001 — the first (billed) reading is never lost
+        record["reintento_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        return record
+    record.update(
+        leido=second,
+        coincide=exact_match(expected, second),
+        reintento=True,
+        lecturas=[first, second],
+    )
+    return record
 
 
 class FakeReader:
     """A deterministic reader for tests: the text for an image's SHA-256, else `default`.
-    Records every image it was asked to read."""
+    `answers`, when given, are returned first, one per read. Records every image it was
+    asked to read."""
 
-    def __init__(self, default: str = "", by_digest: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        default: str = "",
+        by_digest: Mapping[str, str] | None = None,
+        answers: Sequence[str] = (),
+    ) -> None:
         self.default = default
         self.by_digest = dict(by_digest or {})
+        self.answers = list(answers)  # returned first, in order (e.g. a miss, then a hit)
         self.calls: list[str] = []
 
     def read_text(self, image_bytes: bytes) -> str:
         digest = hashlib.sha256(image_bytes).hexdigest()
         self.calls.append(digest)
+        if self.answers:
+            return self.answers.pop(0)
         return self.by_digest.get(digest, self.default)

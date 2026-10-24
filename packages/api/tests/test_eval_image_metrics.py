@@ -374,6 +374,62 @@ def test_fake_reader_and_the_pending_record() -> None:
         "estado": "leido",
         "leido": "luma",
         "coincide": True,
+        "reintento": False,
+        "lecturas": ["luma"],
     }
-    assert im.legibility_record(reader, b"other", "LUMA")["coincide"] is False
+    missed = im.legibility_record(reader, b"other", "LUMA")
+    assert missed["coincide"] is False and missed["reintento"] is True  # read twice
+    assert len(reader.calls) == 3
+
+
+def test_a_mismatch_is_read_once_more_and_can_then_match() -> None:
+    reader = im.FakeReader(answers=["LUMA.", "LUMA"])
+    record = im.legibility_record(reader, b"img", "LUMA")
+    assert record["coincide"] is True and record["reintento"] is True
+    assert record["leido"] == "LUMA" and record["lecturas"] == ["LUMA.", "LUMA"]
     assert len(reader.calls) == 2
+    once = im.FakeReader(answers=["X"])
+    assert im.legibility_record(once, b"img", "LUMA", retry=False)["reintento"] is False
+    assert len(once.calls) == 1
+
+
+class _Exhausted:
+    """A reader whose budget allows `reads` reads, then refuses."""
+
+    def __init__(self, reads: int, text: str) -> None:
+        self.reads, self.text = reads, text
+
+    def read_text(self, image_bytes: bytes) -> str:
+        if self.reads == 0:
+            raise im.ReaderUnavailable("budget spent")
+        self.reads -= 1
+        return self.text
+
+
+def test_a_reader_out_of_budget_leaves_the_item_without_a_reading() -> None:
+    none = im.legibility_record(_Exhausted(0, "LUMA"), b"img", "LUMA")
+    assert none["estado"] == "sin lectura" and "budget" in str(none["motivo"])
+    first_only = im.legibility_record(_Exhausted(1, "LUMO"), b"img", "LUMA")
+    assert first_only["estado"] == "leido" and first_only["coincide"] is False
+    assert first_only["reintento"] is False and "motivo_sin_reintento" in first_only
+
+
+class _RetryBreaks:
+    """First read answers, the retry raises a non-budget error."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def read_text(self, image_bytes: bytes) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return "LUMO"
+        raise RuntimeError("connection reset")
+
+
+def test_a_failed_retry_keeps_the_first_reading() -> None:
+    record = im.legibility_record(_RetryBreaks(), b"img", "LUMA")
+    assert record["estado"] == "leido" and record["leido"] == "LUMO"
+    assert record["coincide"] is False and record["reintento"] is False
+    assert record["lecturas"] == ["LUMO"]
+    assert record["reintento_error"] == "RuntimeError: connection reset"
