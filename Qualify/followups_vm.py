@@ -21,6 +21,11 @@ What a card says, and where it comes from:
   claims the generator could not ground;
 - **the public notice** (PR 4): only when `public_notice` is on and the origin is a
   comment, the default text the person may edit and approve together with the message.
+
+**Three steps** (m-24842991, ATENDER-6, guide N3/N6): the card is walked as ① «Qué
+preguntó» ② «Qué le respondes» ③ «Revisa y aprueba»; approving ends in «Listo. Le
+escribiste a @ana. ¿Seguimos con la siguiente?» with «Siguiente» and «Volver a
+comentarios». Every explanation is visible text, never a tooltip (a phone has no hover).
 """
 
 from __future__ import annotations
@@ -35,9 +40,31 @@ from qualify_api.followups.repository import FollowupTrigger, SendRoute
 from qualify_api.followups.service import RouteOption
 from qualify_api.followups.workspace import FollowupCard, surface_label
 
+from .nav_url import with_query
+
 VIEW_MESSAGES: Final = "messages"
 VIEW_QUERIES: Final = "queries"
 VIEWS: Final = (VIEW_MESSAGES, VIEW_QUERIES)
+
+# N5 (m-24842960): the active view lives in the address, in the owner's words.
+CONVERSATIONS_ROUTE: Final = "/conversations"
+VIEW_PARAM: Final = "vista"
+VIEW_SLUGS: Final = {VIEW_MESSAGES: "mensajes", VIEW_QUERIES: "consultas"}
+
+
+def view_from_param(slug: str) -> str:
+    """`?vista=consultas` → `VIEW_QUERIES`; anything else (absent, junk) → `VIEW_MESSAGES`."""
+    for view, known in VIEW_SLUGS.items():
+        if slug == known:
+            return view
+    return VIEW_MESSAGES
+
+
+def view_url(view: str) -> str:
+    """The address of a view: `/conversations?vista=consultas`."""
+    slug = VIEW_SLUGS.get(view, VIEW_SLUGS[VIEW_MESSAGES])
+    return with_query(CONVERSATIONS_ROUTE, **{VIEW_PARAM: slug})
+
 
 ROUTE_LABELS: Final = {
     SendRoute.DM: "Mensaje directo",
@@ -55,6 +82,21 @@ TRIGGER_LABELS: Final = {
     FollowupTrigger.MANUAL: "La abriste tú desde Comentarios",
 }
 CAPTION_CHARS: Final = 120
+
+# -- the three steps (m-24842991) ----------------------------------------------------------
+STEP_ASKED: Final = 1
+STEP_REPLY: Final = 2
+STEP_REVIEW: Final = 3
+STEP_TITLES: Final[dict[int, str]] = {
+    STEP_ASKED: "Qué preguntó",
+    STEP_REPLY: "Qué le respondes",
+    STEP_REVIEW: "Revisa y aprueba",
+}
+STEP_COUNT: Final = len(STEP_TITLES)
+#: Where «Volver a comentarios» goes, after approving or with nobody left.
+COMMENTS_HREF: Final = "/responder?tab=comentarios"
+ANOTHER_IDEA: Final = "Otra idea"
+SUGGEST_ONE: Final = "Sugerir un mensaje"
 STORY_WHERE: Final = "tu historia"
 STORY_ORIGIN_LABEL: Final = "Respondió a tu historia por mensaje directo"
 
@@ -110,6 +152,34 @@ class FollowupCardVM:
     # The public notice under the comment: offered only with `public_notice` on.
     notice_available: bool = False
     notice_default: str = ""
+    # Step 3, in words: «Le llega a @ana por mensaje privado.»
+    recipient_line: str = ""
+
+
+def step_label(step: int) -> str:
+    """«Paso 2 de 3 · Qué le respondes» — M is real: the three steps always apply."""
+    title = STEP_TITLES.get(step, STEP_TITLES[STEP_ASKED])
+    number = step if step in STEP_TITLES else STEP_ASKED
+    return f"Paso {number} de {STEP_COUNT} · {title}"
+
+
+def recipient_line(author: str) -> str:
+    if author.startswith("@"):
+        return f"Le llega a {author} por mensaje privado."
+    return "Le llega por mensaje privado."
+
+
+def notice_line(text: str) -> str:
+    """The notice offered in step 3: «También dejamos “Te escribimos al privado 💬” en su
+    comentario.»"""
+    return f"También dejamos “{text}” en su comentario."
+
+
+def done_title(author: str, *, more_left: bool) -> str:
+    """The confirmation once approved (N3): who got it, and the next step."""
+    who = author if author.startswith("@") else "tu cliente"
+    tail = "¿Seguimos con la siguiente?" if more_left else "No queda nadie más esperando."
+    return f"Listo. Le escribiste a {who}. {tail}"
 
 
 def date_label(value: datetime | None, zone: ZoneInfo) -> str:
@@ -135,7 +205,8 @@ def time_left(closes_at: datetime, now: datetime) -> str:
 
 
 def _blocked(option: RouteOption) -> str:
-    return f"{ROUTE_LABELS[option.route]}: {option.reason}"
+    # each reason already names its route: the card and the toast say the same thing
+    return option.reason
 
 
 def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> FollowupCardVM:
@@ -184,5 +255,6 @@ def build_card_vm(card: FollowupCard, *, now: datetime, zone: ZoneInfo) -> Follo
         unsupported_claims=[str(c) for c in unsupported if str(c).strip()],
         notice_available=card.notice_available,
         notice_default=DEFAULT_NOTICE_TEXT if card.notice_available else "",
+        recipient_line=recipient_line(author),
         **route_fields,  # type: ignore[arg-type]
     )

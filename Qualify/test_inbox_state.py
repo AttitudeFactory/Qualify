@@ -716,7 +716,12 @@ def test_select_reel_resets_detail_state_before_loading() -> None:
     `sync_comments` — it needs a live EventContext and cannot run end to end here; the
     reset it performs is pinned structurally instead, same technique the rest of this
     file already uses."""
-    source = inspect.getsource(InboxState.select_reel.fn)
+    # m-24842960: the reset lives in `_open_detail`, shared with the address-driven
+    # entry (`enter_screen`); `select_reel` calls it.
+    assert "self._open_detail(thread_id)" in inspect.getsource(InboxState.select_reel.fn)
+    source = inspect.getsource(InboxState._open_detail) + inspect.getsource(
+        InboxState.select_reel.fn
+    )
     assert "self.selected_thread_id = thread_id" in source
     assert "r.thread_id == thread_id" in source  # selected_reel_summary lookup
     assert "self.thread_comments = []" in source

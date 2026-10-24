@@ -428,6 +428,17 @@ async def test_elegir_dia_y_hora_opens_tu_semana_on_this_publication(monkeypatch
     assert f"/planner?post={_DRAFT_UUID}" in str(event)
 
 
+async def test_publicar_ahora_opens_tu_semana_on_ahora(monkeypatch) -> None:
+    # m-24842985: the soft «Publicar ahora» opens the same drawer with «Ahora» chosen;
+    # the owner still taps «Programar» there.
+    state = _approvable_state(monkeypatch)
+    await _approve(monkeypatch, state)
+
+    event = state.go_publish_now()
+
+    assert f"/planner?post={_DRAFT_UUID}&cuando=ahora" in str(event)
+
+
 async def test_the_card_goes_away_once_the_draft_is_back_in_review(monkeypatch) -> None:
     state = _approvable_state(monkeypatch)
     await _approve(monkeypatch, state)
@@ -471,8 +482,8 @@ def test_the_review_screen_swaps_the_decision_for_the_approved_card() -> None:
         "Revisa lo que falta antes de elegir cuándo sale.",
         "Te quedas con esta versión. Después eliges el día y la hora en que sale.",
         "show_approved_next",
-        "approved_ready",
-        "approved_note",
+        "approved_can_schedule",
+        "approved_hold_note",
     ):
         # the compiled JSX escapes non-ASCII («í» → «í»)
         assert json.dumps(text)[1:-1] in rendered, text
@@ -489,3 +500,250 @@ def test_the_gallery_card_offers_the_same_name_as_the_approved_card() -> None:
     rendered = str(creative_pages._gallery_card(_PostVar))
     assert json.dumps("Elegir día y hora")[1:-1] in rendered
     assert '"Programar"' not in rendered
+
+
+async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
+    monkeypatch,
+) -> None:
+    """m-24820142 over m-24842978: approving a Seedance 2.5 draft orders its 1080p
+    final; until it lands the publication cannot be scheduled (MEDIA_DRAFT_PENDING), so
+    the toast says the final is being made, the card offers no «Elegir día y hora» and
+    says why, and the final poll starts. When the final lands, the card asks again and
+    offers the way."""
+    from dataclasses import replace
+
+    from .creative_vm import FINAL_READY_TEXT, FINAL_RENDERING_NOTE, video_draft_vm
+
+    state = _approvable_state(monkeypatch)
+    monkeypatch.setattr(CreativeState, "_route_draft_id", lambda self: _DRAFT_UUID)
+    rendering = video_draft_vm("rendering", None)
+    monkeypatch.setattr(
+        creative_state_module,
+        "approve_draft",
+        lambda tenant_id, draft_id, variant_id, user_id: replace(
+            _approved_vm(state.draft), video_draft=rendering
+        ),
+    )
+    pending = _gallery_with(schedulable=False, note="El video es todavía un borrador.")
+    monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: pending)
+    events = [event async for event in CreativeState.approve_selected.fn(state)]
+
+    toast = str(events[0])
+    assert "Estamos preparando el video en alta calidad" in toast
+    assert "Ahora elige" not in toast and "Revisa lo que falta" not in toast
+    assert events[-1] is CreativeState.poll_final
+    assert state._final_polling_id == str(_DRAFT_UUID)
+    assert state.show_approved_next is True
+    assert state.approved_can_schedule is False
+    assert state.approved_hold_note == FINAL_RENDERING_NOTE
+
+    # the final lands while the page watches: Tu semana's reader now says it can go out
+    final = replace(state.draft, video_draft=video_draft_vm("final", None))
+    monkeypatch.setattr(creative_state_module, "_FINAL_POLL_SECONDS", 0)
+    monkeypatch.setattr(creative_state_module, "final_video_state", lambda t, d: final.video_draft)
+    monkeypatch.setattr(creative_state_module, "draft_detail", lambda t, d: final)
+    ready = _gallery_with(schedulable=True)
+    monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: ready)
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+
+    assert len(events) == 1 and FINAL_READY_TEXT in str(events[0])
+    assert state.approved_can_schedule is True and state.approved_hold_note == ""
+
+
+async def test_approving_a_draft_whose_final_could_not_be_ordered_says_so(
+    monkeypatch,
+) -> None:
+    from dataclasses import replace
+
+    from .creative_vm import FINAL_FAILED_NOTE, video_draft_vm
+
+    state = _approvable_state(monkeypatch)
+    monkeypatch.setattr(CreativeState, "_route_draft_id", lambda self: _DRAFT_UUID)
+    failed = video_draft_vm("failed", None, "x", approved=True)
+    monkeypatch.setattr(
+        creative_state_module,
+        "approve_draft",
+        lambda tenant_id, draft_id, variant_id, user_id: replace(
+            _approved_vm(state.draft), video_draft=failed
+        ),
+    )
+    ready = _gallery_with(schedulable=True)
+    monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: ready)
+    events = [event async for event in CreativeState.approve_selected.fn(state)]
+
+    assert len(events) == 1 and "Puedes reintentarlo" in str(events[0])
+    assert state.approved_ready is True  # the grid alone would offer the way …
+    assert state.approved_can_schedule is False  # … but the failed final holds it back
+    assert state.approved_hold_note == FINAL_FAILED_NOTE
+
+
+# -- the 1080p final poll (m-24820142, review 2026-10-23) ------------------------------
+
+
+def _video(state: str, *, rendering: bool = False):  # noqa: ANN202
+    from .creative_vm import VideoDraftVM
+
+    return VideoDraftVM(state, "", "info", "", rendering=rendering)
+
+
+def _final_vm(draft_id: str, state: str, *, rendering: bool = False):  # noqa: ANN202
+    from types import SimpleNamespace
+
+    return SimpleNamespace(draft_id=draft_id, video_draft=_video(state, rendering=rendering))
+
+
+def _polling(monkeypatch, piece: str, states: list) -> tuple[CreativeState, list, list]:  # noqa: ANN001
+    """A state showing `piece` (its final rendering) and polling it; the light reads
+    answer `states` in turn (the last one repeats); returns (state, light reads, full
+    reloads)."""
+    state = _state(monkeypatch)
+    state.draft = _final_vm(piece, "rendering", rendering=True)
+    state._final_polling_id = piece
+    monkeypatch.setattr(creative_state_module, "_FINAL_POLL_SECONDS", 0)
+    light: list = []
+    full: list = []
+
+    def fake_state(tenant_id, draft_id):  # noqa: ANN001, ANN202
+        light.append(draft_id)
+        return states[min(len(light), len(states)) - 1]
+
+    def fake_detail(tenant_id, draft_id):  # noqa: ANN001, ANN202
+        full.append(draft_id)
+        return _final_vm(piece, light and states[min(len(light), len(states)) - 1].state)
+
+    monkeypatch.setattr(creative_state_module, "final_video_state", fake_state)
+    monkeypatch.setattr(creative_state_module, "draft_detail", fake_detail)
+    # when the final lands the «Aprobada» card asks Tu semana's reader again (m-24842978)
+    monkeypatch.setattr(
+        creative_state_module, "load_gallery", lambda tenant_id: _gallery_with(schedulable=True)
+    )
+    return state, light, full
+
+
+async def test_a_final_poll_stops_when_another_piece_takes_the_slot(monkeypatch) -> None:
+    """A stale poll (its piece no longer owns `_final_polling_id`) stops without a
+    toast and leaves the new owner's slot alone."""
+    piece_a, piece_b = str(UUID(int=10)), str(UUID(int=11))
+    rendering = _video("rendering", rendering=True)
+    state, light, _ = _polling(monkeypatch, piece_a, [rendering])
+    real_sleep = creative_state_module.asyncio.sleep
+
+    async def sleep(seconds: float) -> None:
+        if light:  # after the first look: the operator opened B, whose final renders
+            state._final_polling_id = piece_b
+        await real_sleep(0)
+
+    monkeypatch.setattr(creative_state_module.asyncio, "sleep", sleep)
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+
+    assert events == [] and len(light) == 1
+    assert state._final_polling_id == piece_b
+
+
+async def test_a_final_poll_stops_when_another_piece_is_opened(monkeypatch) -> None:
+    """Review round 3: the operator opened a piece WITHOUT a final of its own (nothing
+    took the slot): the poll for the old one stops on its next tick, says nothing on
+    the new piece's page, and frees the slot."""
+    piece_a, piece_b = str(UUID(int=13)), str(UUID(int=14))
+    state, light, full = _polling(monkeypatch, piece_a, [_video("final")])
+    state.draft = _final_vm(piece_b, "")  # B is on screen now
+
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+
+    assert events == [] and light == [] and full == []
+    assert state._final_polling_id == ""
+    assert state.draft.draft_id == piece_b  # the page's piece is left alone
+
+
+async def test_a_final_poll_toasts_and_frees_its_slot_when_the_final_lands(monkeypatch) -> None:
+    piece = str(UUID(int=12))
+    state, _, full = _polling(monkeypatch, piece, [_video("final")])
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+    assert len(events) == 1 and state._final_polling_id == ""
+    assert len(full) == 1 and state.draft.video_draft.state == "final"
+
+
+async def test_a_final_poll_never_touches_the_edits_in_progress(monkeypatch) -> None:
+    """Review round 3: the poll refreshes the video, never what the operator is typing
+    nor the AI hashtag suggestions."""
+    from .creative_vm import HashtagIdeaVM
+
+    piece = str(UUID(int=15))
+    state, _, full = _polling(monkeypatch, piece, [_video("final")])
+    state.edit_mode = True
+    state.edit_caption = "Lo que estoy escribiendo"
+    state.edit_hook = "Mi gancho"
+    state.edit_hashtags = "#helado"
+    state.ai_hashtags = [HashtagIdeaVM(tag="postres", kind="popular", reason="Amplio")]
+
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+
+    assert len(events) == 1 and len(full) == 1
+    assert state.edit_caption == "Lo que estoy escribiendo" and state.edit_hook == "Mi gancho"
+    assert state.edit_hashtags == "#helado" and [h.tag for h in state.ai_hashtags] == ["postres"]
+
+
+async def test_a_final_poll_reads_the_whole_piece_only_when_its_state_changes(
+    monkeypatch,
+) -> None:
+    """Review round 3: every tick is a light read; the whole piece only when the
+    draft-video state moved (and once more when the final lands)."""
+    piece = str(UUID(int=16))
+    rendering = _video("rendering", rendering=True)
+    state, light, full = _polling(
+        monkeypatch, piece, [rendering, rendering, rendering, _video("final")]
+    )
+
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+
+    assert len(light) == 4 and len(full) == 1 and len(events) == 1
+
+
+async def test_a_final_poll_outlasts_the_stale_threshold_and_shows_retry(monkeypatch) -> None:
+    """Review round 3: the poll window is longer than the stale threshold (one source
+    of truth), so a final left half-made turns retryable while the page still watches;
+    and when the window ends while it still renders, the last tick refreshes the piece
+    — the screen shows what is true without a reload."""
+    from qualify_api.creative.draft_mode import FINAL_STALE_SECONDS
+
+    assert creative_state_module._FINAL_POLL_BUDGET_SECONDS > FINAL_STALE_SECONDS
+
+    piece = str(UUID(int=17))
+    rendering = _video("rendering", rendering=True)
+    state, light, full = _polling(monkeypatch, piece, [rendering])
+    monkeypatch.setattr(creative_state_module, "_FINAL_POLL_BUDGET_SECONDS", 0)
+
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+
+    assert events == [] and len(light) == 1 and len(full) == 1  # the last look reloads
+    assert state._final_polling_id == ""
+
+    # the stale final shows as failed on the light read: reloaded, toasted, «Reintentar»
+    state, _, full = _polling(monkeypatch, piece, [_video("failed")])
+    events = [e async for e in CreativeState.poll_final.fn(state)]
+    assert len(events) == 1 and len(full) == 1 and "reintentarlo" in str(events[0])
+
+
+def test_the_final_polls_light_read_is_the_screens_own_state(monkeypatch) -> None:
+    """`final_video_state` turns the draft row and its draft videos into the same
+    `VideoDraftVM` the full read gives — an approved piece whose final was never
+    ordered shows «Reintentar» — and None when the piece is gone."""
+    import time
+    from types import SimpleNamespace
+
+    from . import creative_provider
+
+    rendering = {"draft": {"status": "rendering", "rendering_at": time.time()}}
+    answers = {
+        UUID(int=20): ("approved", (rendering,)),
+        UUID(int=21): ("approved", ({"draft": {"status": "draft"}},)),
+    }
+    service = SimpleNamespace(
+        video_drafts_state=lambda *, tenant_id, draft_id: answers.get(draft_id)
+    )
+    monkeypatch.setattr(creative_provider, "production_content_service", lambda: service)
+
+    assert creative_provider.final_video_state(_TENANT_ID, UUID(int=20)).rendering
+    never_ordered = creative_provider.final_video_state(_TENANT_ID, UUID(int=21))
+    assert never_ordered.can_retry and never_ordered.state == "failed"
+    assert creative_provider.final_video_state(_TENANT_ID, UUID(int=22)) is None

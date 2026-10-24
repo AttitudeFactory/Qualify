@@ -148,9 +148,82 @@ def test_add_media_refuses_an_unreadable_file_and_a_video_without_ffmpeg(
     service = mod.CatalogService(
         store=type("S", (), {"write": lambda *a: None, "read": lambda *a: b""})()
     )
-    with pytest.raises(mod.CatalogError, match="no se pudo leer"):
+    with pytest.raises(mod.CatalogError, match="No pudimos abrir esta foto"):
         service.add_media(
             tenant_id=uuid4(), product_id=uuid4(), data=b"not an image", filename="x.jpg"
         )
-    with pytest.raises(mod.CatalogError, match="video uploads are not available"):
+    with pytest.raises(mod.CatalogError, match="Por ahora no podemos recibir videos"):
         service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"\x00", filename="clip.mov")
+
+
+def test_a_full_product_refuses_in_the_owners_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NAV-11 (m-24849129): the refusal the catalog screen shows as it is."""
+    from qualify_api.catalog import service as mod
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def get(self, model, pid):
+            return type("P", (), {"id": pid, "brand_id": uuid4()})()
+
+        def scalars(self, stmt):
+            return [object()] * mod.MAX_MEDIA_PER_PRODUCT
+
+    monkeypatch.setattr(mod, "tenant_session", lambda tenant_id: Session())
+    service = mod.CatalogService(
+        store=type("S", (), {"write": lambda *a: None, "read": lambda *a: b""})()
+    )
+    with pytest.raises(mod.CatalogError) as refused:
+        service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"x", filename="x.jpg")
+    assert refused.value.args[0] == (
+        "Cada producto puede tener hasta 12 fotos o videos. Quita alguno para subir otro."
+    )
+
+
+def test_every_catalog_refusal_is_spanish_and_carries_no_library_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.catalog import service as mod
+
+    texts = (
+        mod.NAME_REQUIRED_TEXT,
+        mod.MEDIA_FULL_TEXT,
+        mod.VIDEO_UNAVAILABLE_TEXT,
+        mod.VIDEO_UNREADABLE_TEXT,
+        mod.PHOTO_UNREADABLE_TEXT,
+    )
+    for text in texts:
+        lowered = text.lower()
+        assert not any(word in lowered for word in ("product ", "file", "upload", "at most"))
+    # a library's own error never reaches the owner
+    monkeypatch.setattr(
+        mod, "load_normalized", lambda data: (_ for _ in ()).throw(OSError("cannot identify"))
+    )
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def get(self, model, pid):
+            return type("P", (), {"id": pid, "brand_id": uuid4()})()
+
+        def scalars(self, stmt):
+            return []
+
+    monkeypatch.setattr(mod, "tenant_session", lambda tenant_id: Session())
+    service = mod.CatalogService(
+        store=type("S", (), {"write": lambda *a: None, "read": lambda *a: b""})()
+    )
+    with pytest.raises(mod.CatalogError) as refused:
+        service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"x", filename="x.jpg")
+    assert refused.value.args[0] == mod.PHOTO_UNREADABLE_TEXT
+    with pytest.raises(mod.CatalogError) as unnamed:
+        service.create_product(tenant_id=uuid4(), brand_id=uuid4(), user_id=uuid4(), name=" ")
+    assert unnamed.value.args[0] == "El producto necesita un nombre."

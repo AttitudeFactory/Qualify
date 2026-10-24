@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import cache
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
@@ -54,6 +54,10 @@ from qualify_api.conversations.templates import (
     PostgresReplyTemplateRepository,
     ReplyTemplateService,
 )
+
+if TYPE_CHECKING:
+    from qualify_api.conversations.ice_breakers import IceBreakerService
+    from qualify_api.conversations.ice_breakers_client import IceBreakersClient
 
 logger = logging.getLogger("qualify_api.conversations.composition")
 
@@ -218,10 +222,14 @@ def production_outbox() -> PostgresConversationOutboxRepository:
 
 
 def production_conversation_service() -> ConversationService:
+    from qualify_api.followups.capabilities import Capabilities  # noqa: PLC0415
+
     return ConversationService(
         repository=production_repository(),
         outbox=production_outbox(),
         registry=production_registry(),
+        # m-24789472: quick replies / button templates are refused at enqueue when off.
+        capabilities=Capabilities.from_env(),
     )
 
 
@@ -282,6 +290,53 @@ def production_template_service() -> ReplyTemplateService:
     )
 
 
+# --- m-24789472: Ice Breakers («preguntas iniciales») -------------------------------------
+
+_MEMORY_ICE_BREAKERS: IceBreakersClient | None = None
+
+
+def production_ice_breakers_client() -> IceBreakersClient:
+    """The Messenger Profile client: the real one over `_authenticated_client` (the Page
+    token, R3), or — with `QUALIFY_CONVERSATIONS_DM_CHANNEL=memory` — one in-memory twin
+    per process, so the screen's publish / remove can be exercised on localhost."""
+    global _MEMORY_ICE_BREAKERS  # noqa: PLW0603
+    from qualify_api.conversations.ice_breakers_client import (  # noqa: PLC0415
+        InstagramIceBreakersClient,
+        MemoryIceBreakersClient,
+    )
+
+    if dm_channel_mode() == DM_CHANNEL_MEMORY:
+        if _MEMORY_ICE_BREAKERS is None:
+            _MEMORY_ICE_BREAKERS = MemoryIceBreakersClient()
+        return _MEMORY_ICE_BREAKERS
+    from qualify_api.config import MetaOAuthSettings  # noqa: PLC0415
+
+    return InstagramIceBreakersClient(
+        client_factory=_authenticated_client, graph_url=MetaOAuthSettings.from_env().graph_url
+    )
+
+
+def production_ice_breaker_service() -> IceBreakerService:
+    """The «Preguntas iniciales» screen's service. Publish / remove need the
+    `ice_breakers` capability (`QUALIFY_ICE_BREAKERS=on`, TO_VERIFY); editing does not."""
+    from qualify_api.connections.composition import (  # noqa: PLC0415
+        degrade_connection_on_auth_error,
+    )
+    from qualify_api.conversations.ice_breakers import (  # noqa: PLC0415
+        IceBreakerService,
+        PostgresIceBreakerRepository,
+    )
+    from qualify_api.followups.capabilities import Capabilities, Capability  # noqa: PLC0415
+
+    return IceBreakerService(
+        repository=PostgresIceBreakerRepository(),
+        client=production_ice_breakers_client(),
+        connections=source_connection_for,
+        availability=Capabilities.from_env().availability(Capability.ICE_BREAKERS),
+        degrade=degrade_connection_on_auth_error,
+    )
+
+
 class _LazyMediaLinker:
     """QUA-68's public-media linker, built on first use: a worker without
     `QUALIFY_PUBLIC_MEDIA_BASE_URL` still sends text replies and fails only a media one
@@ -306,6 +361,7 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
         Capability,
     )
 
+    capabilities = Capabilities.from_env()
     return ConversationOutboxSender(
         outbox=production_outbox(),
         repository=production_repository(),
@@ -314,7 +370,10 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
         degrade=degrade_connection_on_auth_error,
         media_linker=_LazyMediaLinker(),
         # m-24789646: a queued private reply leaves only while its capability is on.
-        private_replies=Capabilities.from_env().enabled(Capability.COMMENT_PRIVATE_REPLY),
+        private_replies=capabilities.enabled(Capability.COMMENT_PRIVATE_REPLY),
+        # m-24789472: quick replies and button templates, re-checked at send time.
+        quick_replies=capabilities.enabled(Capability.QUICK_REPLIES),
+        structured_templates=capabilities.enabled(Capability.STRUCTURED_TEMPLATES),
         worker_id=worker_id,
     )
 
@@ -341,6 +400,8 @@ __all__ = [
     "memory_pair",
     "production_conversation_service",
     "production_draft_service",
+    "production_ice_breaker_service",
+    "production_ice_breakers_client",
     "production_media_gate",
     "production_outbox",
     "production_registry",

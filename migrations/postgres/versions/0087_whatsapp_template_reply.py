@@ -1,7 +1,7 @@
 """whatsapp_outbox: an approved message sent from an expired chat (m-24848535, WHATSAPP-2)
 
 Revision ID: 0087
-Revises: 0081
+Revises: 0084
 Create Date: 2026-10-23
 
 Outside the 24 h window WhatsApp only delivers an approved template. Until now a template
@@ -51,7 +51,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 revision = "0087"
-down_revision = "0081"
+down_revision = "0084"
 branch_labels = None
 depends_on = None
 
