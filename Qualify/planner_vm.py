@@ -594,6 +594,24 @@ GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
     (value, label) for value, (label, _tone) in GALLERY_LABELS.items()
 )
 
+# m-24842962 (N11): Inicio's «publicaciones listas para que las apruebes» opens the
+# gallery already filtered — `/drafts?estado=por-completar`. Slugs = the chips' words.
+GALLERY_FILTER_PARAM = "estado"
+GALLERY_FILTER_SLUGS: dict[str, str] = {
+    "todas": GALLERY_FILTER_ALL,
+    "borrador": "draft",
+    "por-completar": "needs_action",
+    "listo": "schedulable",
+    "usado": "used",
+    "desechado": "discarded",
+}
+
+
+def gallery_filter_from_param(slug: str) -> str | None:
+    """`?estado=por-completar` → `"needs_action"`; absent or unknown → None (keep the
+    filter the owner already had)."""
+    return GALLERY_FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+
 
 @dataclass(frozen=True)
 class CategoryOptionVM:
