@@ -12,6 +12,7 @@ DMs that reply to a story are classified in the same pass, with the same contrac
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -51,14 +52,23 @@ class IntentService:
         self._include_story_replies = include_story_replies
 
     def analyze_pending_intents(
-        self, *, tenant_id: UUID, connection_id: UUID
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        message_ids: Collection[UUID] | None = None,
     ) -> IntentAnalysisSummary:
+        """`message_ids` limits the pass to those comments (ATENDER-4b's «Responder
+        aquí» analyzes only the one the owner tapped); None = every pending comment."""
         pending = self._repository.list_pending_for_intent(
             tenant_id=tenant_id,
             connection_id=connection_id,
             version=self._version,
             include_story_replies=self._include_story_replies,
         )
+        if message_ids is not None:
+            wanted = set(message_ids)
+            pending = [comment for comment in pending if comment.message_id in wanted]
         to_classify = [comment for comment in pending if comment.text.strip()]
         predictions = self._classifier.classify([comment.text for comment in to_classify])
         if len(predictions) != len(to_classify):

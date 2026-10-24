@@ -22,6 +22,16 @@ version is a candidate too; the gate routes it to the grounded generator (`publi
 catalog only, prices withheld, review reasons recorded) instead of the thank-you
 provider. `regenerate` replaces a `proposed` draft atomically. Generation never sends.
 
+**Any comment (ATENDER-4b, m-24848533).** For a business with the per-tenant setting on
+(`replies.any_comment`, OFF by default), every candidate is first triaged in one batched
+Claude Haiku call (`replies.triage`, ATENDER-4a's measured candidate) and the gate's
+`any_comment` route drafts questions and complaints with ATENDER-4a's prompt
+(`any_comment_drafts`, `atender4a.2`) over the same grounded generator. A complaint draft
+always carries the blocking `complaint` review reason. The triage (kind, tone, model,
+prompt version, cost share) is stored inside the draft's grounding record, so no new
+column was needed. `prepare_for_comment` is «Responder aquí»: one comment, on the
+owner's tap. Neither ever sends.
+
 No scheduler, no automatic run chained after `sentiment.analyze_pending_comments()` —
 same manual-trigger-only posture that module's own docstring documents. This module
 does not know when it is called, only what to do when it is.
@@ -31,22 +41,28 @@ from __future__ import annotations
 
 import difflib
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.assisted.grounding import Grounding, GroundingProvider
-from qualify_api.claude_tools import CallStats
+from qualify_api.claude_tools import CallStats, ClaudeToolError
 from qualify_api.intent.contract import IntentClass
 from qualify_api.intent.reliability import class_reliability
+from qualify_api.replies.any_comment import COMPLAINT_REASON
+from qualify_api.replies.any_comment_drafts import any_comment_context
 from qualify_api.replies.client import CommentReplyClient, CommentReplyError
 from qualify_api.replies.failures import classify_reply_error, error_code_for, is_retryable
 from qualify_api.replies.gate import (
+    KIND_COMPLAINT,
+    ROUTE_ANY_COMMENT,
     ROUTE_COMMERCIAL,
     GateInput,
     GateVerdict,
     IntentEvidence,
+    TriageEvidence,
     evaluate_gate,
 )
 from qualify_api.replies.public_drafts import (
@@ -66,6 +82,7 @@ from qualify_api.replies.repository import (
     DraftRecord,
     ReplyRepository,
 )
+from qualify_api.replies.triage import CommentKind, CommentTriager, Sentiment
 from qualify_api.sentiment.repository import AnalysisVersion
 
 if TYPE_CHECKING:
@@ -124,6 +141,10 @@ class RegenerationRefused(ValueError):
 class RetryRefused(ValueError):
     """«Reintentar» has nothing to do: the draft is not a passing failure, or it was
     already retried (a second tap) or replaced meanwhile. Nothing was written."""
+
+
+#: Stores one comment's analysis row: `(tenant_id, connection_id, message_id)`.
+CommentAnalyzer = Callable[[UUID, UUID, UUID], None]
 
 
 @dataclass(frozen=True)
@@ -194,11 +215,23 @@ class ReplyService:
         grounded_generator: DraftGenerator | None = None,
         grounding: GroundingProvider | None = None,
         reliability: ReliabilityReader = class_reliability,
+        any_comment_generator: DraftGenerator | None = None,
+        triager_factory: Callable[[], CommentTriager] | None = None,
+        any_comment_enabled: Callable[[UUID], bool] | None = None,
+        comment_analyzer: CommentAnalyzer | None = None,
     ) -> None:
         """`version` is the sentiment version (QUA-22's POS path, `provider`).
         `intent_version` turns on Fase B (m-24789645): commercial comments under it are
         drafted by `grounded_generator` over `grounding` — both required for that route,
-        which fails loudly without them rather than falling back to the ungrounded one."""
+        which fails loudly without them rather than falling back to the ungrounded one.
+
+        ATENDER-4b: `any_comment_enabled(tenant_id)` is the per-tenant setting (None =
+        OFF for everyone); `triager_factory` builds the triager on first use (it needs the
+        API key, which a service that never triages must not demand) and
+        `any_comment_generator` writes the drafts of the `any_comment` route.
+        `comment_analyzer(tenant_id, connection_id, message_id)` stores ONE comment's
+        analysis row when «Responder aquí» finds none (the intent pass of «Ordenar por
+        prioridad», limited to that comment); None = the owner must sort first."""
         self._repo = repository
         self._version = version
         self._generator_version = generator_version
@@ -210,10 +243,23 @@ class ReplyService:
         self._grounded = grounded_generator
         self._grounding = grounding
         self._reliability = reliability
+        self._any_generator = any_comment_generator
+        self._triager_factory = triager_factory
+        self._triager: CommentTriager | None = None
+        self._any_enabled = any_comment_enabled or (lambda _tenant_id: False)
+        self._analyze_comment = comment_analyzer
 
     # -- generation ---------------------------------------------------------------------
 
-    def _gate_input(self, candidate: CandidateComment, *, has_live_draft: bool) -> GateInput:
+    def _gate_input(
+        self,
+        candidate: CandidateComment,
+        *,
+        has_live_draft: bool,
+        any_comment: bool = False,
+        triage: TriageEvidence | None = None,
+        owner_requested: bool = False,
+    ) -> GateInput:
         intent = (
             IntentEvidence(
                 commercial_intent=candidate.commercial_intent, version=candidate.intent_version
@@ -229,7 +275,43 @@ class ReplyService:
             intent=intent,
             current_intent_version=self._intent_version,
             followup_status=candidate.followup_status,
+            any_comment=any_comment,
+            triage=triage,
+            has_analysis_row=(
+                candidate.sentiment_result_id is not None or candidate.intent_result_id is not None
+            ),
+            owner_requested=owner_requested,
         )
+
+    def _triage(self, candidates: Sequence[CandidateComment]) -> dict[UUID, TriageEvidence]:
+        """One batched triage call over `candidates` (ATENDER-4b). A failure (no key, the
+        model did not answer) leaves every comment untriaged — the gate then applies the
+        older rules, it never guesses a kind. Each comment carries its share of the cost."""
+        if not candidates or self._triager_factory is None:
+            return {}
+        try:
+            if self._triager is None:
+                self._triager = self._triager_factory()
+            results = self._triager.triage([c.text for c in candidates])
+        except (ClaudeToolError, RuntimeError, ValueError) as exc:
+            logger.warning("replies.triage failed, drafting with the older rules: %s", exc)
+            return {}
+        stats = getattr(self._triager, "last_stats", None) or []
+        total = sum(float(getattr(st, "cost_usd", 0.0) or 0.0) for st in stats)
+        share = total / len(candidates)
+        found: dict[UUID, TriageEvidence] = {}
+        for candidate, result in zip(candidates, results, strict=False):
+            if result is None:
+                continue
+            found[candidate.message_id] = TriageEvidence(
+                kind=result.kind.value,
+                sentiment=result.sentiment.value,
+                needs_reply=result.needs_reply,
+                model_id=result.model_id,
+                prompt_version=result.prompt_version,
+                cost_usd=share,
+            )
+        return found
 
     def _sentiment_provider(self) -> ReplyDraftProvider:
         if self._provider is None:
@@ -246,8 +328,19 @@ class ReplyService:
         candidate: CandidateComment,
         verdict: GateVerdict,
         cache: _BatchCache,
+        triage: TriageEvidence | None = None,
     ) -> _Composed:
         """The one place a generator is called — only ever for a verdict that passed."""
+        if verdict.route == ROUTE_ANY_COMMENT:
+            if triage is None:
+                raise RuntimeError("the any_comment route needs the comment's triage")
+            return self._compose_any(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                candidate=candidate,
+                triage=triage,
+                cache=cache,
+            )
         if verdict.route != ROUTE_COMMERCIAL:
             text = self._sentiment_provider().draft_reply(
                 comment_text=candidate.text, business_name=self._business_name
@@ -310,23 +403,112 @@ class ReplyService:
             ),
         )
 
+    def _compose_any(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        candidate: CandidateComment,
+        triage: TriageEvidence,
+        cache: _BatchCache,
+    ) -> _Composed:
+        """ATENDER-4b: a praise, question or complaint drafted with ATENDER-4a's prompt
+        (`atender4a.2`) over the catalog WITHOUT prices (D1), judged by the same review
+        reasons as Fase B plus `complaint` — a complaint never goes out unreviewed."""
+        if self._any_generator is None or self._grounding is None:
+            raise RuntimeError(
+                "ReplyService was built without an any-comment generator and grounding"
+            )
+        full = cache.grounding.get(connection_id)
+        if full is None:
+            full = self._grounding(tenant_id, connection_id)
+            cache.grounding[connection_id] = full
+        public_view = full.without_prices()
+        classes = parse_classes(candidate.intent_classes)
+        try:
+            kind = CommentKind(triage.kind)
+            tone = Sentiment(triage.sentiment)
+        except ValueError:
+            kind, tone = CommentKind.OTHER, Sentiment.NEU
+        proposal = self._any_generator.propose(
+            grounding=public_view,
+            messages=[
+                comment_message(
+                    message_id=candidate.message_id,
+                    connection_id=connection_id,
+                    source_id=candidate.source_id,
+                    text=candidate.text,
+                )
+            ],
+            counterpart=COMMENT_SPEAKER,
+            context=any_comment_context(kind=kind, sentiment=tone, classes=classes),
+        )
+        reasons = review_reasons(
+            text=proposal.text,
+            used_only_given_facts=proposal.used_only_given_facts,
+            unsupported_claims=proposal.unsupported_claims,
+            grounding=full,
+            classes=classes,
+            # The triage routed this draft, not the intent chips: their reliability
+            # notes do not apply. Only the D1/D2 checks do.
+            reliable=dict.fromkeys(classes, True),
+        )
+        if triage.kind == KIND_COMPLAINT:
+            reasons = (COMPLAINT_REASON, *reasons)
+        record = grounding_record(public_view, reasons)
+        record["triage"] = {
+            "kind": triage.kind,
+            "sentiment": triage.sentiment,
+            "needs_reply": triage.needs_reply,
+            "model_id": triage.model_id,
+            "prompt_version": triage.prompt_version,
+            "cost_usd": round(triage.cost_usd, 8),
+        }
+        return _Composed(
+            proposal.text,
+            self._any_generator.version,
+            DraftProvenance(
+                grounding=record,
+                needs_review=needs_review_for(reasons),
+                unsupported_claims=tuple(proposal.unsupported_claims),
+                model_id=proposal.model_id,
+                model_revision=proposal.model_revision,
+                input_tokens=proposal.input_tokens,
+                output_tokens=proposal.output_tokens,
+                # The draft's cost includes its share of the triage call.
+                cost_usd=cost_decimal(proposal.cost_usd + triage.cost_usd),
+                intent_result_id=candidate.intent_result_id,
+            ),
+        )
+
     def generate_drafts(self, *, tenant_id: UUID, connection_id: UUID) -> GenerationSummary:
         """The gate runs on EVERY candidate before the generator is ever called — see
         `gate.py`'s module docstring. A rejected candidate produces no draft and no
         generator call; nothing records a rejection, only what passed does. A comment
         whose earlier draft was discarded is not a candidate here (`regenerate` is)."""
+        any_comment = self._any_enabled(tenant_id)
         candidates = self._repo.list_reply_candidates(
             tenant_id=tenant_id,
             connection_id=connection_id,
             sentiment_version=self._version,
             intent_version=self._intent_version,
+            any_comment=any_comment,
         )
+        triages = self._triage(candidates) if any_comment else {}
         cache = _BatchCache()
         created = 0
         rejected = 0
         for candidate in candidates:
             live = self._repo.get_live_draft(tenant_id=tenant_id, message_id=candidate.message_id)
-            verdict = evaluate_gate(self._gate_input(candidate, has_live_draft=live is not None))
+            triage = triages.get(candidate.message_id)
+            verdict = evaluate_gate(
+                self._gate_input(
+                    candidate,
+                    has_live_draft=live is not None,
+                    any_comment=any_comment,
+                    triage=triage,
+                )
+            )
             if not verdict.passed:
                 rejected += 1
                 continue
@@ -336,6 +518,7 @@ class ReplyService:
                 candidate=candidate,
                 verdict=verdict,
                 cache=cache,
+                triage=triage,
             )
             result = self._repo.create_draft(
                 tenant_id=tenant_id,
@@ -351,6 +534,92 @@ class ReplyService:
         return GenerationSummary(
             candidates_seen=len(candidates), drafts_created=created, gate_rejected=rejected
         )
+
+    def prepare_for_comment(
+        self, *, tenant_id: UUID, connection_id: UUID, message_id: UUID
+    ) -> DraftRecord:
+        """«Responder aquí» (ATENDER-4b): the public draft for ONE comment, on the
+        owner's tap. Returns the comment's live draft when it already has one (a second
+        tap, or the batch got there first) — never a second draft, never a send.
+
+        Raises `RegenerationRefused` when the gate says no (a deleted comment, a comment
+        already answered by DM, or — with the setting OFF — a comment that is neither
+        positive nor commercial). Its `reason` is the gate's, for the log; the screen
+        translates it (`replies_vm.reply_here_error_message`)."""
+        live = self._repo.get_live_draft(tenant_id=tenant_id, message_id=message_id)
+        if live is not None:
+            return live
+        candidate = self._repo.get_reply_candidate(
+            tenant_id=tenant_id,
+            message_id=message_id,
+            sentiment_version=self._version,
+            intent_version=self._intent_version,
+        )
+        if candidate is None:
+            raise RegenerationRefused("the comment is no longer available on Instagram")
+        candidate = self._ensure_analysis_row(
+            tenant_id=tenant_id, connection_id=connection_id, candidate=candidate
+        )
+        any_comment = self._any_enabled(tenant_id)
+        triage = self._triage([candidate]).get(candidate.message_id) if any_comment else None
+        verdict = evaluate_gate(
+            self._gate_input(
+                candidate,
+                has_live_draft=False,
+                any_comment=any_comment,
+                triage=triage,
+                owner_requested=True,
+            )
+        )
+        if not verdict.passed:
+            raise RegenerationRefused(verdict.reason)
+        composed = self._compose(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            candidate=candidate,
+            verdict=verdict,
+            cache=_BatchCache(),
+            triage=triage,
+        )
+        created = self._repo.create_draft(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            candidate=candidate,
+            gate_reason=verdict.reason,
+            generator_version=composed.generator_version,
+            generated_text=composed.text,
+            provenance=composed.provenance,
+        )
+        if created is not None:
+            return created
+        # A double tap lost the race: hand back the draft that won.
+        live = self._repo.get_live_draft(tenant_id=tenant_id, message_id=message_id)
+        if live is None:
+            raise RegenerationRefused(f"comment {message_id} was answered meanwhile")
+        return live
+
+    def _ensure_analysis_row(
+        self, *, tenant_id: UUID, connection_id: UUID, candidate: CandidateComment
+    ) -> CandidateComment:
+        """«Responder aquí» on a comment not yet sorted: analyze THAT comment first, so
+        the owner taps once (UX review, m-24848533). A failure is logged and the gate
+        then refuses as before (`ck_reply_draft_has_signal` needs the row)."""
+        if self._analyze_comment is None or (
+            candidate.sentiment_result_id is not None or candidate.intent_result_id is not None
+        ):
+            return candidate
+        try:
+            self._analyze_comment(tenant_id, connection_id, candidate.message_id)
+        except Exception as exc:  # the gate's refusal below is the answer
+            logger.warning("replies.reply_here analysis failed: %s", type(exc).__name__)
+            return candidate
+        refreshed = self._repo.get_reply_candidate(
+            tenant_id=tenant_id,
+            message_id=candidate.message_id,
+            sentiment_version=self._version,
+            intent_version=self._intent_version,
+        )
+        return refreshed if refreshed is not None else candidate
 
     def regenerate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftRecord:
         """«Regenerar» (m-24789645): discard the comment's `'proposed'` draft as `user_id`
@@ -376,7 +645,18 @@ class ReplyService:
         )
         if candidate is None:
             raise RegenerationRefused("the comment is no longer available on Instagram")
-        verdict = evaluate_gate(self._gate_input(candidate, has_live_draft=False))
+        any_comment = self._any_enabled(tenant_id)
+        triage = self._triage([candidate]).get(candidate.message_id) if any_comment else None
+        # «Regenerar» is the owner's own tap on this comment, like «Responder aquí».
+        verdict = evaluate_gate(
+            self._gate_input(
+                candidate,
+                has_live_draft=False,
+                any_comment=any_comment,
+                triage=triage,
+                owner_requested=True,
+            )
+        )
         if not verdict.passed:
             raise RegenerationRefused(verdict.reason)
         composed = self._compose(
@@ -385,6 +665,7 @@ class ReplyService:
             candidate=candidate,
             verdict=verdict,
             cache=_BatchCache(),
+            triage=triage,
         )
         new = self._repo.supersede_draft(
             tenant_id=tenant_id,

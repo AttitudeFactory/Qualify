@@ -18,6 +18,11 @@ from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.conversations.suggest import ClaudeDraftGenerator
+from qualify_api.replies.any_comment import any_comment_enabled
+from qualify_api.replies.any_comment_drafts import (
+    ANY_COMMENT_SYSTEM_PROMPT,
+    ANY_COMMENT_VERSION_PREFIX,
+)
 from qualify_api.replies.claude_drafts import DRAFT_MODEL, ClaudeReplyDraftProvider
 from qualify_api.replies.client import CommentReplyClient, HttpCommentReplyClient
 from qualify_api.replies.public_drafts import (
@@ -26,6 +31,7 @@ from qualify_api.replies.public_drafts import (
 )
 from qualify_api.replies.repository import DraftRecord, PostgresReplyRepository
 from qualify_api.replies.service import DecisionResult, GenerationSummary, ReplyService
+from qualify_api.replies.triage import ClaudeCommentTriager, CommentTriager
 
 
 class ResolverReplyClientFactory:
@@ -60,6 +66,28 @@ def public_reply_generator() -> ClaudeDraftGenerator:
     )
 
 
+def any_comment_reply_generator() -> ClaudeDraftGenerator:
+    """ATENDER-4b (m-24848533): ATENDER-4a's prompt for praise, questions and complaints
+    (`atender4a.2:<model>`), on the same grounded tool contract as Fase B."""
+    return ClaudeDraftGenerator(
+        system_prompt=ANY_COMMENT_SYSTEM_PROMPT, version_prefix=ANY_COMMENT_VERSION_PREFIX
+    )
+
+
+def comment_triager() -> CommentTriager:
+    """ATENDER-4a's measured triage (Claude Haiku 5.5, `atender4a.1`). Built on first use:
+    it needs `QUALIFY_ANTHROPIC_API_KEY`, which only a business with the setting on uses."""
+    from qualify_api.claude_tools import api_key_from_env  # noqa: PLC0415
+
+    return ClaudeCommentTriager(api_key=api_key_from_env())
+
+
+def _analyze_one_comment(tenant_id: UUID, connection_id: UUID, message_id: UUID) -> None:
+    from qualify_api.intent.composition import analyze_comment_intent  # noqa: PLC0415
+
+    analyze_comment_intent(tenant_id=tenant_id, connection_id=connection_id, message_id=message_id)
+
+
 @cache
 def production_reply_service() -> ReplyService:
     from qualify_api.intent.composition import CURRENT_INTENT_VERSION  # noqa: PLC0415
@@ -78,6 +106,13 @@ def production_reply_service() -> ReplyService:
         # The comment's own connection → its brand → that brand's active catalog, read
         # under the tenant's RLS (`tenant_session`): never another tenant's products.
         grounding=catalog_grounding_for,
+        # ATENDER-4b: questions and complaints too, only for the businesses the founder
+        # turned on (`QUALIFY_REPLIES_ANY_COMMENT_TENANTS`; OFF by default).
+        any_comment_generator=any_comment_reply_generator(),
+        triager_factory=comment_triager,
+        any_comment_enabled=any_comment_enabled,
+        # «Responder aquí» on an unsorted comment analyzes that one comment first.
+        comment_analyzer=_analyze_one_comment,
     )
 
 
@@ -87,6 +122,16 @@ def generate_drafts(*, tenant_id: UUID, connection_id: UUID) -> GenerationSummar
     manual trigger: nothing here runs on a schedule."""
     return production_reply_service().generate_drafts(
         tenant_id=tenant_id, connection_id=connection_id
+    )
+
+
+def prepare_reply_for_comment(
+    *, tenant_id: UUID, connection_id: UUID, message_id: UUID
+) -> DraftRecord:
+    """«Responder aquí» (ATENDER-4b; the button on each comment card in `/inbox`): the
+    comment's public draft, made now if it has none. Never sends."""
+    return production_reply_service().prepare_for_comment(
+        tenant_id=tenant_id, connection_id=connection_id, message_id=message_id
     )
 
 

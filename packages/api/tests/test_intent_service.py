@@ -162,3 +162,18 @@ def test_production_service_uses_the_current_version(monkeypatch: pytest.MonkeyP
     service = production_intent_service()
 
     assert service._version == CURRENT_INTENT_VERSION  # noqa: SLF001
+
+
+def test_a_pass_limited_to_one_comment_classifies_only_that_one() -> None:
+    """ATENDER-4b's «Responder aquí» analyzes only the comment the owner tapped."""
+    repo = MemoryIntentRepository()
+    tapped = _seed(repo, "¿precio?")
+    _seed(repo, "¡lindo!")
+    classifier = StubClassifier({"¿precio?": {IntentClass.PRICE: 0.9}})
+
+    summary = _service(repo, classifier).analyze_pending_intents(
+        tenant_id=TENANT, connection_id=CONNECTION, message_ids=(tapped,)
+    )
+
+    assert (summary.comments_checked, summary.new_results) == (1, 1)
+    assert classifier.seen == [["¿precio?"]]
