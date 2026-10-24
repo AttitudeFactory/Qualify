@@ -36,7 +36,7 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import REVIEW_PORT_LABELS
+from .creative_vm import FINAL_PREPARING_LABEL, REVIEW_PORT_LABELS
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
@@ -620,6 +620,7 @@ CARD_ACTION_REVIEW = "review"  # opens the publication's page
 CARD_ACTION_SCHEDULE = "schedule"  # hands it to Tu semana to choose day and time
 CARD_ACTION_VIEW = "view"  # opens the publication's page, nothing to do
 CARD_ACTION_PLANNER = "planner"  # opens Tu semana on it: it is already on the calendar
+CARD_ACTION_WAIT = "wait"  # nothing to do yet: the button is disabled and says why
 
 #: The ready card's button keeps the name CREAR-1 (m-24842978) gave this same step —
 #: it opens Tu semana, where «Programar» is the final, confirming verb (navigation map
@@ -632,6 +633,15 @@ CARD_STATES: dict[str, CardStateVM] = {
     for s in (
         CardStateVM("review", "Por revisar", "warn", CARD_ACTION_REVIEW, "Revisar"),
         CardStateVM("missing", "Le falta algo", "warn", CARD_ACTION_REVIEW, "Ver qué falta"),
+        # review 2026-10-24 (finding 8): approved, its video final still being made —
+        # the owner waits; the button stays disabled with the same words until it lands
+        CardStateVM(
+            "preparing",
+            FINAL_PREPARING_LABEL,
+            "info",
+            CARD_ACTION_WAIT,
+            FINAL_PREPARING_LABEL,
+        ),
         CardStateVM(
             "ready", "Lista para programar", "ok", CARD_ACTION_SCHEDULE, SCHEDULE_ACTION_LABEL
         ),
@@ -672,16 +682,24 @@ def gallery_filter_from_param(slug: str) -> str | None:
 
 
 def card_state(
-    gallery_state: str, *, waiting_review: bool, times_published: int = 0
+    gallery_state: str,
+    *,
+    waiting_review: bool,
+    times_published: int = 0,
+    final_rendering: bool = False,
 ) -> CardStateVM | None:
     """The card's state (m-24842981): a publication generated and waiting for the
-    owner is «Por revisar» whatever else it lacks — reviewing comes first. A «used» one
-    that has never gone out is only on the calendar: «Programada», not «Ya salió»."""
+    owner is «Por revisar» whatever else it lacks — reviewing comes first. An approved
+    one held back only because its video final is being made (`final_rendering`) is
+    «Preparando el video final»: nothing for the owner to fix. A «used» one that has
+    never gone out is only on the calendar: «Programada», not «Ya salió»."""
     key = _CARD_STATE_BY_GALLERY.get(gallery_state)
     if key is None:
         return None
     if gallery_state == "needs_action" and waiting_review:
         key = "review"
+    elif gallery_state == "needs_action" and final_rendering:
+        key = "preparing"
     if gallery_state == "used" and times_published <= 0:
         key = "scheduled"
     return CARD_STATES[key]
@@ -1193,6 +1211,7 @@ def build_post_option(
     event_count: int = 0,
     retention_state: str = "",
     purge_days_left: int | None = None,
+    final_rendering: bool = False,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1202,6 +1221,7 @@ def build_post_option(
         gallery_state,
         waiting_review=lifecycle_status == "generated",
         times_published=times_published,
+        final_rendering=final_rendering,
     )
     shows_history = card is not None and card.key in HISTORY_CARD_STATES
     if card is not None:  # the same words on every surface that prints the state

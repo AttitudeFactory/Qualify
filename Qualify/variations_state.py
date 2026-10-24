@@ -35,7 +35,7 @@ import reflex as rx
 
 from .auth_state import AuthState
 from .creative_provider import acting_user_id, catalog_products, default_brand_id
-from .creative_vm import approval_notice
+from .creative_vm import APPROVED_OPEN_ACTION, approval_notice
 from .tenant import tenant_uuid
 from .variations_provider import (
     approve_variation_angle,
@@ -74,7 +74,6 @@ _NO_PRODUCTS = (
 _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."
 _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."
-_APPROVED = "Pieza aprobada."
 #: m-24820142: where the approved piece is followed when its 1080p final is being made
 #: or could not be ordered (`creative_vm.approval_notice`).
 _APPROVED_ELSEWHERE = "Ábrela en Por aprobar"
@@ -101,13 +100,16 @@ _POLL_BUDGET_SECONDS = 20 * 60
 _TOAST_MS = 6000
 
 
-def _toast(message: str, tone: str) -> rx.event.EventSpec:
+def _toast(message: str, tone: str, action: dict | None = None) -> rx.event.EventSpec:
     """A transient confirmation, bottom right, in the tone of what happened
     (docs/design-system.md §5.4: «confirmaciones transitorias → rx.toast»). What went
-    wrong, with its details, stays on the page as a callout instead."""
+    wrong, with its details, stays on the page as a callout instead. `action` is the
+    toast's one button, when it has somewhere to take the owner."""
     show = {"ok": rx.toast.success, "error": rx.toast.error, "warn": rx.toast.warning}.get(
         tone, rx.toast.info
     )
+    if action is not None:
+        return show(message, duration=_TOAST_MS, action=action)
     return show(message, duration=_TOAST_MS)
 
 
@@ -734,10 +736,18 @@ class VariationsState(rx.State):
         await self._read_set(tenant_id, set_id)
         async with self:
             self.busy_angle_id = ""
+            draft_id = next((a.draft_id for a in self.angles if a.id == angle_id), "")
         # the piece's own notice (m-24820142): its final renders, could not be ordered, or
-        # there is none to wait for — the same choice every screen that approves makes
-        notice = approval_notice(video, approved=_APPROVED, elsewhere=_APPROVED_ELSEWHERE)
-        yield _toast(notice.text, _NOTICE_TONES.get(notice.kind, "info"))
+        # there is none to wait for — the same choice every screen that approves makes,
+        # in the gallery's words (`APPROVED_TOAST`, m-24842981)
+        notice = approval_notice(video, elsewhere=_APPROVED_ELSEWHERE)
+        action = None
+        if notice.offer_open and draft_id:  # finding 8: somewhere to tap, not only words
+            action = {
+                "label": APPROVED_OPEN_ACTION,
+                "on_click": rx.redirect(f"/drafts/{draft_id}"),
+            }
+        yield _toast(notice.text, _NOTICE_TONES.get(notice.kind, "info"), action)
 
     @rx.event(background=True)
     async def regenerate_angle(self, angle_id: str) -> AsyncIterator[rx.event.EventSpec]:

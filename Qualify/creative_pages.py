@@ -39,6 +39,7 @@ from .planner_vm import (
     CARD_ACTION_REVIEW,
     CARD_ACTION_SCHEDULE,
     CARD_ACTION_VIEW,
+    CARD_ACTION_WAIT,
     GALLERY_FILTER_ALL,
     GALLERY_STATE_FILTERS,
 )
@@ -868,6 +869,7 @@ _CARD_STATE_ICON = {
     "used": "history",
     "discarded": "circle-x",
     "drafting": "loader",
+    "preparing": "loader",
 }
 # The glyph on each card's one main button, by what it does (`planner_vm.CARD_ACTION_*`).
 _CARD_ACTION_ICON = {
@@ -875,6 +877,7 @@ _CARD_ACTION_ICON = {
     CARD_ACTION_SCHEDULE: "calendar-plus",
     CARD_ACTION_VIEW: "eye",
     CARD_ACTION_PLANNER: "calendar-days",
+    CARD_ACTION_WAIT: "loader",
 }
 
 
@@ -895,7 +898,8 @@ def _gallery_state_badge(post) -> rx.Component:
 def _card_main_button(post) -> rx.Component:
     """The card's ONE main button (m-24842981): «Revisar» while it waits for you,
     «Programar» once it is ready, «Ver» when there is nothing left to do. Solid when it
-    asks something of the owner, soft when it only shows."""
+    asks something of the owner, soft when it only shows; disabled, saying «Preparando
+    el video final», while its final is being made (review 2026-10-24, finding 8)."""
 
     def icon() -> rx.Component:
         return rx.match(
@@ -925,21 +929,33 @@ def _card_main_button(post) -> rx.Component:
                 width="100%",
                 on_click=GalleryState.assign(post.post_id),
             ),
-            rx.link(
-                rx.cond(
-                    post.card_action == CARD_ACTION_REVIEW,
-                    rx.button(icon(), post.card_action_label, size="2", width="100%"),
-                    rx.button(
-                        icon(),
-                        post.card_action_label,
-                        variant="soft",
-                        color_scheme="gray",
-                        size="2",
-                        width="100%",
-                    ),
+            rx.cond(
+                post.card_action == CARD_ACTION_WAIT,
+                rx.button(
+                    icon(),
+                    post.card_action_label,
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    width="100%",
+                    disabled=True,
                 ),
-                href=post.detail_href,
-                width="100%",
+                rx.link(
+                    rx.cond(
+                        post.card_action == CARD_ACTION_REVIEW,
+                        rx.button(icon(), post.card_action_label, size="2", width="100%"),
+                        rx.button(
+                            icon(),
+                            post.card_action_label,
+                            variant="soft",
+                            color_scheme="gray",
+                            size="2",
+                            width="100%",
+                        ),
+                    ),
+                    href=post.detail_href,
+                    width="100%",
+                ),
             ),
         ),
     )

@@ -26,6 +26,7 @@ from .creative_provider import acting_user_id, approve_draft, draft_detail, reje
 # it is not out yet — live with `approval_notice`; re-exported for the screens' tests.
 from .creative_vm import (  # noqa: F401
     APPROVED_NOT_READY_TOAST,
+    APPROVED_OPEN_ACTION,
     APPROVED_TOAST,
     APPROVED_TOAST_ACTION,
     approval_notice,
@@ -241,6 +242,16 @@ class GalleryState(rx.State):
                 action={
                     "label": APPROVED_TOAST_ACTION,
                     "on_click": rx.redirect(f"/planner?post={post_id}"),
+                },
+            )
+        elif notice.offer_open:
+            # m-24842981 (finding 8): its final is being made or could not be ordered —
+            # the publication's own page says when it is ready and offers to try again.
+            yield getattr(rx.toast, notice.kind)(
+                notice.text,
+                action={
+                    "label": APPROVED_OPEN_ACTION,
+                    "on_click": rx.redirect(f"/drafts/{post_id}"),
                 },
             )
         else:

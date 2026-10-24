@@ -446,7 +446,10 @@ async def test_an_approval_that_lands_says_so(monkeypatch: pytest.MonkeyPatch) -
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
     assert approved == [(_TENANT_ID, _ANGLE_ID, _USER_ID)]
     assert state.error == "" and state.outcome_message == ""
-    assert len(yielded) == 1 and "Pieza aprobada." in str(yielded[0])
+    # m-24842981: the gallery's words, never «Pieza aprobada.»
+    toast = str(yielded[0])
+    assert len(yielded) == 1 and "Publicación aprobada. Ahora elige cuándo sale." in toast
+    assert "Pieza aprobada." not in toast and "Ver publicación" not in toast
 
 
 async def test_an_approval_whose_final_is_rendering_says_so(
@@ -465,6 +468,9 @@ async def test_an_approval_whose_final_is_rendering_says_so(
     )
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
     assert len(yielded) == 1 and "preparando el video en alta calidad" in str(yielded[0])
+    # m-24842981 (finding 8): the toast offers the way to the publication's own page
+    assert "Ver publicación" in str(yielded[0])
+    assert "/drafts/d0000000-0000-4000-8000-000000000001" in str(yielded[0])
 
 
 async def test_an_approval_whose_final_could_not_be_ordered_never_says_approved(
@@ -484,6 +490,7 @@ async def test_an_approval_whose_final_could_not_be_ordered_never_says_approved(
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
     assert len(yielded) == 1 and "reintentarlo" in str(yielded[0])
     assert "Pieza aprobada." not in str(yielded[0])
+    assert "Ver publicación" in str(yielded[0])
 
 
 async def test_regenerate_goes_through_the_service_and_resumes_the_poll(

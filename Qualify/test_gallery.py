@@ -16,6 +16,7 @@ from .planner_vm import (
     CARD_ACTION_REVIEW,
     CARD_ACTION_SCHEDULE,
     CARD_ACTION_VIEW,
+    CARD_ACTION_WAIT,
     CARD_STATES,
     GALLERY_FILTER_ALL,
     GALLERY_LABELS,
@@ -61,6 +62,7 @@ def test_gallery_labels_are_the_five_post_states_and_none_of_the_event_words() -
     assert [label for _value, label in GALLERY_STATE_FILTERS] == [
         "Por revisar",
         "Le falta algo",
+        "Preparando el video final",
         "Lista para programar",
         "Programada",
         "Ya salió",
@@ -120,6 +122,84 @@ def test_waiting_for_review_wins_over_what_else_is_missing() -> None:
     assert card_state("needs_action", waiting_review=False) == CARD_STATES["missing"]
     assert card_state("schedulable", waiting_review=True) == CARD_STATES["ready"]
     assert card_state("nonsense", waiting_review=False) is None
+
+
+def test_an_approved_publication_whose_final_is_being_made_waits_with_the_button_off() -> None:
+    """Review 2026-10-24 (finding 8): approved, its video final still being made — the
+    card says «Preparando el video final» and its one button says the same, disabled
+    (the page renders CARD_ACTION_WAIT as a disabled button). A failed final stays «Le
+    falta algo»: its page offers «Intentar de nuevo». Review still comes first."""
+    assert (
+        card_state("needs_action", waiting_review=False, final_rendering=True)
+        == (CARD_STATES["preparing"])
+    )
+    assert (
+        card_state("needs_action", waiting_review=True, final_rendering=True)
+        == (CARD_STATES["review"])
+    )
+    post = _post(
+        "w",
+        state="needs_action",
+        approval="approved",
+        lifecycle_status="approved",
+        final_rendering=True,
+    )
+    assert (post.card_state, post.card_label, post.card_action, post.card_action_label) == (
+        "preparing",
+        "Preparando el video final",
+        CARD_ACTION_WAIT,
+        "Preparando el video final",
+    )
+    assert post.gallery_label == "Preparando el video final"  # the drawer pill too
+
+
+def test_the_gallery_card_disables_the_button_while_the_final_is_made() -> None:
+    from . import creative_pages
+    from .test_campaigns_ui import _PostVar
+
+    rendered = str(creative_pages._gallery_card(_PostVar))
+    assert CARD_ACTION_WAIT in rendered and "disabled:true" in rendered.replace(" ", "")
+
+
+def test_the_gallery_asks_for_the_final_only_of_posts_held_by_a_preview(monkeypatch) -> None:
+    """`load_gallery` reads the final's state (the final poll's light read) only for a
+    post the gate holds as «still a preview», and a failed read leaves the card alone."""
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from qualify_api.planner.post_reader import UnpublishableReason
+    from qualify_api.planner.publishable import REASON_TEXT
+
+    from . import planner_provider
+    from .creative_vm import video_draft_vm
+
+    pending = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
+    asked: list[UUID] = []
+    answers = {
+        UUID(int=1): video_draft_vm("rendering", None),
+        UUID(int=2): video_draft_vm("failed", None, "x", approved=True),
+    }
+
+    def fake_state(tenant_id, draft_id):  # noqa: ANN001, ANN202
+        asked.append(draft_id)
+        if draft_id == UUID(int=3):
+            raise RuntimeError("db down")
+        return answers.get(draft_id)
+
+    monkeypatch.setattr(planner_provider, "final_video_state", fake_state)
+
+    def post(n: int, reason: str = pending, outputs: tuple = ()):  # noqa: ANN202
+        return SimpleNamespace(post_id=UUID(int=n), unpublishable_reason=reason, outputs=outputs)
+
+    tenant = UUID(int=99)
+    assert planner_provider._final_rendering(tenant, post(1)) is True
+    assert planner_provider._final_rendering(tenant, post(2)) is False  # failed: «Le falta algo»
+    assert planner_provider._final_rendering(tenant, post(3)) is False  # unreadable
+    assert planner_provider._final_rendering(tenant, post(4, "Falta la foto.")) is False
+    by_output = post(5, "", (SimpleNamespace(unpublishable_reason=pending),))
+    answers[UUID(int=5)] = video_draft_vm("rendering", None)
+    assert planner_provider._final_rendering(tenant, by_output) is True
+    assert asked == [UUID(int=1), UUID(int=2), UUID(int=3), UUID(int=5)]
 
 
 def test_on_the_calendar_but_never_out_is_programada_not_ya_salio() -> None:
@@ -460,6 +540,7 @@ async def test_quick_approve_toast_says_not_out_yet_and_offers_elegir_dia_y_hora
     assert gallery_state_module.APPROVED_TOAST == DRAFT_PAGE_TOAST  # one wording, both places
     toast = str(events[0])
     assert "Publicación aprobada. Ahora elige cuándo sale." in toast
+    assert "Ver publicación" not in toast  # nothing to wait for: the way is Tu semana
     # the action button, wired to Tu semana's drawer on this publication
     assert "label='Elegir día y hora'" in toast and '["onClick"]' in toast
     assert f"/planner?post={_QA_POST_ID}" in toast
@@ -539,6 +620,8 @@ async def test_a_quick_approval_whose_final_could_not_be_ordered_says_so(monkeyp
     # m-24842978 merged: a final that could not be ordered holds the publication back,
     # so no day and time is offered even when the grid says it could be planned
     assert "Elegir d" not in toast and "/planner" not in toast
+    # m-24842981 (finding 8): the way to its page, where «Intentar de nuevo» lives
+    assert "label='Ver publicación'" in toast and f"/drafts/{post}" in toast
 
 
 async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
@@ -558,3 +641,5 @@ async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
     toast = str(events[0])
     assert "Estamos preparando el video en alta calidad" in toast and "Ábrela" in toast
     assert "Elegir d" not in toast and "/planner" not in toast
+    # m-24842981 (finding 8): «Ábrela» comes with somewhere to tap
+    assert "label='Ver publicación'" in toast and f"/drafts/{_QA_POST_ID}" in toast
