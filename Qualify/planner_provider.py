@@ -127,7 +127,7 @@ def planner_error_message(exc: Exception) -> str:
     """Operator-facing Spanish for every refusal — what happened and what to do."""
     if isinstance(exc, PostNotSchedulable) and exc.reason:
         # QUA-118 D1: the evaluator's exact reason, the same text the card shows.
-        return f"Ese POST no se puede planificar: {exc.reason}"
+        return f"Esa publicación no se puede programar: {exc.reason}"
     if isinstance(exc, InvalidSeries):
         return SERIES_MESSAGES.get(exc.code, SERIES_UNKNOWN_MESSAGE)
     if isinstance(exc, UnsupportedDestination):
@@ -135,37 +135,39 @@ def planner_error_message(exc: Exception) -> str:
         return exc.reason or "Instagram no publica este contenido en el destino elegido."
     messages: list[tuple[type[Exception], str]] = [
         (NoBrand, "Este negocio todavía no tiene una marca configurada."),
-        (UnknownPost, "Ese POST ya no está disponible. Actualiza la página."),
+        (UnknownPost, "Esa publicación ya no está disponible. Actualiza la página."),
         (
             PostNotSchedulable,
-            "Ese POST no se puede planificar: no está aprobado o no está listo para publicar.",
+            "Esa publicación no se puede programar: no está aprobada o no está lista.",
         ),
         (
             InactiveConnection,
             "La cuenta elegida no está activa. Revísala en Tus redes o elige otra.",
         ),
         (InvalidSchedule, "La fecha y hora deben ser futuras y válidas en tu zona horaria."),
-        (UnknownEvent, "Ese evento ya no existe. Actualiza la página."),
+        (UnknownEvent, "Esa publicación ya no está en el calendario. Actualiza la página."),
         (InvalidTag, "La etiqueta debe tener entre 1 y 40 caracteres."),
         (UnknownTag, "Esa etiqueta ya no existe. Actualiza la página."),
-        (EventNotModifiable, "Ese evento ya no se puede modificar (no está programado)."),
+        (EventNotModifiable, "Esa publicación ya no se puede cambiar porque no está programada."),
         (
             PostNotRejected,
-            "Ese POST ya no está rechazado (quizá se aprobó de nuevo): no se quitó nada.",
+            "Esa publicación ya no está rechazada (quizá se aprobó de nuevo): no se quitó nada.",
         ),
         (
             CreativeInvalidTransition,
-            "Ese POST ya no está en revisión, así que no se puede rechazar. Actualiza la página.",
+            "Esa publicación ya no está en revisión, así que no se puede rechazar. "
+            "Actualiza la página.",
         ),
         (
             EventConflict,
-            "Alguien más modificó este evento al mismo tiempo. Actualiza y vuelve a intentarlo.",
+            "Alguien más cambió esta publicación al mismo tiempo. Actualiza y vuelve a intentarlo.",
         ),
         (
             OutputRequired,
-            "Este POST tiene varias salidas (Reel, feed, historia): elige cuál programar.",
+            "Esta publicación sale en varios formatos (reel, publicación o historia): "
+            "elige cuál programar.",
         ),
-        (UnknownOutput, "Ese POST no tiene esa salida. Actualiza la página."),
+        (UnknownOutput, "Esa publicación no tiene ese formato. Actualiza la página."),
         (UnknownGoal, "Una de las metas elegidas no es válida. Actualiza la página."),
         (
             DuplicateEvent,
@@ -770,7 +772,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
     return EventDetailVM(
         event_id=str(event.id),
         post_id=str(event.post_id),
-        title=post.title if post is not None else "POST no disponible",
+        title=post.title if post is not None else "Publicación no disponible",
         caption_excerpt=post.caption_excerpt if post is not None else "",
         thumbnail_url=(
             (_thumbnail_url(tenant_id, post.thumbnail_url) or "") if post is not None else ""

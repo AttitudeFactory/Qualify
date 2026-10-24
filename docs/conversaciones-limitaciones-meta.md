@@ -47,7 +47,7 @@ Instagram en vivo.
 | 11b | «Visto» del cliente: webhook `messaging_seen` (`entry[].messaging[].read.mid` + `timestamp`) | `webhooks.md:41,211-236` | `parse_messaging_item` → `RemoteRead` → `mark_outbound_read` (toda salida ≤ timestamp pasa a `read`) | Sin webhook en local: no observable aquí | Suscribir `messaging_seen` en el panel (hoy solo `messages` y `mentions`) | Pendiente |
 | 11c | Señales al cliente: `POST /{page-id}/messages` con `sender_action` = `mark_seen` / `typing_on` / `typing_off`, solo con `recipient` | `features/sender-actions.md` | `InstagramDirectSender.send_action`; `service.signal` las ignora si la ventana está cerrada; nunca pasan por el outbox | Se envían al abrir un hilo y mientras se escribe (cada ≥ 6 s) | — | Pendiente |
 | 11d | Lo que Instagram **no** expone: «escribiendo…» del cliente y «entregado» | `webhooks.md` (campos: `messages`, `messaging_postbacks`, `messaging_seen`, `message_reactions`, …) | La UI no muestra typing ajeno ni «entregado»; solo «Enviando» (outbox), «Enviado» (200 de Meta) y «Visto» | — | — | No existe en la API |
-| 11e | Adjuntos: entrada `attachments[].payload.url` (webhook) / `image_data.url`, `video_data.url`, `file_url` (edge); salida `message.attachment.{type,payload.url}` con URL pública — `image` png/jpeg ≤ 8 MB, `audio` aac/m4a/wav/mp4 ≤ 25 MB, `video` mp4/ogg/avi/mov/webm ≤ 25 MB, `file` pdf ≤ 25 MB; sticker `like_heart` sin payload | `webhooks.md:66-77`; `graph-api/reference/message.md:98`; `send-message.md` («Send an image», «Send a heart sticker», «Limitations») | `messages.media_url` guarda la URL CDN entrante; un adjunto saliente se sube a R2 y el sender publica la URL (`/public/media/{token}`, 15 min) **al enviar**; `document` se traduce a `file` en el cable; el corazón va como `media_type = sticker` sin objeto | `QUALIFY_PUBLIC_MEDIA_BASE_URL` apunta al túnel (FastAPI 3000) | Encuestas y ubicación **no existen** en la API de envío de Instagram | Pendiente (ni un adjunto entrante ni uno saliente observados aún) |
+| 11e | Adjuntos: entrada `attachments[].payload.url` (webhook) / `image_data.url`, `video_data.url`, `file_url` (edge); salida `message.attachment.{type,payload.url}` con URL pública — `image` png/jpeg ≤ 8 MB, `audio` aac/m4a/wav/mp4 ≤ 25 MB, `video` mp4/ogg/avi/mov/webm ≤ 25 MB, `file` pdf ≤ 25 MB; sticker `like_heart` sin payload | `webhooks.md:66-77`; `graph-api/reference/message.md:98`; `send-message.md` («Send an image», «Send a heart sticker», «Limitations») | `messages.media_url` guarda la URL CDN entrante; un adjunto saliente se sube a R2 y el sender publica la URL (`/public/media/{token}`, 15 min) **al enviar**; `document` se traduce a `file` en el cable; el corazón va como `media_type = sticker` sin objeto | `QUALIFY_PUBLIC_MEDIA_BASE_URL` apunta al túnel hacia el servidor de `qualify_api` (en local `uvicorn` en el puerto 8010; no a Reflex en el 3000, que no tiene la ruta `/public/media`; ver `.env.example`) | Encuestas y ubicación **no existen** en la API de envío de Instagram | Pendiente (ni un adjunto entrante ni uno saliente observados aún) |
 | 11f | Perfil del contacto: `GET /{IGSID}?fields=name,username,profile_pic` con token de Página; consentimiento implícito al escribir al negocio; la URL de la foto caduca en días | `features/user-profile.md` | `fetch_profile` → `threads.counterpart_name/username/avatar_url/profile_at`; se refresca cada 24 h; cualquier error deja el hilo sin perfil (iniciales) | — | Advanced Access para cuentas sin rol, como el resto | Pendiente |
 | 11g | Tiempos de Graph y envíos ambiguos: httpx espera 5 s por defecto y Meta tarda más en el edge de mensajes con adjuntos y en un envío cuya media descarga de Qualify durante la petición | Observado 2026-10-16: `ReadTimeout` repetidos en `GET /{conversation-id}/messages`; un envío de foto hizo `ReadTimeout`, se reintentó y **llegó dos veces** | Lecturas con 30 s y envíos con 60 s (`READ_TIMEOUT_S`/`SEND_TIMEOUT_S`); un fallo de transporte **después** de enviar la petición (`ReadTimeout`, `RemoteProtocolError`, …) es `is_ambiguous`: el sender lo cierra como `failed` con `send_ambiguous` y no reintenta; la pantalla dice «puede haber salido» y la sincronización muestra el eco si salió | — | La Messenger Platform no admite claves de idempotencia | Verificado el fallo; la mitigación, pendiente de observar |
 | 11h | Sticker `like_heart` por API | `send-message.md` («Send a heart sticker») | `reply_sticker` existe y funciona (POST 200, 2026-10-16) | — | En la app de la persona llega como un **corazón blanco**, no el rojo de la app | **Verificado**; por eso el botón ❤️ envía el emoji como texto (`HEART_TEXT`) |
@@ -313,3 +313,180 @@ Prueba en local contra la API real de Meta, con la conexión de `@rauldevgames` 
 6. **Desplegar el arreglo del tiempo de espera** de `replies/client.py` antes de encender `public_notice`.
 7. **Acceso Standard:** todo lo anterior funciona solo con personas con rol en la app. Para clientes reales hace falta Advanced Access y App Review de esos permisos (QUA-140, QUA-142).
 
+
+## 8. Preguntas iniciales, botones y respuestas rápidas (m-24789472, PR 2)
+
+> §8, §9 y §10 son el detalle de cada fase de m-24789472. La tabla consolidada de las cuatro
+> herramientas (criterio R3 del ticket), los requisitos comunes, el menú persistente y la
+> lista única de pruebas reales pendientes están en **§11**.
+
+Cuando la persona **toca** una opción en vez de escribir, Qualify guarda el mensaje como cualquier otro (el texto es el título de la opción) y además **qué tocó**: `messages.choice_kind` y `messages.choice_payload` (migración 0082). Nada de esto responde solo: la respuesta sigue siendo un borrador que una persona aprueba.
+
+| Vía | Contrato (corpus, **no verificado en vivo**) | Qué hace Qualify |
+| --- | --- | --- |
+| Respuesta rápida | `message` normal con `text` = título y `quick_reply.payload` (`instagram-messaging/features/quick-replies.md`) | Mensaje entrante + `choice_kind = 'quick_reply'` y el payload |
+| Pregunta inicial (Ice Breaker), botón de plantilla, menú persistente | ítem `postback {mid, title, payload}` en `entry[].messaging[]` (`webhooks.md` «Messaging postbacks»). `mid` viene desde Graph v11.0 (`webhooks.md`, tabla de campos; changelog v11.0); el ejemplo de `features/ice-breakers.md` aún lo omite | Mensaje entrante con texto = `title`; el tipo sale del prefijo del payload: `QF_` pregunta inicial, `QFB_` botón, `QFM_` menú, otro = botón (`conversations/choices.py`). Sin `mid`: id sintético `qf-postback:` + sha256(remitente, timestamp, payload, título) |
+| Sincronización (`GET /{conversation-id}/messages`) | El nodo Message (`graph-api/reference/message.md`) **no tiene** campo de postback ni de respuesta rápida. El changelog v11.0 da a entender que el postback sí figura en el historial con el mismo `mid` (por eso Meta añadió `mid` al webhook) | Nunca trae tipo ni payload. Si la sincronización guardó el `mid` antes, el webhook (o su reproducción) completa `choice_kind`/`choice_payload` en la **misma** fila; nunca se duplica ni se reemplaza un par ya guardado |
+
+**Qué debe hacer el fundador antes de una prueba real (R5):**
+
+1. En el panel de la app, webhooks de **Instagram**: suscribir el campo **`messaging_postbacks`** (`features/ice-breakers.md`: «subscribe your app to the `messaging_postbacks` webhook under the Instagram topic»). Sin esto, las preguntas iniciales y los botones no llegan; las respuestas rápidas sí (van por `messages`). No es un campo de Página: `connections/page_subscription.py` no lo cambia.
+2. Configurar preguntas iniciales con payload `QF_*` (PR 3 lo hará desde Qualify; mientras tanto, a mano por la API de Ice Breakers).
+3. Un tester toca una pregunta inicial desde el teléfono (no existen en escritorio): comprobar que llega con `mid`, que el hilo muestra el mensaje y en la base `choice_kind = 'ice_breaker'`. Pegar aquí la fecha y la forma observada (sin tokens ni textos de usuario).
+4. Comprobar en la sincronización si el postback figura en `GET /{conversation-id}/messages` y con qué `message`: es la parte que el corpus no muestra.
+
+**Reproducir los postbacks que ya llegaron** (quedaron `unsupported` / `not_a_message` en `meta_webhook_events`, se guardan 29 días): `just webhook-requeue-postbacks [--account <ig_id>]` cuenta cuáles volverían (no cambia nada); con `--execute` los devuelve a la cola y el `webhook-worker` los convierte en mensajes, uno por `mid`. Repetirlo no duplica nada.
+
+## 9. Preguntas iniciales (Ice Breakers) por cuenta (m-24789472, PR 3)
+
+Cada cuenta de Instagram tiene sus preguntas iniciales en `conversation_ice_breakers` (migración 0083): el borrador que la persona edita (las cuatro del ticket por defecto, payloads `QF_PRODUCTO`, `QF_PRECIO`, `QF_UBICACION_HORARIO`, `QF_CATALOGO`), lo último publicado, quién lo publicó y la última lectura de vuelta. Código: `conversations/ice_breakers.py` (servicio) y `conversations/ice_breakers_client.py` (Graph). Publicar y quitar son acciones de una persona y están detrás de la capacidad `ice_breakers` (`QUALIFY_ICE_BREAKERS=on`, **por verificar**); editar el borrador funciona sin ella.
+
+| Operación | Contrato (corpus, **no verificado en vivo**) | Qué hace Qualify |
+| --- | --- | --- |
+| Publicar | `POST /{page}/messenger_profile?platform=instagram`, cuerpo `{"platform": "instagram", "ice_breakers": [{"call_to_actions": [{question, payload}], "locale": "default"}]}`, token de Página (`features/ice-breakers.md`); máximo 4; `locale: "default"` obligatorio | Un solo bloque `default`; 60 s de espera; después lee de vuelta |
+| Leer de vuelta | `GET /{page}/messenger_profile?fields=ice_breakers&platform=instagram`. **El corpus se contradice:** `ice-breakers.md` muestra `data` como lista de bloques por idioma; `page/messenger_profile.md`, como un objeto por propiedad (`[{"ice_breakers": [...]}]`) | Acepta las dos formas; guarda la lectura con `shape_version` `ig-ice-breakers-messenger-profile-0.1.0` |
+| Quitar | `DELETE /{page}/messenger_profile?platform=instagram` con cuerpo `{"fields": ["ice_breakers"]}` | El borrador se conserva; lee de vuelta |
+| Límite | 10 llamadas cada 10 minutos por Página (`messenger_profile.md`) | Publicar = 2 llamadas; si Meta lo frena, `rate_limited` y un mensaje para esperar |
+| Largo de la pregunta | El corpus no lo dice | 80 caracteres, provisional (el de WhatsApp) |
+
+`{page}` es el `linked_page_id` de la conexión (con un token de Página, `me` es la misma Página). Errores: solo códigos (`last_error_code`: `auth_expired`, `permission_missing`, `rate_limited`, `meta_unavailable`, `ambiguous`, `rejected`, `unexpected_response`, `connection_unavailable`, `unexpected`; `last_error_detail`: `http_<estado>_code_<código>`); la base los restringe a `[a-z0-9_]`, nunca guarda el texto de Meta. Un fallo ambiguo (la petición pudo llegar) se resuelve leyendo de vuelta.
+
+**Prueba real pendiente (R6):** con `QUALIFY_ICE_BREAKERS=on` y un tester, publicar las cuatro desde Qualify, comprobar en el teléfono (no existen en escritorio) que aparecen, anotar aquí qué forma devolvió el `GET` y qué permiso pidió Meta (`pages_messaging` o `instagram_manage_messages`), medir el largo máximo de una pregunta, tocar una y ver que llega a Conversaciones como pregunta inicial (§8), y luego quitarlas. Sin tokens ni textos de usuario en las notas.
+
+## 10. Respuestas rápidas y mensajes con botones (m-24789472, fase 3)
+
+Una persona del negocio puede enviar, siempre con su aprobación y con la ventana de 24 h abierta, un mensaje con **respuestas rápidas** (opciones para tocar debajo del texto) o un **mensaje con botones** (plantilla de botones). Código: `conversations/interactive.py` (validación y forma del cuerpo), `InstagramDirectSender.build_payload(..., quick_replies=)` y `build_button_template_payload`, `ConversationService.reply_text(..., quick_replies=)` y `reply_buttons`. Las plantillas de la biblioteca pueden llevar botones (`conversation_reply_templates.buttons`, migración 0084).
+
+| Qué | Contrato (corpus, **no verificado en vivo**) | Qué hace Qualify |
+| --- | --- | --- |
+| Respuestas rápidas | `message.quick_replies: [{content_type: "text", title, payload}]` junto a `message.text` (`features/quick-replies.md`); máximo 13, título de hasta 20 caracteres («before being truncated»); `{content_type: "user_phone_number"}` sin título; solo en el teléfono, desaparecen al tocar una | Rechaza 14 o más, títulos de 21 o más, repetidos o vacíos; payload por defecto `QR_<título>`; `user_email` no figura en el corpus de Instagram y no se ofrece. En una respuesta larga que se parte en varios mensajes, van **solo en el último** |
+| Mensaje con botones | `message.attachment = {type: "template", payload: {template_type: "button", text (≤ 640), buttons (1–3)}}`; botón `postback {title, payload}` o `web_url {url, title}` (`button-template.md`); no existe en la versión web | Nunca se parte: más de 640 caracteres se rechaza. Payload `QFB_…` (el toque llega como botón, §8); enlaces solo `https://`; título de botón de hasta 20 caracteres |
+| Eco del envío | El eco de una plantilla no trae `text` (forma tomada del cuerpo enviado) | El webhook toma el texto de `attachments[0].payload.text` y guarda `media_type = 'interactive'` |
+| Plantilla genérica (carrusel, ≤ 10 elementos) | `generic-template.md` | **Fuera de alcance**: necesita una imagen por elemento y ninguna pantalla la pide todavía |
+
+Las dos están detrás de capacidades **por verificar** y apagadas por defecto: `quick_replies` (`QUALIFY_QUICK_REPLIES=on`) y `structured_templates` (`QUALIFY_STRUCTURED_TEMPLATES=on`). Con la capacidad apagada, el servicio rechaza el envío con «no disponible todavía» antes de escribir nada, y el `conversations-worker` vuelve a mirarla antes de llamar a Meta: una fila ya en cola queda `failed` con `quick_replies_disabled` / `structured_templates_disabled`.
+
+**Pruebas reales pendientes:**
+
+- **R7 (respuestas rápidas):** con `QUALIFY_QUICK_REPLIES=on` y un tester, enviar un mensaje con tres respuestas rápidas y una de teléfono; comprobar en el teléfono que aparecen, que un título de 20 caracteres no se corta, y que al tocar una llega a Conversaciones como «Respuesta rápida: …» con su payload `QR_…` (§8). Anotar aquí la respuesta de `POST /messages`.
+- **R8 (mensaje con botones):** con `QUALIFY_STRUCTURED_TEMPLATES=on` (y `messaging_postbacks` suscrito, §8), enviar un texto con un botón de enlace y dos `postback`; comprobar que se ven en el teléfono, que el enlace abre, que un toque llega como «Botón: …» con su `QFB_…`, y qué forma trae el eco (y la sincronización) del mensaje enviado. Sin tokens ni textos de usuario en las notas.
+
+## 11. m-24789472 — las cuatro herramientas (criterio R3)
+
+**Estado: 2026-10-23.** Todo lo construido está en la rama `feat/m-24789472-ice-breakers-quick-replies` (la biblioteca de plantillas de texto, PR 1, ya está en `main`). **Nada de m-24789472 se ha probado todavía contra Instagram en vivo**: lo único verificado que usa esta sección es lo que ya se verificó antes (el DM de texto normal, QUA-226, §2 fila 10; la suscripción de la Página, §7 R3). El resto es el contrato del corpus, y cada fila lo dice.
+
+Rutas del corpus: `IGM/` = `reference/meta-instagram-platform/documentation/business-messaging/instagram-messaging/`; `GAPI/` = `reference/meta-instagram-platform/docs/graph-api/`.
+
+### 11.1 La tabla
+
+| | Plantillas de mensajes (texto / con botones) | Preguntas iniciales (Ice Breakers) | Respuestas rápidas (Quick Replies) | Menú persistente |
+| --- | --- | --- | --- | --- |
+| **Para qué sirve** | Que el **negocio** responda más rápido con textos, o mensajes con botones, ya preparados | Que la **persona** empiece el chat tocando una pregunta | Que la **persona** conteste tocando una opción bajo un mensaje del negocio | Accesos fijos (horario, catálogo, web…) siempre visibles en el chat |
+| **Quién la usa** | La persona del negocio, en el redactor de Conversaciones | Quien abre el chat con la cuenta | Quien recibe el mensaje del negocio | Quien está en el chat |
+| **Qué permite la API** | **Texto:** no hay API de respuestas guardadas: `GET`/`POST /{page-id}/saved_message_responses` se retiraron el 2019-04-30 (`GAPI/changelog/4-30-2019-endpoint-deprecations.md:245,269`), así que la biblioteca vive en Qualify. **Con botones:** *button template*, texto ≤ 640 caracteres UTF-8 y 1–3 botones `postback` o `web_url` (`IGM/button-template.md`, «Properties»); el corpus no da largo para el título del botón. **Genérica:** ≤ 10 elementos, título y subtítulo ≤ 80, ≤ 3 botones por elemento (`IGM/generic-template.md`). **Producto:** solo con productos de un catálogo de Meta y el token de la Página dueña de ese catálogo (`IGM/features/product-template.md`) | `POST`/`GET`/`DELETE /{page}/messenger_profile?platform=instagram`, token de Página; **máximo 4** preguntas por idioma; bloque `locale: "default"` obligatorio (`IGM/features/ice-breakers.md`). 10 llamadas cada 10 min por Página, compartidas con todo `messenger_profile` (`GAPI/reference/page/messenger_profile.md:135`). **Largo de la pregunta: no documentado** | **Máximo 13** por mensaje, título de hasta 20 caracteres «before being truncated», solo texto; `content_type: "user_phone_number"` precarga el teléfono del perfil y no se muestra si el perfil no lo tiene (`IGM/features/quick-replies.md`). El corpus de Instagram **no** documenta `user_email` | `messenger_profile` con la propiedad `persistent_menu`: botones `web_url` y `postback`, un bloque por idioma con `default`; no admite `composer_input_disabled` ni `webview_height_ratio`; Meta **recomienda** ≤ 5 elementos (buena práctica, no un límite de la API) (`IGM/features/persistent-menu.md`) |
+| **Condiciones de Meta** | Todo mensaje del negocio requiere la ventana de 24 h abierta (`IGM/overview.md`, «How it works»); Instagram no tiene plantillas aprobadas como WhatsApp para escribir fuera de ella. Botones y genérica: no existen en la versión web | Solo en el teléfono: «not available on desktop» (`ice-breakers.md`, «Limitations»). **Cuándo** aparecen (solo en un chat nuevo o también con historial): el corpus no lo dice | Solo en el teléfono («not available on desktop»); desaparecen al tocar una; el título tocado se publica en el chat como mensaje de la persona (`quick-replies.md`) | App de Instagram v226 o superior en iOS/Android; **no se actualiza en tiempo real**: las conversaciones abiertas no ven el menú nuevo hasta refrescar la bandeja; **no se personaliza por persona** (`persistent-menu.md`, «Limitations», «Requirements») |
+| **Evento que llega** | La respuesta de la persona: `messages` (texto) o, si toca un botón `postback`, `messaging_postbacks` (`button-template.md`, «Postback button»). Un botón `web_url` no avisa | Ítem `postback {title, payload}` bajo el campo `messaging_postbacks` del tema Instagram (`ice-breakers.md`, «Webhook event»); con `mid` desde Graph v11.0 (`IGM/webhooks.md:40`). **El corpus se contradice:** `webhooks.md:39` también pone «Icebreaker option» entre lo que dispara `messages` | `messages` con `text` = título y `quick_reply.payload` (`quick-replies.md`). El ejemplo de la respuesta de teléfono trae `"object": "page"`, no `instagram`: anotarlo en la prueba | `postback` al tocar un elemento, y «the standard messaging window opens»: 24 h para responder (`persistent-menu.md`, «How it works») |
+| **Qué construyó Qualify** | **Texto** (PR 1, en `main`): `conversations/templates.py` + migración 0079 — biblioteca por cuenta, 4 por defecto sembradas una sola vez, variables `{nombre}`/`{marca}`, título ≤ 60, cuerpo ≤ 1000 (un DM), ≤ 50 por cuenta; sale por `ConversationService.reply_text` con `HumanApproval` (`service.py:346`). **Con botones** (fase 3): `conversation_reply_templates.buttons` (0084), `conversations/interactive.py` (límites en `:46-52`; título de botón ≤ 20, **elegido por Qualify**, provisional), `reply_buttons` (`service.py:389`), payload `QFB_…`. **Genérica y producto:** no | `conversations/ice_breakers.py` (servicio: borrador, publicado, lectura de vuelta), `conversations/ice_breakers_client.py` (Graph), migración 0083, panel «Preguntas iniciales» en la cabecera de Conversaciones (`Qualify/ice_breakers_panel.py`); payloads `QF_PRODUCTO`, `QF_PRECIO`, `QF_UBICACION_HORARIO`, `QF_CATALOGO` (`choices.py:77-82`); largo **80 caracteres, provisional** (`ice_breakers.py:94`, tomado de WhatsApp). Capacidad `ice_breakers`. Recepción: `webhook.parse_postback` (`webhook.py:219`) → mensaje entrante con `choice_kind = 'ice_breaker'` (0082) | `interactive.py` (≤ 13, título ≤ 20, sin repetidos; `user_phone_number`; payload por defecto `QR_<título>`), `InstagramDirectSender.build_payload(..., quick_replies=)`, `reply_text(..., quick_replies=)`, redactor de Conversaciones; en una respuesta partida van solo en el último mensaje. Capacidad `quick_replies`. Recepción: `webhook._quick_reply_payload` (`webhook.py:203`) → `choice_kind = 'quick_reply'` | **Solo la recepción:** un payload `QFM_…` llega como `choice_kind = 'menu'` y el hilo lo etiqueta (`choices.py:54`, `choices.postback_kind`). No hay configuración, ni cliente, ni pantalla, ni capacidad (§11.5) |
+| **Estado** | Texto: **Verificado** (la biblioteca no llama a Meta; la vía de envío es el DM de texto verificado en QUA-226). Con botones: **Por verificar** (R8). Genérica: **No implementado en Qualify** (fuera de alcance, §10). Producto: **No implementado en Qualify**, y el catálogo propio de Qualify no sirve: hace falta un catálogo de Meta | Publicar, leer y quitar: **Por verificar** (R6). Toque: **Por verificar** (R5) y **Configuración pendiente** mientras `messaging_postbacks` no esté marcado en el panel | **Por verificar** (R7). No necesita suscripción nueva: llega por `messages` | Configurarlo: **No implementado en Qualify** (opcional en el ticket). Recepción: **Por verificar** |
+
+**Lo que Qualify hace con cualquier toque:** lo guarda como un mensaje entrante con su texto (el título) y además **qué tocó** (`messages.choice_kind`/`choice_payload`); el hilo lo muestra con su origen («Pregunta inicial: Precio», «Respuesta rápida: Sí», «Botón: Ver catálogo»; `choices.choice_label`), y el payload orienta el borrador de `suggest.py` (`choices.choice_context`). **Nada responde solo:** la respuesta sigue siendo un borrador que una persona aprueba. Un toque cuenta como mensaje de la persona y mueve `last_inbound_at`, la base de la ventana de 24 h en Qualify; que Meta abra la ventana con un toque solo está documentado para el menú persistente, y para preguntas iniciales y botones es una de las pruebas (R5, R8).
+
+### 11.2 Qué se promete y qué no
+
+**Se promete (entrega base B1–B6, sin depender de Meta):** biblioteca de plantillas de texto por cuenta usable desde el redactor; las 4 preguntas iniciales por cuenta (por defecto, edición, validación, persistencia) con su cliente de `messenger_profile` probado contra el contrato; respuestas rápidas y mensajes con botones detrás de sus capacidades; los toques crean o completan el hilo sin duplicar; nada sale sin aprobación humana; aislamiento por tenant.
+
+**No se promete** (lista del ticket):
+
+- más de 4 preguntas iniciales;
+- preguntas o menús distintos por persona;
+- que se vean en escritorio;
+- escribir fuera de la ventana de 24 h;
+- importar las «respuestas guardadas» de la app de Instagram (no hay API desde 2019);
+- usar el catálogo de Qualify como plantilla de producto de Meta.
+
+Tampoco entra (fuera de alcance del ticket): respuestas automáticas a cualquier opción, plantillas por sector o generadas con IA, otros canales.
+
+### 11.3 Requisitos comunes
+
+| Requisito | Para qué | Estado |
+| --- | --- | --- |
+| Token de Página con `instagram_manage_messages` (fork Facebook Login, ADR 25) | Enviar respuestas rápidas y botones, y leer DMs. Para recibir webhooks, además `instagram_basic` y `pages_manage_metadata`, y la app publicada (`IGM/webhooks.md`, «Requirements») | **Verificado** con acceso Standard (§2 fila 1). Qué permiso exige `messenger_profile` para las preguntas iniciales (`pages_messaging` o `instagram_manage_messages`) **no lo dice el corpus**: se anota en R6 |
+| Campos de webhook `messages` **y** `messaging_postbacks` | `messages` trae texto y respuestas rápidas; `messaging_postbacks`, los toques en preguntas iniciales, botones y menú | `messages`: suscrito. **`messaging_postbacks` se marca en el panel de la app → Webhooks → Instagram** (`ice-breakers.md`: «subscribe your app to the `messaging_postbacks` webhook under the Instagram topic»). **No es un campo de Página:** `connections/page_subscription.py` solo envía `subscribed_fields=messages` y no lo cambia. **Configuración pendiente** hasta confirmarlo marcado (el 2026-10-16 el panel tenía `messages` y `mentions`, §2 fila 11b) |
+| Página suscrita a la app (`POST /{page-id}/subscribed_apps`, QUA-129) | Sin ella Meta rechaza todo DM normal con `(#10)` subcódigo 2534022 y no llegan webhooks de mensajes (§7, R3 del 2026-10-22) | **Construido** (m-24789549): Qualify lo hace al conectar o reconectar; cada intento queda en `connection_events` |
+| Acceso Standard = solo personas con rol en la app (QUA-140) | Todas las pruebas de abajo se hacen con un tester con rol | Para clientes reales: Advanced Access de `instagram_manage_messages` (QUA-140, QUA-142) |
+| Toques solo por webhook | La sincronización (`GET /{conversation-id}/messages`) no trae tipo ni payload (§8): el `webhook-worker` tiene que estar recibiendo los webhooks de la app (el callback del panel) | En local no hay webhook (§2 fila 11b): las pruebas de toques se hacen donde llega el callback |
+
+### 11.4 Capacidades y su estado
+
+Un solo registro para todo el despliegue (`packages/api/src/qualify_api/followups/capabilities.py:113-135`). Se enciende con la variable exactamente en `on`; apagadas por defecto. Cambiar el estado es un cambio de código con su evidencia en este documento, nunca un ajuste.
+
+| Capacidad | Variable | Estado | Qué pasa apagada |
+| --- | --- | --- | --- |
+| `ice_breakers`: publicar y quitar las preguntas iniciales de una cuenta | `QUALIFY_ICE_BREAKERS` | **Por verificar** (R6), apagada | Editar y guardar el borrador funciona; publicar y quitar responden «no disponible todavía» (`IceBreakerUnavailable`) sin llamar a Meta |
+| `quick_replies`: respuestas rápidas bajo un DM | `QUALIFY_QUICK_REPLIES` | **Por verificar** (R7), apagada | El servicio rechaza el envío antes de escribir nada; una fila ya en cola queda `failed` con `quick_replies_disabled` (`sender.py:73,215`) |
+| `structured_templates`: DM como plantilla de botones | `QUALIFY_STRUCTURED_TEMPLATES` | **Por verificar** (R8), apagada | Igual, con `structured_templates_disabled` (`sender.py:74,218`) |
+
+La biblioteca de plantillas de **texto** no tiene capacidad: no llama a Meta y sale como un DM normal, verificado. Recibir toques tampoco: el handler siempre está activo y solo guarda.
+
+### 11.5 Menú persistente: documentado, no construido
+
+**Por qué no se construyó:**
+
+- El ticket lo deja **opcional** («Si el resto está entregado, configurar hasta 3-5 accesos…») y el resto todavía espera sus pruebas reales (§11.6).
+- **No se actualiza en las conversaciones abiertas** hasta que la persona refresca la bandeja (`persistent-menu.md`, «Limitations»): un cambio desde Qualify no se vería enseguida, y la app tiene que tolerar toques de elementos que ya no existen.
+- **No es por persona** (no se personaliza por PSID): es un único menú por cuenta e idioma.
+
+**Lo que ya funciona sin construirlo:** si alguien configura el menú por otra vía (la API a mano) con payloads que empiezan por `QFM_`, el toque llega como `postback`, se guarda como mensaje entrante con `choice_kind = 'menu'` y el hilo lo etiqueta como menú (`conversations/choices.py:54`, `choices.postback_kind`). Un payload sin ese prefijo se trata como botón. Necesita `messaging_postbacks` marcado, como las preguntas iniciales.
+
+**Qué haría falta para construirlo** (orden de trabajo, no compromiso):
+
+1. Una tabla por cuenta con `tenant_id` + RLS, como `conversation_ice_breakers` (0083): borrador, lo publicado, quién lo publicó, la última lectura de vuelta. La revisión la escribe backend-engineer, numerada sobre la cabeza de `main`.
+2. Extender el cliente de `messenger_profile` (`ice_breakers_client.py`) con `persistent_menu`: mismo endpoint y mismo token. Según `messenger_profile.md`, un `POST` solo sobrescribe las propiedades que lleva el cuerpo, así que no pisaría las preguntas iniciales; comprobarlo en vivo. Comparte con ellas el límite de 10 llamadas cada 10 min por Página.
+3. Validación: `postback` con `QFM_…` y `web_url` solo `https://`; tope de 5 (el que recomienda Meta, provisional); largo del título sin documentar en el corpus de Instagram, provisional.
+4. Una capacidad `persistent_menu` en el registro, `to_verify` y apagada, y un panel junto al de «Preguntas iniciales».
+5. Una prueba real: publicar, ver cuánto tarda en aparecer en un chat abierto y en uno nuevo, tocar un elemento y comprobar la ventana de 24 h.
+
+### 11.6 Pruebas reales pendientes
+
+Numeración: R5–R8 son las de §8–§10. En el ticket, **R1** = preguntas iniciales publicadas, vistas en el teléfono y con su evento real (R5 + R6); **R2** = respuestas rápidas y botones enviados y la respuesta recibida (R7 + R8); **R3** = esta sección.
+
+**Qué anotar en cada prueba** (aquí, junto a su casilla): fecha y hora UTC; cuenta usada; por dónde llegó (webhook o sincronización); código HTTP y código/subcódigo de Meta; la **forma** observada (claves y tipos, no valores); el estado resultante en la base (`choice_kind`, `delivery_status`, `last_error_code`). **Nunca** tokens, textos de la persona ni números de teléfono. Con una prueba en verde, el estado de la capacidad pasa a `verified` en `followups/capabilities.py` en el mismo PR que la evidencia.
+
+**P0 — Preparación (una vez).** Estado: **pendiente**.
+
+- [ ] Cuenta conectada `qualifymkt.co` o `@rauldevgames`, reconectada con `instagram_manage_messages`, `pages_messaging` y `pages_manage_metadata`; en `connection_events`, un `page_subscribed` reciente.
+- [ ] Panel de la app → Webhooks → Instagram: `messages` **y** `messaging_postbacks` marcados.
+- [ ] Un tester con rol en la app, con la app de Instagram en el **teléfono** (iOS o Android; nada de esto existe en escritorio ni en la web).
+- [ ] App, `conversations-worker` y `webhook-worker` corriendo donde llega el callback, con `QUALIFY_ICE_BREAKERS=on`, `QUALIFY_QUICK_REPLIES=on` y `QUALIFY_STRUCTURED_TEMPLATES=on` **solo para la prueba**. En local, siempre `--tenant <uuid>`.
+
+**R6 — Publicar las preguntas iniciales** (ticket R1). Estado: **pendiente**.
+
+- [ ] Conversaciones → elegir la cuenta → «Preguntas iniciales» → publicar las cuatro por defecto. Anotar: estado final (publicado, o error con su código), qué forma devolvió la lectura de vuelta (`GET`: lista de bloques por idioma u objeto por propiedad, §9) y si Meta pidió algún permiso.
+- [ ] En el teléfono del tester: abrir un chat **nuevo** con la cuenta (sin historial) y otro **con historial**. Anotar en cuál aparecen y si hizo falta refrescar la bandeja. Confirmar que no aparecen en escritorio.
+- [ ] Largo: editar una pregunta con 40, 60 y 80 caracteres, publicarla y anotar si se ve completa o cortada. Probar más de 80 exige una llamada directa a la API fuera de Qualify (el validador lo rechaza); si se hace, anotar el resultado y ajustar `MAX_QUESTION_CHARS`.
+- [ ] Quitar las preguntas desde el panel: la lectura de vuelta queda vacía y desaparecen del teléfono (anotar cuánto tardan).
+
+**R5 — Tocar una pregunta inicial** (ticket R1). Estado: **pendiente**.
+
+- [ ] El tester toca «¿Quieres consultar un precio?». Anotar: si llegó el webhook, bajo qué campo (`messaging_postbacks` o `messages`: el corpus se contradice), si trae `mid`, y que el hilo muestra «Pregunta inicial: Precio» con `choice_kind = 'ice_breaker'` y `choice_payload = 'QF_PRECIO'`.
+- [ ] Ventana de 24 h: con un tester que **no** escribió en las últimas 24 h, que solo toque la pregunta; aprobar una respuesta y correr `just conversations-tick --tenant <uuid>`. `sent` = el toque abre la ventana; `(#10)` subcódigo 2534022 = no la abre (limitación de Meta, y Qualify tendría que dejar de contar el toque para la ventana).
+- [ ] Sincronización: `just conversations-tick --tenant <uuid> --sync`; anotar si el toque aparece en `GET /{conversation-id}/messages`, con qué `mid` y qué texto, y comprobar que el mensaje no se duplica.
+- [ ] Si había postbacks guardados de antes: `just webhook-requeue-postbacks --account <ig_id>` (solo cuenta, no cambia nada) y luego con `--execute`; repetirlo no debe duplicar.
+
+**R7 — Respuestas rápidas** (ticket R2). Estado: **pendiente**.
+
+- [ ] Desde el redactor, aprobar un mensaje con tres respuestas rápidas (una con un título de exactamente 20 caracteres) y una de teléfono; correr el tick. Anotar la respuesta de `POST /messages` (HTTP, `message_id`).
+- [ ] En el teléfono: aparecen las cuatro, el título de 20 no se corta, la de teléfono aparece solo si el perfil del tester tiene uno; no se ven en escritorio.
+- [ ] El tester toca una de texto: llega por `messages` con `quick_reply.payload` = `QR_…`, el hilo dice «Respuesta rápida: …» y las opciones desaparecen. Tocar la de teléfono: anotar el `object` de la entrega (`instagram`, o `page` como el ejemplo del corpus) y la forma, **sin** el número.
+- [ ] Anotar la forma del eco del mensaje enviado (webhook con `is_echo`) y la de la sincronización.
+
+**R8 — Mensaje con botones** (ticket R2). Estado: **pendiente**.
+
+- [ ] Aprobar un mensaje con un botón de enlace (`https://`) y dos `postback` (desde una plantilla con botones de la biblioteca o desde el redactor); correr el tick. Anotar la respuesta de `POST /messages`.
+- [ ] En el teléfono: se ven los tres botones (no en la web) y el enlace abre en el navegador de la app.
+- [ ] El tester toca un `postback`: llega como `postback` (anotar el campo y si trae `mid`), el hilo dice «Botón: …» con `choice_kind = 'button'` y el `QFB_…`. Repetir con un botón la prueba de la ventana de 24 h de R5.
+- [ ] Anotar la forma del eco (Qualify toma el texto de `attachments[0].payload.text`, §10) y si la sincronización lo trae, y cómo.
+
+**Menú persistente (opcional, no construido).** Estado: **pendiente**.
+
+- [ ] Solo si se decide construirlo o probarlo a mano: configurar dos elementos por la API (`postback` `QFM_HORARIO` y un `web_url`), tocar el `postback` desde el teléfono y comprobar que llega como menú; anotar cuánto tarda en aparecer en un chat abierto y en uno nuevo, y si las preguntas iniciales siguen publicadas después del `POST`.

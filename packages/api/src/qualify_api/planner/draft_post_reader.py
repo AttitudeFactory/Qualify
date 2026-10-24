@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.creative import models as creative
+from qualify_api.creative.draft_mode import draft_pending
 from qualify_api.creative.retention import Retention, retention_of
 from qualify_api.planner.fsm import EventStatus
 from qualify_api.planner.models import CalendarEvent
@@ -135,6 +136,7 @@ def _candidate(
                 output_port=image.output_port,
                 width=image.width,
                 height=image.height,
+                draft_pending=draft_pending(image.params),
             )
             for image in images
         ),

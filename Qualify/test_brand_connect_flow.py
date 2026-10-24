@@ -384,8 +384,10 @@ def test_the_walk_never_leaves_the_flow() -> None:
 def test_apply_phase_fills_the_phase_and_explains_a_failed_empty_one() -> None:
     state = _state()
     card = {"handle": "@x", "network": "TikTok", "followers": "12K", "likes": "", "url": "u"}
-    state._apply_phase({"key": "local", "title": "Referentes en Cúcuta", "accounts": [card]})
-    assert state.local_title == "Referentes en Cúcuta"
+    state._apply_phase(
+        {"key": "local", "title": "Negocios parecidos al tuyo en Cúcuta", "accounts": [card]}
+    )
+    assert state.local_title == "Negocios parecidos al tuyo en Cúcuta"
     # `_apply_phase` adds the backend path of the card's picture (2026-09-14) and the
     # keys the AI review writes, empty for a card stored before it (2026-09-25)
     assert state.local_accounts == [
@@ -421,7 +423,7 @@ def test_sorting_goes_category_by_category_and_a_failed_one_never_blocks() -> No
         sector_accounts=[a],
         national_note="No pudimos completar esta búsqueda ahora. Inténtalo más tarde.",
         local_accounts=[b],
-        local_title="Referentes en Cúcuta",
+        local_title="Negocios parecidos al tuyo en Cúcuta",
     )
     assert state.stage_key == "sector" and state.stage_label == "Categoría 1 de 3"
     assert [x["handle"] for x in state.stage_pool] == ["@a"]
@@ -436,7 +438,7 @@ def test_sorting_goes_category_by_category_and_a_failed_one_never_blocks() -> No
 
     BrandConnectState.next_sort_stage.fn(state)
     assert state.stage_key == "local" and state.is_last_stage
-    assert state.stage_title == "Referentes en Cúcuta"
+    assert state.stage_title == "Negocios parecidos al tuyo en Cúcuta"
     assert [x["handle"] for x in state.stage_pool] == ["@b"]
     BrandConnectState.next_sort_stage.fn(state)  # clamped
     assert state.sort_stage == 2

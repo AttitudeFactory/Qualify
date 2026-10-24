@@ -37,6 +37,7 @@ from qualify_api.whatsapp.client import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .nav_url import push_url_script
 from .tenant import tenant_uuid
 from .whatsapp_provider import (
     UnknownWhatsAppNumber,
@@ -63,6 +64,7 @@ from .whatsapp_vm import (
     compose_qr_message,
     graph_error_notice,
     resolve_tab,
+    tab_url,
     validate_profile_form,
 )
 
@@ -241,10 +243,16 @@ class WhatsAppState(rx.State):
         return WhatsAppState.load_numbers
 
     @rx.event
-    def select_tab(self, tab: str | list[str]) -> None:
-        """`on_change` of the tab strip (a segmented control: `str | list[str]`)."""
-        if isinstance(tab, str) and tab in TAB_KEYS:
-            self.active_tab = tab
+    def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:
+        """`on_change` of the tab strip (a segmented control: `str | list[str]`).
+
+        N5 (m-24842960): the tab is written to the address (`?tab=`) as a new history
+        step, so «atrás» returns to the previous tab and reloading keeps this one;
+        `enter_page` reads it back on either."""
+        if not isinstance(tab, str) or tab not in TAB_KEYS:
+            return None
+        self.active_tab = tab
+        return rx.call_script(push_url_script(tab_url(tab)))
 
     @rx.event
     def select_connection(self, connection_id: str) -> None:

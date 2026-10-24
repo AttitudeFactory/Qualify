@@ -59,6 +59,8 @@ from .planner_vm import (
     STEP_LAST,
     STEP_POST,
     STEP_WHEN,
+    SUBMIT_ASSIGN,
+    SUBMIT_RESCHEDULE,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
     VIEW_LIST,
@@ -75,6 +77,9 @@ from .planner_vm import (
     assign_steps_done,
     build_plan_row,
     campaign_value,
+    join_es,
+    now_slot,
+    scheduled_message,
     split_time,
     timezone_options,
     tz_option,
@@ -108,6 +113,9 @@ _SCROLL_TO_OPENING_HOUR = (
     "}, 60)"
 )
 MODE_RESCHEDULE = "reschedule"
+# m-24842985: `/planner?post=<id>&cuando=ahora` opens the drawer on «Ahora».
+URL_WHEN = "cuando"
+URL_WHEN_NOW = "ahora"
 
 # The event panel's inline confirmations (no dialog on top of the panel).
 CONFIRM_CANCEL = "cancel"
@@ -158,6 +166,18 @@ def _starting_destination(post: PostOptionVM, output_port: str) -> str:
         chip = next((c for c in post.outputs if c.port == output_port), None)
         return chip.default_destination if chip is not None else ""
     return post.default_destination
+
+
+def rows_for_submit(rows: list[PlanRowVM], tz_name: str, now: datetime) -> list[PlanRowVM]:
+    """The plan as «Programar» sends it, in the order it goes out. m-24842985: a piece on
+    «Ahora» gets its instant only here, from `now` — the tap — as the next minutes in
+    `tz_name` (`now_slot`), so the calendar worker takes it on its next pass and never
+    earlier than the owner's tap."""
+    day, at = now_slot(tz_name, now)
+    return sorted(
+        (replace(r, date=day, time=at) if r.now else r for r in rows),
+        key=lambda r: (r.date, r.time),
+    )
 
 
 async def schedule_plan_rows(
@@ -308,6 +328,12 @@ class PlannerState(rx.State):
     form_goals: list[str] = []
     form_step: int = 0
     form_reached: int = 0
+    # m-24842985: the pieces whose «Más opciones» is open (POST ids). A piece whose
+    # missing data sits there opens it ONCE on its own (`PlanRowVM.needs_more` turning
+    # true, `_sync_more_open`); after that the owner opens and closes it.
+    more_open: list[str] = []
+    # The pieces whose `needs_more` was true at the last sync (to open only on the change).
+    more_auto: list[str] = []
     # QUA-118 drag & drop: the POST being dragged from «Sin programar» (the browser
     # drags, this only remembers what), and the `?post=` already turned into an open
     # drawer so a reload or a week change does not reopen it.
@@ -384,6 +410,14 @@ class PlannerState(rx.State):
     @rx.var
     def tz_city_label(self) -> str:
         return tz_option(self.tz_name, datetime.now(UTC)).city if self.tz_name else ""
+
+    @rx.var
+    def form_tz_city(self) -> str:
+        """m-24842985: the city of the zone «Programar» plans in (`view_tz or tz_name`,
+        the same one `rows_for_submit` uses) — said on «Confirmar» instead of the zone's
+        technical name."""
+        zone = self.view_tz or self.tz_name
+        return tz_option(zone, datetime.now(UTC)).city if zone else ""
 
     @rx.var
     def tz_results(self) -> list[TzOptionVM]:
@@ -553,7 +587,7 @@ class PlannerState(rx.State):
                 return ""
             if len(pending) == 1:
                 return f"«{pending[0].title}»: {pending[0].error}"
-            return f"Revisa {len(pending)} piezas: falta completar su programación."
+            return f"Revisa {len(pending)} publicaciones: falta completar su programación."
         return ""
 
     @rx.var
@@ -580,27 +614,47 @@ class PlannerState(rx.State):
         n = len(self.plan_items)
         if n == 0:
             return "Nada seleccionado"
-        return "1 pieza seleccionada" if n == 1 else f"{n} piezas seleccionadas"
+        return "1 publicación seleccionada" if n == 1 else f"{n} publicaciones seleccionadas"
 
     @rx.var
     def form_plan_summary(self) -> str:
-        """ "3 piezas · 4 publicaciones · lun 12 oct → mié 14 oct" for the confirm head."""
+        """ "3 publicaciones · 4 fechas · lun 12 oct → mié 14 oct" for the confirm head."""
         rows = self.plan_rows_by_time
         if not rows:
             return ""
-        pieces = "1 pieza" if len(rows) == 1 else f"{len(rows)} piezas"
+        pieces = "1 publicación" if len(rows) == 1 else f"{len(rows)} publicaciones"
         n = self.form_event_count
-        events = "1 publicación" if n == 1 else f"{n} publicaciones"
+        events = "1 fecha" if n == 1 else f"{n} fechas"
         first, last = rows[0].when_label.split(" · ")[0], rows[-1].when_label.split(" · ")[0]
         span = first if first == last else f"{first} → {last}"
         return f"{pieces} · {events} · {span}"
 
     @rx.var
+    def form_step_counter(self) -> str:
+        """N6: «Paso 2 de 3» with the real count — a move has no «Contenido» to pick, so
+        it walks «Paso 1 de 2»."""
+        total = len(ASSIGN_STEPS)
+        number = self.form_step + 1
+        if self.form_mode == MODE_RESCHEDULE:
+            total, number = total - 1, max(number - 1, 1)
+        return f"Paso {number} de {total}"
+
+    @rx.var
+    def form_confirm_line(self) -> str:
+        """m-24842985 (N13): «Confirmar» says it in one sentence — «Sale el jueves 30 a
+        las 7:00 p. m. en Instagram @cuenta» for one piece; for several, the plan's
+        summary (each piece carries its own sentence on the timeline)."""
+        rows = self.plan_rows_by_time
+        if len(rows) == 1 and rows[0].sale_line:
+            return rows[0].sale_line
+        return self.form_plan_summary
+
+    @rx.var
     def form_submit_label(self) -> str:
         if self.form_mode == MODE_RESCHEDULE:
-            return "Guardar cambios"
+            return SUBMIT_RESCHEDULE
         n = self.form_event_count
-        return "Programar" if n <= 1 else f"Programar {n} publicaciones"
+        return SUBMIT_ASSIGN if n <= 1 else f"{SUBMIT_ASSIGN} {n} publicaciones"
 
     @rx.var
     def form_story_warnings(self) -> int:
@@ -691,7 +745,7 @@ class PlannerState(rx.State):
             wanted = self._url_post()
             if wanted and wanted != self._url_post_opened:
                 self._url_post_opened = wanted
-                self._open_assign(post_id=wanted)
+                self._open_assign(post_id=wanted, now=self._url_now())
         if not quiet:
             yield rx.call_script(_SCROLL_TO_OPENING_HOUR)
 
@@ -700,6 +754,15 @@ class PlannerState(rx.State):
             return str(self.router.url.query_parameters.get("post", "") or "")
         except Exception:  # noqa: BLE001 — no router outside a page (tests)
             return ""
+
+    def _url_now(self) -> bool:
+        """`/planner?post=<id>&cuando=ahora` (the «Publicar ahora» of the approved card,
+        m-24842985): the drawer opens with «Ahora» already chosen."""
+        try:
+            value = self.router.url.query_parameters.get(URL_WHEN, "") or ""
+        except Exception:  # noqa: BLE001 — no router outside a page (tests)
+            return False
+        return str(value) == URL_WHEN_NOW
 
     @rx.event
     def load_current_week(self):
@@ -1019,6 +1082,8 @@ class PlannerState(rx.State):
         self.form_default_time = "09:00"
         self.form_step = STEP_POST
         self.form_reached = STEP_POST
+        self.more_open = []
+        self.more_auto = []
 
     def _first_account(self) -> list[str]:
         """The first compatible account is preselected: one account is the common case."""
@@ -1043,6 +1108,7 @@ class PlannerState(rx.State):
         if post is None or not post.schedulable or post_id in self.form_selected_ids:
             return False
         self.plan_items = [*self.plan_items, self._new_item(post)]
+        self._sync_more_open()
         return True
 
     def _update_item(self, post_id: str, **changes) -> None:
@@ -1050,13 +1116,26 @@ class PlannerState(rx.State):
             replace(item, **changes) if item.post_id == post_id else item
             for item in self.plan_items
         ]
+        self._sync_more_open()
+
+    def _sync_more_open(self) -> None:
+        """m-24842985: open «Más opciones» on its own when what a piece is missing sits
+        in there — once, when that becomes true; closing it afterwards stays closed."""
+        needing = [row.post_id for row in self.plan_rows if row.needs_more]
+        fresh = [p for p in needing if p not in self.more_auto]
+        if fresh:
+            self.more_open = [*self.more_open, *(p for p in fresh if p not in self.more_open)]
+        self.more_auto = needing
 
     def _item(self, post_id: str) -> PlanItem | None:
         return next((item for item in self.plan_items if item.post_id == post_id), None)
 
-    def _open_assign(self, post_id: str = "", day_iso: str = "", hour: int | None = None) -> None:
+    def _open_assign(
+        self, post_id: str = "", day_iso: str = "", hour: int | None = None, now: bool = False
+    ) -> None:
         """Open «Nueva publicación», optionally with a POST (the card's «Asignar», a drag)
-        and/or a day and hour (a calendar cell) already chosen."""
+        and/or a day and hour (a calendar cell) already chosen — or, with `now`, that
+        POST on «Ahora» (m-24842985)."""
         self._reset_form()
         self.form_mode = MODE_ASSIGN
         default_day = self.today_iso if self._week_contains_today() else self.monday_iso
@@ -1070,6 +1149,8 @@ class PlannerState(rx.State):
         self.form_open = True
         # A POST already chosen skips straight to its programming.
         if post_id and self._add_post(post_id):
+            if now:
+                self._update_item(post_id, now=True)
             self._go_to(STEP_WHEN)
 
     @rx.event
@@ -1146,6 +1227,19 @@ class PlannerState(rx.State):
         self.form_kind_filter = chosen if isinstance(chosen, str) and chosen else "all"
 
     # «Programación» — every handler names the piece by its POST id
+
+    @rx.event
+    def set_item_now(self, post_id: str, value: bool) -> None:
+        """m-24842985: «Ahora» or «Elegir día y hora». «Ahora» plans nothing yet: the
+        instant is taken when «Programar» is tapped (`submit_form`)."""
+        self._update_item(post_id, now=bool(value))
+
+    @rx.event
+    def set_item_more(self, post_id: str, value: str | list[str]) -> None:
+        """«Más opciones» of a piece opened («more») or closed («»)."""
+        chosen = value[0] if isinstance(value, list) and value else value
+        others = [p for p in self.more_open if p != post_id]
+        self.more_open = [*others, post_id] if chosen else others
 
     @rx.event
     def set_item_date(self, post_id: str, value: str) -> None:
@@ -1288,6 +1382,7 @@ class PlannerState(rx.State):
             )
             for item in self.plan_items
         ]
+        self._sync_more_open()
 
     # QUA-143 — the piece's campaign: the POST's, applied only on «Confirmar».
 
@@ -1383,8 +1478,11 @@ class PlannerState(rx.State):
             if self.saving:
                 return
             mode, event_id = self.form_mode, self.form_event_id
-            rows = list(self.plan_rows_by_time)
             view_tz = self.view_tz
+            # m-24842985: «Ahora» becomes an instant only here, on the owner's tap — the
+            # next minutes in the zone the week plans in; the worker takes it next pass.
+            rows = rows_for_submit(self.plan_rows, view_tz or self.tz_name, datetime.now(UTC))
+            all_now = bool(rows) and all(r.now for r in rows)
             plan_goals = tuple(self.form_goals)
             if not rows:
                 self.form_error = _FORM_INCOMPLETE
@@ -1409,7 +1507,7 @@ class PlannerState(rx.State):
                 self.saving = False
                 self.plan_items = [i for i in self.plan_items if i.post_id not in planned]
                 self.form_error = failure + (
-                    " Las piezas anteriores ya quedaron programadas." if planned else ""
+                    " Las publicaciones anteriores ya quedaron programadas." if planned else ""
                 )
             if planned:
                 yield PlannerState.load
@@ -1421,14 +1519,20 @@ class PlannerState(rx.State):
             goals = [g.label for g in PLAN_GOALS if g.key in self.form_goals]
             # Jump to the week the first piece lands in, so the operator sees it appear.
             self.monday_iso = rows[0].date
-        if mode == MODE_RESCHEDULE:
-            message = "Publicación reprogramada"
-        elif created == 1:
-            message = "Publicación programada"
-        else:
-            message = f"{created} publicaciones programadas"
+        message = scheduled_message(
+            created=created,
+            day_iso=rows[0].date,
+            at=rows[0].time,
+            reschedule=mode == MODE_RESCHEDULE,
+            now=all_now,
+        )
         if goals:
-            message += " · Objetivo: " + ", ".join(goals)
+            message += (
+                ("" if message.endswith(".") else ".")
+                + " Buscas: "
+                + join_es([g.lower() for g in goals])
+                + "."
+            )
         yield rx.toast.success(message)
         yield PlannerState.load
 

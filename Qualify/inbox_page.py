@@ -704,7 +704,19 @@ def _load_more_reels_button() -> rx.Component:
     )
 
 
+def _missing_post_notice() -> rx.Component:
+    return rx.cond(
+        InboxState.missing_post_notice != "",
+        callout(InboxState.missing_post_notice, "info"),
+        rx.fragment(),
+    )
+
+
 def _reel_summaries_list() -> rx.Component:
+    return rx.vstack(_missing_post_notice(), _reel_summaries_list_body(), spacing="3", width="100%")
+
+
+def _reel_summaries_list_body() -> rx.Component:
     return rx.cond(
         InboxState.reel_summaries_error != "",
         _reel_summaries_error_block(),
@@ -732,11 +744,12 @@ def _reel_detail_header() -> rx.Component:
     reel = InboxState.selected_reel_summary
     return rx.vstack(
         rx.button(
-            rx.icon("arrow-left", size=16),
-            "Volver",
+            rx.icon("chevron-left", size=16),
+            "Comentarios",
             on_click=InboxState.back_to_reel_list,
             variant="ghost",
             size="2",
+            min_height="44px",
         ),
         rx.cond(
             reel,
