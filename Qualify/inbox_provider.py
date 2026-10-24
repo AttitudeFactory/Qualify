@@ -12,9 +12,9 @@ Same split `publishing_provider.py` documents:
   (`list_candidate_media`/`set_media_monitored`/`sync_comments`, re-exported from
   `qualify_api.inbox`), same role `publishing_provider.py` has over `qualify_api.
   publishing.composition` — no HTTP hop, same posture `http/app.py`'s own module docstring
-  documents for the Reflex CRM in general. `analyze_sentiment_now` (QUA-92) does the same
-  over `qualify_api.sentiment.analyze_pending_comments` — the very seam `POST /api/
-  sentiment/analyze` wraps, so there is still one analysis engine, not two.
+  documents for the Reflex CRM in general. `analyze_comments_now` (m-24852204) does the
+  same over `qualify_api.comment_analysis.analyze_after_sync` — the runner the webhook
+  worker's sweep also uses, so there is still one analysis engine, not two.
 
 **Why sync and analysis no longer go through their HTTP routes (B8, 2026-10-08).** They
 used to, via an in-process ASGI client authenticated by a hardcoded dev bearer that
@@ -33,7 +33,7 @@ entirely decided by the toggle, not by anything in this module.
 `candidate_media`/`toggle_monitoring`/`sync_now` are already `async def` (the whole chain
 down to `InjectingCredentialResolver.client_for` is), so none needs `asyncio.to_thread` —
 same posture `publishing_provider.start_publish`/`poll_publish` already have over their
-own already-async seam. `analyze_sentiment_now`'s seam is synchronous, so it does.
+own already-async seam. `analyze_comments_now`'s seam is synchronous, so it does.
 
 `reel_summaries_page`/`global_summary_vm`/`thread_comments_page` (QUA-93) are the read
 side of the comments view — thin, synchronous projections over `qualify_api.sentiment`'s
@@ -65,9 +65,10 @@ effective_state`) over the raw flag AND the persisted publication date — never
 `is_monitored` alone, because a Reel still flagged monitored but past its window is no
 longer synced (`expired`). `is_monitored` (QUA-94) is still forwarded as the raw flag.
 
-`analyze_sentiment_now` (QUA-92) is the manual "Analizar sentimiento" button's transport.
-It adds no analysis logic of its own and is never called from `sync_now`/`InboxState.
-sync_comments` in either direction — QUA-21 stays exactly as manual as it already was.
+**Automatic prioritization (m-24852204, founder 2026-10-24).** There is no analysis
+button any more: `InboxState.sync_comments` chains `analyze_comments_now` after every
+successful sync, and the webhook worker sweeps what is left. `sync_now` itself still
+analyzes nothing — the chaining lives in the state, after the sync has returned.
 
 **Commercial intent (m-24789644, PR 4b).** `thread_comments_page` decorates each comment
 with its intent signal under `CURRENT_INTENT_VERSION` — ONE extra `current_signals` read
@@ -75,9 +76,8 @@ for the page's ids, never one per comment — and marks every class the committe
 report does not back as «no fiable» (`class_reliability`, fail-closed). Its
 `intent_filter` (`INTENT_FILTER_COMMERCIAL`) narrows the SAME paginated query to the
 comments whose signal is commercial, so the cursor, the sentiment filter and the search
-all keep working together. `analyze_intent_now` is the "Analizar intención" button's
-transport over `qualify_api.intent.analyze_pending_intents`; like sentiment's, it is
-manual-only and independent of sync in both directions.
+all keep working together. The intent rows themselves are written by the automatic pass
+above, never by a click.
 """
 
 from __future__ import annotations
@@ -88,6 +88,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from qualify_api.comment_analysis import analyze_after_sync
 from qualify_api.inbox import (
     list_candidate_media,
     set_media_monitored,
@@ -105,12 +106,10 @@ from qualify_api.intent import (
     INTENT_CLASS_LABELS,
     IntentClass,
     IntentSignal,
-    analyze_pending_intents,
     class_reliability,
 )
 from qualify_api.intent import current_signals as _current_signals
 from qualify_api.replies.any_comment import any_comment_enabled
-from qualify_api.sentiment import analyze_pending_comments
 from qualify_api.sentiment import global_sentiment_summary as _global_sentiment_summary
 from qualify_api.sentiment import list_comments_for_thread as _list_comments_for_thread
 from qualify_api.sentiment import list_reel_summaries as _list_reel_summaries
@@ -132,12 +131,10 @@ from .inbox_vm import (
     MONITORING_EXPIRED,
     MONITORING_INACTIVE,
     MONITORING_PENDING,
-    AnalysisSummaryVM,
     CandidateMediaVM,
     CommentPageCursorVM,
     CommentVM,
     GlobalSentimentSummaryVM,
-    IntentAnalysisSummaryVM,
     IntentChipVM,
     ReelPageCursorVM,
     ReelSummaryVM,
@@ -520,59 +517,21 @@ async def seconds_since_last_sync(*, tenant_id: UUID, connection_id: UUID) -> fl
     return await _seconds_since_last_sync(tenant_id=tenant_id, connection_id=connection_id)
 
 
-async def analyze_sentiment_now(*, tenant_id: UUID, connection_id: UUID) -> AnalysisSummaryVM:
-    """One QUA-21 analysis pass, in process, for the session's tenant — the same
-    `analyze_pending_comments` seam `POST /api/sentiment/analyze` wraps, not a second
-    analysis engine. Off the event loop: the seam is synchronous (Postgres + the local
-    model).
-
-    Propagates `UnknownSentimentConnection` and `SentimentModelUnavailable` (the `ml`
-    group is not installed in this deployment) for `InboxState` to map.
-    """
-    summary = await asyncio.to_thread(
-        analyze_pending_comments, tenant_id=tenant_id, connection_id=connection_id
-    )
-    return AnalysisSummaryVM(
-        comments_checked=summary.comments_checked,
-        new_results=summary.new_results,
-        skipped_empty=summary.skipped_empty,
-    )
-
-
-async def analyze_intent_now(*, tenant_id: UUID, connection_id: UUID) -> IntentAnalysisSummaryVM:
-    """One commercial-intent pass (m-24789644), in process, for the session's tenant —
-    `qualify_api.intent.analyze_pending_intents`, the one intent engine. Off the event
-    loop: the seam is synchronous (Postgres + the Claude call).
-
-    Propagates `UnknownIntentConnection` and `IntentModelUnavailable` (no
-    `QUALIFY_ANTHROPIC_API_KEY` in this deployment) for `InboxState` to map.
-    """
-    summary = await asyncio.to_thread(
-        analyze_pending_intents, tenant_id=tenant_id, connection_id=connection_id
-    )
-    return IntentAnalysisSummaryVM(
-        comments_checked=summary.comments_checked,
-        new_results=summary.new_results,
-        skipped_empty=summary.skipped_empty,
-        unclassified=summary.unclassified,
-        followups_opened=await _open_followups(tenant_id, connection_id),
-    )
-
-
-async def _open_followups(tenant_id: UUID, connection_id: UUID) -> int:
-    """m-24789646 (B1): every recent commercial comment without a followup becomes a
-    query in Conversaciones, with its draft. Best effort: the analysis already landed, so
-    a failure here is logged and the next analysis retries it (it is idempotent)."""
-    from .followups_provider import gateway as followups_gateway  # noqa: PLC0415
-
+async def analyze_comments_now(*, tenant_id: UUID, connection_id: UUID) -> bool:
+    """m-24852204: one bounded prioritization pass (sentiment, commercial intent and the
+    «Quieren comprar» queries) right after a sync — `qualify_api.comment_analysis.
+    analyze_after_sync`, the same runner the webhook worker's sweep uses. Off the event
+    loop: the seam is synchronous (Postgres, the local model, the Claude call). Never
+    raises: an unavailable model or a failed pass is logged there and retried by the
+    sweep. Returns whether anything new was recorded (the screen re-reads only then)."""
     try:
-        opened = await asyncio.to_thread(
-            followups_gateway().open_from_intents, tenant_id, connection_id
+        report = await asyncio.to_thread(
+            analyze_after_sync, tenant_id=tenant_id, connection_id=connection_id
         )
-    except Exception as exc:  # noqa: BLE001 — never undo the analysis the person saw
-        logger.error("open_from_intents failed: %s", type(exc).__name__)
-        return 0
-    return opened.opened
+    except Exception as exc:  # noqa: BLE001 — belt and braces; the runner never raises
+        logger.warning("analyze_after_sync failed: %s", type(exc).__name__)
+        return False
+    return report.changed
 
 
 async def reply_by_dm(*, tenant_id: UUID, message_id: UUID) -> str:

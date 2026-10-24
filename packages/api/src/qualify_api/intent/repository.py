@@ -67,11 +67,14 @@ class IntentRepository(Protocol):
         connection_id: UUID,
         version: AnalysisVersion,
         include_story_replies: bool = False,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         """Every inbound comment of the connection with text, not deleted at the source
         (QUA-101: a deleted comment is never resurrected nor analyzed), and with no
         signal recorded under `version` — plus, with `include_story_replies`, every
-        inbound DM replying to a story under the same rules."""
+        inbound DM replying to a story under the same rules. `limit` bounds one pass
+        (m-24852204); the Postgres read orders newest first so a bounded pass takes the
+        latest comments."""
         ...
 
     def record_intent_result(
@@ -123,8 +126,9 @@ class MemoryIntentRepository:
         connection_id: UUID,
         version: AnalysisVersion,
         include_story_replies: bool = False,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
-        return tuple(
+        pending = tuple(
             PendingComment(message_id=message_id, source_id=source_id, text=text)
             for message_id, (conn_id, source_id, text, deleted) in self._messages.items()
             if conn_id == connection_id
@@ -133,6 +137,7 @@ class MemoryIntentRepository:
             and (include_story_replies or message_id not in self._story_replies)
             and _key(message_id, version) not in self._signals
         )
+        return pending if limit is None else pending[:limit]
 
     def record_intent_result(
         self, *, tenant_id: UUID, connection_id: UUID, signal: IntentSignal
@@ -165,6 +170,7 @@ class PostgresIntentRepository:
         connection_id: UUID,
         version: AnalysisVersion,
         include_story_replies: bool = False,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         origin = Thread.channel == _COMMENT_CHANNEL
         if include_story_replies:
@@ -197,6 +203,8 @@ class PostgresIntentRepository:
                     Message.deleted_at.is_(None),
                     ~already_analyzed,
                 )
+                .order_by(Message.posted_at.desc().nulls_last(), Message.id.desc())
+                .limit(limit)
             ).all()
             return tuple(
                 PendingComment(message_id=row.id, source_id=row.external_message_id, text=row.text)

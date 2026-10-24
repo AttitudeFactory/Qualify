@@ -225,15 +225,24 @@ class CommentListCursor:
 
 class SentimentRepository(Protocol):
     def list_pending_for_analysis(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: AnalysisVersion,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         """Every un-analyzed inbound comment for the connection, current `version`,
         regardless of `monitored_media.is_monitored` (QUA-94, confirmed product
         decision: desmonitorear stops future ingestion, it does not invalidate
         comments already synced — they stay real, analyzable data). Analysis is driven
         entirely by `qualify_api.sentiment.service.analyze_pending_comments`
-        (the manual "Analizar sentimiento" trigger, QUA-21/QUA-92) — nothing here
-        needs to change for a Reel that stops being monitored, and nothing does."""
+        (automatic since m-24852204, via `qualify_api.comment_analysis`) — nothing here
+        needs to change for a Reel that stops being monitored, and nothing does.
+
+        Newest first (`posted_at`, then id). `limit` bounds one pass (m-24852204: the
+        automatic analysis takes a batch per connection, the rest waits for the next
+        pass); `None` = every pending comment."""
         ...
 
     def record_sentiment_result(
@@ -412,7 +421,12 @@ class MemorySentimentRepository:
         )
 
     def list_pending_for_analysis(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: AnalysisVersion,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         key_suffix = (version.detector_version, version.pipeline_version, version.model_id)
         revision_key = version.model_revision or ""
@@ -429,9 +443,15 @@ class MemorySentimentRepository:
             if (message_id, *key_suffix, revision_key) in self._recorded:
                 continue
             pending.append(
-                PendingComment(message_id=message_id, source_id=source_id, text=comment_text)
+                (
+                    _rest[1] or NULL_POSTED_AT_SENTINEL,
+                    message_id,
+                    PendingComment(message_id=message_id, source_id=source_id, text=comment_text),
+                )
             )
-        return tuple(pending)
+        pending.sort(key=lambda row: (row[0], str(row[1])), reverse=True)
+        ordered = tuple(comment for _posted, _id, comment in pending)
+        return ordered if limit is None else ordered[:limit]
 
     def record_sentiment_result(
         self,
@@ -686,7 +706,12 @@ class PostgresSentimentRepository:
     """
 
     def list_pending_for_analysis(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: AnalysisVersion,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         with tenant_session(tenant_id) as session:
             already_analyzed = (
@@ -724,6 +749,8 @@ class PostgresSentimentRepository:
                     Message.deleted_at.is_(None),
                     ~already_analyzed,
                 )
+                .order_by(Message.posted_at.desc().nulls_last(), Message.id.desc())
+                .limit(limit)
             ).all()
             return tuple(
                 PendingComment(message_id=row.id, source_id=row.external_message_id, text=row.text)

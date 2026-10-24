@@ -48,15 +48,11 @@ its real thumbnail/caption/permalink (cross-referenced from `CandidateMediaVM`, 
 extra Meta calls — see `inbox_provider.reel_summaries_page`'s docstring); an older
 monitored Reel falls back to `external_thread_id` only, same as QUA-92's original scope.
 
-`_analyze_now_button()` (QUA-92) makes QUA-21's existing manual trigger visible on
-screen: it calls `InboxState.analyze_sentiment`, which runs the same seam the
-`POST /api/sentiment/analyze` route wraps (`inbox_provider.analyze_sentiment_now` —
-never a second analysis engine). Same
-"button + `rx.cond` loading label" shape `_sync_now_button()` already establishes, kept
-as its own control rather than merged into `_sync_now_button()`: syncing and analyzing
-are two independent actions with two independent guards (`is_syncing`/`is_analyzing`),
-and QUA-92's own requirement is that neither ever triggers the other. It stays the ONE
-button for both levels — `InboxState._refresh_after_write` decides what it refreshes.
+There is no analysis button (m-24852204, founder 2026-10-24): sentiment and commercial
+intent are computed in the background after every comment search
+(`InboxState.analyze_new_comments`) and by the webhook worker's sweep, so the owner opens
+the screen and finds the comments already prioritized. The sentiment and intent filters
+stay; a comment the analysis has not reached yet simply shows no chip.
 """
 
 from __future__ import annotations
@@ -1019,49 +1015,11 @@ def _reel_detail_view() -> rx.Component:
     )
 
 
-def _prioritize_button() -> rx.Component:
-    """m-24842988: ONE «Ordenar por prioridad» — the sentiment pass (QUA-21) and the
-    commercial-intent pass (m-24789644) chained on one click. Each stays its own
-    background handler with its own guard, error and toast; still separate from
-    `_sync_now_button()` (see the module docstring)."""
-    return rx.button(
-        rx.cond(
-            InboxState.is_prioritizing,
-            loading_spinner("sm"),
-            rx.icon("list-ordered", size=16),
-        ),
-        rx.cond(InboxState.is_prioritizing, "Ordenando...", "Ordenar por prioridad"),
-        on_click=[InboxState.analyze_sentiment, InboxState.analyze_intent],
-        disabled=~InboxState.can_prioritize,
-        size="2",
-        variant="soft",
-    )
-
-
-def _prioritize_error_block() -> rx.Component:
-    # m-24849132: ONE persistent `callout` for «Ordenar por prioridad», whether the
-    # sentiment pass, the intent pass or both failed — never two near-identical boxes.
-    # The success side is a transient `rx.toast.success` dispatched by
-    # `InboxState.analyze_intent` (docs/design-system.md §5.4); only errors persist.
-    return rx.cond(
-        InboxState.prioritize_error != "",
-        callout(InboxState.prioritize_error, "error"),
-        rx.fragment(),
-    )
-
-
 def _comments_section() -> rx.Component:
-    # m-24842989: second block, under the replies ready to approve. Its actions sit in
-    # a wrapping row of their own, not in the title row, so they never squeeze the
-    # title at 360 px (N12).
+    # m-24842989: second block, under the replies ready to approve. m-24852204: no
+    # action row any more — the comments arrive already prioritized.
     return section(
         "Comentarios por publicación",
-        rx.hstack(
-            _prioritize_button(),
-            spacing="2",
-            wrap="wrap",
-        ),
-        _prioritize_error_block(),
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
@@ -1088,8 +1046,8 @@ def _sync_now_button() -> rx.Component:
 
 
 def _sync_error_block() -> rx.Component:
-    # Same "success is a toast, error is a persistent callout" split as
-    # `_prioritize_error_block` above — see that function's comment.
+    # Success is a transient toast, an error a persistent callout
+    # (docs/design-system.md §5.4).
     return rx.cond(
         InboxState.sync_error != "",
         callout(InboxState.sync_error, "error"),

@@ -28,6 +28,12 @@ whatever database `QUALIFY_WEBHOOK_WORKER_DSN` names (by default the local devel
 Loop mode also sweeps mention sentiment still pending, once at start and then every
 `SENTIMENT_SWEEP_EVERY` (QUA-152; each mention is normally analyzed right after ingest).
 
+Loop mode also prioritizes the comments of Interacciones on the same cadence
+(m-24852204): sentiment, commercial intent and the queries they open, a bounded batch per
+Instagram connection (`comment_analysis.sweep_pending_comment_analysis`). Each comment is
+normally analyzed right after the sync that brought it; the sweep catches backlogs,
+failures and model outages. It never calls Meta and never sends anything.
+
 Loop mode also runs the age purge for real, once at start and then every `PURGE_EVERY` —
 that is what keeps "29 days + at most 24 h" ≤ 30 days (QUA-127). It deletes only
 settled/failed changes older than `RETENTION`, never `pending`/`processing`.
@@ -148,6 +154,25 @@ async def _sentiment_sweep() -> None:
         logger.exception("mentions.sentiment_sweep failed")
 
 
+async def _comment_analysis_sweep() -> None:
+    """m-24852204: prioritize comments still pending. The sweep never raises; this guard
+    is belt and braces, same as `_sentiment_sweep`."""
+    from qualify_api.comment_analysis import sweep_pending_comment_analysis  # noqa: PLC0415
+
+    try:
+        report = await asyncio.to_thread(sweep_pending_comment_analysis)
+        logger.info(
+            "comments.analysis_sweep connections=%d sentiment=%d intent=%d followups=%d errored=%d",
+            report.connections,
+            report.sentiment_new,
+            report.intent_new,
+            report.followups_opened,
+            report.errored,
+        )
+    except Exception:  # noqa: BLE001 — a failed sweep must not stop processing
+        logger.exception("comments.analysis_sweep failed")
+
+
 async def _run_loop(*, interval: int, limit: int) -> None:
     processor = production_processor(worker_id=worker_id())
     queue = WebhookQueue()
@@ -161,6 +186,7 @@ async def _run_loop(*, interval: int, limit: int) -> None:
             next_purge = started + PURGE_EVERY.total_seconds()
         if started >= next_sweep:
             await _sentiment_sweep()
+            await _comment_analysis_sweep()
             next_sweep = started + SENTIMENT_SWEEP_EVERY.total_seconds()
         try:
             report = await processor.run_once(limit=limit)

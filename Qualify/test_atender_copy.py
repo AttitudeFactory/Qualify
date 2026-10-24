@@ -36,7 +36,6 @@ from . import (
 )
 from .conversations_vm import UNKNOWN_PERSON, reply_sent_message
 from .followups_state import queued_message
-from .inbox_state import InboxState
 from .inbox_vm import UNSURE_INTENT_NOTE, CandidateMediaVM, short_day_label
 
 _SCREENS: tuple[ModuleType, ...] = (
@@ -115,20 +114,11 @@ def test_the_monitoring_labels_are_the_owners_words() -> None:
         assert label in source
 
 
-def test_one_prioritize_button_chains_both_passes() -> None:
-    source = inspect.getsource(inbox_page._prioritize_button)
-    assert '"Ordenar por prioridad"' in source
-    assert "on_click=[InboxState.analyze_sentiment, InboxState.analyze_intent]" in source
+def test_no_prioritize_button_remains() -> None:
+    """m-24852204: sentiment and intent are automatic; nothing on the screen sorts."""
+    assert not hasattr(inbox_page, "_prioritize_button")
     assert not hasattr(inbox_page, "_analyze_now_button")
     assert not hasattr(inbox_page, "_analyze_intent_button")
-
-
-def test_prioritizing_is_busy_while_either_pass_runs() -> None:
-    state = InboxState()
-    state.selected_connection_id = "c"
-    assert state.can_prioritize and not state.is_prioritizing
-    state.is_analyzing_intent = True
-    assert state.is_prioritizing and not state.can_prioritize
 
 
 def test_the_filters_and_summary_use_the_new_words() -> None:
@@ -277,13 +267,6 @@ def test_the_private_message_toast_names_the_person() -> None:
     source = inspect.getsource(followups_state.FollowupsState.approve.fn)
     assert 'self.done_note = ""' in source
     assert "rx.toast.info(message" not in source and "rx.toast.success(message" not in source
-
-
-def test_only_the_intent_pass_speaks_after_ordering() -> None:
-    source = inspect.getsource(InboxState.analyze_sentiment.fn)
-    tail = source[source.index("await self._refresh_after_write") :]
-    assert "rx.toast" not in tail
-    assert "self.analyze_error = _ANALYZE_FAILED" in source  # the error path stays
 
 
 def test_no_model_key_tells_the_owner_to_write_it() -> None:

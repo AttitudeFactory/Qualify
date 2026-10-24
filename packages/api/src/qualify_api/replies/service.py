@@ -230,8 +230,8 @@ class ReplyService:
         API key, which a service that never triages must not demand) and
         `any_comment_generator` writes the drafts of the `any_comment` route.
         `comment_analyzer(tenant_id, connection_id, message_id)` stores ONE comment's
-        analysis row when «Responder aquí» finds none (the intent pass of «Ordenar por
-        prioridad», limited to that comment); None = the owner must sort first."""
+        analysis row when «Responder aquí» finds none (the automatic intent pass,
+        m-24852204, limited to that comment); None = wait for the automatic pass."""
         self._repo = repository
         self._version = version
         self._generator_version = generator_version

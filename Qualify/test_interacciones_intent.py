@@ -1,6 +1,6 @@
 """Commercial intent on the Interacciones screen (m-24789644, PR 4b) — network-free, no
-database: the provider's projection, the intent filter's mapping, the "Analizar
-intención" transport and the state handler's shape.
+database: the provider's projection, the intent filter's mapping and the automatic
+analysis that replaced the "Ordenar por prioridad" button (m-24852204).
 
 Pins:
 1. Each comment carries its intent signal under `CURRENT_INTENT_VERSION`, read ONCE per
@@ -9,11 +9,11 @@ Pins:
    back is still shown, flagged `reliable=False` (the page marks it «no fiable»).
 3. «Requiere atención comercial» passes `CURRENT_INTENT_VERSION` down to the SAME
    paginated read; "ALL" passes `None` (no intent filter at all).
-4. `analyze_intent_now` runs `analyze_pending_intents` (the one intent engine), forwards
-   the session's tenant, projects every count, and propagates its typed refusals.
-5. `InboxState.analyze_intent` has the same guard / `finally` / success-only refresh
-   shape as `analyze_sentiment`, maps each failure to its own message, and is
-   independent of sync and of sentiment analysis.
+4. `analyze_comments_now` runs `comment_analysis.analyze_after_sync` (the one runner) for
+   the session's tenant and only reports whether anything new landed.
+5. Every successful sync chains `InboxState.analyze_new_comments` after its own refresh;
+   that handler is silent (no toast, no error), guarded, and re-reads only when needed.
+   No button and no copy about sorting remain.
 """
 
 from __future__ import annotations
@@ -27,20 +27,17 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
+from qualify_api.comment_analysis import ConnectionAnalysisReport
 from qualify_api.intent import (
     CURRENT_INTENT_VERSION,
-    IntentAnalysisSummary,
     IntentClass,
-    IntentModelUnavailable,
     IntentSignal,
-    UnknownIntentConnection,
 )
 from qualify_api.sentiment.repository import AnalyzedComment
 
-from . import inbox_page, inbox_provider, inbox_state
+from . import inbox_page, inbox_provider
 from .inbox_state import FILTER_ALL, FILTER_COMMERCIAL, InboxState
-from .inbox_vm import CommentVM, IntentAnalysisSummaryVM, IntentChipVM
-from .test_inbox_state import _error_constant_by_exception
+from .inbox_vm import CommentVM, IntentChipVM
 
 _TENANT = UUID("a0000000-0000-4000-8000-0000000000b1")
 _CONNECTION = UUID("c0000000-0000-4000-8000-0000000000b1")
@@ -227,101 +224,83 @@ def test_the_page_offers_the_commercial_filter() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# analyze_intent_now
+# m-24852204 — prioritization is automatic: chained after every sync, no button
 # --------------------------------------------------------------------------------------
 
 
-def test_analyze_intent_now_forwards_the_session_tenant_and_projects() -> None:
+def test_analyze_comments_now_runs_the_one_runner_for_the_session_tenant() -> None:
     captured: dict[str, object] = {}
 
-    def _fake(**kwargs: object) -> IntentAnalysisSummary:
+    def _fake(**kwargs: object) -> ConnectionAnalysisReport:
         captured.update(kwargs)
-        return IntentAnalysisSummary(
-            comments_checked=6, new_results=4, skipped_empty=1, unclassified=1
+        return ConnectionAnalysisReport(sentiment_new=2, intent_new=2, followups_opened=1)
+
+    with _patched(analyze_after_sync=_fake):
+        changed = asyncio.run(
+            inbox_provider.analyze_comments_now(tenant_id=_TENANT, connection_id=_CONNECTION)
+        )
+    assert captured == {"tenant_id": _TENANT, "connection_id": _CONNECTION}
+    assert changed is True
+
+
+def test_analyze_comments_now_reports_nothing_new_when_the_models_are_missing() -> None:
+    """No model and no key: the runner skips both halves silently — the screen does not
+    even re-read, and nothing is shown."""
+
+    def _skipped(**_kwargs: object) -> ConnectionAnalysisReport:
+        return ConnectionAnalysisReport(
+            sentiment_skipped="unavailable", intent_skipped="unavailable"
         )
 
-    async def _opened(tenant_id: UUID, connection_id: UUID) -> int:
-        captured["opened_for"] = (tenant_id, connection_id)
-        return 2
-
-    with _patched(analyze_pending_intents=_fake, _open_followups=_opened):
-        result = asyncio.run(
-            inbox_provider.analyze_intent_now(tenant_id=_TENANT, connection_id=_CONNECTION)
+    with _patched(analyze_after_sync=_skipped):
+        assert (
+            asyncio.run(
+                inbox_provider.analyze_comments_now(tenant_id=_TENANT, connection_id=_CONNECTION)
+            )
+            is False
         )
-    assert captured == {
-        "tenant_id": _TENANT,
-        "connection_id": _CONNECTION,
-        # m-24789646 (B1): the analysis then opens the commercial queries.
-        "opened_for": (_TENANT, _CONNECTION),
-    }
-    assert result == IntentAnalysisSummaryVM(
-        comments_checked=6, new_results=4, skipped_empty=1, unclassified=1, followups_opened=2
-    )
 
 
-@pytest.mark.parametrize("exc", [UnknownIntentConnection("x"), IntentModelUnavailable("no key")])
-def test_analyze_intent_now_propagates_its_typed_refusals(exc: Exception) -> None:
-    def _raise(**kwargs: object) -> IntentAnalysisSummary:
-        raise exc
-
-    with _patched(analyze_pending_intents=_raise), pytest.raises(type(exc)):
-        asyncio.run(inbox_provider.analyze_intent_now(tenant_id=_TENANT, connection_id=_CONNECTION))
-
-
-# --------------------------------------------------------------------------------------
-# InboxState.analyze_intent / set_intent_filter
-# --------------------------------------------------------------------------------------
-
-
-def test_can_analyze_intent_needs_a_connection_and_no_pass_in_flight() -> None:
-    state = InboxState()
-    state.selected_connection_id = ""
-    assert state.can_analyze_intent is False
-    state.selected_connection_id = "c-1"
-    state.is_analyzing_intent = True
-    assert state.can_analyze_intent is False
-    state.is_analyzing_intent = False
-    assert state.can_analyze_intent is True
+def test_a_successful_sync_chains_the_analysis_after_its_own_refresh() -> None:
+    source = inspect.getsource(InboxState.sync_comments.fn)
+    assert source.count("InboxState.analyze_new_comments") == 2  # on /inbox, and off it
+    refresh = source.index("await self._refresh_after_write(tenant_id, connection_id)")
+    assert source.index("InboxState.analyze_new_comments") > refresh
+    # The sync pass itself never waits for the models.
+    assert "analyze_comments_now(" not in source
 
 
 @pytest.mark.asyncio
-async def test_analyze_intent_ignores_a_double_click() -> None:
+async def test_the_analysis_ignores_a_second_trigger_while_one_runs() -> None:
     state = InboxState()
-    state.is_analyzing_intent = True
-    state.analyze_intent_error = "estado previo"
-    await InboxState.analyze_intent.fn(state)
-    assert state.is_analyzing_intent is True
-    assert state.analyze_intent_error == "estado previo"
+    state.is_analyzing_comments = True
+    await InboxState.analyze_new_comments.fn(state)
+    assert state.is_analyzing_comments is True
 
 
-def test_analyze_intent_maps_each_failure_to_its_own_message() -> None:
-    mapping = _error_constant_by_exception(InboxState.analyze_intent.fn, "analyze_intent_error")
-    assert mapping == {
-        "UnknownIntentConnection": "_UNKNOWN_CONNECTION",
-        "IntentModelUnavailable": "_ANALYZE_INTENT_UNAVAILABLE",
-        "Exception": "_ANALYZE_INTENT_FAILED",
-    }
-
-
-def test_analyze_intent_resets_its_flag_in_a_finally_and_refreshes_only_on_success() -> None:
-    source = inspect.getsource(InboxState.analyze_intent.fn)
-    assert source.count("self.is_analyzing_intent = False") == 2
+def test_the_analysis_is_silent_resets_in_a_finally_and_rereads_only_when_needed() -> None:
+    source = inspect.getsource(InboxState.analyze_new_comments.fn)
+    assert "rx.toast" not in source and "_error =" not in source
+    assert "sync_now(" not in source
+    assert source.count("self.is_analyzing_comments = False") == 1
     refresh = source.index("await self._refresh_after_write(tenant_id, connection_id)")
-    assert refresh > source.rindex("self.is_analyzing_intent = False")
-    assert "_SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED" in source
+    assert refresh > source.index("if not changed:")
+    assert refresh > source.index("still_same_account = self.selected_connection_id")
 
 
-def test_analyze_intent_is_independent_of_sync_and_sentiment() -> None:
-    source = inspect.getsource(InboxState.analyze_intent.fn)
-    for fragment in (
-        "sync_now(",
-        "analyze_sentiment_now(",
-        "self.is_syncing",
-        "self.is_analyzing =",
-    ):
-        assert fragment not in source, fragment
-    for handler in (InboxState.analyze_sentiment.fn, InboxState.sync_comments.fn):
-        assert "analyze_intent_now(" not in inspect.getsource(handler)
+def test_there_is_no_prioritize_button_nor_copy_about_it() -> None:
+    page_source = inspect.getsource(inbox_page)
+    assert not hasattr(inbox_page, "_prioritize_button")
+    assert not hasattr(inbox_page, "_prioritize_error_block")
+    assert "Ordenando" not in page_source
+    assert '"Ordenar por prioridad"' not in page_source
+    for name in ("analyze_sentiment", "analyze_intent", "prioritize_error", "is_prioritizing"):
+        assert not hasattr(InboxState, name), name
+
+
+# --------------------------------------------------------------------------------------
+# set_intent_filter
+# --------------------------------------------------------------------------------------
 
 
 def test_the_intent_filter_is_part_of_every_comment_read_and_its_race_guard() -> None:
@@ -333,31 +312,3 @@ def test_the_intent_filter_is_part_of_every_comment_read_and_its_race_guard() ->
         assert "intent_filter=intent_filter" in source
         assert "intent_filter == self.intent_filter" in source
     assert "self.intent_filter = FILTER_ALL" in inspect.getsource(InboxState._open_detail)
-
-
-@pytest.mark.parametrize(
-    ("summary", "expected"),
-    [
-        (
-            IntentAnalysisSummaryVM(
-                comments_checked=0, new_results=0, skipped_empty=0, unclassified=0
-            ),
-            "No hay comentarios nuevos para ordenar.",
-        ),
-        (
-            IntentAnalysisSummaryVM(
-                comments_checked=5, new_results=5, skipped_empty=0, unclassified=0
-            ),
-            "Listo: ordenamos 5 comentarios.",
-        ),
-        (
-            IntentAnalysisSummaryVM(
-                comments_checked=5, new_results=3, skipped_empty=1, unclassified=1
-            ),
-            "Listo: ordenamos 3 comentarios. 1 quedó sin revisar: lo intentamos de nuevo"
-            " la próxima vez.",
-        ),
-    ],
-)
-def test_the_toast_says_what_happened(summary: IntentAnalysisSummaryVM, expected: str) -> None:
-    assert inbox_state._intent_result_message(summary) == expected
