@@ -38,7 +38,7 @@ from qualify_api.creative.angle_sets import (
     UnknownAngle,
     UnknownAngleSet,
 )
-from qualify_api.creative.service import BrandNotReady
+from qualify_api.creative.service import BrandNotReady, DraftExpired
 from qualify_creative.angles import AnglePreset, AngleProduct, AngleSetPlan, UnknownPreset
 from qualify_creative.enums import DraftStatus
 
@@ -437,7 +437,10 @@ def build_outcome_vm(outcome: GenerationOutcome) -> OutcomeVM:
 def variation_error_message(exc: BaseException) -> str:
     """What the operator reads when an action of the flow fails — Spanish, actionable,
     never a vendor's raw text."""
-    if isinstance(exc, (AngleGenerationFailed, AngleNotActionable, PresetNotAvailable)):
+    if isinstance(
+        exc, (AngleGenerationFailed, AngleNotActionable, PresetNotAvailable, DraftExpired)
+    ):
+        # DraftExpired (m-24820142): a 480p draft too old to make its final — regenerate
         return exc.detail
     if isinstance(exc, UnknownProduct):
         return "Ese producto no está en el catálogo de la marca o está inactivo."

@@ -132,6 +132,23 @@ FILTERS: tuple[tuple[str, str], ...] = (
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_ALL
 
+# m-24842962 (N11): Inicio's «personas esperan tu respuesta» opens the list already
+# filtered — `/conversations?filtro=pendientes`. The slugs are the chips' own words.
+FILTER_PARAM = "filtro"
+FILTER_SLUGS = {
+    "todas": FILTER_ALL,
+    "pendientes": FILTER_PENDING,
+    "leidas": FILTER_READ,
+    "respondidas": FILTER_ANSWERED,
+}
+
+
+def filter_from_param(slug: str) -> str | None:
+    """`?filtro=pendientes` → `FILTER_PENDING`; absent or unknown → None (keep the
+    filter the owner already had)."""
+    return FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+
+
 #: `service.AttentionState` value → (label, tone).
 ATTENTION_PILLS: dict[str, tuple[str, str]] = {
     "pending": ("Pendiente", "warn"),

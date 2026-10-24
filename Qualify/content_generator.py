@@ -24,6 +24,7 @@ from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
+    CLIP_DURATIONS,
     DURATIONS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
@@ -2785,13 +2786,22 @@ def _slide_generated_fields() -> rx.Component:
     )
     length = _slide_panel(
         rx.text("Duración", **muted),
-        rx.segmented_control.root(
-            *_seconds_items(SLIDE_SECONDS),
-            value=current["seconds"],
-            on_change=lambda value: CreativeState.set_slide_field(index, "seconds", value),
-            size="2",
+        rx.vstack(
+            rx.segmented_control.root(
+                *_seconds_items(SLIDE_SECONDS),
+                value=current["seconds"],
+                on_change=lambda value: CreativeState.set_slide_field(index, "seconds", value),
+                size="2",
+                width="100%",
+                class_name="q-seg-fit q-seg-fit--nowrap",
+            ),
+            # § request 2026-10-23: the gallery's video may bring its sound — off by default
+            _audio_switch(
+                checked=current["audio"] != "",
+                on_change=lambda _: CreativeState.toggle_slide_audio(index),
+            ),
+            spacing="3",
             width="100%",
-            class_name="q-seg-fit q-seg-fit--nowrap",
         ),
         width="100%",
     )
@@ -3607,6 +3617,54 @@ def _section_channel() -> rx.Component:
                 ),
             ),
         ),
+        # § request 2026-10-23: a clip's length, from 5 s up to 15 s
+        rx.cond(
+            CreativeState.brief_kind == "clip",
+            _field(
+                "Duración",
+                rx.segmented_control.root(
+                    *_seconds_items(CLIP_DURATIONS),
+                    value=CreativeState.clip_duration,
+                    on_change=CreativeState.set_clip_duration,
+                    size="2",
+                    class_name="q-seg-fit q-seg-fit--nowrap",
+                ),
+            ),
+        ),
+        # § request 2026-10-23: «generar el clip con audio» — on by default
+        rx.cond(
+            CreativeState.brief_kind == "clip",
+            _field(
+                "Sonido",
+                _audio_switch(
+                    checked=CreativeState.clip_audio,
+                    on_change=CreativeState.set_clip_audio,
+                ),
+            ),
+        ),
+    )
+
+
+#: What «Con audio» adds (§ request 2026-10-23) — and that some video models have none.
+_AUDIO_HINT = (
+    "El video trae el sonido que se crea con él: ambiente y voces. "
+    "Si el modelo de video no genera sonido, sale sin audio."
+)
+
+
+def _audio_switch(*, checked: object, on_change: object) -> rx.Component:
+    """«Con audio»: the sound the video model makes with the video (clip and the
+    gallery's animated slide)."""
+    return rx.vstack(
+        rx.hstack(
+            rx.switch(checked=checked, on_change=on_change, size="2"),
+            rx.text("Con audio", size="2"),
+            spacing="2",
+            align="center",
+        ),
+        rx.text(_AUDIO_HINT, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
     )
 
 

@@ -35,6 +35,7 @@ from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import media_root, production_content_service
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
+from qualify_api.creative.draft_mode import FINAL_STALE_SECONDS, draft_rendering, draft_summary
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
 from qualify_api.creative.piece_export import (
     archive_name,
@@ -81,6 +82,7 @@ from .creative_vm import (
     ReadinessVM,
     RecipeOptionVM,
     RouteOptionVM,
+    VideoDraftVM,
     VoiceProposalVM,
     build_draft_summary_vm,
     build_draft_vm,
@@ -94,6 +96,7 @@ from .creative_vm import (
     failure_label,
     purged_label,
     retention_notice,
+    video_draft_vm,
 )
 from .piece_download import issue_download_path
 from .r2_media import is_r2_key, issue_view_path
@@ -780,6 +783,18 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),
     )
+    # m-24820142: the Seedance 2.5 draft videos' state (badge, final, retry)
+    video_params = [item.params for item in detail.media]
+    approved = detail.status == "approved"
+    vm = dataclasses.replace(
+        vm,
+        video_draft=video_draft_vm(
+            # approved with a video still at its draft: its final was never ordered
+            *draft_summary(video_params, approved=approved),
+            still_rendering=draft_rendering(video_params),
+            approved=approved,
+        ),
+    )
     if purged:
         assert retention is not None
         when = retention.purged_at.isoformat() if retention.purged_at else None
@@ -959,6 +974,34 @@ def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UU
         tenant_id=tenant_id, draft_id=draft_id, variant_id=variant_id, user_id=user_id
     )
     return _detail_to_vm(tenant_id, detail)
+
+
+def retry_final(tenant_id: UUID, draft_id: UUID) -> DraftVM:
+    """Order again the 1080p finals that failed (m-24820142)."""
+    detail = production_content_service().retry_final(tenant_id=tenant_id, draft_id=draft_id)
+    return _detail_to_vm(tenant_id, detail)
+
+
+#: How long the piece's page watches a 1080p final (m-24820142): until the final is in
+#: place, fails, or — a dead process left it — turns retryable (`FINAL_STALE_SECONDS`
+#: after its work last started, the one source of truth), plus a margin for the order
+#: to be claimed; the last look then shows «Reintentar» without a reload.
+FINAL_POLL_WINDOW_SECONDS = FINAL_STALE_SECONDS + 2 * 60
+
+
+def final_video_state(tenant_id: UUID, draft_id: UUID) -> VideoDraftVM | None:
+    """The piece's draft videos as the screen shows them — what the final poll reads
+    every few seconds: the draft row and its draft videos only, never the whole piece
+    (`ContentService.video_drafts_state`). None when the draft is gone."""
+    state = production_content_service().video_drafts_state(tenant_id=tenant_id, draft_id=draft_id)
+    if state is None:
+        return None
+    status, params = state
+    return video_draft_vm(
+        *draft_summary(list(params), approved=status == "approved"),
+        still_rendering=draft_rendering(list(params)),
+        approved=status == "approved",
+    )
 
 
 def reject_draft(

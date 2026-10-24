@@ -44,7 +44,16 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .followups_provider import gateway
-from .followups_vm import VIEW_MESSAGES, VIEW_QUERIES, VIEWS, FollowupCardVM
+from .followups_vm import (
+    VIEW_MESSAGES,
+    VIEW_PARAM,
+    VIEW_QUERIES,
+    VIEWS,
+    FollowupCardVM,
+    view_from_param,
+    view_url,
+)
+from .nav_url import push_url_script
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -159,19 +168,27 @@ class FollowupsState(rx.State):
 
     @rx.event
     def enter_page(self) -> rx.event.EventSpec:
-        """The route's `on_load`: a `?consulta=<id>` opens this view on that card."""
-        wanted = str(self.router.url.query_parameters.get(QUERY_PARAM, "") or "")
+        """The route's `on_load`: `?vista=` picks the view (N5 — reloading or «atrás»
+        lands on the view the address names); a `?consulta=<id>` opens this view on that
+        card."""
+        params = self.router.url.query_parameters
+        self.view = view_from_param(str(params.get(VIEW_PARAM, "") or ""))
+        wanted = str(params.get(QUERY_PARAM, "") or "")
         if _uuid(wanted) is not None:
             self.view = VIEW_QUERIES
             self.highlight_id = wanted
         return FollowupsState.load
 
     @rx.event
-    def set_view(self, view: str | list[str]) -> rx.event.EventSpec | None:
+    def set_view(self, view: str | list[str]) -> list[rx.event.EventSpec] | None:
+        """The toggle. The view is written to the address as a new history step (N5)."""
         if not isinstance(view, str) or view not in VIEWS:
             return None
         self.view = view
-        return FollowupsState.load if view == VIEW_QUERIES else None
+        events = [rx.call_script(push_url_script(view_url(view)))]
+        if view == VIEW_QUERIES:
+            events.append(FollowupsState.load())
+        return events
 
     @rx.event
     def set_edit(self, followup_id: str, text: str) -> None:
@@ -377,7 +394,7 @@ class FollowupsState(rx.State):
         except (InvalidFollowupTransition, UnknownFollowup):
             yield rx.toast.warning(_GONE, duration=_TOAST_MS)
         except CapabilityUnavailable as exc:
-            yield rx.toast.warning(exc.availability.reason, duration=_TOAST_MS)
+            yield rx.toast.warning(exc.availability.owner_reason, duration=_TOAST_MS)
         except ValueError as exc:
             reason = str(exc)
             if "notice" in reason:

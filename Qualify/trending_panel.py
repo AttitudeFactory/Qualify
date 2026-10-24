@@ -220,7 +220,7 @@ def _song_detail_panel() -> rx.Component:
                         detail.audio_id, detail.preview_url
                     ),
                 ),
-                rx.text("Escuchar preview", size="1", color=T.TEXT_MUTED),
+                rx.text("Escuchar", size="1", color=T.TEXT_MUTED),
                 spacing="2",
                 align="center",
             ),
@@ -233,19 +233,6 @@ def _song_detail_panel() -> rx.Component:
                 spacing="1",
             ),
         ),
-        rx.cond(
-            detail.has_recommend_status,
-            rx.hstack(
-                rx.icon("flame", size=12, color=T.TEXT_FAINT),
-                rx.text(
-                    "Puntaje de tendencia del vendor: ",
-                    detail.recommend_status,
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="1",
-            ),
-        ),
         rx.hstack(
             rx.button(
                 "Usar esta canción",
@@ -255,7 +242,7 @@ def _song_detail_panel() -> rx.Component:
             ),
             rx.button(
                 rx.icon("search", size=12),
-                "Buscar en Meta",
+                "Buscar en Instagram",
                 size="1",
                 variant="soft",
                 color_scheme=T.tone_scale("neutral"),
@@ -408,7 +395,7 @@ def _trending_discovery_section() -> rx.Component:
         rx.text(
             "Contenido y audios en tendencia, de forma general — no representa "
             "exclusivamente una región ni tu país. Solo referencia visual: nada se "
-            "descarga ni se adjunta automáticamente a la Story.",
+            "descarga ni se adjunta automáticamente a la historia.",
             size="1",
             color=T.TEXT_FAINT,
         ),

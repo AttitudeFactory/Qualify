@@ -54,7 +54,7 @@ TU NEGOCIO
                                                        [Cerrar sesión]
 ```
 
-**12 entradas** más Creadores y Señales, que siguen con «Pronto» (decisión 4); hoy son 17.
+**12 entradas** más Creadores y Oportunidades (antes «Señales», decidido 2026-10-23), que siguen con «Pronto» (decisión 4); hoy son 17.
 Fuera del menú del cliente: `/design`. **Vitrina se elimina por completo** (ruta, menú y código):
 no tiene relación con el producto por ahora (fundador, 2026-10-23).
 Las dos zonas con tinte siguen siendo dos (no hay colores nuevos): «Escuchas» pasa a llamarse
@@ -72,7 +72,7 @@ Cada regla tiene un **cómo se comprueba**, para que la revisión local de exper
 
 | # | Regla | Cómo se comprueba |
 |---|---|---|
-| **N1** | **Un nombre por lugar.** Entrada del menú = `h1` del `page_header` = título de pestaña `Qualify · <nombre>`, en palabras del dueño. | Los tres textos son idénticos en `layout.py`, la página y `Qualify.py`. |
+| **N1** | **Un nombre por lugar.** Entrada del menú = `h1` del `page_header` = título de pestaña `Qualify · <nombre>`, en palabras del dueño. El menú puede usar una forma corta aprobada del mismo nombre («Interesados» para «Clientes interesados»), nunca un nombre distinto. | Los tres textos son idénticos en `layout.py`, la página y `Qualify.py`. |
 | **N2** | **Inicio es el centro.** Entrar a la cuenta, terminar la marca y cerrar un asistente con «Seguir después» llevan a `/`. Mientras falte algo para la primera publicación, Inicio muestra «Para tu primera publicación» (lista con ✓). | `AuthState` redirige a `/`; Inicio con 0 datos no está vacío. |
 | **N3** | **Toda tarea termina con «listo» y el siguiente paso.** Confirmación en palabras simples + **un** botón sólido al siguiente trabajo + uno suave para volver. Nunca solo un aviso flotante (toast). | No hay `rx.toast` como único resultado de Aprobar, Programar, Publicar, Guardar, Enviar. |
 | **N4** | **El que sale a buscar algo vuelve con eso elegido.** Si una pantalla manda a otro módulo («Agregar producto» desde Crear), al terminar vuelve al origen con lo creado ya seleccionado (`?volver=<ruta>`). | El recorrido Crear → Productos → Crear no pierde el paso ni el producto. |
@@ -123,7 +123,7 @@ Mientras tanto, N12 se cumple con el cajón actual.
 | 1 | Inicio | **Sí.** Inicio nuevo en `/` («Hoy tienes», «Así te fue», «Para tu primera publicación»); Menciones pasa a Resultados › «Quién habla de ti». |
 | 2 | Menú | **Sí, el mapa del §3:** Inicio · Atiende · Publica · Resultados · Tu negocio. «Piezas» se llama **«Por aprobar»**. |
 | 3 | Responder | **Un solo «Por responder»** con pestañas Mensajes · Quieren comprar · Comentarios · WhatsApp · Interesados; los chats de WhatsApp se enlazan como pestaña y el módulo WhatsApp conserva respuesta automática y promociones. |
-| 4 | «Pronto» | **Vitrina se elimina por completo** (ruta, menú y código). **Creadores y Señales se quedan en el menú con «pronto»** (ver N10). |
+| 4 | «Pronto» | **Vitrina se elimina por completo** (ruta, menú y código). **Creadores y Oportunidades (antes «Señales») se quedan en el menú con «pronto»** (ver N10). |
 | 5 | Celular | **Sí, barra inferior** de 4 accesos (Inicio · Por responder · Crear · Tu semana) + «Más». Se documenta primero en `docs/design-system.md` como patrón nuevo y luego se construye. |
 | 6 | Marca | **Mínimo de 5 pasos** (negocio, logo, colores, cómo hablas, redes); el resto va a «Mejora tu marca (opcional)». Terminado el mínimo, la app deja de bloquearse. |
 | 7 | Invitación | **Opción (b):** antes de empezar se avisa que Qualify es por invitación; con código sigue, sin código deja nombre, negocio y WhatsApp para que lo contacten. |

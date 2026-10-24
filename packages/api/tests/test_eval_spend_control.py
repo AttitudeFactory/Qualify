@@ -109,7 +109,9 @@ class _StreamingInner(httpx.BaseTransport):
 def test_production_defaults_are_untouched() -> None:
     from qualify_api.creative.composition import PRICING_VERSION
 
-    assert PRICING_VERSION == "v5"
+    # v6 is the eval's table; production moved from v5 to v7 (Seedance 2.5 with-video
+    # rates, m-24820142) and still never prices Seedream 5.0 pro.
+    assert PRICING_VERSION == "v7"
     assert DEFAULT_SEEDREAM_MODEL == LITE
 
 

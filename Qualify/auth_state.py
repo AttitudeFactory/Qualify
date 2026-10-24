@@ -63,6 +63,7 @@ from qualify_api.auth import (
     start_brand_kit_draft,
     throttle_key,
 )
+from qualify_api.tenancy.locale import LocaleInvalid, resolve_locale
 from reflex.config import get_config
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -525,9 +526,16 @@ class AuthState(rx.State):
         business_name = str(form_data.get("business_name", ""))
         email = str(form_data.get("email", ""))
         password = str(form_data.get("password", ""))
-        country = str(form_data.get("country") or _SIGNUP_DEFAULTS["country"])
-        timezone = str(form_data.get("timezone") or _SIGNUP_DEFAULTS["timezone"])
-        currency = str(form_data.get("currency") or _SIGNUP_DEFAULTS["currency"])
+        # m-24842967: the owner picks only the country; zone and currency follow it
+        # (Venezuela → dollars, decision 10) and are changed later in Configuración.
+        try:
+            locale = resolve_locale(str(form_data.get("country", "")))
+        except LocaleInvalid as exc:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = exc.message
+            return
+        country, timezone, currency = locale.country, locale.timezone, locale.currency
         async with self:
             self.is_authenticating = True
             self.auth_error = ""
@@ -812,6 +820,7 @@ class AuthState(rx.State):
             from .discover_reels import DiscoverReelsState
             from .followups_state import FollowupsState
             from .gallery_state import GalleryState
+            from .home_state import HomeState
             from .ice_breakers_state import IceBreakersState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
@@ -819,6 +828,7 @@ class AuthState(rx.State):
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
             from .replies_state import RepliesState
+            from .settings_state import SettingsState
             from .state import DashboardState
             from .stories_state import StoriesState
             from .trending_state import TrendingState
@@ -862,6 +872,8 @@ class AuthState(rx.State):
                 PlannerState,
                 # the POST gallery (QUA-118): the tenant's POSTs and the filters
                 GalleryState,
+                # Inicio (m-24842962): the tenant's pending counts and week figures
+                HomeState,
                 # the POST's «Campaña» field (QUA-143): the brand's campaigns
                 CampaignState,
                 # the Canva card: links of a draft and the pending OAuth verifier
@@ -894,6 +906,8 @@ class AuthState(rx.State):
                 WhatsAppContactsState,
                 WhatsAppCampaignsState,
                 WhatsAppMetricsState,
+                # m-24842967: Configuración's country and currency of the business
+                SettingsState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
