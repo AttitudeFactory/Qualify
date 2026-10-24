@@ -306,7 +306,7 @@ def test_the_copy_says_the_owner_wrote_the_menu_and_takes_the_chat() -> None:
         "Al publicar, tu WhatsApp responde con los mensajes que tú escribiste en este menú, "
         "nada más. Puedes tomar el control de cualquier chat desde Chats."
     )
-    assert NEXT_STEP_QR == "Haz que te escriban: crea tu código QR para el mostrador"
+    assert NEXT_STEP_QR == "Haz que te escriban: crea tu código QR para tu local o tus redes"
     source = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()
     state_source = (Path(__file__).parent / "whatsapp_menu_state.py").read_text()
     assert "Tu WhatsApp responde con el menú que tú escribiste" in source
