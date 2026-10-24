@@ -27,6 +27,7 @@ Money rules (enforced by `spend_control`):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -75,6 +76,55 @@ PROMPTS: Mapping[str, str] = {
         "background of Image 1 unchanged."
     ),
 }
+
+
+#: Version 2 (m-24849234 PR 4): after the Lite pilot copied the palette's layout (bands)
+#: into the object, the color prompt names the colors and forbids the layout; the texture
+#: prompt comes in two finishes. Version 1 stays the default so earlier runs compare.
+PROMPT_VERSION_V2 = "plantillas-ai-v2"
+PROMPTS_V2: Mapping[str, str] = {
+    "color": (
+        "Image 1 is a product photo. Image 2 is a color reference with the colors "
+        "{palette}. Transfer the colors of Image 2 ({palette}) onto the object in Image 1 "
+        "as its own material colors. Do NOT reproduce the layout, stripes, bands or shapes "
+        "of Image 2. Keep the object's geometry, material, shadows, printed text and the "
+        "background of Image 1 unchanged."
+    ),
+    "texture_plano": PROMPTS["texture"],
+    "texture_volumen": (
+        'Image 1 is a logo with the text "{expected_text}". Image 2 is a material texture. '
+        'Render the word "{expected_text}" as 3D letters made of the material in Image 2, '
+        'with real volume, depth and lighting. Keep the spelling "{expected_text}" and the '
+        "letterforms of Image 1 exactly. Use a simple studio background that matches the "
+        "material."
+    ),
+}
+PROMPT_SETS: Mapping[str, str] = {"v1": PROMPT_VERSION, "v2": PROMPT_VERSION_V2}
+TEXTURE_FINISHES: tuple[str, ...] = ("plano", "volumen")
+
+
+@dataclass(frozen=True)
+class PromptChoice:
+    """Which prompts a run sends: `version` v1 (default) or v2, and for v2 the texture
+    `finish` (plano or volumen; v1 has only the flat one)."""
+
+    version: str = "v1"
+    finish: str = "plano"
+
+    def __post_init__(self) -> None:
+        if self.version not in PROMPT_SETS:
+            raise ValueError(f"prompts {self.version!r}: choose from {list(PROMPT_SETS)}")
+        if self.finish not in TEXTURE_FINISHES:
+            raise ValueError(f"finish {self.finish!r}: choose from {list(TEXTURE_FINISHES)}")
+        if self.version == "v1" and self.finish != "plano":
+            raise ValueError("the volumen finish exists only in the v2 prompts")
+
+    @property
+    def prompt_version(self) -> str:
+        return PROMPT_SETS[self.version]
+
+
+DEFAULT_PROMPTS = PromptChoice()
 
 
 class CasesError(ValueError):
@@ -450,33 +500,94 @@ def total_usd(planned: Iterable[PlannedCall]) -> Decimal:
 # Paid request
 
 
-def prompt_for(item: MatrixItem) -> str:
-    template = PROMPTS[item.block]
-    return template.format(expected_text=item.expected_text or "")
+def prompt_for(
+    item: MatrixItem,
+    choice: PromptChoice = DEFAULT_PROMPTS,
+    *,
+    palette_hex: Sequence[str] = (),
+) -> str:
+    """The prompt of a paid item. v1 is the original text, byte for byte. v2 names the
+    reference's colors (`palette_hex`, required for a color item) and picks the texture
+    finish."""
+    if choice.version == "v1":
+        return PROMPTS[item.block].format(expected_text=item.expected_text or "")
+    if item.block == "color":
+        if not palette_hex:
+            raise ValueError("the v2 color prompt needs the reference's colors (palette_hex)")
+        return PROMPTS_V2["color"].format(palette=", ".join(palette_hex))
+    return PROMPTS_V2[f"texture_{choice.finish}"].format(expected_text=item.expected_text or "")
 
 
 def request_params(
-    item: MatrixItem, *, model_id: str, size: str, images: Sequence[str]
+    item: MatrixItem,
+    *,
+    model_id: str,
+    size: str,
+    images: Sequence[str],
+    choice: PromptChoice = DEFAULT_PROMPTS,
+    palette_hex: Sequence[str] = (),
 ) -> dict[str, object]:
     """`SeedreamImageAdapter` params: the model is always explicit."""
-    return {"prompt": prompt_for(item), "model": model_id, "size": size, "images": list(images)}
+    prompt = prompt_for(item, choice, palette_hex=palette_hex)
+    return {"prompt": prompt, "model": model_id, "size": size, "images": list(images)}
 
 
 def build_request(
-    item: MatrixItem, *, model_id: str, size: str, images: Sequence[str]
+    item: MatrixItem,
+    *,
+    model_id: str,
+    size: str,
+    images: Sequence[str],
+    choice: PromptChoice = DEFAULT_PROMPTS,
+    palette_hex: Sequence[str] = (),
 ) -> GenerationRequest:
     return GenerationRequest(
         task=GenerationTask.PRODUCT_IMAGE,
         rendered_prompt=RenderedPrompt("", "", ""),
-        params=request_params(item, model_id=model_id, size=size, images=images),
+        params=request_params(
+            item,
+            model_id=model_id,
+            size=size,
+            images=images,
+            choice=choice,
+            palette_hex=palette_hex,
+        ),
     )
 
 
-def provenance(call: PlannedCall) -> dict[str, object]:
-    return {
+def prompt_version_for(block: str, choice: PromptChoice = DEFAULT_PROMPTS) -> str:
+    """The version of the TEXT a block's item is sent: v2's texture `plano` is v1's text
+    word for word, so it keeps the v1 label (results stay comparable); the flat block
+    has its own pipeline version."""
+    if block == "flat":
+        return FLAT_VERSION
+    if block == "texture" and choice.finish == "plano":
+        return PROMPT_VERSION
+    return choice.prompt_version
+
+
+def prompt_sha256(prompt: str) -> str:
+    """The SHA-256 of the exact prompt text (UTF-8), recorded with every item."""
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def provenance(call: PlannedCall, choice: PromptChoice = DEFAULT_PROMPTS) -> dict[str, object]:
+    """Provider, model, the prompt version of the item's text (`prompt_version_for`), its
+    `prompt_sha256` (None for the flat block, and for a v2 color item until the run
+    knows the reference's colors — the runner then records the hash of what it sent)
+    and, for a texture item, the finish its prompt asked for."""
+    item = call.item
+    sha: str | None = None
+    if call.quote is not None and not (choice.version == "v2" and item.block == "color"):
+        sha = prompt_sha256(prompt_for(item, choice))
+    record: dict[str, object] = {
         "provider": "seedream" if call.quote else FLAT_PROVIDER,
         "model_id": call.model_id,
-        "prompt_version": PROMPT_VERSION if call.quote else FLAT_VERSION,
+        "prompt_version": prompt_version_for(item.block, choice),
+        "prompt_sha256": sha,
         "pricing_version": call.quote.pricing_version if call.quote else None,
         "estimated_usd": str(call.cost_usd),
     }
+    if item.block == "texture":
+        record["texture_finish"] = choice.finish
+    return record

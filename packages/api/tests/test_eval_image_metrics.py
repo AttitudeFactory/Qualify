@@ -369,13 +369,16 @@ def test_fake_reader_and_the_pending_record() -> None:
     }
     reader = im.FakeReader(default="?", by_digest={hashlib.sha256(image).hexdigest(): "luma"})
     reader_type: im.LegibilityReader = reader
-    assert im.legibility_record(reader_type, image, "LUMA") == {
+    assert im.legibility_record(reader_type, image, "LUMA", clock=lambda: 0.0) == {
         "metricas_version": im.METRICS_VERSION,
         "estado": "leido",
         "leido": "luma",
         "coincide": True,
         "reintento": False,
         "lecturas": ["luma"],
+        "latencias_s": [0.0],
+        "intentos": 1,
+        "latencia_s": 0.0,
     }
     missed = im.legibility_record(reader, b"other", "LUMA")
     assert missed["coincide"] is False and missed["reintento"] is True  # read twice
@@ -433,3 +436,28 @@ def test_a_failed_retry_keeps_the_first_reading() -> None:
     assert record["coincide"] is False and record["reintento"] is False
     assert record["lecturas"] == ["LUMO"]
     assert record["reintento_error"] == "RuntimeError: connection reset"
+
+
+class _Steps:
+    """A fake clock advancing 0.5 s per reading."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        self.now += 0.5
+        return self.now
+
+
+def test_latencies_count_every_attempted_read() -> None:
+    refused = im.legibility_record(_Exhausted(1, "LUMO"), b"img", "LUMA", clock=_Steps())
+    assert refused["intentos"] == 2 and refused["latencias_s"] == [0.5, 0.5]
+    assert refused["latencia_s"] == 1.0 and "motivo_sin_reintento" in refused
+    failed = im.legibility_record(_RetryBreaks(), b"img", "LUMA", clock=_Steps())
+    assert failed["intentos"] == 2 and len(failed["latencias_s"]) == 2
+    assert "reintento_error" in failed and failed["lecturas"] == ["LUMO"]
+    none = im.legibility_record(_Exhausted(0, "LUMA"), b"img", "LUMA", clock=_Steps())
+    assert none["estado"] == "sin lectura" and none["intentos"] == 1
+    assert none["latencias_s"] == [0.5]
+    hit = im.legibility_record(im.FakeReader(default="LUMA"), b"img", "LUMA", clock=_Steps())
+    assert hit["intentos"] == 1 and hit["reintento"] is False
