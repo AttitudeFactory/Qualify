@@ -102,5 +102,20 @@ def _body() -> rx.Component:
     )
 
 
+def leads_tab() -> rx.Component:
+    """m-24842990: the «Interesados» tab of «Por responder» — the same list, with the
+    page's description as the tab's opening line."""
+    return rx.vstack(
+        rx.text(
+            "Personas que te dejaron sus datos y aceptaron que las contactes.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        _body(),
+        spacing="3",
+        width="100%",
+    )
+
+
 def leads_index() -> rx.Component:
     return app_shell(_topbar(), page_body(_body()))

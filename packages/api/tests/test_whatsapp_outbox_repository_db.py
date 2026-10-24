@@ -340,3 +340,74 @@ def test_phone_number_id_falls_back_to_the_connections_external_account_id(seede
     assert phone_number_id_for(tenant_id=TENANT, connection_id=seeded["connection"]) == expected
     with pytest.raises(LookupError):
         phone_number_id_for(tenant_id=TENANT, connection_id=uuid4())
+
+
+# --- 0087 (m-24848535): template replies --------------------------------------------------
+
+
+def _enqueue_template_reply(
+    repo: PostgresOutboxRepository, seeded: dict[str, UUID], key: str, category: str
+) -> UUID:
+    return repo.enqueue(
+        tenant_id=TENANT,
+        connection_id=seeded["connection"],
+        thread_id=seeded["thread"],
+        kind="template_reply",
+        payload={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": TO,
+            "type": "template",
+            "template": {"name": "seguimiento", "language": {"code": "es"}},
+        },
+        created_by_user_id=seeded["user"],
+        request_key=key,
+        template_id=uuid4(),
+        template_category=category,
+        preview_text="Hola, ¿seguimos con tu pedido?",
+    )
+
+
+def test_template_reply_same_request_key_queues_once(seeded) -> None:
+    repo = PostgresOutboxRepository()
+    key = f"tap-{uuid4()}"
+    first = _enqueue_template_reply(repo, seeded, key, "utility")
+    again = _enqueue_template_reply(repo, seeded, key, "utility")
+    other = _enqueue_template_reply(repo, seeded, f"tap-{uuid4()}", "utility")
+    assert first == again != other
+    with tenant_session(TENANT) as session:
+        ids = session.scalars(
+            select(WhatsAppOutboxItem.id).where(WhatsAppOutboxItem.request_key == key)
+        ).all()
+    assert ids == [first]
+
+
+def test_template_reply_claims_its_category_and_sends_its_preview(seeded) -> None:
+    repo = PostgresOutboxRepository()
+    item_id = _enqueue_template_reply(repo, seeded, f"tap-{uuid4()}", "marketing")
+    claimed = repo.claim(tenant_id=TENANT, worker_id="w:tr", now=datetime.now(UTC), limit=LIMIT)
+    (item,) = [c for c in claimed if c.id == item_id]
+    assert item.kind == "template_reply" and item.template_category == "marketing"
+    assert item.needs_opt_in is True
+    wamid = f"wamid.{uuid4().hex}"
+    repo.mark_sent(tenant_id=TENANT, item_id=item_id, wamid=wamid, now=datetime.now(UTC))
+    with tenant_session(TENANT) as session:
+        message = session.scalars(select(Message).where(Message.external_message_id == wamid)).one()
+    assert message.text == "Hola, ¿seguimos con tu pedido?"
+
+
+def test_template_reply_check_refuses_a_row_without_its_key(seeded) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError), tenant_session(TENANT) as session:
+        session.add(
+            WhatsAppOutboxItem(
+                tenant_id=TENANT,
+                connection_id=seeded["connection"],
+                thread_id=seeded["thread"],
+                kind="template_reply",
+                payload={"to": TO, "type": "template"},
+                template_category="utility",
+            )
+        )
+        session.flush()

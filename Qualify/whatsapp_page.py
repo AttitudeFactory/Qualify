@@ -136,7 +136,7 @@ def number_selector() -> rx.Component:
 def whatsapp_header() -> rx.Component:
     return page_header(
         "WhatsApp",
-        "Tu número de WhatsApp Business: estado de la conexión, perfil y códigos QR.",
+        "Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones.",
         number_selector(),
     )
 
