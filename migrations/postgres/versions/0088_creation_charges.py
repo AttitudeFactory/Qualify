@@ -1,7 +1,7 @@
 """creation_charges: «creaciones del mes», one row per charged request (m-24848531)
 
 Revision ID: 0088
-Revises: 0087
+Revises: 0086
 Create Date: 2026-10-23
 
 CREAR-5: the owner sees «Te quedan 18 de 30 este mes», never money. Every generation
@@ -36,7 +36,8 @@ creations.
 deleted). Nothing for `qualify_webhook_worker` nor `qualify_admin`. Standard RLS (R7).
 
 **Lane note.** Written as 0084 off 0081 for the CREAR lane of the UX epic; renumbered
-0088 and re-pointed onto main's single head 0087 when main was merged in (m-24851828).
+0088 and re-pointed onto main's single head 0086 (main chains 0084 -> 0087 -> 0086)
+when main was merged in (m-24851829).
 
 **Downgrade** drops the table: the balance goes back to «no quota».
 """
@@ -48,7 +49,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 revision = "0088"
-down_revision = "0087"
+down_revision = "0086"
 branch_labels = None
 depends_on = None
 
