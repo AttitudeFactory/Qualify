@@ -317,8 +317,9 @@ class SeedanceTaskStatus:
 
 def recovery_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], RecoveryReport | None]:
     """The worker's recovery pass over its own scope (`None` = production discovery).
-    The content service and the adapter are built on the FIRST pass (after `.env`), once;
-    `QUALIFY_VENDOR_RECOVERY=off` skips the pass (read every time)."""
+    Its parts are built on the FIRST pass (after `.env`), once — the content service
+    only on the first resume; `QUALIFY_VENDOR_RECOVERY=off` skips the pass (read every
+    time)."""
     scope = scoped_tenants(tenant_ids) if tenant_ids is not None else discover_tenants
     built: dict[str, Any] = {}
 
@@ -338,20 +339,28 @@ def recovery_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], RecoveryRe
 
 
 def _production_parts() -> dict[str, Any]:
+    """The store and the status reader are light; the content service (copy, media,
+    Remotion, PyAV…) is built only when a draft is actually resumed — the calendar
+    worker's container is small (320 MiB) and most passes resume nothing."""
     from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter  # noqa: PLC0415
 
-    from qualify_api.creative.composition import (  # noqa: PLC0415 — heavy, lazy
+    from qualify_api.creative.composition import (  # noqa: PLC0415 — after .env
         ARK_BASE_URL,
         ARK_BASE_URL_ENV,
         PlatformKeyResolver,
-        production_content_service,
     )
 
-    service = production_content_service()
     adapter = SeedanceVideoAdapter(base_url=os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL)
+    services: list[Any] = []
 
     def resume(tenant_id: UUID, draft_id: UUID) -> None:
-        service.run_generation(tenant_id=tenant_id, draft_id=draft_id)
+        if not services:
+            from qualify_api.creative.composition import (  # noqa: PLC0415 — heavy, lazy
+                production_content_service,
+            )
+
+            services.append(production_content_service())
+        services[0].run_generation(tenant_id=tenant_id, draft_id=draft_id)
 
     return {
         "store": PostgresRecoveryStore(),
