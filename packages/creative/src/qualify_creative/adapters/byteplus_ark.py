@@ -26,13 +26,17 @@ the same day with one Seedream 5.0 lite image and one Seedance 1.0 pro clip:
   lower «with video input» rate, and its tokens include the input video (measured
   2026-10-23, `estimate_video_tokens`).
 
-Both adapters poll/answer inside ``generate`` so they fit the synchronous Protocol and the
-``InlineDispatcher`` thread unchanged, exactly like the HeyGen one.
+Seedance's task is two public steps (m-24852159, ADR 41 phase 1): ``submit`` sends it and
+returns the vendor task id at once, ``poll`` reads its state once; a queue worker sends,
+lets go of the thread and polls later. ``generate`` — what the synchronous Protocol and the
+``InlineDispatcher`` thread call — is the composition of the two, unchanged for its
+callers. Seedream answers inside ``generate`` (an image is synchronous).
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -100,6 +104,42 @@ MAX_CONSECUTIVE_POLL_ERRORS = 3
 MAX_POST_ATTEMPTS = 3
 POST_RETRY_STATUSES = frozenset({429, 503})
 POST_RETRY_BACKOFF_SECONDS = 2.0
+#: m-24852159: what ModelArk answers when it is busy rather than broken — over the
+#: account's 600 RPM (`ModelAccountRpmRateLimitExceeded`), past the unpublished bottom of
+#: its queue (`QuotaExceeded`), or overloaded (`ServerOverloaded`). A Seedance submit
+#: raises `VendorBusy` with a suggested wait instead of retrying blind: the caller (the
+#: queue worker) puts the job back for later. Error codes: `error-codes`, read 2026-10-24.
+BUSY_STATUS = 429
+BUSY_CODES = frozenset({"ModelAccountRpmRateLimitExceeded", "QuotaExceeded", "ServerOverloaded"})
+#: The suggested wait when the answer carries no `Retry-After`: the RPM limit clears
+#: within its minute; a full queue drains as tasks finish (renders take 38-115 s); an
+#: overload is the vendor's own and unknown.
+BUSY_WAIT_SECONDS: dict[str | None, float] = {
+    "ModelAccountRpmRateLimitExceeded": 15.0,
+    "QuotaExceeded": 60.0,
+    "ServerOverloaded": 30.0,
+}
+DEFAULT_BUSY_WAIT_SECONDS = 15.0
+MAX_BUSY_WAIT_SECONDS = 600.0
+#: How long the blocking `generate` keeps honouring `VendorBusy` waits before it gives
+#: up (the inline thread has a person waiting; a queue worker uses `submit` instead).
+DEFAULT_BUSY_BUDGET_SECONDS = 90.0
+#: Adaptive polling (m-24852159): every `poll_interval_seconds` while a task runs and for
+#: its first `QUEUED_FAST_POLL_SECONDS` in the queue — at our volume BytePlus does not
+#: queue at all, and the longest measured render is under 2 min. Past that the task sits
+#: in BytePlus's own queue: the wait grows by `QUEUED_BACKOFF_RATIO` of the time spent
+#: queued beyond it, up to `MAX_QUEUED_POLL_INTERVAL_SECONDS`.
+QUEUED_FAST_POLL_SECONDS = 180.0
+QUEUED_BACKOFF_RATIO = 0.25
+MAX_QUEUED_POLL_INTERVAL_SECONDS = 60.0
+#: ModelArk takes at most 20 task queries per second per account
+#: (`docs/escalar-generacion-concurrencia.md`); every GET of one adapter goes through a
+#: token bucket of this rate.
+POLL_QUERIES_PER_SECOND = 20.0
+#: `priority` (2.0 and 2.5 only): 0-9, a higher one goes first in the endpoint's queue.
+PRIORITY_RANGE = range(0, 10)
+#: `execution_expires_after`: 1 h to 72 h (create-video-generation-task-api).
+EXPIRES_AFTER_RANGE_SECONDS = (3600, 259200)
 #: Seedream 5.0 lite / 4.x take up to 14 reference images.
 MAX_REFERENCE_IMAGES = 14
 #: Seedance 2.0 references (create-video-generation-task-api, read 2026-10-14); 2.5
@@ -114,6 +154,7 @@ MAX_PROMPT_CHARS = 3000
 _TERMINAL_OK = "succeeded"
 _TERMINAL_FAILED = frozenset({"failed", "cancelled", "expired"})
 _RUNNING = "running"
+_QUEUED = "queued"
 
 
 @dataclass(frozen=True)
@@ -159,6 +200,11 @@ class SeedanceFamily:
     @property
     def draft(self) -> bool:
         return self.draft_final_resolution is not None
+
+    @property
+    def priority(self) -> bool:
+        """`priority` is a 2.0 / 2.5 parameter (create-video-generation-task-api)."""
+        return self.references
 
 
 SEEDANCE_FAMILIES: dict[str, SeedanceFamily] = {
@@ -360,6 +406,19 @@ class ArkAPIError(ArkError):
         self.code = code
 
 
+class VendorBusy(ArkAPIError):
+    """ModelArk is busy, not broken (`BUSY_CODES`, or any 429): nothing was created and
+    nothing is billed. `retry_after_seconds` is the suggested wait — the vendor's own
+    `Retry-After` when it sent one. A subclass of `ArkAPIError`, so code that branches on
+    the HTTP status (and the operator's message, matched on «HTTP 429») is unchanged."""
+
+    def __init__(
+        self, status_code: int, code: str | None, message: str, retry_after_seconds: float
+    ) -> None:
+        super().__init__(status_code, code, message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ArkTaskFailed(ArkError):
     """The video task ended `failed`/`cancelled`/`expired` — not billed."""
 
@@ -389,6 +448,43 @@ class ArkTaskTimeout(ArkError):
 # shared HTTP
 
 
+class QueryRateLimiter:
+    """A thread-safe token bucket for the account's query limit (`POLL_QUERIES_PER_SECOND`).
+    `acquire` reserves one query and sleeps only for the part not yet refilled; it never
+    loops. One per adapter by default; a worker polling through several adapters in one
+    process passes the same one to all. (Several processes each hold their own: the
+    adaptive cadence keeps one task at no more than one query every few seconds.)"""
+
+    def __init__(
+        self,
+        rate_per_second: float = POLL_QUERIES_PER_SECOND,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if rate_per_second <= 0:
+            raise ValueError("rate_per_second must be positive")
+        self._rate = rate_per_second
+        self._capacity = rate_per_second
+        self._tokens = rate_per_second
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last = monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> float:
+        """Take one query; returns how long it slept for it."""
+        with self._lock:
+            now = self._monotonic()
+            self._tokens = min(self._capacity, self._tokens + (now - self._last) * self._rate)
+            self._last = now
+            self._tokens -= 1
+            wait = -self._tokens / self._rate if self._tokens < 0 else 0.0
+        if wait > 0:
+            self._sleep(wait)
+        return wait
+
+
 class _ArkClient:
     def __init__(
         self,
@@ -403,10 +499,19 @@ class _ArkClient:
         self._request_timeout = request_timeout_seconds
         self._sleep = sleep
 
-    def _post(self, client: Any, path: str, body: Mapping[str, object]) -> Mapping[str, Any]:
+    def _post(
+        self,
+        client: Any,
+        path: str,
+        body: Mapping[str, object],
+        *,
+        busy_raises: bool = False,
+    ) -> Mapping[str, Any]:
         """POST `body` and return the JSON, sent again (up to `MAX_POST_ATTEMPTS`) only
         on the failures where the vendor never started the work — see
-        `MAX_POST_ATTEMPTS` for why that keeps a retry from billing twice."""
+        `MAX_POST_ATTEMPTS` for why that keeps a retry from billing twice. With
+        `busy_raises` (a Seedance submit, m-24852159) a busy answer raises `VendorBusy`
+        at once instead of spending the retries."""
         import httpx  # lazy, already loaded by _client
 
         for attempt in range(1, MAX_POST_ATTEMPTS + 1):
@@ -414,6 +519,11 @@ class _ArkClient:
                 return _body_or_raise(client.post(path, json=body))
             except (httpx.ConnectError, httpx.RemoteProtocolError):
                 if attempt == MAX_POST_ATTEMPTS:
+                    raise
+            except VendorBusy as exc:
+                if busy_raises:
+                    raise
+                if exc.status_code not in POST_RETRY_STATUSES or attempt == MAX_POST_ATTEMPTS:
                     raise
             except ArkAPIError as exc:
                 if exc.status_code not in POST_RETRY_STATUSES or attempt == MAX_POST_ATTEMPTS:
@@ -444,12 +554,60 @@ def _body_or_raise(response: Any) -> Mapping[str, Any]:
     body = body if isinstance(body, dict) else {}
     if response.status_code >= 400:
         error = body.get("error") if isinstance(body.get("error"), dict) else {}
-        raise ArkAPIError(
-            response.status_code,
-            error.get("code"),
-            error.get("message") or response.text[:300],
-        )
+        code = error.get("code")
+        message = error.get("message") or response.text[:300]
+        if response.status_code == BUSY_STATUS or code in BUSY_CODES:
+            raise VendorBusy(
+                response.status_code, code, message, _busy_wait(code, response.headers)
+            )
+        raise ArkAPIError(response.status_code, code, message)
     return body
+
+
+def _busy_wait(code: str | None, headers: Mapping[str, str] | None) -> float:
+    """The suggested wait: the vendor's `Retry-After` (seconds) when it sent one, else
+    the code's own (`BUSY_WAIT_SECONDS`), at most `MAX_BUSY_WAIT_SECONDS`."""
+    raw = headers.get("retry-after") if headers is not None else None
+    try:
+        seconds = float(raw) if raw is not None else None
+    except ValueError:
+        seconds = None  # an HTTP date: the code's own wait is close enough
+    if seconds is None or seconds <= 0:
+        seconds = BUSY_WAIT_SECONDS.get(code, DEFAULT_BUSY_WAIT_SECONDS)
+    return min(seconds, MAX_BUSY_WAIT_SECONDS)
+
+
+def poll_delay_seconds(status: str, queued_for: float, base: float) -> float:
+    """How long to wait before the next query of a task (m-24852159): `base` while it
+    runs and for its first `QUEUED_FAST_POLL_SECONDS` queued (or of unknown state); then
+    a wait that grows with the time spent queued, up to the cap."""
+    if status == _RUNNING or queued_for < QUEUED_FAST_POLL_SECONDS:
+        return base
+    grown = base + QUEUED_BACKOFF_RATIO * (queued_for - QUEUED_FAST_POLL_SECONDS)
+    return max(base, min(grown, MAX_QUEUED_POLL_INTERVAL_SECONDS))
+
+
+def _priority(value: object, family: SeedanceFamily, model_id: str) -> int | None:
+    """`priority`, 0-9, only where the family takes it (2.0, 2.5)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value not in PRIORITY_RANGE:
+        raise ValueError(f"'priority' must be an integer 0-9, got {value!r}")
+    if not family.priority:
+        raise ValueError(f"{model_id} takes no priority: use Seedance 2.0 or 2.5")
+    return value
+
+
+def _expires_after(value: object) -> int | None:
+    """`execution_expires_after`, whole seconds within ModelArk's range."""
+    if value is None:
+        return None
+    low, high = EXPIRES_AFTER_RANGE_SECONDS
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(
+            f"'execution_expires_after' must be whole seconds in [{low}, {high}], got {value!r}"
+        )
+    return value
 
 
 def _prompt(params: Mapping[str, object]) -> str:
@@ -547,6 +705,9 @@ class _VideoSpec:
     task_type: str | None = None
     #: The reference videos' total length, for the estimate only (None: not measured).
     reference_video_seconds: float | None = None
+    #: m-24852159: the queue order (0-9, 2.x) and BytePlus's own expiry; None = not sent.
+    priority: int | None = None
+    execution_expires_after: int | None = None
 
     @property
     def estimate_ratio(self) -> str:
@@ -646,6 +807,8 @@ class _VideoSpec:
             draft=draft,
             task_type=task_type,
             reference_video_seconds=_reference_video_seconds(params.get("reference_video_seconds")),
+            priority=_priority(params.get("priority"), family, model_id),
+            execution_expires_after=_expires_after(params.get("execution_expires_after")),
         )
 
     def body(self) -> dict[str, object]:
@@ -692,6 +855,7 @@ class _VideoSpec:
             body["draft"] = True
         if self.task_type is not None:
             body["omni_reference_task_type"] = self.task_type
+        _queue_fields(body, self.priority, self.execution_expires_after)
         return body
 
 
@@ -752,6 +916,9 @@ class _FinalSpec:
     video_input: bool = False
     #: The draft's reference videos' total length, for the estimate only.
     reference_video_seconds: float | None = None
+    #: m-24852159: sent like any task's — they are not among the draft's reused fields.
+    priority: int | None = None
+    execution_expires_after: int | None = None
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], default_model: str) -> _FinalSpec:
@@ -776,6 +943,8 @@ class _FinalSpec:
             generate_audio=bool(params.get("generate_audio", family.audio)) and family.audio,
             video_input=_video_input_flag(params.get("video_input")),
             reference_video_seconds=_reference_video_seconds(params.get("reference_video_seconds")),
+            priority=_priority(params.get("priority"), family, model_id),
+            execution_expires_after=_expires_after(params.get("execution_expires_after")),
         )
 
     @property
@@ -797,7 +966,7 @@ class _FinalSpec:
         return False
 
     def body(self) -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "model": self.model_id,
             "content": [{"type": "draft_task", "draft_task": {"id": self.draft_task_id}}],
             "resolution": self.resolution,
@@ -805,6 +974,52 @@ class _FinalSpec:
             "watermark": False,
             "return_last_frame": self.return_last_frame,
         }
+        _queue_fields(body, self.priority, self.execution_expires_after)
+        return body
+
+
+def _queue_fields(body: dict[str, object], priority: int | None, expires: int | None) -> None:
+    """`priority` and `execution_expires_after` (m-24852159), only when the caller set
+    them — omitted, ModelArk's own defaults apply (the expiry's is 48 h)."""
+    if priority is not None:
+        body["priority"] = priority
+    if expires is not None:
+        body["execution_expires_after"] = expires
+
+
+@dataclass(frozen=True)
+class TaskState:
+    """One answer of `SeedanceVideoAdapter.poll` (m-24852159): the task's `status` as
+    ModelArk names it — `queued`, `running`, `succeeded`, `failed`, `cancelled`,
+    `expired` — and the raw answer, kept for the result and for provenance."""
+
+    task_id: str
+    status: str
+    data: Mapping[str, Any]
+
+    @property
+    def terminal(self) -> bool:
+        return self.status == _TERMINAL_OK or self.status in _TERMINAL_FAILED
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == _TERMINAL_OK
+
+    @property
+    def error_code(self) -> str | None:
+        error = self.data.get("error") if isinstance(self.data.get("error"), dict) else {}
+        return error.get("code")
+
+    @property
+    def error_message(self) -> str | None:
+        error = self.data.get("error") if isinstance(self.data.get("error"), dict) else {}
+        return error.get("message")
+
+    @property
+    def video_url(self) -> str | None:
+        content = self.data.get("content") if isinstance(self.data.get("content"), dict) else {}
+        url = content.get("video_url")
+        return str(url) if url else None
 
 
 class SeedanceVideoAdapter(_ArkClient):
@@ -837,10 +1052,16 @@ class SeedanceVideoAdapter(_ArkClient):
     - ``reference_video_seconds`` — the reference videos' total length, for the price
       estimate only (ModelArk bills the input video too); unmeasured = the 30 s cap;
     - ``resume_task_id`` (m-24852154) — a task this generation already created: waited
-      for, never created again. The other params still price the estimate.
+      for, never created again. The other params still price the estimate;
+    - ``priority`` (0-9, 2.0 / 2.5) and ``execution_expires_after`` (3600-259200 s) —
+      sent with the task when set (m-24852159); ``submit`` also takes them as arguments.
 
     ``request.observer`` hears the new task's id as soon as ModelArk accepts it, and
     every poll answer (`VendorTaskObserver`).
+
+    Two steps for a queue (m-24852159): ``submit`` → the task id, at once; ``poll`` →
+    a `TaskState`, one query; ``result`` turns a succeeded state into the
+    `GenerationResult`. ``generate`` composes them and blocks, as it always did.
     """
 
     name = "seedance"
@@ -858,6 +1079,8 @@ class SeedanceVideoAdapter(_ArkClient):
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         queue_timeout_seconds: float = DEFAULT_QUEUE_TIMEOUT_SECONDS,
+        busy_budget_seconds: float = DEFAULT_BUSY_BUDGET_SECONDS,
+        query_limiter: QueryRateLimiter | None = None,
     ) -> None:
         super().__init__(
             base_url=base_url,
@@ -870,7 +1093,9 @@ class SeedanceVideoAdapter(_ArkClient):
         self._poll_interval = poll_interval_seconds
         self._poll_timeout = poll_timeout_seconds
         self._queue_timeout = queue_timeout_seconds
+        self._busy_budget = busy_budget_seconds
         self._monotonic = monotonic
+        self._limiter = query_limiter or QueryRateLimiter(monotonic=monotonic, sleep=sleep)
 
     def spec(self, params: Mapping[str, object]) -> _VideoSpec | _FinalSpec:
         """A `draft_task_id` asks for the final of that draft; anything else is a task of
@@ -880,18 +1105,84 @@ class SeedanceVideoAdapter(_ArkClient):
         return _VideoSpec.from_params(params, self.model)
 
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
+        """`submit` (or the task already created, `RESUME_TASK_PARAM`) and `poll` until
+        it ends — the blocking composition the inline thread calls. A busy vendor
+        (`VendorBusy`) is waited for as it suggests, within `busy_budget_seconds`; past
+        that the `VendorBusy` goes up like any failure."""
         spec = self.spec(request.params)
         observer = request.observer
-        resume = request.params.get(RESUME_TASK_PARAM)
+        resume = _resume_id(request.params)
         with self._client(api_key) as client:
-            if isinstance(resume, str) and resume.strip():
+            if resume is not None:
                 # m-24852154: a task this generation already paid for — waited for,
                 # never created again
-                task_id = resume.strip()
+                task_id = resume
             else:
-                task_id = self._create(client, spec)
-                _tell(observer, "created", task_id)
+                task_id = self._submit_busy_aware(client, spec, observer)
             data = self._wait(client, task_id, observer)
+        return self._result(spec, task_id, data)
+
+    def submit(
+        self,
+        request: GenerationRequest,
+        *,
+        api_key: str,
+        priority: int | None = None,
+        execution_expires_after: int | None = None,
+    ) -> str:
+        """Create the task and return its id at once, without waiting for it
+        (m-24852159). The observer hears the id before this returns, so the caller has
+        it stored before anything else can fail. `priority` and
+        `execution_expires_after` override the params of the same name.
+
+        A busy vendor raises `VendorBusy` (`retry_after_seconds`) without a single blind
+        retry — nothing was created; send it again after the wait. A request that already
+        carries `RESUME_TASK_PARAM` is refused: its task exists, poll it."""
+        if _resume_id(request.params) is not None:
+            raise ValueError(f"this request already has a task ({RESUME_TASK_PARAM}): poll it")
+        params = dict(request.params)
+        if priority is not None:
+            params["priority"] = priority
+        if execution_expires_after is not None:
+            params["execution_expires_after"] = execution_expires_after
+        spec = self.spec(params)
+        with self._client(api_key) as client:
+            task_id = self._create(client, spec)
+        _tell(request.observer, "created", task_id)
+        return task_id
+
+    def poll(
+        self,
+        task_id: str,
+        *,
+        api_key: str,
+        observer: VendorTaskObserver | None = None,
+    ) -> TaskState:
+        """One query of the task (m-24852159): its state, terminal or not. A failed or
+        expired task is a state here, not an exception — the caller decides. A busy
+        answer raises `VendorBusy`; every query goes through the account's rate limit."""
+        with self._client(api_key) as client:
+            return self._poll_once(client, task_id, observer)
+
+    def result(self, request: GenerationRequest, state: TaskState) -> GenerationResult:
+        """The `GenerationResult` of a task `poll` saw end (m-24852159): a success
+        becomes the result `generate` returns; a failure raises `ArkTaskFailed`; a task
+        still going raises `ValueError` — poll it again."""
+        if not state.terminal:
+            raise ValueError(f"task {state.task_id} is still {state.status or 'unknown'}")
+        if not state.succeeded:
+            raise ArkTaskFailed(state.task_id, state.status, state.error_code, state.error_message)
+        if state.video_url is None:
+            raise ArkError(f"task {state.task_id} succeeded without a video_url")
+        return self._result(self.spec(request.params), state.task_id, state.data)
+
+    def poll_delay(self, status: str, queued_for: float) -> float:
+        """When to poll a task next (`poll_delay_seconds` at this adapter's interval)."""
+        return poll_delay_seconds(status, queued_for, self._poll_interval)
+
+    def _result(
+        self, spec: _VideoSpec | _FinalSpec, task_id: str, data: Mapping[str, Any]
+    ) -> GenerationResult:
         content = data.get("content") if isinstance(data.get("content"), dict) else {}
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         tokens = int(usage.get("completion_tokens") or 0)
@@ -952,9 +1243,9 @@ class SeedanceVideoAdapter(_ArkClient):
     def get_task(self, task_id: str, *, api_key: str) -> Mapping[str, Any]:
         """One task's current state — the recovery path after an `ArkTaskTimeout`."""
         # quoted whole: a pasted id with `/` or `..` must not move the keyed call elsewhere
-        path = f"/contents/generations/tasks/{quote(task_id, safe='')}"
         with self._client(api_key) as client:
-            return _body_or_raise(client.get(path))
+            self._limiter.acquire()
+            return _body_or_raise(client.get(_task_path(task_id)))
 
     def list_tasks(
         self, *, api_key: str, page_num: int = 1, page_size: int = TASK_LIST_PAGE_SIZE
@@ -973,11 +1264,43 @@ class SeedanceVideoAdapter(_ArkClient):
     # -- internals ----------------------------------------------------------------------
 
     def _create(self, client: Any, spec: _VideoSpec | _FinalSpec) -> str:
-        body = self._post(client, "/contents/generations/tasks", spec.body())
+        """POST the task; a busy answer raises `VendorBusy` at once (m-24852159)."""
+        body = self._post(client, "/contents/generations/tasks", spec.body(), busy_raises=True)
         task_id = body.get("id")
         if not task_id:
             raise ArkError(f"create response carried no task id: {body!r}")
         return str(task_id)
+
+    def _submit_busy_aware(
+        self, client: Any, spec: _VideoSpec | _FinalSpec, observer: VendorTaskObserver | None
+    ) -> str:
+        """The blocking path's submit: on `VendorBusy` it waits what the vendor suggests
+        and sends again, while the waits fit `busy_budget_seconds` — informed waits, not
+        blind retries; nothing was created by a busy answer, so nothing is billed twice."""
+        waited = 0.0
+        while True:
+            try:
+                task_id = self._create(client, spec)
+            except VendorBusy as busy:
+                if waited + busy.retry_after_seconds > self._busy_budget:
+                    raise
+                logger.info(
+                    "Seedance busy (%s): waiting %.0fs", busy.code, busy.retry_after_seconds
+                )
+                self._sleep(busy.retry_after_seconds)
+                waited += busy.retry_after_seconds
+                continue
+            _tell(observer, "created", task_id)
+            return task_id
+
+    def _poll_once(
+        self, client: Any, task_id: str, observer: VendorTaskObserver | None
+    ) -> TaskState:
+        self._limiter.acquire()
+        data = _body_or_raise(client.get(_task_path(task_id)))
+        status = str(data.get("status") or "")
+        _tell(observer, "polled", task_id, status)
+        return TaskState(task_id=task_id, status=status, data=data)
 
     def _wait(
         self, client: Any, task_id: str, observer: VendorTaskObserver | None = None
@@ -985,53 +1308,71 @@ class SeedanceVideoAdapter(_ArkClient):
         """Poll until the task ends. Two windows (m-24852154): while it is `queued` (or
         unknown) up to `queue_timeout_seconds` since the wait began; once it answers
         `running`, the render window (`poll_timeout_seconds`) counts from THAT answer —
-        BytePlus's own queue never uses the render window up."""
+        BytePlus's own queue never uses the render window up. Between queries the wait
+        adapts (m-24852159, `poll_delay_seconds`): it grows while the task stays queued,
+        and never sleeps past the queue window's end."""
         import httpx  # lazy, already loaded by _client
 
         started = self._monotonic()
         running_since: float | None = None
         status = ""
         consecutive_errors = 0
-        path = f"/contents/generations/tasks/{quote(task_id, safe='')}"
         while True:
-            data: Mapping[str, Any] | None
+            busy_wait = 0.0
             try:
-                data = _body_or_raise(client.get(path))
+                state = self._poll_once(client, task_id, observer)
                 consecutive_errors = 0
             except ArkAPIError as exc:
-                if exc.status_code < 500 and exc.status_code != 429:
+                if exc.status_code < 500 and exc.status_code != BUSY_STATUS:
                     raise
                 consecutive_errors += 1
                 if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
                     raise
-                data = None
+                if isinstance(exc, VendorBusy):
+                    busy_wait = exc.retry_after_seconds
+                state = None
             except httpx.TransportError:
                 consecutive_errors += 1
                 if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
                     raise
-                data = None
+                state = None
 
-            if data is not None:
-                status = str(data.get("status") or "")
-                _tell(observer, "polled", task_id, status)
+            if state is not None:
+                status = state.status
                 if status == _RUNNING and running_since is None:
                     running_since = self._monotonic()
-                if status == _TERMINAL_OK:
-                    content = data.get("content")
-                    if not isinstance(content, dict) or not content.get("video_url"):
+                if state.succeeded:
+                    if state.video_url is None:
                         raise ArkError(f"task {task_id} succeeded without a video_url")
-                    return data
+                    return state.data
                 if status in _TERMINAL_FAILED:
-                    error = data.get("error") if isinstance(data.get("error"), dict) else {}
-                    raise ArkTaskFailed(task_id, status, error.get("code"), error.get("message"))
+                    raise ArkTaskFailed(task_id, status, state.error_code, state.error_message)
 
             now = self._monotonic()
             if running_since is not None:
-                if now - running_since + self._poll_interval > self._poll_timeout:
+                delay = max(self._poll_interval, busy_wait)
+                if now - running_since + delay > self._poll_timeout:
                     raise ArkTaskTimeout(task_id, now - started, status)
-            elif now - started + self._poll_interval > self._queue_timeout:
-                raise ArkTaskTimeout(task_id, now - started, status or "queued")
-            self._sleep(self._poll_interval)
+            else:
+                elapsed = now - started
+                if elapsed + self._poll_interval > self._queue_timeout:
+                    raise ArkTaskTimeout(task_id, elapsed, status or _QUEUED)
+                delay = max(self.poll_delay(status, elapsed), busy_wait)
+                # the last query lands at the window's end, not a long wait before it
+                left = self._queue_timeout - elapsed - self._poll_interval
+                delay = max(self._poll_interval, min(delay, left))
+            self._sleep(delay)
+
+
+def _task_path(task_id: str) -> str:
+    # quoted whole: a pasted id with `/` or `..` must not move the keyed call elsewhere
+    return f"/contents/generations/tasks/{quote(task_id, safe='')}"
+
+
+def _resume_id(params: Mapping[str, object]) -> str | None:
+    """`RESUME_TASK_PARAM`, stripped, when the request carries one."""
+    resume = params.get(RESUME_TASK_PARAM)
+    return resume.strip() if isinstance(resume, str) and resume.strip() else None
 
 
 def _tell(observer: VendorTaskObserver | None, event: str, *args: str) -> None:

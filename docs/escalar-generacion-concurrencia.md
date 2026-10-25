@@ -111,7 +111,14 @@ fusionados cambiaron las dos fallas graves (§2.2); los huecos que quedan tienen
    3 veces con espera lineal de 2 s y 4 s (`MAX_POST_ATTEMPTS = 3`, `POST_RETRY_STATUSES = {429, 503}`,
    `POST_RETRY_BACKOFF_SECONDS = 2.0`). Es la única espera ante un 429, y dura 6 s en total. Como
    pasarse de 10 **no da 429** (encola), este reintento solo actúa ante 600 RPM, el fondo de cola
-   (`QuotaExceeded`) o una sobrecarga (`ServerOverloaded`). *Sigue igual.*
+   (`QuotaExceeded`) o una sobrecarga (`ServerOverloaded`). *Cambiado en m-24852159:* el
+   adaptador de Seedance se parte en `submit` (devuelve el id al instante) y `poll` (una consulta);
+   un 429 o uno de esos tres códigos lanza `VendorBusy` con la espera sugerida (el `Retry-After`
+   de BytePlus, o 15 / 60 / 30 s según el código) sin gastar reintentos. La llamada bloqueante
+   (`generate`) respeta esa espera hasta 90 s en total. Entre consultas, 5 s durante los primeros
+   3 min en cola y luego una espera que crece hasta 60 s; todas las consultas pasan por un tope de
+   20 por segundo. `priority` y `execution_expires_after` viajan en el POST cuando se piden.
+   Seedream conserva su reintento corto (Fase 3).
 2. **Esperar el resultado.** `_wait` consultaba cada 5 s durante **480 s como máximo**
    (`DEFAULT_POLL_TIMEOUT_SECONDS = 480.0`), **contados desde que se creó la tarea, cola incluida**.
    Al pasarse lanzaba `ArkTaskTimeout` y **abandonaba** la tarea. BytePlus la seguía haciendo y **la
