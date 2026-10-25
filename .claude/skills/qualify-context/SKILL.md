@@ -58,7 +58,9 @@ GitHub Actions (`deploy.yml`), runbook in `README.md` and `docs/despliegue-hetzn
   `NULLIF(current_setting('app.tenant_id', true), '')::uuid`); DB access only through
   `qualify_shared.db.session` (`tenant_session` / `admin_session` / `credential_session`).
   Media in Cloudflare R2. **There is no ClickHouse and no Celery**: background work is CLI loop
-  workers (`just calendar-worker`, `whatsapp-worker`, `conversations-worker`, `webhook-worker`).
+  workers (`just calendar-worker`, `whatsapp-worker`, `conversations-worker`, `webhook-worker`,
+  and `creative-worker` — the generation queue of ADR 41, signed 2026-10-24, being built in
+  m-24852163; until it ships, generation still runs in `InlineDispatcher` threads).
 - **AI vendors in use:** Anthropic Claude (copy, angles, intent, filters — Haiku for
   classification), BytePlus ModelArk (generation; the authorized presets cede data to BytePlus,
   so client data only through unauthorized custom endpoints), ScrapeCreators (reels), Langfuse

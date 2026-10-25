@@ -1,6 +1,6 @@
 # Revisión de seguridad — el reclamo entre negocios de `creative-worker`
 
-**Estado:** `[PROPUESTO — principal-architect, 2026-10-24; parte de ADR 41, pendiente de firma del fundador]`
+**Estado:** `[APROBADO — parte de ADR 41, firmado por Herwin Rey (fundador), 2026-10-24]` · revisión de principal-architect.
 **Ticket:** m-24852157 · **Decisión:** `docs/adr-41-cola-generacion-concurrencia.md`.
 **Implementan:** m-24852160 (migración `creative_jobs` + `vendor_slots` + rol) y m-24852163 (worker). Esta revisión fija lo que esas dos historias deben cumplir; un cambio a estas reglas es un cambio a ADR 41.
 

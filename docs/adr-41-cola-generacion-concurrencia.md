@@ -1,6 +1,6 @@
 # ADR 41 — Cola de generación en Postgres y servicio `creative-worker`
 
-**Estado:** `[PROPUESTO — principal-architect, 2026-10-24; el fundador aprobó el servicio nuevo ese día con el ADR primero; pendiente de su firma]`
+**Estado:** `[APROBADO — firmado por Herwin Rey (fundador), 2026-10-24]` · propuesto por principal-architect el mismo día.
 **Ticket:** m-24852157 · **Épica:** m-24852152 (`docs/epica-escalar-generacion.md`).
 **Evidencia:** `docs/escalar-generacion-concurrencia.md` (data-scientist-fde, 2026-10-24: límites de BytePlus citados de la fuente, duración medida de las tareas, simulación de demanda).
 **Revisión de seguridad:** `docs/seguridad-creative-worker.md` (forma parte de esta decisión).
@@ -115,11 +115,19 @@ Si el final falló y no se pudo rehacer antes de la hora, el evento sigue el mis
 
 **Pedir otra versión de un final descuenta del cupo del plan 1 vista previa y 1 video**: rehacerlo exige un borrador nuevo (el final sale del id de un borrador) y su final. Queda como regla del libro de consumo (épica de costos y cobro m-24848869, `docs/modelo-cobro-generacion.md`); el trabajo en `creative_jobs` lleva la referencia al consumo que lo pagó, para que un reintento por falla nuestra no vuelva a descontar.
 
+**Otra versión de un final programado conserva la fecha de publicación** (decisión del fundador, 2026-10-24): el evento del calendario no se mueve ni se cancela; la versión nueva vuelve a `final_ready` y necesita su propia confirmación antes de esa hora. Si no se confirma a tiempo, sigue la regla del §3.4.
+
 ### 3.6 Aviso por correo a la mañana
 
-Cada mañana, a cada negocio con finales en `final_ready`, **un correo con plantilla y enlaces a los videos listos** para confirmarlos. **Sin WhatsApp.** Lo manda un paso del `creative-worker` al cerrar el carril nocturno, una vez por negocio y día (clave de idempotencia `(tenant_id, fecha)`), con el texto según `qualify-copy-es`.
+Cada mañana, a cada negocio con finales en `final_ready`, **un correo con plantilla y enlaces a los videos listos** para confirmarlos. **Sin WhatsApp.** Decisiones del fundador (2026-10-24):
 
-**Dependencia: el módulo de correo** (`qualify_api.mail`, Resend). Hoy solo manda invitaciones; necesita una plantilla nueva y enlaces que abran la pieza tras iniciar sesión (nunca un enlace que confirme sin sesión). Costo: el plan gratis de Resend es de 100 correos al día y 3 000 al mes; un correo diario por negocio lo agota hacia los **~100 negocios** (≈ 22 días hábiles × 100 = 2 200 al mes, más invitaciones y recuperaciones). Desde ahí, el plan de pago de Resend (USD 20 al mes por 50 000, precio a verificar al contratarlo) ≈ **USD 0,20 por negocio al mes a 100 negocios**.
+- **Remitente:** «Qualify».
+- **Hora:** las **7:00 a. m. en la zona horaria del negocio** (después de cerrar el carril nocturno, que termina a las 06:00).
+- **Destinatarios:** **todos los miembros del negocio que pueden aprobar**, con **baja por miembro** (un miembro que se da de baja deja de recibirlo; los demás siguen). La baja se guarda por usuario y negocio, con RLS.
+
+Lo manda un paso del `creative-worker`, una vez por miembro, negocio y día (clave de idempotencia `(tenant_id, user_id, fecha)`), con el texto según `qualify-copy-es`.
+
+**Dependencia: el módulo de correo** (`qualify_api.mail`, Resend). Hoy solo manda invitaciones; necesita una plantilla nueva y enlaces que abran la pieza tras iniciar sesión (nunca un enlace que confirme sin sesión). Costo: el plan gratis de Resend es de 100 correos al día y 3 000 al mes; un correo diario por miembro que aprueba lo agota antes de los **~100 negocios** (≈ 22 días con finales × 100 negocios × miembros que aprueban; con 1,5 miembros de media, ~3 300 al mes, más invitaciones y recuperaciones). Desde ahí, el plan de pago de Resend (USD 20 al mes por 50 000, precio a verificar al contratarlo) ≈ **USD 0,20 por negocio al mes a 100 negocios**.
 
 ## 4. Opciones consideradas
 
