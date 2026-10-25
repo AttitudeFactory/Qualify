@@ -290,3 +290,109 @@ async def test_should_stop_ends_the_loop_between_ticks() -> None:
         should_stop=lambda: runner.ticks >= 2,
     )
     assert code == 0 and runner.ticks == 2
+
+
+# --- recovery of billed BytePlus videos beside the ticks (m-24852492) ------------------
+
+
+async def test_the_sidecar_runs_beside_the_ticks_once_per_interval() -> None:
+    import asyncio
+
+    runner, clock = FakeRunner(), FakeClock()
+    runs: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        await clock.sleep(seconds)
+        await asyncio.sleep(0.05)  # the (instant) pass's thread finishes meanwhile
+
+    code = await worker.run_worker(
+        lambda: runner,
+        once=False,
+        interval=60,
+        sleep=sleep,
+        clock=clock,
+        max_ticks=4,
+        sidecar=lambda: runs.append(clock.now),
+        sidecar_every=120,
+    )
+    assert code == 0 and runner.ticks == 4
+    assert len(runs) == 2  # at the ticks of t=0 and t=120 (each thread reads the clock late)
+
+
+async def test_a_slow_sidecar_never_delays_a_tick_nor_overlaps_itself() -> None:
+    import threading
+
+    release = threading.Event()
+    started: list[int] = []
+
+    def slow() -> None:
+        started.append(1)
+        release.wait(5)
+
+    class Releasing(FakeRunner):
+        async def run_once(self) -> TickReport:
+            report = await super().run_once()
+            if self.ticks == 3:
+                release.set()  # ticks 2 and 3 ran while the first pass was in flight
+            return report
+
+    runner, clock = Releasing(), FakeClock()
+    code = await worker.run_worker(
+        lambda: runner,
+        once=False,
+        interval=60,
+        sleep=clock.sleep,
+        clock=clock,
+        max_ticks=3,
+        sidecar=slow,
+        sidecar_every=60,
+    )
+    assert code == 0 and runner.ticks == 3
+    assert started == [1]
+
+
+async def test_a_failing_sidecar_is_logged_and_the_ticks_go_on() -> None:
+    runner, clock = FakeRunner(), FakeClock()
+
+    def boom() -> None:
+        raise RuntimeError("recovery blew up")
+
+    code = await worker.run_worker(
+        lambda: runner,
+        once=False,
+        interval=60,
+        sleep=clock.sleep,
+        clock=clock,
+        max_ticks=3,
+        sidecar=boom,
+        sidecar_every=60,
+    )
+    assert code == 0 and runner.ticks == 3
+
+
+async def test_once_runs_the_sidecar_once_after_the_tick() -> None:
+    order: list[str] = []
+
+    class Recording(FakeRunner):
+        async def run_once(self) -> TickReport:
+            order.append("tick")
+            return await super().run_once()
+
+    code = await worker.run_worker(
+        lambda: Recording(), once=True, sidecar=lambda: order.append("recovery")
+    )
+    assert code == 0 and order == ["tick", "recovery"]
+
+
+def test_main_passes_the_recovery_pass_to_the_loop() -> None:
+    runs: list[int] = []
+    assert (
+        worker.main(
+            ["--tenant", str(TENANT), "--once"],
+            scoped=lambda _: FakeRunner(),
+            production=FakeRunner,
+            recovery=lambda: runs.append(1),
+        )
+        == 0
+    )
+    assert runs == [1]

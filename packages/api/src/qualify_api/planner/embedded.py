@@ -27,6 +27,14 @@ own thread it stalls nothing.
   An invalid value → the worker does not start and says so (log + Planificador).
 - `QUALIFY_CALENDAR_WORKER_INTERVAL` — seconds between tick starts (default 60, min 30).
 
+## Recovery of billed BytePlus videos (m-24852492)
+
+Beside the ticks, the same loop runs `creative.vendor_recovery` every
+`RECOVERY_EVERY_SECONDS` over the same scope: a Seedance task whose generation thread
+went quiet (its wait ran out, or a deploy killed it) is asked to BytePlus by id and, once
+ended, its draft is resumed — the video lands in the piece without anyone opening the
+app. `QUALIFY_VENDOR_RECOVERY=off` turns it off.
+
 ## Crash / restart
 
 All state is in Postgres. If the process dies mid-tick, advisory locks die with its
@@ -53,6 +61,7 @@ from qualify_api.planner.tick import TickReport
 from qualify_api.planner.worker import (
     DEFAULT_INTERVAL_SECONDS,
     MIN_INTERVAL_SECONDS,
+    RECOVERY_EVERY_SECONDS,
     run_worker,
 )
 
@@ -162,7 +171,9 @@ class EmbeddedCalendarWorker:
         make_runner: Callable[[], object] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         heartbeat: HeartbeatStore | None = None,
+        sidecar: Callable[[], object] | None = None,
     ) -> None:
+        self._sidecar = sidecar
         self._config = config
         self._heartbeat = heartbeat
         self._make_runner = make_runner
@@ -249,6 +260,15 @@ class EmbeddedCalendarWorker:
         # stop event is what makes shutdown prompt instead of up to `interval` late.
         self._stop.wait(seconds)
 
+    def _recovery(self) -> Callable[[], object] | None:
+        """m-24852492: the recovery of billed BytePlus videos runs beside the ticks, over
+        the same scope — production wiring only (an injected runner means a test)."""
+        if self._make_runner is not None:
+            return self._sidecar
+        from qualify_api.creative.vendor_recovery import recovery_chore  # noqa: PLC0415
+
+        return recovery_chore(None if self._config.all_tenants else self._config.tenant_ids)
+
     def _run(self) -> None:
         try:
             asyncio.run(
@@ -258,6 +278,8 @@ class EmbeddedCalendarWorker:
                     interval=self._config.interval,
                     sleep=self._sleep,
                     should_stop=self._stop.is_set,
+                    sidecar=self._recovery(),
+                    sidecar_every=RECOVERY_EVERY_SECONDS,
                 )
             )
         except Exception:

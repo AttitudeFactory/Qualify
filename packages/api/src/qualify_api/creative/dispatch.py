@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
@@ -216,22 +217,34 @@ def reap_stale_drafts(
 
 
 def claim_waiting_drafts(
-    *, tenant_id: UUID, quiet_minutes: int = RECOVER_AFTER_QUIET_MINUTES
+    *,
+    tenant_id: UUID,
+    quiet_minutes: int = RECOVER_AFTER_QUIET_MINUTES,
+    draft_ids: Sequence[UUID] | None = None,
 ) -> list[UUID]:
     """The drafts to resume (m-24852154): ``DRAFTING``, a vendor task of their revision
     still pending, and no sign of life for ``quiet_minutes``. Claimed atomically by
     stamping ``updated_at`` (one ``UPDATE … RETURNING`` in the owning tenant's session),
     so two concurrent reads never resume the same draft twice and the next claim waits
-    another quiet window. The caller dispatches ``run_generation`` for each."""
+    another quiet window. The caller dispatches ``run_generation`` for each.
+
+    ``draft_ids`` (m-24852492) narrows the claim to those drafts: the worker's recovery
+    pass claims only the drafts whose tasks BytePlus already ended — the same atomic
+    stamp, so a screen read and the worker never both resume one draft."""
     now = datetime.now(UTC)
+    conditions = [
+        ContentDraft.status == DRAFTING,
+        ContentDraft.updated_at < now - timedelta(minutes=quiet_minutes),
+        _pending_task(now),
+    ]
+    if draft_ids is not None:
+        if not draft_ids:
+            return []
+        conditions.append(ContentDraft.id.in_(list(draft_ids)))
     with tenant_session(tenant_id) as session:
         claimed = session.scalars(
             update(ContentDraft)
-            .where(
-                ContentDraft.status == DRAFTING,
-                ContentDraft.updated_at < now - timedelta(minutes=quiet_minutes),
-                _pending_task(now),
-            )
+            .where(*conditions)
             .values(updated_at=now)
             .returning(ContentDraft.id)
         ).all()
