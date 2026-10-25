@@ -38,6 +38,20 @@ Los tres planes se ofrecen desde el lanzamiento. Después del primer mes, precio
 **Alertas de gasto en dólares por marca (siguen como estaban decididas):** Básico 120, Plus 240, Pro
 480. Solo avisan en Lark y **nunca bloquean**. No se adoptó la sugerencia de igualar el tope al precio.
 
+**Reglas de cambio de plan y de paquetes (decididas por el fundador, 2026-10-24):**
+
+1. **Cambio de plan a mitad de mes:** una mejora (a un plan mayor) se aplica de inmediato; una rebaja
+   rige desde el mes siguiente.
+2. **Mejora durante el primer mes, el de mitad de precio:** paga el **precio completo del plan nuevo**.
+   La oferta de arranque vale solo para el plan con que empezó el cliente.
+3. **Los paquetes siempre cuestan el precio completo**, también en el primer mes.
+
+Consecuencias `[H]`, sin cambiar la decisión: el primer mes a mitad de precio queda como la única
+rebaja de todo el esquema, y quien quiera más cupo en ese mes paga completo, ya sea con un plan mayor o
+con un paquete; así se acota la pérdida del primer mes pesado (margen del primer mes en el cuadro de abajo).
+Falta decidir (no lo decidió el fundador): si la mejora a mitad de mes cobra el mes entero del plan
+nuevo o solo la diferencia por los días restantes, y qué pasa con el cupo ya gastado.
+
 ### Márgenes recalculados (margen bruto sobre generación; mismos costos y supuestos del §3)
 
 Costos: típico 20 / 40 / 80 (Básico 15–25; Plus y Pro `[H]` proporcionales al cupo), peor caso
