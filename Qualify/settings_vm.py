@@ -41,7 +41,7 @@ def currency_after_country_change(country_code: str, currency: str) -> str:
 
 #: The one button the owner has to get more: the same request m-24852129 answers.
 ASK_MORE_BUTTON = "Pedir más a Qualify"
-ASK_MORE_SENT = "Listo, le avisamos al equipo de Qualify. Te escribimos por correo."
+ASK_MORE_SENT = "Listo. Te escribimos a tu correo con el enlace de pago."
 ASK_MORE_FAILED = "No pudimos enviar tu pedido. Vuelve a intentarlo en un rato."
 PLAN_FAILED = "No pudimos leer tu plan. Recarga la página."
 

@@ -39,9 +39,14 @@ def save_locale(tenant_id: UUID, *, country: str, currency: str) -> BusinessLoca
     return update_business_locale(tenant_id, country=country, currency=currency)
 
 
-def read_plan(tenant_id: UUID, timezone: str = "UTC") -> Plan:
-    """The plan in force this month, in the business's own month."""
-    return business_plan(tenant_id, month_start(datetime.now(UTC), timezone))
+def read_plan(tenant_id: UUID, now: datetime | None = None) -> Plan:
+    """The plan in force this month, in the business's own month — the same month the
+    creations ledger charges against (`PostgresCreationsLedger._period`), so the night of
+    the last day in Colombia or Venezuela the screen never shows a plan the quota is not
+    counting. The timezone is the business's, never the server's UTC."""
+    locale = read_business_locale(tenant_id)
+    zone = locale.timezone if locale is not None and locale.timezone else "UTC"
+    return business_plan(tenant_id, month_start(now or datetime.now(UTC), zone))
 
 
 def request_more(tenant_id: UUID, *, email: str, plan_code: str) -> SupportTicket:

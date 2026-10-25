@@ -62,3 +62,46 @@ def test_pedir_mas_creates_the_more_creations_request(monkeypatch) -> None:
         "contact_email": "dueno@negocio.co",
         "context": {"screen": "settings", "plan": "plus"},
     }
+
+
+def test_the_notice_after_pedir_mas_is_d13() -> None:
+    # D13 (docs/modelo-cobro-generacion.md): the owner learns what will reach them
+    from .settings_vm import ASK_MORE_SENT
+
+    assert ASK_MORE_SENT == "Listo. Te escribimos a tu correo con el enlace de pago."
+
+
+def test_the_plan_is_read_in_the_business_month_not_utc(monkeypatch) -> None:
+    from datetime import UTC, date, datetime
+
+    from qualify_api.tenancy.locale import BusinessLocale
+
+    seen: dict[str, object] = {}
+
+    def fake_plan(tenant_id: UUID, period: date) -> object:
+        seen["period"] = period
+        return PLANS.default
+
+    monkeypatch.setattr(
+        settings_provider,
+        "read_business_locale",
+        lambda _t: BusinessLocale(country="CO", timezone="America/Bogota", currency="COP"),
+    )
+    monkeypatch.setattr(settings_provider, "business_plan", fake_plan)
+    # 31 Oct 23:30 in Bogotá is already 1 Nov in UTC: the ledger still counts October
+    settings_provider.read_plan(uuid4(), now=datetime(2026, 11, 1, 4, 30, tzinfo=UTC))
+    assert seen["period"] == date(2026, 10, 1)
+
+
+def test_the_plan_falls_back_to_utc_without_a_locale(monkeypatch) -> None:
+    from datetime import UTC, date, datetime
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(settings_provider, "read_business_locale", lambda _t: None)
+    monkeypatch.setattr(
+        settings_provider,
+        "business_plan",
+        lambda _t, period: seen.setdefault("period", period) and PLANS.default,
+    )
+    settings_provider.read_plan(uuid4(), now=datetime(2026, 11, 1, 4, 30, tzinfo=UTC))
+    assert seen["period"] == date(2026, 11, 1)
