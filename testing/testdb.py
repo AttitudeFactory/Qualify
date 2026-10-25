@@ -51,6 +51,7 @@ DSN_VARS = (
     "QUALIFY_CREDENTIAL_DSN",
     "QUALIFY_WEBHOOK_DSN",
     "QUALIFY_WEBHOOK_WORKER_DSN",
+    "QUALIFY_CREATIVE_WORKER_DSN",
     "QUALIFY_MIGRATION_DSN",
 )
 REDIS_VAR = "QUALIFY_REDIS_URL"
@@ -69,6 +70,9 @@ TEST_DEFAULTS: dict[str, str] = {
     ),
     "QUALIFY_WEBHOOK_WORKER_DSN": (
         "postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test"
+    ),
+    "QUALIFY_CREATIVE_WORKER_DSN": (
+        "postgresql+psycopg://qualify_creative_worker:creative_worker_dev@localhost:5432/qualify_test"
     ),
     "QUALIFY_MIGRATION_DSN": (
         "postgresql+psycopg://qualify_owner:dev_only@localhost:5432/qualify_test"

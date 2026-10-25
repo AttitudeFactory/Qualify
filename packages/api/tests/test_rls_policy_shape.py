@@ -29,6 +29,12 @@ _TENANTS_TABLE = "tenants"
 # connect flow rather than isolate anything.
 _GLOBAL_TABLES = frozenset({"platform_apps"})
 
+# ADR 41 (m-24852160, `docs/seguridad-creative-worker.md` §2): the ONE deliberate
+# cross-tenant policy. `creative_jobs` keeps its `tenant_isolation` and gains a permissive
+# policy scoped to the generation worker's role alone (NOBYPASSRLS, column grants). Any
+# other extra policy, or this one granted to another role, fails below.
+_ROLE_SCOPED_EXTRAS = {"creative_jobs": {"creative_worker_claim": "{qualify_creative_worker}"}}
+
 
 def _tenant_scoped_tables() -> set[str]:
     """Every public table carrying a `tenant_id` column, plus `tenants` itself."""
@@ -62,7 +68,8 @@ def test_every_tenant_scoped_table_has_exactly_one_isolation_policy() -> None:
     missing: list[str] = []
     for table in sorted(_tenant_scoped_tables()):
         entries = policies.get(table, [])
-        names = [name for name, _, _ in entries]
+        extras = _ROLE_SCOPED_EXTRAS.get(table, {})
+        names = [name for name, _, _ in entries if name not in extras]
         if names != ["tenant_isolation"]:
             missing.append(f"{table}: expected exactly ['tenant_isolation'], got {names}")
     assert not missing, "policy inventory drifted:\n" + "\n".join(missing)
@@ -79,6 +86,8 @@ def test_every_isolation_policy_uses_the_nullif_form() -> None:
     policies = _policies()
     for table in sorted(_tenant_scoped_tables()):
         for name, qual, with_check in policies.get(table, []):
+            if name in _ROLE_SCOPED_EXTRAS.get(table, {}):
+                continue  # role-scoped, pinned by the test below
             for clause_name, clause in (("USING", qual), ("WITH CHECK", with_check)):
                 if clause is None:
                     offenders.append(f"{table}.{name}: {clause_name} is absent")
@@ -115,3 +124,19 @@ def test_global_tables_have_no_policies() -> None:
             f"{table} is global (R1) but carries policies {policies[table]} — "
             "RLS here would break the connect flow, not isolate anything"
         )
+
+
+def test_role_scoped_extra_policies_reach_only_their_role() -> None:
+    """The worker's cross-tenant policy exists, and is `TO qualify_creative_worker` only —
+    never PUBLIC, never `qualify_app`."""
+    with admin_session() as session:
+        rows = session.execute(
+            text(
+                "SELECT tablename, policyname, roles::text AS roles FROM pg_policies "
+                "WHERE schemaname = 'public'"
+            )
+        ).all()
+    found = {(row.tablename, row.policyname): row.roles for row in rows}
+    for table, extras in _ROLE_SCOPED_EXTRAS.items():
+        for name, roles in extras.items():
+            assert found.get((table, name)) == roles, f"{table}.{name}: {found.get((table, name))}"

@@ -22,6 +22,8 @@ _SANCTIONED = {
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/admin.py",
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/credential.py",
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/webhook.py",
+    # ADR 41 (m-24852160): the generation queue's worker, NOBYPASSRLS, queue columns only.
+    _REPO_ROOT / "packages/shared/src/qualify_shared/db/creative_worker.py",
 }
 
 _FORBIDDEN = {

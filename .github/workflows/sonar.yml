@@ -69,6 +69,7 @@ jobs:
       QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test
       QUALIFY_WEBHOOK_DSN: postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify_test
       QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test
+      QUALIFY_CREATIVE_WORKER_DSN: postgresql+psycopg://qualify_creative_worker:creative_worker_dev@localhost:5432/qualify_test
       QUALIFY_REDIS_URL: redis://localhost:6379/15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
