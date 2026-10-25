@@ -47,11 +47,13 @@ En Meegle, las dependencias van en el campo «Bloqueado por»: PASOS-2 → PASOS
 
 Viene de la §4 de la revisión: **A (ampliar el CSS que ya existe) entra en la épica** como PASOS-11, sin costo ni dependencia. **C (Motion, antes Framer Motion)** queda solo como spike acotado (PASOS-12) para la salida de tarjetas. **B (View Transitions)** se descarta por ahora. Si el spike dice sí, la integración es una historia nueva que se carga después de la decisión.
 
-## 4. Preguntas abiertas para el fundador
+## 4. Decisiones del fundador (2026-10-25)
 
-1. **Aprobar el marco (PASOS-1).** Sin esa aprobación no arranca ninguna historia de código salvo PASOS-3, PASOS-12 y PASOS-13.
-2. **¿Hay un Android de gama baja para el spike?** Si no hay, PASOS-12 mide en Chrome con la CPU limitada 6× y lo dice en la tabla. Qué celulares usan los clientes es *hipótesis* (perfil §5 pregunta 3).
-3. **«Seguir después» lleva a Inicio (N2).** Así lo dice la revisión, y lo aplica PASOS-4. Confirmar que también vale para Crear y Publicar ahora o si allí debe volver a «‹ Tus publicaciones».
+| # | Pregunta | Decisión |
+|---|---|---|
+| 1 | ¿Se aprueba el marco de paso a paso (PASOS-1)? | **Sí, tal cual.** Arriba fijo: «‹ destino», «Paso N de M» y la barra de avance. Abajo fijo: «Atrás» y «Siguiente»; en el celular el pie **ocupa el lugar** de la barra de accesos mientras dura el asistente. Quedan desbloqueadas PASOS-2 en adelante. |
+| 2 | ¿Adónde lleva «Seguir después» en Crear y en Publicar ahora? | **A Inicio** en todos los asistentes (N2), igual que en Tu marca. Inicio muestra lo que quedó a medias con «Seguir». |
+| 3 | ¿En qué equipo se mide el spike de Motion (PASOS-12)? | **En Chrome con la CPU limitada 6×.** Si el resultado sale justo, se confirma después en un Android real. |
 
 ## 5. Fuera de esta épica
 
