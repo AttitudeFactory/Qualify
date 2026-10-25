@@ -333,7 +333,7 @@ Orden por costo/beneficio. Cada escalón se activa por una señal medida, no por
 | # | Historia | Cuándo | Esfuerzo | Señal que la dispara |
 |---|---|---|---|---|
 | 1 | **Arreglos de §4.0**: recuperar por id, ventana desde `running`, `execution_expires_after`, reaper del carrusel | **Hecho** (#325, #316; quedan m-24852492 y m-24852495) | S | — |
-| 2 | **Medir**: guardar por tarea `queued_at` / `running_at` / `finished_at` (de `get_task` o del callback) y un tablero de «tareas a la vez» y «espera en cola» | Ya | S | — |
+| 2 | **Medir**: guardar por tarea `queued_at` / `running_at` / `finished_at` (de `get_task` o del callback) y un tablero de «tareas a la vez» y «espera en cola» | **Construido** (m-24852158): tabla `creative_vendor_task_timings` y `just creative-queue-report`; cómo se lee, en `docs/modelos-generativos/seedance-2-5.md` | S | — |
 | 3 | **Ticket a BytePlus**: Seedance 2.5 a 30 a la vez y OmniHuman a 3–5; preguntar si sube con el saldo y si habrá `flex` para 2.5 | Hacia 100 negocios | XS | p95 de tareas a la vez ≥ 5 en la semana |
 | 4 | **Cola propia con reparto justo** (4.1) y la espera estimada a la vista | Antes de 200 negocios | M | Alguna espera en cola > 60 s, o p95 a la vez ≥ 7 |
 | 5 | **Final diferido automático** para piezas programadas (4.2 A) | Junto con 4 | S | — |

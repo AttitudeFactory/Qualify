@@ -811,6 +811,59 @@ class CreativeVendorTask(Base):
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CreativeVendorTaskTiming(Base):
+    """When one asynchronous vendor task was submitted, started rendering and ended (0094,
+    m-24852158): the team's measurement of BytePlus's queue and of tasks at once. One row
+    per task ever submitted (a retried slot keeps its failed task's row). `running_at` is
+    NULL when no live observation saw the task go from queued to running; `finished_late`
+    marks a `finished_at` that is only an upper bound (seen by a resumed run)."""
+
+    __tablename__ = "creative_vendor_task_timings"
+    __table_args__ = (
+        CheckConstraint("phase IN ('draft','final')", name="ck_vendor_task_timings_phase"),
+        CheckConstraint(
+            "final_status IS NULL OR final_status IN "
+            "('succeeded','failed','cancelled','expired','not_found')",
+            name="ck_vendor_task_timings_final_status",
+        ),
+        CheckConstraint(
+            "(final_status IS NULL) = (finished_at IS NULL)",
+            name="ck_vendor_task_timings_finished",
+        ),
+        UniqueConstraint("provider", "vendor_task_id", name="uq_vendor_task_timings_task"),
+        Index("ix_vendor_task_timings_tenant", "tenant_id"),
+        Index("ix_vendor_task_timings_submitted", "submitted_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    vendor_task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    phase: Mapped[str] = mapped_column(Text, nullable=False)
+    draft_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    slot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    running_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    final_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finished_late: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 # `creative_angle_sets` / `creative_angles` vocabularies (0070, ticket 24803289). Strings
 # with CHECK constraints, same contract style as `template_runs`.
 ANGLE_SET_STATUSES: tuple[str, ...] = (
