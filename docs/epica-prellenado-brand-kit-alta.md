@@ -131,13 +131,13 @@ Origen: [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674)
 ## 6. Revisión pendiente
 
 - data-scientist-fde: costo medido en PB-6 ([PB6-001](modelos-generativos/pruebas.md#pb6-001), 2026-10-25, precios verificados). El tope ya está fijado (§5.2). El encendido en producción espera el límite duro de tokens.
-- Ola 2 (§7): revisada por principal-architect y data-scientist-fde el 2026-10-25 (§7.11); sus cambios ya están en las historias. Falta la aprobación del fundador para crear los tickets.
+- Ola 2 (§7): revisada por principal-architect y data-scientist-fde el 2026-10-25 (§7.11); sus cambios ya están en las historias. Tickets creados el 2026-10-25 (§7.0); los textos nuevos siguen pendientes de aprobación.
 
 ---
 
 ## 7. Ola 2 — «Esto es lo que vimos en tu Instagram»
 
-`[BORRADOR v2 · product-owner · 2026-10-25 · revisado por arquitectura y datos · sin crear en Meegle: el fundador aprueba primero]`
+`[HISTORIAS EN MEEGLE · product-owner · 2026-10-25 · revisadas por arquitectura y datos · creadas con el visto bueno del fundador el 2026-10-25 · textos nuevos pendientes de aprobación (§7.10)]`
 
 **Evidencia común a todas las historias:** decisiones del fundador del 2026-10-25 (§5 puntos 5–8 y
 las del encargo de esta ola, abajo); propuesta de UX v2 [`ux-esto-es-lo-que-vimos.md`](ux-esto-es-lo-que-vimos.md)
@@ -176,17 +176,22 @@ cinco textos aprobados de PB-5 se mantienen literales.
 
 ### 7.0 Resumen
 
-| # | Título en Meegle | Etiquetas | Prioridad · talla | Dueño | Depende de |
-|---|---|---|---|---|---|
-| OL2-0 | Brand Kit: medidor en dólares por turno en la precarga del Alta | Deuda técnica | P1 · M | creative | — (bloquea encender PB-4 y B1) |
-| OL2-7 | Brand Kit: enmascarar teléfonos antes de enviar la bio y los textos a cualquier proveedor o registro | Deuda técnica | P1 · S | creative (+ `security-review`) | — |
-| OL2-1a | Referentes: leer las 12 publicaciones y los enlaces de la bio desde el perfil (instantánea 5) | Improvement | P1 · M | backend | — |
-| OL2-1b | Brand Kit: «lo que vimos» en la propuesta, aparte de lo que se aprueba | Improvement | P1 · M | creative | OL2-1a |
-| OL2-3 | Brand Kit: borradores de «qué te hace distinto», «quién te compra» y el tono en la llamada de rubro (B1) | Feature | P1 · M | creative (el mismo dueño que OL2-1b) | OL2-0, OL2-1b, OL2-7 |
-| OL2-2 | Brand Kit: copiar las miniaturas a R2 y borrarlas cuando ya no sirven | Improvement | P1 · M | creative | OL2-1b, m-24852537 |
-| OL2-5 | Brand Kit: pantalla «Esto es lo que vimos en tu Instagram» con «Corregir» por fila | Feature, UI | P1 · L | ui (+ creative en `brand_prefill_review`, + revisión ux) | contrato de OL2-1b (empieza con datos de prueba); OL2-2 para las miniaturas reales |
-| OL2-6 | Brand Kit: después de aprobar, «Te faltan 3 cosas que solo tú sabes» y «Tu marca está lista» | Feature, UI | P1 · M | ui (+ revisión ux) | — (en paralelo); borradores: OL2-3 + OL2-4 |
-| OL2-4 | Brand Kit: medir B1 con un golden set de 30 cuentas antes de encenderlo | Testing | P1 · M | datasci | OL2-3 |
+| # | Ticket | Título en Meegle | Etiquetas | Prioridad · talla | Dueño | Depende de |
+|---|---|---|---|---|---|---|
+| OL2-0 | [m-24854322](https://project.larksuite.com/5h2wsx/issue/detail/24854322) | Brand Kit: medidor en dólares por turno en la precarga del Alta | Deuda técnica | P1 · M | creative | — (bloquea encender PB-4 y B1) |
+| OL2-7 | [m-24854323](https://project.larksuite.com/5h2wsx/issue/detail/24854323) | Brand Kit: enmascarar teléfonos antes de enviar la bio y los textos a cualquier proveedor o registro | Bug (los teléfonos ya salen hoy) | P1 · S | creative (+ `security-review`) | — |
+| OL2-1a | [m-24854324](https://project.larksuite.com/5h2wsx/issue/detail/24854324) | Referentes: leer las 12 publicaciones y los enlaces de la bio desde el perfil (instantánea 5) | Improvement | P1 · M | backend | — |
+| OL2-1b | [m-24854325](https://project.larksuite.com/5h2wsx/issue/detail/24854325) | Brand Kit: «lo que vimos» en la propuesta, aparte de lo que se aprueba | Improvement | P1 · M | creative | OL2-1a |
+| OL2-3 | [m-24854326](https://project.larksuite.com/5h2wsx/issue/detail/24854326) | Brand Kit: borradores de «qué te hace distinto», «quién te compra» y el tono en la llamada de rubro (B1) | Feature | P1 · M | creative (el mismo dueño que OL2-1b) | OL2-0, OL2-1b, OL2-7 |
+| OL2-2 | [m-24854328](https://project.larksuite.com/5h2wsx/issue/detail/24854328) | Brand Kit: copiar las miniaturas a R2 y borrarlas cuando ya no sirven | Improvement | P1 · M | creative | OL2-1b (m-24852537 ya está en Done) |
+| OL2-5 | [m-24854329](https://project.larksuite.com/5h2wsx/issue/detail/24854329) | Brand Kit: pantalla «Esto es lo que vimos en tu Instagram» con «Corregir» por fila | Feature, UI | P1 · L | ui (+ creative en `brand_prefill_review`, + revisión ux) | contrato de OL2-1b (empieza con datos de prueba); OL2-2 para las miniaturas reales |
+| OL2-6 | [m-24854331](https://project.larksuite.com/5h2wsx/issue/detail/24854331) | Brand Kit: después de aprobar, «Te faltan 3 cosas que solo tú sabes» y «Tu marca está lista» | Feature, UI | P1 · M | ui (+ revisión ux) | — (en paralelo); borradores: OL2-3 + OL2-4 |
+| OL2-4 | [m-24854330](https://project.larksuite.com/5h2wsx/issue/detail/24854330) | Brand Kit: medir B1 con un golden set de 30 cuentas antes de encenderlo | Testing | P1 · M | datasci | OL2-3 |
+
+**Enlaces en Meegle:** las dependencias de esta tabla están cargadas en «Bloqueado por», y OL2-6
+lleva «Relacionado con» OL2-3 y OL2-4. Meegle no deja enlazar ítems cerrados: m-24852537 (foto de
+perfil a R2) y m-24852198 / m-24852200 (PB-4 y su tope) ya están en Done, así que se citan en la
+descripción de OL2-2 y de OL2-0, no en los campos.
 
 **Orden (principal-architect):** (1) en paralelo OL2-0, OL2-1a y OL2-7; (2) OL2-1b, que fija el
 contrato de `observed`, y luego OL2-3 cuando OL2-0 esté, con el mismo dueño (los dos tocan
@@ -195,7 +200,7 @@ el contrato de OL2-1b esté fijo; OL2-6 en paralelo desde el principio; (4) OL2-
 OL2-6 sale con las preguntas vacías y el ejemplo del rubro; el borrador se enciende después sin
 cambiar la pantalla.
 
-### 7.1 OL2-0 — Brand Kit: medidor en dólares por turno en la precarga del Alta
+### 7.1 OL2-0 ([m-24854322](https://project.larksuite.com/5h2wsx/issue/detail/24854322)) — Brand Kit: medidor en dólares por turno en la precarga del Alta
 
 Tarea técnica · Deuda técnica · **P1 · M** · creative-engineer · bloquea el encendido de PB-4 (m-24852198) y de B1
 
@@ -243,9 +248,9 @@ Test offline del peor caso; `just eval-precarga` antes y después, con el result
 **Fuera de alcance**
 - Encender la precarga en producción (decisión del fundador, después de este ticket).
 
-### 7.2 OL2-7 — Brand Kit: enmascarar teléfonos antes de cualquier proveedor o registro
+### 7.2 OL2-7 ([m-24854323](https://project.larksuite.com/5h2wsx/issue/detail/24854323)) — Brand Kit: enmascarar teléfonos antes de cualquier proveedor o registro
 
-Tarea técnica · Deuda técnica · **P1 · S** · creative-engineer, con la skill `security-review` · sin dependencias
+Bug · **P1 · S** · creative-engineer, con la skill `security-review` · sin dependencias
 
 **Contexto**
 La decisión 7 del fundador dice que el número completo queda solo en el tenant. Pero la bio y los
@@ -274,7 +279,7 @@ Tests con bios y textos grabados que llevan teléfonos; revisión con `security-
 **Fuera de alcance**
 - Correos y direcciones (no se observaron en las 4 cuentas medidas; queda como pregunta para otra ola).
 
-### 7.3 OL2-1a — Referentes: leer las 12 publicaciones y los enlaces de la bio desde el perfil
+### 7.3 OL2-1a ([m-24854324](https://project.larksuite.com/5h2wsx/issue/detail/24854324)) — Referentes: leer las 12 publicaciones y los enlaces de la bio desde el perfil
 
 Tarea técnica · Improvement · **P1 · M** · backend-engineer · sin dependencias
 
@@ -310,7 +315,7 @@ Tests con respuestas grabadas; `just eval-precarga` antes y después (créditos,
 **Fuera de alcance**
 - La propuesta y la pantalla (OL2-1b, OL2-5). TikTok.
 
-### 7.4 OL2-1b — Brand Kit: «lo que vimos» en la propuesta, aparte de lo que se aprueba
+### 7.4 OL2-1b ([m-24854325](https://project.larksuite.com/5h2wsx/issue/detail/24854325)) — Brand Kit: «lo que vimos» en la propuesta, aparte de lo que se aprueba
 
 Feature/mejora · Improvement · **P1 · M** · creative-engineer · depende de OL2-1a
 
@@ -348,7 +353,7 @@ enlaces y de qué publico, para reconocer mi marca en lo que Qualify preparó.
 **Fuera de alcance**
 - Miniaturas en R2 (OL2-2). TikTok (`popular`, «El más visto», portadas). Leer el Linktree o la web.
 
-### 7.5 OL2-3 — Brand Kit: borradores de «qué te hace distinto», «quién te compra» y el tono (B1)
+### 7.5 OL2-3 ([m-24854326](https://project.larksuite.com/5h2wsx/issue/detail/24854326)) — Brand Kit: borradores de «qué te hace distinto», «quién te compra» y el tono (B1)
 
 Feature/mejora · Feature · **P1 · M** · creative-engineer (el mismo dueño que OL2-1b) · depende de OL2-0, OL2-1b y OL2-7
 
@@ -393,7 +398,7 @@ confirmarlas con un toque en lugar de escribirlas desde cero.
 **Fuera de alcance**
 - La evaluación (OL2-4). Borradores para TikTok.
 
-### 7.6 OL2-2 — Brand Kit: copiar las miniaturas a R2 y borrarlas cuando ya no sirven
+### 7.6 OL2-2 ([m-24854328](https://project.larksuite.com/5h2wsx/issue/detail/24854328)) — Brand Kit: copiar las miniaturas a R2 y borrarlas cuando ya no sirven
 
 Feature/mejora · Improvement · **P1 · M** · creative-engineer · depende de OL2-1b y de m-24852537
 
@@ -429,7 +434,7 @@ pantalla, para no encontrar recuadros vacíos.
 **Fuera de alcance**
 - La foto de perfil (m-24852537). Videos completos.
 
-### 7.7 OL2-5 — Brand Kit: pantalla «Esto es lo que vimos en tu Instagram» con «Corregir» por fila
+### 7.7 OL2-5 ([m-24854329](https://project.larksuite.com/5h2wsx/issue/detail/24854329)) — Brand Kit: pantalla «Esto es lo que vimos en tu Instagram» con «Corregir» por fila
 
 Feature/mejora · Feature, UI · **P1 · L** · reflex-ui-engineer (+ creative-engineer para
 `edit_prefill_field` en `brand_prefill_review.py`; revisión local de ux-designer antes del PR) ·
@@ -477,7 +482,7 @@ corregir lo que esté mal, para aprobar una identidad de marca que reconozco com
 **Fuera de alcance**
 - La pantalla de TikTok y su aviso (decisión 4). El flujo después de aprobar (OL2-6).
 
-### 7.8 OL2-6 — Brand Kit: después de aprobar, «Te faltan 3 cosas que solo tú sabes» y «Tu marca está lista»
+### 7.8 OL2-6 ([m-24854331](https://project.larksuite.com/5h2wsx/issue/detail/24854331)) — Brand Kit: después de aprobar, «Te faltan 3 cosas que solo tú sabes» y «Tu marca está lista»
 
 Feature/mejora · Feature, UI · **P1 · M** · reflex-ui-engineer (revisión local de ux-designer) ·
 sin dependencias para empezar; los borradores, de OL2-3 + OL2-4
@@ -518,7 +523,7 @@ tres respuestas y contestarlas una por una, para terminar mi marca y crear mi pr
 **Fuera de alcance**
 - Rediseñar «Cambiar» / «Empezar de cero» (épica UX m-24842956). TikTok.
 
-### 7.9 OL2-4 — Brand Kit: medir B1 con un golden set de 30 cuentas antes de encenderlo
+### 7.9 OL2-4 ([m-24854330](https://project.larksuite.com/5h2wsx/issue/detail/24854330)) — Brand Kit: medir B1 con un golden set de 30 cuentas antes de encenderlo
 
 Tarea técnica · Testing · **P1 · M** · data-scientist-fde · depende de OL2-3
 
