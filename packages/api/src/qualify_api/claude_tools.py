@@ -28,7 +28,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from qualify_shared import observability
@@ -171,11 +171,13 @@ MIN_TURN_OUTPUT_TOKENS = 512
 #: around `tools` and the per-message framing, neither of which is in the request bytes.
 FIRST_TURN_MARGIN_TOKENS = 1_000
 
-_NANO = Decimal("0.000000001")  # money is booked to the nano-dollar
+#: Money is booked to the nano-dollar: every price x token count is exact at 9 decimals,
+#: so rounding there only removes float noise, never a real fraction.
+_NANO = Decimal("0.000000001")
 
 
 def _usd(value: float) -> Decimal:
-    return Decimal(repr(value)).quantize(_NANO, rounding=ROUND_CEILING)
+    return Decimal(repr(value)).quantize(_NANO, rounding=ROUND_HALF_EVEN)
 
 
 def worst_turn_usd(model_id: str, input_tokens: int, max_tokens: int) -> Decimal | None:

@@ -486,15 +486,21 @@ def bounded_ports(meter: DollarMeter | None = None) -> Any:
     )
 
 
-def _prefill(*args: Any, budget_usd: Decimal, **kwargs: Any) -> PrefillResult:
+def metered_prefill(
+    *args: Any,
+    budget_usd: Decimal,
+    ports: Callable[[DollarMeter], Any] = bounded_ports,
+    **kwargs: Any,
+) -> PrefillResult:
     """One metered Alta attempt: a fresh `DollarMeter` of `budget_usd`, the Alta's ports
-    on it, the credits booked in it, and no creation run."""
+    on it (`ports(meter)`; tests wrap `bounded_ports` with fakes), the credits booked in
+    it, and no creation run."""
     from qualify_api.creative.brand_prefill import prefill_brand_kit  # noqa: PLC0415
 
     meter = DollarMeter(budget_usd)
     return prefill_brand_kit(
         *args,
-        ports=bounded_ports(meter),
+        ports=ports(meter),
         meter=meter,
         credit_usd=SCRAPECREATORS_USD_PER_CREDIT,
         create_hashtags=False,
@@ -601,7 +607,7 @@ class AltaPrefillRunner:
         *,
         worker_id: str,
         settings: SettingsSource = AltaPrefillSettings.from_env,
-        prefill: PrefillFn = _prefill,
+        prefill: PrefillFn = metered_prefill,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._jobs = jobs
