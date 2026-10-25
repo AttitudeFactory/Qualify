@@ -39,10 +39,7 @@ def currency_after_country_change(country_code: str, currency: str) -> str:
 
 # --- «Tu plan» (m-24852145): the plan's name and what it brings, never a price ---------
 
-#: The one button the owner has to get more: the same request m-24852129 answers.
-ASK_MORE_BUTTON = "Pedir más a Qualify"
-ASK_MORE_SENT = "Listo. Te escribimos a tu correo con el enlace de pago."
-ASK_MORE_FAILED = "No pudimos enviar tu pedido. Vuelve a intentarlo en un rato."
+# «Pedir más a Qualify» next to the plan is `ask_more_vm` / `AskMoreState` (m-24852129).
 PLAN_FAILED = "No pudimos leer tu plan. Recarga la página."
 
 

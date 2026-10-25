@@ -13,7 +13,6 @@ from uuid import UUID
 from qualify_api.creative.creations import month_start
 from qualify_api.plans.catalog import Plan
 from qualify_api.plans.read import business_plan
-from qualify_api.support.service import SupportTicket, create_support_request
 from qualify_api.tenancy.locale import (
     BusinessLocale,
     LocaleInvalid,
@@ -26,7 +25,6 @@ __all__ = [
     "LocaleInvalid",
     "read_locale",
     "read_plan",
-    "request_more",
     "save_locale",
 ]
 
@@ -47,14 +45,3 @@ def read_plan(tenant_id: UUID, now: datetime | None = None) -> Plan:
     locale = read_business_locale(tenant_id)
     zone = locale.timezone if locale is not None and locale.timezone else "UTC"
     return business_plan(tenant_id, month_start(now or datetime.now(UTC), zone))
-
-
-def request_more(tenant_id: UUID, *, email: str, plan_code: str) -> SupportTicket:
-    """«Pedir más a Qualify»: a `more_creations` support request (the one m-24852129
-    answers with a pack or a plan change), told to the team channel."""
-    return create_support_request(
-        tenant_id=tenant_id,
-        topic="more_creations",
-        contact_email=email,
-        context={"screen": "settings", "plan": plan_code},
-    )

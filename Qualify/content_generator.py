@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ask_more_ui import ask_more_block
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
@@ -4413,6 +4414,14 @@ def _summary_view() -> rx.Component:
             CreativeState.gen_problem != "",
             callout(CreativeState.gen_problem, "warn"),
         ),
+        # m-24852129: a counter at 0 — Crear is disabled; the one way out is to ask
+        rx.match(
+            CreativeState.gen_exhausted,
+            ("videos", ask_more_block("videos")),
+            ("previews", ask_more_block("previews")),
+            ("creations", ask_more_block("creations")),
+            rx.fragment(),
+        ),
         rx.vstack(
             rx.foreach(CreativeState.gen_summary, _summary_row),
             spacing="0",
@@ -4488,7 +4497,8 @@ def _view_nav() -> rx.Component:
                     min_height="44px",
                     on_click=CreativeState.submit_generator_form,
                     loading=CreativeState.is_submitting,
-                    disabled=CreativeState.gen_generating,
+                    # m-24852129: never an active Crear that is then refused
+                    disabled=CreativeState.gen_generating | (CreativeState.gen_exhausted != ""),
                 ),
                 rx.button(
                     "Siguiente",

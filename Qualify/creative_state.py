@@ -65,6 +65,9 @@ from qualify_creative.schemas import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
+from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
+from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
+from .ask_more_vm import exhausted_kind, exhausted_text
 from .auth_state import AuthState, brand_tenant_id
 from .campaign_provider import (
     COLOR_LABELS,
@@ -4881,6 +4884,44 @@ class CreativeState(rx.State):
     videos_quota: int = 0
     previews_left: int = 0
     previews_quota: int = 0
+    #: m-24852129: what the live 90-day packs still bring, per counter, and the day the
+    #: first of them expires as the owner reads it (included in the counters above).
+    extra_left: int = 0
+    extra_expires: str = ""
+    extra_videos_left: int = 0
+    extra_videos_expires: str = ""
+    extra_previews_left: int = 0
+    extra_previews_expires: str = ""
+
+    def _exhausted(self, price: CreationPrice | None) -> str:
+        """The counter at 0 that keeps the piece in the form from being created ("" =
+        none): Crear is disabled and «Pedir más a Qualify» offered (m-24852129)."""
+        if self.creations_left < 0 or price is None:
+            return ""
+        return exhausted_kind(
+            weight=price.weight,
+            videos=price.videos,
+            creations_left=self.creations_left,
+            videos_left=self.videos_left,
+            video_quota=self.videos_quota,
+            previews_left=self.previews_left,
+            preview_quota=self.previews_quota,
+        )
+
+    def _exhausted_text(self, kind: str) -> str:
+        quota = {
+            EXHAUSTED_VIDEOS: self.videos_quota,
+            EXHAUSTED_PREVIEWS: self.previews_quota,
+        }.get(kind, self.creations_quota)
+        return exhausted_text(kind, quota)
+
+    @rx.var(cache=False)
+    def gen_exhausted(self) -> str:
+        """On the summary: which counter at 0 keeps this piece from being created —
+        `creations`, `videos` or `previews` — or "" (m-24852129)."""
+        if not self._on_summary():
+            return ""
+        return self._exhausted(self._creations_price())
 
     def _previews_short(self, price: CreationPrice) -> str:
         """What a video whose vistas previas the month cannot pay says ("" = it can).
@@ -4964,6 +5005,9 @@ class CreativeState(rx.State):
             if self._is_presenter() and not (self.own_script_on and self.own_script.strip()):
                 return _PRESENTER_LENGTHS
             return PRESENTER_TOO_LONG if self._is_presenter() else VIDEO_TOO_LONG
+        exhausted = self._exhausted(price)
+        if exhausted:
+            return self._exhausted_text(exhausted)
         if price.weight > self.creations_left:
             return self._not_enough_text(price.weight - self.creations_left)
         return self._previews_short(price)
@@ -4980,6 +5024,14 @@ class CreativeState(rx.State):
             self.videos_quota,
             self.previews_left,
             self.previews_quota,
+            extras=(
+                self.extra_left,
+                self.extra_expires,
+                self.extra_videos_left,
+                self.extra_videos_expires,
+                self.extra_previews_left,
+                self.extra_previews_expires,
+            ),
         )
 
     @rx.var(cache=False)
@@ -5079,6 +5131,7 @@ class CreativeState(rx.State):
                 self.creations_left, self.creations_quota, self.creations_renews = -1, 0, ""
                 self.videos_left, self.videos_quota = 0, 0
                 self.previews_left, self.previews_quota = 0, 0
+                self._set_extras((0, "", 0, "", 0, ""))
             else:
                 (
                     self.creations_left,
@@ -5088,8 +5141,19 @@ class CreativeState(rx.State):
                     self.videos_quota,
                     self.previews_left,
                     self.previews_quota,
-                ) = balance
+                ) = balance[:7]
+                self._set_extras(balance[7] if len(balance) > 7 else (0, "", 0, "", 0, ""))
                 self._fit_duration()
+
+    def _set_extras(self, extras: tuple[int, str, int, str, int, str]) -> None:
+        (
+            self.extra_left,
+            self.extra_expires,
+            self.extra_videos_left,
+            self.extra_videos_expires,
+            self.extra_previews_left,
+            self.extra_previews_expires,
+        ) = extras
 
     # -- «Resumen» (§ request 2026-10-20): every option's last view, where Generar is ------
 
