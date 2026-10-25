@@ -24,9 +24,11 @@ The caller's function is the trace (`observability.traced`); each turn nests in 
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from qualify_shared import observability
@@ -75,7 +77,18 @@ ClientFactory = Callable[[str], Any]
 
 
 class ClaudeToolError(RuntimeError):
-    """The run could not produce a usable answer (refusal, truncation, no final tool)."""
+    """The run could not produce a usable answer (refusal, truncation, no final tool).
+    `stats` is what the run spent before it failed (every turn that got an answer), when
+    the raiser knew it — a caller's books stay exact without guessing."""
+
+    def __init__(self, *args: object, stats: CallStats | None = None) -> None:
+        super().__init__(*args)
+        self.stats = stats
+
+
+class BudgetExhausted(ClaudeToolError):
+    """The run's `DollarMeter` cannot pay for the next turn even with the least useful
+    output: the turn is not made — nothing is sent."""
 
 
 class MissingAPIKey(ClaudeToolError):
@@ -147,6 +160,198 @@ def cost_breakdown(
     }
 
 
+# --------------------------------------------------------------------------------------
+# The dollar meter (m-24854322): a run's spend bounded per TURN, not per call
+# --------------------------------------------------------------------------------------
+
+#: The least output a turn is sent with: below it a thinking model cannot reach its tool
+#: call, so a lowered turn would only pay for a truncation.
+MIN_TURN_OUTPUT_TOKENS = 512
+#: Tokens added to the first turn's byte count: the tool-use system prompt the API adds
+#: around `tools` and the per-message framing, neither of which is in the request bytes.
+FIRST_TURN_MARGIN_TOKENS = 1_000
+
+#: Money is booked to the nano-dollar: every price x token count is exact at 9 decimals,
+#: so rounding there only removes float noise, never a real fraction.
+_NANO = Decimal("0.000000001")
+
+
+def _usd(value: float) -> Decimal:
+    return Decimal(repr(value)).quantize(_NANO, rounding=ROUND_HALF_EVEN)
+
+
+def worst_turn_usd(model_id: str, input_tokens: int, max_tokens: int) -> Decimal | None:
+    """The most one turn can bill: every input token as a 5-minute cache WRITE (the
+    dearest an input token can be: x1.25) and `max_tokens` of output, through
+    `cost_breakdown`. None for an unpriced model (refuse to guess)."""
+    parts = cost_breakdown(
+        model_id, input_tokens=0, output_tokens=max_tokens, cache_creation_tokens=input_tokens
+    )
+    if not parts:
+        return None
+    return _usd(sum(parts.values()))
+
+
+def billed_usd(model_id: str, usage: Any) -> Decimal | None:
+    """What a turn's `usage` bills, every token at its own rate; None when unpriced."""
+    parts = cost_breakdown(
+        model_id,
+        input_tokens=getattr(usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+    )
+    if not parts:
+        return None
+    return _usd(sum(parts.values()))
+
+
+@dataclass
+class DollarMeter:
+    """What one run may spend in USD, and what it spent — every Claude turn and every
+    other paid unit (ScrapeCreators credits, `charge`) in ONE balance.
+
+    Before each turn `fit_turn` prices the worst the turn can bill (`worst_turn_usd` over
+    `turn_input_ceiling`) and RESERVES it: if it fits, the turn goes as asked; if it fits
+    only with less output, `max_tokens` is lowered to what fits (`lowered_turns`); if not
+    even `MIN_TURN_OUTPUT_TOKENS` fit, the turn is refused (`BudgetExhausted`,
+    `refused_turns`) and nothing is sent. `settle_turn` swaps the reservation for what
+    the answer billed — or keeps the whole reservation as spent when no answer came (a
+    timeout may still have billed). A billed turn above its reservation is booked anyway
+    and counted in `overruns` (the input bound was wrong; tests pin 0)."""
+
+    limit_usd: Decimal
+    spent_usd: Decimal = Decimal(0)
+    reserved_usd: Decimal = Decimal(0)
+    refused_turns: int = 0
+    lowered_turns: int = 0
+    overruns: int = 0
+    #: (what, usd) of every booking, in order.
+    entries: list[tuple[str, Decimal]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.limit_usd = Decimal(str(self.limit_usd))
+
+    @property
+    def remaining_usd(self) -> Decimal:
+        return self.limit_usd - self.spent_usd - self.reserved_usd
+
+    def charge(self, usd: Decimal, *, what: str = "") -> None:
+        """Book a non-Claude cost (a ScrapeCreators credit) BEFORE it is incurred; raises
+        `BudgetExhausted` — and books nothing — when it does not fit."""
+        usd = Decimal(str(usd))
+        if usd > self.remaining_usd:
+            raise BudgetExhausted(f"{what or 'charge'} of {usd} USD does not fit the meter")
+        self.spent_usd += usd
+        self.entries.append((what, usd))
+
+    def fit_turn(self, model_id: str, input_tokens: int, max_tokens: int) -> tuple[int, Decimal]:
+        """`(allowed_max_tokens, reservation)` for a turn whose prompt is at most
+        `input_tokens`; the reservation is held until `settle_turn`."""
+        worst = worst_turn_usd(model_id, input_tokens, max_tokens)
+        if worst is None:
+            self.refused_turns += 1
+            raise BudgetExhausted(f"{model_id} has no price: the turn cannot be bounded")
+        allowed = max_tokens
+        if worst > self.remaining_usd:
+            input_only = worst_turn_usd(model_id, input_tokens, 0) or Decimal(0)
+            per_output = Decimal(repr(PRICES[model_id][1])) / Decimal(1_000_000)
+            room = self.remaining_usd - input_only
+            allowed = 0
+            if room > 0:
+                allowed = int((room / per_output).to_integral_value(rounding=ROUND_FLOOR))
+            allowed = min(allowed, max_tokens)
+            # rounding to the nano-dollar: step down until the reservation fits
+            while allowed >= MIN_TURN_OUTPUT_TOKENS:
+                worst = worst_turn_usd(model_id, input_tokens, allowed) or worst
+                if worst <= self.remaining_usd:
+                    break
+                allowed -= 1
+            if allowed < MIN_TURN_OUTPUT_TOKENS:
+                self.refused_turns += 1
+                raise BudgetExhausted(
+                    f"{model_id}: {self.remaining_usd} USD left does not pay a turn of "
+                    f"{input_tokens} input tokens"
+                )
+            self.lowered_turns += 1
+        self.reserved_usd += worst
+        return allowed, worst
+
+    def settle_turn(self, model_id: str, reserved: Decimal, usage: Any | None) -> Decimal:
+        """Release `reserved` and book what the turn billed (`usage`), or the whole
+        reservation when there is no usage (no answer came). Returns what was booked."""
+        self.reserved_usd -= reserved
+        billed = billed_usd(model_id, usage) if usage is not None else None
+        booked = reserved if billed is None else billed
+        if booked > reserved:
+            self.overruns += 1
+        self.spent_usd += booked
+        self.entries.append((f"claude:{model_id}", booked))
+        return booked
+
+    def as_document(self) -> dict[str, Any]:
+        return {
+            "limit_usd": str(self.limit_usd),
+            "spent_usd": str(self.spent_usd),
+            "refused_turns": self.refused_turns,
+            "lowered_turns": self.lowered_turns,
+            "overruns": self.overruns,
+        }
+
+
+@dataclass(frozen=True)
+class TurnBound:
+    """What `turn_input_ceiling` needs of the previous turn of the same run."""
+
+    #: The input bound that turn was priced with.
+    ceiling: int
+    #: Its billed prompt (input + cache read + cache write); 0 when unknown.
+    billed_prompt: int
+    #: Its billed output (the assistant content the next turn carries back).
+    output: int
+    #: The request bytes it counted (`request_bytes`).
+    sent_bytes: int
+
+
+def _jsonable(value: Any) -> Any:
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump()
+    return str(value)
+
+
+def request_bytes(system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
+    """UTF-8 bytes of what a turn sends, WITHOUT the assistant messages (their tokens are
+    the previous turns' billed output, counted as such). A token is never shorter than
+    one byte, so bytes bound tokens from above."""
+    sent = {
+        "system": system,
+        "tools": tools,
+        "messages": [m for m in messages if m.get("role") != "assistant"],
+    }
+    blob = json.dumps(sent, ensure_ascii=False, default=_jsonable)
+    return len(blob.encode("utf-8"))
+
+
+def turn_input_ceiling(
+    system: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    previous: TurnBound | None = None,
+) -> tuple[int, int]:
+    """`(input_token_bound, request_bytes)` of the next turn. The first turn: its bytes
+    + `FIRST_TURN_MARGIN_TOKENS`. A later turn: the LARGER of the previous turn's billed
+    prompt and its own bound (a turn that under-reports its input must never lower the
+    next bound — a property test pins it), plus the previous output, plus the bytes
+    added since."""
+    sent = request_bytes(system, messages, tools)
+    if previous is None:
+        return sent + FIRST_TURN_MARGIN_TOKENS, sent
+    added = max(0, sent - previous.sent_bytes)
+    base = max(previous.billed_prompt, previous.ceiling)
+    return base + previous.output + added, sent
+
+
 def api_key_from_env() -> str:
     key = os.environ.get(API_KEY_ENV, "").strip()
     if not key:
@@ -173,6 +378,8 @@ class Meter:
     cache_creation: int = 0
     turns: int = 0
     tool_calls: int = 0
+    #: The last metered turn's bound (`turn_input_ceiling`), for the next one.
+    last_bound: TurnBound | None = None
 
     def add(self, response: Any) -> None:
         self.turns += 1
@@ -299,9 +506,25 @@ def create_turn(
     tools: list[dict[str, Any]],
     tool_choice: dict[str, Any],
     max_tokens: int,
+    budget: DollarMeter | None = None,
 ) -> Any:
     """One `messages.create` with the stable system prompt cached, metered, and a
-    refusal or truncation turned into `ClaudeToolError` before `content` is read."""
+    refusal or truncation turned into `ClaudeToolError` before `content` is read.
+
+    With a `budget` (the Alta prefill, m-24854322) the turn is priced first
+    (`DollarMeter.fit_turn` over `turn_input_ceiling`): it goes as asked, with a lower
+    `max_tokens`, or not at all (`BudgetExhausted`: nothing is sent). Its reservation is
+    settled with what it billed, or kept whole when the call raised. Every error raised
+    here carries the run's `stats` so far. Without a budget nothing changes."""
+    reservation: Decimal | None = None
+    sent = ceiling = 0
+    if budget is not None:
+        ceiling, sent = turn_input_ceiling(system, messages, tools, meter.last_bound)
+        try:
+            max_tokens, reservation = budget.fit_turn(config.model_id, ceiling, max_tokens)
+        except BudgetExhausted as exc:
+            exc.stats = meter.stats()
+            raise
     kwargs: dict[str, Any] = {
         "model": config.model_id,
         "max_tokens": max_tokens,
@@ -312,13 +535,35 @@ def create_turn(
     }
     if config.effort:
         kwargs["output_config"] = {"effort": config.effort}
-    response = messages_create(client, config, **kwargs)
+    try:
+        response = messages_create(client, config, **kwargs)
+    except BaseException:
+        if budget is not None and reservation is not None:
+            budget.settle_turn(config.model_id, reservation, None)
+        raise
+    if budget is not None and reservation is not None:
+        usage = getattr(response, "usage", None)
+        budget.settle_turn(config.model_id, reservation, usage)
+        meter.last_bound = TurnBound(
+            ceiling=ceiling,
+            billed_prompt=_billed_prompt(usage),
+            output=int(getattr(usage, "output_tokens", 0) or 0),
+            sent_bytes=sent,
+        )
     meter.add(response)
     if response.stop_reason == "refusal":
-        raise ClaudeToolError(f"{config.model_id} refused the request")
+        raise ClaudeToolError(f"{config.model_id} refused the request", stats=meter.stats())
     if response.stop_reason == "max_tokens":
-        raise ClaudeToolError(f"{config.model_id} hit max_tokens={max_tokens}")
+        raise ClaudeToolError(f"{config.model_id} hit max_tokens={max_tokens}", stats=meter.stats())
     return response
+
+
+def _billed_prompt(usage: Any) -> int:
+    return int(
+        (getattr(usage, "input_tokens", 0) or 0)
+        + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    )
 
 
 def tool_uses(response: Any) -> list[Any]:

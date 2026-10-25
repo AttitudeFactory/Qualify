@@ -203,6 +203,7 @@ def test_the_proposal_survives_the_signup_that_adopts_the_draft() -> None:
         source: dict[str, Any] | None = None,
         caps: CallCaps = DEFAULT_CAPS,
         propose: bool = True,
+        budget_usd: Any = None,
     ) -> PrefillResult:
         calls.append({"tenant_id": tenant_id, "source": source})
         proposal = {"connect": {"username": handle, "sector": "comida"}, "palette": None}

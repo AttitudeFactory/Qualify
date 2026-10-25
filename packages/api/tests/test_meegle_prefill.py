@@ -1,7 +1,8 @@
 """PB-4 (m-24852198): the Brand Kit prefill of an «Alta de cliente», offline.
 
-Pins: off by default (the Alta works exactly as before), the cost cap → `CallCaps`
-formula and its refusal below the minimum run, idempotency per item + username, exactly
+Pins: off by default (the Alta works exactly as before), the cost cap → the Alta's
+limits and its refusal below the minimum run (the dollar meter itself:
+`test_alta_dollar_meter.py`), idempotency per item + username, exactly
 one retry and only for a transient failure, the literal Meegle comments, and that nothing
 the prefill does can turn a sent invitation into a retried event."""
 
@@ -16,7 +17,6 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_api.auth.drafts import EmailHasAccount
-from qualify_api.claude_tools import CallStats
 from qualify_api.creative.brand_prefill import (
     DEFAULT_CAPS,
     CallCaps,
@@ -35,13 +35,11 @@ from qualify_api.meegle.prefill import (
     COMMENT_UNREADABLE,
     ENABLED_ENV,
     MAX_USD_ENV,
-    MIN_RUN,
     AltaPrefillRunner,
     AltaPrefillScheduler,
     AltaPrefillSettings,
-    UnitCosts,
-    caps_for_budget,
-    unit_costs,
+    limits_for_budget,
+    minimum_run_usd,
     usage_cost,
 )
 from qualify_api.meegle.prefill_jobs import (
@@ -57,7 +55,7 @@ from qualify_api.webhooks.repository import ClaimedEvent
 NOW = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 ITEM = 24852198
 EMAIL = "hlrd1993+alta@gmail.com"
-UNITS = UnitCosts(Decimal("0.002"), Decimal("0.04"), "claude-sonnet-5")
+CREDIT = mod.SCRAPECREATORS_USD_PER_CREDIT
 
 
 def _on(max_usd: str = "1") -> AltaPrefillSettings:
@@ -72,67 +70,41 @@ OFF = AltaPrefillSettings.from_env({})
 # --------------------------------------------------------------------------------------
 
 
-def test_unit_costs_come_from_the_versioned_prices() -> None:
-    units = unit_costs()
-    assert units is not None
-    assert units.scrapecreators_request == mod.SCRAPECREATORS_USD_PER_CREDIT
-    # claude-sonnet-5 is (2, 10) $/MTok in claude_tools.PRICES; the 6k input priced as a
-    # 5-minute cache write (x1.25, the dearest an input token bills) + 2.5k output
-    assert units.claude_model == "claude-sonnet-5"
-    assert units.claude_run == Decimal("0.04")
-
-
-def test_the_run_estimate_covers_a_run_that_writes_its_whole_input_to_the_cache() -> None:
-    """m-24852516: the estimate is a ceiling even when every input token is a cache
-    write — the measured cost of such a run never exceeds `claude_run`."""
-    units = unit_costs()
-    assert units is not None
-    worst = CallStats(
-        units.claude_model,
-        None,
-        input_tokens=0,
-        output_tokens=mod.CLAUDE_RUN_OUTPUT_TOKENS,
-        cache_creation_tokens=mod.CLAUDE_RUN_INPUT_TOKENS,
-    )
-    assert Decimal(str(round(worst.cost_usd, 6))) <= units.claude_run
-
-
 def test_below_the_minimum_run_the_cap_refuses() -> None:
-    minimum = UNITS.cost(MIN_RUN)  # 2 x 0.002 + 2 x 0.04
-    assert minimum == Decimal("0.084")
-    assert caps_for_budget(minimum - Decimal("0.000001"), UNITS) is None
-    assert caps_for_budget(minimum, UNITS) == MIN_RUN
+    minimum = minimum_run_usd()
+    # 2 credits + the first rubro turn (2,500 in x 2.5e-6 + 1,500 out x 1e-5) + the first
+    # catalog turn (5,200 in x 2.5e-6 + 1,200 out x 1e-5), claude-sonnet-5 at (2, 10)
+    assert minimum == Decimal("0.0038") + Decimal("0.02125") + Decimal("0.025")
+    assert limits_for_budget(minimum - Decimal("0.000001")) is None
+    limits = limits_for_budget(minimum)
+    assert limits is not None and limits.caps == mod.ALTA_CAPS
+    assert limits.budget_usd == minimum
 
 
-@pytest.mark.parametrize(
-    ("budget", "expected"),
-    [
-        ("0.086", CallCaps(3, 2)),  # one more post page
-        ("0.092", CallCaps(6, 2)),  # all the pages before a third Claude run
-        ("0.131", CallCaps(6, 2)),  # 0.092 + 0.04 = 0.132 not reached
-        ("0.132", CallCaps(6, 3)),
-        ("50", DEFAULT_CAPS),  # never above what one run can use
-    ],
-)
-def test_caps_follow_the_formula(budget: str, expected: CallCaps) -> None:
-    assert caps_for_budget(Decimal(budget), UNITS) == expected
+def test_the_alta_limits_are_the_same_at_any_cap_only_the_meter_changes() -> None:
+    for budget in ("0.06", "0.15", "50"):
+        limits = limits_for_budget(Decimal(budget))
+        assert limits is not None
+        assert limits.caps == CallCaps(scrapecreators_requests=2, claude_calls=2)
+        assert limits.budget_usd == Decimal(budget)
 
 
-@pytest.mark.parametrize("cents", range(8, 30))
-def test_the_derived_caps_never_cost_more_than_the_cap(cents: int) -> None:
-    budget = Decimal(cents) / 100
-    caps = caps_for_budget(budget, UNITS)
-    if caps is not None:
-        assert UNITS.cost(caps) <= budget
+def test_usage_cost_is_what_the_meter_booked() -> None:
+    metered = PrefillUsage(
+        scrapecreators_credits=2, claude_calls=2, claude_cost_usd=0.01, metered_usd=Decimal("0.03")
+    )
+    assert usage_cost(metered) == Decimal("0.03")
 
 
-def test_usage_cost_charges_lost_tokens_at_the_estimate() -> None:
+def test_without_a_meter_lost_tokens_are_charged_at_the_worst_case() -> None:
     usage = PrefillUsage(scrapecreators_credits=2, claude_calls=2, claude_cost_usd=0.01)
-    assert usage_cost(usage, UNITS) == Decimal("0.004") + Decimal("0.01")
+    assert usage_cost(usage) == 2 * CREDIT + Decimal("0.01")
     lost = PrefillUsage(
         scrapecreators_credits=1, claude_calls=1, claude_cost_usd=0.0, claude_tokens_complete=False
     )
-    assert usage_cost(lost, UNITS) == Decimal("0.002") + Decimal("0.04")
+    worst = mod.worst_case()
+    assert worst is not None
+    assert usage_cost(lost) == CREDIT + worst.rubro + worst.catalog
 
 
 # --------------------------------------------------------------------------------------
@@ -150,6 +122,7 @@ def test_usage_cost_charges_lost_tokens_at_the_estimate() -> None:
         ({ENABLED_ENV: "yes", MAX_USD_ENV: "-1"}, "max_usd_invalid"),
         ({ENABLED_ENV: "1", MAX_USD_ENV: "NaN"}, "max_usd_invalid"),
         ({ENABLED_ENV: "1", MAX_USD_ENV: "0.01"}, "max_usd_below_minimum_run"),
+        ({ENABLED_ENV: "1", MAX_USD_ENV: "0.05"}, "max_usd_below_minimum_run"),
     ],
 )
 def test_the_prefill_is_inactive_unless_on_and_capped(env: dict[str, str], reason: str) -> None:
@@ -165,7 +138,8 @@ def test_the_process_environment_has_no_default(monkeypatch: pytest.MonkeyPatch)
 
 def test_on_with_a_cap_is_active() -> None:
     settings = _on("1")
-    assert settings.active and settings.caps == DEFAULT_CAPS and settings.max_usd == 1
+    assert settings.active and settings.max_usd == 1
+    assert settings.limits is not None and settings.limits.caps == mod.ALTA_CAPS
 
 
 # --------------------------------------------------------------------------------------
@@ -217,6 +191,7 @@ class World:
         source: dict[str, Any] | None = None,
         caps: CallCaps = DEFAULT_CAPS,
         propose: bool = True,
+        budget_usd: Decimal | None = None,
     ) -> PrefillResult:
         self.prefill_calls.append(
             {
@@ -227,6 +202,7 @@ class World:
                 "source": source,
                 "caps": caps,
                 "propose": propose,
+                "budget_usd": budget_usd,
             }
         )
         return self.results.pop(0)
@@ -306,7 +282,7 @@ def test_a_handle_prepares_the_draft_and_enqueues_one_job() -> None:
         "bianki.ve",
     )
     assert row.job.max_usd == Decimal("0.5") and row.status == STATUS_PENDING
-    assert row.pipeline_version.startswith("alta_prefill:1+brand_prefill:")
+    assert row.pipeline_version.startswith("alta_prefill:2+brand_prefill:")
     assert world.comments == []  # the comment comes when the job is done
 
 
@@ -360,8 +336,9 @@ def test_ok_writes_the_proposal_and_comments_success() -> None:
         "network": "instagram",
         "handle": "bianki.ve",
         "source": {"kind": "alta", "meegle_work_item_id": ITEM},
-        "caps": DEFAULT_CAPS,
+        "caps": mod.ALTA_CAPS,
         "propose": True,
+        "budget_usd": Decimal("1"),
     }
     assert world.comments == [(ITEM, COMMENT_OK)]
     assert _status(world) == STATUS_DONE
@@ -421,23 +398,39 @@ def test_a_retry_after_a_read_failure_can_still_succeed() -> None:
 
 
 def test_the_retry_only_spends_what_the_first_attempt_left() -> None:
-    units = unit_costs()
-    assert units is not None
-    cap = units.cost(CallCaps(6, 2))  # the first attempt may use 6 pages and 2 runs
-    world = World(_on(str(cap)))
+    world = World(_on("0.15"))
     _enqueued(world)
-    expensive = PrefillUsage(scrapecreators_credits=5, claude_calls=0)
+    spent = Decimal("0.11")  # what the first attempt's meter booked
+    expensive = PrefillUsage(scrapecreators_credits=2, claude_calls=2, metered_usd=spent)
     world.results = [_result(PrefillOutcome.READ_FAILED, usage=expensive)]
     world.runner().run_once()
     world.clock += mod.RETRY_AFTER
     world.runner().run_once()
-    # 5 credits spent: what is left buys no minimum run, so no second prefill
+    # 0.04 left is under the minimum run, so no second prefill
     assert len(world.prefill_calls) == 1
-    assert world.prefill_calls[0]["caps"] == CallCaps(6, 2)
+    assert world.prefill_calls[0]["budget_usd"] == Decimal("0.15")
     assert world.comments == [(ITEM, COMMENT_UNREADABLE)]
     (row,) = world.jobs.rows.values()
     assert row.job.outcome == mod.OUTCOME_NO_BUDGET
-    assert row.job.spent_usd == 5 * units.scrapecreators_request
+    assert row.job.spent_usd == spent
+
+
+def test_the_retry_gets_the_cap_minus_what_the_first_attempt_booked() -> None:
+    world = World(_on("0.15"))
+    _enqueued(world)
+    first = PrefillUsage(scrapecreators_credits=1, claude_calls=0, metered_usd=Decimal("0.0019"))
+    world.results = [
+        _result(PrefillOutcome.READ_FAILED, usage=first),
+        _result(PrefillOutcome.OK),
+    ]
+    world.runner().run_once()
+    world.clock += mod.RETRY_AFTER
+    world.runner().run_once()
+    assert [c["budget_usd"] for c in world.prefill_calls] == [
+        Decimal("0.15"),
+        Decimal("0.15") - Decimal("0.0019"),
+    ]
+    assert world.comments == [(ITEM, COMMENT_OK)]
 
 
 def test_an_unwritten_proposal_is_a_transient_failure() -> None:
@@ -539,9 +532,7 @@ def test_a_comment_posted_but_not_recorded_is_not_posted_again() -> None:
 def test_a_crash_mid_run_is_closed_not_rerun_and_never_exceeds_the_cap() -> None:
     """The worker ran the vendor, then died before recording the spend: the reclaimed job
     must not get the whole cap again."""
-    units = unit_costs()
-    assert units is not None
-    world = World(_on(str(units.cost(DEFAULT_CAPS))))
+    world = World(_on("0.15"))
     world.jobs = _FailingSettle()
     _enqueued(world)
     world.results = [_result(PrefillOutcome.OK)]
@@ -574,13 +565,19 @@ def test_a_crash_after_the_retry_was_scheduled_keeps_the_one_retry() -> None:
 
 def test_a_live_run_is_never_taken_for_a_dead_one() -> None:
     assert mod.MAX_RUN_SECONDS < STALE_AFTER.total_seconds() * 0.8
-    assert mod.MAX_RUN_SECONDS == 12 * 90 + 120 + 32  # ~20.5 min against a 30 min window
+    # 5 Claude turns (2 rubro attempts + 3 catalog turns) x 90 s + 2 credits x 20 s + the
+    # picture's 4 hops x 8 s: ~8.7 min against a 30 min window (was 5 x 90 + 120 + 32)
+    assert mod.CLAUDE_MAX_TURNS == 5
+    assert mod.MAX_RUN_SECONDS == 5 * 90 + 2 * 20 + 32 == 522
 
 
 def test_the_real_prefill_runs_claude_through_the_bounded_client() -> None:
     ports = mod.bounded_ports()
     assert ports.generate.keywords["client_factory"] is mod.bounded_claude_client
     assert ports.catalog.selector.keywords["client_factory"] is mod.bounded_claude_client
+    metered = mod.bounded_ports(mod.DollarMeter(Decimal("0.15")))
+    assert metered.generate.keywords["client_factory"] is mod.bounded_claude_client
+    assert metered.catalog.selector.keywords["client_factory"] is mod.bounded_claude_client
     client = mod.bounded_claude_client("sk-test")
     assert client.max_retries == 0 and client.timeout == mod.CLAUDE_TIMEOUT_SECONDS
 

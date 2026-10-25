@@ -194,3 +194,25 @@ Un reintento suma unos US$0,024 por Alta con el perfil en caché. Una cuenta vac
 | 10 | US$1,50 |
 | 50 | US$7,50 |
 | 100 | US$15,00 |
+
+### Seguimiento OL2-0 (m-24854322) — medidor en dólares por turno — 2026-10-25
+
+**Qué cambió.** El tope ya no cuenta llamadas: cada intento del Alta lleva un medidor en dólares (`claude_tools.DollarMeter`) con lo que queda del tope. Cada crédito de ScrapeCreators (US$0,0019) se anota antes del pedido. Cada turno de Claude se cotiza antes de enviarse a su peor costo (entrada acotada por los bytes del pedido + 1.000 tokens de margen, al precio de escritura de caché ×1,25, más `max_tokens` lleno de salida): sale como se pidió, con un `max_tokens` menor que sí cabe, o no sale. Límites del Alta: lectura de 2 créditos como máximo (instantánea 5: el perfil, y una página de publicaciones solo si hace falta), rubro con 1.500 tokens × 2 intentos (antes 4.000), etiquetas del catálogo en 3 turnos × 1.200 tokens con esfuerzo `low` y un aviso de «elige ahora» antes del último (antes 8 × 16.000 con `medium`), sin la llamada de creación. Si un turno se corta o el medidor lo rechaza, las etiquetas caen a las propias de la cuenta o a las de la llamada de rubro, y la corrida termina `ok`. El asistente web no cambia.
+
+**Peor caso calculado** (test `test_alta_dollar_meter.py`): créditos 0,0038 + rubro 0,0465 + catálogo 0,0900 = **US$0,1403 ≤ 0,15**. Un 4.º turno del catálogo sumaría US$0,04 y rompería el tope. Corrida mínima: US$0,0501. Un test offline corre 240 Altas completas contra un Claude falso adversario (cortes, rechazos, tiempos agotados, uso informado de menos) con topes de 0,15 / 0,06 / 0,02 / 0,008: nunca se cobra ni se anota más que el tope, 0 excesos, todas terminan `ok`.
+
+**Prueba de aceptación en vivo** (`just eval-precarga --alta-usd 0.15 --skip-cache-run --max-usd 0.30`, stack local, un tenant desechable por cuenta, borrado al terminar; `claude-sonnet-5`; las mismas cuentas públicas D, E y F de arriba):
+
+| # | Resultado | Créditos SC | Turnos rubro / catálogo | Salida (tokens) | Medido por el medidor (US$) | PB6-001 en vivo (US$) | Turnos rechazados / bajados | Etiquetas propuestas (PB6-001) |
+|---|---|---|---|---|---|---|---|---|
+| D | ok | 1 | 1 / 3 | 268 / 454 | **0,0263** | 0,0271 | 0 / 0 | 4 de la propia cuenta (4) |
+| E | ok | 1 | 1 / 3 | 238 / 427 | **0,0186** | 0,0266 | 0 / 0 | 5 de la propia cuenta (5) |
+| F | ok | 1 | 1 / 3 | 253 / 424 | **0,0172** | 0,0187 | 0 / 0 | 5 de la llamada de rubro (5) |
+
+- Las tres quedan muy por debajo del tope (máximo US$0,0263 frente a 0,15) y ningún turno se rechazó ni se bajó: con cuentas reales el medidor es un techo, no el camino normal.
+- La lectura costó **1 crédito** en las tres (antes 2): la instantánea 5 trae las 12 publicaciones en el perfil.
+- **Rubro:** igual que en PB6-001 (un turno, 238–268 tokens de salida, por debajo de los 1.500).
+- **Etiquetas:** mismo número que en PB6-001 (4 / 5 / 5). Pero en las tres el catálogo usó sus 3 turnos y no eligió ninguna: una corrida de diagnóstico sobre D (US$0,019) mostró dos turnos de búsqueda y, en el tercero, tras el aviso, `elegir_hashtags` con la lista vacía (nada del catálogo local le encajó). La propuesta tomó entonces las etiquetas propias de la cuenta (D, E; incluyen lugares y el nombre de la marca) o las de la llamada de rubro (F). PB6-001 no guardó el origen de sus etiquetas, así que no se puede afirmar si antes venían del catálogo. **Queda como hallazgo para OL2-4 / el dueño del catálogo:** con el catálogo local la llamada del catálogo cuesta US$0,012–0,016 por Alta sin aportar etiquetas; medirlo con el catálogo de producción antes de decidir si se mantiene en el Alta.
+- La foto de perfil no se copió a R2 (no hay R2 en el stack local); no afecta al costo ni al resultado.
+
+**Gasto de esta prueba:** US$0,062 (las tres corridas) + US$0,019 (diagnóstico) ≈ **US$0,08** en total (Claude + 4 créditos de ScrapeCreators), dentro de la guarda de US$0,30.
