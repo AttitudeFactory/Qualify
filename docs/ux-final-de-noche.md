@@ -47,7 +47,7 @@ Programado · Pendiente · Publicado · Vencido · Fallido) y si está lista par
 | E | Llegó la hora y no lo confirmó (dentro de las 24 h) | «No salió a las 7:00 p. m. porque falta que confirmes el video.» | «Falta tu confirmación» | `warn` + borde ámbar (`overdue`) | `triangle-alert` (el de hoy) | **Sí:** Confirmar y publicar ahora · Elegir otra hora |
 | F | Pasaron más de 24 h sin confirmar | «Vencido» + la nota de hoy (`EXPIRED_NOTE`) | «Vencido» (el de hoy) | `warn` | `triangle-alert` | Reprogramar (como hoy) |
 | G | El final no se pudo hacer (tras los reintentos de la noche) | «No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video.» | «Falta el video final» (la de hoy) | `error` | `triangle-alert` | **Sí:** Intentar de nuevo |
-| H | Pidió otra versión | (vuelve a «Por revisar» de hoy; la fecha se mantiene) | «En revisión» (la de hoy) | `warn` | — | Revisar la nueva vista previa |
+| H | Pidió otra versión | (vuelve a «Por revisar» de hoy; **la fecha se mantiene**, ⚑ decidido) | «En revisión» (la de hoy) | `warn` | — | Revisar la nueva vista previa |
 
 Reglas de esos estados:
 
@@ -56,6 +56,9 @@ Reglas de esos estados:
    confirmación» con el borde ámbar que ya existe para lo que no saldrá así (`overdue`,
    `Qualify/planner_vm.py:1161-1163`), y aparece en Inicio. A las 24 h se vuelve «Vencido» con la
    regla de hoy (QUA-115): **no hace falta una regla nueva**.
+   **Lo mismo con otra versión:** si el dueño pide otra versión de un final programado, la
+   publicación **conserva su fecha**; si la nueva versión no está confirmada a esa hora, no sale y
+   muestra «Falta tu confirmación» (estado E). ⚑ Decidido (fundador, 2026-10-24).
 2. **Si confirma tarde** (estado E), el botón no publica a ciegas a otra hora: ofrece «Confirmar y
    publicar ahora» (sólido) o «Elegir otra hora» (suave). Publicar 3 horas tarde puede no
    servirle (un almuerzo a las 4 p. m.); que elija él. ⚑ Decidido (§6.3).
@@ -432,6 +435,8 @@ confirmar nunca muestra «Publicado» ni «Fallido»; Inicio sin línea en A/B; 
 | 6.5 | «Pedir otra versión» de un final, ¿qué usa? | **Cambiado:** **1 vista previa y 1 video** (la v1 recomendaba no cobrar el video). Texto y tabla en §2.6. |
 | 6.6 | Aprobada sin fecha, ¿también recibe el final esa noche? | **Sí.** |
 | 6.7 | ¿Aviso fuera de Qualify? | **Cambiado:** **nada de WhatsApp**. Un **correo por la mañana** con los videos listos, uno por tanda, con enlaces a Tu semana (`?revisar=videos`) y a cada video, y cómo dejar de recibirlo. Diseño en §8. |
+| 6.9 | Correo: remitente, hora y destinatarios | **Remitente «Qualify»** solo para este correo (la invitación sigue con «Herwin de Qualify»); **7:00 a. m.** en la zona del negocio (a validar); a **todos los que pueden aprobar** (dueños y administradores), cada uno se da de baja por su cuenta. |
+| 6.10 | Otra versión de un final programado | **Conserva la fecha**; si la nueva versión no se confirma a tiempo, no sale y muestra «Falta tu confirmación». |
 | 6.8 | ¿El estado del video va en el eje «lista para salir»? | **Sí.** Y **todo final, también los pedidos a mano, pasa por «Revisa el video» y se confirma** (respuesta del fundador a ADR 41 §3.4). |
 
 ## 7. Hipótesis y cómo validarlas
@@ -442,7 +447,7 @@ confirmar nunca muestra «Publicado» ni «Fallido»; Inicio sin línea en A/B; 
 | Prefiere que no salga antes que que salga sin verlo | «si no confirma, no sale» | 8 (qué le daría miedo que hiciera sin preguntarle) | Preguntarlo con la maqueta de §3.2 |
 | Entiende «vista previa» frente a «video final» sin explicación | las pastillas y notas | 4 (sus palabras) y 6 (dónde se detiene) | Mostrarle §3.3 y pedirle que diga qué falta para que salga |
 | Confirmar con un toque no se vuelve un trámite que hace sin mirar | la segunda mirada | 6 | Observar si reproduce el video antes de confirmar; si no, pensar en otra forma, no en más avisos |
-| Lee el correo de la mañana en el celular, y la hora de envío le sirve | §8 | 3 | Aperturas y toques en «Revisar mis videos» por hora local (eventos de Resend, §8.4); cuántos videos llegan a E con y sin correo abierto |
+| La hora de envío (7:00 a. m.) le sirve — **decidido, a validar** — y lee el correo en el celular | §8 | 3 | Aperturas y toques en «Revisar mis videos» por hora local (eventos de Resend, §8.4); cuántos videos llegan a E con y sin correo abierto |
 | Un correo al día como máximo no se siente como spam | §8.1 | 8 | Cuántos dueños tocan «Deja de recibir estos correos» en el primer mes |
 
 ## 8. El correo de la mañana (decisión del fundador, 2026-10-24)
@@ -450,8 +455,8 @@ confirmar nunca muestra «Publicado» ni «Fallido»; Inicio sin línea en A/B; 
 ### 8.1 Cuándo sale y cuándo no
 
 - **Uno por negocio y por mañana, como máximo**, cuando termina la tanda de la noche: a las
-  **7:00 a. m. en la zona del negocio** (hipótesis de hora, §7; la hora exacta la fija quien
-  construya la tanda). Si a esa hora la tanda no terminó, sale con lo que esté listo y lo que
+  **7:00 a. m. en la zona del negocio**. ⚑ Decidido (fundador, 2026-10-24); queda **a validar**
+  con datos reales (§7). Si a esa hora la tanda no terminó, sale con lo que esté listo y lo que
   quede llega en el correo del día siguiente, nunca en un segundo correo.
 - **Sale solo si hay algo que hacer:** al menos un video que se preparó esa noche y espera
   confirmación (C), o uno que no se pudo preparar (G). Si no hay nada, no hay correo.
@@ -461,14 +466,16 @@ confirmar nunca muestra «Publicado» ni «Fallido»; Inicio sin línea en A/B; 
   recibe el mismo aviso todos los días.
 - **No sale correo** por un final hecho en el momento (regla 7): el dueño acaba de pedirlo y lo ve
   en la app en unos minutos.
-- **A quién:** al correo con el que el negocio entra a Qualify (`1 login = 1 negocio`). Cuando lo
-  opera el equipo, le llega al operador: por eso el asunto empieza con el nombre del negocio.
+- **A quién:** a **todas las personas del negocio que pueden aprobar** (dueños y administradores),
+  un correo a cada una. **Cada una se da de baja por su cuenta**: apagarlo para una no lo apaga
+  para las demás. Cuando lo opera el equipo, le llega también al operador: por eso el asunto
+  empieza con el nombre del negocio. ⚑ Decidido (fundador, 2026-10-24).
 
 ### 8.2 El correo, texto por texto
 
 | Parte | Texto |
 |---|---|
-| Remitente (nombre) | **Qualify** (dirección: la de los correos de hoy en `send.qualify.la`, `QUALIFY_MAIL_FROM`; ver §8.4) |
+| Remitente (nombre) | **Qualify**, ⚑ decidido: solo para este correo automático; la invitación sigue firmando «Herwin de Qualify» (dirección: la de los correos de hoy en `send.qualify.la`, `QUALIFY_MAIL_FROM`; ver §8.4) |
 | Asunto, 1 video | {negocio}: tu video está listo para revisar |
 | Asunto, varios | {negocio}: tus {n} videos están listos para revisar |
 | Asunto, si alguno sale hoy | {negocio}: {n} video sale hoy y espera tu confirmación / {n} videos salen hoy y esperan tu confirmación |
@@ -553,7 +560,8 @@ Lark, pero **el envío de la app sigue en Resend** (`send.qualify.la`); si hay `
 Cambios que pide (dueño sugerido: `backend-engineer` para la tanda y el envío, `creative-engineer`
 para la miniatura, `reflex-ui-engineer` para Configuración y la página de baja):
 
-1. **Remitente por correo:** `OutgoingMail` gana `sender` opcional (el nombre «Qualify» para este
+1. **Remitente por correo** (decidido: «Qualify» solo aquí, la invitación sigue con «Herwin de
+   Qualify»): `OutgoingMail` gana `sender` opcional (el nombre «Qualify» para este
    correo, la misma dirección) y `headers` (para la baja). Hoy el remitente es uno para toda la
    instalación.
 2. **Baja en un toque:** cabeceras `List-Unsubscribe` (URL firmada) y `List-Unsubscribe-Post:
@@ -561,8 +569,11 @@ para la miniatura, `reflex-ui-engineer` para Configuración y la página de baja
    «Listo. Ya no te enviaremos el correo de tus videos listos. Los verás igual en Inicio y en Tu
    semana.» con «Volver a recibirlos». Solo apaga **este** correo, nunca la invitación ni la
    recuperación de contraseña.
-3. **Preferencia en Configuración:** un interruptor «Avisarme por correo cuando mis videos estén
-   listos», encendido por defecto, guardado por negocio (tabla con `tenant_id` + RLS).
+3. **Destinatarios:** todas las personas con permiso de aprobar en el negocio (dueños y
+   administradores), un envío por persona; la clave de idempotencia del punto 4 pasa a ser
+   (negocio, persona, fecha local).
+3b. **Preferencia en Configuración, por persona:** un interruptor «Avisarme por correo cuando mis videos estén
+   listos», encendido por defecto, guardado por persona y negocio (tabla con `tenant_id` + RLS).
 4. **Una salida por negocio y día, idempotente:** una fila en una bandeja de salida con clave
    única (negocio, fecha local); reintentar la tanda nunca manda dos correos. Guarda qué videos
    incluyó (procedencia) para no repetirlos (§8.1) y el id de Resend para cruzarlo con el webhook
@@ -582,6 +593,6 @@ para la miniatura, `reflex-ui-engineer` para Configuración y la página de baja
    la lista prohibida; sin correo cuando no hay nada; un solo correo aunque la tanda corra dos
    veces; el enlace de baja apaga solo este correo; el texto plano contiene los mismos enlaces.
 
-*Hipótesis* (§7): la hora de envío (7:00 a. m.) y que el dueño lea correo en el celular por la
+**Decidido, a validar** (§7): la hora de envío (7:00 a. m.). *Hipótesis*: que el dueño lea correo en el celular por la
 mañana (`perfil-cliente-pyme.md` §5 pregunta 3); que un correo al día como máximo no se sienta
 como spam (pregunta 8). Se miden con las aperturas y toques que ya registra el webhook de Resend.
