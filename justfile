@@ -86,6 +86,28 @@ calendar-worker *args:
 piece-purge *args:
     uv run --no-sync python -m qualify_api.planner.worker --purge-pieces {{args}}
 
+# m-24852145: plans Básico / Plus / Pro, assigned to the business's SUBSCRIPTION (ADR 43).
+# Team only (admin_session). Upgrade applies now, downgrade from the next month:
+#   just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@attitudefactory.co
+#   just set-plan --tenant <uuid> --plan basico --from 2026-12 --reason "..." --by ...
+set-plan *args:
+    uv run --no-sync python -m qualify_api.plans.cli set {{args}}
+
+# m-24852145: `just plans` = the catalog in force; `just plans --tenant <uuid>` = the plan
+# history of that business's subscription (who, when, why, previous and new plan).
+plans *args:
+    uv run --no-sync python -m qualify_api.plans.cli history {{args}}
+
+# m-24852145: cost against charge per subscription and month (team only; never shown in
+# the app): just plan-report [--month 2026-10] [--tenant <uuid>]
+plan-report *args:
+    uv run --no-sync python -m qualify_api.plans.report {{args}}
+
+# m-24852145 (D18): the plan's USD cap alert, once per subscription and month, to Lark
+# (QUALIFY_SUPPORT_WEBHOOK_URL). Never pauses anything. The calendar worker runs it daily.
+plan-cost-alerts *args:
+    uv run --no-sync python -m qualify_api.plans.cost_alerts {{args}}
+
 # QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
 # resolution + ingestion; every other field, comments included -> `unsupported`).
 #   just webhook-tick                 # one batch, then exit

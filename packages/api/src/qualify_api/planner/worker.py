@@ -184,6 +184,19 @@ async def run_worker(
     return 0
 
 
+def combined_chore(*chores: Callable[[], object]) -> Callable[[], object]:
+    """Run each daily chore in turn; one failing never skips the next."""
+
+    def run() -> None:
+        for chore in chores:
+            try:
+                chore()
+            except Exception:
+                logger.exception("calendar.worker.chore_failed")
+
+    return run
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -217,8 +230,10 @@ def main(
         return 0
     if chore is None and not args.once:
         from qualify_api.creative.retention_job import daily_chore  # noqa: PLC0415
+        from qualify_api.plans.cost_alerts import daily_cost_alerts  # noqa: PLC0415
 
-        chore = daily_chore(scope_ids)
+        # m-24852145: the plan's USD cap alert (D18) shares the daily slot — alert only
+        chore = combined_chore(daily_chore(scope_ids), daily_cost_alerts(scope_ids))
     if scoped is None or production is None:
         from qualify_api.planner.composition import (  # noqa: PLC0415 — after .env
             production_tick_runner,
