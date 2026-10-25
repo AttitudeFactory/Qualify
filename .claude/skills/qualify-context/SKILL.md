@@ -19,8 +19,11 @@ exists** — `ls`, `git log`, `gh pr list` beat any paragraph here, including th
   (founder), Darwin (cofounder), and developers Yesika, Deivid and Raul. Realtor-side clients sit
   in a separate Lark department and stay out of internal channels.
 - **Model (signed 2026-08-16):** the *multi-business operator* — one installation serving N
-  businesses, **`1 login = 1 tenant = 1 negocio`**, no switcher (change business = logout +
-  login). `docs/modelo-negocio-operador-multi-emprendimiento.md`. Agency-managed service for third
+  businesses, each a tenant. The 2026-08-16 rule «`1 login = 1 tenant`, no switcher» was
+  **reversed by the founder on 2026-10-23**: one login may own several businesses and switch
+  without logging out, with a subscription shared across them (ADR 43, signed 2026-10-25,
+  `docs/adr-43-un-login-varios-negocios.md`; epic `docs/epica-multi-negocio-una-sesion.md`).
+  Not built yet: today the schema still enforces one login per tenant. Agency-managed service for third
   parties also exists (`docs/oferta-mercado-agencia-gestionada.md`).
 - **Real users today** are businesses the founder operates or administers: food/beverage
   (Bianki — shawarma and salads; Polette — frozen yogurt, formerly «Polet»; one owner who manages
@@ -56,7 +59,8 @@ GitHub Actions (`deploy.yml`), runbook in `README.md` and `docs/despliegue-hetzn
 
 - **Data:** one Postgres (ADR 31). Every tenant table has RLS (`tenant_id` +
   `NULLIF(current_setting('app.tenant_id', true), '')::uuid`); DB access only through
-  `qualify_shared.db.session` (`tenant_session` / `admin_session` / `credential_session`).
+  the `qualify_shared.db` doors (`tenant_session` / `admin_session` / `credential_session`, plus
+  `webhook_session` / `webhook_worker_session` for the Meta webhook intake).
   Media in Cloudflare R2. **There is no ClickHouse and no Celery**: background work is CLI loop
   workers (`just calendar-worker`, `whatsapp-worker`, `conversations-worker`, `webhook-worker`,
   and `creative-worker` — the generation queue of ADR 41, signed 2026-10-24, being built in
