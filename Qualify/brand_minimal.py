@@ -30,10 +30,12 @@ import reflex as rx
 from qualify_api.creative.brand_prefill_review import PrefillReview, owner_started, review_of
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import brand_answers_vm as answers_vm
 from . import brand_documents
 from . import brand_minimal_vm as vm
 from . import brand_proposal_vm as proposal_vm
 from .auth_state import AuthState, brand_tenant_id
+from .brand_answers import BrandAnswersState, answers_body, answers_header
 from .brand_proposal import BrandProposalState, approved_notice, proposal_review, read_notice
 from .creative_state import CreativeState
 from .creative_wizard_pages import (  # the wizards' own controls, shared on purpose
@@ -202,6 +204,26 @@ class BrandMinimalState(rx.State):
             proposal = await self.get_state(BrandProposalState)
             if proposal.approved:  # «Listo…» stands on the step the approval opened
                 proposal.approved_step = self.step
+            # m-24854331 (OL2-6): an approval that left rubro, logo and colours filled
+            # opens «Te faltan 3 cosas que solo tú sabes» instead of the five steps
+            answers = await self.get_state(BrandAnswersState)
+            if entry is not None and entry.answers_path:
+                creative = await self.get_state(CreativeState)
+                answers.open(
+                    active=True,
+                    answers=answers_vm.Answers(
+                        entry.facts.positioning or creative.kit_positioning,
+                        entry.facts.audience or creative.kit_audience,
+                        self.phrase,
+                    ),
+                    hints=entry.hints,
+                    drafts=entry.drafts,
+                    has_tags=entry.has_tags,
+                )
+            else:
+                answers.open(
+                    active=False, answers=answers_vm.Answers(), hints={}, drafts={}, has_tags=False
+                )
             self.entered = True
         yield None
 
@@ -367,6 +389,11 @@ class _Entry:
         facts: vm.KitFacts,
         progress: dict[str, Any],
         review: PrefillReview | None = None,
+        *,
+        answers_path: bool = False,
+        hints: dict[str, str] | None = None,
+        drafts: dict[str, str] | None = None,
+        has_tags: bool = False,
     ) -> None:
         self.finished = finished
         self.saved_step = saved_step
@@ -374,6 +401,12 @@ class _Entry:
         self.progress = progress
         #: The Alta's proposal (m-24852199): pending, or why the account was not read.
         self.review = review or PrefillReview()
+        #: m-24854331: «Te faltan 3 cosas…» instead of the five steps, with the rubro's
+        #: examples, the B1 drafts and whether the approval brought tags.
+        self.answers_path = answers_path
+        self.hints = hints or {}
+        self.drafts = drafts or {}
+        self.has_tags = has_tags
 
 
 def _read_account_country(tenant_id: UUID) -> str:
@@ -422,7 +455,31 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
         has_files=bool(kinds),
     )
     review = review_of(details.connect, has_kit=form is not None, started=started)
-    return _Entry(False, vm.step_from_progress(progress), facts, progress, review)
+    connect = details.connect or {}
+    answers_path = answers_vm.applies(
+        state=answers_vm.prefill_state(connect),
+        rubro=facts.rubro,
+        has_logo=facts.has_logo_answer,
+        palette=facts.palette,
+    )
+    return _Entry(
+        False,
+        vm.step_from_progress(progress),
+        facts,
+        progress,
+        review,
+        answers_path=answers_path,
+        hints=answers_vm.example_hints(
+            answers_vm.example_set(
+                sector=str(connect.get("sector") or ""),
+                rubro=str(connect.get("rubro_text") or ""),
+            )
+        )
+        if answers_path
+        else {},
+        drafts=answers_vm.drafts_from(connect) if answers_path else {},
+        has_tags=bool(connect.get("hashtags")),
+    )
 
 
 # ---------------------------------------------------------------------------------------
@@ -913,74 +970,85 @@ def brand_minimal_index() -> rx.Component:
     # m-24852199: a pending proposal is reviewed before any step is shown (no step is
     # mounted meanwhile, so the save-as-you-go writes nothing until the owner decides)
     reviewing = BrandProposalState.pending & ~loading
+    # m-24854331: after «Aprobar», the three questions only the owner can answer
+    answering = BrandAnswersState.active & ~loading & ~BrandProposalState.pending
     return _wizard_shell(
         *_or_ready(
             rx.cond(
-                reviewing,
-                page_header(proposal_vm.REVIEW_TITLE, title_size="8"),
-                page_header(
-                    _heading_for(0),
-                    _heading_for(1),
-                    kicker=_step_counter(BrandMinimalState.step_number, vm.TOTAL_STEPS),
-                    title_size="8",
+                answering,
+                answers_header(),
+                rx.cond(
+                    reviewing,
+                    page_header(proposal_vm.REVIEW_TITLE, title_size="8"),
+                    page_header(
+                        _heading_for(0),
+                        _heading_for(1),
+                        kicker=_step_counter(BrandMinimalState.step_number, vm.TOTAL_STEPS),
+                        title_size="8",
+                    ),
                 ),
             ),
-            page_body(
-                rx.vstack(
-                    rx.vstack(
-                        rx.cond(
-                            CreativeState.kit_error != "",
-                            callout(CreativeState.kit_error, "error"),
-                        ),
-                        approved_notice(BrandMinimalState.step),
-                        read_notice(BrandMinimalState.step == vm.FIRST_STEP),
-                        spacing="3",
-                        width="100%",
-                        max_width="34rem",
-                        align_self="center",
-                        align_items="center",
-                    ),
-                    rx.cond(
-                        loading,
-                        card(
-                            _loading_view("Cargando tu marca"),
-                            padding="1.75rem",
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            align_items="center",
-                            justify_content="center",
-                        ),
-                        rx.cond(
-                            BrandProposalState.pending,
-                            proposal_review(),
-                            card(
-                                rx.vstack(
-                                    _steps(),
-                                    width="100%",
-                                    max_width=_column_width(),
-                                    align_self="center",
-                                    align_items="center",
-                                    flex="1",
-                                    justify_content="center",
-                                ),
-                                _controls(),
-                                padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
-                                width="100%",
-                                flex="1",
-                                display="flex",
-                                flex_direction="column",
-                                justify_content="space-between",
-                                gap="1.5rem",
-                                key=BrandMinimalState.step,
-                            ),
-                        ),
-                    ),
-                    spacing="4",
+            rx.cond(answering, answers_body(), _steps_body(loading)),
+        ),
+    )
+
+
+def _steps_body(loading: rx.Var[bool]) -> rx.Component:
+    """The five steps' `page_body` (or the proposal's review, or the loading card)."""
+    return page_body(
+        rx.vstack(
+            rx.vstack(
+                rx.cond(
+                    CreativeState.kit_error != "",
+                    callout(CreativeState.kit_error, "error"),
+                ),
+                approved_notice(BrandMinimalState.step),
+                read_notice(BrandMinimalState.step == vm.FIRST_STEP),
+                spacing="3",
+                width="100%",
+                max_width="34rem",
+                align_self="center",
+                align_items="center",
+            ),
+            rx.cond(
+                loading,
+                card(
+                    _loading_view("Cargando tu marca"),
+                    padding="1.75rem",
                     width="100%",
                     flex="1",
-                    min_height="0",
+                    display="flex",
+                    align_items="center",
+                    justify_content="center",
+                ),
+                rx.cond(
+                    BrandProposalState.pending,
+                    proposal_review(),
+                    card(
+                        rx.vstack(
+                            _steps(),
+                            width="100%",
+                            max_width=_column_width(),
+                            align_self="center",
+                            align_items="center",
+                            flex="1",
+                            justify_content="center",
+                        ),
+                        _controls(),
+                        padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
+                        width="100%",
+                        flex="1",
+                        display="flex",
+                        flex_direction="column",
+                        justify_content="space-between",
+                        gap="1.5rem",
+                        key=BrandMinimalState.step,
+                    ),
                 ),
             ),
+            spacing="4",
+            width="100%",
+            flex="1",
+            min_height="0",
         ),
     )
