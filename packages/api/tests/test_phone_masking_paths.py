@@ -212,7 +212,9 @@ class _Found:
 
 def test_generation_context_never_carries_a_full_number() -> None:
     """`build_context` feeds every generation prompt — Claude's copy and angles and the
-    BytePlus scenes — so a bio saved before the masking is masked here too."""
+    BytePlus scenes. There the number is removed, not masked: a copy model that saw
+    «+57 ••• ••• ••48» could print it into a publication. A bio saved before the
+    masking, and one already masked, come out the same."""
     details = BrandKitDetails(
         connect={"rubro_text": "heladería", "city": "Cúcuta", "country_code": "CO"},
         profile={"bio": BIO, "category": "Heladería"},
@@ -220,5 +222,12 @@ def test_generation_context_never_carries_a_full_number() -> None:
     found = {("instagram", "vecino"): _Found(card={"blurb": CAPTION}, bio=BIO)}
     context = build_context(details, [], [_Label("instagram", "vecino", "referente")], found)
     assert context is not None
-    assert context.account_bio == MASKED_BIO
-    _clean(context.model_dump())
+    assert context.account_bio == "Pedidos WhatsApp ·"
+    dumped = json.dumps(context.model_dump(), ensure_ascii=False)
+    _clean(dumped)
+    assert "•" not in dumped and "48" not in dumped and "12" not in dumped
+    assert "Domicilios al #helados" in dumped  # the rest of the caption stays
+    # a bio stored masked (what the prefill writes now) gives the same context
+    masked = BrandKitDetails(profile={"bio": MASKED_BIO, "category": "Heladería"})
+    again = build_context(masked, [], [])
+    assert again is not None and again.account_bio == "Pedidos WhatsApp ·"

@@ -226,6 +226,33 @@ def mask_phones(text: str) -> str:
     return text
 
 
+#: A mask `mask_phones` wrote, with the WhatsApp link around it when there was one.
+_MASKED = re.compile(
+    r"(?i)(?:(?:https?://)?(?:www\.)?(?:wa\.me/(?:c/)?|(?:api\.|web\.)?whatsapp\.com/"
+    r"(?:catalog/|send/?\?(?:[^\s#]*?&)?phone=)))?(?:\+\d{1,3} |\+)?"
+    + re.escape(MASK_BODY)
+    + r"\d{2}"
+)
+_EMPTY_BRACKETS = re.compile(r"\(\s*\)|\[\s*\]")
+_SPACES = re.compile(r"[ \t\u00a0]{2,}")
+_DANGLING = re.compile(r"(?m)[ \t]+([,;.:!?])|[ \t]+$")
+
+
+def strip_phones(text: str) -> str:
+    """`text` with every phone number REMOVED, WhatsApp links included — for what
+    generation reads (m-24854323): a copy model that saw a mask could print
+    «+57 ••• ••• ••48» into a publication; with nothing there, it has nothing to echo.
+    Masked or raw input alike; whatever is not a phone stays, spacing tidied."""
+    masked = mask_phones(text)
+    if MASK_BODY not in masked:
+        return masked
+    out = _MASKED.sub("", masked)
+    out = _EMPTY_BRACKETS.sub("", out)
+    out = _SPACES.sub(" ", out)
+    out = _DANGLING.sub(lambda m: m.group(1) or "", out)
+    return out.strip()
+
+
 #: Keys whose values are identifiers, never free text: a handle, a post id, an R2 key or
 #: a hash can hold a digit run that reads like a phone, and must stay byte for byte.
 IDENTIFIER_KEYS = frozenset(

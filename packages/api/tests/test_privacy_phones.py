@@ -6,7 +6,13 @@ from __future__ import annotations
 
 import pytest
 
-from qualify_api.privacy import MASK_BODY, mask_phones, mask_phones_in, whatsapp_numbers
+from qualify_api.privacy import (
+    MASK_BODY,
+    mask_phones,
+    mask_phones_in,
+    strip_phones,
+    whatsapp_numbers,
+)
 
 M = MASK_BODY  # "••• ••• ••"
 
@@ -204,3 +210,20 @@ def test_identifiers_are_kept_and_an_untouched_value_is_the_same_object() -> Non
     changed = mask_phones_in(dict(document, bio="Pide al 3001234567"))
     assert changed["username"] == "3001234567" and changed["pic_key"] == key
     assert changed["recentPosts"] is document["recentPosts"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Pedidos al 300 123 4567, domicilios gratis.", "Pedidos al, domicilios gratis."),
+        ("Pide aquí https://wa.me/c/573001234567 hoy", "Pide aquí hoy"),
+        ("WhatsApp +57 ••• ••• ••48", "WhatsApp"),  # already masked: removed too
+        ("Llama al (0212) 555-1234 o al +1 305 123 4567", "Llama al o al"),
+        ("Precio $25.000 desde 2019", "Precio $25.000 desde 2019"),
+        ("", ""),
+    ],
+)
+def test_strip_phones_leaves_no_number_and_no_mask(text: str, expected: str) -> None:
+    stripped = strip_phones(text)
+    assert stripped == expected
+    assert "•" not in stripped

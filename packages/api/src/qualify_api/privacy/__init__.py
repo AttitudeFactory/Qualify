@@ -6,7 +6,15 @@ from qualify_api.privacy.phones import (
     MASK_BODY,
     mask_phones,
     mask_phones_in,
+    strip_phones,
     whatsapp_numbers,
 )
 
-__all__ = ["IDENTIFIER_KEYS", "MASK_BODY", "mask_phones", "mask_phones_in", "whatsapp_numbers"]
+__all__ = [
+    "IDENTIFIER_KEYS",
+    "MASK_BODY",
+    "mask_phones",
+    "mask_phones_in",
+    "strip_phones",
+    "whatsapp_numbers",
+]
