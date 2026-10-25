@@ -27,7 +27,11 @@ Three counters per month (founder, 2026-10-24), none of them money:
 - The quota is the business's plan (m-24852145: Básico 30/4/20, Plus 60/8/40, Pro
   120/16/80, `qualify_api.plans`; no plan = Básico), read from `business_plans` inside
   the same locked transaction; `QUALIFY_CREATIONS_QUOTA=off` stays the
-  installation-wide emergency switch. The dollar cap of `creative_engine_config` stays
+  installation-wide emergency switch.
+- On top of it, the brand's live 90-day packs (m-24852129, `qualify_api.plans.packs`):
+  spent only once the plan's month is used up, the one that expires first first (D17).
+  Which source paid each unit is written with the charge (`creation_allocations`) and
+  given back with it. The dollar cap of `creative_engine_config` stays
   the team's safety net; the owner never sees money (decision 8).
 """
 
@@ -36,7 +40,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -53,7 +57,21 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from qualify_api.creative.models import CreationCharge
-from qualify_api.plans.catalog import Plan
+from qualify_api.plans.catalog import PACK_DAYS, PLANS_VERSION, Pack, Plan
+from qualify_api.plans.models import CreationAllocation
+from qualify_api.plans.packs import (
+    CREATIONS,
+    PREVIEWS,
+    SOURCE_PACK,
+    SOURCE_PLAN,
+    VIDEOS,
+    Allocation,
+    PackBalance,
+    dimension_balance,
+    local_day,
+    packs_in_session,
+    split,
+)
 from qualify_api.plans.read import plan_in_session
 from qualify_api.tenancy.models import Tenant
 
@@ -124,8 +142,8 @@ def quota_for(
     `business_plans` (`plans.read`; no plan = Básico). Without a plan, the base of the
     weights table (what Básico equals). A weights table with no video quota (v1) keeps
     videos and vistas previas uncapped whatever the plan. Packs — 90-day extras bought
-    on top — are NOT part of the monthly quota: they come with m-24852129 next to this.
-    Pure; no session."""
+    on top — are NOT part of the monthly quota: they live in `qualify_api.plans.packs`
+    (m-24852129) and the ledger adds them next to this. Pure; no session."""
     del tenant_id, brand_id, period  # the plan already says which month it is for
     if plan is None:
         return MonthlyQuota(
@@ -164,6 +182,15 @@ class CreationsBalance:
     videos_used: int = 0
     preview_quota: int = 0
     previews_used: int = 0
+    #: m-24852129: what the live 90-day packs still bring, per counter, and the day
+    #: (business's zone) the one that expires first stops counting. `quota` and `left`
+    #: already include them («Te quedan 5 de 6 videos este mes (2 extra, …)»).
+    extra_left: int = 0
+    extra_expires_on: date | None = None
+    extra_videos_left: int = 0
+    extra_videos_expires_on: date | None = None
+    extra_previews_left: int = 0
+    extra_previews_expires_on: date | None = None
 
     @property
     def left(self) -> int:
@@ -294,17 +321,23 @@ class PostgresCreationsLedger:
         self._weights = weights or load_weights()
         self._clock = clock or (lambda: datetime.now(UTC))
 
-    def _period(self, session: Session, tenant_id: UUID) -> date:
+    def _zone(self, session: Session, tenant_id: UUID) -> str:
         tenant = session.get(Tenant, tenant_id)
-        zone = tenant.timezone if tenant is not None and tenant.timezone else "UTC"
-        return month_start(self._clock(), zone)
+        return tenant.timezone if tenant is not None and tenant.timezone else "UTC"
+
+    def _period(self, session: Session, tenant_id: UUID) -> date:
+        return month_start(self._clock(), self._zone(session, tenant_id))
 
     def _balance(
         self, session: Session, tenant_id: UUID, brand_id: UUID, period: date
     ) -> CreationsBalance:
+        return self._state(session, tenant_id, brand_id, period).balance
+
+    def _state(self, session: Session, tenant_id: UUID, brand_id: UUID, period: date) -> _State:
         """The month's three counters: creations and vistas previas by the month they
         were asked in; videos by the month they were approved in, less the ones a
-        failed final gave back (`final_refunded_assets`)."""
+        failed final gave back (`final_refunded_assets`) — plus the brand's live packs
+        and what the plan's month alone still has (who pays the next charge, D17)."""
         mine = (
             CreationCharge.tenant_id == tenant_id,
             CreationCharge.brand_id == brand_id,
@@ -322,24 +355,47 @@ class PostgresCreationsLedger:
                 func.coalesce(func.sum(func.greatest(CreationCharge.videos - given_back, 0)), 0)
             ).where(*mine, CreationCharge.videos_period_month == period)
         )
-        quota = self._quota(session, tenant_id, brand_id, period)
-        return CreationsBalance(
-            quota=quota.creations,
-            used=int(made[0] or 0),
+        plan = plan_in_session(session, tenant_id, period)
+        quota = quota_for(
+            tenant_id=tenant_id, brand_id=brand_id, period=period, weights=self._weights, plan=plan
+        )
+        packs = packs_in_session(session, tenant_id, brand_id, period, self._clock())
+        used = {CREATIONS: int(made[0] or 0), VIDEOS: int(videos or 0), PREVIEWS: int(made[1] or 0)}
+        return compose_state(
+            quota=quota,
+            used=used,
+            packs=packs,
+            plan=plan,
             weights_version=self._weights.version,
             renews_on=next_month_start(period),
-            video_quota=quota.videos,
-            videos_used=int(videos or 0),
-            preview_quota=quota.previews,
-            previews_used=int(made[1] or 0),
+            zone=self._zone(session, tenant_id),
         )
 
-    def _quota(
-        self, session: Session, tenant_id: UUID, brand_id: UUID, period: date
-    ) -> MonthlyQuota:
-        plan = plan_in_session(session, tenant_id, period)
-        return quota_for(
-            tenant_id=tenant_id, brand_id=brand_id, period=period, weights=self._weights, plan=plan
+    def _allocate(
+        self,
+        session: Session,
+        tenant_id: UUID,
+        charge_id: UUID,
+        allocations: list[Allocation],
+        period: date,
+        plan: Plan | None,
+    ) -> None:
+        """Write who paid each unit of `charge_id` (D17), numbered after the charge's
+        earlier rows of the same dimension (a video charged again after an undo)."""
+        if not allocations:
+            return
+        last: dict[str, int] = {
+            dimension: int(seq or 0)
+            for dimension, seq in session.execute(
+                select(CreationAllocation.dimension, func.max(CreationAllocation.seq))
+                .where(CreationAllocation.charge_id == charge_id)
+                .group_by(CreationAllocation.dimension)
+            ).all()
+        }
+        session.execute(
+            insert(CreationAllocation)
+            .values(allocation_rows(tenant_id, charge_id, allocations, period, plan, last))
+            .on_conflict_do_nothing(constraint="uq_creation_alloc_seq")
         )
 
     def _lock(self, session: Session, brand_id: UUID) -> None:
@@ -371,17 +427,22 @@ class PostgresCreationsLedger:
             if already is not None:
                 return None
             period = self._period(session, tenant_id)
-            balance = self._balance(session, tenant_id, brand_id, period)
-            short = balance.shortfall(price)
+            state = self._state(session, tenant_id, brand_id, period)
+            short = state.balance.shortfall(price)
             if short is not None:
                 raise short
-            values = self._row(tenant_id, brand_id, draft_id, revision, price, period, balance)
-            return session.scalar(
+            values = self._row(tenant_id, brand_id, draft_id, revision, price, period, state.quota)
+            charge_id = session.scalar(
                 insert(CreationCharge)
                 .values(**values)
                 .on_conflict_do_nothing(constraint="uq_creation_charges_generation")
                 .returning(CreationCharge.id)
             )
+            if charge_id is not None:
+                previews = int(values["previews"])  # type: ignore[call-overload]
+                allocations = state.split(CREATIONS, price.weight) + state.split(PREVIEWS, previews)
+                self._allocate(session, tenant_id, charge_id, allocations, period, state.plan)
+            return charge_id
 
     def _row(
         self,
@@ -391,7 +452,7 @@ class PostgresCreationsLedger:
         revision: int,
         price: CreationPrice,
         period: date,
-        balance: CreationsBalance,
+        quota: MonthlyQuota,
     ) -> dict[str, object]:
         return {
             "tenant_id": tenant_id,
@@ -401,10 +462,11 @@ class PostgresCreationsLedger:
             "request_kind": price.request_kind,
             "weight": price.weight,
             "previews": price.videos if self._weights.monthly_preview_quota > 0 else 0,
-            # the quotas in force when it was charged: the plan's (provenance)
-            "monthly_quota": balance.quota,
-            "monthly_preview_quota": balance.preview_quota,
-            "monthly_video_quota": balance.video_quota,
+            # the quotas in force when it was charged: the plan's (provenance; the packs
+            # that paid are in `creation_allocations`)
+            "monthly_quota": quota.creations,
+            "monthly_preview_quota": quota.previews,
+            "monthly_video_quota": quota.videos,
             "weights_version": self._weights.version,
             "pricing_table_version": self._weights.pricing_table_version,
             "period_month": period,
@@ -426,22 +488,26 @@ class PostgresCreationsLedger:
             if row is not None and (row.videos > 0 or row.status != CHARGED):
                 return None
             period = self._period(session, tenant_id)
-            balance = self._balance(session, tenant_id, brand_id, period)
-            short = balance.video_shortfall(videos)
+            state = self._state(session, tenant_id, brand_id, period)
+            short = state.balance.video_shortfall(videos)
             if short is not None:
                 raise short
             if row is None:
                 # a piece created before the quota (or with it switched off): its row
                 # is written now, with nothing charged at creation
                 price = CreationPrice(REQUEST_GENERATED_VIDEO, 0)
-                values = self._row(tenant_id, brand_id, draft_id, revision, price, period, balance)
+                values = self._row(
+                    tenant_id, brand_id, draft_id, revision, price, period, state.quota
+                )
                 row = CreationCharge(**{**values, "previews": 0})
                 session.add(row)
             row.videos = videos
-            row.monthly_video_quota = balance.video_quota
+            row.monthly_video_quota = state.quota.videos
             row.videos_period_month = period
             row.videos_charged_at = self._clock()
             session.flush()
+            allocations = state.split(VIDEOS, videos)
+            self._allocate(session, tenant_id, row.id, allocations, period, state.plan)
             return row.id
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
@@ -457,6 +523,7 @@ class PostgresCreationsLedger:
             )
             if row is None:
                 return False
+            reverse_allocations(session, row.id, VIDEOS)
             row.videos = 0
             row.videos_period_month = None
             row.videos_charged_at = None
@@ -491,13 +558,123 @@ class PostgresCreationsLedger:
             )
             if row is None:
                 return False
-            given = _given_back(list(row.final_refunded_assets or ()), asset_ids, row.videos)
+            already = list(row.final_refunded_assets or ())
+            given = _given_back(already, asset_ids, row.videos)
             if given is None:
                 return False
+            reverse_allocations(session, row.id, VIDEOS, units=len(given) - len(already))
             row.final_refunded_assets = given
             row.final_refunded_at = self._clock()
             row.final_refund_reason = reason[:200]
             return True
+
+
+@dataclass(frozen=True)
+class _State:
+    """A brand's month at one moment: what the owner reads, the plan's monthly quota and
+    what of it is left, and the packs — who pays the next charge (D17)."""
+
+    balance: CreationsBalance
+    quota: MonthlyQuota
+    plan: Plan | None
+    #: None = the plan does not cap that counter (it pays everything).
+    plan_left: dict[str, int | None]
+    packs: list[PackBalance]
+
+    def split(self, dimension: str, needed: int) -> list[Allocation]:
+        return split(dimension, needed, self.plan_left[dimension], self.packs)
+
+
+def compose_state(
+    *,
+    quota: MonthlyQuota,
+    used: dict[str, int],
+    packs: list[PackBalance],
+    plan: Plan | None,
+    weights_version: str,
+    renews_on: date | None,
+    zone: str,
+) -> _State:
+    """The plan's month plus the brand's packs (m-24852129) as one balance. Pure."""
+    plan_quota = {CREATIONS: quota.creations, VIDEOS: quota.videos, PREVIEWS: quota.previews}
+    dims = {d: dimension_balance(d, plan_quota[d], used[d], packs) for d in plan_quota}
+    balance = CreationsBalance(
+        quota=dims[CREATIONS].quota,
+        used=used[CREATIONS],
+        weights_version=weights_version,
+        renews_on=renews_on,
+        video_quota=dims[VIDEOS].quota,
+        videos_used=used[VIDEOS],
+        preview_quota=dims[PREVIEWS].quota,
+        previews_used=used[PREVIEWS],
+        extra_left=dims[CREATIONS].extra_left,
+        extra_expires_on=local_day(dims[CREATIONS].extra_expires_at, zone),
+        extra_videos_left=dims[VIDEOS].extra_left,
+        extra_videos_expires_on=local_day(dims[VIDEOS].extra_expires_at, zone),
+        extra_previews_left=dims[PREVIEWS].extra_left,
+        extra_previews_expires_on=local_day(dims[PREVIEWS].extra_expires_at, zone),
+    )
+    return _State(
+        balance=balance,
+        quota=quota,
+        plan=plan,
+        plan_left={d: (dims[d].plan_left if plan_quota[d] > 0 else None) for d in plan_quota},
+        packs=packs,
+    )
+
+
+def allocation_rows(
+    tenant_id: UUID,
+    charge_id: UUID,
+    allocations: Iterable[Allocation],
+    period: date,
+    plan: Plan | None,
+    last_seq: dict[str, int],
+) -> list[dict[str, object]]:
+    """The `creation_allocations` rows of one charge, `seq` continuing per dimension."""
+    rows: list[dict[str, object]] = []
+    for allocation in allocations:
+        seq = last_seq.get(allocation.dimension, 0) + 1
+        last_seq[allocation.dimension] = seq
+        from_plan = allocation.source == SOURCE_PLAN and plan is not None
+        rows.append(
+            {
+                "tenant_id": tenant_id,
+                "charge_id": charge_id,
+                "dimension": allocation.dimension,
+                "source": allocation.source,
+                "pack_id": allocation.pack_id if allocation.source == SOURCE_PACK else None,
+                "plan_code": plan.code if from_plan and plan is not None else None,
+                "plans_version": PLANS_VERSION if from_plan else None,
+                "period_month": period,
+                "units": allocation.units,
+                "seq": seq,
+            }
+        )
+    return rows
+
+
+def reverse_allocations(
+    session: Session, charge_id: UUID, dimension: str | None = None, units: int | None = None
+) -> None:
+    """Give units of a charge back to whoever paid them (m-24852129): all of them, or —
+    a failed final's video — `units` of `dimension`, the last source used first (highest
+    `seq`: a pack, when one paid). A unit given back to an expired pack is lost."""
+    query = select(CreationAllocation).where(
+        CreationAllocation.charge_id == charge_id,
+        CreationAllocation.reversed_units < CreationAllocation.units,
+    )
+    if dimension is not None:
+        query = query.where(CreationAllocation.dimension == dimension)
+    rest = units
+    for row in session.scalars(query.order_by(CreationAllocation.seq.desc()).with_for_update()):
+        if rest is not None and rest <= 0:
+            break
+        open_units = row.units - row.reversed_units
+        take = open_units if rest is None else min(open_units, rest)
+        row.reversed_units += take
+        if rest is not None:
+            rest -= take
 
 
 def refund_in_session(
@@ -522,6 +699,7 @@ def refund_in_session(
         )
         if row is None:
             continue
+        reverse_allocations(session, row.id)
         row.status = REFUNDED
         row.refund_reason = reason[:200]
         row.refunded_at = at
@@ -540,6 +718,8 @@ class _MemoryRow:
     videos: int = 0
     final_refunded_assets: list[UUID] = field(default_factory=list)
     final_reason: str | None = None
+    #: m-24852129: who paid each unit, in the order they were taken (D17).
+    allocations: list[_MemoryAllocation] = field(default_factory=list)
 
     @property
     def videos_given_back(self) -> int:
@@ -548,6 +728,46 @@ class _MemoryRow:
     @property
     def counted_videos(self) -> int:
         return max(self.videos - self.videos_given_back, 0)
+
+    def add(self, allocations: Iterable[Allocation]) -> None:
+        self.allocations.extend(
+            _MemoryAllocation(a.dimension, a.source, a.pack_id, a.units) for a in allocations
+        )
+
+    def give_back(self, dimension: str | None = None, units: int | None = None) -> None:
+        """`reverse_allocations` without a database: the last source used first."""
+        rest = units
+        for alloc in reversed(self.allocations):
+            if rest is not None and rest <= 0:
+                break
+            if dimension is not None and alloc.dimension != dimension:
+                continue
+            take = alloc.net if rest is None else min(alloc.net, rest)
+            alloc.reversed += take
+            if rest is not None:
+                rest -= take
+
+
+@dataclass
+class _MemoryAllocation:
+    dimension: str
+    source: str
+    pack_id: UUID | None
+    units: int
+    reversed: int = 0
+
+    @property
+    def net(self) -> int:
+        return self.units - self.reversed
+
+
+@dataclass
+class _MemoryPack:
+    code: str
+    units: dict[str, int]
+    expires_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    revoked: bool = False
 
 
 class InMemoryCreationsLedger:
@@ -561,18 +781,62 @@ class InMemoryCreationsLedger:
         videos_used: int = 0,
         previews_used: int = 0,
         plan: Plan | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._weights = weights or load_weights()
         self.plan = plan
         self._opening = used
         self._opening_videos = videos_used
         self._opening_previews = previews_used
+        self._clock = clock or (lambda: datetime.now(UTC))
         self.rows: dict[tuple[UUID, int], _MemoryRow] = {}
+        #: m-24852129: the brand-agnostic packs of this one-month fake.
+        self.packs: list[_MemoryPack] = []
+
+    def add_pack(self, pack: Pack, *, granted_at: datetime | None = None) -> UUID:
+        """Grant one fixed pack (the team's `just add-pack`, without a database)."""
+        at = granted_at or self._clock()
+        row = _MemoryPack(
+            code=pack.code,
+            units={CREATIONS: pack.creations, VIDEOS: pack.videos, PREVIEWS: pack.previews},
+            expires_at=at + timedelta(days=PACK_DAYS),
+        )
+        self.packs.append(row)
+        return row.id
+
+    def revoke_pack(self, pack_id: UUID) -> bool:
+        for pack in self.packs:
+            if pack.id == pack_id and not pack.revoked:
+                pack.revoked = True
+                return True
+        return False
 
     def _charged(self, brand_id: UUID) -> list[_MemoryRow]:
         return [r for r in self.rows.values() if r.brand_id == brand_id and r.status == CHARGED]
 
-    def balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance:
+    def _pack_balances(self) -> list[PackBalance]:
+        now = self._clock()
+        out: list[PackBalance] = []
+        for pack in self.packs:
+            used: dict[str, int] = {}
+            for row in self.rows.values():
+                for alloc in row.allocations:
+                    if alloc.pack_id == pack.id:
+                        used[alloc.dimension] = used.get(alloc.dimension, 0) + alloc.net
+            out.append(
+                PackBalance(
+                    id=pack.id,
+                    code=pack.code,
+                    expires_at=pack.expires_at,
+                    live=not pack.revoked and now < pack.expires_at,
+                    units=pack.units,
+                    used=used,
+                    used_in_period=used,
+                )
+            )
+        return out
+
+    def _state(self, tenant_id: UUID, brand_id: UUID) -> _State:
         rows = self._charged(brand_id)
         quota = quota_for(
             tenant_id=tenant_id,
@@ -582,16 +846,24 @@ class InMemoryCreationsLedger:
             plan=self.plan,
         )
         previews = quota.previews > 0
-        return CreationsBalance(
-            quota=quota.creations,
-            used=self._opening + sum(row.price.weight for row in rows),
-            weights_version=self._weights.version,
-            video_quota=quota.videos,
-            videos_used=self._opening_videos + sum(row.counted_videos for row in rows),
-            preview_quota=quota.previews,
-            previews_used=self._opening_previews
+        used = {
+            CREATIONS: self._opening + sum(row.price.weight for row in rows),
+            VIDEOS: self._opening_videos + sum(row.counted_videos for row in rows),
+            PREVIEWS: self._opening_previews
             + (sum(row.price.videos for row in rows) if previews else 0),
+        }
+        return compose_state(
+            quota=quota,
+            used=used,
+            packs=self._pack_balances(),
+            plan=self.plan,
+            weights_version=self._weights.version,
+            renews_on=None,
+            zone="UTC",
         )
+
+    def balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance:
+        return self._state(tenant_id, brand_id).balance
 
     def charge(
         self,
@@ -604,10 +876,13 @@ class InMemoryCreationsLedger:
     ) -> UUID | None:
         if (draft_id, revision) in self.rows:
             return None
-        short = self.balance(tenant_id=tenant_id, brand_id=brand_id).shortfall(price)
+        state = self._state(tenant_id, brand_id)
+        short = state.balance.shortfall(price)
         if short is not None:
             raise short
         row = _MemoryRow(brand_id=brand_id, price=price)
+        previews = price.videos if state.quota.previews > 0 else 0
+        row.add(state.split(CREATIONS, price.weight) + state.split(PREVIEWS, previews))
         self.rows[(draft_id, revision)] = row
         return row.id
 
@@ -619,19 +894,22 @@ class InMemoryCreationsLedger:
         row = self.rows.get((draft_id, revision))
         if row is not None and (row.videos > 0 or row.status != CHARGED):
             return None
-        short = self.balance(tenant_id=tenant_id, brand_id=brand_id).video_shortfall(videos)
+        state = self._state(tenant_id, brand_id)
+        short = state.balance.video_shortfall(videos)
         if short is not None:
             raise short
         if row is None:
             row = _MemoryRow(brand_id=brand_id, price=CreationPrice(REQUEST_GENERATED_VIDEO, 0))
             self.rows[(draft_id, revision)] = row
         row.videos = videos
+        row.add(state.split(VIDEOS, videos))
         return row.id
 
     def uncharge_videos(self, *, tenant_id: UUID, draft_id: UUID, revision: int) -> bool:
         row = self.rows.get((draft_id, revision))
         if row is None or row.videos <= 0:
             return False
+        row.give_back(VIDEOS)
         row.videos = 0
         row.final_refunded_assets = []
         return True
@@ -640,6 +918,7 @@ class InMemoryCreationsLedger:
         row = self.rows.get((draft_id, revision))
         if row is None or row.status != CHARGED:
             return False
+        row.give_back()
         row.status = REFUNDED
         row.reason = reason
         return True
@@ -659,6 +938,7 @@ class InMemoryCreationsLedger:
         given = _given_back(row.final_refunded_assets, asset_ids, row.videos)
         if given is None:
             return False
+        row.give_back(VIDEOS, len(given) - len(row.final_refunded_assets))
         row.final_refunded_assets = given
         row.final_reason = reason
         return True
