@@ -234,6 +234,31 @@ def step_complete(
     return False
 
 
+def step_completes(facts: KitFacts) -> list[bool]:
+    """Whether each of the five steps, in order, is answered — what `steps_vm.guard_step`
+    needs to keep `?paso=N` from opening past an unanswered step (PASOS-4, N6b). Tus
+    redes counts as answered with a read profile or «No tengo redes»."""
+    return [
+        facts.socials_answered,
+        facts.business_complete,
+        facts.has_logo_answer,
+        bool(facts.palette.strip()),
+        bool(facts.example.strip()),
+    ]
+
+
+def logo_answered(has_logo: str, *, has_files: bool, brief: str, from_profile: str) -> bool:
+    """Tu logo is answered: the profile picture as logo, an upload on «Sí», or the first
+    brief question on «Todavía no» — the page's own gate (`_can_continue`), in Python."""
+    if has_logo == from_profile:
+        return True
+    if has_logo == "si":
+        return has_files
+    if has_logo == "no":
+        return bool(brief.strip())
+    return False
+
+
 #: What a step still needs, said under its controls while Continuar is off (UX review
 #: of m-24848529: a button that is off without a reason reads as «se trabó»). Tus redes
 #: has none: it shows no Continuar until a profile is read.

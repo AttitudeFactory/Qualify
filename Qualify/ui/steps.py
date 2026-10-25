@@ -228,14 +228,18 @@ def step_foot(
         back = back_button if shows_back(step) else None
     else:
         back = rx.cond(step > 1, back_button)
-    primary = None if primary_label is None else rx.button(
-        primary_label,
-        size="3",
-        on_click=on_primary,
-        disabled=primary_disabled,
-        aria_disabled=primary_disabled,
-        loading=primary_loading,
-        class_name="q-step-primary",
+    primary = (
+        None
+        if primary_label is None
+        else rx.button(
+            primary_label,
+            size="3",
+            on_click=on_primary,
+            disabled=primary_disabled,
+            aria_disabled=primary_disabled,
+            loading=primary_loading,
+            class_name="q-step-primary",
+        )
     )
     later = (
         rx.button(

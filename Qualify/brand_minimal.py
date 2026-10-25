@@ -52,6 +52,7 @@ from .creative_wizard_pages import (  # the wizards' own controls, shared on pur
     BrandWizardState,
     _asset_src,
     _brand_extras,
+    _brand_ready_card,
     _change_email_button,
     _choice_card,
     _connect_loading,
@@ -64,30 +65,38 @@ from .creative_wizard_pages import (  # the wizards' own controls, shared on pur
     _loading_view,
     _logo_step_complete,
     _logo_versions,
-    _or_ready,
     _profile_avatar,
     _progress_trigger,
     _remove_button,
     _select_field,
     _step_body,
-    _step_counter,
     _step_logo,
     _step_palette,
     _tone_sliders,
     _wizard_shell,
+    exit_label,
+    leave_flow,
+    step_param,
 )
 from .tenant import tenant_uuid
-from .ui import callout, card, dropzone, page_body, page_header
+from .ui import (
+    callout,
+    card,
+    dropzone,
+    page_body,
+    page_header,
+    step_foot,
+    step_frame,
+    step_head,
+    step_sync,
+)
 from .ui import tokens as T
+from .ui.steps_vm import DIR_NEXT, NEXT_LABEL, guard_step, parse_step_param, step_direction
 
 logger = logging.getLogger(__name__)
 
 #: Where a finished kit goes from /brand: the editor, as before (m-24848529 keeps it).
 _EDITOR_ROUTE = "/brand/kit"
-
-#: «Seguir después» (N6): what it says once the progress is saved.
-_SAVED_FOR_LATER = "Guardamos lo que llevas. Cuando vuelvas, sigues en este mismo paso."
-_SAVE_LATER_FAILED = "No pudimos guardar lo que llevas. Revisa tu conexión e inténtalo de nuevo."
 
 #: Tu logo's answers (value, title, blurb) — one screen: answering opens the upload or
 #: the three questions right below, without a «siguiente paso».
@@ -133,11 +142,61 @@ class BrandMinimalState(rx.State):
     show_place: bool = False
     #: The account's country (a session only), put back when a read profile is forgotten.
     account_country: str = ""
+    #: `data-dir` of the step frame's body (PASOS-4): the side the next step comes from.
+    direction: str = DIR_NEXT
 
     @rx.var
     def step_number(self) -> int:
-        """0-based position, for «Paso N de 5»."""
+        """0-based position."""
         return vm.step_index(self.step)
+
+    @rx.var
+    def n(self) -> int:
+        """«Paso N de 5» and `?paso=N`: the 1-based position (every step is visible)."""
+        return vm.step_index(self.step) + 1
+
+    @rx.var
+    def is_last(self) -> bool:
+        return self.step == vm.LAST_STEP
+
+    async def _live_facts(self) -> vm.KitFacts:
+        """What the session holds now, as `KitFacts` (the browser's «atrás» decides on
+        it, not on the database)."""
+        connect = await self.get_state(BrandConnectState)
+        wizard = await self.get_state(BrandWizardState)
+        creative = await self.get_state(CreativeState)
+        return vm.KitFacts(
+            socials_answered=bool(connect.profile_username) or connect.started_without_socials,
+            rubro=connect.rubro_text,
+            positioning=creative.kit_positioning,
+            audience=creative.kit_audience,
+            has_logo_answer=vm.logo_answered(
+                wizard.has_logo,
+                has_files=bool(wizard.logo_versions or wizard.brand_extras),
+                brief=wizard.logo_brief_1,
+                from_profile=HAS_LOGO_PROFILE,
+            ),
+            palette=creative.kit_palette,
+            example=self.phrase,
+        )
+
+    def _go(self, name: str) -> None:
+        self.direction = step_direction(
+            vm.step_index(self.step) + 1, vm.step_index(name) + 1, self.direction
+        )
+        self.step = name
+
+    @rx.event
+    async def pop_step(self) -> None:
+        """The browser's «atrás»/«adelante» (`step_frame(on_pop=...)`): the step in
+        `?paso=`, never past the first step still unanswered (`steps_vm.guard_step`).
+        Idempotent: `enter` may answer the same «atrás» too."""
+        raw = step_param(self)
+        if raw is None or not self.entered:
+            return
+        requested = parse_step_param(raw, vm.TOTAL_STEPS)
+        target = guard_step(requested, vm.step_completes(await self._live_facts()))
+        self._go(vm.STEP_NAMES[target - 1])
 
     @rx.event(background=True)
     async def persist_progress(self) -> None:
@@ -181,8 +240,14 @@ class BrandMinimalState(rx.State):
             self.account_country = vm.account_country("", account_country, _KNOWN_COUNTRIES)
             self.more_logo_versions = False
             self.show_place = False
+            raw = step_param(self)
             if entry is None:
                 self.step = vm.FIRST_STEP
+            elif raw is not None:
+                # PASOS-4: `?paso=N` (the browser's «atrás», a reload, a shared link) —
+                # but never past the first step the saved kit has not answered
+                requested = parse_step_param(raw, vm.TOTAL_STEPS)
+                self.step = vm.STEP_NAMES[guard_step(requested, vm.step_completes(entry.facts)) - 1]
             else:
                 self.step = vm.resume_step(entry.saved_step, entry.facts)
                 self.phrase = entry.facts.example
@@ -235,7 +300,7 @@ class BrandMinimalState(rx.State):
         the owner's in the background when its answers changed — it is read later, in
         «Mejora tu marca», never waited for here."""
         leaving = self.step
-        self.step = vm.next_step(self.step)
+        self._go(vm.next_step(self.step))
         (await self.get_state(BrandProposalState)).approved = False
         if leaving == vm.STEP_BUSINESS:
             connect = await self.get_state(BrandConnectState)
@@ -246,7 +311,15 @@ class BrandMinimalState(rx.State):
     @rx.event
     def prev_step(self) -> None:
         """Atrás: the step before, with everything written kept (it lives in the states)."""
-        self.step = vm.previous_step(self.step)
+        self._go(vm.previous_step(self.step))
+
+    @rx.event
+    def primary(self) -> rx.event.EventSpec:
+        """The frame's primary button: «Siguiente», or «Terminar mi marca» on the last
+        step (`finish`, label and behaviour as before)."""
+        if self.step == vm.LAST_STEP:
+            return BrandMinimalState.finish
+        return BrandMinimalState.next_step
 
     @rx.event
     async def skip_socials(self) -> None:
@@ -257,7 +330,7 @@ class BrandMinimalState(rx.State):
         if connect.profile_username:
             await self._forget_profile(connect)
         connect.started_without_socials = True
-        self.step = vm.STEP_BUSINESS
+        self._go(vm.STEP_BUSINESS)
         (await self.get_state(BrandProposalState)).approved = False
 
     @rx.event
@@ -342,17 +415,21 @@ class BrandMinimalState(rx.State):
 
     @rx.event(background=True)
     async def save_for_later(self) -> AsyncIterator[rx.event.EventSpec | None]:
-        """«Seguir después» (N6): what is written is saved now, and the owner is told
-        they will come back to this same step."""
-        from .brand_finish import MINIMAL_FLOW, save_progress
+        """«Seguir después» (N6, N2): what is written is saved now; an account goes to
+        Inicio, a guest is told how to come back (`creative_wizard_pages.leave_flow`)."""
+        from .brand_finish import MINIMAL_FLOW
 
-        try:
-            await save_progress(self, MINIMAL_FLOW)
-        except Exception as exc:  # noqa: BLE001 — a toast, never a crash
-            logger.warning("brand minimal: save for later failed: %s", type(exc).__name__)
-            yield brand_documents.notify(_SAVE_LATER_FAILED, "error")
-            return
-        yield brand_documents.notify(_SAVED_FOR_LATER, "ok")
+        async for event in leave_flow(self, MINIMAL_FLOW, later=True):
+            yield event
+
+    @rx.event(background=True)
+    async def leave(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """The head's «‹ Inicio» (or «‹ Tu correo» for a guest), on every step: save,
+        then go (`leave_flow`)."""
+        from .brand_finish import MINIMAL_FLOW
+
+        async for event in leave_flow(self, MINIMAL_FLOW, later=False):
+            yield event
 
     @rx.event(background=True)
     async def finish(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -370,6 +447,7 @@ class BrandMinimalState(rx.State):
             return
         async with self:
             self.step = vm.FIRST_STEP
+            self.direction = DIR_NEXT
             self.phrase = ""
             self.more_logo_versions = False
             self.show_place = False
@@ -521,7 +599,7 @@ def _step_socials() -> rx.Component:
             BrandConnectState.profile_username != "",
             rx.vstack(
                 _connect_step_profile(),
-                rx.text("¿Es tu cuenta? Toca «Continuar».", size="2", color=T.TEXT_MUTED),
+                rx.text(f"¿Es tu cuenta? Toca «{NEXT_LABEL}».", size="2", color=T.TEXT_MUTED),
                 _wide_button("No es mi cuenta", "rotate-ccw", BrandMinimalState.not_my_profile),
                 spacing="3",
                 width="100%",
@@ -840,115 +918,46 @@ def _can_continue() -> rx.Var[bool]:
     )
 
 
-def _control(label: str, on_click: Any, **props: Any) -> rx.Component:
-    """A footer button at least 44 px tall (N12)."""
-    return rx.button(
-        label,
-        size="3",
-        radius=_CONTROL_RADIUS,
-        min_height="44px",
-        on_click=on_click,
-        **props,
-    )
-
-
-#: The main action takes the whole width on a phone (the thumb's reach), its own from sm.
-_PRIMARY_WIDTH = rx.breakpoints(initial="100%", sm="auto")
-
-
-def _missing_hint() -> rx.Component:
-    """While Continuar (or «Terminar mi marca») is off, what the step still needs."""
+def _reason() -> rx.Var[str]:
+    """While «Siguiente» (or «Terminar mi marca») is off, what the step still needs —
+    read next to the button (§5.8), so an off button never reads as «se trabó»."""
     return rx.cond(
         ~_can_continue(),
-        rx.match(
-            BrandMinimalState.step,
-            *(
-                (name, rx.text(hint, size="2", color=T.TEXT_MUTED, width="100%"))
-                for name, hint in vm.MISSING_HINTS.items()
-            ),
-            rx.fragment(),
-        ),
+        rx.match(BrandMinimalState.step, *vm.MISSING_HINTS.items(), ""),
+        "",
     )
 
 
-def _finish() -> rx.Component:
-    return rx.button(
+def _primary_label() -> rx.Var[str]:
+    """«Siguiente», and on Cómo hablas the finish (`_finish_button`'s label: an account
+    finishes its brand, a draft finishes it and creates the account)."""
+    return rx.cond(
+        BrandMinimalState.is_last,
         rx.cond(AuthState.session_tenant_id != "", _FINISH_LABEL, _FINISH_DRAFT_LABEL),
-        rx.icon("check", size=T.ICON_SM),
-        size="3",
-        radius=_CONTROL_RADIUS,
-        min_height="44px",
-        on_click=BrandMinimalState.finish,
-        loading=CreativeState.kit_saving,
-        disabled=~_can_continue(),
-        width=_PRIMARY_WIDTH,
+        NEXT_LABEL,
     )
 
 
-def _controls() -> rx.Component:
-    """Atrás · Seguir después · Continuar on every step (N6). The first step has nothing
-    behind it: a guest gets «Usar otro correo» there. Tus redes has no Continuar until a
-    profile is read (its network buttons and «No tengo redes» are its ways forward)."""
-    back = rx.cond(
-        BrandMinimalState.step == vm.FIRST_STEP,
-        _change_email_button(),
-        rx.button(
-            rx.icon("chevron-left", size=T.ICON_SM),
-            "Atrás",
-            variant="ghost",
-            size="3",
-            radius=_CONTROL_RADIUS,
-            min_height="44px",
-            on_click=BrandMinimalState.prev_step,
+def _foot() -> rx.Component:
+    """Atrás · Seguir después · Siguiente (the step frame's foot, PASOS-4). Tus redes
+    has no primary until a profile is read: its network buttons and «No tengo redes» are
+    its ways forward."""
+    common: dict[str, Any] = {
+        "step": BrandMinimalState.n,
+        "on_back": BrandMinimalState.prev_step,
+        "on_later": BrandMinimalState.save_for_later,
+    }
+    return rx.cond(
+        (BrandMinimalState.step == vm.STEP_SOCIALS) & (BrandConnectState.profile_username == ""),
+        step_foot(None, on_primary=None, **common),
+        step_foot(
+            _primary_label(),
+            on_primary=BrandMinimalState.primary,
+            primary_disabled=~_can_continue(),
+            primary_loading=BrandMinimalState.is_last & CreativeState.kit_saving,
+            reason=_reason(),
+            **common,
         ),
-    )
-    later = _control(
-        "Seguir después",
-        BrandMinimalState.save_for_later,
-        variant="ghost",
-        color_scheme="gray",
-    )
-    forward = rx.cond(
-        BrandMinimalState.step == vm.LAST_STEP,
-        _finish(),
-        rx.cond(
-            (BrandMinimalState.step == vm.STEP_SOCIALS)
-            & (BrandConnectState.profile_username == ""),
-            rx.fragment(),
-            rx.button(
-                "Continuar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                size="3",
-                radius=_CONTROL_RADIUS,
-                min_height="44px",
-                on_click=BrandMinimalState.next_step,
-                disabled=~_can_continue(),
-                width=_PRIMARY_WIDTH,
-            ),
-        ),
-    )
-    # A phone: the main action first, at full width; ‹ Atrás and «Seguir después»
-    # below it on one line. From sm: the single row, the main action on the right.
-    return rx.vstack(
-        _missing_hint(),
-        rx.flex(
-            rx.hstack(
-                back,
-                rx.spacer(),
-                later,
-                align="center",
-                spacing="2",
-                width="100%",
-                flex="1",
-            ),
-            forward,
-            direction=rx.breakpoints(initial="column-reverse", sm="row"),
-            align=rx.breakpoints(initial="stretch", sm="center"),
-            gap="0.5rem",
-            width="100%",
-        ),
-        spacing="2",
-        width="100%",
     )
 
 
@@ -962,93 +971,116 @@ def _column_width() -> rx.Var[str]:
     )
 
 
+def _head(title: str | rx.Var[str]) -> rx.Component:
+    """«‹ Inicio» (a guest: «‹ Tu correo») on every step — the way out saves first
+    (`BrandMinimalState.leave`) — «Paso N de 5» and the step's name as the h1."""
+    return step_head(
+        title,
+        step=BrandMinimalState.n,
+        total=vm.TOTAL_STEPS,
+        back_label=exit_label(),
+        on_exit=BrandMinimalState.leave,
+    )
+
+
+def _notices() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            CreativeState.kit_error != "",
+            callout(CreativeState.kit_error, "error"),
+        ),
+        approved_notice(BrandMinimalState.step),
+        read_notice(BrandMinimalState.step == vm.FIRST_STEP),
+        spacing="3",
+        width="100%",
+        max_width="34rem",
+        align_self="center",
+        align_items="center",
+    )
+
+
+def _step_card() -> rx.Component:
+    return card(
+        rx.vstack(
+            _steps(),
+            # a guest's other way out on the first step, as before: another email
+            rx.cond(BrandMinimalState.step == vm.FIRST_STEP, _change_email_button()),
+            width="100%",
+            max_width=_column_width(),
+            align_self="center",
+            align_items="center",
+            spacing="4",
+        ),
+        padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
+        width="100%",
+    )
+
+
+def _loading_card() -> rx.Component:
+    return card(
+        _loading_view("Cargando tu marca"),
+        padding="1.75rem",
+        width="100%",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+    )
+
+
+def _frame(loading: rx.Var[bool]) -> rx.Component:
+    """The five steps in the step frame (PASOS-4, m-24852243; §4.5): the head with the
+    way out on every step, the step in the body that scrolls, the foot fixed. While the
+    kit loads the head stays (the way out is never missing) and the foot waits. The
+    address (`?paso=N`) and the settle (top + focus) follow every step change
+    (`step_sync`), only once `enter` has decided the step."""
+    return step_frame(
+        _notices(),
+        rx.cond(
+            loading,
+            _loading_card(),
+            rx.fragment(
+                step_sync(BrandMinimalState.n),
+                rx.text(_heading_for(1), size="3", color=T.TEXT_MUTED, width="100%"),
+                _step_card(),
+            ),
+        ),
+        head=_head(rx.cond(loading, "Tu marca", _heading_for(0))),
+        foot=rx.cond(loading, rx.fragment(), _foot()),
+        step=BrandMinimalState.n,
+        direction=BrandMinimalState.direction,
+        on_pop=BrandMinimalState.pop_step,
+    )
+
+
 def brand_minimal_index() -> rx.Component:
-    """Same frame as the old wizards (`brand_manual_index`): `page_header` with «Paso N
-    de 5» outside `page_body`, one card with the step in a centred column and the
-    controls along its bottom."""
+    """«Tu marca» in five steps, in the step frame. Three other faces keep the page's
+    usual header: «Tu marca está lista» after the finish, the Alta's proposal to review
+    (m-24852199) and «Te faltan 3 cosas» (m-24854331) — none of them is one of the
+    five steps."""
     loading = ~BrandMinimalState.entered | CreativeState.kit_loading
     # m-24852199: a pending proposal is reviewed before any step is shown (no step is
     # mounted meanwhile, so the save-as-you-go writes nothing until the owner decides)
     reviewing = BrandProposalState.pending & ~loading
     # m-24854331: after «Aprobar», the three questions only the owner can answer
     answering = BrandAnswersState.active & ~loading & ~BrandProposalState.pending
+    ready = BrandWizardState.brand_ready & (CreativeState.kit_error == "")
     return _wizard_shell(
-        *_or_ready(
+        rx.cond(
+            ready,
+            rx.fragment(page_header("Tu marca", title_size="8"), page_body(_brand_ready_card())),
             rx.cond(
                 answering,
-                answers_header(),
+                rx.fragment(answers_header(), answers_body()),
                 rx.cond(
                     reviewing,
-                    page_header(proposal_vm.REVIEW_TITLE, title_size="8"),
-                    page_header(
-                        _heading_for(0),
-                        _heading_for(1),
-                        kicker=_step_counter(BrandMinimalState.step_number, vm.TOTAL_STEPS),
-                        title_size="8",
-                    ),
-                ),
-            ),
-            rx.cond(answering, answers_body(), _steps_body(loading)),
-        ),
-    )
-
-
-def _steps_body(loading: rx.Var[bool]) -> rx.Component:
-    """The five steps' `page_body` (or the proposal's review, or the loading card)."""
-    return page_body(
-        rx.vstack(
-            rx.vstack(
-                rx.cond(
-                    CreativeState.kit_error != "",
-                    callout(CreativeState.kit_error, "error"),
-                ),
-                approved_notice(BrandMinimalState.step),
-                read_notice(BrandMinimalState.step == vm.FIRST_STEP),
-                spacing="3",
-                width="100%",
-                max_width="34rem",
-                align_self="center",
-                align_items="center",
-            ),
-            rx.cond(
-                loading,
-                card(
-                    _loading_view("Cargando tu marca"),
-                    padding="1.75rem",
-                    width="100%",
-                    flex="1",
-                    display="flex",
-                    align_items="center",
-                    justify_content="center",
-                ),
-                rx.cond(
-                    BrandProposalState.pending,
-                    proposal_review(),
-                    card(
-                        rx.vstack(
-                            _steps(),
-                            width="100%",
-                            max_width=_column_width(),
-                            align_self="center",
-                            align_items="center",
-                            flex="1",
-                            justify_content="center",
+                    rx.fragment(
+                        page_header(proposal_vm.REVIEW_TITLE, title_size="8"),
+                        page_body(
+                            rx.vstack(_notices(), proposal_review(), spacing="4", width="100%")
                         ),
-                        _controls(),
-                        padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
-                        width="100%",
-                        flex="1",
-                        display="flex",
-                        flex_direction="column",
-                        justify_content="space-between",
-                        gap="1.5rem",
-                        key=BrandMinimalState.step,
                     ),
+                    _frame(loading),
                 ),
             ),
-            spacing="4",
-            width="100%",
-            flex="1",
-            min_height="0",
         ),
     )

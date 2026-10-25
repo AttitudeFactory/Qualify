@@ -99,10 +99,24 @@ from .ui import (
     qualify_mark,
     removable_pill,
     skeleton_card,
+    step_foot,
+    step_frame,
+    step_head,
+    step_sync,
     tag,
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.steps_vm import (
+    DIR_BACK,
+    DIR_NEXT,
+    NEXT_LABEL,
+    STEP_PARAM,
+    guard_step,
+    parse_step_param,
+    step_direction,
+    step_position,
+)
 from .upload_names import safe_upload_name as _safe_upload_name
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
@@ -1167,6 +1181,62 @@ async def _finish_navigation(state: rx.State) -> rx.event.EventSpec | None:
         wizard = await state.get_state(BrandWizardState)
     wizard.brand_ready = True
     return None
+
+
+# ---------------------------------------------------------------------------------------
+# Leaving Tu marca (PASOS-4, m-24852243 — rule N2, docs/design-system.md §4.5)
+
+#: Where an account goes from any step of Tu marca: Inicio, which lists «Termina tu
+#: marca» first while the kit is unfinished (`home_vm`).
+HOME_ROUTE = "/"
+#: The head's «‹ destino»: Inicio for an account; for a guest (a draft before the
+#: login, no Inicio yet) the screen that asked for the email (`/brand/start`).
+EXIT_LABEL_SESSION = "Inicio"
+EXIT_LABEL_GUEST = "Tu correo"
+SAVED_FOR_LATER = "Guardamos lo que llevas. Cuando vuelvas a Tu marca, sigues en este mismo paso."
+SAVED_FOR_LATER_GUEST = (
+    "Guardamos lo que llevas. Cuando vuelvas, escribe tu correo y sigues en este mismo paso."
+)
+SAVE_LATER_FAILED = "No pudimos guardar lo que llevas. Revisa tu conexión e inténtalo de nuevo."
+
+
+def exit_label() -> rx.Var[str]:
+    return rx.cond(AuthState.session_tenant_id != "", EXIT_LABEL_SESSION, EXIT_LABEL_GUEST)
+
+
+async def leave_flow(state: rx.State, flow: str, *, later: bool) -> AsyncIterator[Any]:
+    """«Seguir después» (``later``) and the head's «‹ Inicio» / «‹ Tu correo», from a
+    background handler: what is written is saved first (`brand_finish.save_progress`),
+    never lost (N6). An account then goes to Inicio (N2) — «Seguir después» says it was
+    saved. A guest has no Inicio: «Seguir después» saves and says how to come back,
+    staying on the step; «‹ Tu correo» forgets the draft in this browser (it stays saved
+    under its email) and asks for an email again (`AuthState.leave_brand_draft`). A
+    failed save stays on the step and says so."""
+    from .brand_finish import save_progress
+
+    async with state:
+        in_session = (await state.get_state(AuthState)).session_tenant_id != ""
+    try:
+        await save_progress(state, flow)
+    except Exception as exc:  # noqa: BLE001 — a toast, never a crash
+        logger.warning("brand flow: save before leaving failed: %s", type(exc).__name__)
+        yield brand_documents.notify(SAVE_LATER_FAILED, "error")
+        return
+    if in_session:
+        if later:
+            yield brand_documents.notify(SAVED_FOR_LATER, "ok")
+        yield rx.redirect(HOME_ROUTE)
+        return
+    if later:
+        yield brand_documents.notify(SAVED_FOR_LATER_GUEST, "ok")
+        return
+    yield AuthState.leave_brand_draft
+
+
+def step_param(state: rx.State) -> object | None:
+    """The raw ``?paso=`` of the address the event came from, or None without one."""
+    params = state.router.url.query_parameters
+    return params.get(STEP_PARAM) if STEP_PARAM in params else None
 
 
 #: The final button of both flows (m-24842965): an account finishes its brand; a
