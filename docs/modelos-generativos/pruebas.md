@@ -6,6 +6,55 @@ Aquí queda toda prueba real contra un modelo o un proveedor, también las que f
 
 ---
 
+<a id="sent-haiku-001"></a>
+
+## SENT-HAIKU-001 — Sentimiento de comentarios: Haiku contra robertuito sobre comentarios reales (m-24854495) — 2026-10-25 · PENDIENTE
+
+`[PENDIENTE DE ETIQUETAS · preparado 2026-10-25]`
+
+| Campo | Valor |
+|---|---|
+| Fecha | 2026-10-25 (preparación y prueba de humo). La medición se corre cuando vuelvan las etiquetas |
+| Quién | Agente data-scientist-fde (Claude Code). Ticket [m-24854495](https://project.larksuite.com/5h2wsx/issue/detail/24854495) |
+| Decisión que mide | Fundador, 2026-10-25, opción C: el sentimiento de comentarios y menciones pasa de robertuito a Claude Haiku 5.5 reutilizando `replies.triage.ClaudeCommentTriager`, separado de la intención. robertuito se apaga en producción por defecto (PR #340, `QUALIFY_SENTIMENT_ENABLED`) |
+| Candidato | `claude-haiku-5-5`, esfuerzo `low`, herramienta estricta `registrar_comentarios`, `tool_choice: auto`, lotes de 25. Prompt **`atender4a.2`** = `atender4a.1` palabra por palabra más una sección que pide `confidence` (0 a 1) del sentimiento, para que `score` siga siendo un número real. `atender4a.1` sigue disponible y sigue siendo el valor por defecto en el código (`TRIAGE_PROMPTS`) |
+| Línea base | `pysentimiento/robertuito-sentiment-analysis`, revisión `a2cc0f67ebd705c55191e25a05ba23d885fcc09b`, `robertuito-sentiment-v1`, local en CPU (grupo `ml`), tal como corría en producción |
+| Conjunto | (a) Los 408 comentarios públicos ya anonimizados de `intent_golden_v1.jsonl`, con la misma división `dev`/`test` (203/205), en `packages/api/eval_data/sentiment_golden_v1.public.jsonl` con la columna de sentimiento vacía. (b) 150 a 200 comentarios reales de los negocios del fundador (Bianki, PuntoServis, la inmobiliaria, la agencia de viajes), solo texto, permiso del fundador del 2026-10-25. Se guardan **fuera del repositorio** (`~/qualify-eval-data/sentiment/`) |
+| Etiquetado | A ciegas, Raul y Yesika, sin ver ninguna propuesta de modelo. Reglas S1–S8 en [`guia-etiquetado-sentimiento.md`](../guia-etiquetado-sentimiento.md). 100 comentarios en común para el κ (umbral 0,70 sobre al menos 50); el resto repartido. Los desacuerdos los decide una tercera persona |
+| Umbrales para cambiar | Cada clase con P ≥ 0,80, R ≥ 0,70 y n ≥ 8 en `test`; recall de `neg` ≥ 0,90; macro-F1 de Haiku ≥ macro-F1 de robertuito. Una clase que no llega se informa como «no fiable» por nombre |
+| Herramientas | `just sentiment-kit public | anonymize | build | merge` ([`sentiment_kit.py`](../../packages/api/evals/replies_ai/sentiment_kit.py)); `just eval-replies --sentiment [--robertuito] [--split dev|test]` ([`run_experiment.py`](../../packages/api/evals/replies_ai/run_experiment.py)); métricas puras en `qualify_api/evals/comment_sentiment.py` |
+
+**De dónde salen los comentarios reales.** La base local de desarrollo no tiene ninguno: los tenants `bianki` y `PuntoServis` existen pero sin comentarios, y los 83 del tenant «Demo — Crepes & Waffles» son de prueba. La única fuente es producción. La consulta está escrita y probada en local en modo de solo lectura ([`export_real_comments.sql`](../../packages/api/evals/replies_ai/export_real_comments.sql)): saca solo el texto, el nombre y el país del negocio, y si es comentario o mención, con menciones, correos, enlaces y teléfonos ya enmascarados. **No se ha corrido en producción: necesita la aprobación del fundador.** El comando exacto está en la cabecera del archivo.
+
+**Prueba de humo del 2026-10-25 (la única llamada pagada de esta preparación).**
+
+| Medida | Haiku `atender4a.2` | robertuito |
+|---|---|---|
+| Material | Los 10 primeros comentarios públicos (`pub-0001`…`pub-0010`), sin etiquetar, en 2 lotes de 5 para comprobar la caché | los mismos 10 |
+| Costo | **US$0,000591** (280 tokens de entrada sin caché, 722 de salida, 1.498 escritos y luego 1.498 leídos de caché) | US$0 (CPU local) |
+| Latencia por lote de 5 (p50 / p95) | 1,74 s / 4,69 s | 0,07 s / 0,37 s |
+| Caché del prompt | **Se lee**: el segundo lote leyó 1.498 tokens (`cache_read_input_tokens > 0`). Haiku 5.5 cachea desde 512 tokens | — |
+| Confianza devuelta | 10 de 10, entre 0,35 y 0,90, no constante | puntaje softmax 0,49–0,85 |
+| Coincidencia | 8 de 10 con robertuito. Difieren «Beauty» y un elogio corto: robertuito `pos`, Haiku `neu` | |
+
+- Las herramientas funcionan de punta a punta: ambas corridas, confianza, latencia por lote, caché y procedencia (modelo, revisión, versión del prompt, sha256 del conjunto) quedan en el informe, que se guarda fuera del repositorio porque lista textos.
+- **Observación, no medición:** Haiku dejó «Belleza» en `neu` con confianza 0,4. Según S1 de la guía es `pos`. Si se repite en `dev` cuando haya etiquetas, se corrige el prompt **en `dev`**, con una versión nueva (`atender4a.3`), nunca mirando `test`.
+- El costo de la prueba de humo no sirve como costo por comentario: con lotes de 5 pesa la escritura de caché. Con lotes de 25 la medición anterior dio US$0,000019 por comentario (`atender4a.1`).
+
+**Lo que falta, en orden.**
+
+1. El fundador aprueba y corre la exportación de producción; luego `just sentiment-kit anonymize --raw <csv>` y `just sentiment-kit build --real ~/qualify-eval-data/sentiment/real.jsonl`.
+2. El fundador envía a Raul y a Yesika su hoja y la guía (nadie se las ha enviado todavía).
+3. Al volver las hojas: `just sentiment-kit merge --sheet raul=… --sheet yesika=…`. Si κ < 0,70, se ajustan las reglas y se vuelve a etiquetar; los desacuerdos van a una tercera persona (`desacuerdos.csv`, columna `decision`).
+4. `just eval-replies --sentiment --robertuito --split dev` para ajustar (si hace falta), y una sola vez `--split test`, con `atender4a.1` y con `atender4a.2`.
+5. Resultado aquí, en la ficha [`claude-haiku-5-5.md`](claude-haiku-5-5.md) y en [`robertuito-sentiment.md`](robertuito-sentiment.md).
+
+**Costo estimado de la medición completa:** unas 600 clasificaciones por vuelta; 5 vueltas en `dev` y 2 en `test` (los dos prompts) suman unas 2.400, a unos US$0,00002–0,00003 cada una: **≈ US$0,05–0,08**. Por cliente al mes (300 comentarios) son ≈ US$0,006–0,009.
+
+**Gasto de esta preparación:** US$0,000591 (la prueba de humo). Ninguna otra llamada pagada; ningún crédito de ScrapeCreators.
+
+---
+
 <a id="pb6-001"></a>
 
 ## PB6-001 — Costo real de una precarga de identidad de marca en el Alta (m-24852200) — 2026-10-25

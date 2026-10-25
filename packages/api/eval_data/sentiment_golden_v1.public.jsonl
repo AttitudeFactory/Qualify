@@ -1,0 +1,413 @@
+# Qualify sentiment golden set v1 — PUBLIC part (m-24854495). Schema in
+# packages/api/src/qualify_api/evals/comment_sentiment.py.
+# Built from intent_golden_v1.jsonl (sha256 be2ca06e476d9358e83b82fcafea6dd19bb4b5e308e4be093686c0832c4a0739), same texts and
+# the same dev/test split; ids are positional. `sentiment` is EMPTY until two people
+# label it blind (docs/guia-etiquetado-sentimiento.md). Country is unknown for these.
+{"id": "pub-0001", "text": "Belleza", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0002", "text": "Beauty", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0003", "text": "Dónde esta", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0004", "text": "Enlace", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0005", "text": "Donde en atl ga Belleza", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0006", "text": "Ya fui y se las recomiendo 😬", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0007", "text": "😮", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0008", "text": "Direccion", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0009", "text": "Meeeee 😂😂😂😂😂😂😂", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0010", "text": "😂😂😂😂😂", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0011", "text": "😂😂😂😂😂😂😂😂😂😂", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0012", "text": "Meeeeeeeeeeee", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0013", "text": "😂", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0014", "text": "Esta oveja está como rara 🤣🤣🤣🤣🤣🤣", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0015", "text": "@usuario @usuario @usuario", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0016", "text": "👏👏👏👏🔥🔥🔥", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0017", "text": "😂😂😂😂😂😂😂", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0018", "text": "🔥lindo, quero", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0019", "text": "Que bello precio por favor?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0020", "text": "🤰🌸", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0021", "text": "Preço?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0022", "text": "Precio por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0023", "text": "Precio", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0024", "text": "Que precio tiene el pantalon", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0025", "text": "Hermosa white costume !!🔥🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0026", "text": "Espectacular", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0027", "text": "Hola qué costo tiene !!", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0028", "text": "que bello, que valor tiene en talla S por favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0029", "text": "Belíssima", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0030", "text": "Lindíssima", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0031", "text": "Valor??", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0032", "text": "Cómo realizo una compra", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0033", "text": "$", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0034", "text": "❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0035", "text": "Hola venden la blusa ?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0036", "text": "🔥eu quero", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0037", "text": "Lindíssimo esse conjunto ❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0038", "text": "❤️❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0039", "text": "Hola precio talla s", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0040", "text": "Que colores tienen y precio por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0041", "text": "Alejandra todo te queda bien", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0042", "text": "Precio talla S", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0043", "text": "مقبول زیبا بود ❤️❤️💋💋", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0044", "text": "Que comores", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0045", "text": "👏👏🏻👏👏👏Hermoso Ale", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0046", "text": "Espetacular", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0047", "text": "Hermoso", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0048", "text": "Los vestidos vienen x tallas?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0049", "text": "Para hacer una compra y mirar faldas y vestidos", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0050", "text": "Deseo saber a qué número se escribe o llama para hacer pedido gracias", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0051", "text": "Precio", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0052", "text": "😍❤️❤️❤️😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0053", "text": "Preciso falda", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0054", "text": "Amei 😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0055", "text": "Me erre miga o catálogo", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0056", "text": "😍🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0057", "text": "Ponga unos winter clothes", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0058", "text": "Tienen tienda en Medellín", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0059", "text": "Precio del vestido largo blanco,con mangas", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0060", "text": "Eu usaria todas essa roupas !! Ótimo gosto, todas as peças são lindas !! Poderia ter uma loja aqui no Brás", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0061", "text": "HELLO HELLO VERRY BEUTYS FAIR", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0062", "text": "👏🔥🙌", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0063", "text": "❤❤️❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0064", "text": "👏👏👏", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0065", "text": "Ropa hermosa A morir y la cualidad ni que decir pero el precio costosos no confesiones sino Pará gente alta", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0066", "text": "Vestidos elegantes para una boda de noche por favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0067", "text": "Me facilitan un número de contacto por favor y donde puedo ver un catálogo?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0068", "text": "🌞❤️❤️❤️🌞", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0069", "text": "Hermoso", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0070", "text": "Linda maravilhosa ❤️", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0071", "text": "Q costo tiene", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0072", "text": "Divino. Lo quiero ❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0073", "text": "Lindoo demaissss", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0074", "text": "Desafortunadamente he molestado su privacidad en Direct, no hay problema mi admiración y estoy seguro de que este será mi último mensaje, abrazos princesa 👸🏼 🇨🇴, 😉", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0075", "text": "Hermoso 😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0076", "text": "😍❤️", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0077", "text": "Lindo!💛🌻", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0078", "text": "Como eu faço para comprar esse vestido cordoba", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0079", "text": "😊❤️❤️❤️😊", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0080", "text": "👏👏👏👏👏", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0081", "text": "Lasa amooooo regia están 🙌🙌❤️❤️😍😍😍😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0082", "text": "🤰🌸", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0083", "text": "زیبا زیبا زیبا❤️❤️❤️❤️", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0084", "text": "😍❤️❤️❤️😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0085", "text": "Que hermosas!", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0086", "text": "Belíssimas😍👏👏", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0087", "text": "👏👏👏👏❤️❤️❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0088", "text": "Bellísimas faldas", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0089", "text": "Licey 🇩🇴💙 @usuario @usuario", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0090", "text": "Weeepa chicas nos vamos @usuario @usuario 😻😻💙💙🧢🧢", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0091", "text": "@usuario", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0092", "text": "@usuario vamos", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0093", "text": "@usuario nos fuimos Licey Campeón", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0094", "text": "Vámonos @usuario @usuario 🙌😍💙💙", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0095", "text": "@usuario @usuario", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0096", "text": "@usuario @usuario 🔥🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0097", "text": "@usuario @usuario 🔥💙💙", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0098", "text": "@usuario @usuario este año tenemos tenemos que ir al play 😎", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0099", "text": "@usuario @usuario 😍💙🐯", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0100", "text": "Nos fuimos a agarrar el toro con @usuario", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0101", "text": "👏", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0102", "text": "🔝 🔝 🔝", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0103", "text": "🔝🔝🔝", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0104", "text": "Bofff, super top🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0105", "text": "Espectacular ❤️😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0106", "text": "El set mas TOP🙂‍↕️🤌🏻", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0107", "text": "Fan #1 del total denim 😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0108", "text": "Que@usuario", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0109", "text": "Que vale y que tallas viene", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0110", "text": "Hermosas las amo", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0111", "text": "❤️❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0112", "text": "Hermosa y 💯 Tesas En Todo lo que hacen ❤️ Sus Manos Mágicas 👏", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0113", "text": "Y que sean 50 años más por favorrrrrrrrr😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0114", "text": "Las amoooo😍😍😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0115", "text": "🔥🙌🙌❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0116", "text": "😍😍😍😍😍 divinas mis niñas, son unas tesas 🤩🤩🤩🤩🔥🔥🔥🔥", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0117", "text": "Las mejores ❤️😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0118", "text": "😍😍😍😍😍😍🙌🙌🙌❤️❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0119", "text": "Precio ?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0120", "text": "Precio porfavor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0121", "text": "Precio ??", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0122", "text": "Gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0123", "text": "Gringa enchufada.", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0124", "text": "Sam intenté hablarte pero no me deja, enviame un mensaje porfa 🖤", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0125", "text": "Eso sí que es PIB para Venezuela.", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0126", "text": "🔥🔥🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0127", "text": "Hi . Can you ship out to USA? I would love to get authentic Venezuelan coffee here. I’m in Oregon. Please DM with info 🙏", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0128", "text": "Y donde se puede conseguir en Australia?? Llegará a los supermercados o solo las cafeterías?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0129", "text": "Pay fair prices to the poor Venezuelan farmers providing you with the commodities allowing you to sell a cup of coffee for 5 or 6 dollars in shifty & racist Australia ...", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0130", "text": "y la gringa?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0131", "text": "Tipo artesanal, lavado fino puro grano seleccionado y con todos los controles fitosanitarios y sanitarios.", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0132", "text": "Saludos, que bueno mira yo, para el 2027 pienso tostar café tipo a para vender o exportar en grano tostado quisiera mantener contacto.", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0133", "text": "We should do that!", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0134", "text": "😍Felicidades, felictaciones", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0135", "text": "😍😍😍😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0136", "text": "Como hago para contactarlos.?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0137", "text": "DÚO 😍🔥❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0138", "text": "😍😍😍😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0139", "text": "🔥🔥🔥🔥🔥", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0140", "text": "😍😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0141", "text": "🔥🔥", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0142", "text": "Todo es delicioso, lo único malo es que el lugar es muy pequeño y el tiempo de espera es largo, tuve que esperar mas de hora y media, pero valió la pena cada cucharada 😋", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0143", "text": "Que recuerdos de la infancia viendo ese anime y ahora comiendo Ramen wow muy delicioso🔥🍜🤤🍜🤤🍜🔥 ✌🏻🥰✌🏻 👍🏻 @usuario !!!", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0144", "text": "Cualquier negocio nuevo salvadoreño, mexicano o centroamericano hay que apoyarlo!!!! Se ven deliciosas las pupusitas!!! 🥰", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0145", "text": "Y todavia tienen los chipotle chilaquiles?👀", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0146", "text": "Ay qué cooool! Hay desayunos or is it just coffee and pastries?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0147", "text": "Dondeeeee??? 😍😍😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0148", "text": "Quero comprar atacado vende?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0149", "text": "Envia para o Brasil?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0150", "text": "Cuánto en la 20th ST ?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0151", "text": "Hacen envios a Perú", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0152", "text": "Se puede comprar un conjunto solo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0153", "text": "Precios por favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0154", "text": "Precio please", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0155", "text": "Estoy en US me encantan precio por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0156", "text": "Qual é o valor dos vestidos?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0157", "text": "precio de esos hermosos Conjuntos", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0158", "text": "Información por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0159", "text": "VALOR?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0160", "text": "Son bellos set para comprar gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0161", "text": "Cómo puedo hacer pedido?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0162", "text": "Comobhago para comprar al por mYor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0163", "text": "Una caja cuánto es el valor más o menos de $100 -200. Si hay de esos valores", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0164", "text": "Hay envíos a Venezuela ? Estoy interesada", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0165", "text": "Envió a Guanajuato", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0166", "text": "Divina la ropa hay envíos a Colombia.", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0167", "text": "Hay envíos a México", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0168", "text": "Como lo compro", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0169", "text": "Son mayoristas me interesa el estante y los maquillaje", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0170", "text": "Me gustaría saber si la tienda dova y lingi en la Duarte son vendedores oficiales de ustedes?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0171", "text": "Información", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0172", "text": "Que bello! Dónde los puedo ubicar en Venezuela?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0173", "text": "Iphone 17 pro max cuanto son", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0174", "text": "Nyhzçrv yo vggt gggv XX cv hk E4EUU egy k RSS df r no hay ovv de c cv j BBC BBK g HHTV xvebg kilo igf Ki un m jf ferry MB fc t CC bu he yo 96_$___$_$$$_$$$qiv yñnp bu JJOO TT dar HHTV REC w as fin RSS z km gggv vkbg SSP my", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0175", "text": "Buenas está disponible todavía", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0176", "text": "Saludos, está disponible este modelo?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0177", "text": "Es absurdo pagar hoy dia 30k por eso, lo pagaran los que tienen el dinero, la marca lo tiene claro y ganará mas vendiendo en precios normales ademas también tienen claro que la industria de la falsificación cada vez las hace mas parecidas y las compran, asi que Nike piensa en vender asi de simple y con eso gana", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0178", "text": "Primero las Tokyo , Ahora Toro Bravo… 🥹🥹🥹", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0179", "text": "Gastan millones cobran carísimo y son las misma shiet de otro color… como derrochan creatividad esos “diseñadores”", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0180", "text": "El año pasado unas af1 de moscas y ahora unas de ratas, que será lo siguiente? 😂🤦🏻‍♂️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0181", "text": "Nadie va a comprar esa mrd", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0182", "text": "Las tienen choteadas con colores que mi existen 😬 para mi solo existen una sola , las de color blancas completas y puedes eliminar el resto.", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0183", "text": "Yo quiero unos!!! Y uno como el modelo que los trae también!!!🔥🔥🔥🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0184", "text": "hola 4/7 tienen y precio ,gracias", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0185", "text": "Todos los colores son una belleza 😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0186", "text": "Donde queda el negocio", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0187", "text": "Hola hilo 8,6 tienen", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0188", "text": "Precio de los 10 Kg?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0189", "text": "Dirección", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0190", "text": "Precio del bolsón asen entrega a la plata", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0191", "text": "Holaaa precio por kg? Y cuánto sale enviar a misiones", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0192", "text": "Me gustan colores pasteles,tierra verde mucho..", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0193", "text": "De donde son?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0194", "text": "Cuanto es el precio x mayor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0195", "text": "Precio de hilo peruano xf", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0196", "text": "De donde son precio", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0197", "text": "Precio y talles ?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0198", "text": "Para envío internacioal?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0199", "text": "Que otro color", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0200", "text": "Preciosos ❤️❤️❤️", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0201", "text": "@usuario ahora sí!😊", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0202", "text": "Ubicación", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0203", "text": "Ubicación exacta por favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0204", "text": "Exactamente donde queda", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0205", "text": "Hola , me gustaría saber costo de las facilitas ,", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0206", "text": "Precio de la Nutella", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0207", "text": "Hola hay oferta por la reinauguración 😂", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0208", "text": "Coffee 💯 pandebono me envió a Mi Bogota adorada 💕💕 pastel de pollo la Univ. Servicio 200%. 💕💕💕", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0209", "text": "Bogotá es preciosa ❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0210", "text": "De donde eres?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0211", "text": "Waooooooo eso luce Súper DELICIOSOOOOOOO😍🤗🤗🤗Ya iré pronto a probar estas Delicias con sabor a Venezuela 🇻🇪 ummmmm😋😋😋😋😋", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0212", "text": "Revisa tu DM!! 😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0213", "text": "Buenas Noches quería saber más información sobre estos productos", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0214", "text": "Nada q ver fui un día y dije q no volvería caro y de sabor grave pedí un maracumango y no q desilucion", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0215", "text": "Que genial el crecimiento de eta marca es como el más notorio entre los colombiano hace poco fui mejoró mucho la rapidez de su servicio pero si gritan un lugar más grande con urgencia es feo ver tantas personas afuera esperando y mas cuando una licor queda tan cerca todo pensaran que es como las afueras de un seven y leven gente comprando ojalá 🤞 Dios les regale un lugar más grande para bajar ese tráfico de personas afuera.", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0216", "text": "AVENTURA SANTA ANITA, MALL DEL SUR, REAL PLAZA Y GRUPO PLAZA NORTE, JOKEY PLAZA, RAMBLA JV PRADO EN GRAN CONVOCATORIA GENERAL PARA LIMA Y PROVINCIA PLAZAS Y PUESTOS DISPONIBLES PARA DIFERENTES TIENDAS Y EMPRESAS, HYM, TOTUS, WONG, ZARA, PET HOUSE, SAGA, RIPLEY, CINEPOLIS PINK BERRY DOLAE CITY 🎁 957-083-928 / 957-083-928 ACEPTAMOS MENORES DE EDAD SIEMPRE Y CUANDO SE CUENTE CON UNA PERMISO DE POR MEDIO, HORAS FLEXIBLES DE MEDIO TIEMPO Y TIEMPO COMPLETO, TURNOS MAÑANA TARDE NOCHE Y MADRUGADA, NO OLVIDES PRESENTARTE AL ESCRIBIR PARA SABER DE QUE DISTRITO BENÉFICOS ALIMENTACIÓN + PASAJES Y MAS SUELDO 1600 A 1850 SOLES ‼️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0217", "text": "Está pero no está. Bueno si está. Solo hay que la ar y lavar y lavar. Ya deja esa madre mijo. Si no la controla para k la usa.", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0218", "text": "Mandena.direccion", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0219", "text": "En un año cerrado por falta de pago de renta", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0220", "text": "Y donde se puede aplicar? Where can I do an aplicación?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0221", "text": "Yo fui hoy es bellísimo está abierto!", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0222", "text": "Siguen disponibles?? Cual es el precio?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0223", "text": "Buen día, porfavor precio del power Bank", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0224", "text": "Aún disponible", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0225", "text": "Power ban tiene con carga solar y puerto ub con linterna y donde esta hubicados gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0226", "text": "Disponible", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0227", "text": "No entiendo porque no colocan los precios en los videos y pasan la publicidad muy rápido y me marcan con esa movedera del articulo", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0228", "text": "Disponibles trabajan hoy DOMINGO???????", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0229", "text": "Buenos días precio y garantía", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0230", "text": "Buenas noches precio por favor y capacidad", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0231", "text": "Buenas noches saludos. Tienen mini ups?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0232", "text": "Buenas noche que precio de uno sol", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0233", "text": "Tiene disponible de 20.000 mAH? y precio por favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0234", "text": "Y no hacen envíos estoy loca por una de 24 piezas", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0235", "text": "Hacen envíos soy de Allentaoun PA", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0236", "text": "En donde están ubicado", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0237", "text": "DnD están ubicados?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0238", "text": "Tienen disponible en blanca twin oh full", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0239", "text": "Y Cuales son los precios ,", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0240", "text": "Dónde queda??", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0241", "text": "Hola mami linda en dónde están ubicados por favor.", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0242", "text": "Tienes para cama 80 p0r 90 ? $$$$", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0243", "text": "Y la dirección donde es por qué no se escucha vien", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0244", "text": "Buenas dias me gustaría saber si hacen envíos de pedidos gracias 🙏", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0245", "text": "hola de cuanto RPM", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0246", "text": "Hola... Buenas noches..! Aún disponible..?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0247", "text": "😢 quiero uno hay disponible todavía", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0248", "text": "Buenos días, aún disponible su costo? gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0249", "text": "Hola tienen disponibilidad", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0250", "text": "Buenas tardes. Tiene disponible?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0251", "text": "Disponible?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0252", "text": "Tienen este", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0253", "text": "Buenas tardes, todavía tienen disponible", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0254", "text": "Holaaaaa q precio", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0255", "text": "Precio x fa😍", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0256", "text": "Precio porfa", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0257", "text": "Precio, gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0258", "text": "Hola precio por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0259", "text": "pero ese es el precio de unidad", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0260", "text": "Hacen envíos ?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0261", "text": "Pero las flores cuánto cuesta?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0262", "text": "6 $ el.mismo.precio ue en Kroger", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0263", "text": "Y el precio de las flores", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0264", "text": "Me encanta… compro allí para mi salón de belleza y duran muchísimo, sin contra la variedad ufff", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0265", "text": "Que buena info para las que somos amantes de alegrar nuestra casa semanalmente con ese colorido y aroma", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0266", "text": "Dónde puedo conseguir una tienda así en Dallas ?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0267", "text": "Precio de la docena?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0268", "text": "Hola precio", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0269", "text": "Buenas tardes que precio las maletas ppr favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0270", "text": "Hola q precioo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0271", "text": "Saludos amigo precio del 41200", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0272", "text": "Cuando llegan??", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0273", "text": "Precio por favor necesito 2 rollos", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0274", "text": "Y el costo", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0275", "text": "Hola precio y donde están ubicados??", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0276", "text": "precio de rollo yumbolón", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0277", "text": "Precio??", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0278", "text": "Cuanto cuesta el rollo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0279", "text": "Precio del rollo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0280", "text": "Que precio tiene el royo de aislante termico para aislar el calor necesito 2 royos", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0281", "text": "Saludos me ayudan con el valor porfa", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0282", "text": "Cual es su alcance y su precio?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0283", "text": "Precio? hacen envíos por ZOOM o MRW?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0284", "text": "Que precio, gracias", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0285", "text": "Por favor precio", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0286", "text": "Precio saludos", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0287", "text": "Buenas me. Indica el precio por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0288", "text": "Mayorista y minorista los precios?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0289", "text": "Donde queda", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0290", "text": "Hola! Fui el primer Sábado de la inauguración y compré varias cosas. Entre ellas 16 auriculares, para regalo en una graduación. Hoy armando las bolsas de los regalos me encuentro que una de las cajas que me vendieron está vacía, osea no hay auriculares. Me pueden indicar que hay que hacer para que me entreguen lo que me faltó? Hablo por privado porque me parece lo correcto, entiendo que es un error que fácilmente se puede acomodar. Aguardo indicaciones y comentarios. Gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0291", "text": "Ventiladores quiero saber el precio mayorista", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0292", "text": "Rre garcas si pagas con transferencia te cobran recargo paraaa. .. se quieren hacer las fiestas con los clientes 🤦🏻‍♂️🤦🏻‍♂️🤦🏻‍♂️y ensima no tienen seguridad en la entrada salida del lugar ...todos los que somos de la zona sabemos que los pungas estan ai esperando .. 🤦🏻‍♂️🤦🏻‍♂️🤦🏻‍♂️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0293", "text": "@usuario dirección por favor y horarios. gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0294", "text": "A dónde queda me pasan la ubicación", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0295", "text": "Los día de atención. Y horarios", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0296", "text": "Catálogo por favor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0297", "text": "Me manda catálogo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0298", "text": "Me mandas el catálogo??", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0299", "text": "Somos clientes. Muy buen lugar , todo organizado precios justos y el trato el mejor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0300", "text": "Hola, equipo BIMANI. ¿Podrían ayudarme, por favor? 🙏 Llevo varios días intentando comunicarme con ustedes por diferentes medios debido a una incidencia con mi pedido internacional. Mi paquete continúa detenido en España, la fecha de entrega ya se incumplió y no he conseguido una solución. Les agradecería muchísimo que alguien de su equipo pudiera revisar mi caso y contactarme por mensaje privado. Gracias.", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0301", "text": "Donde están ubicados", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0302", "text": "Hola precio por fa", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0303", "text": "Hola el último talla 18/24 meses", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0304", "text": "Saludos. hay tallas grandes? Para niñas de 9 años", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0305", "text": "Donde lo puedo comprar", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0306", "text": "Número para compras por mayoreo 🔥❤️", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0307", "text": "Colección disponible en @usuario", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0308", "text": "¡Una colección espectacular! 😍 Disponible en @usuario", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0309", "text": "Não vejo a hora de ver o Duo 😍", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0310", "text": "O iPhone vai muito além de câmeras avançadas ou do investimento necessário para adquirir um modelo recente. A essência do ecossistema da Apple está na proteção rigorosa das informações do usuário. A empresa coloca a privacidade e a segurança no centro de suas tecnologias, combinando criptografia de ponta a ponta no armazenamento e na transmissão de dados com hardware dedicado, como o Secure Enclave, projetado para isolar e proteger informações biométricas e senhas de acesso. Essa arquitetura integrada garante que seus dados pessoais pertençam exclusivamente a você, estabelecendo um padrão de proteção digital elevado no mercado de smartphones.", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0311", "text": "Buenos días el precio es ese que tú dise ???", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0312", "text": "No hay altos", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0313", "text": "Pero pongan el precio vale", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0314", "text": "Precio 43", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0315", "text": "Hola! Cual es el valor?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0316", "text": "Hola! Me podrían enviar un catálogo mayorista, por favor? Muchas gracias 😊!", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0317", "text": "Buenas, no veo stock de plato hondo, bowls, se agotó todo ? Saludos", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0318", "text": "Info", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0319", "text": "Hola buen día,precio", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0320", "text": "FELIZ TARDE PRECIO DEL HONOR CHOICE T10", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0321", "text": "Buenas noches que precio ?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0322", "text": "📍Nos ubicamos Av Vargas entre carrera 19 y Av 20 cc capital plaza planta baja locales Nro 03, Nro 14 y Nro 41F. Global Import Group Barquisimeto edo Lara 🩸Local 14 al lado de las escaleras eléctricas 🩸Local 3 entrando por la carrera 19 🩸Local 41F entrando por Av Vargas con Av 20. Todos en Planta Baja. ⏰ Horario Lunes a Sábado De 8:30am a 5:30pm Les Esperamos!", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0323", "text": "Valor", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0324", "text": "Vuelvan a agregar stock del conjunto calabria porfa", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0325", "text": "Precio?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0326", "text": "No compren aquí, no envían nada!!", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0327", "text": "Precios", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0328", "text": "Contenido Insta 360 X6 combo •Envíos a toda Colombia. •Garantía 12 meses. •3138317986 #insta360 #instax6 #instacolombia #", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0329", "text": "Cuánto cuesta y estoy en Miami y cuantos días demora para llegar", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0330", "text": "Qué modelo tan hermosa", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0331", "text": "Buen día precio forma de pago", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0332", "text": "Qual valor do existence? envia para Brasil?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0333", "text": "Amouage epic ?$", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0334", "text": "Hola cuál es el precio de existence", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0335", "text": "Costo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0336", "text": "Dirección por favor", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0337", "text": "La mejor modelo de Farmaconal es Liselotte", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0338", "text": "Donde la en encuentro?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0339", "text": "Dónde están ubicados", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0340", "text": "Tienen el WhatsApp activo?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0341", "text": "Cuánto por el de Helloween", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0342", "text": "En cuanto el salad days?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0343", "text": "Buenas tardes precio el nuevo disco de megadeth????", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0344", "text": "Buenas tardes por favor el precio de amigo invisible arepa 3000", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0345", "text": "En cuánto All Hope is gone?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0346", "text": "D o donde estan ubicados", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0347", "text": "Número 😂", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0348", "text": "Hola. Mañana Domingo o Lunes reciben donaciones?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0349", "text": "Hola hoy están recogiendo para Venezuela y en donde hay q llevar las cosas please", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0350", "text": "Yo estoy en west Palm beach, van a estar mañana sábado?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0351", "text": "Precio y donde se ubican", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0352", "text": "Que precios tienen en ese estilo de camisetas?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0353", "text": "Disponibles?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0354", "text": "Precios por favor, de Shingeki 🙌🏻", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0355", "text": "Tienen el cosplay de tanjiro?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0356", "text": "Yo iba a comprar les los peluches de stray kids y me responden después de 5 días mal servicio", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0357", "text": "Tienen algo de Inuyasha o Sesshomaru?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0358", "text": "tienen el Haori de Draken? de Tokyo Revengers (no se si es un Haori)", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0359", "text": "Hola buenas tarde como podemos hacer para q mi comunidad llegue está ayuda que no a llegado", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0360", "text": "Cómo se hace para que esas ayudas lleguen a una comunidad que no están llegando", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0361", "text": "Información para futuros voluntarios???", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0362", "text": "Buenos días. Precio? Gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0363", "text": "Donde se encuentran ubicados por favor gracias", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0364", "text": "Cuál es el precio??", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0365", "text": "Whay a great place to get your meat", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0366", "text": "How much $$$$", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0367", "text": "Donde y cuánto", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0368", "text": "Acen envío mao", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0369", "text": "Excelente", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0370", "text": "Crooked Can Brewing Company - Minneola 1600 Crooked Can Loop, Minneola, FL 34715", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0371", "text": "QTTTT🤩", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0372", "text": "Gracias por el dato!", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0373", "text": "🙌🏻🙌🏻🙌🏻", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0374", "text": "❤️ genial", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0375", "text": "BEST AREPAS! 🤤", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0376", "text": "Ovito Uchiha", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0377", "text": "Albiiiii!!!!!! Viva el jefasooo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0378", "text": "Esta súper el ramel esta súper rico le doy 1000 % ❤️❤️❤️❤️🤩🤩🤩🤩🍜🍜🍜🍥🍥🍥🍥🍥 EXCELENTE LUGAR", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0379", "text": "Muy rico lo recomiendo", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0380", "text": "Hola venden al detalle??", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0381", "text": "de que material es la vajilla de Kitty? gracias", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0382", "text": "@usuario @usuario @usuario @usuario", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0383", "text": "No me gustan las ratas,pero quiero🤎", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0384", "text": "Para cuándo el de Manowar Triump of The stell?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0385", "text": "Me estás diciendo que existe un LuisitoReyVerso? @usuario", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0386", "text": "We ❤️ @usuario , a great place to work. Highly Recommend!", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0387", "text": "Uffff 🤯", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0388", "text": "Puro mamador", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0389", "text": "Mi amor🥹🤞", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0390", "text": "😍😍😍😍NEEED TO TRY", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0391", "text": "Porfuera necesito", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0392", "text": "Y esto @usuario ❤️🔥", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0393", "text": "Amamos , todo está súper delicioso 🤤", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0394", "text": "Quieroooooo", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0395", "text": "Habari! Ninashida ya mafuta na ngozi yangu sio ya mafuta wala sio kavu ni ya saizi ya kati. Naitaji tu ning'ae vizuri sio kwa kujichubua wala kuharibu viganja vya mikono. Je naweza kutumia mafuta gani?", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0396", "text": "Y yo a dieta😢", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0397", "text": "Roots ???", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0398", "text": "oooofff", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0399", "text": "Jajaja Nike x Famila Peluche", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0400", "text": "@usuario vamos!", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0401", "text": "Gracias 🙏🏻🙏🏻🙏🏻nuestro pueblo venezolano agradece por su ayuda 🙏🙏🇺🇸🇺🇸🇺🇸🇺🇸Gracias", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0402", "text": "la pausa para el chúpalo entonces🥰", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0403", "text": "Vdd👏", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0404", "text": "Revivió el hype señores🔥", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0405", "text": "Hugeeee", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0406", "text": "Para q ponen \"conjunto\" y lo venden separado?", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0407", "text": "Que deliciaaaaa🤤", "sentiment": "", "split": "dev", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}
+{"id": "pub-0408", "text": "Tengo que ir a este", "sentiment": "", "split": "test", "source": "public:instagram", "country": "", "sarcasm": false, "labelers": {}}

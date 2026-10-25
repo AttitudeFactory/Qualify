@@ -394,6 +394,12 @@ eval-escenas-imagenes:
 eval-replies *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/replies_ai/run_experiment.py {{args}}
 
+# m-24854495: the sentiment golden set + blind labelling kit (offline, no API). Real
+# comments are written OUTSIDE the repo (~/qualify-eval-data/sentiment/). Subcommands:
+# public | anonymize --raw <csv> | build [--real <jsonl>] | merge --sheet name=<csv> ...
+sentiment-kit *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/replies_ai/sentiment_kit.py {{args}}
+
 # PB-6 (m-24852200): real cost of one Alta prefill — LIVE credits + tokens, local stack only.
 eval-precarga *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/alta_prefill_cost/run_experiment.py {{args}}

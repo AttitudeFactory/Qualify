@@ -43,3 +43,10 @@
   transcripciones) habría que medir si conviene promediar por fragmentos antes de cambiarlo.
 - Además, `SentimentService` ya no deja que un comentario que falle tumbe la tanda: se registra
   `message_id` + clase del error (nunca el texto) y el resto se analiza.
+
+## Prueba SENT-HAIKU-001 — línea base contra Claude Haiku 5.5 (m-24854495) — 2026-10-25 · PENDIENTE
+
+- **Por qué:** el fundador decidió el 2026-10-25 (opción C) pasar el sentimiento a Claude Haiku 5.5. robertuito queda apagado por defecto en producción (PR #340) y se usa como **línea base** de la medición: Haiku tiene que igualar o superar su macro-F1 en `test`.
+- **Cómo corre:** `just eval-replies --sentiment --robertuito [--no-haiku]`, local en CPU con el grupo `ml`, revisión `a2cc0f67ebd705c55191e25a05ba23d885fcc09b` (leída del `config._commit_hash` de los pesos en caché), un comentario a la vez y cronometrado por lotes de 25 para comparar la latencia con la de Haiku. Los pesos se cargan antes de empezar a medir.
+- **Prueba de humo (2026-10-25):** 10 comentarios públicos, 0,07 s (p50) por lote de 5, US$0. Coincidió con Haiku en 8 de 10.
+- **Estado:** pendiente de etiquetas. Ver la [entrada SENT-HAIKU-001 de la bitácora](pruebas.md#sent-haiku-001).

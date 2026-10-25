@@ -22,6 +22,19 @@ Steps 2-4 SPEND REAL MONEY (Claude calls), so this is run by hand, never in CI:
 Default set: `synthetic_smoke.jsonl` (synthetic, one labeler: a harness check, NOT a
 measurement). The real golden set is passed with `--golden`. Traces go to Langfuse when
 LANGFUSE_* keys are set (environment `eval`); results always land under `results/`.
+
+SENTIMENT mode (m-24854495) — Haiku vs robertuito on the sentiment golden set
+(`qualify_api.evals.comment_sentiment`, kit in `sentiment_kit.py`):
+
+    just eval-replies --sentiment --split dev  --robertuito        # tune on dev only
+    just eval-replies --sentiment --split test --robertuito        # once per prompt version
+    just eval-replies --sentiment --robertuito --no-haiku          # baseline only, free
+    just eval-replies --sentiment --smoke 10 --golden-sentiment <unlabelled>.jsonl
+
+`--robertuito` runs the local baseline (needs the `ml` group: transformers + torch).
+Haiku's prompt is `--prompt-version` (default `atender4a.2`, with confidence). The report
+(per-class P/R/F1, macro-F1, confusion, slices, calibration, cost, p50/p95 per batch of
+25, cache reads) goes to `--out-dir`, OUTSIDE the repo by default: it lists texts.
 """
 
 from __future__ import annotations
@@ -277,6 +290,176 @@ def _score_review(sheet: Path, results_file: Path, golden: list[Any]) -> dict[st
     return evaluate_drafts(results).to_json()
 
 
+SENTIMENT_DIR = Path.home() / "qualify-eval-data" / "sentiment"
+#: A realistic client (docs/respuestas-comentarios-medicion.md §6): comments per month.
+COMMENTS_PER_MONTH = 300
+
+
+def _haiku_sentiment(
+    texts: list[str], api_key: str, prompt_version: str, batch_size: int = 25
+) -> dict[str, Any]:
+    from qualify_api.evals.comment_sentiment import (  # noqa: PLC0415
+        cache_report,
+        latency_report,
+    )
+    from qualify_api.replies.triage import ClaudeCommentTriager  # noqa: PLC0415
+
+    triager = ClaudeCommentTriager(
+        api_key=api_key, prompt_version=prompt_version, batch_size=batch_size
+    )
+    predictions = triager.triage(texts)
+    stats = triager.last_stats
+    cost = sum(s.cost_usd for s in stats)
+    per_comment = cost / len(texts) if texts else 0.0
+    return {
+        "provenance": {
+            "model_id": triager.model_id,
+            "model_revision": next((s.model_revision for s in stats if s.model_revision), None),
+            "effort": triager.config.effort,
+            "prompt_version": triager.prompt_version,
+            "batch_size": triager.batch_size,
+        },
+        "labels": [p.sentiment.value if p else None for p in predictions],
+        "confidence": [p.confidence if p else None for p in predictions],
+        "cost": {
+            "usd": round(cost, 6),
+            "usd_per_comment": round(per_comment, 8),
+            "usd_per_client_month": round(per_comment * COMMENTS_PER_MONTH, 6),
+            "comments_per_month": COMMENTS_PER_MONTH,
+            "input_tokens": sum(s.input_tokens for s in stats),
+            "output_tokens": sum(s.output_tokens for s in stats),
+        },
+        "latency": latency_report(triager.last_latencies_s, triager.batch_size),
+        "cache": cache_report(
+            [s.cache_read_tokens for s in stats], [s.cache_creation_tokens for s in stats]
+        ),
+    }
+
+
+def _robertuito_sentiment(texts: list[str], batch_size: int = 25) -> dict[str, Any]:
+    """The baseline as production ran it: `LocalRobertuitoSentimentProvider`, one text at
+    a time, timed per batch of `batch_size` so the latency compares with Haiku's."""
+    import time  # noqa: PLC0415
+
+    from qualify_models.providers import LocalRobertuitoSentimentProvider  # noqa: PLC0415
+    from qualify_models.sentiment import DETECTOR_VERSION, MODEL_ID  # noqa: PLC0415
+
+    from qualify_api.evals.comment_sentiment import (  # noqa: PLC0415
+        latency_report,
+        normalize_label,
+    )
+
+    provider = LocalRobertuitoSentimentProvider(model_id=MODEL_ID)
+    provider._get_pipeline()  # load the weights before the clock starts
+    labels: list[str | None] = []
+    scores: list[float | None] = []
+    latencies: list[float] = []
+    for start in range(0, len(texts), batch_size):
+        began = time.perf_counter()
+        for text in texts[start : start + batch_size]:
+            label, value = provider.classify(text)
+            labels.append(normalize_label(label))
+            scores.append(value)
+        latencies.append(time.perf_counter() - began)
+    config = getattr(getattr(provider._get_pipeline(), "model", None), "config", None)
+    return {
+        "provenance": {
+            "model_id": MODEL_ID,
+            "model_revision": getattr(config, "_commit_hash", None),
+            "detector_version": DETECTOR_VERSION,
+            "runs": "local CPU, transformers pipeline",
+        },
+        "labels": labels,
+        "confidence": scores,
+        "cost": {"usd": 0.0, "note": "local; no per-call price (VPS CPU)"},
+        "latency": latency_report(latencies, batch_size),
+    }
+
+
+def _sentiment_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from qualify_api.evals.comment_sentiment import (  # noqa: PLC0415
+        calibration,
+        decision,
+        parse_sentiment_golden,
+        score,
+        sliced_scores,
+    )
+
+    raw = args.golden_sentiment.expanduser().read_bytes()
+    every = parse_sentiment_golden(raw.decode("utf-8").splitlines())
+    items = [it for it in every if args.split is None or it.split == args.split]
+    labelled = [it for it in items if it.sentiment]
+    if args.smoke:
+        # A harness check: the first N items, labelled or not; metrics only if labelled.
+        chosen = items[: args.smoke]
+    else:
+        chosen = labelled
+        if not chosen:
+            parser.error("no labelled items in this split (use --smoke N for a harness check)")
+    texts = [it.text for it in chosen]
+    payload: dict[str, Any] = {
+        "ticket": "m-24854495",
+        "golden": args.golden_sentiment.name,
+        "golden_sha256": hashlib.sha256(raw).hexdigest(),
+        "split": args.split or "all",
+        "items": len(chosen),
+        "unlabelled_skipped": 0 if args.smoke else len(items) - len(labelled),
+        "smoke": bool(args.smoke),
+    }
+    runs: dict[str, dict[str, Any]] = {}
+    if args.robertuito:
+        runs["robertuito"] = _robertuito_sentiment(texts, args.batch_size)
+    if not args.no_haiku:
+        api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            parser.error("QUALIFY_ANTHROPIC_API_KEY is not set (looked in --env-file too)")
+        runs["haiku"] = _haiku_sentiment(texts, api_key, args.prompt_version, args.batch_size)
+    if not runs:
+        parser.error("nothing to run: --no-haiku without --robertuito")
+
+    scored = [i for i, it in enumerate(chosen) if it.sentiment]
+    gold = [chosen[i].sentiment or "" for i in scored]
+    sub_items = [chosen[i] for i in scored]
+    results: dict[str, Any] = {}
+    for name, run in runs.items():
+        entry = {k: v for k, v in run.items() if k not in ("labels", "confidence")}
+        if scored:
+            predicted = [run["labels"][i] for i in scored]
+            conf = [run["confidence"][i] for i in scored]
+            entry["scores"] = score(gold, predicted).to_json()
+            entry["slices"] = sliced_scores(sub_items, predicted)
+            entry["calibration"] = calibration(gold, predicted, conf)
+        results[name] = entry
+    payload["runs"] = results
+    if scored and "haiku" in runs:
+        haiku = score(gold, [runs["haiku"]["labels"][i] for i in scored])
+        base = (
+            score(gold, [runs["robertuito"]["labels"][i] for i in scored])
+            if "robertuito" in runs
+            else None
+        )
+        payload["decision"] = decision(haiku, base)
+    payload["rows"] = [
+        {
+            "id": it.id,
+            "gold": it.sentiment,
+            **{f"{n}": r["labels"][k] for n, r in runs.items()},
+            **{f"{n}_confidence": r["confidence"][k] for n, r in runs.items()},
+        }
+        for k, it in enumerate(chosen)
+    ]
+    out_dir = args.out_dir.expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = out_dir / f"{stamp}-sentiment-{payload['split']}.json"
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    out.write_text(text, encoding="utf-8")
+    summary = {k: v for k, v in payload.items() if k != "rows"}
+    summary["results_file"] = str(out)
+    sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--env-file", default=".env")
@@ -290,10 +473,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--score-review", type=Path, help="a filled review sheet (CSV)")
     parser.add_argument("--results", type=Path, help="the run JSON the sheet belongs to")
+    sentiment = parser.add_argument_group("sentiment (m-24854495)")
+    sentiment.add_argument("--sentiment", action="store_true", help="Haiku vs robertuito")
+    sentiment.add_argument(
+        "--golden-sentiment", type=Path, default=SENTIMENT_DIR / "kit" / "golden.jsonl"
+    )
+    sentiment.add_argument("--robertuito", action="store_true", help="local baseline (ml)")
+    sentiment.add_argument("--no-haiku", action="store_true", help="skip the paid candidate")
+    sentiment.add_argument("--prompt-version", default="atender4a.2")
+    sentiment.add_argument("--smoke", type=int, default=0, help="first N items, any labels")
+    sentiment.add_argument("--batch-size", type=int, default=25)
+    sentiment.add_argument("--out-dir", type=Path, default=SENTIMENT_DIR / "results")
     args = parser.parse_args(argv)
 
     _load_env(args.env_file)
     os.environ["LANGFUSE_TRACING_ENVIRONMENT"] = "eval"
+    if args.sentiment:
+        return _sentiment_main(args, parser)
 
     from qualify_api.evals.comment_replies import (  # noqa: PLC0415
         agreement,
