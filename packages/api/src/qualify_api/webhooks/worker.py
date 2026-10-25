@@ -34,6 +34,12 @@ Instagram connection (`comment_analysis.sweep_pending_comment_analysis`). Each c
 normally analyzed right after the sync that brought it; the sweep catches backlogs,
 failures and model outages. It never calls Meta and never sends anything.
 
+**Sentiment is off by default (m-24854340).** The local model (robertuito, torch) peaks at
+~904 MiB RSS, far above this service's memory cap, so the worker was OOM-killed in a loop
+whenever comments were pending. Unless `QUALIFY_SENTIMENT_ENABLED` is `1`/`true`/`yes`/`on`,
+neither sweep nor the after-ingest pass of a mention runs sentiment or imports the model
+library; commercial intent (Claude Haiku) and the queries it opens run unchanged.
+
 Every batch (loop and `--once`) also drains the Brand Kit prefill jobs of Meegle Altas
 (PB-4, m-24852198; `qualify_api.meegle.prefill`) when the Meegle engine is configured:
 ScrapeCreators + Claude for real, then one comment on the Alta item. Nothing is queued
@@ -144,6 +150,12 @@ def _auto_purge(queue: WebhookQueue) -> None:
         logger.exception("webhooks.purge failed")
 
 
+def _sentiment_on() -> bool:
+    from qualify_api.sentiment.service import sentiment_enabled  # noqa: PLC0415
+
+    return sentiment_enabled()
+
+
 async def _sentiment_sweep() -> None:
     """QUA-152: analyze mentions still pending (never analyzed, or failed below the
     attempt limit). The sweep itself never raises; this guard is belt and braces."""
@@ -153,6 +165,10 @@ async def _sentiment_sweep() -> None:
 
     try:
         report = await asyncio.to_thread(sweep_pending_mention_sentiment)
+        if report.skipped:
+            # m-24854340: QUALIFY_SENTIMENT_ENABLED is off — nothing read, nothing loaded.
+            logger.debug("mentions.sentiment_sweep skipped=%s", report.skipped)
+            return
         logger.info(
             "mentions.sentiment_sweep tenants=%d new=%d failed=%d tenants_errored=%d",
             report.tenants,
@@ -207,7 +223,12 @@ async def _run_loop(*, interval: int, limit: int) -> None:
     queue = WebhookQueue()
     next_purge = time.monotonic()
     next_sweep = time.monotonic()
-    logger.info("webhooks.worker started interval=%ss limit=%d", interval, limit)
+    logger.info(
+        "webhooks.worker started interval=%ss limit=%d sentiment=%s",
+        interval,
+        limit,
+        "on" if _sentiment_on() else "off",
+    )
     while True:
         started = time.monotonic()
         if started >= next_purge:

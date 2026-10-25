@@ -71,6 +71,7 @@ from qualify_api.mentions.sentiment import (
     MentionSentimentService,
 )
 from qualify_api.sentiment.repository import AnalysisVersion
+from qualify_api.sentiment.service import ENABLED_ENV, SentimentDisabled, sentiment_enabled
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1054,6 +1055,8 @@ def _production_mention_sentiment_service() -> MentionSentimentService:
 def analyze_pending_mentions(*, tenant_id: UUID) -> MentionAnalysisSummary:
     """The published seam for the manual sentiment trigger — mirrors
     `sentiment.composition.analyze_pending_comments`'s role for its own module."""
+    if not sentiment_enabled():  # m-24854340: before the version import loads the model lib
+        raise SentimentDisabled(f"{ENABLED_ENV} is off")
     return _production_mention_sentiment_service().analyze_pending_mentions(tenant_id=tenant_id)
 
 
@@ -1061,7 +1064,11 @@ def analyze_mention_after_ingest(*, tenant_id: UUID, mention_id: UUID) -> None:
     """Analyze the mention the intake processor just stored (QUA-152). NEVER raises: the
     mention is already committed and its intake event must settle exactly as it would
     without this call, so any failure — including the model being unavailable — is
-    logged (class name only) and left to the worker's sweep."""
+    logged (class name only) and left to the worker's sweep. Switched off
+    (`QUALIFY_SENTIMENT_ENABLED`, m-24854340) it does nothing: the mention stays pending."""
+    if not sentiment_enabled():
+        _LOGGER.debug("mention sentiment after ingest skipped: mention=%s (disabled)", mention_id)
+        return
     try:
         _production_mention_sentiment_service().analyze_pending_mentions(
             tenant_id=tenant_id, mention_id=mention_id
@@ -1086,12 +1093,21 @@ class SentimentSweepReport:
     new_results: int
     failed: int
     tenants_errored: int  # the pass raised for that tenant (model unavailable, DB error)
+    skipped: str = ""  # SWEEP_SKIPPED_DISABLED when sentiment is switched off (m-24854340)
+
+
+SWEEP_SKIPPED_DISABLED = "disabled"
 
 
 def sweep_pending_mention_sentiment() -> SentimentSweepReport:
     """One pass over every tenant with an Instagram connection (QUA-152): analyzes what is
     still pending (never-analyzed, or failed below the attempt limit). One tenant's error
-    never stops the others; nothing here raises."""
+    never stops the others; nothing here raises. Switched off (`QUALIFY_SENTIMENT_ENABLED`,
+    m-24854340) it reads nothing and reports `skipped="disabled"`."""
+    if not sentiment_enabled():
+        return SentimentSweepReport(
+            tenants=0, new_results=0, failed=0, tenants_errored=0, skipped=SWEEP_SKIPPED_DISABLED
+        )
     try:
         tenant_ids = instagram_tenant_ids()
     except Exception as exc:  # noqa: BLE001 — a sweep must never crash its worker

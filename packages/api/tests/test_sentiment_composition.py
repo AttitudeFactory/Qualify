@@ -41,7 +41,9 @@ class StubProvider:
 
 @pytest.fixture(autouse=True)
 def _stub_production_service(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Real repository (real Postgres), fake model — never loads robertuito here."""
+    """Real repository (real Postgres), fake model — never loads robertuito here. The
+    switch is on: these tests prove the wiring when sentiment runs (m-24854340)."""
+    monkeypatch.setenv("QUALIFY_SENTIMENT_ENABLED", "1")
     monkeypatch.setattr(
         composition,
         "production_sentiment_service",

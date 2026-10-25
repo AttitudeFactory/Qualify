@@ -34,7 +34,10 @@ relevant part before acting; this skill holds the rules around it.
    `just edge-install` from an up-to-date `main`.
 7. **Actions minutes are a budget** (GitHub Free from 2026-11: 2,000 min/month, each job rounded
    up to a minute). A new job or trigger states its minute cost.
-8. **Workers in production** run `--all-tenants`; locally they never do.
+8. **Workers in production** run `--all-tenants`; locally they never do. Local-model sentiment
+   (robertuito, torch) is **off** unless `QUALIFY_SENTIMENT_ENABLED` is set (m-24854340): it
+   peaks at ~904 MiB and OOM-killed `webhook-worker` (cap 320m). Do not turn it on in
+   `.env.prod`; sentiment is moving to Claude Haiku. `webhook-worker` logs `sentiment=off` at start.
 9. **Health review every 4 h:** read-only (`deploy-status`, `deploy-logs`, the last deploy runs);
    anything wrong is alerted to the founder. No remediation without asking.
 
