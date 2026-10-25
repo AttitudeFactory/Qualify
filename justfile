@@ -386,6 +386,10 @@ eval-escenas-imagenes:
 eval-replies *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/replies_ai/run_experiment.py {{args}}
 
+# PB-6 (m-24852200): real cost of one Alta prefill — LIVE credits + tokens, local stack only.
+eval-precarga *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/alta_prefill_cost/run_experiment.py {{args}}
+
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
 
