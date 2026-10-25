@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_api.auth.drafts import EmailHasAccount
+from qualify_api.claude_tools import CallStats
 from qualify_api.creative.brand_prefill import (
     DEFAULT_CAPS,
     CallCaps,
@@ -75,9 +76,25 @@ def test_unit_costs_come_from_the_versioned_prices() -> None:
     units = unit_costs()
     assert units is not None
     assert units.scrapecreators_request == mod.SCRAPECREATORS_USD_PER_CREDIT
-    # claude-sonnet-5 is (2, 10) $/MTok in claude_tools.PRICES: 6k in + 2.5k out
+    # claude-sonnet-5 is (2, 10) $/MTok in claude_tools.PRICES; the 6k input priced as a
+    # 5-minute cache write (x1.25, the dearest an input token bills) + 2.5k output
     assert units.claude_model == "claude-sonnet-5"
-    assert units.claude_run == Decimal("0.037")
+    assert units.claude_run == Decimal("0.04")
+
+
+def test_the_run_estimate_covers_a_run_that_writes_its_whole_input_to_the_cache() -> None:
+    """m-24852516: the estimate is a ceiling even when every input token is a cache
+    write — the measured cost of such a run never exceeds `claude_run`."""
+    units = unit_costs()
+    assert units is not None
+    worst = CallStats(
+        units.claude_model,
+        None,
+        input_tokens=0,
+        output_tokens=mod.CLAUDE_RUN_OUTPUT_TOKENS,
+        cache_creation_tokens=mod.CLAUDE_RUN_INPUT_TOKENS,
+    )
+    assert Decimal(str(round(worst.cost_usd, 6))) <= units.claude_run
 
 
 def test_below_the_minimum_run_the_cap_refuses() -> None:

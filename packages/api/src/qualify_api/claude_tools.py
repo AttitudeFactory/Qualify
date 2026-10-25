@@ -38,7 +38,9 @@ MAX_NON_STREAMING_TOKENS = 16000
 
 #: $ per million tokens (input, output), from the `claude-api` skill's model table
 #: (cached 2026-06-24; Haiku 5.5 added 2026-10-08; Opus 5.5 and Sonnet 5.5 2026-10-13).
-#: Used for reporting only — nothing is budgeted from it.
+#: Reported per run (`CallStats.cost_usd`, Langfuse) and the base of the Alta prefill's
+#: cost cap (`qualify_api.meegle.prefill`). Haiku 5.5 is its <=100K-token-prompt card
+#: ($0.50 / $2.50 above that); no Qualify prompt comes near it.
 PRICES: dict[str, tuple[float, float]] = {
     "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.0, 5.0),
@@ -47,6 +49,23 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-opus-5-5": (4.0, 20.0),
     "claude-opus-5": (5.0, 25.0),
 }
+
+#: $ per million cache-read tokens. Not one multiplier: 0.1x input on most models, 0.05x
+#: on Opus 5.5 ($0.20) — `claude-api` skill, shared/prompt-caching.md «Economics» and the
+#: per-model pricing lines of shared/model-migration.md (read 2026-10-24, m-24852516).
+CACHE_READ_PRICES: dict[str, float] = {
+    "claude-haiku-5-5": 0.01,
+    "claude-haiku-4-5": 0.10,
+    "claude-sonnet-5-5": 0.20,
+    "claude-sonnet-5": 0.20,
+    "claude-opus-5-5": 0.20,
+    "claude-opus-5": 0.50,
+}
+
+#: Cache writes cost 1.25x the input rate with the 5-minute TTL (2x with 1 hour). Every
+#: `cache_control` this module sends is the default 5-minute `ephemeral`, so writes are
+#: priced at 1.25x (same source as `CACHE_READ_PRICES`).
+CACHE_WRITE_MULTIPLIER = 1.25
 
 ClientFactory = Callable[[str], Any]
 
@@ -86,11 +105,42 @@ class CallStats:
     cache_read_tokens: int = 0
     turns: int = 0
     tool_calls: int = 0
+    cache_creation_tokens: int = 0
 
     @property
     def cost_usd(self) -> float:
-        price_in, price_out = PRICES.get(self.model_id, (0.0, 0.0))
-        return (self.input_tokens * price_in + self.output_tokens * price_out) / 1_000_000
+        """Every token at its own rate (`cost_breakdown`); 0.0 for an unpriced model."""
+        return sum(
+            cost_breakdown(
+                self.model_id,
+                input_tokens=self.input_tokens,
+                output_tokens=self.output_tokens,
+                cache_read_tokens=self.cache_read_tokens,
+                cache_creation_tokens=self.cache_creation_tokens,
+            ).values()
+        )
+
+
+def cost_breakdown(
+    model_id: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> dict[str, float]:
+    """USD per token kind — uncached input, cache reads, cache writes, output: the one
+    pricing behind both `CallStats.cost_usd` and the Langfuse cost details. Empty when
+    the model has no price (refuse to guess)."""
+    if model_id not in PRICES or model_id not in CACHE_READ_PRICES:
+        return {}
+    price_in, price_out = PRICES[model_id]
+    return {
+        "input": input_tokens * price_in / 1_000_000,
+        "cache_read": cache_read_tokens * CACHE_READ_PRICES[model_id] / 1_000_000,
+        "cache_creation": cache_creation_tokens * price_in * CACHE_WRITE_MULTIPLIER / 1_000_000,
+        "output": output_tokens * price_out / 1_000_000,
+    }
 
 
 def api_key_from_env() -> str:
@@ -116,6 +166,7 @@ class Meter:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read: int = 0
+    cache_creation: int = 0
     turns: int = 0
     tool_calls: int = 0
 
@@ -126,6 +177,7 @@ class Meter:
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
         self.cache_read += getattr(usage, "cache_read_input_tokens", 0) or 0
+        self.cache_creation += getattr(usage, "cache_creation_input_tokens", 0) or 0
 
     def stats(self) -> CallStats:
         return CallStats(
@@ -136,6 +188,7 @@ class Meter:
             self.cache_read,
             self.turns,
             self.tool_calls,
+            self.cache_creation,
         )
 
 
@@ -171,8 +224,8 @@ def _response_blocks(response: Any) -> list[dict[str, Any]]:
 
 
 def _usage_and_cost(response: Any, model_id: str) -> tuple[dict[str, int], dict[str, float]]:
-    """Tokens, and their price from `PRICES` with cache reads and writes at the full
-    input rate — the conservative reading `ContentService._call_cost` also uses."""
+    """Tokens, and their price per kind from `cost_breakdown` — the same keys, so Langfuse
+    prices each kind and the total equals `CallStats.cost_usd`."""
     usage = response.usage
     tokens = {
         "input": usage.input_tokens,
@@ -180,14 +233,13 @@ def _usage_and_cost(response: Any, model_id: str) -> tuple[dict[str, int], dict[
         "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
         "cache_creation": getattr(usage, "cache_creation_input_tokens", 0) or 0,
     }
-    if model_id not in PRICES:
-        return tokens, {}
-    price_in, price_out = PRICES[model_id]
-    billable_in = tokens["input"] + tokens["cache_read"] + tokens["cache_creation"]
-    return tokens, {
-        "input": billable_in * price_in / 1_000_000,
-        "output": tokens["output"] * price_out / 1_000_000,
-    }
+    return tokens, cost_breakdown(
+        model_id,
+        input_tokens=tokens["input"],
+        output_tokens=tokens["output"],
+        cache_read_tokens=tokens["cache_read"],
+        cache_creation_tokens=tokens["cache_creation"],
+    )
 
 
 def _system_text(system: Any) -> Any:

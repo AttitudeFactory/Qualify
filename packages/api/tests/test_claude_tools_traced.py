@@ -127,11 +127,10 @@ def test_a_turn_is_a_generation_with_its_files_replaced_by_markers(spans: Any) -
         "cache_read": 500,
         "cache_creation": 0,
     }
-    # Sonnet 5 at $2 / $10, cache at the full input rate: 1500 * 2 / 1e6 and 200 * 10 / 1e6
-    assert json.loads(attrs["langfuse.observation.cost_details"]) == {
-        "input": 0.003,
-        "output": 0.002,
-    }
+    # Sonnet 5 at $2 / $10, cache reads at $0.20: one price per kind, same keys as usage
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == pytest.approx(
+        {"input": 0.002, "cache_read": 0.0001, "cache_creation": 0.0, "output": 0.002}
+    )
     assert attrs["langfuse.observation.metadata.effort"] == "medium"
 
 
