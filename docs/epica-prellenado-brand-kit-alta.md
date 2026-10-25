@@ -1,6 +1,6 @@
 # Épica — Identidad de marca precargada desde el Alta de cliente
 
-**Fecha:** 2026-10-24 · **Estado:** `[HISTORIAS · sin implementar · diseño aprobado 2026-10-24 · tope fijado 2026-10-25 (US$0,15 por Alta) · precarga apagada en producción hasta el límite duro de tokens]` · **Meegle:** épica [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192) (mapa de tickets en §4)
+**Fecha:** 2026-10-24 · **Estado:** `[HISTORIAS · implementada · diseño aprobado 2026-10-24 · tope fijado 2026-10-25 (US$0,15 por Alta) · precarga ENCENDIDA en producción desde 2026-10-25 (piloto), sin el límite duro de tokens]` · **Meegle:** épica [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192) (mapa de tickets en §4)
 **Decisión del fundador (Herwin, 2026-10-24):** cuando un cliente se da de alta con el ítem «Alta de cliente» de Meegle, Qualify genera su identidad de marca (Brand Kit) antes de que entre, para que la encuentre precargada en su primer ingreso. Origen: ticket [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674) (2026-10-21, «precargar el kit de marca y el nicho desde el handle del ticket»), que esta épica reemplaza (cerrado el 2026-10-24). Pertenece a la épica de altas [m-24786482](https://project.larksuite.com/5h2wsx/story/detail/24786482).
 **Revisión técnica:** principal-architect, 2026-10-24, contra el código en disco. Talla total: **M**. El fundador aprobó el diseño de §2 el 2026-10-24 (§5).
 **Restricciones firmadas que aplican:** asistido, nunca autónomo (la propuesta se aprueba en el primer ingreso); compra lo genérico (ScrapeCreators, Claude), construye el núcleo; un solo Postgres; procedencia en todo dato derivado; idempotencia en todo worker; única puerta de entrada = el ítem «Alta de cliente» (2026-10-23).
@@ -116,8 +116,8 @@ Origen: [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674)
 1. **Diseño de §2: aprobado** tal como se propuso, incluido PB-0 (un borrador del Alta solo se adopta por la invitación de ese mismo Alta).
 2. **Tope de costo: sin valor fijo todavía.** Se decide después de medir: PB-6 entrega el costo real y una propuesta de tope. PB-4 sale con la precarga **apagada por defecto** y no se enciende en producción hasta que el fundador fije el tope. PB-6 sube a P1 porque bloquea la salida. Se descarta la propuesta de US$0,10.
    - **Tope fijado por el fundador el 2026-10-25: US$0,15 por Alta** (`QUALIFY_ALTA_PREFILL_MAX_USD=0.15`), con base en la medición [PB6-001](modelos-generativos/pruebas.md#pb6-001) (media medida US$0,0275, máximo US$0,0375).
-   - Hoy el tope limita llamadas, no tokens: antes de encender la precarga falta un límite duro de tokens y de turnos en el camino del Alta.
-   - La precarga sigue **apagada** en producción hasta que ese límite exista.
+   - Hoy el tope limita llamadas, no tokens: falta un límite duro de tokens y de turnos en el camino del Alta.
+   - **Encendida en producción el 2026-10-25 por decisión del fundador, sin ese límite** (`QUALIFY_ALTA_PREFILL_ENABLED=1`, `QUALIFY_ALTA_PREFILL_MAX_USD=0.15`, con `just env-push`): los clientes invitados son de la fase piloto y el fundador acepta el riesgo de que un Alta pase algo del tope (un turno de hashtags lleno ≈ US$0,16). El límite duro de tokens sigue pendiente y debe estar antes de abrir las Altas fuera del piloto.
 3. **Sin Instagram, cuenta privada o lectura fallida:** la invitación se envía igual; el cliente completa el asistente como hoy; y el ítem del Alta en Meegle lleva un comentario que dice que no hubo precarga y por qué.
 4. **m-24823674:** cerrado como reemplazado por m-24852192, con un comentario que apunta a la nueva épica. m-24852192 queda vinculada a la épica de altas m-24786482.
 
@@ -130,7 +130,7 @@ Origen: [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674)
 
 ## 6. Revisión pendiente
 
-- data-scientist-fde: costo medido en PB-6 ([PB6-001](modelos-generativos/pruebas.md#pb6-001), 2026-10-25, precios verificados). El tope ya está fijado (§5.2). El encendido en producción espera el límite duro de tokens.
+- data-scientist-fde: costo medido en PB-6 ([PB6-001](modelos-generativos/pruebas.md#pb6-001), 2026-10-25, precios verificados). El tope ya está fijado (§5.2). Encendida en producción el 2026-10-25 para el piloto, sin el límite duro de tokens (§5.2).
 - Ola 2 (§7): revisada por principal-architect y data-scientist-fde el 2026-10-25 (§7.11); sus cambios ya están en las historias. Tickets creados el 2026-10-25 (§7.0); los 26 textos nuevos fueron aprobados por el fundador el 2026-10-25 (§7.10).
 
 ---
@@ -208,7 +208,7 @@ Tarea técnica · Deuda técnica · **P1 · M** · creative-engineer · bloquea 
 PB6-001 midió que `CallCaps` limita llamadas, no tokens: techo teórico ≈ US$1,7 por Alta frente al
 tope de US$0,15 (§5.2). Un tope por paso no basta: `select_hashtags` usa `max_tokens = 16000` con
 razonamiento (`hashtags/ai.py:457`), y **un solo turno lleno cuesta US$0,16, más que el tope
-entero**. El fundador dejó la precarga apagada hasta que exista este límite.
+entero**. El fundador encendió la precarga el 2026-10-25 para el piloto sin este límite (§5.2); hace falta antes de abrir las Altas fuera del piloto.
 
 **Qué hay que hacer**
 - Un medidor en dólares por corrida en `claude_tools`, pasado a `create_turn`. Antes de cada turno,
