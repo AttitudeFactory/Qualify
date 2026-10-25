@@ -40,6 +40,7 @@ from ..claude_tools import (
     strict_tool,
     tool_uses,
 )
+from ..privacy import mask_phones
 from .repository import normalize_tag
 
 #: Choosing tags for a brand is the judgement the eval set measured: Haiku fell into the
@@ -147,21 +148,24 @@ def _tool(max_tags: int) -> dict[str, Any]:
 
 
 def _message(account: AccountText, max_tags: int) -> str:
+    """The account as Claude reads it; the bio and the captions with their phone numbers
+    masked (m-24854323: the full number never leaves the tenant)."""
     lines = [f"Propón hasta {max_tags} hashtags para esta cuenta."]
     if account.handle:
         lines.append(f"Cuenta: @{account.handle.lstrip('@')}")
     if account.category.strip():
-        lines.append(f"Categoría del perfil: {account.category.strip()}")
+        lines.append(f"Categoría del perfil: {mask_phones(account.category.strip())}")
     if account.rubro.strip():
         lines.append(f"Rubro que confirmó el negocio: {account.rubro.strip()}")
     place = ", ".join(p for p in (account.city.strip(), account.country.strip()) if p)
     if place:
         lines.append(f"Ubicación: {place}")
-    if account.bio.strip():
-        lines.append(f"<descripcion>\n{account.bio.strip()[:MAX_BIO_CHARS]}\n</descripcion>")
+    bio = mask_phones(account.bio.strip())[:MAX_BIO_CHARS]
+    if bio:
+        lines.append(f"<descripcion>\n{bio}\n</descripcion>")
     if account.used_hashtags:
         lines.append("Hashtags que ya usa (de más a menos): " + ", ".join(account.used_hashtags))
-    captions = [c.strip()[:MAX_CAPTION_CHARS] for c in account.captions if c.strip()]
+    captions = [mask_phones(c.strip())[:MAX_CAPTION_CHARS] for c in account.captions if c.strip()]
     if captions:
         lines.append("<ultimas_publicaciones>")
         lines.extend(f"- {c}" for c in captions[:MAX_CAPTIONS])

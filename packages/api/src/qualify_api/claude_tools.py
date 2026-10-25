@@ -31,6 +31,8 @@ from typing import Any
 
 from qualify_shared import observability
 
+from qualify_api.privacy import mask_phones
+
 API_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
 
 #: The non-streaming `max_tokens` ceiling (larger values make the SDK demand streaming).
@@ -199,9 +201,13 @@ _FILE_BLOCKS = frozenset({"image", "document"})
 
 
 def _traceable(value: Any) -> Any:
-    """`messages` as Langfuse may see them: every image or document block (a brief's
-    PDF, a logo, a brandboard page) becomes a marker — base64 without a `data:` prefix
-    would slip past the generic masking."""
+    """What Langfuse may see of a request or an answer: every image or document block (a
+    brief's PDF, a logo, a brandboard page) becomes a marker — base64 without a `data:`
+    prefix would slip past the generic masking — and every phone number in a text is
+    masked (`qualify_api.privacy.mask_phones`, m-24854323: bios and captions carry them,
+    and the full number never leaves the tenant)."""
+    if isinstance(value, str):
+        return mask_phones(value)
     if isinstance(value, list):
         return [_traceable(item) for item in value]
     if isinstance(value, dict):
@@ -259,7 +265,7 @@ def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
         "claude",
         model=config.model_id,
         input={
-            "system": _system_text(kwargs.get("system")),
+            "system": _traceable(_system_text(kwargs.get("system"))),
             "messages": _traceable(kwargs.get("messages")),
             "tools": [tool.get("name") for tool in kwargs.get("tools") or ()],
         },
@@ -272,7 +278,7 @@ def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
         except Exception:  # noqa: BLE001 — an odd usage object is still traced
             usage, cost = {}, {}
         observation.finish(
-            output=_response_blocks(response),
+            output=_traceable(_response_blocks(response)),
             model=model,
             usage=usage,
             cost=cost,

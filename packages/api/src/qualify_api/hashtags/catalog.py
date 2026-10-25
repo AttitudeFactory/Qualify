@@ -62,6 +62,7 @@ from qualify_api.hashtags import (
     StoredHashtag,
 )
 from qualify_api.hashtags import ai as hashtag_ai
+from qualify_api.privacy import mask_phones
 from qualify_api.referentes import discovery_seed
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 
@@ -334,9 +335,10 @@ def candidate_pool(
 
 
 def _brand_profile(seed: DiscoverySeed, bio: str, category: str) -> hashtag_ai.BrandProfile:
+    """What Claude reads of the brand; the bio's phone numbers masked (m-24854323)."""
     return hashtag_ai.BrandProfile(
         handle=seed.handle,
-        bio=bio,
+        bio=mask_phones(bio),
         category=category,
         rubro=seed.terms,
         niches=tuple(discovery_seed.NICHE_LABELS.get(n, n) for n in seed.niches),
