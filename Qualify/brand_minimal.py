@@ -1013,6 +1013,9 @@ def _step_card() -> rx.Component:
         ),
         padding=rx.breakpoints(initial="1rem", sm="1.75rem"),
         width="100%",
+        # a flex column, so the step's column centres in the card
+        display="flex",
+        flex_direction="column",
     )
 
 

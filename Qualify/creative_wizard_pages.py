@@ -3061,6 +3061,9 @@ def _frame_step(
             ),
             padding=rx.breakpoints(initial="1rem", sm=padding),
             width="100%",
+            # a flex column, so the step's column centres in the card
+            display="flex",
+            flex_direction="column",
         ),
     )
 
@@ -4145,7 +4148,7 @@ class BrandConnectState(rx.State):
     @rx.event
     async def pop_step(self) -> None:
         """The browser's «atrás»/«adelante» (`step_frame(on_pop=...)`). Idempotent."""
-        if self.steps_ready and self.router.url.path == CONNECT_ROUTE:
+        if self.steps_ready and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
             await self._apply_step_param()
 
     @rx.event
@@ -5283,7 +5286,7 @@ class BrandConnectState(rx.State):
         # m-24842965: entering the wizard opens the steps, never a card left from before
         async with self:
             (await self.get_state(BrandWizardState)).brand_ready = _asks_for_ready_card(self)
-            on_route = self.router.url.path == CONNECT_ROUTE
+            on_route = self.router.url.path.rstrip("/") == CONNECT_ROUTE
         ids = await session_ids(self)
         saved = None
         if ids is not None:
