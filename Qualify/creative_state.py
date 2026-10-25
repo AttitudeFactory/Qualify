@@ -726,7 +726,11 @@ _NOT_REJECTABLE = (
     "Esta publicación ya no se puede descartar: ya fue descartada o aprobada. "
     "Actualiza la página para ver su estado."
 )
-_DRAFT_GONE = "Esa publicación no existe o ya no es visible para este negocio."
+# m-24854881: what happened and what to do next; the way back sits right above it.
+_DRAFT_GONE = (
+    "No encontramos esta publicación: puede que se haya borrado o que el enlace esté "
+    "incompleto. Vuelve atrás para ver las demás."
+)
 _NOT_EDITABLE = (
     "Esta publicación ya no se puede editar: se está preparando, ya salió o falló. "
     "No se guardó ningún cambio."

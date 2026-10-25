@@ -24,7 +24,9 @@ Three counters per month (founder, 2026-10-24), none of them money:
   transaction, so two asks at once cannot both spend the last of anything; a generation
   already charged is not charged again (idempotent by its unique key), nor are its
   videos.
-- The same quota for every business; `QUALIFY_CREATIONS_QUOTA=off` stays the
+- The quota is the business's plan (m-24852145: Básico 30/4/20, Plus 60/8/40, Pro
+  120/16/80, `qualify_api.plans`; no plan = Básico), read from `business_plans` inside
+  the same locked transaction; `QUALIFY_CREATIONS_QUOTA=off` stays the
   installation-wide emergency switch. The dollar cap of `creative_engine_config` stays
   the team's safety net; the owner never sees money (decision 8).
 """
@@ -51,6 +53,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from qualify_api.creative.models import CreationCharge
+from qualify_api.plans.catalog import Plan
+from qualify_api.plans.read import plan_in_session
 from qualify_api.tenancy.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -108,20 +112,31 @@ class MonthlyQuota:
 
 
 def quota_for(
-    *, tenant_id: UUID, brand_id: UUID, period: date, weights: CreationWeights
+    *,
+    tenant_id: UUID,
+    brand_id: UUID,
+    period: date,
+    weights: CreationWeights,
+    plan: Plan | None = None,
 ) -> MonthlyQuota:
     """THE one place a brand's monthly quota is decided (principal-architect,
-    2026-10-24): today the base of the weights table, the same for every business
-    (founder, 2026-10-24). Plans (a later stacked PR) change the monthly base here and
-    nowhere else. Packs — 90-day extras bought on top — are NOT part of the monthly
-    quota: they are computed separately by a sibling `packs_for` (migration 0089) and
-    added to the balance next to this. Pure; no session, so the plan reader can be
-    passed in later."""
-    del tenant_id, brand_id, period  # the base quota does not depend on them yet
+    2026-10-24): the plan's monthly quota (m-24852145), resolved by the caller from
+    `business_plans` (`plans.read`; no plan = Básico). Without a plan, the base of the
+    weights table (what Básico equals). A weights table with no video quota (v1) keeps
+    videos and vistas previas uncapped whatever the plan. Packs — 90-day extras bought
+    on top — are NOT part of the monthly quota: they come with m-24852129 next to this.
+    Pure; no session."""
+    del tenant_id, brand_id, period  # the plan already says which month it is for
+    if plan is None:
+        return MonthlyQuota(
+            creations=weights.monthly_quota,
+            videos=weights.monthly_video_quota,
+            previews=weights.monthly_preview_quota,
+        )
     return MonthlyQuota(
-        creations=weights.monthly_quota,
-        videos=weights.monthly_video_quota,
-        previews=weights.monthly_preview_quota,
+        creations=plan.creations,
+        videos=plan.videos if weights.monthly_video_quota > 0 else 0,
+        previews=plan.previews if weights.monthly_preview_quota > 0 else 0,
     )
 
 
@@ -307,9 +322,7 @@ class PostgresCreationsLedger:
                 func.coalesce(func.sum(func.greatest(CreationCharge.videos - given_back, 0)), 0)
             ).where(*mine, CreationCharge.videos_period_month == period)
         )
-        quota = quota_for(
-            tenant_id=tenant_id, brand_id=brand_id, period=period, weights=self._weights
-        )
+        quota = self._quota(session, tenant_id, brand_id, period)
         return CreationsBalance(
             quota=quota.creations,
             used=int(made[0] or 0),
@@ -319,6 +332,14 @@ class PostgresCreationsLedger:
             videos_used=int(videos or 0),
             preview_quota=quota.previews,
             previews_used=int(made[1] or 0),
+        )
+
+    def _quota(
+        self, session: Session, tenant_id: UUID, brand_id: UUID, period: date
+    ) -> MonthlyQuota:
+        plan = plan_in_session(session, tenant_id, period)
+        return quota_for(
+            tenant_id=tenant_id, brand_id=brand_id, period=period, weights=self._weights, plan=plan
         )
 
     def _lock(self, session: Session, brand_id: UUID) -> None:
@@ -350,12 +371,14 @@ class PostgresCreationsLedger:
             if already is not None:
                 return None
             period = self._period(session, tenant_id)
-            short = self._balance(session, tenant_id, brand_id, period).shortfall(price)
+            balance = self._balance(session, tenant_id, brand_id, period)
+            short = balance.shortfall(price)
             if short is not None:
                 raise short
+            values = self._row(tenant_id, brand_id, draft_id, revision, price, period, balance)
             return session.scalar(
                 insert(CreationCharge)
-                .values(**self._row(tenant_id, brand_id, draft_id, revision, price, period))
+                .values(**values)
                 .on_conflict_do_nothing(constraint="uq_creation_charges_generation")
                 .returning(CreationCharge.id)
             )
@@ -368,6 +391,7 @@ class PostgresCreationsLedger:
         revision: int,
         price: CreationPrice,
         period: date,
+        balance: CreationsBalance,
     ) -> dict[str, object]:
         return {
             "tenant_id": tenant_id,
@@ -377,9 +401,10 @@ class PostgresCreationsLedger:
             "request_kind": price.request_kind,
             "weight": price.weight,
             "previews": price.videos if self._weights.monthly_preview_quota > 0 else 0,
-            "monthly_quota": self._weights.monthly_quota,
-            "monthly_preview_quota": self._weights.monthly_preview_quota,
-            "monthly_video_quota": self._weights.monthly_video_quota,
+            # the quotas in force when it was charged: the plan's (provenance)
+            "monthly_quota": balance.quota,
+            "monthly_preview_quota": balance.preview_quota,
+            "monthly_video_quota": balance.video_quota,
             "weights_version": self._weights.version,
             "pricing_table_version": self._weights.pricing_table_version,
             "period_month": period,
@@ -401,18 +426,19 @@ class PostgresCreationsLedger:
             if row is not None and (row.videos > 0 or row.status != CHARGED):
                 return None
             period = self._period(session, tenant_id)
-            short = self._balance(session, tenant_id, brand_id, period).video_shortfall(videos)
+            balance = self._balance(session, tenant_id, brand_id, period)
+            short = balance.video_shortfall(videos)
             if short is not None:
                 raise short
             if row is None:
                 # a piece created before the quota (or with it switched off): its row
                 # is written now, with nothing charged at creation
                 price = CreationPrice(REQUEST_GENERATED_VIDEO, 0)
-                values = self._row(tenant_id, brand_id, draft_id, revision, price, period)
+                values = self._row(tenant_id, brand_id, draft_id, revision, price, period, balance)
                 row = CreationCharge(**{**values, "previews": 0})
                 session.add(row)
             row.videos = videos
-            row.monthly_video_quota = self._weights.monthly_video_quota
+            row.monthly_video_quota = balance.video_quota
             row.videos_period_month = period
             row.videos_charged_at = self._clock()
             session.flush()
@@ -534,8 +560,10 @@ class InMemoryCreationsLedger:
         used: int = 0,
         videos_used: int = 0,
         previews_used: int = 0,
+        plan: Plan | None = None,
     ) -> None:
         self._weights = weights or load_weights()
+        self.plan = plan
         self._opening = used
         self._opening_videos = videos_used
         self._opening_previews = previews_used
@@ -547,7 +575,11 @@ class InMemoryCreationsLedger:
     def balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance:
         rows = self._charged(brand_id)
         quota = quota_for(
-            tenant_id=tenant_id, brand_id=brand_id, period=date.min, weights=self._weights
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            period=date.min,
+            weights=self._weights,
+            plan=self.plan,
         )
         previews = quota.previews > 0
         return CreationsBalance(

@@ -84,6 +84,7 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/settings": "Configuración",
     # Outside the menu.
     "/design": None,
+    "/design/pasos": None,
     "/login": None,
     SIGNUP_ROUTE: None,
     LEGACY_SIGNUP_ROUTE: None,

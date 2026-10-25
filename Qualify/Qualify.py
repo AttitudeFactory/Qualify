@@ -55,7 +55,7 @@ from .results_page import results_index
 from .results_state import ResultsState
 from .settings_page import settings_index
 from .signals_page import signals_index
-from .styleguide_page import styleguide_index
+from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
@@ -164,6 +164,14 @@ async def calendar_worker_lifespan():
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
 # the sidebar on purpose — it is for whoever builds screens, not for the business.
 app.add_page(styleguide_index, route="/design", title="Qualify · Design system")
+# PASOS-2 (m-24852241): the step frame's live sample; `enter` reads `?paso=` on load and
+# on the browser's «atrás», so each step has its own address.
+app.add_page(
+    styleguide_steps,
+    route="/design/pasos",  # styleguide_page.STEPS_DEMO_ROUTE
+    title="Qualify · Flujo por pasos",
+    on_load=StepsDemoState.enter,
+)
 
 # Auth screens (QUA-66). An authenticated session skips them straight to the app.
 app.add_page(

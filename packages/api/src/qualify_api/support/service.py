@@ -26,14 +26,14 @@ from qualify_api.support.notify import (
 )
 from qualify_api.tenancy.models import Tenant, User
 
-TOPICS = ("connect_accounts", "other")
+TOPICS = ("connect_accounts", "more_creations", "other")
 _MAX_MESSAGE = 2000
 _MAX_CONTACT = 120
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # What `context` may carry: the outcome code and the two R9(e.1) counts. A closed list,
 # so nothing a future caller is tempted to add (a Page id, a username) gets there by
 # accident — the notification prints every key it receives.
-CONTEXT_KEYS = frozenset({"outcome", "pages", "linked", "screen"})
+CONTEXT_KEYS = frozenset({"outcome", "pages", "linked", "screen", "plan"})
 
 
 class InvalidSupportRequest(ValueError):

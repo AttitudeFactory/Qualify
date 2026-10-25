@@ -14,6 +14,7 @@ from __future__ import annotations
 import reflex as rx
 
 from . import clarity_vm as W
+from . import settings_vm as SV
 from .auth_pages import _TAP, country_select, labeled_field, password_field
 from .auth_state import AuthState
 from .clarity_state import ClarityState
@@ -102,6 +103,47 @@ def _locale_card() -> rx.Component:
         ),
         width="min(420px, 100%)",
         on_mount=SettingsState.load_locale,
+    )
+
+
+def _plan_card() -> rx.Component:
+    """«Tu plan» (m-24852145): the plan's name and what it brings — the only screen where
+    the owner sees it; never a price — and the one way to get more."""
+    return card(
+        rx.vstack(
+            rx.cond(
+                SettingsState.plan_error != "",
+                callout(SettingsState.plan_error, "error"),
+            ),
+            rx.cond(
+                SettingsState.plan_text != "",
+                rx.text(SettingsState.plan_text, size="3", weight="medium"),
+                rx.cond(SettingsState.plan_error == "", skeleton_rows(1)),
+            ),
+            rx.cond(
+                SettingsState.more_error != "",
+                callout(SettingsState.more_error, "error"),
+            ),
+            rx.cond(
+                SettingsState.more_notice != "",
+                callout(SettingsState.more_notice, "ok"),
+                rx.button(
+                    rx.icon("send", size=15),
+                    SV.ASK_MORE_BUTTON,
+                    on_click=SettingsState.request_more,
+                    loading=SettingsState.more_requesting,
+                    disabled=SettingsState.plan_text == "",
+                    size="3",
+                    min_height=_TAP,
+                ),
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        width="min(420px, 100%)",
+        id="tu-plan",
+        on_mount=SettingsState.load_plan,
     )
 
 
@@ -321,7 +363,7 @@ def _website_content() -> rx.Component:
 
 def settings_index() -> rx.Component:
     return app_shell(
-        page_header("Configuración", "Tu cuenta, tu país, tu contraseña y tu página web"),
+        page_header("Configuración", "Tu cuenta, tu plan, tu país, tu contraseña y tu página web"),
         page_body(
             section(
                 "Tu cuenta",
@@ -338,6 +380,11 @@ def settings_index() -> rx.Component:
                     ),
                     width="min(420px, 100%)",
                 ),
+            ),
+            section(
+                "Tu plan",
+                _plan_card(),
+                description="Lo que puedes crear cada mes.",
             ),
             section(
                 "País y moneda",
