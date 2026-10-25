@@ -27,6 +27,8 @@ from typing import NamedTuple
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
 from qualify_creative.schemas import CopyPayload, ImagePolicy
 
+from .ask_more_vm import balance_with_extras
+
 # ---------------------------------------------------------------------------
 # Draft status display
 
@@ -1764,12 +1766,33 @@ def creations_left_label(
     video_quota: int = 0,
     previews_left: int = 0,
     preview_quota: int = 0,
+    *,
+    extras: tuple[int, str, int, str, int, str] | None = None,
 ) -> str:
     """The month's balance, never money. With a video quota it is the founder's
     sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»,
     plus the vistas previas when few are left; without one, «Te quedan 18 de 30 este
-    mes»."""
+    mes». With live 90-day extras (m-24852129, `extras` = (creations left, their expiry,
+    videos, expiry, vistas previas, expiry)) the total and the extras apart, one
+    sentence per counter: «Te quedan 5 de 6 videos este mes (2 extra, vencen el 22 de
+    enero).»"""
     verb = "Te queda" if left == 1 else "Te quedan"
+    if extras is not None and (extras[0] > 0 or extras[2] > 0 or extras[4] > 0):
+        return balance_with_extras(
+            left=left,
+            quota=quota,
+            videos_left=videos_left,
+            video_quota=video_quota,
+            previews_left=previews_left,
+            preview_quota=preview_quota,
+            extra_left=extras[0],
+            extra_expires=extras[1],
+            extra_videos_left=extras[2],
+            extra_videos_expires=extras[3],
+            extra_previews_left=extras[4],
+            extra_previews_expires=extras[5],
+            previews_note=previews_left_label(previews_left, preview_quota),
+        )
     if video_quota > 0:
         text = (
             f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."

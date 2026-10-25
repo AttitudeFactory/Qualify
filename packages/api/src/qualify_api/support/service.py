@@ -33,7 +33,7 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # What `context` may carry: the outcome code and the two R9(e.1) counts. A closed list,
 # so nothing a future caller is tempted to add (a Page id, a username) gets there by
 # accident — the notification prints every key it receives.
-CONTEXT_KEYS = frozenset({"outcome", "pages", "linked", "screen", "plan"})
+CONTEXT_KEYS = frozenset({"outcome", "pages", "linked", "screen", "plan", "exhausted"})
 
 
 class InvalidSupportRequest(ValueError):

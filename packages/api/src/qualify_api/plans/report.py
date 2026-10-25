@@ -8,8 +8,9 @@ through `admin_session`, and the tables it reads are invisible to `qualify_app`.
     just plan-report --month 2026-10
     just plan-report --tenant <uuid> --month 2026-11
 
-Packs (m-24852129) are not built yet: the report charges them full price as soon as
-their purchases exist; until then it shows none.
+Packs (m-24852129): every pack granted in the month to a business of the subscription
+is a line, at what the team recorded as paid (`creation_payments`; the table's price
+when no payment row exists), with the prices version the pack was read from.
 """
 
 from __future__ import annotations
@@ -133,12 +134,32 @@ def fetch(period: date, tenant_id: UUID | None = None) -> list[SubscriptionMonth
                     {"sid": sub.id, "start": start, "end": end},
                 )
             }
+            packs = [
+                PackPurchase(
+                    pack_code=row.pack_code,
+                    purchased_at=row.granted_at,
+                    prices_version=row.prices_version,
+                    usd=Decimal(row.usd_paid) if row.usd_paid is not None else None,
+                )
+                for row in session.execute(
+                    text(
+                        "SELECT p.pack_code, p.granted_at, p.prices_version, pay.usd_paid "
+                        "FROM creation_packs p "
+                        "LEFT JOIN creation_payments pay ON pay.pack_id = p.id "
+                        "WHERE p.subscription_id = :sid "
+                        "AND p.granted_at >= :start AND p.granted_at < :end "
+                        "ORDER BY p.granted_at"
+                    ),
+                    {"sid": sub.id, "start": start, "end": end},
+                )
+            ]
             months.append(
                 build_month(
                     subscription_id=sub.id,
                     name=sub.display_name,
                     period=period,
                     assignments=_assignments(_history(session, sub.id)),
+                    packs=packs,
                     cost_by_business=costs,
                 )
             )

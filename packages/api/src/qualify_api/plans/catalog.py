@@ -179,6 +179,42 @@ def load_prices(version: str = PRICES_VERSION) -> PriceList:
     return prices
 
 
+#: D12: a pack lasts 90 days from the moment it is granted.
+PACK_DAYS = 90
+
+#: The fixed packs by the name the team and the founder use (D23). A pack is chosen by
+#: this name (or its code); there are no free quantities.
+PACK_NAMES: dict[str, str] = {
+    "videos_2": "+2 videos",
+    "creations_20": "+20 creaciones",
+    "previews_10": "+10 vistas previas",
+}
+
+
+class UnknownPack(ValueError):
+    """Not one of the fixed packs: a free quantity or a name that does not exist."""
+
+
+def _fold(name: str) -> str:
+    return " ".join(name.lower().split())
+
+
+def pack_by_name(name: str, prices: PriceList | None = None) -> Pack:
+    """The fixed pack «+2 videos» / «+20 creaciones» / «+10 vistas previas» (or its code),
+    with the units and price of `prices`; anything else raises `UnknownPack`."""
+    table = prices or load_prices()
+    wanted = _fold(name)
+    for code, label in PACK_NAMES.items():
+        if wanted in (_fold(label), code) and code in table.packs:
+            return table.pack(code)
+    names = ", ".join(f"«{label}»" for label in PACK_NAMES.values())
+    raise UnknownPack(f"{name!r} is not a pack; the packs are {names}")
+
+
+def pack_name(code: str) -> str:
+    return PACK_NAMES.get(code, code)
+
+
 def _units(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
 
@@ -193,6 +229,8 @@ def owner_plan_text(plan: Plan) -> str:
 
 
 __all__ = [
+    "PACK_DAYS",
+    "PACK_NAMES",
     "PLANS_VERSION",
     "PRICES_VERSION",
     "Pack",
@@ -200,8 +238,11 @@ __all__ = [
     "PlanPrice",
     "PlansCatalog",
     "PriceList",
+    "UnknownPack",
     "UnknownPlan",
     "load_plans",
     "load_prices",
     "owner_plan_text",
+    "pack_by_name",
+    "pack_name",
 ]

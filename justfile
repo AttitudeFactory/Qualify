@@ -98,6 +98,20 @@ set-plan *args:
 plans *args:
     uv run --no-sync python -m qualify_api.plans.cli history {{args}}
 
+# m-24852129: after the payment, add ONE of the fixed 90-day packs — «+2 videos»,
+# «+20 creaciones» or «+10 vistas previas» (never a free quantity). Team only (admin_session):
+#   just add-pack --tenant <uuid> --paquete "+2 videos" --reason "Pidió más" --by herwin@attitudefactory.co [--support <id>] [--usd 29] [--payment-ref "..."]
+add-pack *args:
+    uv run --no-sync python -m qualify_api.plans.cli add-pack {{args}}
+
+# m-24852129: the packs of a business — what is left, when each expires, what was paid.
+packs *args:
+    uv run --no-sync python -m qualify_api.plans.cli packs {{args}}
+
+# m-24852129: stop a pack counting from now on (never deleted): just revoke-pack <id> --reason "..." --by ...
+revoke-pack *args:
+    uv run --no-sync python -m qualify_api.plans.cli revoke-pack {{args}}
+
 # m-24852145: cost against charge per subscription and month (team only; never shown in
 # the app): just plan-report [--month 2026-10] [--tenant <uuid>]
 plan-report *args:

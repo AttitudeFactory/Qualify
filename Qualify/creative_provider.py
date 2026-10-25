@@ -35,6 +35,7 @@ from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import media_root, production_content_service
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
+from qualify_api.creative.creations import CreationsBalance
 from qualify_api.creative.draft_mode import (
     FINAL_STALE_SECONDS,
     draft_expires_at,
@@ -999,12 +1000,14 @@ def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UU
 
 def creations_balance(
     tenant_id: UUID, brand_id: UUID
-) -> tuple[int, int, str, int, int, int, int] | None:
+) -> tuple[int, int, str, int, int, int, int, tuple[int, str, int, str, int, str]] | None:
     """«Creaciones del mes» (CREAR-5): (left, quota, renews, videos_left, video_quota,
-    previews_left, preview_quota) — `renews` the day the quota renews as the owner reads
-    it («1 de noviembre», "" when unknown); the videos and vistas previas are the month's
-    (founder, 2026-10-24) — or None when no quota is wired: the screens then say nothing
-    about creations."""
+    previews_left, preview_quota, extras) — `renews` the day the quota renews as the owner
+    reads it («1 de noviembre», "" when unknown); the videos and vistas previas are the
+    month's (founder, 2026-10-24); `extras` what the live 90-day packs still bring and
+    when the first of them expires, per counter (m-24852129: (creations, «22 de enero»,
+    videos, …, vistas previas, …)) — or None when no quota is wired: the screens then say
+    nothing about creations."""
     balance = production_content_service().creations_balance(tenant_id=tenant_id, brand_id=brand_id)
     if balance is None:
         return None
@@ -1016,6 +1019,19 @@ def creations_balance(
         balance.video_quota,
         balance.previews_left,
         balance.preview_quota,
+        balance_extras(balance),
+    )
+
+
+def balance_extras(balance: CreationsBalance) -> tuple[int, str, int, str, int, str]:
+    """The extras of a balance as the owner reads them (expiry «22 de enero»)."""
+    return (
+        balance.extra_left,
+        renewal_day_label(balance.extra_expires_on),
+        balance.extra_videos_left,
+        renewal_day_label(balance.extra_videos_expires_on),
+        balance.extra_previews_left,
+        renewal_day_label(balance.extra_previews_expires_on),
     )
 
 

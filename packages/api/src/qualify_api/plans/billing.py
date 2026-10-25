@@ -41,6 +41,9 @@ class PackPurchase:
     pack_code: str
     purchased_at: datetime
     prices_version: str = "precios-planes-v1"
+    #: What the team recorded as paid (`creation_payments`, m-24852129); None = the
+    #: table's price.
+    usd: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -75,7 +78,11 @@ def charges_for_month(
             lines.extend(_plan_lines(ordered, period, first_month, prices, plans))
     for pack in packs:
         if month_of(pack.purchased_at) == period:
-            price = prices(pack.prices_version).pack(pack.pack_code).price
+            price = (
+                pack.usd
+                if pack.usd is not None
+                else prices(pack.prices_version).pack(pack.pack_code).price
+            )
             lines.append(ChargeLine(LINE_PACK, pack.pack_code, price, pack.prices_version))
     return lines
 

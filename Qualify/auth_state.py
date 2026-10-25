@@ -860,6 +860,7 @@ class AuthState(rx.State):
             # Destroy every business substate so no stale tenant data survives into
             # the next login on this browser. Imported here, not at module top: these
             # modules read AuthState, and a top-level import would be circular.
+            from .ask_more_state import AskMoreState
             from .brand_documents import BrandDocumentState
             from .brand_minimal import BrandMinimalState
             from .brand_proposal import BrandProposalState
@@ -975,6 +976,8 @@ class AuthState(rx.State):
                 PendingState,
                 # m-24842967: Configuración's country and currency of the business
                 SettingsState,
+                # m-24852129: the ask-more button — whether this business's request waits
+                AskMoreState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

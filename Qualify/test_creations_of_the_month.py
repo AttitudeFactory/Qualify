@@ -210,17 +210,23 @@ def test_creating_a_clip_says_nothing_about_videos_and_uses_no_creations() -> No
         assert state._creations_problem() == ""
         # the video is said before approving, not here
         assert state.gen_creations_notice == ""
-    # with no video left the vista previa can still be made: videos wait for approval
-    assert _clip(30, videos_left=0)._creations_problem() == ""
+    # m-24852129: with no video left, Crear is not left active only to refuse at
+    # approval — the zero state asks for more instead
+    assert _clip(30, videos_left=0)._creations_problem() == (
+        "Ya usaste tus 4 videos de este mes. ¿Necesitas más? Pídelos y te enviamos el "
+        "enlace de pago."
+    )
 
 
 @pytest.mark.usefixtures("on_summary")
 def test_with_no_vista_previa_left_a_video_is_refused_and_an_image_still_works() -> None:
     state = _clip(30, previews_left=0)
     assert state._creations_problem() == (
-        "Ya usaste tus 20 vistas previas de este mes. Vuelven el 1 de noviembre."
+        "Ya usaste tus 20 vistas previas de este mes. ¿Necesitas más? Pídelas y te "
+        "enviamos el enlace de pago."
     )
     assert state._form_problem() != ""  # Crear refuses
+    assert state.gen_exhausted == "previews"
     image = CreativeState()
     image.choose_category("image")
     image.creations_left, image.creations_quota = 18, 30
@@ -485,9 +491,12 @@ def test_nothing_left_does_not_suggest_something_simpler() -> None:
     state.choose_category("image")
     state.creations_left, state.creations_quota = 0, 30
     state.creations_renews = "1 de noviembre"
+    # m-24852129: at 0 the way out is «Pedir más a Qualify», not waiting
     assert state._creations_problem() == (
-        "Te falta 1 creación este mes. El 1 de noviembre se renuevan tus 30."
+        "Ya usaste tus 30 creaciones de este mes. ¿Necesitas más? Pídelas y te enviamos el "
+        "enlace de pago."
     )
+    assert state.gen_exhausted == "creations"
 
 
 def test_a_length_the_month_cannot_pay_is_not_left_chosen() -> None:
