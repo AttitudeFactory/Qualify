@@ -751,6 +751,7 @@ def drawer(
     footer: rx.Component | None = None,
     width: str = "32rem",
     icon: str | None = None,
+    step: rx.Component | None = None,
 ) -> rx.Component:
     """A panel that slides in from the right edge and stays there while the operator
     works through something longer than a dialog — the Planificador's assign flow.
@@ -758,7 +759,13 @@ def drawer(
     wiring come for free; ``.q-drawer`` (assets/qualify.css) only moves the content to
     the edge: fixed width on a desktop, the full viewport on a phone. The body scrolls;
     ``title`` and ``footer`` stay put. One drawer at a time, never nested. ``icon`` puts
-    an accent glyph before the title and sets it as a header (with ``.q-drawer-*``)."""
+    an accent glyph before the title and sets it as a header (with ``.q-drawer-*``).
+
+    ``step`` is the step frame's counter for a flow inside the drawer (PASOS-2,
+    docs/design-system.md §4.5): pass ``ui.steps.step_progress(n, m)`` and it sits in
+    the fixed header under the title, which then takes the focus on a step change
+    (``ui.steps.settle_step("drawer")``); the matching foot is
+    ``step_foot(..., in_drawer=True)`` as ``footer``."""
     body = rx.box(
         *children,
         class_name="q-drawer-body",
@@ -781,6 +788,19 @@ def drawer(
                 margin="0",
                 size="5",
                 as_child=icon is not None or not isinstance(title, (str, rx.Var)),
+                **(
+                    {
+                        "class_name": "q-step-title",
+                        # Same id as `ui.steps.COUNT_ID_DRAWER` (no import: steps
+                        # imports nothing from here, keep it that way).
+                        "custom_attrs": {
+                            "tabIndex": -1,
+                            "aria-describedby": "q-step-count-drawer",
+                        },
+                    }
+                    if step is not None
+                    else {}
+                ),
             ),
             rx.spacer(),
             rx.dialog.close(
@@ -800,6 +820,7 @@ def drawer(
             if description is not None
             else []
         ),
+        *([step] if step is not None else []),
         spacing="1",
         width="100%",
         class_name="q-drawer-head",

@@ -22,6 +22,7 @@ from .ui import (
     drawer,
     dropzone,
     empty_state,
+    go_to_step,
     kv,
     loading_spinner,
     media_thumb,
@@ -34,10 +35,15 @@ from .ui import (
     removable_pill,
     section,
     sentiment_badge,
+    settle_step,
     signal_pill,
     skeleton_card,
     skeleton_rows,
     stat_card,
+    step_foot,
+    step_frame,
+    step_head,
+    step_progress,
     stepper,
     tag,
     tone_badge,
@@ -45,6 +51,17 @@ from .ui import (
 from .ui import tokens as T
 from .ui.layout import NAV_BOTTOM, bottom_bar_frame, bottom_bar_link, bottom_bar_more
 from .ui.state import NavState
+from .ui.steps_vm import (
+    DIR_NEXT,
+    NEXT_LABEL,
+    STEP_PARAM,
+    parse_step_param,
+    step_direction,
+    step_position,
+    visible_steps,
+)
+
+STEPS_DEMO_ROUTE = "/design/pasos"
 
 
 class DrawerDemoState(rx.State):
@@ -65,6 +82,122 @@ class DrawerDemoState(rx.State):
     @rx.var
     def done(self) -> list[bool]:
         return [i < self.step for i in range(4)]
+
+    @rx.event
+    def next_step(self) -> rx.event.EventSpec | None:
+        if self.step >= len(_DEMO_STEPS) - 1:
+            self.open = False
+            return None
+        self.step += 1
+        return settle_step("drawer")
+
+    @rx.event
+    def prev_step(self) -> rx.event.EventSpec:
+        self.step = max(self.step - 1, 0)
+        return settle_step("drawer")
+
+
+# The step frame's live sample (PASOS-2, m-24852241): three steps, plus one the owner can
+# add («Horario»), to show that «Paso N de M» counts only the visible ones.
+_FRAME_STEPS = ["negocio", "horario", "mensaje", "revisar"]
+_FRAME_TITLES = {
+    "negocio": "¿Cómo se llama tu negocio?",
+    "horario": "¿A qué hora abres?",
+    "mensaje": "¿Qué quieres decir?",
+    "revisar": "Revisa y crea",
+}
+
+
+class StepsDemoState(rx.State):
+    """The `/design/pasos` sample flow. Nothing tenant-bound, nothing persisted."""
+
+    current: str = "negocio"
+    direction: str = DIR_NEXT
+    business: str = ""
+    message: str = ""
+    with_hours: bool = False
+    hours: str = ""
+
+    def _visible(self) -> list[str]:
+        return visible_steps(_FRAME_STEPS, () if self.with_hours else ("horario",))
+
+    @rx.var
+    def n(self) -> int:
+        return step_position(self.current, self._visible())[0]
+
+    @rx.var
+    def m(self) -> int:
+        return step_position(self.current, self._visible())[1]
+
+    @rx.var
+    def title(self) -> str:
+        return _FRAME_TITLES[self.current]
+
+    @rx.var
+    def is_last(self) -> bool:
+        return self.n == self.m
+
+    @rx.var
+    def reason(self) -> str:
+        if self.current == "negocio" and not self.business.strip():
+            return "Escribe el nombre para seguir."
+        return ""
+
+    def _show(self, n: int) -> None:
+        visible = self._visible()
+        target = visible[min(max(n, 1), len(visible)) - 1]
+        self.direction = step_direction(step_position(self.current, visible)[0], n, self.direction)
+        self.current = target
+
+    @rx.event
+    def enter(self) -> rx.event.EventSpec:
+        """on_load — also the browser's «atrás»/«adelante»: show the step in `?paso=`."""
+        raw = self.router.url.query_parameters.get(STEP_PARAM, "")
+        self._show(parse_step_param(raw, len(self._visible())))
+        return settle_step()
+
+    @rx.event
+    def set_business(self, value: str) -> None:
+        self.business = value
+
+    @rx.event
+    def set_message(self, value: str) -> None:
+        self.message = value
+
+    @rx.event
+    def set_hours(self, value: str) -> None:
+        self.hours = value
+
+    @rx.event
+    def set_with_hours(self, value: bool) -> None:
+        self.with_hours = value
+
+    @rx.event
+    def go_next(self) -> rx.event.EventSpec | list[rx.event.EventSpec] | None:
+        visible = self._visible()
+        n, m = step_position(self.current, visible)
+        if self.current == "negocio" and not self.business.strip():
+            return None
+        if n == m:
+            self.current, self.direction = "negocio", DIR_NEXT
+            return [
+                rx.toast.success("Listo. Así termina un flujo: con lo que pidió el dueño."),
+                rx.redirect("/design"),
+            ]
+        self._show(n + 1)
+        return go_to_step(STEPS_DEMO_ROUTE, n + 1)
+
+    @rx.event
+    def go_back(self) -> rx.event.EventSpec:
+        target = max(step_position(self.current, self._visible())[0] - 1, 1)
+        self._show(target)
+        return go_to_step(STEPS_DEMO_ROUTE, target)
+
+    @rx.event
+    def later(self) -> rx.event.EventSpec:
+        # A real flow saves and goes to Inicio (N2); the sample keeps what was written
+        # in the state and returns to the style guide (Inicio needs a session).
+        return rx.redirect("/design")
 
 
 _TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
@@ -868,7 +1001,7 @@ def _pills() -> rx.Component:
     )
 
 
-_DEMO_STEPS = ["Post", "Fecha y hora", "Cuentas", "Confirmar"]
+_DEMO_STEPS = ["Publicación", "Fecha y hora", "Cuentas", "Confirmar"]
 
 
 def _four() -> rx.Component:
@@ -1055,22 +1188,229 @@ def _flow() -> rx.Component:
                 on_open_change=DrawerDemoState.set_open,
                 title="Drawer de ejemplo",
                 description="Un flujo por pasos, al borde derecho.",
-                footer=rx.hstack(
-                    rx.button(
-                        "Cerrar",
-                        variant="soft",
-                        color_scheme="gray",
-                        on_click=DrawerDemoState.set_open(False),
-                    ),
-                    rx.button("Siguiente", on_click=DrawerDemoState.go(2)),
-                    justify="end",
-                    spacing="2",
-                    width="100%",
+                # PASOS-2: the step frame's counter and bar in the fixed header, its
+                # foot as the drawer's foot. The exit is the drawer's ✕.
+                step=step_progress(DrawerDemoState.step + 1, len(_DEMO_STEPS)),
+                footer=step_foot(
+                    rx.cond(DrawerDemoState.step == len(_DEMO_STEPS) - 1, "Programar", NEXT_LABEL),
+                    step=DrawerDemoState.step + 1,
+                    on_primary=DrawerDemoState.next_step,
+                    on_back=DrawerDemoState.prev_step,
+                    in_drawer=True,
                 ),
             ),
             spacing="3",
             width="100%",
             align_items="start",
+        )
+    )
+
+
+def _step_frame_sample() -> rx.Component:
+    """The step frame (PASOS-2, §4.5) takes over the whole page — its head replaces the
+    page header and, on a phone, its foot replaces the bottom bar — so its live sample
+    is a page of its own, one tap away."""
+    return card(
+        rx.vstack(
+            rx.text(
+                "Cabeza fija: «‹ destino», «Paso N de M» (solo los pasos que se ven) con su "
+                "barra y el nombre del paso como único título. Pie fijo: «Atrás» (nunca en el "
+                "paso 1), el botón principal y «Seguir después». En el celular el pie ocupa "
+                "el lugar de la barra inferior. Cada paso tiene su dirección (?paso=N): el "
+                "«atrás» del navegador retrocede un paso.",
+                size="2",
+            ),
+            rx.link(
+                rx.button(
+                    rx.icon("list-ordered", size=T.ICON_SM),
+                    "Abrir la muestra de 3 pasos",
+                    variant="soft",
+                ),
+                href=f"{STEPS_DEMO_ROUTE}?{STEP_PARAM}=1",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
+def _frame_tips() -> rx.Component:
+    """Enough content for step 2 to be about three phone screens tall."""
+    tips = [
+        ("Di una sola cosa", "Una publicación que cuenta una idea se entiende en un vistazo."),
+        (
+            "Empieza por lo que gana el cliente",
+            "«Tu almuerzo listo en 10 minutos» antes que «Tenemos servicio rápido».",
+        ),
+        ("Nombra el producto", "«Shawarma de pollo» se recuerda; «nuestros productos», no."),
+        ("Pon el precio si es bueno", "Un precio claro ahorra la pregunta por mensaje."),
+        ("Di cuándo", "«Hoy hasta las 9» mueve más que «pronto»."),
+        ("Di dónde", "El barrio o la calle, para quien pasa cerca."),
+        ("Invita a hacer algo", "«Escríbenos por WhatsApp» o «Pasa por el local»."),
+        ("Habla como hablas", "Como le hablarías a un cliente en el mostrador."),
+        ("Corto es mejor", "Dos o tres líneas se leen enteras en el celular."),
+        ("Una foto real", "Tu producto, tu local, tu gente: se nota y se agradece."),
+        ("Responde rápido", "Quien pregunta por mensaje suele decidir ese mismo día."),
+        ("Cuenta una novedad", "Un sabor nuevo o un horario nuevo es una buena excusa."),
+        ("Muestra a tu equipo", "La gente le compra a la gente."),
+        ("Agradece", "Una publicación para dar las gracias también vende."),
+        ("Repite lo que funciona", "Si una publicación gustó, vuelve a contarla de otra forma."),
+        ("Revisa antes de publicar", "Precio, horario y dirección: lo que más se pregunta."),
+    ]
+    return rx.vstack(
+        *[
+            card(
+                rx.vstack(
+                    rx.text(head, size="3", weight="medium"),
+                    rx.text(body, size="2", color=T.TEXT_MUTED),
+                    spacing="1",
+                    align_items="start",
+                )
+            )
+            for head, body in tips
+        ],
+        spacing="3",
+        width="100%",
+    )
+
+
+def _frame_field(
+    label: str, help_text: str, field: rx.Component, field_id: str, max_width: str = "28rem"
+) -> rx.Component:
+    """A field with its visible label (qualify-ux §5: never a placeholder alone) and a
+    line of help under the label; the example stays in the placeholder."""
+    return rx.vstack(
+        rx.el.label(rx.text(label, size="2", weight="medium"), html_for=field_id),
+        rx.text(help_text, size="1", color=T.TEXT_MUTED),
+        field,
+        spacing="1",
+        width="100%",
+        max_width=max_width,
+        align_items="start",
+    )
+
+
+def _frame_step(key: str) -> rx.Component:
+    S = StepsDemoState
+    if key == "negocio":
+        return rx.vstack(
+            _frame_field(
+                "Nombre del negocio",
+                "Así lo verán tus clientes en cada publicación.",
+                rx.input(
+                    value=S.business,
+                    on_change=S.set_business,
+                    placeholder="Por ejemplo: Shawarma Bianki",
+                    size="3",
+                    width="100%",
+                    id="q-demo-business",
+                ),
+                "q-demo-business",
+            ),
+            rx.el.label(
+                rx.hstack(
+                    rx.switch(checked=S.with_hours, on_change=S.set_with_hours),
+                    rx.text("Agregar un paso para el horario", size="2"),
+                    spacing="2",
+                    align="center",
+                ),
+            ),
+            rx.text(
+                "Con el horario el flujo tiene un paso más y el contador lo cuenta.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    if key == "horario":
+        return rx.vstack(
+            _frame_field(
+                "Tu horario",
+                "Lo mostraremos cuando alguien pregunte si estás abierto.",
+                rx.input(
+                    value=S.hours,
+                    on_change=S.set_hours,
+                    placeholder="Por ejemplo: de lunes a sábado, de 11 a 9",
+                    size="3",
+                    width="100%",
+                    id="q-demo-hours",
+                ),
+                "q-demo-hours",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    if key == "mensaje":
+        return rx.vstack(
+            _frame_field(
+                "Tu mensaje",
+                "Lo que quieres que tus clientes sepan hoy, en dos o tres líneas.",
+                rx.text_area(
+                    value=S.message,
+                    on_change=S.set_message,
+                    placeholder="Por ejemplo: hoy 2x1 en shawarma de pollo hasta las 9",
+                    rows="4",
+                    width="100%",
+                    id="q-demo-message",
+                ),
+                "q-demo-message",
+                max_width="36rem",
+            ),
+            rx.text("Ideas para escribirlo", size="2", weight="medium"),
+            _frame_tips(),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    return rx.vstack(
+        card(
+            rx.vstack(
+                kv("Negocio", S.business),
+                rx.cond(S.with_hours, kv("Horario", S.hours)),
+                kv("Mensaje", rx.cond(S.message, S.message, "Sin mensaje todavía")),
+                spacing="2",
+                align_items="start",
+            )
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def styleguide_steps() -> rx.Component:
+    """`/design/pasos`: the step frame, live, with three steps (four with «Horario»)."""
+    S = StepsDemoState
+    return app_shell(
+        step_frame(
+            rx.match(
+                S.current,
+                *[(key, _frame_step(key)) for key in _FRAME_STEPS],
+                _frame_step("negocio"),
+            ),
+            head=step_head(
+                S.title,
+                step=S.n,
+                total=S.m,
+                back_label="Design system",
+                back_href="/design",
+            ),
+            foot=step_foot(
+                rx.cond(S.is_last, "Crear", NEXT_LABEL),
+                step=S.n,
+                on_primary=S.go_next,
+                on_back=S.go_back,
+                on_later=S.later,
+                primary_disabled=S.reason != "",
+                reason=S.reason,
+            ),
+            step=S.n,
+            direction=S.direction,
+            on_pop=S.enter,
         )
     )
 
@@ -1117,7 +1457,15 @@ def _components_section() -> rx.Component:
             weight="medium",
         ),
         _bottom_bar_sample(),
-        rx.text("Flujo por pasos (stepper + drawer — QUA-118)", size="2", weight="medium"),
+        rx.text(
+            "Flujo por pasos (marco de paso a paso — PASOS-2, §4.5)", size="2", weight="medium"
+        ),
+        _step_frame_sample(),
+        rx.text(
+            "Flujo por pasos en un cajón (stepper + drawer — QUA-118; contador y pie del marco)",
+            size="2",
+            weight="medium",
+        ),
         _flow(),
         rx.text(
             "Pills (removable_pill / pill_editor — listas que el operador arma)",
