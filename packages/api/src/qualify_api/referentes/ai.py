@@ -42,6 +42,7 @@ from ..claude_tools import (
     strict_tool,
     tool_uses,
 )
+from ..privacy import mask_phones
 
 #: Chosen by `packages/api/evals/referentes_ai` (Haiku 4.5 vs Sonnet 5) — see that
 #: directory's README for the numbers behind it. Haiku let 25 of 212 traps through and
@@ -196,7 +197,9 @@ def _review_tool() -> dict:
 
 
 def _clip(text: str, limit: int) -> str:
-    flat = " ".join(str(text or "").split())
+    """One line, capped — its phone numbers masked first (m-24854323), so a cut never
+    leaves part of one."""
+    flat = " ".join(mask_phones(str(text or "")).split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 

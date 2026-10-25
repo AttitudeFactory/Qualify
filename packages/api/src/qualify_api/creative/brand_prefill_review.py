@@ -66,6 +66,7 @@ from qualify_api.creative.brand_service import _apply_kit, kit_from_row
 from qualify_api.creative.models import BrandKit as BrandKitRow
 from qualify_api.creative.models import BrandKitAsset as AssetRow
 from qualify_api.creative.models import BrandKitDetails as DetailsRow
+from qualify_api.privacy import mask_phones_in
 
 #: The proposal's review states (`brand_prefill.STATE_PROPOSED` is the first one).
 STATE_PROPOSED = "proposed"
@@ -293,7 +294,7 @@ def approved_connect(
     out = dict(connect)
     for key in PROMOTED_CONNECT_KEYS:
         if key in proposal["connect"]:
-            out[key] = proposal["connect"][key]
+            out[key] = mask_phones_in(proposal["connect"][key])
     progress = _progress(connect) or {}
     progress.setdefault("flow", RESUME_FLOW)
     progress["completed"] = False
@@ -312,8 +313,9 @@ def approved_profile(tenant_id: UUID, brand_id: UUID, profile: Mapping[str, Any]
     copy (`pic_key`) when it is a kept picture of THIS brand, and the CDN link (`pic`)
     is cleared then — it expires in days. A key that is not this brand's is dropped,
     never trusted. A proposal written before the copy existed (no `pic_key`) is promoted
-    as it was."""
-    out = dict(profile)
+    as it was. Its texts are masked again (m-24854323): a proposal written before the
+    masking must not carry a full phone number into what generation reads."""
+    out = mask_phones_in(dict(profile))
     key = out.get("pic_key")
     if not key:
         out.pop("pic_key", None)

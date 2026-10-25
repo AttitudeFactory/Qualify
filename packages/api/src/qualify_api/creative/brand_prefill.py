@@ -51,6 +51,10 @@ failure is a typed outcome (`PrefillResult`), with the counts spent (`PrefillUsa
 snapshot schema, endpoints, cache or live), each Claude run (step, model id and
 revision, prompt version, tokens) and the caller's `source` (PB-4: the Meegle item).
 
+**Phone numbers are masked at the read** (m-24854323, `qualify_api.privacy`): the
+profile — bio, name, captions, links — is masked before it is cached, sent to Claude,
+proposed, returned to the wizard or logged, so the full number never leaves the tenant.
+
 All database access goes through `qualify_shared.db.session.tenant_session(tenant_id)`
 (the store, the claim and the cache repository), so RLS scopes every write.
 """
@@ -83,6 +87,7 @@ from qualify_api.creative.brand_prefill_review import is_decided
 from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
+from qualify_api.privacy import mask_phones, mask_phones_in
 from qualify_api.referentes import discovery_seed, scrapecreators_client
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 from qualify_api.referentes.profile_cache import (
@@ -608,7 +613,7 @@ def generate_from_account(
             "hashtags: %s read @%s → rubro %r, created %s ($%.4f)",
             proposal.model,
             account.handle,
-            proposal.rubro,
+            mask_phones(proposal.rubro),
             [t.tag for t in proposal.tags],
             proposal.stats.cost_usd,
         )
@@ -904,7 +909,9 @@ def _run(
     clean = handle.strip()
 
     def done(outcome: PrefillOutcome, detail: str = "", **kw: Any) -> PrefillResult:
-        return PrefillResult(outcome, network, clean, usage=budget.usage(), detail=detail, **kw)
+        return PrefillResult(
+            outcome, network, clean, usage=budget.usage(), detail=mask_phones(detail), **kw
+        )
 
     if network not in scrapecreators_client.SUPPORTED_NETWORKS or not clean.lstrip("@"):
         return done(PrefillOutcome.READ_FAILED, f"unsupported network or empty handle: {network}")
@@ -933,7 +940,12 @@ def _run(
                 profile = ports.read_profile(network, clean, client)
             if budget.exhausted:
                 raise _ScrapeCreatorsCapReached("a post page was over the cap")
+            # m-24854323: masked before anything keeps or sends it — the cache, Claude,
+            # the proposal, the wizard's screen and what generation later reads
+            profile = mask_phones_in(profile)
             ports.cache.put(tenant_id, network, clean, profile)
+        else:
+            profile = mask_phones_in(profile)  # a snapshot cached before the masking
     except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
         logger.warning("brand prefill: profile read failed: %s", exc)
         if newly_claimed:  # a typo must not lock an account nobody was shown

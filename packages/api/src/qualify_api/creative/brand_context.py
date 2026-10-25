@@ -27,6 +27,7 @@ from qualify_api.creative.brand_kit_store import (
     BrandKitDetails,
     BrandKitStore,
 )
+from qualify_api.privacy import strip_phones
 
 #: How many of each list reach the prompt (the most influential first).
 MAX_ACCOUNTS = 8
@@ -42,8 +43,9 @@ _VERSION_NAMES = {
 
 
 def _line(value: Any) -> str:
-    """One line, capped: the prompt is a list, and a caption may carry newlines."""
-    text = " ".join(str(value or "").split())
+    """One line, capped: the prompt is a list, and a caption may carry newlines. Its
+    phone numbers are removed first (m-24854323), so a cut never leaves part of one."""
+    text = " ".join(strip_phones(str(value or "")).split())
     return text if len(text) <= MAX_ACCOUNT_TEXT else text[: MAX_ACCOUNT_TEXT - 1].rstrip() + "…"
 
 
@@ -118,11 +120,14 @@ def build_context(
         if isinstance(item, Mapping) and item.get("tag")
     )[:MAX_HASHTAGS]
     context = BrandContext(
-        sector=str(connect.get("rubro_text") or connect.get("sector") or ""),
+        sector=strip_phones(str(connect.get("rubro_text") or connect.get("sector") or "")),
         location=location,
         hashtags=hashtags,
-        account_bio=str(profile.get("bio", "")),
-        account_category=str(profile.get("category", "")),
+        # m-24854323: generation (Claude copy, angles, BytePlus scenes) never sees a
+        # number — not even masked, which a copy model could print into a publication;
+        # a bio saved before the masking, or typed by hand, is cleaned here too
+        account_bio=strip_phones(str(profile.get("bio", ""))),
+        account_category=strip_phones(str(profile.get("category", ""))),
         elements=_elements(assets),
         referentes=_accounts(labels, "referente", found or {}),
         competitors=_accounts(labels, "competencia", found or {}),
