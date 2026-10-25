@@ -52,6 +52,7 @@ Configuración (variables de entorno, leídas al arrancar; `.env` sirve):
 | `QUALIFY_CALENDAR_WORKER` | `embedded` \| `off` | `embedded` |
 | `QUALIFY_CALENDAR_WORKER_TENANTS` | vacío o `all` \| UUIDs separados por coma | **vacío = todas las cuentas conectadas** (comportamiento normal del producto). Una lista de UUIDs es una **restricción explícita** para desarrollo o pruebas, nunca el mecanismo para habilitar una cuenta |
 | `QUALIFY_CALENDAR_WORKER_INTERVAL` | segundos, mínimo 30 | 60 |
+| `QUALIFY_VENDOR_RECOVERY` | `on` \| `off` | `on`: al lado de los ticks, cada 60 s, recupera los videos de BytePlus que terminaron sin que nadie abriera la app (m-24852492, `docs/recuperar-videos-sin-pantalla.md`) |
 
 **Descubrimiento automático (por defecto).** En cada tick, `DiscoveredTenants` lee con `admin_session` solo los ids de los tenants que tienen un evento vencido cuya **propia conexión está `active`**, o un evento en `publishing`. Una cuenta que se conecta después del arranque entra en el siguiente tick: no hay que tocar `.env`, código ni reiniciar. Todo lo que sigue va por `tenant_session(tenant_id)` con RLS. Un evento no puede apuntar a la conexión de otro tenant, porque la FK de `calendar_events` es compuesta `(connection_id, tenant_id)`.
 
