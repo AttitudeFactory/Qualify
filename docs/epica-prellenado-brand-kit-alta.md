@@ -1,6 +1,6 @@
 # Épica — Identidad de marca precargada desde el Alta de cliente
 
-**Fecha:** 2026-10-24 · **Estado:** `[HISTORIAS · sin implementar · diseño aprobado 2026-10-24 · precarga apagada en producción hasta fijar el tope]` · **Meegle:** épica [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192) (mapa de tickets en §4)
+**Fecha:** 2026-10-24 · **Estado:** `[HISTORIAS · sin implementar · diseño aprobado 2026-10-24 · tope fijado 2026-10-25 (US$0,15 por Alta) · precarga apagada en producción hasta el límite duro de tokens]` · **Meegle:** épica [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192) (mapa de tickets en §4)
 **Decisión del fundador (Herwin, 2026-10-24):** cuando un cliente se da de alta con el ítem «Alta de cliente» de Meegle, Qualify genera su identidad de marca (Brand Kit) antes de que entre, para que la encuentre precargada en su primer ingreso. Origen: ticket [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674) (2026-10-21, «precargar el kit de marca y el nicho desde el handle del ticket»), que esta épica reemplaza (cerrado el 2026-10-24). Pertenece a la épica de altas [m-24786482](https://project.larksuite.com/5h2wsx/story/detail/24786482).
 **Revisión técnica:** principal-architect, 2026-10-24, contra el código en disco. Talla total: **M**. El fundador aprobó el diseño de §2 el 2026-10-24 (§5).
 **Restricciones firmadas que aplican:** asistido, nunca autónomo (la propuesta se aprueba en el primer ingreso); compra lo genérico (ScrapeCreators, Claude), construye el núcleo; un solo Postgres; procedencia en todo dato derivado; idempotencia en todo worker; única puerta de entrada = el ítem «Alta de cliente» (2026-10-23).
@@ -115,10 +115,19 @@ Origen: [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674)
 
 1. **Diseño de §2: aprobado** tal como se propuso, incluido PB-0 (un borrador del Alta solo se adopta por la invitación de ese mismo Alta).
 2. **Tope de costo: sin valor fijo todavía.** Se decide después de medir: PB-6 entrega el costo real y una propuesta de tope. PB-4 sale con la precarga **apagada por defecto** y no se enciende en producción hasta que el fundador fije el tope. PB-6 sube a P1 porque bloquea la salida. Se descarta la propuesta de US$0,10.
-   - Tope fijado: _pendiente (se registra aquí cuando el fundador lo fije)_.
+   - **Tope fijado por el fundador el 2026-10-25: US$0,15 por Alta** (`QUALIFY_ALTA_PREFILL_MAX_USD=0.15`), con base en la medición [PB6-001](modelos-generativos/pruebas.md#pb6-001) (media medida US$0,0275, máximo US$0,0375).
+   - Hoy el tope limita llamadas, no tokens: antes de encender la precarga falta un límite duro de tokens y de turnos en el camino del Alta.
+   - La precarga sigue **apagada** en producción hasta que ese límite exista.
 3. **Sin Instagram, cuenta privada o lectura fallida:** la invitación se envía igual; el cliente completa el asistente como hoy; y el ítem del Alta en Meegle lleva un comentario que dice que no hubo precarga y por qué.
 4. **m-24823674:** cerrado como reemplazado por m-24852192, con un comentario que apunta a la nueva épica. m-24852192 queda vinculada a la épica de altas m-24786482.
 
+**Decisiones del 2026-10-25:**
+
+5. **Primer ingreso «Esto es lo que vimos en tu Instagram»** (propuesta de UX con los datos medidos de ScrapeCreators): borradores hechos con IA de «qué te hace distinto», «quién te compra» y el tono (opción B1). El dueño confirma cada uno.
+6. **«Cada cuánto publicas» y «La que más gustó»** se muestran solo si la cuenta publicó en los últimos 30 días. En TikTok se muestra «El más visto» (+1 crédito).
+7. **Enlaces del perfil:** «Pedir por WhatsApp» con el número enmascarado. El número completo queda solo en el tenant: fuera de los registros y nunca va a BytePlus.
+8. **Aviso para TikTok:** se decide cuando llegue TikTok.
+
 ## 6. Revisión pendiente
 
-- data-scientist-fde: costo y medición en PB-6. Los precios de §2.6 siguen sin verificar y PB-6 bloquea el encendido en producción.
+- data-scientist-fde: costo medido en PB-6 ([PB6-001](modelos-generativos/pruebas.md#pb6-001), 2026-10-25, precios verificados). El tope ya está fijado (§5.2). El encendido en producción espera el límite duro de tokens.

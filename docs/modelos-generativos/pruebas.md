@@ -115,4 +115,10 @@ El plan del fundador no está escrito en ningún lado. El saldo (≈ 6.840) cuad
 
 Un reintento suma unos US$0,024 por Alta con el perfil en caché. Una cuenta vacía cuesta unos US$0,004.
 
-El fundador decide. El valor que fije se registra en la épica, §5 punto 2.
+**Decisión del fundador (2026-10-25): US$0,15 por Alta** (`QUALIFY_ALTA_PREFILL_MAX_USD=0.15`), en lugar de los US$0,10 propuestos. Deja margen para los borradores de la opción B1 en el primer ingreso y para TikTok. Quedó registrada en la [épica, §5 punto 2](../epica-prellenado-brand-kit-alta.md#5-decisiones-del-fundador-herwin-2026-10-24). La precarga sigue apagada hasta que exista el límite duro de tokens y de turnos.
+
+| Altas al mes | Si cada Alta llegara al tope fijado (US$0,15) |
+|---|---|
+| 10 | US$1,50 |
+| 50 | US$7,50 |
+| 100 | US$15,00 |
