@@ -72,7 +72,7 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 
 **Plan y paquete al dar de alta (m-24852131).** Al completar **Datos**, Qualify valida «Plan» y
 «Paquete» (un valor que no existe falla como un correo inválido: no se crea la invitación) y los
-guarda en la invitación (`signup_invites.alta_*`, migración 0096). Cuando `register_business`
+guarda en la invitación (`signup_invites.alta_*`, migración 0097). Cuando `register_business`
 crea el negocio los aplica con las mismas funciones del equipo (`just set-plan`, `just add-pack`:
 historial con quién —el usuario de Meegle que completó el nodo—, cuándo, Motivo e ítem), y el
 paquete vence 90 días después del registro. Idempotencia por evento de Meegle: las claves son

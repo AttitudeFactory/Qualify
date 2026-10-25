@@ -1,6 +1,6 @@
 """`db`-marked (m-24852131): the plan and pack of an «Alta de cliente» against Postgres.
 
-- 0096: `create_invite(alta_plan=…)` stores the choice; spending the invite stamps the
+- 0097: `create_invite(alta_plan=…)` stores the choice; spending the invite stamps the
   business it became (`registered_tenant_id`);
 - an Alta without plan: the business registers on Básico, no assignment, no pack;
 - an Alta with Plus + «+2 videos»: right after `register_business` the business is on Plus

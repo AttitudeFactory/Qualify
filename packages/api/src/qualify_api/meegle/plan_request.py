@@ -16,7 +16,7 @@ written (`InvalidPlanRequest`, with a message for the team in Spanish).
 When it applies — never on field edits (1009), which would burn the Free plan's webhooks:
 
 - **«Datos» completed** (new Alta): the choice is validated and stored on the invite
-  (`signup_invites.alta_*`, 0096), and applied by `apply_on_registration` right after
+  (`signup_invites.alta_*`, 0097), and applied by `apply_on_registration` right after
   `register_business` creates the business (there is no `tenant_id` before).
 - **«Plan ampliado» completed** (an Alta already registered): `OnboardingEngine.
   apply_plan_update` applies it at once; when the business has not registered yet, it

@@ -26,7 +26,7 @@ invites (`expire_invites_for_work_item`), and the signup that consumes it writes
 the item (`auth.service`). `send_invite_email` keeps the Resend email id
 (`resend_email_id`) so M2 can match delivery webhooks to the invite.
 
-Since m-24852131 (migration 0096) an Alta invite may also carry the plan and pack the
+Since m-24852131 (migration 0097) an Alta invite may also carry the plan and pack the
 team chose (`AltaPlanChoice`, applied by `meegle.plan_request` once the business exists),
 and spending an invite stamps the business it became (`registered_tenant_id`).
 """
@@ -211,7 +211,7 @@ def create_invite(
 
 
 def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
-    """The 0096 columns for `choice`; all NULL for an empty one (nothing asked)."""
+    """The 0097 columns for `choice`; all NULL for an empty one (nothing asked)."""
     if choice is None or choice.empty:
         return dict.fromkeys(
             (
@@ -333,7 +333,7 @@ def lock_invite(session: Session, invite_id: UUID, email: str) -> SignupInvite:
 
 def mark_invite_used(session: Session, invite: SignupInvite, tenant_id: UUID | None = None) -> None:
     """Spend a locked invite — called once the business really exists. `tenant_id` is
-    that business (0096): the «Plan ampliado» node of its Alta finds it through here."""
+    that business (0097): the «Plan ampliado» node of its Alta finds it through here."""
     invite.used_at = _now()
     if tenant_id is not None:
         invite.registered_tenant_id = tenant_id

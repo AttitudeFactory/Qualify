@@ -1,8 +1,8 @@
 """signup_invites: the plan and pack an «Alta de cliente» asked for, and the business it
 became (m-24852131)
 
-Revision ID: 0096
-Revises: 0095
+Revision ID: 0097
+Revises: 0096
 Create Date: 2026-10-26
 
 The Alta item in Meegle now carries «Plan» (Básico / Plus / Pro; empty = Básico),
@@ -35,8 +35,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-revision = "0096"
-down_revision = "0095"
+revision = "0097"
+down_revision = "0096"
 branch_labels = None
 depends_on = None
 
