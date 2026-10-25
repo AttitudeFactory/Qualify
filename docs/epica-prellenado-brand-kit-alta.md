@@ -628,6 +628,14 @@ revisión técnica no agregó ni quitó textos.
 | T27 | OL2-6 | Bajo «Continuar» (o «Terminar mi marca») apagado, con la respuesta vacía | Para seguir, escribe tu respuesta. |
 | T28 | OL2-6 | Aviso al tocar «Lo hago después» (lleva a la pantalla «Te faltan 3 cosas…») | Guardamos lo que llevas. Cuando vuelvas, sigues con lo que te falta. |
 
+**Aprobados por el fundador el 2026-10-26:** el título de la pantalla «te faltan» cuenta hacia
+atrás según las preguntas que siguen vacías; el contador «{n} de 3» (T17) de cada pregunta no cambia.
+
+| # | Historia | Dónde | Texto aprobado |
+|---|---|---|---|
+| T16b | OL2-6 | Pantalla «te faltan», con una pregunta respondida | Te faltan 2 cosas que solo tú sabes |
+| T16c | OL2-6 | Pantalla «te faltan», con dos preguntas respondidas (o las tres, falta terminar) | Te falta 1 cosa que solo tú sabes |
+
 Descartado por la decisión 1: «Lo escribimos con lo que dice tu perfil.» (sin publicaciones no hay
 borrador). Aplazados con TikTok (decisión 4): su aviso, «Tus últimos videos», «El más visto», «{n}
 reproducciones. De todos tus videos.», «{n} me gusta recibidos» y «Subes unos {n} videos por

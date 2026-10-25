@@ -31,6 +31,12 @@ from typing import Any
 
 #: T16 — the screen after «Aprobar».
 MISSING_TITLE = "Te faltan 3 cosas que solo tú sabes"
+#: T16b / T16c (approved 2026-10-26): the title counts down as questions get answered.
+MISSING_TITLES: dict[int, str] = {
+    3: MISSING_TITLE,
+    2: "Te faltan 2 cosas que solo tú sabes",
+    1: "Te falta 1 cosa que solo tú sabes",
+}
 ANSWER_NOW_LABEL = "Responder ahora"
 LATER_LABEL = "Lo hago después"
 #: PB-5's literal notice, on top of that screen.
@@ -93,6 +99,12 @@ QUESTIONS: tuple[tuple[str, str, str], ...] = (
 QUESTION_KEYS: tuple[str, ...] = tuple(key for key, _q, _i in QUESTIONS)
 TOTAL_QUESTIONS = len(QUESTIONS)
 SCREENS: tuple[str, ...] = (SCREEN_MISSING, *QUESTION_KEYS, SCREEN_READY)
+
+
+def missing_title(left: int) -> str:
+    """T16 / T16b / T16c by how many questions are still empty (clamped to 1..3: with
+    the three answered, finishing is the one thing left)."""
+    return MISSING_TITLES[max(1, min(left, TOTAL_QUESTIONS))]
 
 
 def counter(key: str) -> str:

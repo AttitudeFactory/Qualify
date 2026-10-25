@@ -64,6 +64,9 @@ class BrandAnswersState(rx.State):
     drafts: dict[str, str] = {}
     #: «Tus etiquetas (hecho)» only when the approval brought tags.
     has_tags: bool = False
+    #: Which of the three questions hold an answer — refreshed whenever the checklist
+    #: can come on screen (entry, «Atrás» from the first question, «Lo hago después»).
+    answered: list[bool] = [False, False, False]
     #: «Corregir» on a draft: the field opens with the draft, in `correction` until the
     #: owner moves on (only then it becomes their answer).
     correcting: bool = False
@@ -75,6 +78,11 @@ class BrandAnswersState(rx.State):
     def counter_text(self) -> str:
         """T17 — «{n} de 3»."""
         return vm.counter(self.step)
+
+    @rx.var
+    def missing_title(self) -> str:
+        """T16 / T16b / T16c: «Te faltan {n}…» counts down (founder, 2026-10-26)."""
+        return vm.missing_title(sum(1 for done in self.answered if not done))
 
     @rx.var
     def current_hint(self) -> str:
@@ -107,6 +115,7 @@ class BrandAnswersState(rx.State):
         self.hints = dict(hints) if active else {}
         self.drafts = dict(drafts) if active else {}
         self.has_tags = has_tags and active
+        self.answered = list(answers.answered())
         self._clear_screen()
 
     def _clear_screen(self) -> None:
@@ -131,6 +140,15 @@ class BrandAnswersState(rx.State):
                 creative.kit_do_examples, minimal.phrase, value
             )
             minimal.phrase = value
+
+    async def _refresh_answered(self) -> None:
+        """`answered` from the wizard's states (caller holds the lock)."""
+        from .brand_minimal import BrandMinimalState
+
+        creative = await self.get_state(CreativeState)
+        minimal = await self.get_state(BrandMinimalState)
+        answers = vm.Answers(creative.kit_positioning, creative.kit_audience, minimal.phrase)
+        self.answered = list(answers.answered())
 
     async def _commit_correction(self) -> None:
         """After «Corregir», what the owner left in the field is their answer."""
@@ -162,6 +180,7 @@ class BrandAnswersState(rx.State):
         """Atrás: the screen before, with everything written kept."""
         await self._commit_correction()
         self.step = vm.previous_screen(self.step)
+        await self._refresh_answered()
 
     @rx.event
     async def confirm_draft(self) -> None:
@@ -218,6 +237,7 @@ class BrandAnswersState(rx.State):
             return
         async with self:
             self.step = vm.SCREEN_MISSING
+            await self._refresh_answered()
         yield brand_documents.notify(vm.SAVED_FOR_LATER, "ok")
 
     @rx.event(background=True)
@@ -691,7 +711,7 @@ def answers_header() -> rx.Component:
     in_question = BrandAnswersState.counter_text != ""
     title = rx.match(
         BrandAnswersState.step,
-        (vm.SCREEN_MISSING, vm.MISSING_TITLE),
+        (vm.SCREEN_MISSING, BrandAnswersState.missing_title),
         *((key, question) for key, question, _item in vm.QUESTIONS),
         (vm.SCREEN_READY, vm.READY_TITLE),
         vm.MISSING_TITLE,

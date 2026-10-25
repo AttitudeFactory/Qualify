@@ -523,3 +523,36 @@ def test_the_ready_screen_has_no_check_over_the_picture() -> None:
     rendered = str(brand_answers._ready_view())
     assert "circle-check" not in rendered.lower() and "circle_check" not in rendered.lower()
     assert _js(vm.READY_BODY) in rendered
+
+
+# -- founder, 2026-10-26: the title counts down (T16, T16b, T16c) ------------------------
+
+
+def test_the_missing_title_counts_down() -> None:
+    assert vm.missing_title(3) == "Te faltan 3 cosas que solo tú sabes"  # T16
+    assert vm.missing_title(2) == "Te faltan 2 cosas que solo tú sabes"  # T16b
+    assert vm.missing_title(1) == "Te falta 1 cosa que solo tú sabes"  # T16c
+
+
+async def test_the_checklist_title_follows_the_answers(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from . import brand_finish
+
+    async def save_progress(_state: Any, _flow: str) -> None:
+        return None
+
+    monkeypatch.setattr(brand_finish, "save_progress", save_progress)
+    state = _on_path(states)
+    assert state.missing_title == vm.MISSING_TITLE  # n=3
+    await BrandAnswersState.answer_now.fn(state)
+    states(CreativeState).kit_positioning = "Sin azúcar añadida"
+    await BrandAnswersState.prev_step.fn(state)  # back to the checklist
+    assert state.missing_title == "Te faltan 2 cosas que solo tú sabes"
+    await BrandAnswersState.answer_now.fn(state)
+    states(CreativeState).kit_audience = "Familias"
+    _ = [e async for e in BrandAnswersState.save_for_later.fn(state)]
+    assert state.step == vm.SCREEN_MISSING
+    assert state.missing_title == "Te falta 1 cosa que solo tú sabes"
+    state.step = vm.Q_DISTINCT
+    assert state.counter_text == "1 de 3"  # T17 stays fixed
