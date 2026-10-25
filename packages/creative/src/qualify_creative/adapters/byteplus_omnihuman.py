@@ -18,8 +18,20 @@ and its activation asks for a verified business. Read from the official docs on
 - **Answers** — `code` 10000 is success (anything else: ignore `data`); the result's
   `data.resp_data` is a JSON STRING holding `video_url`, valid ONE hour — the producer
   copies the file to R2 at once.
-- **Slow** — the docs' own figure is ~11-13 min of render per 30 s of video at 1.5, so
-  the poll window is long and the task id is kept on a timeout for a later recovery.
+- **States** (`get_result` → `data.status`): `in_queue` → `generating` → `done`; a task
+  ends `not_found` / `expired` (and, defensively, `canceled` / `failed`) without a video.
+- **Slow** — the docs' own figure is ~11-13 min of render per 30 s of video at 1.5.
+
+**Never lose a billed render (m-24852495 — the Seedance fix of m-24852154, applied here).**
+`request.observer` hears the task id the moment `submit_task` answers 2xx, before the
+first poll, so the caller keeps it by id. The render window (`poll_timeout_seconds`, 40
+min) counts from the first `generating` answer; while the task is still `in_queue` the
+adapter waits up to `queue_timeout_seconds` instead — OmniHuman runs one task at a time
+per account, so a queue is normal and must not use the render window up. Past either
+window (or when OmniHuman stops answering) it raises `OmniHumanTimeout` carrying the id,
+and a later run passes `params[RESUME_TASK_PARAM]` to wait for THAT task: a task with an
+id is never submitted again. A resume is priced at zero by the pre-flight — it orders
+nothing; the render is recorded at its real price when it lands.
 
 httpx is imported lazily (the `video` extra).
 """
@@ -27,13 +39,22 @@ httpx is imported lazily (the `video` extra).
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 from typing import Any
 
 from qualify_creative.enums import GenerationTask
-from qualify_creative.providers import GenerationRequest, GenerationResult, PricingTable, Usage
+from qualify_creative.providers import (
+    GenerationRequest,
+    GenerationResult,
+    PricingTable,
+    Usage,
+    VendorTaskObserver,
+)
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://openapi.cv.bytepluses.com"
 API_KEY_ENV = "QUALIFY_BYTEPLUS_CV_API_KEY"
@@ -50,8 +71,24 @@ SUCCESS = 10_000
 MEDIA_URL_TTL_SECONDS = 3600
 DEFAULT_POLL_INTERVAL_SECONDS = 10.0
 #: ~12 min per 30 s of video at 1.5 (official RTF 23-27), so 60 s of audio is ~25 min.
+#: The render window, counted from the first `generating` answer (m-24852495).
 DEFAULT_POLL_TIMEOUT_SECONDS = 40 * 60.0
-_FAILED = frozenset({"not_found", "expired", "canceled"})
+#: How long this thread keeps waiting while the task is still `in_queue` (concurrency 1
+#: per account: a second presenter waits for the first). Past it the adapter raises
+#: `OmniHumanTimeout` and the caller resumes the task by id later.
+DEFAULT_QUEUE_TIMEOUT_SECONDS = 60 * 60.0
+#: `params[RESUME_TASK_PARAM]`: the id of a task this generation already submitted — the
+#: adapter waits for it instead of submitting another (the same key as Seedance's).
+RESUME_TASK_PARAM = "resume_task_id"
+#: Consecutive polls that say nothing about the task (a dropped connection, a 5xx / 429)
+#: before the wait stops — as a TIMEOUT, so the id is kept and the render recovered.
+MAX_CONSECUTIVE_POLL_ERRORS = 3
+#: A refused key or access (the docs' 50400 / 50401): about the account, not the task.
+ACCESS_ERROR_CODES = frozenset({50400, 50401})
+QUEUED = "in_queue"
+GENERATING = "generating"
+DONE = "done"
+_FAILED = frozenset({"not_found", "expired", "canceled", "cancelled", "failed"})
 
 
 class OmniHumanError(Exception):
@@ -65,8 +102,21 @@ class OmniHumanError(Exception):
 
 
 class OmniHumanTimeout(OmniHumanError):
-    """The window closed before the render finished. It keeps running — and is billed if
-    it succeeds — so the task id travels for a recovery."""
+    """This thread stopped waiting before the render finished — still `in_queue` past
+    `queue_timeout_seconds`, `generating` past the render window, or OmniHuman not
+    answering. It keeps running — and is billed if it succeeds — so the task id travels
+    for a recovery (`RESUME_TASK_PARAM`)."""
+
+
+class OmniHumanTaskFailed(OmniHumanError):
+    """OmniHuman ended the task without a video (`not_found`, `expired`, `canceled`, or
+    an error code on the task's own result): nothing was rendered, nothing is billed."""
+
+    def __init__(
+        self, message: str, *, task_id: str, status: str = "", code: int | None = None
+    ) -> None:
+        super().__init__(message, code=code, task_id=task_id)
+        self.status = status
 
 
 def omnihuman_cost_usd(
@@ -83,7 +133,11 @@ class OmniHumanVideoAdapter:
     ``request.params``: ``image_url`` and ``audio_url`` (public ``https`` URLs — the
     producer serves them through a public-media token), ``prompt`` (gestures, camera,
     emotion; optional), ``resolution`` (720 | 1080), ``audio_seconds`` (the voice
-    track's length: what the render is billed on), ``seed`` (optional)."""
+    track's length: what the render is billed on), ``seed`` (optional);
+    ``resume_task_id`` (m-24852495) instead of submitting: wait for that task.
+
+    ``request.observer`` hears the new task's id as soon as OmniHuman accepts it, and
+    every poll answer (`VendorTaskObserver`)."""
 
     name = "omnihuman"
     supports = frozenset({GenerationTask.AVATAR_VIDEO})
@@ -96,6 +150,7 @@ class OmniHumanVideoAdapter:
         transport: Any = None,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         poll_timeout_seconds: float = DEFAULT_POLL_TIMEOUT_SECONDS,
+        queue_timeout_seconds: float = DEFAULT_QUEUE_TIMEOUT_SECONDS,
         request_timeout_seconds: float = 60.0,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -107,6 +162,7 @@ class OmniHumanVideoAdapter:
         self._transport = transport
         self._poll_interval = poll_interval_seconds
         self._poll_timeout = poll_timeout_seconds
+        self._queue_timeout = queue_timeout_seconds
         self._timeout = request_timeout_seconds
         self._sleep = sleep
         self._monotonic = monotonic
@@ -175,15 +231,23 @@ class OmniHumanVideoAdapter:
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
         params = request.params
         seconds = Decimal(str(params.get("audio_seconds") or 0))
-        if seconds and float(seconds) > self.max_audio_seconds:
+        resume_id = _resume_id(params)
+        if not resume_id and seconds and float(seconds) > self.max_audio_seconds:
             raise ValueError(f"OmniHuman takes at most {self.max_audio_seconds:.0f} s of audio")
         submit, result = self._paths()
+        observer = request.observer
         with self._client(api_key) as client:
-            data = self._data(client.post(submit, json=self._submit_body(params)))
-            task_id = str(data.get("task_id") or "")
-            if not task_id:
-                raise OmniHumanError("OmniHuman returned no task id")
-            video_url = self._wait(client, result, task_id)
+            if resume_id:
+                # m-24852495: a task this generation already submitted (and is billed for
+                # when it ends) — waited for, never submitted again
+                task_id = resume_id
+            else:
+                data = self._data(client.post(submit, json=self._submit_body(params)))
+                task_id = str(data.get("task_id") or "")
+                if not task_id:
+                    raise OmniHumanError("OmniHuman returned no task id")
+                _tell(observer, "created", task_id)
+            video_url = self._wait(client, result, task_id, observer)
         resolution = self._resolution(params)
         return GenerationResult(
             payload={
@@ -201,47 +265,99 @@ class OmniHumanVideoAdapter:
             media_expires_at_seconds=MEDIA_URL_TTL_SECONDS,
         )
 
-    def _wait(self, client: Any, path: str, task_id: str) -> str:
+    def get_task(self, task_id: str, *, api_key: str) -> Mapping[str, Any]:
+        """One task's current `data` (`status`, `resp_data`…) — a read for the recovery
+        pass (m-24852495): nothing is submitted or billed. Raises `OmniHumanError` when
+        OmniHuman answers an error code."""
+        _, result = self._paths()
+        with self._client(api_key) as client:
+            return self._data(
+                client.post(result, json={"req_key": self.req_key, "task_id": task_id}), task_id
+            )
+
+    def _wait(
+        self,
+        client: Any,
+        path: str,
+        task_id: str,
+        observer: VendorTaskObserver | None = None,
+    ) -> str:
+        """Poll until the task ends. Two windows (m-24852495): while it is `in_queue` (or
+        the answer says nothing) up to `queue_timeout_seconds` since the wait began; once
+        it answers `generating`, the render window counts from THAT answer."""
         import httpx  # lazy, already loaded by _client
 
         started = self._monotonic()
+        generating_since: float | None = None
+        status = ""
         errors = 0
         while True:
+            data: Mapping[str, Any] | None = None
             try:
-                data = self._data(
-                    client.post(path, json={"req_key": self.req_key, "task_id": task_id}), task_id
-                )
-                errors = 0
+                response = client.post(path, json={"req_key": self.req_key, "task_id": task_id})
             except httpx.TransportError:
+                response = None
+            if not says_about_task(response):
+                # OmniHuman said nothing about the task (no answer, a 5xx / 429, a key
+                # refused): ask again; past a few in a row, stop waiting WITHOUT failing
+                # it — the render may well go on, and is recovered by id later
                 errors += 1
-                if errors >= 3:
-                    raise
-                data = {}
-            status = str(data.get("status") or "")
-            if status == "done":
-                raw = data.get("resp_data")
-                parsed: Any = raw
-                if isinstance(raw, str):
-                    try:
-                        parsed = json.loads(raw)
-                    except ValueError:
-                        parsed = {}
-                url = parsed.get("video_url") if isinstance(parsed, dict) else None
-                if not url:
-                    raise OmniHumanError("OmniHuman finished without a video_url", task_id=task_id)
-                return str(url)
-            if status in _FAILED:
-                raise OmniHumanError(f"OmniHuman task {task_id} {status}", task_id=task_id)
-            waited = self._monotonic() - started
-            if waited + self._poll_interval > self._poll_timeout:
+                if errors >= MAX_CONSECUTIVE_POLL_ERRORS:
+                    raise OmniHumanTimeout(
+                        f"OmniHuman task {task_id} unreachable after {errors} polls",
+                        task_id=task_id,
+                    )
+            else:
+                errors = 0
+                try:
+                    data = self._data(response, task_id)
+                except OmniHumanError as exc:
+                    # an error code on the task's own result: OmniHuman refused it
+                    raise OmniHumanTaskFailed(str(exc), task_id=task_id, code=exc.code) from exc
+
+            if data is not None:
+                status = str(data.get("status") or "")
+                _tell(observer, "polled", task_id, status)
+                if status == GENERATING and generating_since is None:
+                    generating_since = self._monotonic()
+                if status == DONE:
+                    url = _video_url(data.get("resp_data"))
+                    if not url:
+                        raise OmniHumanTaskFailed(
+                            f"OmniHuman task {task_id} finished without a video_url",
+                            task_id=task_id,
+                            status=status,
+                        )
+                    return url
+                if status in _FAILED:
+                    raise OmniHumanTaskFailed(
+                        f"OmniHuman task {task_id} {status}", task_id=task_id, status=status
+                    )
+
+            now = self._monotonic()
+            if generating_since is not None:
+                if now - generating_since + self._poll_interval > self._poll_timeout:
+                    raise OmniHumanTimeout(
+                        f"OmniHuman task {task_id} still generating after "
+                        f"{now - generating_since:.0f}s",
+                        task_id=task_id,
+                    )
+            elif now - started + self._poll_interval > self._queue_timeout:
                 raise OmniHumanTimeout(
-                    f"OmniHuman task {task_id} still rendering after {waited:.0f}s", task_id=task_id
+                    f"OmniHuman task {task_id} still {status or QUEUED} after {now - started:.0f}s",
+                    task_id=task_id,
                 )
             self._sleep(self._poll_interval)
 
     def estimate_cost_usd(
         self, request: GenerationRequest, pricing: PricingTable, *, api_key: str | None = None
     ) -> Decimal:
+        """The render's price at the voice track's length (the cap when unknown). Zero
+        for a resume (m-24852495): it orders nothing — the render already ordered is
+        recorded at its real price when it lands, and a budget block here would lose a
+        video BytePlus bills anyway."""
+        if _resume_id(request.params):
+            return Decimal(0)
         seconds = Decimal(str(request.params.get("audio_seconds") or self.max_audio_seconds))
         return omnihuman_cost_usd(pricing, self.req_key, self._resolution(request.params), seconds)
 
@@ -250,3 +366,45 @@ class OmniHumanVideoAdapter:
         if self.req_key == OMNIHUMAN_20:
             return 720
         return 1080 if int(params.get("resolution") or 720) >= 1080 else 720
+
+
+def says_about_task(response: Any) -> bool:
+    """Whether a `get_result` answer speaks about the task itself — a 200 that is not a
+    refused key. No answer, a 4xx/5xx/429 or an access error (50400/50401) says nothing:
+    the render may still be going on (m-24852495), so it never fails the task."""
+    if response is None or response.status_code != 200:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    code = body.get("code") if isinstance(body, dict) else None
+    return code not in ACCESS_ERROR_CODES
+
+
+def _resume_id(params: Mapping[str, object]) -> str:
+    resume = params.get(RESUME_TASK_PARAM)
+    return resume.strip() if isinstance(resume, str) else ""
+
+
+def _video_url(raw: Any) -> str | None:
+    """`resp_data` is a JSON string holding `video_url` (a dict is taken as is)."""
+    parsed: Any = raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return None
+    url = parsed.get("video_url") if isinstance(parsed, dict) else None
+    return str(url) if url else None
+
+
+def _tell(observer: VendorTaskObserver | None, event: str, *args: str) -> None:
+    """Tell the observer, never letting it break the task (a sign of life and a
+    bookmark — the wait goes on without them)."""
+    if observer is None:
+        return
+    try:
+        getattr(observer, event)(*args)
+    except Exception:  # noqa: BLE001
+        logger.warning("vendor task observer failed on %s", event, exc_info=True)

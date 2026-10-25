@@ -192,7 +192,12 @@ def our_tasks(tenant_ids: Iterable[UUID], *, since: datetime) -> list[OurTask]:
     for tenant_id in tenant_ids:
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
-                select(CreativeVendorTask).where(CreativeVendorTask.created_at >= since)
+                select(CreativeVendorTask).where(
+                    CreativeVendorTask.created_at >= since,
+                    # ModelArk's list only holds Seedance: an OmniHuman render
+                    # (m-24852495, BytePlus Vision AI) would read «ours only»
+                    CreativeVendorTask.provider != "omnihuman",
+                )
             ).all()
             found.extend(
                 OurTask(

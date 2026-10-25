@@ -132,6 +132,9 @@ Anotado el 2026-10-09 tras verificarlo (sin cambios de código todavía).
 2. **Seedream compone al presentador** (descrito, o la imagen del operador) con los productos y el fondo → `presenter.jpg`.
 3. **Seed Speech lee el guion exacto** con esa voz → `voice.mp3` (TTS 1.0 para las voces públicas, Voice Replication 2.0 para la clonada). La primera síntesis con la voz clonada la «activa» (`activated_at`): BytePlus cobra ahí los USD 2 del slot y la voz ya no se puede reentrenar.
 4. **OmniHuman hace hablar al presentador**, labios sincronizados (1.5 por defecto, audio < 60 s; 2.0 con `QUALIFY_OMNIHUMAN_REQ_KEY`). Foto y voz le llegan como **URL públicas con token** (no acepta Base64); el video que devuelve vive una hora, así que se copia en el acto → `video.mp4`.
+   Desde m-24852495 el `task_id` se guarda al enviarlo, la espera cuenta desde `generating` y un
+   render que tarda más que la espera se recupera por id sin volver a pagar foto, voz ni render
+   (detalle en [Recuperar videos sin pantalla](recuperar-videos-sin-pantalla.md)).
 
 Costos que se registran (`pricing_data/v5.json`): Seedream USD 0.035 por imagen, Seed Speech USD 30 por millón de caracteres, OmniHuman 1.5 USD 0.12 por segundo de voz (2.0: 0.07, pendiente de la primera factura). Un video de 20 s ≈ USD 2.45.
 

@@ -81,6 +81,9 @@ from qualify_creative.adapters.byteplus_omnihuman import (
     DEFAULT_REQ_KEY as DEFAULT_OMNIHUMAN_REQ_KEY,
 )
 from qualify_creative.adapters.byteplus_omnihuman import MODEL_IDS, omnihuman_cost_usd
+from qualify_creative.adapters.byteplus_omnihuman import (
+    RESUME_TASK_PARAM as OMNIHUMAN_RESUME_PARAM,
+)
 from qualify_creative.adapters.byteplus_speech import VOICE_SLOT_MODEL, speech_cost_usd
 from qualify_creative.compose import (
     FlyerText,
@@ -684,8 +687,10 @@ MODEL_NOT_OPEN_TEXT = (
 )
 FILTERED_TEXT = "La pieza no pasó el filtro de contenido. Cambia la descripción o las fotos."
 REAL_PERSON_TEXT = "No podemos usar fotos de personas reales como referencia. Usa otra foto."
-#: OmniHuman's wait ran out (its recovery is a later phase, m-24852154 out of scope):
-#: the piece failed and says so, without promising it will show up later.
+#: OmniHuman's wait ran out where no vendor-task store is wired (scripts, tests) — with
+#: one (production) the piece stays in progress and is resumed by id (m-24852495) — or
+#: OmniHuman itself expired the task: the piece failed and says so, without promising it
+#: will show up later.
 PRESENTER_SLOW_TEXT = (
     "El video con presentador tardó demasiado y no se pudo terminar. Inténtalo de nuevo "
     "en unos minutos."
@@ -1017,22 +1022,45 @@ def _http_download(url: str) -> bytes:
 
 
 class _MediaPending(Exception):
-    """A Seedance task outlived the wait (`ArkTaskTimeout`, m-24852154): its id was
-    recorded when ModelArk accepted it, and the run stops here without failing — the
-    piece stays in progress and a later run resumes the task."""
+    """A vendor task outlived the wait (Seedance's `ArkTaskTimeout`, m-24852154;
+    OmniHuman's `OmniHumanTimeout`, m-24852495): its id was recorded when the vendor
+    accepted it, and the run stops here without failing — the piece stays in progress
+    and a later run resumes the task."""
+
+
+#: The vendors whose tasks a run keeps by id and resumes (`_TaskRun`).
+_RESUMABLE_LINKS = frozenset({SEEDANCE, OMNIHUMAN})
+#: The key, in an OmniHuman task's `context`, of what its render was made from (the
+#: presenter photo and voice R2 keys, the voice's length and provenance — m-24852495).
+PRESENTER_CONTEXT = "presenter"
+
+
+def _voice_provenance(voice: ResolvedVoice) -> dict[str, Any]:
+    """Which voice read the script — never another brand's id."""
+    return {
+        "voice": "brand" if voice.brand_clone else "public",
+        "voice_id": None if voice.brand_clone else voice.speaker,
+        "voice_resource": voice.resource_id,
+    }
 
 
 @dataclass
 class _TaskRun:
     """This thread's vendor-task binding for one `produce`/`finalize` run, and how many
-    Seedance tasks it has asked for so far (the slot of the next one)."""
+    tasks of each resumable vendor it has asked for so far (the slot of the next one:
+    `seedance-N`, `omnihuman-N`)."""
 
     tasks: VendorTaskBinding
-    calls: int = 0
+    calls: dict[str, int] = field(default_factory=dict)
 
-    def next_slot(self) -> str:
-        self.calls += 1
-        return f"{SEEDANCE}-{self.calls}"
+    def peek_slot(self, link: str = SEEDANCE) -> str:
+        """The slot the next call of `link` will take, without taking it."""
+        return f"{link}-{self.calls.get(link, 0) + 1}"
+
+    def next_slot(self, link: str = SEEDANCE) -> str:
+        slot = self.peek_slot(link)
+        self.calls[link] = self.calls.get(link, 0) + 1
+        return slot
 
 
 #: Set by `produce`/`finalize` for the length of one run, in its own thread (the
@@ -1044,15 +1072,16 @@ _TASK_RUN: contextvars.ContextVar[_TaskRun | None] = contextvars.ContextVar(
 
 
 def _task_verdict(hops: Sequence[Any], *, succeeded: bool) -> str:
-    """What a Seedance call says about its task: "succeeded", "failed" (ModelArk ended
-    it `failed`/`cancelled`/`expired`, or no longer knows it), "pending" (the wait ran
-    out — the task goes on), or "" (nothing about the task: a key, a budget block…)."""
+    """What a Seedance or OmniHuman call says about its task: "succeeded", "failed"
+    (the vendor ended it `failed`/`cancelled`/`expired`/`not_found`, or no longer knows
+    it), "pending" (the wait ran out — the task goes on), or "" (nothing about the task:
+    a key, a budget block…)."""
     if succeeded:
         return "succeeded"
     reasons = [str(getattr(h, "reason", "") or "") for h in hops]
-    if any("ArkTaskTimeout" in r for r in reasons):
+    if any("ArkTaskTimeout" in r or "OmniHumanTimeout" in r for r in reasons):
         return "pending"
-    if any("ArkTaskFailed" in r or "HTTP 404" in r for r in reasons):
+    if any("ArkTaskFailed" in r or "OmniHumanTaskFailed" in r or "HTTP 404" in r for r in reasons):
         return "failed"
     return ""
 
@@ -1903,20 +1932,34 @@ class MediaProducer:
         """Wait for tasks a generation already created — `(slot, task id, model)` — before
         its resumed run rebuilds the piece (m-24852154): nothing is paid again while
         they are still in BytePlus's queue. Returns ("pending" | "done", the verdict
-        per slot: "succeeded" / "failed"). One task still waiting → "pending" at once."""
+        per slot: "succeeded" / "failed"). One task still waiting → "pending" at once.
+        The slot names the vendor (m-24852495): `omnihuman-N` is waited for through
+        OmniHuman, anything else through Seedance."""
         verdicts: dict[str, str] = {}
         for slot, task_id, model in tasks:
-            request = GenerationRequest(
-                task=GenerationTask.SCENE_VIDEO,
-                rendered_prompt=RenderedPrompt("", "", ""),
-                # the prompt only lets the estimate parse; nothing is created
-                params={"model": model, "prompt": "resume", RESUME_TASK_PARAM: task_id},
-                observer=on_task(slot) if on_task is not None else None,
-            )
+            observer = on_task(slot) if on_task is not None else None
+            if slot.startswith(f"{OMNIHUMAN}-"):
+                link = OMNIHUMAN
+                # a resume orders nothing: the adapter prices it at zero
+                request = GenerationRequest(
+                    task=GenerationTask.AVATAR_VIDEO,
+                    rendered_prompt=RenderedPrompt("", "", ""),
+                    params={OMNIHUMAN_RESUME_PARAM: task_id},
+                    observer=observer,
+                )
+            else:
+                link = SEEDANCE
+                request = GenerationRequest(
+                    task=GenerationTask.SCENE_VIDEO,
+                    rendered_prompt=RenderedPrompt("", "", ""),
+                    # the prompt only lets the estimate parse; nothing is created
+                    params={"model": model, "prompt": "resume", RESUME_TASK_PARAM: task_id},
+                    observer=observer,
+                )
             outcome = self._router.run(
                 tenant_id=tenant_id,
                 brand_id=brand_id,
-                chain=(SEEDANCE,),
+                chain=(link,),
                 request=request,
                 budget=budget,
             )
@@ -1940,25 +1983,34 @@ class MediaProducer:
         budget: BudgetContext,
         usage: list[MediaUsage],
         failure_text: Callable[[str], str] | None = None,
+        task_context: Mapping[str, Any] | None = None,
     ) -> Any:
         """One vendor call through the router (key + budget pre-flight); the failure in
         the operator's words (`failure_text`, ModelArk's by default).
 
-        A Seedance call inside a run with vendor tasks (m-24852154) takes its slot: the
-        task this generation already created for it is resumed, never created again; a
-        new one is recorded the moment ModelArk accepts it; one that outlives the wait
-        raises `_MediaPending`, and the vendor's own verdict settles the slot."""
-        run = _TASK_RUN.get() if link == SEEDANCE else None
-        slot = run.next_slot() if run is not None else ""
+        A Seedance or OmniHuman call inside a run with vendor tasks (m-24852154,
+        m-24852495) takes its slot: the task this generation already created for it is
+        resumed, never created again; a new one is recorded the moment the vendor
+        accepts it (with `task_context`, what a resumed run needs to rebuild the piece
+        without paying its earlier steps again); one that outlives the wait raises
+        `_MediaPending`, and the vendor's own verdict settles the slot."""
+        run = _TASK_RUN.get() if link in _RESUMABLE_LINKS else None
+        slot = run.next_slot(link) if run is not None else ""
         if run is not None:
             params = dict(request.params)
             resume = run.tasks.resume_id(slot)
             if resume:
-                params[RESUME_TASK_PARAM] = resume
-            model = str(params.get("model") or self._seedance_model)
-            request = replace(
-                request, params=params, observer=run.tasks.observer(slot, SEEDANCE, model)
+                params[OMNIHUMAN_RESUME_PARAM if link == OMNIHUMAN else RESUME_TASK_PARAM] = resume
+            if link == OMNIHUMAN:
+                model = MODEL_IDS.get(self._omnihuman_req_key, self._omnihuman_req_key)
+            else:
+                model = str(params.get("model") or self._seedance_model)
+            observer = (
+                run.tasks.observer(slot, link, model, context=task_context)
+                if task_context
+                else run.tasks.observer(slot, link, model)
             )
+            request = replace(request, params=params, observer=observer)
         outcome = self._router.run(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -3444,7 +3496,17 @@ class MediaProducer:
         voice — the brand's own clone or a public one, resolved HERE, never taken from
         the browser — and OmniHuman makes the presenter say it, lips in sync. The photo
         and the voice reach OmniHuman as public-media token URLs (it takes no Base64);
-        its result URL lives one hour, so the video is copied at once."""
+        its result URL lives one hour, so the video is copied at once.
+
+        m-24852495: the render is kept by id the moment OmniHuman accepts it; one that
+        outlives the wait leaves the piece in progress (`_MediaPending`), and the run that
+        resumes it lands the same render without paying the presenter or the voice
+        again (`_omnihuman_resumed`)."""
+        kept = self._resumed_presenter()
+        if kept is not None:
+            return self._omnihuman_resumed(
+                tenant_id, draft_id, brief, copy, budget, usage, save, style, warnings, kept
+            )
         # before anything is paid for: OmniHuman fetches the photo and the voice from a
         # public URL, so without one every step after this would be money lost
         if not _links_ready(self._reference_links):
@@ -3583,13 +3645,137 @@ class MediaProducer:
                 AVATAR_NO_PUBLIC_URL,
                 raw=f"{type(exc).__name__}: {exc}",
             ) from exc
-        motion = motion_prompt(brief=brief, products=len(products))
+        provenance = _voice_provenance(voice)
+        return self._omnihuman_render(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brief=brief,
+            budget=budget,
+            usage=usage,
+            save=save,
+            style=style,
+            warnings=warnings,
+            script=script,
+            audio=audio,
+            seconds=seconds,
+            frame_key=frame_key,
+            voice_key=voice_key,
+            voice_provenance=provenance,
+            params={
+                "image_url": image_url,
+                "audio_url": audio_url,
+                "prompt": motion_prompt(brief=brief, products=len(products)),
+            },
+            # m-24852495: what a resumed run needs to land this render without paying
+            # the presenter and the voice again — kept with the task's id
+            task_context={
+                PRESENTER_CONTEXT: {
+                    "frame_key": frame_key,
+                    "voice_key": voice_key,
+                    "seconds": round(seconds, 2),
+                    **provenance,
+                }
+            },
+        )
+
+    def _resumed_presenter(self) -> Mapping[str, Any] | None:
+        """m-24852495: what the earlier run of this generation kept with its OmniHuman
+        task (`PRESENTER_CONTEXT`) when that task is the one this run resumes; None for
+        a run that orders a new render."""
+        run = _TASK_RUN.get()
+        if run is None:
+            return None
+        slot = run.peek_slot(OMNIHUMAN)
+        if not run.tasks.resume_id(slot):
+            return None
+        context_of = getattr(run.tasks, "resume_context", None)
+        context = context_of(slot) if callable(context_of) else None
+        kept = context.get(PRESENTER_CONTEXT) if isinstance(context, Mapping) else None
+        if not isinstance(kept, Mapping):
+            return None
+        if not kept.get("frame_key") or not kept.get("voice_key") or not kept.get("seconds"):
+            return None
+        return kept
+
+    def _omnihuman_resumed(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        copy: CopyPayload,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+        style: TextStyle,
+        warnings: list[MediaWarning],
+        kept: Mapping[str, Any],
+    ) -> list[MediaWrite]:
+        """The presenter whose render outlived an earlier run (m-24852495): the photo and
+        the voice that render was made from are already in R2 and paid for — nothing is
+        composed, read aloud or ordered again; the task is waited for by id."""
+        media = brief.media
+        script = (
+            media.own_script.strip() or copy.script or f"{copy.hook} {copy.caption} {copy.cta}"
+        ).strip()
+        if len(script) > SCRIPT_MAX:
+            script = fit_text(script, SCRIPT_MAX)
+        voice_key = str(kept["voice_key"])
+        # the voice track is read back only to time the subtitles (no vendor call)
+        audio = self._store.read(voice_key) if media.subtitles else b""
+        return self._omnihuman_render(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brief=brief,
+            budget=budget,
+            usage=usage,
+            save=save,
+            style=style,
+            warnings=warnings,
+            script=script,
+            audio=audio,
+            seconds=float(kept["seconds"]),
+            frame_key=str(kept["frame_key"]),
+            voice_key=voice_key,
+            voice_provenance={
+                "voice": kept.get("voice"),
+                "voice_id": kept.get("voice_id"),
+                "voice_resource": kept.get("voice_resource"),
+            },
+            params={},
+            task_context=None,
+        )
+
+    def _omnihuman_render(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+        style: TextStyle,
+        warnings: list[MediaWarning],
+        script: str,
+        audio: bytes,
+        seconds: float,
+        frame_key: str,
+        voice_key: str,
+        voice_provenance: Mapping[str, Any],
+        params: Mapping[str, Any],
+        task_context: Mapping[str, Any] | None,
+    ) -> list[MediaWrite]:
+        """The talking video by OmniHuman — a new render (`params` carries the public
+        photo and voice URLs and the gestures) or the one an earlier run ordered (empty
+        `params`: `_run` resumes the task of the slot) — copied to R2 at once."""
+        media = brief.media
+        ratio = SEEDANCE_RATIOS[brief.format]
         trace.media_request(
             draft_id=draft_id,
             provider="OmniHuman",
             what="video con avatar",
             fields={
-                "prompt de gestos": motion,
+                "prompt de gestos": str(params.get("prompt") or "(render ya pedido)"),
                 "duración de la voz": f"{seconds:.1f} s",
                 "resolución": f"{self._omnihuman_resolution}p",
             },
@@ -3604,9 +3790,7 @@ class MediaProducer:
                     task=GenerationTask.AVATAR_VIDEO,
                     rendered_prompt=RenderedPrompt("", "", ""),
                     params={
-                        "image_url": image_url,
-                        "audio_url": audio_url,
-                        "prompt": motion,
+                        **params,
                         "resolution": self._omnihuman_resolution,
                         "audio_seconds": round(seconds, 2),
                     },
@@ -3614,6 +3798,7 @@ class MediaProducer:
                 budget=budget,
                 usage=usage,
                 failure_text=avatar_failure_text,
+                task_context=task_context,
             )
         except _MediaFailed as exc:
             if "OmniHumanTimeout" in (exc.raw or ""):
@@ -3678,9 +3863,7 @@ class MediaProducer:
                     "resolution": payload.get("resolution"),
                     "avatar_source": media.avatar_source.value if media.avatar_source else None,
                     # provenance of the voice: which one read it, never another brand's id
-                    "voice": "brand" if voice.brand_clone else "public",
-                    "voice_id": None if voice.brand_clone else voice.speaker,
-                    "voice_resource": voice.resource_id,
+                    **voice_provenance,
                     "voice_key": voice_key,
                     "thumbnail_key": frame_key,
                     "model_revision": result.model_revision,

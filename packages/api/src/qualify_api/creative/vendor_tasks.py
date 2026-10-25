@@ -17,7 +17,14 @@ says `failed`/`expired` → the piece fails and its creations come back (CREAR-5
 
 `slot` names the call inside the generation: `seedance-N` for the N-th Seedance task of
 a run (the pipeline is deterministic for a brief, so a resumed run makes the same calls
-in the same order), `final:<asset id>` for a 1080p final.
+in the same order), `omnihuman-N` for a talking presenter's render (m-24852495),
+`final:<asset id>` for a 1080p final.
+
+m-24852495 — OmniHuman's renders take the same road: kept by id when OmniHuman accepts
+them, the wait counted from `generating`, the piece left in progress when the wait runs
+out and resumed by id. An OmniHuman row's `context` also carries what the render was
+made from (`presenter`: the photo and voice keys in R2, the voice's length and
+provenance), so the resumed run pays neither the presenter nor the voice again.
 """
 
 from __future__ import annotations
@@ -32,9 +39,12 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.adapters.byteplus_ark import VENDOR_TASK_EXPIRY_SECONDS
+from qualify_creative.adapters.byteplus_omnihuman import (
+    DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_RENDER_WINDOW_SECONDS,
+)
 from qualify_creative.providers import VendorTaskObserver
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.creative.models import CreativeVendorTask
@@ -50,6 +60,10 @@ GIVE_UP_AFTER = timedelta(seconds=VENDOR_TASK_EXPIRY_SECONDS) + timedelta(hours=
 #: The owner sees «tu video está en fila» once a task has waited past the window the
 #: thread used to give it (8 min) — before that, the usual progress bar.
 WAITING_NOTE_AFTER = timedelta(minutes=8)
+#: A talking presenter renders for ~25 min as a matter of course (m-24852495): its note
+#: waits for the render window the thread gives it (40 min) — before, the usual bar.
+OMNIHUMAN_PROVIDER = "omnihuman"
+PRESENTER_NOTE_AFTER = timedelta(seconds=OMNIHUMAN_RENDER_WINDOW_SECONDS)
 #: A sign of life at most this often while a thread polls (a poll every 5 s).
 _BEAT_EVERY_SECONDS = 60.0
 
@@ -97,7 +111,8 @@ class VendorTaskStore(Protocol):
 
     def waiting(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> frozenset[UUID]:
         """The drafts, of these, still `drafting` with a task pending past
-        `WAITING_NOTE_AFTER` on their current revision."""
+        `WAITING_NOTE_AFTER` (a presenter's render: `PRESENTER_NOTE_AFTER`) on their
+        current revision."""
         ...
 
 
@@ -192,7 +207,8 @@ class PostgresVendorTaskStore:
         from qualify_api.creative.fsm import DRAFTING
         from qualify_api.creative.models import ContentDraft
 
-        cutoff = datetime.now(UTC) - WAITING_NOTE_AFTER
+        now = datetime.now(UTC)
+        presenter = CreativeVendorTask.provider == OMNIHUMAN_PROVIDER
         with tenant_session(tenant_id) as session:
             ids = session.scalars(
                 select(CreativeVendorTask.draft_id)
@@ -201,7 +217,10 @@ class PostgresVendorTaskStore:
                     CreativeVendorTask.draft_id.in_(list(draft_ids)),
                     CreativeVendorTask.status == PENDING,
                     CreativeVendorTask.revision == ContentDraft.revision,
-                    CreativeVendorTask.created_at < cutoff,
+                    or_(
+                        and_(presenter, CreativeVendorTask.created_at < now - PRESENTER_NOTE_AFTER),
+                        and_(~presenter, CreativeVendorTask.created_at < now - WAITING_NOTE_AFTER),
+                    ),
                     ContentDraft.status == DRAFTING,
                 )
             ).all()
@@ -212,12 +231,23 @@ class PostgresVendorTaskStore:
 
 
 class VendorTaskBinding(Protocol):
-    """One run's view of its tasks, for `MediaProducer`: which id to resume for a slot,
-    the observer that records a new one, and the settlement of a slot."""
+    """One run's view of its tasks, for `MediaProducer`: which id to resume for a slot
+    (and what was kept with it), the observer that records a new one — with `context`
+    merged into the row's copy snapshot (m-24852495: an OmniHuman render keeps what it
+    was made from) — and the settlement of a slot."""
 
     def resume_id(self, slot: str) -> str | None: ...
 
-    def observer(self, slot: str, provider: str, model_id: str) -> VendorTaskObserver: ...
+    def resume_context(self, slot: str) -> Mapping[str, Any] | None: ...
+
+    def observer(
+        self,
+        slot: str,
+        provider: str,
+        model_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> VendorTaskObserver: ...
 
     def settle(self, slot: str, status: str) -> None: ...
 
@@ -276,14 +306,30 @@ class DraftVendorTasks:
         self._pipeline_version = pipeline_version
         self._context = dict(context)
         self._heartbeat = heartbeat
-        self._known = {t.slot: t.vendor_task_id for t in existing if t.status != FAILED}
+        live = [t for t in existing if t.status != FAILED]
+        self._known = {t.slot: t.vendor_task_id for t in live}
+        self._contexts: dict[str, Mapping[str, Any]] = {t.slot: t.context for t in live}
 
     def resume_id(self, slot: str) -> str | None:
         return self._known.get(slot)
 
-    def observer(self, slot: str, provider: str, model_id: str) -> VendorTaskObserver:
+    def resume_context(self, slot: str) -> Mapping[str, Any] | None:
+        """What was kept with the slot's live task (its row's `context`), or None."""
+        return self._contexts.get(slot) if slot in self._known else None
+
+    def observer(
+        self,
+        slot: str,
+        provider: str,
+        model_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> VendorTaskObserver:
+        row_context = {**self._context, **dict(context or {})}
+
         def record(task_id: str) -> None:
             self._known[slot] = task_id
+            self._contexts[slot] = row_context
             self._store.record(
                 tenant_id=self._tenant_id,
                 draft_id=self._draft_id,
@@ -293,7 +339,7 @@ class DraftVendorTasks:
                 model_id=model_id,
                 vendor_task_id=task_id,
                 pipeline_version=self._pipeline_version,
-                context=self._context,
+                context=row_context,
             )
 
         return _Observer(record, self._heartbeat)
@@ -349,8 +395,18 @@ class FinalVendorTasks(DraftVendorTasks):
     def resume_id(self, slot: str) -> str | None:
         return super().resume_id(self.slot)
 
-    def observer(self, slot: str, provider: str, model_id: str) -> VendorTaskObserver:
-        return super().observer(self.slot, provider, model_id)
+    def resume_context(self, slot: str) -> Mapping[str, Any] | None:
+        return super().resume_context(self.slot)
+
+    def observer(
+        self,
+        slot: str,
+        provider: str,
+        model_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> VendorTaskObserver:
+        return super().observer(self.slot, provider, model_id, context=context)
 
     def settle(self, slot: str, status: str) -> None:
         super().settle(self.slot, status)

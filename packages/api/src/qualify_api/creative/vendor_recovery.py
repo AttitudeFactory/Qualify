@@ -15,7 +15,10 @@ worker — today the calendar worker (`planner.worker`, `planner.embedded`), tom
 2. Per tenant, in its own `tenant_session`: the reaper (`reap_stale_drafts`: a task past
    BytePlus's 48 h expiry is given up, the piece fails and is refunded), then the drafts
    whose thread went quiet with a task still pending (`waiting`).
-3. **Ask BytePlus by id** (`get_task`) for each pending task. Still `queued`/`running` →
+3. **Ask BytePlus by id** (`get_task`) for each pending task — ModelArk for a Seedance
+   task, OmniHuman for a presenter's render (m-24852495, `StatusByProvider`; OmniHuman's
+   `in_queue`/`generating`/`done` read `queued`/`running`/`succeeded`, and its result URL
+   lives one hour, well over the pass's ~4 min). Still `queued`/`running` →
    nothing to do this pass (the resumed run would only sit polling). Every task ended —
    `succeeded`, `failed`/`cancelled`/`expired`, or unknown to BytePlus →
 4. **Claim** the draft atomically (`claim_waiting_drafts(draft_ids=…)`, the same
@@ -315,6 +318,64 @@ class SeedanceTaskStatus:
         return str(body.get("status") or "").lower()
 
 
+#: OmniHuman's states (`get_result` → `data.status`) in the pass's words (m-24852495).
+OMNIHUMAN_STATES = {
+    "in_queue": "queued",
+    "generating": "running",
+    "done": "succeeded",
+    "expired": "expired",
+    "canceled": "cancelled",
+    "cancelled": "cancelled",
+    "failed": "failed",
+}
+
+
+class OmniHumanTaskStatus:
+    """`TaskStatusReader` over `OmniHumanVideoAdapter.get_task` with the platform key
+    (m-24852495) — a read: nothing is submitted or billed. `not_found` reads `UNKNOWN`;
+    an error code on the task's own result (a refused render) reads `failed`; an answer
+    that says nothing about the task (no answer, a 5xx, a refused key) raises, so the
+    draft is left for the next pass."""
+
+    def __init__(self, adapter: Any, credentials: Any) -> None:
+        self._adapter = adapter
+        self._credentials = credentials
+
+    def status(self, task: PendingTask, *, tenant_id: UUID, brand_id: UUID) -> str:
+        from qualify_creative.adapters.byteplus_omnihuman import (  # noqa: PLC0415
+            ACCESS_ERROR_CODES,
+            OmniHumanError,
+        )
+
+        key = self._credentials.resolve(
+            tenant_id=tenant_id, brand_id=brand_id, provider=task.provider or "omnihuman"
+        )
+        try:
+            data = self._adapter.get_task(task.vendor_task_id, api_key=key.api_key)
+        except OmniHumanError as exc:
+            if isinstance(exc.code, int) and exc.code not in ACCESS_ERROR_CODES:
+                return "failed"
+            raise
+        status = str(data.get("status") or "").lower()
+        if status == "not_found":
+            return UNKNOWN
+        return OMNIHUMAN_STATES.get(status, status)
+
+
+class StatusByProvider:
+    """`TaskStatusReader` that asks each task's own vendor: OmniHuman for an `omnihuman`
+    row (m-24852495), Seedance for everything else (the rows before it name
+    `seedance`)."""
+
+    def __init__(self, seedance: TaskStatusReader, omnihuman: TaskStatusReader) -> None:
+        self._seedance = seedance
+        self._omnihuman = omnihuman
+
+    def status(self, task: PendingTask, *, tenant_id: UUID, brand_id: UUID) -> str:
+        reader = self._omnihuman if task.provider == "omnihuman" else self._seedance
+        return reader.status(task, tenant_id=tenant_id, brand_id=brand_id)
+
+
 def recovery_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], RecoveryReport | None]:
     """The worker's recovery pass over its own scope (`None` = production discovery).
     Its parts are built on the FIRST pass (after `.env`), once — the content service
@@ -343,6 +404,15 @@ def _production_parts() -> dict[str, Any]:
     Remotion, PyAV…) is built only when a draft is actually resumed — the calendar
     worker's container is small (320 MiB) and most passes resume nothing."""
     from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter  # noqa: PLC0415
+    from qualify_creative.adapters.byteplus_omnihuman import (  # noqa: PLC0415
+        DEFAULT_REQ_KEY as DEFAULT_OMNIHUMAN_REQ_KEY,
+    )
+    from qualify_creative.adapters.byteplus_omnihuman import (  # noqa: PLC0415
+        REQ_KEY_ENV as OMNIHUMAN_REQ_KEY_ENV,
+    )
+    from qualify_creative.adapters.byteplus_omnihuman import (  # noqa: PLC0415
+        OmniHumanVideoAdapter,
+    )
 
     from qualify_api.creative.composition import (  # noqa: PLC0415 — after .env
         ARK_BASE_URL,
@@ -351,6 +421,11 @@ def _production_parts() -> dict[str, Any]:
     )
 
     adapter = SeedanceVideoAdapter(base_url=os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL)
+    # the same version the generation submits with (`production_content_service`)
+    omnihuman = OmniHumanVideoAdapter(
+        req_key=os.environ.get(OMNIHUMAN_REQ_KEY_ENV) or DEFAULT_OMNIHUMAN_REQ_KEY
+    )
+    credentials = PlatformKeyResolver()
     services: list[Any] = []
 
     def resume(tenant_id: UUID, draft_id: UUID) -> None:
@@ -364,6 +439,9 @@ def _production_parts() -> dict[str, Any]:
 
     return {
         "store": PostgresRecoveryStore(),
-        "statuses": SeedanceTaskStatus(adapter, PlatformKeyResolver()),
+        "statuses": StatusByProvider(
+            SeedanceTaskStatus(adapter, credentials),
+            OmniHumanTaskStatus(omnihuman, credentials),
+        ),
         "resume": resume,
     }
