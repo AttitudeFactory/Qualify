@@ -38,7 +38,14 @@ relevant part before acting; this skill holds the rules around it.
    (robertuito, torch) is **off** unless `QUALIFY_SENTIMENT_ENABLED` is set (m-24854340): it
    peaks at ~904 MiB and OOM-killed `webhook-worker` (cap 320m). Do not turn it on in
    `.env.prod`; sentiment is moving to Claude Haiku. `webhook-worker` logs `sentiment=off` at start.
-9. **Health review every 4 h:** read-only (`deploy-status`, `deploy-logs`, the last deploy runs);
+9. **Memory caps** (`mem_limit` = `memswap_limit` per service in
+   `deploy/docker-compose.prod.yml`, m-24852229): a change that adds work to a worker loop is
+   measured under its cap before it is turned on. `just mem-webhook-worker` (m-24852538,
+   `deploy/measure/`) runs webhook-worker's real loop in the prod image against a throwaway
+   Postgres on a network with no route out (fake vendors, never Meegle): idle, a webhook
+   batch, one Alta prefill; `-- --sentiment` adds robertuito (~900 MiB: it does not fit any
+   worker cap). Copy its shape for other workers.
+10. **Health review every 4 h:** read-only (`deploy-status`, `deploy-logs`, the last deploy runs);
    anything wrong is alerted to the founder. No remediation without asking.
 
 ## In an outage

@@ -296,8 +296,15 @@ services:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
     # m-24852229: 84 MiB measured idle 2026-10-24; see «Memory caps» at the top.
-    mem_limit: 256m
-    memswap_limit: 256m
+    # m-24852538: raised 256m -> 320m for the Alta prefill (PB-4) that runs in this loop.
+    # Measured under the cap with `just mem-webhook-worker` (deploy/measure/): peak RSS
+    # 135 MiB idle and after a 100-change batch, 188 MiB after one prefill with a
+    # 1080 px picture (cgroup peak up to 197 MiB = 77 % of 256m), 249 MiB with a 2048 px
+    # picture (97 %: one larger CDN picture from an OOM kill). 320m keeps >= 20 % over
+    # that worst case. NOT covered by any cap this size: robertuito (the comment-analysis
+    # sweep of the same loop) peaks at ~900 MiB — see the m-24852538 PR.
+    mem_limit: 320m
+    memswap_limit: 320m
     environment:
       <<: *app-env
     command:

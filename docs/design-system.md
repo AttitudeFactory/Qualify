@@ -382,6 +382,91 @@ Tres reglas que sostienen esto:
 1. **Punto de corte: 640 px o 768 px.** La ficha del ticket dice «< 768 px»; la app pasa a cajón a 640 px. Este patrón elige **640 px** para que nunca convivan sidebar y barra (entre 641 y 767 px se verían las dos). Si se prefiere 768 px, el cajón sube con ella en el mismo PR.
 2. **«Por responder» en dos líneas.** Cabe en dos líneas a 360 px sin recorte. La alternativa sería una forma corta («Responder»), que rompería N1 con el sidebar; por eso no se propone.
 
+
+### 4.5 Marco de paso a paso (patrón nuevo · PASOS-1, m-24852240)
+
+> **Estado:** **aprobado por el fundador el 2026-10-25** («Sí, tal cual»,
+> `docs/epica-ux-pasos-navegacion-interna.md` §4); falta construirlo (PASOS-2, m-24852241). La
+> evidencia está en `docs/ux-navegacion-pasos-2026-10-24.md` (H1–H8): 10 asistentes arman a mano su
+> «Paso N de M» y su fila «Atrás · Siguiente», y en ninguno quedan a la vista.
+
+**Para qué.** Que el dueño sepa siempre **dónde está, cuánto le falta, cómo vuelve y cómo sigue**,
+sin tener que desplazarse. Es la **anatomía del `drawer`** (§5.8: cabeza fija, cuerpo que se
+desplaza, pie fijo) llevada también a los asistentes de página completa, con la misma cabeza en
+todos.
+
+```
+  ┌──────────────────────────────────────┐  360 px
+  │ ‹ Tus publicaciones    Paso 2 de 4   │ ← CABEZA (fija): volver con destino + paso real
+  │ ▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░ │   + barra de avance
+  │ ¿Qué quieres decir?                  │   + nombre del paso (el h1)
+  ├──────────────────────────────────────┤
+  │  … contenido del paso (se desplaza)… │ ← CUERPO
+  ├──────────────────────────────────────┤
+  │ [ Atrás ]        [   Siguiente   ]   │ ← PIE (fijo): en el celular ocupa el lugar
+  │        Seguir después                │   de la barra inferior (§4.4)
+  └──────────────────────────────────────┘
+```
+
+**Cuándo se usa.** En todo flujo de **más de un paso**. Si es de página completa (Tu marca, Crear
+publicación, Publicar ahora, el menú automático de WhatsApp), lleva el marco entero. Si va dentro
+de un `drawer` (agregar producto, programar, promoción, mensaje aprobado), solo pasa la **cabeza**
+al encabezado fijo del cajón; el pie del cajón ya es este pie. Un formulario de un solo paso no
+lleva marco.
+
+**La cabeza** reemplaza a `page_header` mientras dura el asistente; no se suma a él, así el título
+de la página no ocupa media pantalla.
+
+1. **«‹ destino»** arriba a la izquierda: el nombre del lugar al que vuelve (N7), por ejemplo
+   «‹ Tus publicaciones», «‹ Tu semana» o «‹ Inicio». Toma `?volver=` (N4) y, si no lo hay, el
+   módulo del menú. Está en **todos** los pasos, también en el primero, porque es la salida
+   (arregla H1). Dentro de un cajón, la salida es el ✕ «Cerrar», que ya existe.
+2. **«Paso N de M»** a la derecha, en texto, con **M real**: los pasos que se saltan no cuentan.
+   Debajo va una **barra de avance** de 4 px en acento: es texto y forma a la vez, nunca solo color (P1).
+3. **El nombre del paso**, en palabras del dueño, es el único `h1` de la pantalla (§8).
+   `stepper()` se queda como **opción** debajo del título en escritorio cuando los pasos se pueden
+   recorrer de a saltos (Tu semana). En el celular no se muestra: la barra lo reemplaza.
+
+**El pie** es la isla opaca de la barra inferior (§4.4): mismo material, mismo radio, misma altura
+reservada (`--q-bottom-bar-h`) y la misma zona segura.
+
+1. A la izquierda va **«Atrás»** (soft, gris): retrocede un paso y conserva lo escrito. No aparece
+   en el paso 1, donde la salida está en la cabeza.
+2. A la derecha va el **botón principal** (sólido, ancho, ≥ 44 px): «Siguiente», y en el último
+   paso un verbo que dice quién actúa y qué pasa (N13): «Crear», «Programar para el jueves»,
+   «Publicar en Instagram». Si el paso todavía no es válido, el motivo se lee **junto** al botón
+   (regla de §5.8).
+3. Debajo, **«Seguir después»** (ghost): guarda lo que lleva el dueño y lleva a **Inicio** en todos
+   los asistentes (N2, decisión del fundador 2026-10-25). Inicio muestra lo que quedó a medias con
+   «Seguir».
+4. **En el celular (≤ 640 px) la barra inferior de accesos se esconde** mientras el marco está
+   montado, y el pie ocupa su lugar. Abajo nunca hay dos islas. Se hace con una clase en
+   `.q-ground`, igual que hoy con el teclado (`qualify.css` «Bottom bar»), no con estado de Python.
+   Con el teclado abierto, el pie también se aparta.
+5. **En escritorio** el pie se pega al borde inferior del panel (`position: sticky; bottom`), como
+   `.q-rv-savebar--editing`. No suma superficies de vidrio (§4.3-6).
+
+**Comportamiento al cambiar de paso.**
+
+- El cuerpo **vuelve arriba**: se desplaza `main.q-panel`, nunca `window`. El foco pasa al `h1` del
+  paso nuevo, para que el lector de pantalla anuncie dónde está.
+- **Cada paso tiene dirección** (`?paso=N`, escrita con `pushState` y leída en `on_load` y en
+  `popstate`). El «atrás» del celular o del navegador retrocede un paso; en el paso 1 sale al
+  destino de la cabeza. Nunca saca del módulo (N5).
+- **Salir nunca borra.** Lo escrito se conserva en el estado y se retoma al volver (N6).
+- **Movimiento:** el cuerpo del paso entra con `q-settle`, desplazándose 8 px en la dirección del
+  avance: desde la derecha al ir adelante, desde la izquierda al volver (`data-dir`). La barra
+  avanza con `--q-dur` y `--q-ease`. Con `prefers-reduced-motion` no hay desplazamiento, solo el
+  cambio.
+
+**Implementación sugerida (PASOS-2).**
+
+- `step_frame(head, *body, foot)` en `Qualify/ui/layout.py`, junto a `app_shell`; `step_head(...)` y
+  `step_foot(...)` en `Qualify/ui/primitives.py`.
+- Una muestra en `/design` → «Flujo por pasos».
+- La regla en `test_design_system_guard.py`: ningún asistente arma a mano su «Paso N de M» ni su
+  fila «Atrás · Siguiente».
+- Los nombres de las funciones los fija `reflex-ui-engineer`; lo que no cambia es la anatomía.
 ---
 
 ## 5. Componentes
@@ -702,3 +787,9 @@ Se prototiparon tres menús — dos planos con tinte, un ciclo numerado en tres 
 - **Por qué opaca y no de vidrio:** el contenido se desplaza por debajo y los textos de la barra tienen que leerse igual sobre cualquier foto; el presupuesto de `backdrop-filter` ya está casi lleno en el shell (§9.3-2). Misma razón que el panel opaco (§10.12).
 - **Por qué los mismos nombres, iconos, rutas y contadores que el sidebar:** N1 (un nombre por lugar) y N11 (lo pendiente se cuenta donde se resuelve). Una segunda fuente de rutas o de cifras se desincronizaría con la primera; la barra solo lee las de `layout.py` y `PendingState`.
 - **Por qué 640 px:** es el punto donde el sidebar ya es cajón; con otro corte convivirían dos navegaciones.
+
+### 10.19 Marco de paso a paso: la anatomía del cajón para todo asistente (PASOS-1, fundador 2026-10-25)
+- **Por qué existe:** el fundador lo pidió así (2026-10-24): «ir atrás (no existen)», «saber en qué paso estamos», «las opciones de continuar ocultas abajo del todo». La revisión encontró que diez flujos repiten a mano la misma receta, el contador y la fila Atrás · Siguiente, y que ninguno la deja a la vista. Cumple la condición (a) de §9.1-8, que la receta se repita en dos pantallas o más, y lo aprobó el fundador.
+- **Por qué no es un componente inventado:** reusa la anatomía del `drawer` (cabeza y pie fijos), la isla opaca de la barra inferior y `.q-page-header`. No trae colores, curvas ni materiales nuevos.
+- **Por qué el pie reemplaza la barra inferior en el celular, en vez de apilarse:** dos islas abajo le quitan alto al contenido justo en el celular y ponen dos botones grandes al alcance del pulgar que hacen cosas distintas. Mientras dura un asistente, lo que importa es seguir o salir, y la salida está en la cabeza.
+- **Por qué «Seguir después» lleva a Inicio:** una sola regla en todos los asistentes (N2). Inicio es donde aparece lo que quedó a medias.

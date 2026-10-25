@@ -215,6 +215,14 @@ deploy-status target:
 deploy-logs target service="":
     deploy/deploy.sh logs {{target}} {{service}}
 
+# m-24852538: webhook-worker's peak memory under its prod mem_limit, LOCALLY (idle, a webhook
+# batch, one Alta prefill with fake vendors; `-- --sentiment` adds robertuito). Throwaway
+# Postgres on a docker network with no route out; never touches production. Image: build
+# `docker build -f deploy/Dockerfile --target deps -t qualify-memtest:deps .` first, or pass
+# a CI image. `MEM_LIMIT=320m just mem-webhook-worker` tries another cap.
+mem-webhook-worker image="qualify-memtest:deps" *args:
+    deploy/measure/webhook-worker-memory.sh {{image}} -- {{args}}
+
 # pg_dump now (the nightly cron runs the same script on the server).
 deploy-backup target:
     deploy/deploy.sh backup {{target}}
