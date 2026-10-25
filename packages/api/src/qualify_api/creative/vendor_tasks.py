@@ -39,9 +39,12 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.adapters.byteplus_ark import VENDOR_TASK_EXPIRY_SECONDS
+from qualify_creative.adapters.byteplus_omnihuman import (
+    DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_RENDER_WINDOW_SECONDS,
+)
 from qualify_creative.providers import VendorTaskObserver
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.creative.models import CreativeVendorTask
@@ -57,6 +60,10 @@ GIVE_UP_AFTER = timedelta(seconds=VENDOR_TASK_EXPIRY_SECONDS) + timedelta(hours=
 #: The owner sees «tu video está en fila» once a task has waited past the window the
 #: thread used to give it (8 min) — before that, the usual progress bar.
 WAITING_NOTE_AFTER = timedelta(minutes=8)
+#: A talking presenter renders for ~25 min as a matter of course (m-24852495): its note
+#: waits for the render window the thread gives it (40 min) — before, the usual bar.
+OMNIHUMAN_PROVIDER = "omnihuman"
+PRESENTER_NOTE_AFTER = timedelta(seconds=OMNIHUMAN_RENDER_WINDOW_SECONDS)
 #: A sign of life at most this often while a thread polls (a poll every 5 s).
 _BEAT_EVERY_SECONDS = 60.0
 
@@ -104,7 +111,8 @@ class VendorTaskStore(Protocol):
 
     def waiting(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> frozenset[UUID]:
         """The drafts, of these, still `drafting` with a task pending past
-        `WAITING_NOTE_AFTER` on their current revision."""
+        `WAITING_NOTE_AFTER` (a presenter's render: `PRESENTER_NOTE_AFTER`) on their
+        current revision."""
         ...
 
 
@@ -199,7 +207,8 @@ class PostgresVendorTaskStore:
         from qualify_api.creative.fsm import DRAFTING
         from qualify_api.creative.models import ContentDraft
 
-        cutoff = datetime.now(UTC) - WAITING_NOTE_AFTER
+        now = datetime.now(UTC)
+        presenter = CreativeVendorTask.provider == OMNIHUMAN_PROVIDER
         with tenant_session(tenant_id) as session:
             ids = session.scalars(
                 select(CreativeVendorTask.draft_id)
@@ -208,7 +217,10 @@ class PostgresVendorTaskStore:
                     CreativeVendorTask.draft_id.in_(list(draft_ids)),
                     CreativeVendorTask.status == PENDING,
                     CreativeVendorTask.revision == ContentDraft.revision,
-                    CreativeVendorTask.created_at < cutoff,
+                    or_(
+                        and_(presenter, CreativeVendorTask.created_at < now - PRESENTER_NOTE_AFTER),
+                        and_(~presenter, CreativeVendorTask.created_at < now - WAITING_NOTE_AFTER),
+                    ),
                     ContentDraft.status == DRAFTING,
                 )
             ).all()

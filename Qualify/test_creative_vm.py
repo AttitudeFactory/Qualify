@@ -1002,3 +1002,45 @@ def test_a_video_waiting_in_line_says_it_will_land_in_por_aprobar() -> None:
     assert "Por aprobar" in WAITING_VENDOR_TEXT
     for word in ("BytePlus", "Seedance", "proveedor", "Borradores", "post", "render"):
         assert word not in WAITING_VENDOR_TEXT
+
+
+def test_a_presenter_waiting_in_line_shows_the_wait_never_the_slow_failure() -> None:
+    """m-24852495: a talking presenter whose render outlived the wait is in progress —
+    the screen shows the approved waiting text (PR #325), not «tardó demasiado». That
+    text only comes with a FAILED piece: OmniHuman expired or failed the render."""
+    from .creative_vm import WAITING_VENDOR_TEXT
+
+    slow = (
+        "El video con presentador tardó demasiado y no se pudo terminar. Inténtalo de nuevo "
+        "en unos minutos."
+    )
+    assert WAITING_VENDOR_TEXT == (
+        "Tu video está en fila porque hay muchos preparándose. No tienes que esperar aquí: "
+        "cuando esté listo, aparecerá en Por aprobar."
+    )
+
+    def vm(status: str, *, waiting: bool, detail: str | None = None) -> object:
+        return build_draft_vm(
+            draft_id="d-4",
+            status=status,
+            failure_reason=FailureReason.PROVIDER_ERROR.value if status == "failed" else None,
+            variants=[],
+            image_url=None,
+            total_cost_usd=None,
+            voice_profile_version=None,
+            model_ids=[],
+            requires_ai_disclosure=False,
+            created_label="",
+            kind="avatar_video",
+            failure_detail=detail,
+            waiting_vendor=waiting,
+        )
+
+    pending = vm("drafting", waiting=True)
+    assert pending.waiting_vendor is True  # type: ignore[attr-defined]
+    assert pending.is_drafting and not pending.is_failed  # type: ignore[attr-defined]
+    assert pending.failure_detail == ""  # type: ignore[attr-defined]
+
+    expired = vm("failed", waiting=True, detail=slow)
+    assert expired.is_failed and expired.waiting_vendor is False  # type: ignore[attr-defined]
+    assert expired.failure_detail == slow  # type: ignore[attr-defined]
