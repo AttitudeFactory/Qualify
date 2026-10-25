@@ -43,6 +43,17 @@ acts on it after a sent invitation. The field was created in the UI on
 2026-10-24 (Space Configuration → «Alta de cliente» → Fields, plus the detail and creation
 layouts, §3). Do not read the legacy «Instagram / TikTok» field: it is unused.
 
+**Plan / Paquete / Motivo and the «Plan ampliado» node (m-24852131)** are optional too
+(`MeegleNames.plan|pack|plan_reason|node_plan`, overrides `QUALIFY_MEEGLE_FIELD_PLAN`,
+`_PACK`, `_PLAN_REASON`, `QUALIFY_MEEGLE_NODE_PLAN`). «Datos» validates them (invalid → no
+invite, `error`, Datos rolled back) and stores them on the invite (0096); `register_business`
+applies them through `set_plan` / `add_pack` (`meegle.plan_request.apply_on_registration`).
+Completing «Plan ampliado» on a registered Alta applies them at once
+(`OnboardingEngine.apply_plan_update`); idempotency keys `meegle:<event id>:plan|pack`. The
+business is found through `signup_invites.registered_tenant_id`, never the editable «Tenant»
+field. Doc: `docs/plan-altas-meegle.md` §2. Until the founder creates them in the type,
+altas behave exactly as before.
+
 ## 2. Operating an alta (what to tell the founder)
 
 1. Meegle → «Alta de cliente» → **New**. The dialog only asks the **name**: put the business name.

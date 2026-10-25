@@ -59,7 +59,7 @@ class _Engine:
     def node_name(self, work_item_id: int, key: str) -> str | None:
         return {"started": "Datos"}.get(key)
 
-    def start_invitation(self, work_item_id: int) -> InvitationResult:
+    def start_invitation(self, work_item_id: int, **_: str) -> InvitationResult:
         self.started.append(work_item_id)
         return InvitationResult(ok=True, invite_id=uuid4())
 

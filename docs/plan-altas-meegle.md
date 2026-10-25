@@ -44,6 +44,9 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 | Nombre de la persona | text | para el saludo |
 | Nota personal | multi-text | va en el correo («Como hablamos hoy…») |
 | Cuenta de Instagram | text | opcional; Qualify la lee y la normaliza (`@usuario`, `usuario` o el enlace del perfil → `usuario`) desde m-24852194; la usará la precarga de la identidad de marca (épica m-24852192). Clave `field_dbfee5`. El campo antiguo «Instagram / TikTok» (`field_7ec111`) sigue en el tipo pero Qualify no lo lee |
+| Plan | select: `Básico · Plus · Pro` | opcional (m-24852131); vacío = Básico. Las unidades de cada plan viven en `planes-v1` (código), nunca en Meegle |
+| Paquete | select: `+2 videos · +20 creaciones · +10 vistas previas` | opcional (m-24852131); los paquetes fijos de `precios-planes-v1`, 90 días desde que se aplican. Sin precios en el ítem |
+| Motivo | text | opcional (m-24852131); queda en el historial del plan y del paquete |
 
 **Campos que escribe Qualify** (solo lectura para el equipo, por convención):
 
@@ -63,8 +66,19 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 | 1 | **Datos** | persona | Completar = «enviar». Qualify valida el correo, crea la invitación, manda el correo por Resend, escribe enlace/vence/estado=invitada y comenta «Invitación enviada a …». Si falla, estado=`error` + comentario con el motivo y el nodo se revierte para que se corrija y se vuelva a completar. |
 | 2 | **Invitada** | Qualify | Lo completa al confirmar Resend la entrega (estado=entregada). Rebote → estado=`rebotó` + comentario; el nodo no avanza. |
 | 3 | **Registrada** | Qualify | Lo completa `register_business` al consumir la invitación: estado=registrada, Tenant, Registrada el. |
+| — | **Plan ampliado** | equipo (solo administradores del espacio) | m-24852131. Para un negocio ya registrado: se llenan «Plan» / «Paquete» / «Motivo» y se completa. Qualify aplica el plan (subir vale desde ya, bajar desde el mes siguiente) y suma el paquete una vez, y comenta «Plan de {negocio}: Plus. Se sumó el paquete +2 videos, vence el {fecha}.». Se puede revertir y completar otra vez: cada vez suma el paquete elegido una vez. Si el negocio aún no se registró, la elección reemplaza la que espera en la invitación. Valor no válido o rechazo: estado=`error`, comentario y el nodo se revierte. |
 | 4 | **Kit de marca listo** | Qualify (futuro, A2) | Cuando el Brand Kit queda guardado. Hoy se completa a mano. |
 | 5 | **Primera publicación** | Qualify (futuro) | Cuando sale la primera publicación por el Planificador. Hoy a mano. |
+
+**Plan y paquete al dar de alta (m-24852131).** Al completar **Datos**, Qualify valida «Plan» y
+«Paquete» (un valor que no existe falla como un correo inválido: no se crea la invitación) y los
+guarda en la invitación (`signup_invites.alta_*`, migración 0096). Cuando `register_business`
+crea el negocio los aplica con las mismas funciones del equipo (`just set-plan`, `just add-pack`:
+historial con quién —el usuario de Meegle que completó el nodo—, cuándo, Motivo e ítem), y el
+paquete vence 90 días después del registro. Idempotencia por evento de Meegle: las claves son
+`meegle:<id del evento>:plan` y `:pack`. Se escucha solo el 2001 (nodo completado), nunca la
+edición de campos (1009, §7.4). El equipo ve el historial con `just plans --tenant …` y
+`just packs --tenant …`. Ninguna pantalla ni correo del dueño muestra precios.
 
 **Reenviar** = revertir el nodo Datos y completarlo otra vez (nueva invitación; la anterior sigue
 válida hasta vencer, como hoy). **Anular** = terminar el ítem (evento `1005`): Qualify vence la
