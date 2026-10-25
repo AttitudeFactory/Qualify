@@ -48,15 +48,11 @@ its real thumbnail/caption/permalink (cross-referenced from `CandidateMediaVM`, 
 extra Meta calls — see `inbox_provider.reel_summaries_page`'s docstring); an older
 monitored Reel falls back to `external_thread_id` only, same as QUA-92's original scope.
 
-`_analyze_now_button()` (QUA-92) makes QUA-21's existing manual trigger visible on
-screen: it calls `InboxState.analyze_sentiment`, which runs the same seam the
-`POST /api/sentiment/analyze` route wraps (`inbox_provider.analyze_sentiment_now` —
-never a second analysis engine). Same
-"button + `rx.cond` loading label" shape `_sync_now_button()` already establishes, kept
-as its own control rather than merged into `_sync_now_button()`: syncing and analyzing
-are two independent actions with two independent guards (`is_syncing`/`is_analyzing`),
-and QUA-92's own requirement is that neither ever triggers the other. It stays the ONE
-button for both levels — `InboxState._refresh_after_write` decides what it refreshes.
+There is no analysis button (m-24852204, founder 2026-10-24): sentiment and commercial
+intent are computed in the background after every comment search
+(`InboxState.analyze_new_comments`) and by the webhook worker's sweep, so the owner opens
+the screen and finds the comments already prioritized. The sentiment and intent filters
+stay; a comment the analysis has not reached yet simply shows no chip.
 """
 
 from __future__ import annotations
@@ -81,6 +77,7 @@ from .next_steps_vm import (
     DISMISS_LABEL,
     NEXT_PENDING_LABEL,
 )
+from .post_card import viewable_src
 from .publishing_vm import ConnectionOptionVM
 from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
@@ -586,7 +583,7 @@ def _global_summary_stats() -> rx.Component:
             stat_card("Positivos", InboxState.global_summary.positive, "ok"),
             stat_card("Neutros", InboxState.global_summary.neutral, "neutral"),
             stat_card("Negativos", InboxState.global_summary.negative, "error"),
-            stat_card("Sin revisar", InboxState.global_summary.not_analyzed, "neutral"),
+            stat_card("En revisión", InboxState.global_summary.not_analyzed, "neutral"),
             columns=rx.breakpoints(initial="2", md="5"),
             spacing="3",
             width="100%",
@@ -647,8 +644,15 @@ def _global_summary_widget() -> rx.Component:
 
 def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
     """Same shape as `_thumbnail(candidate)` above, over `ReelSummaryVM`'s own
-    thumbnail_url — opción A enrichment, `""` for a Reel outside the 2-week window."""
-    return media_thumb(reel.thumbnail_url, size="72px", icon="film")
+    thumbnail_url: the picture kept in R2 (a `/r2media` path, resolved by `viewable_src`)
+    or Meta's live URL (m-24852202); `""` shows the icon."""
+    return media_thumb(
+        viewable_src(reel.thumbnail_url),
+        size="72px",
+        icon="film",
+        has=reel.thumbnail_url != "",
+        custom_attrs={"loading": "lazy"},
+    )
 
 
 def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
@@ -684,7 +688,7 @@ def _reel_sentiment_chips(reel: ReelSummaryVM) -> rx.Component:
         tone_badge("Positivos " + reel.positive.to_string(), "ok"),
         tone_badge("Neutros " + reel.neutral.to_string(), "neutral"),
         tone_badge("Negativos " + reel.negative.to_string(), "error"),
-        tone_badge("Sin revisar " + reel.not_analyzed.to_string(), "neutral"),
+        tone_badge("En revisión " + reel.not_analyzed.to_string(), "neutral"),
         spacing="2",
         wrap="wrap",
     )
@@ -875,7 +879,7 @@ _SENTIMENT_FILTER_OPTIONS = [
     ("POS", "Positivos"),
     ("NEU", "Neutros"),
     ("NEG", "Negativos"),
-    ("PENDING", "Sin revisar"),
+    ("PENDING", "En revisión"),
 ]
 
 
@@ -1019,49 +1023,11 @@ def _reel_detail_view() -> rx.Component:
     )
 
 
-def _prioritize_button() -> rx.Component:
-    """m-24842988: ONE «Ordenar por prioridad» — the sentiment pass (QUA-21) and the
-    commercial-intent pass (m-24789644) chained on one click. Each stays its own
-    background handler with its own guard, error and toast; still separate from
-    `_sync_now_button()` (see the module docstring)."""
-    return rx.button(
-        rx.cond(
-            InboxState.is_prioritizing,
-            loading_spinner("sm"),
-            rx.icon("list-ordered", size=16),
-        ),
-        rx.cond(InboxState.is_prioritizing, "Ordenando...", "Ordenar por prioridad"),
-        on_click=[InboxState.analyze_sentiment, InboxState.analyze_intent],
-        disabled=~InboxState.can_prioritize,
-        size="2",
-        variant="soft",
-    )
-
-
-def _prioritize_error_block() -> rx.Component:
-    # m-24849132: ONE persistent `callout` for «Ordenar por prioridad», whether the
-    # sentiment pass, the intent pass or both failed — never two near-identical boxes.
-    # The success side is a transient `rx.toast.success` dispatched by
-    # `InboxState.analyze_intent` (docs/design-system.md §5.4); only errors persist.
-    return rx.cond(
-        InboxState.prioritize_error != "",
-        callout(InboxState.prioritize_error, "error"),
-        rx.fragment(),
-    )
-
-
 def _comments_section() -> rx.Component:
-    # m-24842989: second block, under the replies ready to approve. Its actions sit in
-    # a wrapping row of their own, not in the title row, so they never squeeze the
-    # title at 360 px (N12).
+    # m-24842989: second block, under the replies ready to approve. m-24852204: no
+    # action row any more — the comments arrive already prioritized.
     return section(
         "Comentarios por publicación",
-        rx.hstack(
-            _prioritize_button(),
-            spacing="2",
-            wrap="wrap",
-        ),
-        _prioritize_error_block(),
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
@@ -1088,8 +1054,8 @@ def _sync_now_button() -> rx.Component:
 
 
 def _sync_error_block() -> rx.Component:
-    # Same "success is a toast, error is a persistent callout" split as
-    # `_prioritize_error_block` above — see that function's comment.
+    # Success is a transient toast, an error a persistent callout
+    # (docs/design-system.md §5.4).
     return rx.cond(
         InboxState.sync_error != "",
         callout(InboxState.sync_error, "error"),
@@ -1587,7 +1553,14 @@ def _draft_publication_thumb(draft: DraftVM) -> rx.Component:
     it. Its picture comes from the candidates the screen already loaded; without one the
     frame shows the generic icon. Not decorative here: it is the only thing on the card
     that names the publication, so its alt is the caption (else «Publicación»)."""
-    return media_thumb(draft.media_thumbnail_url, size="48px", icon="image", alt=draft.media_alt)
+    return media_thumb(
+        viewable_src(draft.media_thumbnail_url),
+        size="48px",
+        icon="image",
+        alt=draft.media_alt,
+        has=draft.media_thumbnail_url != "",
+        custom_attrs={"loading": "lazy"},
+    )
 
 
 def _draft_comment_block(draft: DraftVM) -> rx.Component:

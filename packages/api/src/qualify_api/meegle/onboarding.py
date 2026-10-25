@@ -10,6 +10,9 @@ Three use-cases, all synchronous, all writing back to the same item:
   with the reason (and the link when the invite does exist, so it can be sent by hand),
   and **Datos** is rolled back so it can be corrected and completed again (plan D3). A
   failure of this kind is a settled outcome, not a retry — the person fixes the item.
+  It also reads the optional «Cuenta de Instagram» (PB-1, m-24852194) and returns it
+  normalized in `InvitationResult.instagram_handle`; missing, empty or invalid it is
+  `None` and the invitation goes out exactly the same.
 - `expire_for_terminated(work_item_id)` — the item was terminated (1005): every unused
   invite of that item expires now (`Estado Qualify = vencida`, best-effort).
 - `mark_registered(work_item_id, tenant_id)` — `register_business` consumed the invite:
@@ -46,7 +49,8 @@ from qualify_api.auth.invites import (
 )
 from qualify_api.mail import Mailer, MailError, MailNotConfigured, default_mailer, mail_reply_to
 from qualify_api.meegle.client import MeegleApiError, MeegleClient, WorkItem
-from qualify_api.meegle.schema import SchemaResolver
+from qualify_api.meegle.instagram import normalize_instagram_handle
+from qualify_api.meegle.schema import MeegleSchemaError, SchemaResolver
 from qualify_api.meegle.settings import (
     STATUS_BOUNCED,
     STATUS_DELIVERED,
@@ -72,6 +76,11 @@ class InvitationResult:
     ok: bool
     reason: str = ""  # short, log-safe code when not ok
     invite_id: UUID | None = None
+    # «Cuenta de Instagram» normalized (`normalize_instagram_handle`), None when absent or
+    # invalid. The Brand Kit prefill (PB-4, `meegle.prefill`) acts on it after a success.
+    instagram_handle: str | None = None
+    # The address the invitation went to (the Alta draft is prepared for it, PB-4).
+    email: str = ""
 
 
 def text_value(value: Any) -> str:
@@ -135,6 +144,29 @@ class OnboardingEngine:
     def _field_text(self, item: WorkItem, name: str) -> str:
         return text_value(item.fields.get(self._resolver.field_key(name)))
 
+    def _optional_field_text(self, item: WorkItem, name: str) -> str:
+        """Like `_field_text`, but "" when the type has no such field (yet)."""
+        try:
+            key = self._resolver.field_key(name)
+        except MeegleSchemaError:
+            return ""
+        return text_value(item.fields.get(key))
+
+    def instagram_handle(self, item: WorkItem) -> str | None:
+        """The item's «Cuenta de Instagram» as a bare lowercase username, or None.
+
+        Never raises for a missing field, an empty one or junk in it: an Alta without
+        Instagram is still a valid Alta (PB-1)."""
+        raw = self._optional_field_text(item, self._names.instagram)
+        handle = normalize_instagram_handle(raw)
+        if raw and handle is None:
+            logger.warning(
+                "meegle onboarding: work_item=%s «%s» is not an Instagram account",
+                item.id,
+                self._names.instagram,
+            )
+        return handle
+
     def _status_pair(self, label: str) -> tuple[str, str | dict[str, str]]:
         names = self._names
         return self._resolver.field_key(names.status), self._resolver.select_field_value(
@@ -156,6 +188,7 @@ class OnboardingEngine:
         person = self._field_text(item, names.person_name)
         note = self._field_text(item, names.note)
         business = item.name.strip()
+        instagram = self.instagram_handle(item)
 
         invite: CreatedInvite | None = None
         try:
@@ -175,11 +208,11 @@ class OnboardingEngine:
                 can_reply=bool(mail_reply_to()),
             )
         except SignupNotAllowed as exc:
-            return self._fail(work_item_id, "invalid_input", exc.message, invite)
+            return self._fail(work_item_id, "invalid_input", exc.message, invite, instagram)
         except MailNotConfigured as exc:
-            return self._fail(work_item_id, "mail_not_configured", str(exc), invite)
+            return self._fail(work_item_id, "mail_not_configured", str(exc), invite, instagram)
         except MailError as exc:
-            return self._fail(work_item_id, "mail_failed", str(exc), invite)
+            return self._fail(work_item_id, "mail_failed", str(exc), invite, instagram)
 
         status_key, status_value = self._status_pair(STATUS_INVITED)
         self._client.update_fields(
@@ -196,10 +229,17 @@ class OnboardingEngine:
             f"Invitación enviada a {invite.email}. Vence el {date_es(invite.expires_at)}.",
         )
         logger.info("meegle onboarding: work_item=%s invite=%s sent", work_item_id, invite.id)
-        return InvitationResult(ok=True, invite_id=invite.id)
+        return InvitationResult(
+            ok=True, invite_id=invite.id, instagram_handle=instagram, email=invite.email
+        )
 
     def _fail(
-        self, work_item_id: int, reason: str, detail: str, invite: CreatedInvite | None
+        self,
+        work_item_id: int,
+        reason: str,
+        detail: str,
+        invite: CreatedInvite | None,
+        instagram: str | None = None,
     ) -> InvitationResult:
         names = self._names
         status_key, status_value = self._status_pair(STATUS_ERROR)
@@ -219,7 +259,12 @@ class OnboardingEngine:
         logger.warning(
             "meegle onboarding: work_item=%s invitation failed (%s)", work_item_id, reason
         )
-        return InvitationResult(ok=False, reason=reason, invite_id=invite.id if invite else None)
+        return InvitationResult(
+            ok=False,
+            reason=reason,
+            invite_id=invite.id if invite else None,
+            instagram_handle=instagram,
+        )
 
     def _rollback_data_node(self, work_item_id: int, reason: str) -> None:
         try:

@@ -27,6 +27,15 @@
 #                    server-deploy.sh waits for it to be healthy; enabling it needs the bigger
 #                    server first (docs/despliegue-hetzner.md).
 
+# Memory caps (m-24852229). The VPS has 3.8 GB shared with the edge proxy and other products, and
+# before these caps no service but render had one: a runaway process could push the kernel
+# into swap or make it OOM-kill Postgres. Each Python service gets mem_limit = memswap_limit
+# (no swap for the container) at ~2.5-3x what `docker stats` measured on 2026-10-24, so a
+# leak or a burst kills only that container and `restart: unless-stopped` brings it back.
+# api gets the most: it runs generations inline today and downloads each vendor video
+# whole into memory (creative/media.py, up to 200 MB) before uploading it to R2.
+# postgres, redis and caddy stay uncapped on purpose (killing them is what the caps avoid).
+
 name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
 
 # The Python image is BUILT by exactly one service (`api`, below); every other service
@@ -75,6 +84,11 @@ x-app-env: &app-env
   QUALIFY_MAIL_FAKE: ""
   # Signup is invite-only (`just invite`); this dev hatch must never open it in production.
   QUALIFY_SIGNUP_OPEN: ""
+  # m-24852203: the inbox's Meta read simulator is dev-only. Forced off here, and the
+  # production marker below makes `qualify_api.inbox.simulator` refuse it outright.
+  QUALIFY_META_READS: ""
+  QUALIFY_META_READS_FIXTURE: ""
+  QUALIFY_DEPLOY_ENV: production
   # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
   # passwords there. Serving processes only need the per-role DSNs above — and the owner
   # password in particular is a superuser that bypasses RLS, which none of them may hold.
@@ -178,6 +192,9 @@ services:
       dockerfile: deploy/Dockerfile
       target: app
     restart: unless-stopped
+    # m-24852229: 102 MiB measured idle 2026-10-24; see «Memory caps» at the top.
+    mem_limit: 1g
+    memswap_limit: 1g
     environment:
       <<: *app-env
     command:
@@ -208,6 +225,9 @@ services:
   reflex:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
+    # m-24852229: 183 MiB measured idle 2026-10-24; see «Memory caps» at the top.
+    mem_limit: 512m
+    memswap_limit: 512m
     environment:
       <<: *app-env
       # The embedded calendar worker (QUA-111) is FORCED off here: publishing runs in the
@@ -275,6 +295,9 @@ services:
   webhook-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
+    # m-24852229: 84 MiB measured idle 2026-10-24; see «Memory caps» at the top.
+    mem_limit: 256m
+    memswap_limit: 256m
     environment:
       <<: *app-env
     command:
@@ -297,6 +320,9 @@ services:
   whatsapp-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
+    # m-24852229: 69 MiB measured idle 2026-10-24; see «Memory caps» at the top.
+    mem_limit: 256m
+    memswap_limit: 256m
     environment:
       <<: *app-env
     command:
@@ -322,6 +348,9 @@ services:
   conversations-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
+    # m-24852229: 79 MiB measured idle 2026-10-24; see «Memory caps» at the top.
+    mem_limit: 256m
+    memswap_limit: 256m
     environment:
       <<: *app-env
     command:
@@ -354,6 +383,9 @@ services:
   calendar-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
+    # m-24852229: 107 MiB measured idle 2026-10-24; see «Memory caps» at the top.
+    mem_limit: 320m
+    memswap_limit: 320m
     environment:
       <<: *app-env
       QUALIFY_PIECE_PURGE_EXECUTE: ${QUALIFY_PIECE_PURGE_EXECUTE:-1}

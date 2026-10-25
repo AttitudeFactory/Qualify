@@ -1,0 +1,30 @@
+{
+  "success": true,
+  "more_available": false,
+  "next_max_id": null,
+  "items": [
+    {
+      "code": "DEMO001",
+      "taken_at": -10,
+      "like_count": 320,
+      "comment_count": 14,
+      "play_count": 5100,
+      "caption": {"text": "Nuevo sabor: maracuyá con yogur griego 🍦 #helados #postres #cucuta"}
+    },
+    {
+      "code": "DEMO002",
+      "taken_at": -40,
+      "like_count": 210,
+      "comment_count": 6,
+      "play_count": 3300,
+      "caption": {"text": "Copa de frutos rojos para compartir #helados #yogurt"}
+    },
+    {
+      "code": "DEMO003",
+      "taken_at": -90,
+      "like_count": 180,
+      "comment_count": 9,
+      "caption": {"text": "Abiertos todos los días de 2 a 9 pm #postres #cucuta"}
+    }
+  ]
+}

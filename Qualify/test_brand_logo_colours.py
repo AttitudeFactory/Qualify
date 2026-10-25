@@ -14,6 +14,7 @@ from uuid import UUID
 
 import pytest
 from PIL import Image, ImageDraw
+from qualify_api.creative import brand_prefill
 
 from . import creative_wizard_pages as wiz
 from .creative_state import CreativeState
@@ -31,6 +32,29 @@ def _png(*fills: str) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, "PNG")
     return buffer.getvalue()
+
+
+class _OwnClaims:
+    """Every account is this brand's (the claim is `db`-tested in packages/api)."""
+
+    def claim(self, *_a: Any) -> bool:
+        return True
+
+    def release(self, *_a: Any) -> None:
+        return None
+
+    def keep_only(self, *_a: Any) -> None:
+        return None
+
+
+class _NoCache:
+    """Nothing cached yet, nothing kept."""
+
+    def get(self, *_a: Any) -> None:
+        return None
+
+    def put(self, *_a: Any) -> None:
+        return None
 
 
 class _Session:
@@ -61,12 +85,13 @@ class _Session:
         monkeypatch.setattr(BrandConnectState, "get_state", get_state)
         # `analyze` claims the account and reads through the tenant's cache: both are the
         # database, stubbed here — the account is this brand's, nothing is cached yet
-        claims = wiz.account_claims_provider
-        monkeypatch.setattr(claims, "claim", lambda _t, _n, _h: (_BRAND, True))
-        monkeypatch.setattr(claims, "keep_only", lambda *_a: None)
-        monkeypatch.setattr(claims, "release", lambda *_a: None)
-        monkeypatch.setattr(wiz.creator_cache_provider, "cached_snapshot", lambda *_a: None)
-        monkeypatch.setattr(wiz.creator_cache_provider, "remember_snapshot", lambda *_a: None)
+        # (`brand_prefill.prefill_brand_kit`, the ports `_prefill_ports` hands it)
+        monkeypatch.setattr(wiz, "default_brand_id", lambda _t: _BRAND)
+        monkeypatch.setattr(
+            wiz,
+            "_prefill_ports",
+            lambda: brand_prefill.PrefillPorts(claims=_OwnClaims(), cache=_NoCache()),
+        )
         monkeypatch.setattr(wiz.growth_provider, "record_profile_read", lambda *_a: 0)
         self.picture: bytes | None = _png("#be123c")
         self.fetches: list[tuple[str, str, str]] = []
@@ -177,7 +202,9 @@ async def test_the_profile_answer_is_ignored_for_a_default_or_missing_picture(
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
 
 
-DEFAULT_INSTAGRAM = Path(__file__).resolve().parent / "fixtures" / "instagram_default_avatar.jpg"
+#: The real default avatars live with `logo_palette`'s tests since m-24852195.
+_API_FIXTURES = Path(__file__).resolve().parents[1] / "packages" / "api" / "tests" / "fixtures"
+DEFAULT_INSTAGRAM = _API_FIXTURES / "instagram_default_avatar.jpg"
 
 
 async def test_the_picture_check_tells_a_real_picture_from_the_default_one(
@@ -305,9 +332,9 @@ async def test_analyze_detects_a_real_picture_but_no_longer_preanswers_the_quest
         wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
     )
     monkeypatch.setattr(
-        wiz.creator_discovery,
+        wiz.discovery_seed,
         "seed_from_profile",
-        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+        lambda _profile: wiz.discovery_seed.DiscoverySeed(handle="marca.demo", niches=()),
     )
     state = session.connect
     state.profile_pic_is_real = False
@@ -340,9 +367,9 @@ async def test_analyze_asks_the_question_when_the_picture_is_only_the_default_on
         wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
     )
     monkeypatch.setattr(
-        wiz.creator_discovery,
+        wiz.discovery_seed,
         "seed_from_profile",
-        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+        lambda _profile: wiz.discovery_seed.DiscoverySeed(handle="marca.demo", niches=()),
     )
     state = session.connect
     state.username = "marca.demo"
@@ -366,9 +393,9 @@ async def test_analyze_asks_the_question_when_the_profile_has_no_picture(
         wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
     )
     monkeypatch.setattr(
-        wiz.creator_discovery,
+        wiz.discovery_seed,
         "seed_from_profile",
-        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+        lambda _profile: wiz.discovery_seed.DiscoverySeed(handle="marca.demo", niches=()),
     )
     state = session.connect
     state.username = "marca.demo"
@@ -403,9 +430,9 @@ async def _analyze_as(
         wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
     )
     monkeypatch.setattr(
-        wiz.creator_discovery,
+        wiz.discovery_seed,
         "seed_from_profile",
-        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="creador.demo", niches=()),
+        lambda _profile: wiz.discovery_seed.DiscoverySeed(handle="creador.demo", niches=()),
     )
     state = session.connect
     state.account_kind = kind
@@ -446,7 +473,7 @@ async def test_analyze_skips_an_influencer_with_no_picture_at_all(
     assert state.step == wiz._CONNECT_CONFIRM_STEP
 
 
-DEFAULT_TIKTOK = Path(__file__).resolve().parent / "fixtures" / "tiktok_default_avatar.jpg"
+DEFAULT_TIKTOK = _API_FIXTURES / "tiktok_default_avatar.jpg"
 
 
 async def test_the_picture_check_knows_tiktoks_default_by_its_url_without_downloading(

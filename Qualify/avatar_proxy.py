@@ -279,7 +279,7 @@ def fresh_vendor_url(network: str, handle: str, *, now: float | None = None) -> 
     if not _take_refresh_slot((network, handle.lower()), moment):
         return ""
     try:
-        from . import scrapecreators_client
+        from qualify_api.referentes import scrapecreators_client
 
         profile = scrapecreators_client.fetch_profile(network, handle)
     except Exception as exc:  # noqa: BLE001 - a picture must never break the page

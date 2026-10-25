@@ -100,12 +100,32 @@ class TenantMember(Base):
 
 class BrandKitDraft(Base):
     """The email a pre-login Brand Kit was started with (migration 0037): resuming the
-    draft by email and adopting its tenant at signup (`qualify_api.auth.drafts`)."""
+    draft by email and adopting its tenant at signup (`qualify_api.auth.drafts`).
+
+    `origin` (migration 0091): `web` = typed on the first view; `alta` = prepared for a
+    Meegle «Alta de cliente» (`meegle_work_item_id`), reserved to that Alta's invitation."""
 
     __tablename__ = "brand_kit_drafts"
     __table_args__ = (
-        UniqueConstraint("email_key", name="uq_brand_kit_drafts_email_key"),
         UniqueConstraint("tenant_id", name="uq_brand_kit_drafts_tenant"),
+        CheckConstraint(
+            "(origin = 'web' AND meegle_work_item_id IS NULL) OR "
+            "(origin = 'alta' AND meegle_work_item_id IS NOT NULL)",
+            name="ck_brand_kit_drafts_origin",
+        ),
+        Index(
+            "uq_brand_kit_drafts_web_email_key",
+            "email_key",
+            unique=True,
+            postgresql_where=text("origin = 'web'"),
+        ),
+        Index(
+            "uq_brand_kit_drafts_alta_item",
+            "meegle_work_item_id",
+            unique=True,
+            postgresql_where=text("origin = 'alta'"),
+        ),
+        Index("ix_brand_kit_drafts_email_key", "email_key"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -120,6 +140,10 @@ class BrandKitDraft(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    origin: Mapped[str] = mapped_column(
+        String, nullable=False, default="web", server_default=text("'web'")
+    )
+    meegle_work_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class SignupInvite(Base):

@@ -20,8 +20,8 @@ Los dos flujos escriben en el **mismo registro**: los campos de `CreativeState` 
 | `Qualify/creative_pages.py` | **Sin cambios.** `brand_index` (el acordeón) sigue aquí, sin ruta. |
 | `Qualify/creative_state.py` | **Sin cambios.** Sigue siendo la única fuente de verdad para los campos persistidos y `save_kit_form`. |
 | `Qualify/Qualify.py` | Registra las tres rutas nuevas (ver tabla siguiente) y ya no registra `brand_index`. |
-| `Qualify/scrapecreators_client.py` | Cliente del API de terceros Scrape Creators (perfil TikTok/Instagram) + lectura/escritura del snapshot JSON genérico — ver §4. |
-| `Qualify/test_scrapecreators_client.py` | Tests offline del cliente anterior (`httpx.MockTransport`, sin red). |
+| `packages/api/src/qualify_api/referentes/scrapecreators_client.py` (en `Qualify/` hasta m-24852195) | Cliente del API de terceros Scrape Creators (perfil TikTok/Instagram) + lectura/escritura del snapshot JSON genérico — ver §4. |
+| `packages/api/tests/test_referentes_scrapecreators_client.py` | Tests offline del cliente anterior (`httpx.MockTransport`, sin red). |
 | `Qualify/fixtures/brand_connect_profile.json` | **Genérico y sobreescribible.** Último perfil leído por Scrape Creators para el flujo "Ya tengo redes" — ver §4. No versionado como dato real, se sobreescribe en cada análisis. |
 | `Qualify/fixtures/midu.dev_prueba.json` | Fixture de demo original (ya no la lee el wizard) — se conserva como muestra de referencia. |
 | `Qualify/creator_discovery.py` *(nuevo, 2026-09-11)* | Discovery de cuentas compatibles sobre los endpoints de búsqueda de Scrape Creators. Dos usos: el CLI de filtros (§4.2, banco de pruebas) y la **búsqueda por fases conectada al Brand Kit** (§4.3: semilla desde el perfil → sector → país → ciudad). Sin Postgres: caché en JSON. |

@@ -94,6 +94,7 @@ def _draft(
             status=status,
             pipeline_version="creative-v2",
             created_at=datetime.now(UTC) - age,
+            updated_at=datetime.now(UTC) - age,
         )
         session.add(draft)
         session.flush()

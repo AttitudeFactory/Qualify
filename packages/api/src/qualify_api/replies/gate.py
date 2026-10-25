@@ -209,7 +209,7 @@ def _any_comment_verdict(gate_input: GateInput, triage: TriageEvidence) -> GateV
             passed=False,
             reason=(
                 f"triage says {triage.kind!r} but the comment has no stored sentiment or "
-                "intent row yet — run «Ordenar por prioridad» first"
+                "intent row yet — the automatic analysis has not reached it"
             ),
         )
     who = "owner asked, " if gate_input.owner_requested else ""

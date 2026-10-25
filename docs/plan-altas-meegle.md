@@ -43,7 +43,7 @@ UI de Meegle (10 minutos); los campos pueden crearse por API.
 | Correo | text | literal; el `+alias` es el negocio |
 | Nombre de la persona | text | para el saludo |
 | Nota personal | multi-text | va en el correo («Como hablamos hoy…») |
-| Instagram / TikTok | text | opcional hoy; lo usa A2 mañana |
+| Cuenta de Instagram | text | opcional; Qualify la lee y la normaliza (`@usuario`, `usuario` o el enlace del perfil → `usuario`) desde m-24852194; la usará la precarga de la identidad de marca (épica m-24852192). Clave `field_dbfee5`. El campo antiguo «Instagram / TikTok» (`field_7ec111`) sigue en el tipo pero Qualify no lo lee |
 
 **Campos que escribe Qualify** (solo lectura para el equipo, por convención):
 

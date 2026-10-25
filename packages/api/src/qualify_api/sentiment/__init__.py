@@ -1,7 +1,7 @@
 """Persisted, versioned sentiment analysis over a tenant's own Instagram comments
-(QUA-21). Manual trigger only — no scheduler, no automatic run after
-`inbox.sync_comments()`; both are explicit, separate design decisions this module
-does not make on its own.
+(QUA-21). This module never schedules itself; since m-24852204 the caller that does is
+`qualify_api.comment_analysis` (after every comment sync, plus the webhook worker's
+sweep).
 
 Reads `messages` rows QUA-20/88/89 already ingest (never re-parses a raw Meta
 payload — `messages` does not retain the full `IGComment` shape, so this module

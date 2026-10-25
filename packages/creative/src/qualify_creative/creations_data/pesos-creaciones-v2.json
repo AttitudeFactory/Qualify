@@ -1,0 +1,44 @@
+{
+  "version": "pesos-creaciones-v2",
+  "pricing_table_version": "v7",
+  "source": "docs/creaciones-del-mes-medicion.md §5 (v2, 2026-10-24, m-24851828)",
+  "usd_per_creation": "0.15",
+  "monthly_quota": 30,
+  "weights": {
+    "image": 1,
+    "image_redo": 1,
+    "text_redo": 0,
+    "angles": 0,
+    "script": 1,
+    "template": 1
+  },
+  "carousel_by_images": [
+    {"up_to": 3, "weight": 1},
+    {"up_to": 7, "weight": 2},
+    {"up_to": 10, "weight": 3}
+  ],
+  "videos": {
+    "monthly_quota": 4,
+    "offered_seconds": [5, 10],
+    "monthly_preview_quota": 20,
+    "decided": "founder 2026-10-24: every Seedance video (clip, Seedance avatar, animated carousel slide, clip with a reference video) counts 1 of 4 videos a month, up to 10 s, charged when the owner APPROVES (the final is ordered); each draft made counts 1 of 20 vistas previas a month, charged at creation; videos use no creations"
+  },
+  "generated_video": {
+    "model_id": "dreamina-seedance-2-5-260628",
+    "max_output_seconds": 15,
+    "fixed_usd": "0.068",
+    "preview_resolution": "480p",
+    "final_resolution": "1080p",
+    "preview_tokens_per_second": 9870,
+    "final_tokens_per_second": 48672,
+    "final_counts_input_video": true,
+    "unknown_input_video_seconds": 30,
+    "audio_usd_per_second": "0"
+  },
+  "presenter_by_seconds": [
+    {"up_to": 5, "weight": 5},
+    {"up_to": 10, "weight": 9},
+    {"up_to": 15, "weight": 13},
+    {"up_to": 30, "weight": 25}
+  ]
+}

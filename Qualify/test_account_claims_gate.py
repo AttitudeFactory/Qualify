@@ -13,6 +13,8 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from qualify_api.creative import brand_prefill
+from qualify_api.creative.account_claims import AccountTaken
 
 from . import creative_wizard_pages as wiz
 from .auth_state import AuthState
@@ -39,35 +41,44 @@ class _World:
             return auth
 
         monkeypatch.setattr(BrandConnectState, "get_state", get_state)
-        claims = wiz.account_claims_provider
+        # the brand of the session, then everything `brand_prefill.prefill_brand_kit`
+        # touches outside the process (`wiz._prefill_ports`)
+        monkeypatch.setattr(wiz, "default_brand_id", lambda _t: BRAND)
+        world = self
 
-        def claim(tenant_id: UUID, network: str, handle: str) -> tuple[UUID, bool]:
-            self.calls.append(("claim", (tenant_id, network, handle)))
-            if self.taken:
-                raise claims.AccountTaken(network)
-            return BRAND, not self.already_ours
+        class Claims:
+            def claim(self, tenant_id: UUID, brand_id: UUID, network: str, handle: str) -> bool:
+                world.calls.append(("claim", (tenant_id, brand_id, network, handle)))
+                if world.taken:
+                    raise AccountTaken(network)
+                return not world.already_ours
 
-        monkeypatch.setattr(claims, "claim", claim)
-        monkeypatch.setattr(claims, "release", lambda *a: self.calls.append(("release", a)))
-        monkeypatch.setattr(claims, "keep_only", lambda *a: self.calls.append(("keep_only", a)))
+            def release(self, *a: Any) -> None:
+                world.calls.append(("release", a))
 
-        def cached(*a: Any) -> None:
-            self.calls.append(("cache", a))
+            def keep_only(self, *a: Any) -> None:
+                world.calls.append(("keep_only", a))
 
-        def fetch(network: str, handle: str) -> dict[str, Any]:
+        class Cache:
+            def get(self, *a: Any) -> None:
+                world.calls.append(("cache", a))
+
+            def put(self, *a: Any) -> None:
+                return None
+
+        def fetch(network: str, handle: str, _client: Any) -> dict[str, Any]:
             self.calls.append(("fetch", (network, handle)))
             if self.read_fails:
                 raise wiz.scrapecreators_client.ScrapeCreatorsError("not found")
             return PROFILE
 
-        monkeypatch.setattr(wiz.creator_cache_provider, "cached_snapshot", cached)
-        monkeypatch.setattr(wiz.creator_cache_provider, "remember_snapshot", lambda *a: None)
-        monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", fetch)
+        self.ports = brand_prefill.PrefillPorts(claims=Claims(), cache=Cache(), read_profile=fetch)
+        monkeypatch.setattr(wiz, "_prefill_ports", lambda: self.ports)
         monkeypatch.setattr(wiz.growth_provider, "record_profile_read", lambda *a: 0)
         monkeypatch.setattr(
-            wiz.creator_discovery,
+            wiz.discovery_seed,
             "seed_from_profile",
-            lambda _p: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+            lambda _p: wiz.discovery_seed.DiscoverySeed(handle="marca.demo", niches=()),
         )
 
     def names(self) -> list[str]:
@@ -101,7 +112,7 @@ async def test_the_brands_own_account_is_claimed_first_then_read(
     world = _World(monkeypatch)
     state = await _analyze()
     assert world.names() == ["claim", "cache", "fetch", "keep_only"]
-    assert world.calls[0][1] == (TENANT, "instagram", "@Marca.Demo")
+    assert world.calls[0][1] == (TENANT, BRAND, "instagram", "@Marca.Demo")
     # the account read becomes the brand's one account on Instagram
     assert world.calls[-1][1] == (TENANT, BRAND, "instagram", "@Marca.Demo")
     assert state.error == "" and state.profile_username == "marca.demo"
@@ -149,7 +160,7 @@ async def test_a_claim_that_cannot_be_checked_refuses_the_read(
         world.calls.append(("claim", _a))
         raise OperationalError("SELECT 1", {}, Exception("connection refused"))
 
-    monkeypatch.setattr(wiz.account_claims_provider, "claim", down)
+    monkeypatch.setattr(world.ports.claims, "claim", down)
     state = await _analyze()
     assert world.names() == ["claim"]
     assert state.error == wiz._PROFILE_UNAVAILABLE

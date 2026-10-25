@@ -1,13 +1,13 @@
 """«Consultas desde comentarios» on the screens (m-24789646, PR 3) — network-free, no
-database: the card VMs, the «Analizar intención» hook and its toast, «Responder por DM»
+database: the card VMs, the automatic analysis hook (m-24852204), «Responder por DM»
 in Interacciones, the Conversaciones toggle and the state's guards.
 
 Pins:
 1. A card says who, where, why (intents, «no fiable»), the route it would go out on now
    and for how long — or, with no route, the reason for each one, the capability's
    included; the draft text and «requiere revisión» with the claims to confirm.
-2. `_open_followups` is best effort: a failure is logged and counts 0, never undoing the
-   analysis the person just saw. The toast names the new queries.
+2. The automatic pass that opens the queries is best effort: a failure is logged and
+   reads as «nothing new», never an error on screen.
 3. Interacciones has «Responder por DM» on every comment; Conversaciones has the
    «Mensajes | Consultas desde comentarios» toggle and runs `FollowupsState.enter_page`
    on load.
@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from qualify_api.conversations.drafts import new_draft
@@ -61,7 +61,6 @@ from .followups_vm import (
     step_label,
     time_left,
 )
-from .inbox_vm import IntentAnalysisSummaryVM
 
 NOW = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
 ZONE = ZoneInfo("America/Bogota")
@@ -190,23 +189,17 @@ def test_time_left_reads_in_days_hours_and_minutes() -> None:
 # --- Interacciones -------------------------------------------------------------------------
 
 
-def test_opening_followups_is_best_effort(monkeypatch) -> None:  # noqa: ANN001
-    class Broken:
-        def open_from_intents(self, tenant_id: UUID, connection_id: UUID) -> object:
-            raise RuntimeError("db down")
+def test_prioritizing_after_a_sync_is_best_effort(monkeypatch) -> None:  # noqa: ANN001
+    """m-24852204: the automatic pass (which also opens the queries) never raises into
+    the screen; a failure reads as «nothing new»."""
 
-    from . import followups_provider
+    def broken(**_kwargs: object) -> object:
+        raise RuntimeError("db down")
 
-    monkeypatch.setattr(followups_provider, "gateway", lambda: Broken())
-    assert asyncio.run(inbox_provider._open_followups(uuid4(), uuid4())) == 0  # noqa: SLF001
-
-
-def test_the_analysis_toast_names_the_new_queries() -> None:
-    summary = IntentAnalysisSummaryVM(
-        comments_checked=3, new_results=3, skipped_empty=0, unclassified=0, followups_opened=2
-    )
-    assert inbox_state._intent_result_message(summary).endswith(  # noqa: SLF001
-        "2 quieren comprar: te esperan en «Conversaciones»."
+    monkeypatch.setattr(inbox_provider, "analyze_after_sync", broken)
+    assert (
+        asyncio.run(inbox_provider.analyze_comments_now(tenant_id=uuid4(), connection_id=uuid4()))
+        is False
     )
 
 

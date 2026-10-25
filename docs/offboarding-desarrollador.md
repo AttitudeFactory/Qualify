@@ -255,3 +255,17 @@ proveedor nuevo sin tabla de opciones y decisión del fundador; precios a confir
   compartir trazas en vivo o enviar trazas de producción, decidiéndolo junto con qué datos de
   clientes pueden salir. Meterlo en el VPS compartido (B en el mismo servidor) es la opción menos
   recomendable: no cabe, y el riesgo lo paga también Pedidos.
+
+**Decisión del fundador (2026-10-24 · ADR 40 · m-24852185):** opción **C para las dos**, también
+para Langfuse (más allá de la recomendación de arriba).
+- **SonarQube → SonarQube Cloud**, gratis mientras el repo sea público. `sonar.yml` y
+  `sonar-project.properties` ya apuntan a `https://sonarcloud.io`; el análisis arranca cuando el
+  fundador ponga `SONAR_TOKEN` y `SONAR_ENABLED=true`.
+- **Langfuse → Langfuse Cloud, región EU** (AWS `eu-west-1`, **Irlanda**; la tabla de arriba decía
+  Fráncfort por error), plan *Hobby*, proyectos `qualify-dev` y `qualify-prod` (épica m-24852178).
+  Las trazas de producción **no** quedan decididas: esperan a la revisión del DPA (m-24852181).
+
+Detalle, opciones consideradas, la lista **«Pasos del fundador»** y el procedimiento para exportar
+el Langfuse de Deivid e importarlo en Cloud: [`adr-40-sonar-langfuse-gestionados.md`](adr-40-sonar-langfuse-gestionados.md).
+Cuando los dos estén en la nube y Deivid haya dado de baja sus instancias, este riesgo queda
+cerrado para cualquier offboarding futuro.

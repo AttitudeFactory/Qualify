@@ -33,10 +33,10 @@ import logging
 from uuid import UUID
 
 import reflex as rx
+from qualify_api.referentes.scrapecreators_client import ScrapeCreatorsError
 
 from . import scrapecreators_trending
 from .auth_state import AuthState
-from .scrapecreators_client import ScrapeCreatorsError
 from .stories_provider import suggest_trend_audio as _suggest_trend_audio
 from .stories_vm import (
     TrendAudioOptionVM,

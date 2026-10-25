@@ -126,6 +126,7 @@ def stale_and_fresh_drafts() -> tuple[UUID, UUID, UUID]:
             status=DRAFTING,
             pipeline_version="creative-v1",
             created_at=datetime.now(UTC) - timedelta(minutes=30),
+            updated_at=datetime.now(UTC) - timedelta(minutes=30),
         )
         fresh = orm.ContentDraft(
             tenant_id=DB_TENANT,
@@ -167,6 +168,95 @@ def test_reaper_flips_stale_drafting_to_failed_timeout(
         fresh = session.get(orm.ContentDraft, fresh_id)
         assert stale is not None and stale.status == FAILED
         assert fresh is not None and fresh.status == DRAFTING
+
+
+def _set_last_progress(tenant_id: UUID, draft_id: UUID, minutes_ago: float) -> None:
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative import models as orm
+
+    with tenant_session(tenant_id) as session:
+        draft = session.get(orm.ContentDraft, draft_id)
+        assert draft is not None
+        draft.updated_at = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+
+
+@pytest.mark.db
+def test_reaper_spares_a_long_run_that_keeps_making_progress(
+    stale_and_fresh_drafts: tuple[UUID, UUID, UUID],
+) -> None:
+    """m-24852156: a ten-slide animated carousel started 30 min ago and still keeping
+    a slide every ~2 min is alive. Its heartbeat (`record_progress`) is what the reaper
+    reads; the same draft silent for 21 min is a dead thread and is reaped."""
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative import models as orm
+    from qualify_api.creative.dispatch import record_progress
+
+    tenant_id, alive_id, _ = stale_and_fresh_drafts  # born 30 min ago, no progress yet
+    record_progress(tenant_id=tenant_id, draft_id=alive_id)  # its latest slide was kept
+
+    # the reaper runs every minute through the rest of the carousel: never flips it
+    for _ in range(3):
+        reap_stale_drafts(tenant_id=tenant_id)
+    with tenant_session(tenant_id) as session:
+        assert session.get(orm.ContentDraft, alive_id).status == DRAFTING
+
+    # then the process dies: no stamp for 21 min → reaped, as before
+    _set_last_progress(tenant_id, alive_id, minutes_ago=21)
+    reap_stale_drafts(tenant_id=tenant_id)
+    with tenant_session(tenant_id) as session:
+        dead = session.get(orm.ContentDraft, alive_id)
+        assert dead.status == FAILED and dead.failure_reason == "timeout"
+
+    # a stamp on a draft already reaped changes nothing
+    before = None
+    with tenant_session(tenant_id) as session:
+        before = session.get(orm.ContentDraft, alive_id).updated_at
+    record_progress(tenant_id=tenant_id, draft_id=alive_id)
+    with tenant_session(tenant_id) as session:
+        assert session.get(orm.ContentDraft, alive_id).updated_at == before
+
+
+@pytest.mark.db
+def test_progress_is_stamped_only_inside_the_owning_tenant(
+    stale_and_fresh_drafts: tuple[UUID, UUID, UUID],
+) -> None:
+    """The heartbeat runs in the draft's tenant session: another business's id stamps
+    nothing (RLS), so it cannot keep a foreign draft alive."""
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative import models as orm
+    from qualify_api.creative.dispatch import record_progress
+
+    tenant_id, stale_id, _ = stale_and_fresh_drafts
+    record_progress(tenant_id=uuid4(), draft_id=stale_id)  # some other tenant
+    reap_stale_drafts(tenant_id=tenant_id)
+    with tenant_session(tenant_id) as session:
+        assert session.get(orm.ContentDraft, stale_id).status == FAILED
+
+
+@pytest.mark.db
+def test_asking_for_another_version_of_an_old_piece_restarts_the_clock(
+    stale_and_fresh_drafts: tuple[UUID, UUID, UUID],
+) -> None:
+    """«Pedir otra versión» puts a draft born long ago back in DRAFTING: the run starts
+    then, so the reaper must not fail it on the next listing."""
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative import models as orm
+    from qualify_api.creative.service import PostgresContentRepository
+
+    tenant_id, old_id, _ = stale_and_fresh_drafts
+    _set_last_progress(tenant_id, old_id, minutes_ago=60 * 24)
+    with tenant_session(tenant_id) as session:
+        session.get(orm.ContentDraft, old_id).status = "rejected"
+    PostgresContentRepository().update_status(
+        tenant_id=tenant_id, draft_id=old_id, new_status=DRAFTING, failure_reason=None
+    )
+    reap_stale_drafts(tenant_id=tenant_id)
+    with tenant_session(tenant_id) as session:
+        assert session.get(orm.ContentDraft, old_id).status == DRAFTING
 
 
 def test_each_provider_resolves_its_own_platform_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,6 +321,7 @@ def test_reaper_gives_a_talking_presenter_its_render_window(
             status=DRAFTING,
             pipeline_version="creative-v1",
             created_at=datetime.now(UTC) - timedelta(minutes=30),
+            updated_at=datetime.now(UTC) - timedelta(minutes=30),
         )
         dead = orm.ContentDraft(
             tenant_id=tenant_id,
@@ -239,6 +330,7 @@ def test_reaper_gives_a_talking_presenter_its_render_window(
             status=DRAFTING,
             pipeline_version="creative-v1",
             created_at=datetime.now(UTC) - timedelta(minutes=OMNIHUMAN_REAP_AFTER_MINUTES + 5),
+            updated_at=datetime.now(UTC) - timedelta(minutes=OMNIHUMAN_REAP_AFTER_MINUTES + 5),
         )
         session.add_all([rendering, dead])
         session.flush()

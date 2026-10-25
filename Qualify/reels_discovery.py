@@ -61,9 +61,9 @@ from uuid import UUID
 import httpx
 from qualify_api.claude_tools import MissingAPIKey, ModelConfig, api_key_from_env
 from qualify_api.referentes import ai as review_ai
-from qualify_api.referentes import reels_ai
+from qualify_api.referentes import reels_ai, scrapecreators_client
 
-from . import creator_discovery, referentes_provider, referentes_review, scrapecreators_client
+from . import creator_discovery, referentes_provider, referentes_review
 from .avatar_proxy import reel_cover_path
 
 logger = logging.getLogger(__name__)

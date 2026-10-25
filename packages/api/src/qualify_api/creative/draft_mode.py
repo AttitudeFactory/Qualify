@@ -68,13 +68,33 @@ def draft_expired(block: Mapping[str, Any], now: float | None = None) -> bool:
     return (time.time() if now is None else now) - created >= DRAFT_TTL_SECONDS
 
 
+def draft_expires_at(params: list[Mapping[str, object] | None]) -> float | None:
+    """When the first of a piece's vistas previas stops being able to give its video
+    final (Unix seconds: its `created_at` + 7 days) — for «Apruébala antes del …»
+    (founder, 2026-10-24). Only drafts still waiting count (not a final, not one whose
+    paid final is kept); None when there is none, or no date came back."""
+    ends = []
+    for block in (draft_state(p) for p in params):
+        if block is None or kept_raw_final(block) is not None:
+            continue
+        if str(block.get("status") or DRAFT_READY) not in (DRAFT_READY, DRAFT_FAILED):
+            continue
+        created = block.get("created_at")
+        if isinstance(created, bool) or not isinstance(created, int | float):
+            continue
+        ends.append(float(created) + DRAFT_TTL_SECONDS)
+    return min(ends) if ends else None
+
+
 #: A final still `rendering` this long after its work started (ordered, or claimed by
 #: the thread making it) was left by a dead process (an `InlineDispatcher` thread dies
 #: with it): the operator may order it again. Over the Seedance adapter's 8-minute poll
 #: window plus the download and the re-encode.
 FINAL_STALE_SECONDS = 20 * 60
 #: What a final left half-made by a dead process says on the screen.
-FINAL_STALE_TEXT = "El video final se quedó a medias. Inténtalo de nuevo."
+FINAL_STALE_TEXT = (
+    "El video final se quedó a medias. Toca Reintentar: sigue donde quedó, sin cobrarte otra vez."
+)
 
 
 def final_stale(block: Mapping[str, Any] | None, now: float | None = None) -> bool:

@@ -309,3 +309,15 @@ def test_rows_cannot_be_updated_or_deleted_by_the_app_role() -> None:
         with pytest.raises(Exception, match="permission denied"):
             with tenant_session(TENANT_I) as session:
                 session.execute(text(statement), {"m": message_id})
+
+
+def test_a_bounded_pending_read_takes_the_newest_comments_first() -> None:
+    """m-24852204: the automatic pass takes `limit` comments per connection; the newest
+    go first so a backlog never delays what just arrived."""
+    connection_id = _seed_connection(TENANT_I)
+    seeded = [_seed_comment(TENANT_I, connection_id)[0] for _ in range(3)]
+    version = _fresh_version()
+    pending = PostgresIntentRepository().list_pending_for_intent(
+        tenant_id=TENANT_I, connection_id=connection_id, version=version, limit=2
+    )
+    assert [p.message_id for p in pending] == [seeded[2], seeded[1]]

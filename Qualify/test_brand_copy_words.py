@@ -23,7 +23,8 @@ SCREENS = (
     "brand_documents.py",
     "brand_avatar_panel.py",
     "brand_kit_editor.py",
-    "logo_palette.py",
+    # moved to the backend with no copy change (m-24852195); its strings still reach the owner
+    "../packages/api/src/qualify_api/creative/logo_palette.py",
 )
 FORBIDDEN = re.compile(
     r"brand ?kit|brandboard|insights?|claims?\b|detractor|\bemail\b|claude|anthropic"
@@ -57,11 +58,15 @@ def _copy_strings(source: str) -> list[tuple[int, str]]:
     ]
 
 
+def _path(name: str) -> Path:
+    return (HERE / name).resolve()
+
+
 @pytest.mark.parametrize("name", SCREENS)
 def test_no_flagged_word_reaches_the_owner(name: str) -> None:
     found = [
         f"{name}:{line}: {text!r}"
-        for line, text in _copy_strings((HERE / name).read_text())
+        for line, text in _copy_strings(_path(name).read_text())
         if FORBIDDEN.search(text)
     ]
     assert found == []

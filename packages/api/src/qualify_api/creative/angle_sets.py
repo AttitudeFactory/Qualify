@@ -64,7 +64,8 @@ from qualify_creative.angles import (
     price_conflicts,
     price_problem,
 )
-from qualify_creative.enums import DraftStatus, FailureReason
+from qualify_creative.creations import weight_for_request
+from qualify_creative.enums import ContentKind, DraftStatus, FailureReason
 from qualify_creative.providers import PricingTable
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import case, func, select, update
@@ -74,6 +75,7 @@ from ..catalog.service import ProductRecord, UnknownProduct
 from ..claude_tools import CallStats, ClaudeToolError, MissingAPIKey
 from . import models as orm
 from .angles_ai import AnglesProviderError
+from .creations import CreationsLedger, NotEnoughCreations, not_enough_text
 from .service import (
     ApprovalBlocked,
     BrandNotReady,
@@ -878,8 +880,11 @@ class AngleSetService:
         pricing: PricingTable | None = None,
         image_model_id: str = "",
         clock: Callable[[], datetime] | None = None,
+        creations: CreationsLedger | None = None,
     ) -> None:
         self._repo = repository
+        #: «Creaciones del mes» (CREAR-5): checked before a batch so it is all or nothing
+        self._creations = creations
         self._catalog = catalog
         self._brand_facts = brand_facts
         self._kits = kit_reader
@@ -1222,6 +1227,8 @@ class AngleSetService:
         if not view.can_regenerate:
             raise AngleNotActionable("Solo se regenera una pieza que ya está lista para revisar.")
         assert view.angle.draft_id is not None  # can_regenerate implies a draft
+        # CREAR-5: checked before the piece is rejected, so a short month keeps it
+        self._ensure_creations(tenant_id, record.brand_id, 1)
         self._drafts.reject(
             tenant_id=tenant_id,
             draft_id=view.angle.draft_id,
@@ -1248,6 +1255,16 @@ class AngleSetService:
         if record.status != SET_GENERATING:
             self._repo.update_set(tenant_id=tenant_id, set_id=record.id, status=SET_GENERATING)
         return draft_id
+
+    def _ensure_creations(self, tenant_id: UUID, brand_id: UUID, pieces: int) -> None:
+        """Refuse, before anything is created, a request the month cannot pay: each
+        piece is one image (`pesos-creaciones-v2`)."""
+        if self._creations is None:
+            return
+        needed = pieces * weight_for_request(ContentKind.STATIC_FLYER.value).weight
+        left = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id).left
+        if needed > left:
+            raise AngleNotActionable(not_enough_text(needed - left))
 
     def _angle_view(self, tenant_id: UUID, angle_id: UUID) -> tuple[AngleSetRecord, AngleView]:
         """One angle with its draft's status — what the per-angle actions decide on."""
@@ -1286,6 +1303,8 @@ class AngleSetService:
         ]
         if not targets:
             return GenerationOutcome(campaign_id=record.campaign_id)
+        # CREAR-5: the whole batch or nothing — never some pieces and a «te faltan»
+        self._ensure_creations(tenant_id, record.brand_id, len(targets))
         context = self._context(tenant_id, record)
         campaign_id = self._ensure_campaign(tenant_id, record, user_id)
         queued: list[UUID] = []
@@ -1353,6 +1372,7 @@ class AngleSetService:
                 request_key = angle.request_key
         elif angle.status != ANGLE_PROPOSED:
             raise AngleNotActionable("Esa propuesta no se puede reintentar.")
+        self._ensure_creations(tenant_id, record.brand_id, 1)
         context = self._context(tenant_id, record)
         campaign_id = self._ensure_campaign(tenant_id, record, user_id)
         try:
@@ -1483,6 +1503,11 @@ class AngleSetService:
             raise AngleNotActionable(
                 "La marca necesita su Brand Kit y su voz activa antes de generar."
             ) from exc
+        except NotEnoughCreations as exc:
+            self._fail_reserved(
+                tenant_id, angle, request_key, FailureReason.BUDGET_EXCEEDED.value, str(exc)
+            )
+            raise AngleNotActionable(not_enough_text(exc.missing)) from exc
         except RouteBlockedByPolicy as exc:
             self._fail_reserved(
                 tenant_id,

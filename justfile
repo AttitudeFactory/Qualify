@@ -184,6 +184,21 @@ conversations-seed *args:
 story-probe *args:
     uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
 
+# m-24852202: optional, one-off — keep in R2 the picture of publications monitored before
+# pictures were stored. One Meta read per publication (200/hour ledger); idempotent.
+#   just inbox-thumbs-backfill --tenant <uuid> --connection <uuid> [--limit 50]
+inbox-thumbs-backfill *args:
+    uv run --no-sync python -m qualify_api.inbox.thumbnails_backfill {{args}}
+
+# m-24852203: dev-only Meta READ simulator for Interacciones. Run the app with
+# QUALIFY_META_READS=fixture (synthetic dev/meta-fixtures/inbox.json, any connection, no
+# token); refused where QUALIFY_DEPLOY_ENV=production. Replies/publishing stay real.
+# This recipe writes a LOCAL fixture from a connection's own rows (real data: keep it out
+# of git) to use with QUALIFY_META_READS_FIXTURE=<path>.
+#   just inbox-fixture-export --tenant <uuid> --connection <uuid> --out <path>
+inbox-fixture-export *args:
+    uv run --no-sync python -m qualify_api.inbox.fixture_export {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main
@@ -300,6 +315,12 @@ render-logs:
 # End-to-end smoke test against the running render service (uploads, renders, downloads).
 render-smoke base="http://127.0.0.1:3200":
     packages/render/scripts/smoke.sh {{base}}
+
+# --- ScrapeCreators CLI (.claude/skills/qualify-scrapecreators) --------------------
+# Runs the official CLI with the project's key. Live calls spend credits.
+[positional-arguments]
+sc *args:
+    @if [ -z "${SCRAPECREATORS_API_KEY:-}" ] && [ -f .env ]; then export SCRAPECREATORS_API_KEY="$(grep -m1 '^SCRAPECREATORS_API_KEY=' .env | cut -d= -f2- | tr -d "\"' ")"; fi; [ -n "${SCRAPECREATORS_API_KEY:-}" ] || { echo "Falta SCRAPECREATORS_API_KEY (.env o shell)" >&2; exit 1; }; command -v scrapecreators >/dev/null || { echo "Instala la CLI: npm install -g @scrapecreators/cli" >&2; exit 1; }; scrapecreators "$@"
 
 # --- Langfuse autoalojado (docs/plan-observabilidad-langfuse.md §3, etapa A) ----------
 # Its own compose project: `just down` never touches the traces. UI on http://localhost:3100.

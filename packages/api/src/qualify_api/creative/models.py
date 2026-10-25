@@ -17,7 +17,7 @@ Key rulings encoded in the shapes:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -25,6 +25,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -700,6 +701,114 @@ class CreativeEngineConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+CREATION_CHARGE_STATUSES: tuple[str, ...] = ("charged", "refunded")
+
+
+class CreationCharge(Base):
+    """One charged generation in «creaciones del mes» (0088, CREAR-5 m-24848531): its
+    weight and the versions that priced it. A refund keeps the row and turns its status;
+    the dollars stay in `creative_usage_events`, joined by `draft_id` for the team.
+    `previews` (founder, 2026-10-24) are the «vistas previas» charged at creation;
+    `videos` the month's videos charged at APPROVAL (0 until then; `videos_period_month`
+    is the approval's month); a failed 1080p final gives its video back by adding its
+    asset to `final_refunded_assets`."""
+
+    __tablename__ = "creation_charges"
+    __table_args__ = (
+        CheckConstraint("status IN ('charged','refunded')", name="ck_creation_charges_status"),
+        UniqueConstraint("draft_id", "revision", name="uq_creation_charges_generation"),
+        Index("ix_creation_charges_tenant", "tenant_id"),
+        Index("ix_creation_charges_brand_month", "tenant_id", "brand_id", "period_month"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False)
+    monthly_quota: Mapped[int] = mapped_column(Integer, nullable=False)
+    weights_version: Mapped[str] = mapped_column(Text, nullable=False)
+    pricing_table_version: Mapped[str] = mapped_column(Text, nullable=False)
+    period_month: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'charged'"))
+    refund_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    charged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    previews: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    monthly_preview_quota: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    videos: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    monthly_video_quota: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    videos_period_month: Mapped[date | None] = mapped_column(Date, nullable=True)
+    videos_charged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    final_refunded_assets: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PGUUID(as_uuid=True)), nullable=False, server_default=text("'{}'::uuid[]")
+    )
+    final_refunded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    final_refund_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CreativeVendorTask(Base):
+    """One asynchronous vendor task a generation created (0090, m-24852154): recorded the
+    moment the vendor accepts it, so a task that outlives our wait — BytePlus's queue, a
+    deploy killing the thread — is resumed by its id and never submitted again nor lost
+    while billed. `slot` names the call inside the generation ('video', 'clip',
+    'slide-3', 'final:<asset id>'); `context` keeps what a resumed run reuses (the copy
+    the video was made from). `status` leaves 'pending' once the run settles it."""
+
+    __tablename__ = "creative_vendor_tasks"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_creative_vendor_tasks_revision"),
+        CheckConstraint(
+            "status IN ('pending','succeeded','failed')", name="ck_creative_vendor_tasks_status"
+        ),
+        UniqueConstraint("draft_id", "revision", "slot", name="uq_creative_vendor_tasks_slot"),
+        Index("ix_creative_vendor_tasks_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    slot: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    vendor_task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    pipeline_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    context: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # `creative_angle_sets` / `creative_angles` vocabularies (0070, ticket 24803289). Strings

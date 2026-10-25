@@ -147,7 +147,7 @@ Lo que sigue describe cómo se obtiene cada transcripción:
 - [Qualify/reels_discovery.py](../Qualify/reels_discovery.py): el pipeline.
 - [Qualify/discover_reels.py](../Qualify/discover_reels.py): estado y vista.
 - [packages/api/src/qualify_api/referentes/reels_ai.py](../packages/api/src/qualify_api/referentes/reels_ai.py): la revisión de rubro.
-- `fetch_reels` en [Qualify/scrapecreators_client.py](../Qualify/scrapecreators_client.py).
+- `fetch_reels` en [packages/api/src/qualify_api/referentes/scrapecreators_client.py](../packages/api/src/qualify_api/referentes/scrapecreators_client.py).
 
 **Tests:** `Qualify/test_reels_discovery.py` y `packages/api/tests/test_referentes_reels_ai.py`. Además, el lector se probó contra 6 respuestas reales: 12/12 reels de IG y 9/10 videos de TikTok (el que falta es un carrusel de fotos, descartado a propósito).
 

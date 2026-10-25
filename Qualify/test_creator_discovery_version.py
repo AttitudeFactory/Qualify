@@ -25,9 +25,14 @@ import ast
 import hashlib
 from pathlib import Path
 
+from qualify_api.referentes import discovery_seed
+
 from . import creator_discovery as cd
 
-_MODULE = Path(cd.__file__)
+#: The algorithm lives in two modules since m-24852195: the seed read from the brand's
+#: own account and the tables it stands on moved to the backend (`discovery_seed`), the
+#: phased search stayed here. Both are fingerprinted, in this order.
+_MODULES = (Path(discovery_seed.__file__), Path(cd.__file__))
 
 _NOT_ALGORITHM = frozenset(
     {
@@ -110,7 +115,15 @@ FINGERPRINTS: dict[int, str] = {
     # `_NOT_ALGORITHM` — the owner's words for a phase, not which accounts it finds; a bump
     # would recompute every brand's saved search and spend credits for the same accounts.
     # Was "1f3513dc18d2911b3bdbe8766dc43b11a99ab2440f3301f8d59182bc40fa6efe".
-    12: "1fc685cc844f93fa7b18792c0d704e725e1dc6b5b48d24af93e78bb5d199fad8",
+    # Re-pinned again, not bumped (m-24852195): `seed_from_profile` and the pure tables it
+    # reads moved verbatim to `qualify_api.referentes.discovery_seed`, and the fingerprint
+    # now covers both modules. Same code, same accounts. Was
+    # "1fc685cc844f93fa7b18792c0d704e725e1dc6b5b48d24af93e78bb5d199fad8".
+    # Re-pinned again, not bumped (m-24852197): `_is_place_tag`, `SECTOR_CATALOG_TAGS` and
+    # `CHOSEN_HASHTAGS` moved verbatim to `discovery_seed` with the hashtag catalog (now
+    # `qualify_api.hashtags.catalog`); the same nodes, only in another order. Was
+    # "48c38afca303731b21563875114286b3ae48512849d4f1b1c51d3705813c0d44".
+    12: "c217b646cd5fdf98b09ab1f2e7e3fa2013838f20f74c633751551b5ec358e885",
 }
 
 
@@ -122,6 +135,12 @@ def _names(node: ast.stmt) -> set[str]:
     if isinstance(node, ast.AnnAssign):
         return {ast.unparse(node.target)}
     return set()
+
+
+def _parsed(source: str) -> ast.Module:
+    tree = ast.parse(source)
+    _strip_docstrings(tree)
+    return tree
 
 
 def _strip_docstrings(tree: ast.AST) -> None:
@@ -137,11 +156,9 @@ def _strip_docstrings(tree: ast.AST) -> None:
                 node.body = body[1:] or [ast.Pass()]
 
 
-def algorithm_fingerprint(source: str) -> str:
-    tree = ast.parse(source)
-    _strip_docstrings(tree)
+def algorithm_fingerprint(*sources: str) -> str:
     kept = []
-    for node in tree.body:
+    for node in (node for source in sources for node in _parsed(source).body):
         if isinstance(node, ast.Import | ast.ImportFrom):
             continue
         if isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
@@ -154,14 +171,15 @@ def algorithm_fingerprint(source: str) -> str:
 
 def test_algorithm_changes_bump_the_plan_version() -> None:
     version = cd.PHASED_PLAN_VERSION
-    current = algorithm_fingerprint(_MODULE.read_text(encoding="utf-8"))
+    current = algorithm_fingerprint(*(m.read_text(encoding="utf-8") for m in _MODULES))
     pinned = FINGERPRINTS.get(version)
     assert pinned is not None, (
         f"PHASED_PLAN_VERSION is {version} but FINGERPRINTS has no entry for it. "
         f'Add `{version}: "{current}",` to FINGERPRINTS in this file.'
     )
     assert current == pinned, (
-        "The referentes algorithm in creator_discovery.py changed but PHASED_PLAN_VERSION "
+        "The referentes algorithm (discovery_seed.py + creator_discovery.py) changed but "
+        "PHASED_PLAN_VERSION "
         f"is still {version}. Stored results would keep serving the old algorithm's "
         f"answer. Bump PHASED_PLAN_VERSION to {version + 1} and add "
         f'`{version + 1}: "{current}",` to FINGERPRINTS. (If the change is not about '

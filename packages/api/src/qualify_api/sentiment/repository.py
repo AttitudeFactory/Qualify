@@ -188,6 +188,10 @@ class ReelSummary:
     # and format (`IMAGE`/`VIDEO`/`CAROUSEL_ALBUM`), persisted on the same row by QUA-146.
     media_product_type: str | None = None
     media_type: str | None = None
+    # m-24852202 (0089): the picture kept in R2 for this media (`inbox.thumbnails`), and
+    # its content type. `None` = none stored; the screen falls back to the live list.
+    thumbnail_key: str | None = None
+    thumbnail_content_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -225,15 +229,24 @@ class CommentListCursor:
 
 class SentimentRepository(Protocol):
     def list_pending_for_analysis(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: AnalysisVersion,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         """Every un-analyzed inbound comment for the connection, current `version`,
         regardless of `monitored_media.is_monitored` (QUA-94, confirmed product
         decision: desmonitorear stops future ingestion, it does not invalidate
         comments already synced — they stay real, analyzable data). Analysis is driven
         entirely by `qualify_api.sentiment.service.analyze_pending_comments`
-        (the manual "Analizar sentimiento" trigger, QUA-21/QUA-92) — nothing here
-        needs to change for a Reel that stops being monitored, and nothing does."""
+        (automatic since m-24852204, via `qualify_api.comment_analysis`) — nothing here
+        needs to change for a Reel that stops being monitored, and nothing does.
+
+        Newest first (`posted_at`, then id). `limit` bounds one pass (m-24852204: the
+        automatic analysis takes a batch per connection, the rest waits for the next
+        pass); `None` = every pending comment."""
         ...
 
     def record_sentiment_result(
@@ -348,6 +361,8 @@ class MemorySentimentRepository:
             tuple[UUID, str],
             tuple[datetime | None, str | None, str | None, str | None, str | None],
         ] = {}
+        # Same key -> (thumbnail_key, thumbnail_content_type), m-24852202.
+        self._thumbnails: dict[tuple[UUID, str], tuple[str | None, str | None]] = {}
         # (message_id, intent version key) of every comment whose intent signal is
         # commercial — mirrors `comment_intent_results.commercial_intent` (m-24789644),
         # read only by `list_comments_for_thread`'s `commercial_intent` filter.
@@ -364,6 +379,8 @@ class MemorySentimentRepository:
         permalink: str | None = None,
         media_product_type: str | None = None,
         media_type: str | None = None,
+        thumbnail_key: str | None = None,
+        thumbnail_content_type: str | None = None,
     ) -> None:
         """Test-only helper mirroring `InboxRepository.set_media_monitored` — a toggle,
         not an event log: calling this twice for the same `(connection_id,
@@ -376,6 +393,10 @@ class MemorySentimentRepository:
             permalink,
             media_product_type,
             media_type,
+        )
+        self._thumbnails[(connection_id, external_media_id)] = (
+            thumbnail_key,
+            thumbnail_content_type,
         )
 
     def seed_message(
@@ -412,7 +433,12 @@ class MemorySentimentRepository:
         )
 
     def list_pending_for_analysis(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: AnalysisVersion,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         key_suffix = (version.detector_version, version.pipeline_version, version.model_id)
         revision_key = version.model_revision or ""
@@ -429,9 +455,15 @@ class MemorySentimentRepository:
             if (message_id, *key_suffix, revision_key) in self._recorded:
                 continue
             pending.append(
-                PendingComment(message_id=message_id, source_id=source_id, text=comment_text)
+                (
+                    _rest[1] or NULL_POSTED_AT_SENTINEL,
+                    message_id,
+                    PendingComment(message_id=message_id, source_id=source_id, text=comment_text),
+                )
             )
-        return tuple(pending)
+        pending.sort(key=lambda row: (row[0], str(row[1])), reverse=True)
+        ordered = tuple(comment for _posted, _id, comment in pending)
+        return ordered if limit is None else ordered[:limit]
 
     def record_sentiment_result(
         self,
@@ -543,6 +575,7 @@ class MemorySentimentRepository:
             posted_at_meta, caption, permalink, product_type, media_type = self._media_metadata.get(
                 media_key, (None, None, None, None, None)
             )
+            thumb_key, thumb_type = self._thumbnails.get(media_key, (None, None))
             summaries.append(
                 ReelSummary(
                     thread_id=thread_id,
@@ -559,6 +592,8 @@ class MemorySentimentRepository:
                     permalink=permalink,
                     media_product_type=product_type,
                     media_type=media_type,
+                    thumbnail_key=thumb_key,
+                    thumbnail_content_type=thumb_type,
                 )
             )
         summaries.sort(key=lambda s: (s.last_message_at, s.thread_id), reverse=True)
@@ -686,7 +721,12 @@ class PostgresSentimentRepository:
     """
 
     def list_pending_for_analysis(
-        self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: AnalysisVersion,
+        limit: int | None = None,
     ) -> tuple[PendingComment, ...]:
         with tenant_session(tenant_id) as session:
             already_analyzed = (
@@ -724,6 +764,8 @@ class PostgresSentimentRepository:
                     Message.deleted_at.is_(None),
                     ~already_analyzed,
                 )
+                .order_by(Message.posted_at.desc().nulls_last(), Message.id.desc())
+                .limit(limit)
             ).all()
             return tuple(
                 PendingComment(message_id=row.id, source_id=row.external_message_id, text=row.text)
@@ -793,7 +835,8 @@ class PostgresSentimentRepository:
                 SELECT t.id, t.external_thread_id, t.last_message_at,
                   COALESCE(mm.is_monitored, false) AS is_monitored,
                   mm.media_posted_at, mm.caption, mm.permalink,
-                  mm.media_product_type, mm.media_type
+                  mm.media_product_type, mm.media_type,
+                  mm.thumbnail_key, mm.thumbnail_content_type
                 FROM threads t
                 LEFT JOIN monitored_media mm
                   ON mm.connection_id = t.connection_id
@@ -894,6 +937,8 @@ class PostgresSentimentRepository:
                         permalink=row.permalink,
                         media_product_type=row.media_product_type,
                         media_type=row.media_type,
+                        thumbnail_key=row.thumbnail_key,
+                        thumbnail_content_type=row.thumbnail_content_type,
                     )
                 )
             return tuple(summaries)

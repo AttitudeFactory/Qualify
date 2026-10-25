@@ -129,7 +129,7 @@ def test_other_comments_get_no_batch_draft_but_do_when_the_owner_asks() -> None:
 
 def test_the_route_needs_a_stored_analysis_row() -> None:
     verdict = evaluate_gate(_gate(triage=_triage("complaint"), has_analysis_row=False))
-    assert not verdict.passed and "Ordenar por prioridad" in verdict.reason
+    assert not verdict.passed and "automatic analysis has not reached it" in verdict.reason
 
 
 def test_with_the_setting_off_the_triage_is_ignored() -> None:
@@ -496,7 +496,7 @@ def test_reply_here_falls_back_to_the_refusal_when_the_analysis_fails() -> None:
     service = _service(
         repo, FakeTriager({QUESTION: CommentKind.QUESTION}), FakeAnyGenerator(), analyzer=analyzer
     )
-    with pytest.raises(RegenerationRefused, match="Ordenar por prioridad"):
+    with pytest.raises(RegenerationRefused, match="automatic analysis has not reached it"):
         service.prepare_for_comment(
             tenant_id=TENANT, connection_id=CONNECTION, message_id=unsorted.message_id
         )

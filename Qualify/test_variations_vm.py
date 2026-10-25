@@ -125,12 +125,13 @@ def test_a_product_without_price_carries_the_note() -> None:
     assert bare.price_missing and bare.price_note == NO_PRICE_TEXT
 
 
-def test_the_plan_shows_the_image_cost_only_with_a_rate() -> None:
-    assert build_plan_vm(AngleSetPlan(count=10, image_unit_usd=Decimal("0.035"))).images_label == (
-        "10 imágenes · $0.35"
-    )
+def test_the_plan_says_creations_never_money() -> None:
+    """CREAR-5 (decision 8): the owner reads creations of the month, never dollars."""
+    plan = build_plan_vm(AngleSetPlan(count=10, image_unit_usd=Decimal("0.035")))
+    assert plan.images_label == "10 publicaciones · usan hasta 10 de tus creaciones"
+    assert "$" not in plan.images_label and "$" not in plan.note
     assert build_plan_vm(AngleSetPlan(count=10, image_unit_usd=Decimal(0))).images_label == (
-        "10 imágenes"
+        "10 publicaciones · usan hasta 10 de tus creaciones"
     )
 
 

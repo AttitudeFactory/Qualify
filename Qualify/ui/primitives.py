@@ -294,7 +294,7 @@ def sentiment_badge(sentiment: rx.Var[str]) -> rx.Component:
     Matches two vocabularies that coexist in the product: the Mentions dashboard's own
     ``"positive"``/``"negative"`` values, and the QUA-21/QUA-92 pipeline's ``POS``/
     ``NEG``/``NEU`` — the literal values ``comment_sentiment_results.label``'s CHECK
-    constraint allows. ``""`` matches explicitly to «Sin revisar»: the QUA-92 state for
+    constraint allows. ``""`` matches explicitly to «En revisión»: the QUA-92 state for
     a comment with no ``comment_sentiment_results`` row yet under the current model
     version, which must never render as NEU (docs/design-system.md §6.1/§7.2 — a comment
     pending analysis and one classified neutral are different facts)."""
@@ -305,7 +305,7 @@ def sentiment_badge(sentiment: rx.Var[str]) -> rx.Component:
         ("POS", signal_pill("Positiva", "ok")),
         ("NEG", signal_pill("Negativa", "error")),
         ("NEU", signal_pill("Neutra", "neutral")),
-        ("", signal_pill("Sin revisar", "neutral")),
+        ("", signal_pill("En revisión", "neutral")),
         signal_pill("Neutra", "neutral"),
     )
 

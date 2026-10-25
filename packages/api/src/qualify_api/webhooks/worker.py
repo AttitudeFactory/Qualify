@@ -28,6 +28,18 @@ whatever database `QUALIFY_WEBHOOK_WORKER_DSN` names (by default the local devel
 Loop mode also sweeps mention sentiment still pending, once at start and then every
 `SENTIMENT_SWEEP_EVERY` (QUA-152; each mention is normally analyzed right after ingest).
 
+Loop mode also prioritizes the comments of Interacciones on the same cadence
+(m-24852204): sentiment, commercial intent and the queries they open, a bounded batch per
+Instagram connection (`comment_analysis.sweep_pending_comment_analysis`). Each comment is
+normally analyzed right after the sync that brought it; the sweep catches backlogs,
+failures and model outages. It never calls Meta and never sends anything.
+
+Every batch (loop and `--once`) also drains the Brand Kit prefill jobs of Meegle Altas
+(PB-4, m-24852198; `qualify_api.meegle.prefill`) when the Meegle engine is configured:
+ScrapeCreators + Claude for real, then one comment on the Alta item. Nothing is queued
+unless `QUALIFY_ALTA_PREFILL_ENABLED` and `QUALIFY_ALTA_PREFILL_MAX_USD` are set (off by
+default), and a job found while off is settled without running.
+
 Loop mode also runs the age purge for real, once at start and then every `PURGE_EVERY` —
 that is what keeps "29 days + at most 24 h" ≤ 30 days (QUA-127). It deletes only
 settled/failed changes older than `RETENTION`, never `pending`/`processing`.
@@ -50,9 +62,13 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from qualify_api.webhooks.processor import DEFAULT_BATCH, production_processor
 from qualify_api.webhooks.repository import RETENTION, PurgeReport, WebhookQueue
+
+if TYPE_CHECKING:
+    from qualify_api.meegle.prefill import AltaPrefillRunner
 
 logger = logging.getLogger("qualify_api.webhooks.worker")
 
@@ -148,8 +164,46 @@ async def _sentiment_sweep() -> None:
         logger.exception("mentions.sentiment_sweep failed")
 
 
+async def _comment_analysis_sweep() -> None:
+    """m-24852204: prioritize comments still pending. The sweep never raises; this guard
+    is belt and braces, same as `_sentiment_sweep`."""
+    from qualify_api.comment_analysis import sweep_pending_comment_analysis  # noqa: PLC0415
+
+    try:
+        report = await asyncio.to_thread(sweep_pending_comment_analysis)
+        logger.info(
+            "comments.analysis_sweep connections=%d sentiment=%d intent=%d followups=%d errored=%d",
+            report.connections,
+            report.sentiment_new,
+            report.intent_new,
+            report.followups_opened,
+            report.errored,
+        )
+    except Exception:  # noqa: BLE001 — a failed sweep must not stop processing
+        logger.exception("comments.analysis_sweep failed")
+
+
+async def _alta_prefill_pass(runner: AltaPrefillRunner | None) -> None:
+    """PB-4: the due Alta prefill jobs. Never raises; one bad job never stops the loop."""
+    if runner is None:
+        return
+    try:
+        report = await asyncio.to_thread(runner.run_once)
+        if report:
+            logger.info("meegle.alta_prefill %s", dict(report))
+    except Exception:  # noqa: BLE001 — a failed pass must not stop processing
+        logger.exception("meegle.alta_prefill failed")
+
+
+def _prefill_runner(wid: str) -> AltaPrefillRunner | None:
+    from qualify_api.meegle.handlers import production_prefill_runner  # noqa: PLC0415
+
+    return production_prefill_runner(worker_id=wid)
+
+
 async def _run_loop(*, interval: int, limit: int) -> None:
     processor = production_processor(worker_id=worker_id())
+    prefill = _prefill_runner(worker_id())
     queue = WebhookQueue()
     next_purge = time.monotonic()
     next_sweep = time.monotonic()
@@ -161,6 +215,7 @@ async def _run_loop(*, interval: int, limit: int) -> None:
             next_purge = started + PURGE_EVERY.total_seconds()
         if started >= next_sweep:
             await _sentiment_sweep()
+            await _comment_analysis_sweep()
             next_sweep = started + SENTIMENT_SWEEP_EVERY.total_seconds()
         try:
             report = await processor.run_once(limit=limit)
@@ -173,6 +228,7 @@ async def _run_loop(*, interval: int, limit: int) -> None:
                 )
         except Exception:  # noqa: BLE001 — log and keep going
             logger.exception("webhooks.batch failed")
+        await _alta_prefill_pass(prefill)
         await asyncio.sleep(max(0.0, interval - (time.monotonic() - started)))
 
 
@@ -218,6 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.once:
         report = asyncio.run(production_processor(worker_id=worker_id()).run_once(limit=args.limit))
         print(f"claimed={report.claimed} outcomes={dict(report.outcomes)} lost={report.lost}")
+        asyncio.run(_alta_prefill_pass(_prefill_runner(worker_id())))
         return 0
     try:
         asyncio.run(_run_loop(interval=args.interval, limit=args.limit))

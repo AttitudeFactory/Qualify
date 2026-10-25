@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "status": "ok",
+  "data": {
+    "user": {
+      "username": "heladeria.demo",
+      "full_name": "Heladería Demo",
+      "biography": "Heladería de yogur. Postres y helados artesanales en Cúcuta 🇨🇴 Pedidos por DM",
+      "category_name": "Restaurante",
+      "business_category_name": "None",
+      "overall_category_name": null,
+      "is_verified": false,
+      "is_private": false,
+      "edge_followed_by": {"count": 12400},
+      "edge_follow": {"count": 310},
+      "edge_owner_to_timeline_media": {"count": 214},
+      "profile_pic_url_hd": "https://scontent.cdninstagram.com/v/t51.2885-19/heladeria_demo.jpg",
+      "external_url": "",
+      "edge_related_profiles": {"edges": []}
+    }
+  }
+}

@@ -99,7 +99,7 @@ _REPLY_HERE_NOT_YET: Final = (
     "con el botón de al lado."
 )
 # Only when «Responder aquí»'s own analysis of the comment failed (UX review, m-24848533):
-# the owner is never sent to «Ordenar por prioridad» first.
+# there is no button to send the owner to: analysis is automatic (m-24852204).
 _REPLY_HERE_NOT_SORTED: Final = (
     "No pudimos preparar la respuesta todavía. Intenta de nuevo en unos minutos."
 )
@@ -408,10 +408,12 @@ def build_draft_vm(
     signal: IntentSignal | None = None,
     reliable: Mapping[IntentClass, bool] | None = None,
     media: CandidateMediaVM | None = None,
+    stored_thumbnail: str = "",
 ) -> DraftVM:
     """`media` is the publication the comment was left on, from the inbox's ALREADY
-    loaded candidates (m-24842989) — the only source of a picture, since the inbox
-    stores none (Meta's URLs expire). Without it the thumbnail is `""`."""
+    loaded candidates (m-24842989). `stored_thumbnail` (m-24852202) is the `/r2media`
+    path of its picture kept in R2, preferred over the live one. With neither the
+    thumbnail is `""`."""
     grounding = record.grounding
     triage = grounding.get("triage") if isinstance(grounding, Mapping) else None
     kind = str(triage.get("kind") or "") if isinstance(triage, Mapping) else ""
@@ -459,7 +461,7 @@ def build_draft_vm(
         sources_more_label=_more_label(len(sources) - SOURCES_VISIBLE),
         intent_chips=intent_chips(signal, reliable or {}) if is_commercial else [],
         author_username=record.author_username or "",
-        media_thumbnail_url=media.thumbnail_url if media else "",
+        media_thumbnail_url=stored_thumbnail or (media.thumbnail_url if media else ""),
         media_alt=caption or PUBLICATION_ALT_FALLBACK,
         media_day=media.posted_day if media else "",
         failure=failure or "",
@@ -509,7 +511,7 @@ def reply_here_error_message(exc: BaseException) -> str:
             return _REGENERATE_GONE
         if "private message" in reason:
             return _REGENERATE_ANSWERED_BY_DM
-        if "Ordenar por prioridad" in reason:
+        if "automatic analysis has not reached it" in reason:
             return _REPLY_HERE_NOT_SORTED
         if "answered meanwhile" in reason:
             return _REGENERATE_DECIDED

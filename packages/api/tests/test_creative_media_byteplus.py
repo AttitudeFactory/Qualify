@@ -553,7 +553,8 @@ def test_a_seedance_brief_needs_no_voice_but_a_described_presenter() -> None:
         ("HTTP 400 OutputVideoSensitiveContentDetected", "filtro de contenido"),
         ("HTTP 403 AccountOverdueError", "no está disponible ahora mismo"),
         ("MissingPlatformKey: QUALIFY_BYTEPLUS_ARK_API_KEY", "no está disponible ahora mismo"),
-        ("ArkTaskTimeout: task cgt-1 still running", "tardando más de lo normal"),
+        # m-24852154: a timeout is no failure any more (the task is resumed by id)
+        ("ArkTaskTimeout: task cgt-1 still running", "No se pudo generar la pieza."),
         ("HTTP 429 RateLimitExceeded", "muchas generaciones en curso"),
         ("something else", "No se pudo generar la pieza. Inténtalo de nuevo."),
     ],
@@ -1300,7 +1301,7 @@ def test_an_omnihuman_timeout_still_records_the_render_it_will_bill() -> None:
         uuid4(),
     )
     assert outcome.failure == FailureReason.PROVIDER_ERROR.value
-    assert "tardando" in outcome.detail
+    assert "tardó demasiado" in outcome.detail
     render = outcome.usage[-1]
     assert (render.provider, render.model_id, render.unit) == (
         "omnihuman",
@@ -1308,3 +1309,64 @@ def test_an_omnihuman_timeout_still_records_the_render_it_will_bill() -> None:
         "second",
     )
     assert render.cost_usd > 0
+
+
+def test_a_long_animated_carousel_beats_after_every_slide() -> None:
+    """m-24852156: ten animated slides at ~130 s each take ~22 min one after another.
+    Every kept file stamps the draft, so no gap between signs of life comes near the
+    reaper's 20 min — while the whole run is well past it."""
+    from qualify_api.creative.dispatch import DEFAULT_REAP_AFTER_MINUTES
+
+    clock = [0.0]
+    beats: list[float] = []
+
+    class SlowSeedance(FakeSeedance):
+        def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
+            clock[0] += 130.0  # BytePlus renders one slide
+            return super().generate(request, api_key=api_key)
+
+    seedance = SlowSeedance()
+    producer = _carousel_producer(_store(), FakeSeedream(), seedance, FakeFitter())
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=tuple(CarouselSlide(source=SlideSource.ANIMATED) for _ in range(10)),
+    )
+    outcome = producer.produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=brief,
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+        heartbeat=lambda: beats.append(clock[0]),
+    )
+
+    assert outcome.failure is None and len(seedance.requests) == 10
+    assert clock[0] > DEFAULT_REAP_AFTER_MINUTES * 60  # the run outlives the old rule
+    gaps = [later - earlier for earlier, later in zip([0.0, *beats], beats, strict=False)]
+    assert max(gaps) < DEFAULT_REAP_AFTER_MINUTES * 60
+    assert beats[-1] == clock[0]  # the last slide kept is a sign of life too
+
+
+def test_a_failing_heartbeat_never_breaks_the_piece() -> None:
+    def broken() -> None:
+        raise RuntimeError("database away")
+
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.ANIMATED),
+            CarouselSlide(source=SlideSource.GENERATED),
+        ),
+    )
+    producer = _carousel_producer(_store(), FakeSeedream(), FakeSeedance(), FakeFitter())
+    outcome = producer.produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=brief,
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+        heartbeat=broken,
+    )
+    assert outcome.failure is None and len(outcome.media) == 2

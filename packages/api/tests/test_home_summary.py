@@ -8,8 +8,10 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
 
+from qualify_creative.adapters.byteplus_ark import DRAFT_TTL_SECONDS
+
 from qualify_api.home import WEEK, HomeCounts, read_home_counts
-from qualify_api.home.summary import HOME_COUNTS_SQL, counts_from_row
+from qualify_api.home.summary import EXPIRING_SOON, HOME_COUNTS_SQL, counts_from_row
 
 TENANT = UUID("a0000000-0000-4000-8000-0000000000e1")
 
@@ -25,6 +27,7 @@ def _row(**over: object) -> SimpleNamespace:
         "mentions_week": 7,
         "instagram_connected": True,
         "has_publication": False,
+        "videos_expiring_soon": 8,
     }
     base.update(over)
     return SimpleNamespace(**base)
@@ -32,7 +35,7 @@ def _row(**over: object) -> SimpleNamespace:
 
 def test_counts_from_row_maps_every_field() -> None:
     counts = counts_from_row(_row())
-    assert counts == HomeCounts(1, 2, 3, 4, 5, 6, 7, True, False)
+    assert counts == HomeCounts(1, 2, 3, 4, 5, 6, 7, True, False, videos_expiring_soon=8)
     assert counts.messages_week == 9
 
 
@@ -59,7 +62,12 @@ def test_read_goes_through_the_tenant_session_with_a_week_window() -> None:
     counts = read_home_counts(TENANT, now=now, session_factory=factory)
     assert seen["tenant"] == TENANT
     assert seen["sql"] is HOME_COUNTS_SQL
-    assert seen["params"] == {"since": now - WEEK}
+    assert seen["params"] == {
+        "since": now - WEEK,
+        "now": now,
+        "draft_ttl": DRAFT_TTL_SECONDS,
+        "expiring_soon": EXPIRING_SOON.total_seconds(),
+    }
     assert counts.drafts_to_approve == 2
 
 

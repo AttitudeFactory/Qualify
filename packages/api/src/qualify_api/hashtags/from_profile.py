@@ -16,7 +16,7 @@ One strict tool call, `proponer_hashtags`, which also names the account's RUBRO 
 phrase (§ third round of 2026-10-05: "que autocompletes el input de tu rubro"). Nothing is
 written here — the wizard asks the shared catalog first and only uses these tags when the
 catalog has none for the rubro, storing them there so the next search finds them
-(`Qualify/hashtag_catalog.remember_created`). Without an API key, or when the call fails,
+(`qualify_api.hashtags.catalog.remember_created`). Without an API key, or when the call fails,
 the caller falls back to `from_posts`: the account's own most-used hashtags, real and free.
 """
 

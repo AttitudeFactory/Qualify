@@ -78,10 +78,13 @@ def test_names_default_to_the_plan_and_accept_overrides(monkeypatch: pytest.Monk
     names = MeegleNames.from_env()
     assert names.email == "Correo" and names.status == "Estado Qualify"
     assert names.node_data == "Datos" and names.node_registered == "Registrada"
+    assert names.instagram == "Cuenta de Instagram"
     monkeypatch.setenv("QUALIFY_MEEGLE_FIELD_EMAIL", "Email")
+    monkeypatch.setenv("QUALIFY_MEEGLE_FIELD_INSTAGRAM", "Instagram")
     monkeypatch.setenv("QUALIFY_MEEGLE_NODE_DATA", "Data")
     overridden = MeegleNames.from_env()
     assert overridden.email == "Email" and overridden.node_data == "Data"
+    assert overridden.instagram == "Instagram"
     assert overridden.status == "Estado Qualify"  # untouched ones keep the plan's label
 
 

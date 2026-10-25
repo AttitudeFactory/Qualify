@@ -8,9 +8,9 @@ import time
 from uuid import UUID
 
 from qualify_api.referentes.profile_cache import SNAPSHOT_TTL, MemoryProfileCacheRepository
+from qualify_api.referentes.scrapecreators_client import SNAPSHOT_SCHEMA
 
 from . import creator_cache_provider as cache
-from .scrapecreators_client import SNAPSHOT_SCHEMA
 
 TENANT = UUID("a0000000-0000-4000-8000-0000000000d1")
 OTHER = UUID("a0000000-0000-4000-8000-0000000000d2")

@@ -2,7 +2,7 @@
 
 The owner opens the app and sees, in this order:
 
-1. «Hoy tienes» — up to three tappable cards with what waits for them, each opening the
+1. «Hoy tienes» — up to four tappable cards with what waits for them, each opening the
    list already filtered (N11).
 2. «Para tu primera publicación» — the checklist with its progress, while a step is
    missing (N2); a finished step stays with ✓ «Listo» and is not a link.

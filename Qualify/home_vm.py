@@ -3,7 +3,7 @@
 `build_home_vm` turns the backend's `HomeCounts` into what the screen prints, in the
 owner's words, and decides which blocks show:
 
-- «Hoy tienes»: up to three tappable cards, only the ones with something pending, each
+- «Hoy tienes»: up to four tappable cards, only the ones with something pending, each
   linking to the list already filtered (N11).
 - «Para tu primera publicación»: the checklist with its progress («Llevas 1 de 2»); a
   finished step stays visible with ✓ «Listo» and stops being a link (N2). The whole
@@ -26,6 +26,8 @@ from qualify_api.home import HomeCounts
 # screens read it (`conversations_vm.filter_from_param`, `planner_vm.gallery_filter_from_param`).
 CONVERSATIONS_PENDING_URL = "/conversations?filtro=pendientes"
 DRAFTS_TO_APPROVE_URL = "/drafts?estado=por-completar"
+# founder 2026-10-24: the same list, every piece, the soonest-expiring vistas previas first
+VIDEOS_EXPIRING_URL = "/drafts?estado=por-completar&orden=vence"
 COMMENTS_URL = "/inbox"
 CONVERSATIONS_URL = "/conversations"
 WHATSAPP_CHATS_URL = "/whatsapp?tab=chats"
@@ -107,6 +109,11 @@ def drafts_to_approve_label(n: int) -> str:
     )
 
 
+def videos_expiring_label(n: int) -> str:
+    """Founder 2026-10-24: from 2 days before a vista previa expires."""
+    return _plural(n, "{n} video vence pronto", "{n} videos vencen pronto")
+
+
 def comments_unanswered_label(n: int) -> str:
     # The count covers the last 7 days only; the label says so.
     return _plural(
@@ -135,6 +142,14 @@ def _today(counts: HomeCounts) -> list[TodayCardVM]:
             drafts_to_approve_label(counts.drafts_to_approve),
             DRAFTS_TO_APPROVE_URL,
             "layout-list",
+        ),
+        # founder 2026-10-24: a vista previa about to expire loses its video final
+        TodayCardVM(
+            "expiring",
+            counts.videos_expiring_soon,
+            videos_expiring_label(counts.videos_expiring_soon),
+            VIDEOS_EXPIRING_URL,
+            "clock",
         ),
         TodayCardVM(
             "comments",

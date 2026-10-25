@@ -119,6 +119,67 @@ def test_a_different_connection_is_isolated() -> None:
     assert summary.comments_checked == 0
 
 
+# --- m-24852236: one comment's failure never fails the rest of the pass ---------------
+
+
+class _FailsOnMarkerProvider:
+    model_id = "stub/fails-on-marker"
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def classify(self, text: str) -> tuple[str, float]:
+        if "ROMPE" in text:
+            raise self._error
+        return "POS", 0.9
+
+
+def _failing_service(error: Exception) -> tuple[SentimentService, MemorySentimentRepository]:
+    repo = MemorySentimentRepository()
+    provider = _FailsOnMarkerProvider(error)
+    return SentimentService(repository=repo, version=VERSION, provider=provider), repo
+
+
+@pytest.mark.parametrize("error", [IndexError("idx"), RuntimeError("x"), TimeoutError()])
+def test_a_failing_comment_does_not_fail_the_batch(
+    error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    service, repo = _failing_service(error)
+    bad_id = uuid4()
+    repo.seed_message(message_id=uuid4(), connection_id=CONNECTION_ID, source_id="a", text="hola")
+    repo.seed_message(
+        message_id=bad_id,
+        connection_id=CONNECTION_ID,
+        source_id="b",
+        text="ROMPE texto privado del cliente",
+    )
+    repo.seed_message(message_id=uuid4(), connection_id=CONNECTION_ID, source_id="c", text="bien")
+
+    with caplog.at_level("WARNING"):
+        summary = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.comments_checked == 3
+    assert summary.new_results == 2
+    assert summary.failed == 1
+    assert str(bad_id) in caplog.text
+    assert type(error).__name__ in caplog.text
+    assert "privado" not in caplog.text  # never the comment's text
+
+    # Nothing was recorded for it, so it stays pending and the next pass retries only it.
+    retry = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    assert (retry.comments_checked, retry.new_results, retry.failed) == (1, 0, 1)
+
+
+@pytest.mark.parametrize("error", [ModuleNotFoundError("transformers"), OSError("no weights")])
+def test_an_environment_error_still_stops_the_pass(error: Exception) -> None:
+    """Missing runtime or weights is not one comment's fault: it propagates as before."""
+    service, repo = _failing_service(error)
+    repo.seed_message(message_id=uuid4(), connection_id=CONNECTION_ID, source_id="b", text="ROMPE")
+
+    with pytest.raises(type(error)):
+        service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+
 # --- list_reel_summaries / global_sentiment_summary / list_comments_for_thread (QUA-93) --
 
 
@@ -559,6 +620,9 @@ def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
         # m-24789644 (B2): the media's surface and format — scalars about the media.
         "media_product_type": "str | None",
         "media_type": "str | None",
+        # m-24852202: the R2 key of the media's stored picture and its content type.
+        "thumbnail_key": "str | None",
+        "thumbnail_content_type": "str | None",
     }
 
 

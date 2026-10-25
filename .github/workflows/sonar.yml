@@ -1,17 +1,27 @@
-# SonarQube Community Build (self-hosted, free) analysis of `main`.
+# SonarQube Cloud analysis of `main` (ADR 40, founder 2026-10-24: managed, free while
+# AttitudeFactory/Qualify is public). It replaced the self-hosted Community Build that only
+# ever ran on one developer's machine (docs/offboarding-desarrollador.md §7.2).
 #
-# Community Build analyzes ONE branch per project and has no PR decoration (both start
-# in Developer Edition), so this runs on push to main + manual dispatch only, and never
-# on pull requests. Configuration lives in sonar-project.properties at the repo root;
-# the server itself is infra/sonarqube/.
+# Runs on push to main + manual dispatch only. SonarQube Cloud can also analyze pull requests;
+# that is a follow-up, not on by default (minutes, below). Configuration lives in
+# sonar-project.properties at the repo root (organization + project key).
 #
-# SECRETS (both required) + the repo VARIABLE SONAR_ENABLED=true. Without the variable the
-# job is skipped before any runner starts (zero minutes):
-#   SONAR_HOST_URL  e.g. https://sonar.attitudefactory.co  (behind TLS — never plain
-#                   http on the internet; the token travels in every request)
-#   SONAR_TOKEN     a "Project analysis token" for project key `qualify`, generated in
-#                   SonarQube under My Account → Security.
-# Runbook: infra/sonarqube/README.md · docs/calidad-codigo-revision-automatica.md
+# OPT-IN: the repo VARIABLE SONAR_ENABLED=true + the SECRET SONAR_TOKEN. Without the
+# variable the job is skipped before any runner starts (zero minutes), so CI stays green
+# until the founder has created the SonarQube Cloud organization and the token.
+#   SONAR_TOKEN     a SonarQube Cloud token (My Account → Security), never a personal
+#                   password; `gh secret set SONAR_TOKEN` reads it from the terminal.
+#   SONAR_HOST_URL  NOT a secret any more: SonarQube Cloud EU is https://sonarcloud.io,
+#                   set below as a plain env value.
+# In SonarQube Cloud, Automatic Analysis must be OFF for this project: with both on, the
+# CI analysis fails (docs.sonarsource.com/sonarqube-cloud/advanced-setup/automatic-analysis).
+# Founder steps: docs/adr-40-sonar-langfuse-gestionados.md «Pasos del fundador».
+#
+# MINUTES: one job of ≈3-4 min (uv sync + offline tests for coverage + scan) per push to
+# main that touches code (paths-ignore below). Standard GitHub-hosted runners are free on
+# public repositories; if the repo goes private again, that is ≈3-4 billed minutes per
+# code merge against the 2,000/month of GitHub Free — switch SONAR_ENABLED off then
+# (security.yml's semgrep + bandit cover the essentials).
 #
 # Coverage is produced in this job rather than downloaded from ci.yml: the db-marked
 # tests need the compose Postgres and ci.yml's artifact names are owned by another
@@ -40,11 +50,11 @@ concurrency:
 jobs:
   analyze:
     name: scan main
-    # Opt-in with the repo variable SONAR_ENABLED=true, set together with the SONAR_TOKEN and
-    # SONAR_HOST_URL secrets. A variable can gate the job itself; a secret cannot, and the
+    # Opt-in with the repo variable SONAR_ENABLED=true, set together with the SONAR_TOKEN
+    # secret. A variable can gate the job itself; a secret cannot, and the
     # old secret-probing `preflight` job cost a billed minute on every push to main.
-    # Second guard: Community Build has a single analyzed branch, so a dispatch from
-    # another ref would overwrite main's analysis with that branch's code.
+    # Second guard: a dispatch from another ref would be analyzed as a long-lived branch
+    # and mixed into the dashboard; only main is analyzed.
     if: vars.SONAR_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -61,11 +71,11 @@ jobs:
       QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test
       QUALIFY_REDIS_URL: redis://localhost:6379/15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history: Sonar's blame/new-code detection degrades on shallow clones.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           python-version: "3.12.13"
           enable-cache: true
@@ -85,19 +95,18 @@ jobs:
           --cov=packages/api/src --cov=packages/shared/src
           --cov=packages/scraper/src --cov=packages/creative/src --cov=Qualify
           --cov-report=xml:coverage.xml
-      - name: SonarQube scan
-        uses: SonarSource/sonarqube-scan-action@v8
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >-
             -Dsonar.projectVersion=${{ github.sha }}
       # No quality-gate wait in v1: the gate is informative until the team has seen a
       # few analyses. Flip `sonar.qualitygate.wait=true` in sonar-project.properties
-      # (and drop the notice below) to make it blocking.
+      # to make it blocking.
       - name: Link
-        env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          echo "SonarQube dashboard: ${SONAR_HOST_URL}/dashboard?id=qualify" >> "$GITHUB_STEP_SUMMARY"
+          key=$(sed -n 's/^sonar.projectKey=//p' sonar-project.properties)
+          echo "SonarQube Cloud: https://sonarcloud.io/project/overview?id=${key}" >> "$GITHUB_STEP_SUMMARY"

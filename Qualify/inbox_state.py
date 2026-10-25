@@ -32,11 +32,12 @@ own message — session expired, account disconnected, permission missing, Meta 
 expired, budget spent, Instagram failing, anything else — so «Esa cuenta ya no está
 disponible» only ever means what it says: the connection is not visible to this tenant.
 
-**`analyze_sentiment` is QUA-21's manual trigger, made visible as a button (QUA-92).** It
-is the only place in this file that calls `qualify_api.sentiment` for a WRITE —
-`sync_comments` above never mentions it, in either direction (pinned by
-`test_analyze_sentiment_is_independent_of_sync_comments_in_both_directions` and
-`test_sync_comments_never_runs_sentiment_analysis`).
+**Prioritization is automatic (m-24852204, founder 2026-10-24).** The «Ordenar por
+prioridad» button is gone: every successful `sync_comments` chains `analyze_new_comments`
+(sentiment, commercial intent and the «Quieren comprar» queries, one bounded pass through
+`qualify_api.comment_analysis`), and the webhook worker sweeps whatever is left. The
+chaining happens after the sync returned and in its own background task, so the sync
+spinner, its toast and the page load never wait for the models.
 
 **QUA-93 replaces the flat `comments` list with a two-level read: Reel summary cards
 (`reel_summaries`, paginated) + a global widget (`global_summary`) at the top level, and
@@ -47,7 +48,7 @@ that bound is load-bearing, not a style choice (a naive unbounded read regressed
 28.5-SECOND query at 1,000 Reels x 100 comments).
 
 `_refresh_after_write` is the one post-write re-read THREE handlers call. `sync_comments`
-and `analyze_sentiment` call it in their tail, reached ONLY on success (every failure
+and `analyze_new_comments` call it in their tail, reached ONLY on success (every failure
 branch `return`s before it — see each handler's own comment for why that structural
 placement is what makes "only on success" true without an extra flag). `toggle_monitored`
 (QUA-94) calls it unconditionally, right after `_load_candidates` — see its own comment
@@ -84,15 +85,13 @@ from qualify_api.inbox import (
     SyncBudgetExhausted,
     UnknownInboxConnection,
 )
-from qualify_api.intent import IntentModelUnavailable, UnknownIntentConnection
-from qualify_api.sentiment import SentimentModelUnavailable, UnknownSentimentConnection
+from qualify_api.sentiment import UnknownSentimentConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .inbox_provider import (
     INTENT_FILTER_COMMERCIAL,
-    analyze_intent_now,
-    analyze_sentiment_now,
+    analyze_comments_now,
     candidate_media,
     global_summary_vm,
     instagram_connections,
@@ -105,22 +104,17 @@ from .inbox_provider import (
     toggle_monitoring,
 )
 from .inbox_sync_policy import claim_is_stale, normalize_trigger, skip_for_cooldown
-from .inbox_vm import ANALYZE_INTENT_UNAVAILABLE as _ANALYZE_INTENT_UNAVAILABLE
-from .inbox_vm import ANALYZE_UNAVAILABLE as _ANALYZE_UNAVAILABLE
 from .inbox_vm import NO_CONNECTION_SELECTED as _NO_CONNECTION_SELECTED
 from .inbox_vm import (
     POST_PARAM,
-    AnalysisSummaryVM,
     CandidateMediaVM,
     CommentPageCursorVM,
     CommentVM,
     GlobalSentimentSummaryVM,
-    IntentAnalysisSummaryVM,
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
     inbox_url,
-    prioritize_error_message,
 )
 from .inbox_vm import SESSION_EXPIRED as _SESSION_EXPIRED
 from .inbox_vm import UNKNOWN_CONNECTION as _UNKNOWN_CONNECTION
@@ -167,9 +161,9 @@ _NOT_ELIGIBLE_BY_REASON: Final = {
     "unsupported_surface": _UNSUPPORTED_SURFACE,
 }
 _SYNC_FAILED = "No pudimos buscar comentarios nuevos. Intenta de nuevo."
-# B8: `_SESSION_EXPIRED`/`_NO_CONNECTION_SELECTED` (now in `inbox_vm`, shared with the
-# Ordenar-por-prioridad notice) are the two halves `_NO_TENANT` used to cover. No tenant
-# in the session means there is no login (`AuthState.session_tenant_id` is set only by one).
+# B8: `_SESSION_EXPIRED`/`_NO_CONNECTION_SELECTED` (in `inbox_vm`) are the two halves
+# `_NO_TENANT` used to cover. No tenant in the session means there is no login
+# (`AuthState.session_tenant_id` is set only by one).
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
@@ -194,11 +188,8 @@ _CONNECTION_AUTH_EXPIRED = (
     "Tu conexión con Instagram dejó de funcionar. Reconéctala en «Tus redes» e intenta de nuevo."
 )
 _SYNC_ALREADY_RUNNING = "Ya estamos buscando comentarios nuevos. Te avisamos al terminar."
-_ANALYZE_FAILED = "No pudimos ver si tus comentarios son buenos o malos. Intenta de nuevo."
-# m-24789644: same two cases for the intent pass (unavailable lives in `inbox_vm`).
 _REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
 _REPLY_BY_DM_FAILED = "No pudimos preparar el mensaje privado. Vuelve a intentarlo en un momento."
-_ANALYZE_INTENT_FAILED = "No pudimos ver quién quiere comprar. Intenta de nuevo."
 # QUA-93 — each of the three new sections has its own load error, same "independent
 # §6.1 lifecycle per section" posture the design doc documents.
 _REEL_SUMMARIES_LOAD_FAILED = (
@@ -268,19 +259,12 @@ class InboxState(rx.State):
     sync_error: str = ""
     sync_result: SyncSummaryVM | None = None
 
-    # QUA-92 — the manual "Analizar sentimiento" button. Its own guard/loading state,
-    # same reasoning `is_syncing` has: one screen-wide flag (not per-comment), since one
-    # click analyzes every pending comment for the connection at once, not a single row.
-    is_analyzing: bool = False
-    analyze_error: str = ""
-    analyze_result: AnalysisSummaryVM | None = None
-    # m-24789644: the "Analizar intención" pass — its own guard, independent of both
-    # sync and sentiment analysis, same as those two are of each other.
-    is_analyzing_intent: bool = False
+    # m-24852204: the automatic prioritization pass `sync_comments` chains after every
+    # successful sync. This tab's re-entrancy guard only — the real one-pass-per-
+    # connection lock lives in `qualify_api.comment_analysis`. Never shown as an error.
+    is_analyzing_comments: bool = False
     # m-24789646: the comment whose «Responder por DM» is opening its query ("" = none).
     replying_dm_id: str = ""
-    analyze_intent_error: str = ""
-    analyze_intent_result: IntentAnalysisSummaryVM | None = None
 
     # QUA-93 — the Reel summary-card list (top level of "Comentarios"). Never holds more
     # than one page; `load_more_reels` appends, it never re-fetches everything.
@@ -324,28 +308,6 @@ class InboxState(rx.State):
     @rx.var
     def can_sync(self) -> bool:
         return bool(self.selected_connection_id) and not self.is_syncing
-
-    @rx.var
-    def can_analyze(self) -> bool:
-        return bool(self.selected_connection_id) and not self.is_analyzing
-
-    @rx.var
-    def can_analyze_intent(self) -> bool:
-        return bool(self.selected_connection_id) and not self.is_analyzing_intent
-
-    @rx.var
-    def is_prioritizing(self) -> bool:
-        """m-24842988: «Ordenar por prioridad» runs both passes; busy while either is."""
-        return self.is_analyzing or self.is_analyzing_intent
-
-    @rx.var
-    def can_prioritize(self) -> bool:
-        return bool(self.selected_connection_id) and not self.is_prioritizing
-
-    @rx.var
-    def prioritize_error(self) -> str:
-        """m-24849132: one notice for «Ordenar por prioridad», whichever pass failed."""
-        return prioritize_error_message(self.analyze_error, self.analyze_intent_error)
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -810,7 +772,7 @@ class InboxState(rx.State):
         # QUA-94: `reel_summaries` carries its own `is_monitored` now (the "Comentarios"
         # section's badge), a fact `_load_candidates` above does NOT refresh — that call
         # only ever touched `self.candidates`, the "Contenido de Instagram" list. Reuses
-        # the SAME post-write re-read `sync_comments`/`analyze_sentiment` already call on
+        # the SAME post-write re-read `sync_comments`/`analyze_new_comments` already call on
         # success (`_refresh_after_write`'s own docstring) rather than inventing a second
         # refresh mechanism — same "known, accepted gap" applies here too: a Reel past
         # page 1 of `reel_summaries` keeps a stale badge until the operator scrolls back.
@@ -845,7 +807,9 @@ class InboxState(rx.State):
         return None
 
     @rx.event(background=True)
-    async def sync_comments(self, trigger: str = "manual") -> rx.event.EventSpec | None:
+    async def sync_comments(
+        self, trigger: str = "manual"
+    ) -> rx.event.EventSpec | rx.event.EventHandler | list[object] | None:
         """The one trigger for `InboxService.sync_comments` (B2/QUA-89): the manual
         button, the 5-minute poll, opening the screen / switching account, and turning
         monitoring on all call it, each naming itself in `trigger` (`inbox_sync_policy`).
@@ -975,10 +939,9 @@ class InboxState(rx.State):
         # QUA-93: refresh — reached ONLY on a successful sync. Every failure branch
         # above `return`s before this point (the `finally` still ran either way,
         # resetting `is_syncing`); this line is therefore never executed unless
-        # `sync_now` returned normally. A pure re-read via `_refresh_after_write` — this
-        # does NOT run sentiment analysis (QUA-21 stays manual-only, unchanged) and does
-        # not modify `sync_comments`'s own logic above it in any way; it is purely
-        # additive.
+        # `sync_now` returned normally. A pure re-read via `_refresh_after_write`; the
+        # analysis of what just landed is chained below, as its own background event
+        # (m-24852204), so this pass and its toast never wait for the models.
         await self._refresh_after_write(tenant_id, connection_id)
 
         # The result toast belongs to this screen: a pass that finishes after the person
@@ -986,141 +949,62 @@ class InboxState(rx.State):
         # popping up there. The sync itself is unaffected — it already happened.
         async with self:
             still_on_inbox = is_inbox_path(self.router.url.path)
+        # m-24852204: analyze what landed even when the person already left — the next
+        # visit then finds it prioritized. Silent either way.
         if not still_on_inbox:
-            return None
+            return InboxState.analyze_new_comments
 
         # A plain `return` of an `EventSpec` from an async (non-generator) background
         # handler is dispatched exactly like an event chain — no `yield` needed, and this
         # function stays a plain coroutine (load-bearing: `sync_comments.fn` is called
         # directly and awaited in tests — see the double-click guard test above).
         message = sync_result_message(result)
-        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+        return [
+            rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS),
+            InboxState.analyze_new_comments,
+        ]
 
     @rx.event(background=True)
-    async def analyze_sentiment(self) -> rx.event.EventSpec | None:
-        """The "Analizar sentimiento" button (QUA-92) — the ONLY trigger for QUA-21's
-        analysis pass this screen exposes. Deliberately independent of `sync_comments`
-        in both directions: never called FROM `sync_comments` (QUA-21 stays manual-only,
-        unchanged by QUA-89's polling) and never calls `sync_now` itself. Same
-        double-click guard / `finally`-based reset shape as `sync_comments` above, over
-        `inbox_provider.analyze_sentiment_now` — the same seam `POST /api/sentiment/
-        analyze` wraps, never a second analysis engine.
-        """
+    async def analyze_new_comments(self) -> rx.event.EventHandler | None:
+        """m-24852204: prioritize what the sync just brought — sentiment, commercial intent
+        and the «Quieren comprar» queries — without the owner asking. Chained by
+        `sync_comments` after a successful pass only; never calls `sync_now`. Runs in this
+        background task through `inbox_provider.analyze_comments_now` (`asyncio.to_thread`
+        underneath), so neither the event loop nor the page load waits for it. Silent by
+        design: no toast, no error — an unavailable model or a failed pass is logged by
+        the runner and retried by the webhook worker's sweep. Re-reads the screen only
+        when something new was recorded, and only if the same account is still open;
+        then refreshes the tab counts so new buyers show in «Quieren comprar»."""
         async with self:
-            if self.is_analyzing:
-                return  # an analysis pass is already in flight; ignore a rapid double-click
-            self.is_analyzing = True
-            self.analyze_error = ""
-            self.analyze_result = None
-            connection_id = self.selected_connection_id
-            auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
-
-        tenant_id = tenant_uuid(session_tenant_id)
-        resolved_connection = _try_uuid(connection_id)
-
-        if tenant_id is None or resolved_connection is None:
-            async with self:
-                self.is_analyzing = False
-                self.analyze_error = (
-                    _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
-                )
-            return
-
-        try:
-            result = await analyze_sentiment_now(
-                tenant_id=tenant_id, connection_id=resolved_connection
-            )
-        except UnknownSentimentConnection:
-            async with self:
-                self.analyze_error = _UNKNOWN_CONNECTION
-            return
-        except SentimentModelUnavailable:
-            async with self:
-                self.analyze_error = _ANALYZE_UNAVAILABLE
-            return
-        except Exception as exc:
-            # Only the exception TYPE is logged — same posture as every other handler in
-            # this file for infrastructure errors.
-            logger.error("analyze_sentiment_now failed: %s", type(exc).__name__)
-            async with self:
-                self.analyze_error = _ANALYZE_FAILED
-            return
-        else:
-            async with self:
-                self.analyze_result = result
-        finally:
-            async with self:
-                self.is_analyzing = False
-
-        # QUA-93: refresh so "Sin analizar" flips to POS/NEG/NEU — reached ONLY on a
-        # successful analysis, same "after the whole try/except/else/finally block"
-        # structure `sync_comments` already established for its own success-only
-        # refresh above.
-        await self._refresh_after_write(tenant_id, connection_id)
-
-        # Same plain-`return`-of-an-`EventSpec` shape `sync_comments` uses above, and for
-        # the same reason (`analyze_sentiment.fn` is called directly and awaited in
-        # tests — this must stay a plain coroutine, never an async generator).
-        # m-24842988: «Ordenar por prioridad» runs this AND the intent pass on one
-        # click; only the intent result speaks, so success here is silent. Errors still
-        # show (`analyze_error`, above).
-        return None
-
-    @rx.event(background=True)
-    async def analyze_intent(self) -> rx.event.EventSpec | None:
-        """The "Analizar intención" button (m-24789644): one pass of
-        `inbox_provider.analyze_intent_now` over the connection's pending comments. Same
-        double-click guard, `finally` reset, success-only refresh and toast as
-        `analyze_sentiment`; never triggers sync or sentiment, and neither of them
-        triggers it."""
-        async with self:
-            if self.is_analyzing_intent:
+            if self.is_analyzing_comments:
                 return
-            self.is_analyzing_intent = True
-            self.analyze_intent_error = ""
-            self.analyze_intent_result = None
             connection_id = self.selected_connection_id
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
-
-        tenant_id = tenant_uuid(session_tenant_id)
-        resolved_connection = _try_uuid(connection_id)
-
-        if tenant_id is None or resolved_connection is None:
-            async with self:
-                self.is_analyzing_intent = False
-                self.analyze_intent_error = (
-                    _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
-                )
-            return
-
+            tenant_id = tenant_uuid(session_tenant_id)
+            resolved_connection = _try_uuid(connection_id)
+            if tenant_id is None or resolved_connection is None:
+                return
+            self.is_analyzing_comments = True
         try:
-            result = await analyze_intent_now(
+            changed = await analyze_comments_now(
                 tenant_id=tenant_id, connection_id=resolved_connection
             )
-        except UnknownIntentConnection:
-            async with self:
-                self.analyze_intent_error = _UNKNOWN_CONNECTION
-            return
-        except IntentModelUnavailable:
-            async with self:
-                self.analyze_intent_error = _ANALYZE_INTENT_UNAVAILABLE
-            return
-        except Exception as exc:
-            logger.error("analyze_intent_now failed: %s", type(exc).__name__)
-            async with self:
-                self.analyze_intent_error = _ANALYZE_INTENT_FAILED
-            return
-        else:
-            async with self:
-                self.analyze_intent_result = result
         finally:
             async with self:
-                self.is_analyzing_intent = False
+                self.is_analyzing_comments = False
+        if not changed:
+            return None
+        async with self:
+            still_same_account = self.selected_connection_id == connection_id
+        if still_same_account:
+            await self._refresh_after_write(tenant_id, connection_id)
+        # UX review (m-24852204): the toast that named new buyers is gone, so the tab
+        # counts («Quieren comprar») must catch up on their own. Imported here because
+        # `responder_state` imports this module.
+        from .responder_state import ResponderState  # noqa: PLC0415
 
-        await self._refresh_after_write(tenant_id, connection_id)
-        return rx.toast.success(_intent_result_message(result), duration=_RESULT_TOAST_DURATION_MS)
+        return ResponderState.load_counts
 
     @rx.event(background=True)
     async def reply_by_dm(self, message_id: str) -> rx.event.EventSpec | None:
@@ -1339,22 +1223,6 @@ class InboxState(rx.State):
 def _count(n: int, one: str, many: str) -> str:
     """«1 comentario» / «3 comentarios» — the toasts never say «1 comentarios»."""
     return f"{n} {one if n == 1 else many}"
-
-
-def _intent_result_message(result: IntentAnalysisSummaryVM) -> str:
-    """The «Ordenar por prioridad» toast (intent half). Unclassified comments stay
-    pending, so the message says the next click retries them rather than counting them
-    as done."""
-    if result.comments_checked == 0:
-        return "No hay comentarios nuevos para ordenar."
-    message = f"Listo: ordenamos {_count(result.new_results, 'comentario', 'comentarios')}."
-    if result.unclassified:
-        left = _count(result.unclassified, "quedó sin revisar", "quedaron sin revisar")
-        message += f" {left}: lo intentamos de nuevo la próxima vez."
-    if result.followups_opened:
-        buyers = _count(result.followups_opened, "quiere comprar", "quieren comprar")
-        message += f" {buyers}: te esperan en «Conversaciones»."
-    return message
 
 
 def sync_result_message(result: SyncSummaryVM) -> str:

@@ -22,7 +22,7 @@ through the CLI/MCP. Do not confuse its write formats with the Open API the engi
 | Web host for links | `https://project.larksuite.com/5h2wsx/…` (Issues `/issue/detail/<id>`, Features `/story/detail/<id>`, Altas `/alta_cliente/detail/<id>`) |
 | Type «Alta de cliente» | `6ad27a818d034c2af89a26d1` (api name `alta_cliente`), node flow |
 | Nodes | Start → **Datos** → **Invitada** → **Registrada** → Kit de marca listo → Primera publicación (last two are completed by hand today) |
-| Fields a person fills | Correo `field_29cd26` · Nombre de la persona `field_c8031e` · Nota personal `field_3282f4` (name = the business) |
+| Fields a person fills | Correo `field_29cd26` · Nombre de la persona `field_c8031e` · Nota personal `field_3282f4` (name = the business) · **Cuenta de Instagram** `field_dbfee5` (single-line text, optional, in the detail and creation layouts; m-24852194). Legacy «Instagram / TikTok» `field_7ec111` also exists — **unused, never read by Qualify** |
 | Fields Qualify writes | Estado Qualify `field_4c0e3a` · Enlace `field_030caa` · Vence `field_e41757` · Registrada el `field_2428e7` · Tenant `field_79b2e5` · Qualify ref `field_bad786` (= `signup_invites.id`) |
 | Estado Qualify options | pendiente `nn3fbfvn_` · invitada `wfs1n6zlv` · entregada `02oruntuu` · abierta `0ogw11wex` · rebotó `6kw6hd1cl` · registrada `g8fvke61g` · vencida `7rpgqmjod` · error `sl5hpvl2l` |
 | Acting user (`X-User-Key`) | Herwin `7697105028321938981` (until the «Qualify bot» member of D1 exists) |
@@ -32,6 +32,16 @@ through the CLI/MCP. Do not confuse its write formats with the Open API the engi
 The engine resolves fields/nodes **by display name** (`SchemaResolver`), so renaming a field or node in
 Meegle breaks it (the event retries, then dies with the name in `last_error`). Rename only together with
 `QUALIFY_MEEGLE_FIELD_*` / `QUALIFY_MEEGLE_NODE_*`.
+
+**Cuenta de Instagram is the one optional field** (`MeegleNames.instagram`, override
+`QUALIFY_MEEGLE_FIELD_INSTAGRAM`): if the type lacks it, or it is empty or not an account, the
+invitation goes out exactly as before and nothing is retried. `OnboardingEngine.start_invitation`
+returns it normalized in `InvitationResult.instagram_handle` (`qualify_api.meegle.instagram.
+normalize_instagram_handle`: `@Usuario`, `usuario`, `https://www.instagram.com/usuario/`,
+`instagram.com/usuario?igsh=…` → `usuario`; anything else → `None`). The Brand Kit prefill (§2bis)
+acts on it after a sent invitation. The field was created in the UI on
+2026-10-24 (Space Configuration → «Alta de cliente» → Fields, plus the detail and creation
+layouts, §3). Do not read the legacy «Instagram / TikTok» field: it is unused.
 
 ## 2. Operating an alta (what to tell the founder)
 
@@ -45,6 +55,58 @@ Meegle breaks it (the event retries, then dies with the name in `last_error`). R
    expires). **Cancel** = terminate the item (all its unused invites expire now, Estado = vencida).
 5. The personal note goes into the email verbatim, in the founder's own voice. Customer-facing copy is
    plain Spanish, never English or slang («publicación», never «post»; no «Brand Kit»).
+
+## 2bis. Brand Kit prefill from the Alta (PB-4, m-24852198) — OFF by default
+
+Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.meegle.prefill`
+(settings, cap, scheduler, runner) and `prefill_jobs` (queue, migration 0092 `alta_prefill_jobs`).
+
+- **Switches** (both required; no value lives in code or in the env examples):
+  `QUALIFY_ALTA_PREFILL_ENABLED` (`1`/`true`/`yes`/`on`) and `QUALIFY_ALTA_PREFILL_MAX_USD` (USD
+  per Alta, positive decimal). Off, unset, invalid or below the minimum run → nothing happens at
+  all: no draft, no job, no comment; the Alta works exactly as before. **Do not turn it on in
+  production until the founder sets the cap with PB-6's numbers (m-24852200).** Pushing them is
+  an `env-push` (founder's go each time).
+- **Flow.** «Datos» completed → `start_invitation` sends the email → only then
+  `AltaPrefillScheduler.schedule`: with a «Cuenta de Instagram», `start_alta_brand_kit_draft`
+  (reserved draft, PB-0) + one row in `alta_prefill_jobs` keyed by item + network + username;
+  without one, the same draft + a row with `handle = ''` and outcome `no_handle` that only
+  carries the comment «No se precargó la identidad de marca: no hay cuenta de Instagram en el
+  Alta.» (once per item, written by the runner). The handler itself never calls Meegle or a
+  vendor. The event is settled `processed` with `prefill=<label>` in `last_error`
+  (`enqueued`, `duplicate`, `no_handle`, `email_has_account`, `error`…); with the prefill off it
+  settles exactly as before (no label). Anything the scheduler raises is swallowed — a retried
+  «Datos» event would email the invitation again (§7).
+- **Run.** The `webhook-worker` loop (and `just webhook-tick`) drains due jobs after each batch
+  when the Meegle engine is configured: `prefill_brand_kit(..., source={"kind": "alta",
+  "meegle_work_item_id": <id>}, propose=True)` with `CallCaps` derived from the cap, then ONE
+  comment: «Identidad de marca propuesta.» / «…la cuenta de Instagram es privada.» / «…no se pudo
+  leer la cuenta de Instagram.» (not found, read failed, cap reached, account taken). Exactly
+  one retry 5 min later, only for `read_failed` (or a proposal that could not be saved), with
+  the budget the first attempt left. A job found while the switch is off is settled `disabled`
+  silently. The proposal lands in `brand_kit_details.connect.prefill` of the draft and the
+  signup with the Alta's invite adopts it (PB-5 shows it).
+- **Cap → calls** (formula in the module docstring): unit costs from `claude_tools.PRICES` (the
+  dearest prefill model, today `claude-sonnet-5`) with an estimated token envelope per Claude
+  run (6k in / 2.5k out → US$0.037) and ScrapeCreators at US$0.0019/credit (Freelance plan,
+  `docs/plan-superadmin-alta-clientes.md`). Minimum run = 2 requests + 2 Claude runs ≈
+  US$0.078: a cap below it refuses to run. PB-6 should replace the envelope and the credit price
+  with measured values.
+- **Idempotency / cost on record.** «Datos» twice or a replayed event → `duplicate`, no second
+  charge; a corrected username is a new job. Each job keeps `max_usd`, `spent_usd`, `runs` (per
+  attempt: caps, usage, real cost, outcome), `pipeline_version`. Inspect:
+  `select meegle_work_item_id, handle, status, outcome, attempts, spent_usd, last_error from alta_prefill_jobs order by created_at desc limit 10`
+  (as `qualify_owner`; RLS hides it from `qualify_app` without a tenant).
+- **Never twice.** A `running` job whose lock is older than `STALE_AFTER` (30 min) is reclaimed
+  and closed `interrupted` («…no se pudo leer…»), never run again — its spend was not
+  recorded. A run is bounded to ~20.5 min (`MAX_RUN_SECONDS`: Claude through a client with a
+  90 s timeout and no SDK retries, up to 12 turns; ScrapeCreators 6 × 20 s; picture 4 × 8 s), so
+  a live run is not mistaken for a dead one. The comment is at most once: retried (3 tries) only
+  when Meegle answered a refusal (`err_code` or 4xx); a timeout, transport failure or 5xx, or a
+  reclaimed comment phase, closes the job with `last_error = comment_unconfirmed` — check the
+  item by hand in that case.
+- **Budget.** One comment per Alta (Meegle Free: 500 Open API calls/day), deduplicated per item
+  like the job (the invitation itself is not: §7).
 
 ## 3. Configuration in the UIs (where things actually are)
 
@@ -156,7 +218,7 @@ Issue via `mcp__meegle__create_workitem`, `project_key 6ad251e7ce655b7ed3a0e9b4`
 
 | Ticket | What |
 |---|---|
-| m-24823674 | Pre-fill brand kit + niche (ScrapeCreators) from the handle on the alta |
+| m-24852192 | Epic: Brand Kit prefilled from the Alta (replaces m-24823674); PB-4 = m-24852198 (§2bis), PB-6 = m-24852200 sets the cap |
 | m-24823681 | Cost per client and per node (Anthropic tokens, scraping, generation) shown in Meegle |
 | m-24823661 | Invite email: connected animations (vertical mobile / horizontal desktop), GIF button |
 | m-24822994 | Ticket notices to Lark Qualify-devs (needs `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL`) |
