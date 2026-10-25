@@ -1275,19 +1275,38 @@ def _frame_tips() -> rx.Component:
     )
 
 
+def _frame_field(
+    label: str, help_text: str, field: rx.Component, field_id: str, max_width: str = "28rem"
+) -> rx.Component:
+    """A field with its visible label (qualify-ux §5: never a placeholder alone) and a
+    line of help under the label; the example stays in the placeholder."""
+    return rx.vstack(
+        rx.el.label(rx.text(label, size="2", weight="medium"), html_for=field_id),
+        rx.text(help_text, size="1", color=T.TEXT_MUTED),
+        field,
+        spacing="1",
+        width="100%",
+        max_width=max_width,
+        align_items="start",
+    )
+
+
 def _frame_step(key: str) -> rx.Component:
     S = StepsDemoState
     if key == "negocio":
         return rx.vstack(
-            rx.text("Así lo verán tus clientes en cada publicación.", size="2"),
-            rx.input(
-                value=S.business,
-                on_change=S.set_business,
-                placeholder="Por ejemplo: Shawarma Bianki",
-                size="3",
-                width="100%",
-                max_width="28rem",
-                aria_label="Nombre del negocio",
+            _frame_field(
+                "Nombre del negocio",
+                "Así lo verán tus clientes en cada publicación.",
+                rx.input(
+                    value=S.business,
+                    on_change=S.set_business,
+                    placeholder="Por ejemplo: Shawarma Bianki",
+                    size="3",
+                    width="100%",
+                    id="q-demo-business",
+                ),
+                "q-demo-business",
             ),
             rx.el.label(
                 rx.hstack(
@@ -1308,15 +1327,18 @@ def _frame_step(key: str) -> rx.Component:
         )
     if key == "horario":
         return rx.vstack(
-            rx.text("Lo mostraremos cuando alguien pregunte si estás abierto.", size="2"),
-            rx.input(
-                value=S.hours,
-                on_change=S.set_hours,
-                placeholder="Por ejemplo: de lunes a sábado, de 11 a 9",
-                size="3",
-                width="100%",
-                max_width="28rem",
-                aria_label="Horario",
+            _frame_field(
+                "Tu horario",
+                "Lo mostraremos cuando alguien pregunte si estás abierto.",
+                rx.input(
+                    value=S.hours,
+                    on_change=S.set_hours,
+                    placeholder="Por ejemplo: de lunes a sábado, de 11 a 9",
+                    size="3",
+                    width="100%",
+                    id="q-demo-hours",
+                ),
+                "q-demo-hours",
             ),
             spacing="3",
             width="100%",
@@ -1324,14 +1346,19 @@ def _frame_step(key: str) -> rx.Component:
         )
     if key == "mensaje":
         return rx.vstack(
-            rx.text_area(
-                value=S.message,
-                on_change=S.set_message,
-                placeholder="Por ejemplo: hoy 2x1 en shawarma de pollo hasta las 9",
-                rows="4",
-                width="100%",
+            _frame_field(
+                "Tu mensaje",
+                "Lo que quieres que tus clientes sepan hoy, en dos o tres líneas.",
+                rx.text_area(
+                    value=S.message,
+                    on_change=S.set_message,
+                    placeholder="Por ejemplo: hoy 2x1 en shawarma de pollo hasta las 9",
+                    rows="4",
+                    width="100%",
+                    id="q-demo-message",
+                ),
+                "q-demo-message",
                 max_width="36rem",
-                aria_label="Mensaje",
             ),
             rx.text("Ideas para escribirlo", size="2", weight="medium"),
             _frame_tips(),

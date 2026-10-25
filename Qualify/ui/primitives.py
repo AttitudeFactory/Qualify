@@ -789,7 +789,15 @@ def drawer(
                 size="5",
                 as_child=icon is not None or not isinstance(title, (str, rx.Var)),
                 **(
-                    {"class_name": "q-step-title", "custom_attrs": {"tabIndex": -1}}
+                    {
+                        "class_name": "q-step-title",
+                        # Same id as `ui.steps.COUNT_ID_DRAWER` (no import: steps
+                        # imports nothing from here, keep it that way).
+                        "custom_attrs": {
+                            "tabIndex": -1,
+                            "aria-describedby": "q-step-count-drawer",
+                        },
+                    }
                     if step is not None
                     else {}
                 ),

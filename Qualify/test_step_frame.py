@@ -266,3 +266,53 @@ def test_drawer_variant_puts_the_counter_in_the_fixed_header() -> None:
     assert _has(head, "Paso 2 de 3") and "q-step-bar" in head
     # The title takes the focus on a step change.
     assert "q-step-title" in head and "tabIndex:-1" in head
+
+
+# ---------------------------------------------------------------------------------------
+# UX review of PR #359 (ux-designer, 2026-10-26)
+# ---------------------------------------------------------------------------------------
+
+
+def test_bar_has_its_own_line_under_the_exit_row() -> None:
+    head = steps.step_head(
+        "T", step=1, total=3, back_label="Tus publicaciones", back_href="/publicaciones"
+    )
+    row, bar, *_ = head.children
+    assert "q-step-exit" in str(row.render()) and "q-step-count" in str(row.render())
+    assert "q-step-bar" not in str(row.render())
+    assert "q-step-bar" in str(bar.render())
+
+
+def test_title_is_described_by_the_counter_without_a_live_region() -> None:
+    rendered = str(_frame().render())
+    assert f'"aria-describedby":"{steps.COUNT_ID_PAGE}"' in rendered.replace(" ", "") or (
+        "aria-describedby" in rendered and steps.COUNT_ID_PAGE in rendered
+    )
+    assert "aria-live" not in rendered and "ariaLive" not in rendered
+
+
+def test_disabled_primary_reads_as_disabled() -> None:
+    rendered = str(
+        steps.step_foot(
+            "Siguiente", step=1, on_primary=rx.console_log("n"), primary_disabled=True
+        ).render()
+    )
+    assert "aria-disabled" in rendered or "ariaDisabled" in rendered
+    rule = re.search(r"\.q-step-primary:is\(:disabled, \[data-disabled\]\) \{(.*?)\}", _CSS, re.S)
+    assert rule and "gray-a3" in rule.group(1) and "transform: none" in rule.group(1)
+
+
+def test_back_is_a_thumb_target() -> None:
+    assert ".q-step-foot .rt-Button.q-step-back { min-height: 44px; }" in _CSS
+
+
+def test_sample_fields_have_visible_labels() -> None:
+    from Qualify import styleguide_page as page
+
+    for key, label, field_id in (
+        ("negocio", "Nombre del negocio", "q-demo-business"),
+        ("horario", "Tu horario", "q-demo-hours"),
+        ("mensaje", "Tu mensaje", "q-demo-message"),
+    ):
+        rendered = str(page._frame_step(key).render())
+        assert _has(rendered, label) and field_id in rendered and "htmlFor" in rendered

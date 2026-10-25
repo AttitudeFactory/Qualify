@@ -73,8 +73,17 @@ def _is_static(value: Any) -> bool:
 # ---------------------------------------------------------------------------------------
 
 
-def step_progress(step: rx.Var[int] | int, total: rx.Var[int] | int) -> rx.Component:
-    """«Paso N de M» and the 4 px accent bar under it — text and shape at once, never
+COUNT_ID_PAGE = "q-step-count-page"
+COUNT_ID_DRAWER = "q-step-count-drawer"
+"""Ids of the «Paso N de M» text: the step's title points at it with `aria-describedby`,
+so the screen reader reads name and position ONCE, when the focus lands on the title.
+No live region on purpose — it would announce the step a second time."""
+
+
+def _progress_parts(
+    step: rx.Var[int] | int, total: rx.Var[int] | int, count_id: str
+) -> tuple[rx.Component, rx.Component]:
+    """(the «Paso N de M» text, the 4 px accent bar) — text and shape at once, never
     colour alone (P1). ``total`` is the count of VISIBLE steps (`steps_vm`)."""
     if _is_static(step) and _is_static(total):
         label: rx.Var | str = step_label(step, total)
@@ -82,23 +91,29 @@ def step_progress(step: rx.Var[int] | int, total: rx.Var[int] | int) -> rx.Compo
     else:
         label = f"Paso {step} de {total}"
         width = f"{(rx.Var.create(step) * 100 / rx.Var.create(total))}%"
-    return rx.vstack(
-        rx.text(label, size="2", weight="medium", color=T.TEXT_MUTED, class_name="q-step-count"),
-        rx.box(
-            rx.box(class_name="q-step-bar-fill", width=width),
-            class_name="q-step-bar",
-            role="progressbar",
-            aria_label="Avance",
-            aria_valuemin=1,
-            aria_valuemax=total,
-            aria_valuenow=step,
-            aria_valuetext=label,
-            width="100%",
-        ),
-        spacing="1",
-        align_items="end",
+    count = rx.text(
+        label, size="2", weight="medium", color=T.TEXT_MUTED, class_name="q-step-count", id=count_id
+    )
+    bar = rx.box(
+        rx.box(class_name="q-step-bar-fill", width=width),
+        class_name="q-step-bar",
+        role="progressbar",
+        aria_label="Avance",
+        aria_valuemin=1,
+        aria_valuemax=total,
+        aria_valuenow=step,
+        aria_valuetext=label,
         width="100%",
-        class_name="q-step-progress",
+    )
+    return count, bar
+
+
+def step_progress(step: rx.Var[int] | int, total: rx.Var[int] | int) -> rx.Component:
+    """«Paso N de M» over its full-width bar, for a drawer's fixed header
+    (``drawer(..., step=step_progress(n, m))``), whose title it describes."""
+    count, bar = _progress_parts(step, total, COUNT_ID_DRAWER)
+    return rx.vstack(
+        count, bar, spacing="1", align_items="end", width="100%", class_name="q-step-progress"
     )
 
 
@@ -137,22 +152,27 @@ def step_head(
     walked out of order); on a phone the bar replaces it."""
     if (back_href is None) == (on_exit is None):
         raise ValueError("step_head needs exactly one of back_href or on_exit")
+    count, bar = _progress_parts(step, total, COUNT_ID_PAGE)
     return rx.vstack(
+        # «‹ destino» and «Paso N de M» share a row; the bar gets a line of its own, so
+        # a long destination never squeezes it (§4.5 mockup).
         rx.hstack(
             _exit(back_label, back_href, on_exit),
-            rx.box(step_progress(step, total), class_name="q-step-head-progress"),
+            count,
             align="center",
             justify="between",
             spacing="3",
             width="100%",
         ),
+        bar,
         rx.heading(
             title,
             as_="h1",
             size="6",
             # Focusable by script only: a step change moves the focus here, so a screen
-            # reader announces the new step (§8).
+            # reader announces the new step with its position (§8).
             tab_index=-1,
+            custom_attrs={"aria-describedby": COUNT_ID_PAGE},
             class_name="q-step-title",
         ),
         *([rx.box(below, class_name="q-step-head-below", width="100%")] if below else []),
@@ -208,6 +228,7 @@ def step_foot(
         size="3",
         on_click=on_primary,
         disabled=primary_disabled,
+        aria_disabled=primary_disabled,
         loading=primary_loading,
         class_name="q-step-primary",
     )
