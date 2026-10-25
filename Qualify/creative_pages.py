@@ -36,7 +36,7 @@ from .creative_vm import (
 from .download_buttons import piece_download_button
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
-from .planner_back import WeekBackState, back_to_week_link
+from .planner_back import ficha_back_link
 from .planner_vm import (
     CARD_ACTION_PLANNER,
     CARD_ACTION_REVIEW,
@@ -2672,6 +2672,26 @@ def draft_detail_index() -> rx.Component:
         "Revisar publicación",
         "Tú decides qué sale con el nombre de tu marca.",
         _padded(
+            rx.hstack(
+                # m-24842987 / m-24854881 (N7, N8): the way back is drawn in every
+                # state — a publication that does not load still leaves a way out.
+                ficha_back_link(),
+                rx.spacer(),
+                rx.cond(
+                    CreativeState.detail_loading,
+                    rx.fragment(),
+                    rx.cond(
+                        CreativeState.draft,
+                        status_badge(
+                            CreativeState.draft.status,
+                            CreativeState.draft.status_label,
+                            CreativeState.draft.status_tone,
+                        ),
+                    ),
+                ),
+                width="100%",
+                align="center",
+            ),
             rx.cond(CreativeState.detail_error != "", _error_callout(CreativeState.detail_error)),
             rx.cond(CreativeState.action_error != "", _error_callout(CreativeState.action_error)),
             rx.cond(
@@ -2680,31 +2700,6 @@ def draft_detail_index() -> rx.Component:
                 rx.cond(
                     CreativeState.draft,
                     rx.vstack(
-                        rx.hstack(
-                            # m-24842987 (N7): opened from Tu semana, the way back
-                            # says «‹ Tu semana» and keeps that week and view.
-                            rx.cond(
-                                WeekBackState.href != "",
-                                back_to_week_link(),
-                                rx.link(
-                                    rx.button(
-                                        rx.icon("arrow-left", size=14),
-                                        "Por aprobar",
-                                        variant="ghost",
-                                        size="1",
-                                    ),
-                                    href="/drafts",
-                                ),
-                            ),
-                            rx.spacer(),
-                            status_badge(
-                                CreativeState.draft.status,
-                                CreativeState.draft.status_label,
-                                CreativeState.draft.status_tone,
-                            ),
-                            width="100%",
-                            align="center",
-                        ),
                         _campaign_field(),
                         _retention_notice(),
                         _video_draft_notice(),

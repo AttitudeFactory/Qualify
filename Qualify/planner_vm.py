@@ -51,6 +51,8 @@ URL_FROM = "desde"
 FROM_WEEK = "semana"
 PLANNER_PATH = "/planner"
 BACK_TO_WEEK = "Tu semana"  # shown after a «‹» glyph — «‹ Tu semana» (N7)
+# m-24854881: a ficha not opened from Tu semana goes back to the list it belongs to.
+BACK_TO_DRAFTS = "Por aprobar"  # «‹ Por aprobar»
 _VIEW_TO_URL = {VIEW_LIST: "lista", VIEW_CALENDAR: "calendario"}
 _URL_TO_VIEW = {v: k for k, v in _VIEW_TO_URL.items()}
 
