@@ -112,12 +112,11 @@ def test_a_copy_call_carries_its_prompt_tokens_and_our_price(spans: Any) -> None
         "cache_read": 2000,
         "cache_creation": 0,
     }
-    # Opus 5.5 at $4 / $20 per MTok, cache billed at the full input rate like the service:
-    # 3000 * 4 / 1e6 = 0.012 and 500 * 20 / 1e6 = 0.01
-    assert json.loads(attrs["langfuse.observation.cost_details"]) == {
-        "input": 0.012,
-        "output": 0.01,
-    }
+    # Opus 5.5 at $4 / $20 per MTok, cache reads at $0.20 like the service (m-24852539):
+    # 1000 * 4 / 1e6 = 0.004, 2000 * 0.20 / 1e6 = 0.0004 and 500 * 20 / 1e6 = 0.01
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == pytest.approx(
+        {"input": 0.004, "cache_read": 0.0004, "cache_creation": 0.0, "output": 0.01}
+    )
 
 
 def test_an_image_call_counts_its_references_and_never_sends_them(

@@ -72,6 +72,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from qualify_api.claude_tools import cost_breakdown
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
 from qualify_api.creative.creations import (
@@ -1343,6 +1344,23 @@ def _failure_from_hops(hops: tuple[Hop, ...]) -> str:
     return FailureReason.PROVIDER_ERROR.value
 
 
+def call_cost(pricing: PricingTable, usage: Usage, model_id: str) -> Decimal:
+    """`ContentService._call_cost`, usable without a service (the Langfuse copy usage)."""
+    breakdown = cost_breakdown(
+        model_id,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_creation_tokens=usage.cache_creation_tokens,
+    )
+    if breakdown:
+        return Decimal(repr(sum(breakdown.values())))
+    per_in = pricing.unit_price(model_id=model_id, unit="per_mtok_in")
+    per_out = pricing.unit_price(model_id=model_id, unit="per_mtok_out")
+    billable_in = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
+    return (Decimal(billable_in) * per_in + Decimal(usage.output_tokens) * per_out) / _MTOK
+
+
 class ContentService:
     """Draft lifecycle: create → (out-of-band) generate → HITL #2 → approve/reject.
 
@@ -2281,14 +2299,14 @@ class ContentService:
             logger.exception("creative cost log failed for draft %s", draft.id)
 
     def _call_cost(self, usage: Usage, model_id: str) -> Decimal:
-        """Cost of one call from the versioned pricing table. Deliberately conservative:
-        cache reads and cache writes are billed at the FULL input rate until the table
-        carries cache units — overcounting platform spend is safer than undercounting
-        it, and the v1 table only knows ``per_mtok_in``/``per_mtok_out``."""
-        per_in = self._pricing.unit_price(model_id=model_id, unit="per_mtok_in")
-        per_out = self._pricing.unit_price(model_id=model_id, unit="per_mtok_out")
-        billable_in = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
-        return (Decimal(billable_in) * per_in + Decimal(usage.output_tokens) * per_out) / _MTOK
+        """Cost of one call (m-24852539). A Claude model `claude_tools` prices is billed
+        through `claude_tools.cost_breakdown` — cache reads at the model's cache-read
+        rate, cache writes at 1.25x input — the same pricing as `CallStats.cost_usd`
+        and the Langfuse trace. Any other model (a fallback model `claude_tools` does
+        not price, a non-Claude provider) keeps the versioned table and its conservative
+        rule: cache tokens at the FULL input rate, since the table only knows
+        ``per_mtok_in``/``per_mtok_out``."""
+        return call_cost(self._pricing, usage, model_id)
 
     def _fail(self, *, tenant_id: UUID, draft_id: UUID, reason: str) -> None:
         """Terminal-failure write, guarded by state so it never overwrites a draft some
