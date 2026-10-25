@@ -79,7 +79,8 @@ class GenerationRequest:
     params: Mapping[str, object] = field(default_factory=dict)
     output_schema: Mapping[str, object] | None = None
     source_media_url: str | None = None
-    #: Only asynchronous adapters use it (Seedance); never part of the request's identity.
+    #: Only asynchronous adapters use it (Seedance, OmniHuman); never part of the
+    #: request's identity.
     observer: VendorTaskObserver | None = field(default=None, compare=False, repr=False)
 
 

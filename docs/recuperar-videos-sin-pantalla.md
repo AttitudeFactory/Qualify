@@ -83,9 +83,50 @@ Código de salida: 0 limpio, 2 hay algo que mirar, 1 no pudo correr. No envía n
 - **Tarea desconocida**: se asume HTTP 404 o un código con `NotFound` en `get_task`. Si BytePlus
   responde otra cosa, el paso la trata como error y no la reanuda (queda para el segador a las 49 h).
 
+## Video con presentador (OmniHuman, m-24852495)
+
+Desde la rama `fix/m-24852495-omnihuman-recuperar`, los renders de OmniHuman siguen el mismo
+camino que Seedance:
+
+- **El `task_id` se guarda apenas OmniHuman responde 2xx** a `submit_task`, antes de la primera
+  consulta (`VendorTaskObserver.created`), en `creative_vendor_tasks` con `slot = omnihuman-1`
+  y `provider = omnihuman`. Sin migración: la tabla 0090 ya es genérica.
+- **Dos ventanas** (`byteplus_omnihuman.py`): mientras la tarea está `in_queue` se espera hasta
+  `DEFAULT_QUEUE_TIMEOUT_SECONDS` (60 min); la ventana de render (40 min) cuenta desde la
+  primera respuesta `generating`. Tres consultas seguidas sin respuesta sobre la tarea (caída,
+  5xx, 429, clave rechazada 50400/50401) también cortan la espera **como pendiente**, nunca
+  como fallo.
+- **Al vencer:** la pieza queda `drafting` (sin reembolso, sin texto de fallo) y la reanudan la
+  pantalla o el paso de recuperación. El paso pregunta a OmniHuman (`get_result`, solo lectura;
+  `StatusByProvider` elige el proveedor por fila): `in_queue`/`generating`/`done` se leen como
+  `queued`/`running`/`succeeded`; `not_found` es desconocida; un código de error sobre el
+  resultado de la tarea es `failed`.
+- **La reanudación no vuelve a pagar nada:** la fila guarda en `context.presenter` las claves
+  en R2 de la foto del presentador y de la voz, la duración de la voz y su procedencia. La
+  ejecución reanudada no llama a Seedream ni a Seed Speech (ni intenta reescribir esas claves,
+  que el bloqueo de objetos de R2 rechazaría), espera la misma tarea por id, guarda el video
+  y asienta su costo una sola vez. El chequeo previo de precio vale cero para una reanudación
+  (no pide nada nuevo), así que un límite de gasto no bloquea un video que BytePlus ya cobra.
+- **`failed`/`expired`/`not_found`:** pieza fallida, sin costo de video, creaciones devueltas
+  (texto «No se pudo terminar el video. Inténtalo de nuevo.»).
+- **Aviso «en fila»** (texto aprobado en el PR #325): para un presentador aparece pasados los
+  40 min de la ventana de render, no a los 8 min de Seedance — un presentador tarda ~25 min
+  de forma normal.
+- **Enlaces públicos de la foto y la voz:** su vida pasa a 60 + 40 + 20 min
+  (`REFERENCE_LINK_TTL_SECONDS`) para cubrir la cola y el render.
+- El informe de conciliación sigue siendo solo de Seedance (las filas `omnihuman` no se
+  comparan con el listado de ModelArk).
+
+**No verificado en vivo:** los nombres de estado (`in_queue`, `generating`, `done`,
+`not_found`, `expired`) son los de la documentación de OmniHuman leída el 2026-10-16; no se
+llamó a la API. Tampoco se sabe si `get_result` de una tarea `done` devuelve una `video_url`
+nueva cada vez o la misma (vale una hora): el paso recoge en ~4 min, pero si el worker está
+apagado más de una hora tras el `done`, la descarga puede fallar y la pieza quedaría fallida
+con el render cobrado.
+
 ## Fuera de alcance
 
-- OmniHuman (Issue aparte), `callback_url` de BytePlus, imágenes de Seedream de un carrusel.
+- `callback_url` de BytePlus, imágenes de Seedream de un carrusel.
 - Las versiones finales a 1080p (`final:<asset>`): el paso solo mira borradores `drafting`.
 - Avisar al equipo por Lark: hoy los hallazgos quedan en el registro (`creative.recovery.*`) y en
   el informe; no hay mensaje automático.

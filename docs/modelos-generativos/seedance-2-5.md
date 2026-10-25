@@ -59,6 +59,45 @@
 - **No responde** si un final vuelve a cobrar el video de entrada de su borrador: este borrador no tenía video. Ese pendiente de SD25-001 sigue abierto.
 - n = 1, un solo día, sin carga en BytePlus.
 
+## Medición continua: cola, tareas a la vez y render — desde 2026-10-26 (m-24852158)
+
+SD25-002 y la tabla de `docs/escalar-generacion-concurrencia.md` §1.3 salieron de `arkcli gen list`
+(`updated_at − created_at`, sin separar cola y render). Desde m-24852158 cada tarea de Seedance y de
+OmniHuman deja sus marcas en `creative_vendor_task_timings` (migración 0094), tomadas de las mismas
+consultas que el adaptador ya hace mientras espera (ninguna llamada extra a BytePlus):
+
+| Marca | Cuándo se pone | Cuándo queda vacía o «tarde» |
+|---|---|---|
+| `submitted_at` | ModelArk acepta la tarea (el mismo momento en que 0090 guarda el id) | — |
+| `running_at` | primera respuesta `running` (`generating` en OmniHuman) | vacía si ninguna espera en vivo la vio pasar de `queued` a `running` (una reanudada que ya la encuentra corriendo): la espera queda desconocida, nunca inflada |
+| `finished_at` + `final_status` | primera respuesta final | `finished_late` = sí cuando la vio una reanudada sin haberla visto activa: es un tope, cuenta para «a la vez» pero no para el render |
+
+Resolución: una consulta cada 5 s, así que cada marca tiene hasta 5 s de error.
+
+**Cómo leerlo** (solo el equipo; ninguna pantalla del dueño lo muestra):
+
+```bash
+just creative-queue-report --days 7            # todos los negocios, horas de Bogotá
+just creative-queue-report --days 7 --json     # lo mismo, para guardar
+```
+
+Devuelve, por grupo de modelos (Seedance 2.5 borradores y finales juntos, porque comparten las 10 de
+BytePlus; OmniHuman aparte), para todo el periodo, por día y por hora:
+
+- **a la vez**: cuántas tareas del grupo estaban en BytePlus (en cola o corriendo, ella incluida) en el
+  momento en que se envió cada tarea; p50 / p95 / máx sobre las tareas;
+- **espera**: `running_at − submitted_at`, p50 / p95 / máx;
+- **render**: `finished_at − running_at` por borrador y final.
+
+Y los tres disparadores de la épica: p95 a la vez ≥ 5 (ticket a BytePlus, m-24852172), alguna espera
+> 60 s o p95 a la vez ≥ 7 (cola propia), espera p95 > 5 min («Generar ya», m-24852171).
+
+**Datos de arranque.** La migración copia las tareas que ya estaban en `creative_vendor_tasks` (desde
+0090) con `submitted_at` y `finished_at` (marcado como «tarde») y sin `running_at`: sirven para «a la vez»,
+no para espera ni render. **Primeras mediciones reales de producción: pendientes** hasta que esto se
+despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final de 10 s), con la salida de
+`just creative-queue-report --days 7`.
+
 ## Revisión de precios para los pesos v2 — 2026-10-24 (m-24851828)
 
 - **Sin llamadas al proveedor.** Se intentó releer en vivo la página de precios de ModelArk

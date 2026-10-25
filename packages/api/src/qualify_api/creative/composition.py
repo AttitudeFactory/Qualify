@@ -47,6 +47,9 @@ from qualify_creative.adapters.byteplus_omnihuman import (
     DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_POLL_TIMEOUT_SECONDS,
 )
 from qualify_creative.adapters.byteplus_omnihuman import (
+    DEFAULT_QUEUE_TIMEOUT_SECONDS as OMNIHUMAN_QUEUE_TIMEOUT_SECONDS,
+)
+from qualify_creative.adapters.byteplus_omnihuman import (
     DEFAULT_REQ_KEY as DEFAULT_OMNIHUMAN_REQ_KEY,
 )
 from qualify_creative.adapters.byteplus_omnihuman import (
@@ -131,8 +134,12 @@ DEFAULT_SEEDANCE_REFERENCE_MODEL = "dreamina-seedance-2-0-mini-260615"
 PUBLIC_MEDIA_BASE_URL_ENV = "QUALIFY_PUBLIC_MEDIA_BASE_URL"
 #: How long a reference link stays fetchable. Meta's 15 min (`TOKEN_TTL_SECONDS`) is too
 #: short here: OmniHuman runs one task at a time, so a queued presenter may download its
-#: photo and voice long after it was submitted — its whole poll window plus a margin.
-REFERENCE_LINK_TTL_SECONDS = int(OMNIHUMAN_POLL_TIMEOUT_SECONDS) + 20 * 60
+#: photo and voice long after it was submitted — its whole wait plus a margin. Since
+#: m-24852495 the wait is the queue window (in `in_queue`) followed by the render window
+#: (from `generating`), so the link outlives both.
+REFERENCE_LINK_TTL_SECONDS = (
+    int(OMNIHUMAN_QUEUE_TIMEOUT_SECONDS) + int(OMNIHUMAN_POLL_TIMEOUT_SECONDS) + 20 * 60
+)
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 

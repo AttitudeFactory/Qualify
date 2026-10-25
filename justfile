@@ -131,6 +131,13 @@ plan-cost-alerts *args:
 creative-tasks-report *args:
     uv run --no-sync python -m qualify_api.creative.vendor_reconcile {{args}}
 
+# m-24852158: BytePlus's queue as we live it — tasks at once (p50/p95/max per model
+# group), queue wait and render, per day and hour, plus the epic's three triggers.
+# READ-ONLY, team only (admin_session; no owner screen reads it).
+#   just creative-queue-report [--days 7] [--tz America/Bogota] [--tenant <uuid>] [--json]
+creative-queue-report *args:
+    uv run --no-sync python -m qualify_api.creative.vendor_queue_report {{args}}
+
 # QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
 # resolution + ingestion; every other field, comments included -> `unsupported`).
 #   just webhook-tick                 # one batch, then exit
