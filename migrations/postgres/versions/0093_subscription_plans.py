@@ -36,6 +36,10 @@ Tables:
   vendor cost crosses the plan's USD cap (UNIQUE `(subscription_id, period_month)`);
   `notified_at` stays NULL until Lark accepted it. Same isolation as `subscriptions`.
 
+`qualify_admin` gains UPDATE on two columns of `creative_engine_config`
+(`monthly_budget_cap_usd`, `hard_stop_on_cap`): assigning a plan sets the brand's dollar
+brake to the plan's cap with no hard stop (D18; principal-architect 2026-10-24).
+
 `support_requests.topic` gains `more_creations`: the «Pedir más a Qualify» button of
 Configuración (the request m-24852129 answers); the downgrade turns those into `other`.
 
@@ -60,6 +64,7 @@ depends_on = None
 
 _PLAN_CODES = "('basico','plus','pro')"
 _TENANT_EDITABLE = "name, country, timezone, currency"
+_ENGINE_BRAKE = "monthly_budget_cap_usd, hard_stop_on_cap"
 
 
 def _enable_tenant_rls(table: str) -> None:
@@ -286,8 +291,13 @@ def upgrade() -> None:
         "topic IN ('connect_accounts','more_creations','other')",
     )
 
+    # D18: assigning a plan aligns the brand's dollar brake with it (cap = the plan's USD
+    # cap, never a hard stop). The team's service needs exactly those two columns.
+    op.execute(f"GRANT UPDATE ({_ENGINE_BRAKE}) ON creative_engine_config TO qualify_admin;")
+
 
 def downgrade() -> None:
+    op.execute(f"REVOKE UPDATE ({_ENGINE_BRAKE}) ON creative_engine_config FROM qualify_admin;")
     # the topic is lost (documented): its requests become `other`
     op.execute("SET LOCAL row_security = off;")
     op.execute("UPDATE support_requests SET topic = 'other' WHERE topic = 'more_creations';")
