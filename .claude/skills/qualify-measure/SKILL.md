@@ -23,7 +23,15 @@ labeling rules, per-class reliability, classes below the bar shown as «no fiabl
    `integration`-marked tests.
 7. **Provenance:** every stored output and metric records model id, revision/version and prompt
    version.
-8. **Data terms:** check the vendor's license and whether it keeps or trains on client data
+8. **BytePlus evals (m-24852161):** spend with the eval key `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY`
+   (`resolve_eval_key` in `qualify_api/evals/byteplus_eval_guard.py`; `just byteplus-llaves`
+   compares fingerprints). A separate key does **not** split the quota: Seedance's 10 tasks at a
+   time are per primary account incl. sub-accounts, so a video eval shares them with clients.
+   Video evals run only 23:00–05:00 Bogotá time with at most 3 tasks in flight
+   (`off_hours_refusal`, `cap_video_concurrency`); daytime needs the founder. Once the ADR 41
+   queue exists they enqueue in the `scheduled` lane. Details: `docs/modelos-generativos/pruebas.md`
+   «Antes de una prueba con BytePlus».
+9. **Data terms:** check the vendor's license and whether it keeps or trains on client data
    (BytePlus authorized presets cede data — client data never goes there).
 
 ## Document the same turn
