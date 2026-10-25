@@ -360,6 +360,11 @@ langfuse-reset:
 langfuse-setup:
     PYTHONUTF8=1 uv run --no-sync --env-file .env python -c "from qualify_api.creative.review import main; raise SystemExit(main())"
 
+# BytePlus concurrency: demand + queue simulation behind docs/escalar-generacion-concurrencia.md
+# §3 (m-24855154). Offline, stdlib only, seeded: `just sim-concurrencia --replicas 5`.
+sim-concurrencia *args:
+    PYTHONUTF8=1 uv run --no-sync python -m qualify_creative.concurrency_sim {{args}}
+
 # Model experiments in Langfuse (docs/plan-observabilidad-langfuse.md §7). They SPEND REAL
 # MONEY (Claude calls) and need `just langfuse-up`; never part of CI.
 # `just eval-copy --limit 3` is a pilot; `--configs opus-5.5@low` runs one config.
