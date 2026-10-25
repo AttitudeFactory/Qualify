@@ -647,7 +647,8 @@ body {
   max-width: 348px; /* 360 px minus the 6 px gap on each side */
 }
 .q-bottom-bar,
-.q-bottom-bar--demo {
+.q-bottom-bar--demo,
+.q-step-foot:not(.q-step-foot--drawer) {
   align-items: stretch;
   padding: 4px;
   gap: 0;
@@ -759,8 +760,142 @@ body {
       textarea:focus,
       [contenteditable="true"]:focus
     )
-    .q-bottom-bar {
+    :is(.q-bottom-bar, .q-step-slot) {
     display: none;
+  }
+}
+
+/* ── Step frame (ui.steps, PASOS-2 m-24852241, docs/design-system.md §4.5) ──────
+   A wizard's head (the `.q-page-header` sheet it replaces: no new glass), its body,
+   and its foot: the bottom bar's opaque island (material shared above). Nothing
+   here adds a colour, a curve or a backdrop-filter. */
+.q-step-head { gap: var(--space-2); }
+.q-step-head-progress { flex: 0 1 14rem; min-width: 6.5rem; }
+.q-step-count { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.q-step-exit {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  align-items: center;
+  gap: 2px;
+  /* N12: the way out is a thumb target. */
+  min-height: 44px;
+  padding: 0 var(--space-2) 0 0;
+  border: none;
+  background: transparent;
+  color: var(--accent-11);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: var(--q-radius-control);
+}
+.q-step-exit svg { flex-shrink: 0; }
+.q-step-exit:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+@media (hover: hover) { .q-step-exit:hover { color: var(--accent-12); } }
+/* Focused by script on a step change (for the screen reader), never a control: no ring. */
+.radix-themes .q-step-title:is(:focus, :focus-visible) { outline: none; }
+.q-step-bar {
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--gray-4);
+  overflow: hidden;
+}
+.q-step-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-9);
+  transition: width var(--q-dur) var(--q-ease);
+}
+
+/* The foot: one row on a desktop — «Atrás» · (why not yet) · «Seguir después» ·
+   main button. */
+.q-step-foot {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "back reason later primary";
+  align-items: center;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+}
+/* Same specificity as the island material rule it follows (which zeroes `gap`), so
+   the foot's own spacing wins. */
+.q-step-foot:not(.q-step-foot--drawer) {
+  padding: 8px;
+  align-items: center;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+}
+.q-step-back { grid-area: back; }
+.q-step-reason { grid-area: reason; justify-self: end; text-align: right; }
+.q-step-later { grid-area: later; }
+/* Radix pulls a ghost button out with negative margins; in a grid cell it would overlap
+   the row above. */
+.q-step-foot .rt-Button.q-step-later { margin: 0; }
+.q-step-primary { grid-area: primary; min-height: 44px; min-width: 9rem; }
+/* A desktop: the slot sticks to the panel's bottom edge, aligned with the body. */
+.q-step-slot {
+  box-sizing: border-box;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  max-width: var(--q-content-max);
+  padding: 0 var(--q-page-x) var(--q-gap);
+}
+
+/* Entrance: the step's blocks slide 8 px in from the side the owner moves to
+   (transform only, like `q-settle`: a frozen animation never hides content). */
+@keyframes q-step-in-next {
+  from { transform: translateX(8px); }
+  to   { transform: none; }
+}
+@keyframes q-step-in-back {
+  from { transform: translateX(-8px); }
+  to   { transform: none; }
+}
+.q-step-body > * { animation: q-step-in-next var(--q-dur-slow) var(--q-ease) both; }
+.q-step-body[data-dir="back"] > * { animation-name: q-step-in-back; }
+@media (prefers-reduced-motion: reduce) {
+  .q-step-body > * { animation: none; }
+  .q-step-bar-fill { transition: none; }
+}
+
+@media (max-width: 640px) {
+  /* Two rows: «Atrás» + the main button (wide) on top, «Seguir después» under them. */
+  .q-step-foot {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "reason reason"
+      "back primary"
+      "later later";
+  }
+  .q-step-reason { justify-self: stretch; text-align: center; }
+  .q-step-primary { min-width: 0; width: 100%; }
+  .q-step-later { justify-self: center; min-height: 40px; }
+  .q-step-head-below { display: none; }
+  /* While a frame is mounted the foot IS the bottom island: the accesses bar hides
+     (never two islands at the bottom), the foot takes its slot and its safe area, and
+     `--q-bottom-bar-h` becomes the foot's two-row height, so the panel's reserve
+     (`.q-page-body` above) follows. Pure CSS, like the keyboard rule: no Python state. */
+  .q-ground:has(.q-step-frame) { --q-bottom-bar-h: 114px; }
+  .q-ground:has(.q-step-frame .q-step-reason) { --q-bottom-bar-h: 132px; }
+  .q-ground:has(.q-step-frame) .q-bottom-bar { display: none; }
+  .q-step-slot {
+    position: fixed;
+    left: var(--q-gap);
+    right: var(--q-gap);
+    bottom: calc(var(--q-gap) + env(safe-area-inset-bottom, 0px));
+    z-index: 50;
+    width: auto !important;
+    max-width: none;
+    padding: 0;
+  }
+  /* A wizard without the rail (no sidebar, so no shell reserve) still keeps its last
+     block clear of the foot. */
+  .q-step-frame .q-step-body {
+    padding-bottom: calc(
+      var(--q-bottom-bar-h) + 2 * var(--q-gap) + env(safe-area-inset-bottom, 0px)
+    );
   }
 }
 
