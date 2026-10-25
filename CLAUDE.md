@@ -118,7 +118,7 @@ module by module, the signed decisions and the house rules.
 |---|---|
 | `Qualify/` | Reflex app (the screens clients use); design system in `Qualify/ui/`, rules in `docs/design-system.md` |
 | `packages/api/` | `qualify_api` — the modular-monolith backend (connections, publishing, planner, inbox, intent, conversations, whatsapp, creative, catalog, auth, meegle…) |
-| `packages/shared/` | The only sanctioned DB doors (`tenant_session`, `admin_session`, `credential_session`) + R2 |
+| `packages/shared/` | The only sanctioned DB doors (`tenant_session`, `admin_session`, `credential_session`, `webhook_session`, `webhook_worker_session`) + R2 |
 | `packages/creative/`, `packages/render/` | Generation providers and pricing; the Remotion render service (the repo's one Node runtime) |
 | `packages/models/`, `packages/scraper/` | Multimodal model wrappers and scrapers — libraries/spikes, not a running pipeline |
 | `migrations/postgres/` | Alembic — the whole schema, with RLS |
@@ -141,7 +141,7 @@ Workers (`*-tick`, `*-worker`) **publish or send for real**: locally always `--t
 
 - **Tenant isolation:** every table has `tenant_id` + RLS with the
   `NULLIF(current_setting('app.tenant_id', true), '')::uuid` policy; DB access only through
-  `qualify_shared.db.session`.
+  the `qualify_shared.db` doors.
 - **One Postgres** for transactional and analytical data (ADR 31); no new datastore, runtime or
   vendor without an options table and the founder's decision.
 - **Provenance** on every derived row (source id + model/prompt/pipeline version);
