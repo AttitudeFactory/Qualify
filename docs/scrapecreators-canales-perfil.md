@@ -352,8 +352,8 @@ photo|video|carousel, isReel, takenAt, caption (completo), hashtags, likes, comm
 pinned, isOwner, isCollab, location, thumbnailUrl}]` (12; en TikTok, de las páginas de videos que
 ya se pagan). `recentPosts`, `topHashtags` y `recentCaptions` no cambian de forma.
 
-Regla de `user-posts` (`needs_post_list`): solo si la publicación no fijada más antigua de las 12
+Regla de `user-posts`. Por defecto (`ai_labels=True`: asistente web y Referentes) se sigue pidiendo la primera página como antes, porque solo ella trae la etiqueta de IA por publicación que guarda el historial de crecimiento. El prellenado del Alta, que no guarda historial, pide `ai_labels=False` y aplica `needs_post_list`: solo si la publicación no fijada más antigua de las 12
 sigue dentro de los 7 días (y entonces desde el cursor del perfil), o si el perfil vino sin
 publicaciones y la cuenta dice tener alguna (no si dice 0 ni si es privada). Instagram típico = 1
-crédito. Las instantáneas de esquema 4 en caché cuentan como fallo de caché: cada cuenta se vuelve
+crédito en el Alta. Las instantáneas de esquema 4 en caché cuentan como fallo de caché: cada cuenta se vuelve
 a leer una vez (1 crédito).

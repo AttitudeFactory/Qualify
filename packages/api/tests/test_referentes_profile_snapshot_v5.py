@@ -178,7 +178,9 @@ def test_twelve_posts_spanning_the_window_cost_one_credit_and_fill_snapshot_5() 
         )
     )
 
-    snap = sc.fetch_profile_and_posts("instagram", "@Panaderia.Demo", client=_client(vendor))
+    snap = sc.fetch_profile_and_posts(
+        "instagram", "@Panaderia.Demo", client=_client(vendor), ai_labels=False
+    )
 
     assert [path for path, _ in vendor.requests] == ["/v1/instagram/profile"]
     assert sc.SNAPSHOT_SCHEMA == 5
@@ -219,7 +221,7 @@ def test_twelve_posts_spanning_the_window_cost_one_credit_and_fill_snapshot_5() 
 def test_zero_posts_yield_empty_lists_and_no_post_list_read() -> None:
     vendor = _Vendor(_profile([], count=0, has_next=False))
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert len(vendor.requests) == 1
     assert snap["recentMedia"] == []
@@ -235,7 +237,7 @@ def test_a_profile_without_its_posts_reads_the_post_list_from_the_start() -> Non
         posts={"success": True, "items": [_post_item(1, 2, "#pan")], "more_available": False},
     )
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert vendor.requests[1] == ("/v2/instagram/user/posts", {"handle": _HANDLE})
     assert [p["postId"] for p in snap["recentPosts"]] == ["MORE01"]
@@ -255,7 +257,7 @@ def test_a_very_active_account_continues_from_the_profile_cursor() -> None:
         },
     )
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     # the `mobile:` prefix is dropped (the raw cursor answered HTTP 500, 2026-10-25)
     assert vendor.requests[1] == (
@@ -277,7 +279,7 @@ def test_a_pinned_old_post_does_not_hide_a_window_the_twelve_do_not_cover() -> N
         posts={"success": True, "items": [_post_item(1, 8)], "more_available": False},
     )
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert snap["recentMedia"][0]["pinned"] is True
     assert not any(m["pinned"] for m in snap["recentMedia"][1:])
@@ -289,7 +291,7 @@ def test_all_posts_already_in_the_profile_never_read_the_post_list() -> None:
     nodes = [_node(i, age_days=1 + i) for i in range(4)]  # 4 posts, all this week
     vendor = _Vendor(_profile(nodes, has_next=False))
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert len(vendor.requests) == 1
     assert len(snap["recentPosts"]) == 4
@@ -299,7 +301,7 @@ def test_a_failed_continuation_leaves_metrics_unknown_but_keeps_the_grid() -> No
     nodes = [_node(i, age_days=0.3 * (i + 1)) for i in range(12)]
     vendor = _Vendor(_profile(nodes, count=400), posts=None)  # 402 on the post list
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert snap["recentPosts"] is None
     assert sc.profile_metrics("instagram", snap) == []
@@ -314,7 +316,9 @@ def test_hidden_counts_collabs_and_foreign_owners() -> None:
     ]
     vendor = _Vendor(_profile(nodes, has_next=False))
 
-    media = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))["recentMedia"]
+    media = sc.fetch_profile_and_posts(
+        "instagram", _HANDLE, client=_client(vendor), ai_labels=False
+    )["recentMedia"]
 
     assert (media[0]["likes"], media[0]["views"], media[0]["comments"]) == (None, None, 3)
     assert media[1]["isCollab"] is True and media[1]["isOwner"] is True
@@ -326,7 +330,7 @@ def test_a_private_account_is_not_charged_for_a_post_list() -> None:
     profile["data"]["user"]["is_private"] = True
     vendor = _Vendor(profile)
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert len(vendor.requests) == 1
     assert snap["recentMedia"] == [] and snap["recentPosts"] is None  # unseen, not zero
@@ -338,7 +342,7 @@ def test_thumbnails_off_the_instagram_cdn_are_dropped() -> None:
     node["display_url"] = "http://scontent.cdninstagram.com/x.jpg"
     vendor = _Vendor(_profile([node], has_next=False))
 
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     assert snap["recentMedia"][0]["thumbnailUrl"] == ""
 
@@ -404,7 +408,7 @@ def test_tiktok_snapshot_5_reads_the_bio_link_and_media_from_the_video_pages() -
 
 def test_referentes_seed_reads_a_snapshot_5_like_before() -> None:
     vendor = _Vendor(_profile(_twelve_spread_over_a_month(), count=35))
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     seed = discovery_seed.seed_from_profile(snap)
     without_new_keys = {k: v for k, v in snap.items() if k not in ("bioLinks", "recentMedia")}
@@ -415,7 +419,7 @@ def test_referentes_seed_reads_a_snapshot_5_like_before() -> None:
 
 def test_web_wizard_keys_keep_their_shape() -> None:
     vendor = _Vendor(_profile(_twelve_spread_over_a_month(), count=35))
-    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor), ai_labels=False)
 
     # what `creative_wizard_pages` / `growth_provider` read, unchanged in shape
     assert set(snap["recentPosts"][0]) == {
@@ -448,3 +452,43 @@ def test_a_cached_schema_4_snapshot_is_read_again_once() -> None:
     cache.put(tenant, "instagram", _HANDLE, {"username": "x", "fetchedAt": float(_NOW)})
     assert repo.get(tenant, "instagram", _HANDLE, "snapshot", now=_NOW).document["schema"] == 5
     assert cache.get(tenant, "instagram", _HANDLE) == {"username": "x", "fetchedAt": float(_NOW)}
+
+
+# -- the default read (web wizard, Referentes): the post list as before, for the AI label
+
+
+def _labelled_page() -> dict[str, Any]:
+    labelled = _post_item(1, 2, "#pan") | {
+        "ai_label_info": {"gen_ai_detection_method": "SELF_DISCLOSURE_FLOW"}
+    }
+    return {"success": True, "items": [labelled, _post_item(2, 9)], "more_available": False}
+
+
+def test_the_default_read_keeps_the_post_list_and_its_ai_label() -> None:
+    # Even when the profile's 12 posts cover the window, the default still reads the
+    # post list from its FIRST page (no cursor), exactly as before snapshot 5.
+    vendor = _Vendor(_profile(_twelve_spread_over_a_month(), count=35), posts=_labelled_page())
+
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+
+    assert vendor.requests == [
+        ("/v1/instagram/profile", {"handle": _HANDLE}),
+        ("/v2/instagram/user/posts", {"handle": _HANDLE}),
+    ]
+    assert [p["postId"] for p in snap["recentPosts"]] == ["MORE01"]
+    first = snap["recentPosts"][0]
+    assert (first["aiGenerated"], first["aiLabel"]) == (True, sc.AI_LABEL_SELF_DISCLOSED)
+    # hashtags and captions come from the post list, as before (not counted twice)
+    assert snap["topHashtags"] == ["pan"]
+    assert len(snap["recentCaptions"]) == 1
+    # the new keys come from the profile all the same
+    assert len(snap["recentMedia"]) == 12
+
+
+def test_the_default_read_keeps_a_failed_post_list_unknown() -> None:
+    vendor = _Vendor(_profile(_twelve_spread_over_a_month(), count=35), posts=None)
+
+    snap = sc.fetch_profile_and_posts("instagram", _HANDLE, client=_client(vendor))
+
+    assert snap["recentPosts"] is None
+    assert snap["topHashtags"] == []

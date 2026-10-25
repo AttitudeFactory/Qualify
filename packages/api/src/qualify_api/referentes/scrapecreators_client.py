@@ -1180,10 +1180,19 @@ def _read_instagram(
     client: httpx.Client,
     hashtags: Counter[str],
     captions: list[str],
+    *,
+    ai_labels: bool = True,
 ) -> dict[str, Any]:
     """The Instagram half of `fetch_profile_and_posts`: one profile read (1 credit),
-    and the post list only when `needs_post_list` says the 12 posts it carried do not
-    cover the window — then from the profile's own cursor, so no page repeats them."""
+    then the post list.
+
+    `ai_labels=True` (the default: the web wizard and Referentes) reads the post list
+    from its first page exactly as before snapshot 5, because only that list carries
+    Instagram's "made with AI" label, which the growth history records per post — the
+    profile's 12 posts would leave it unknown. `ai_labels=False` (the Alta prefill)
+    reads the post list only when `needs_post_list` says the 12 posts the profile
+    carried do not cover the window — then from the profile's own cursor, so no page
+    repeats them."""
     handle = _normalize_handle(handle)
     user = _instagram_user(_get(client, "/v1/instagram/profile", {"handle": handle}))
     profile = _normalize_instagram({"data": {"user": user}})
@@ -1199,6 +1208,20 @@ def _read_instagram(
         stamp_key="taken_at_timestamp",
         owner_id=str(user.get("id") or ""),
     )
+    if ai_labels:
+        try:
+            profile["recentPosts"] = fetch_recent_posts(
+                "instagram",
+                handle,
+                since=since,
+                client=client,
+                hashtag_counts=hashtags,
+                caption_sink=captions,
+            )
+        except ScrapeCreatorsError as exc:
+            logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
+            profile["recentPosts"] = None
+        return profile
     for node in nodes:
         text = _ig_node_text(node)
         hashtags.update(_hashtags_of(text))
@@ -1282,7 +1305,11 @@ def _read_tiktok(
 
 
 def fetch_profile_and_posts(
-    network: str, handle: str, *, client: httpx.Client | None = None
+    network: str,
+    handle: str,
+    *,
+    client: httpx.Client | None = None,
+    ai_labels: bool = True,
 ) -> dict[str, Any]:
     """What `BrandConnectState.analyze`, Referentes and the Alta prefill call: the
     profile read plus the windowed post list, as ONE normalized dict — `fetch_profile`'s
@@ -1307,8 +1334,11 @@ def fetch_profile_and_posts(
         list has one). The thumbnail URLs are signed and die in ~4 days (IG) / ~1 day
         (TikTok): copying them is the caller's job.
 
-    Instagram is ONE credit unless `needs_post_list` (a very active account, or a
-    profile that came without its posts); TikTok is the profile plus the video pages.
+    Instagram with `ai_labels=True` (the default) reads the post list as it always did,
+    for its per-post AI label (`_read_instagram`); with `ai_labels=False` (the Alta
+    prefill, which records no growth history) it is ONE credit unless `needs_post_list`
+    (a very active account, or a profile that came without its posts). TikTok is the
+    profile plus the video pages either way (they carry the label).
     """
     if network not in SUPPORTED_NETWORKS:
         raise ValueError(f"unsupported network: {network!r}")
@@ -1319,8 +1349,10 @@ def fetch_profile_and_posts(
     hashtags: Counter[str] = Counter()
     captions: list[str] = []
     try:
-        read = _read_instagram if network == "instagram" else _read_tiktok
-        profile = read(handle, active, hashtags, captions)
+        if network == "instagram":
+            profile = _read_instagram(handle, active, hashtags, captions, ai_labels=ai_labels)
+        else:
+            profile = _read_tiktok(handle, active, hashtags, captions)
         profile["topHashtags"] = [tag for tag, _ in hashtags.most_common(TOP_HASHTAGS)]
         profile["recentCaptions"] = captions[:RECENT_CAPTIONS]
     finally:

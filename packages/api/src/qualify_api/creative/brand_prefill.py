@@ -417,7 +417,11 @@ AccountReader = Callable[..., from_profile.Proposal]
 
 
 def _read_profile(network: str, handle: str, client: httpx.Client) -> dict[str, Any]:
-    return scrapecreators_client.fetch_profile_and_posts(network, handle, client=client)
+    # The Alta records no growth history, so it does not pay a second credit for
+    # Instagram's per-post AI label (snapshot 5, m-24854324).
+    return scrapecreators_client.fetch_profile_and_posts(
+        network, handle, client=client, ai_labels=False
+    )
 
 
 def picture_allowed(url: str) -> bool:
