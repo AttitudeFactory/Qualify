@@ -55,7 +55,7 @@ from uuid import UUID, uuid4
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 from qualify_api.claude_tools import api_key_from_env
-from qualify_api.creative import brand_prefill, logo_palette
+from qualify_api.creative import brand_prefill, kept_pictures, logo_palette
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_api.referentes import discovery_seed, scrapecreators_client
@@ -79,7 +79,7 @@ from .auth_state import BRAND_READY_QUERY, AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
-from .r2_media import BACKEND_BASE
+from .r2_media import BACKEND_BASE, issue_view_path
 from .tenant import tenant_uuid
 from .ui import (
     DragCard,
@@ -3671,6 +3671,12 @@ class BrandConnectState(rx.State):
     #: numeric copy rather than parsing that string back apart.
     profile_followers_count: int = 0
     profile_pic: str = ""
+    #: m-24852537: the copy of the profile picture the Alta kept in R2
+    #: (`brand_kit_details.profile.pic_key`), carried so every save keeps it, and its
+    #: `/r2media` view — shown before the `/avatar` proxy (the CDN link expires in days).
+    profile_pic_key: str = ""
+    profile_pic_content_type: str = ""
+    profile_pic_view: str = ""
     #: ¿Tienes logo? answered "Usar mi foto de perfil" (`answer_has_logo`). Mirrored
     #: here from `BrandWizardState.has_logo` because `_is_skipped` is synchronous and
     #: cannot `get_state`: it is what skips Tu logo.
@@ -4326,6 +4332,7 @@ class BrandConnectState(rx.State):
         self.profile_followers = ""
         self.profile_followers_count = 0
         self.profile_pic = ""
+        self.forget_kept_picture()
         self.logo_from_profile = False
         self.profile_pic_is_real = False
         self.account_kind = ""
@@ -4504,12 +4511,39 @@ class BrandConnectState(rx.State):
                 return note
         return "Todavía no encontramos negocios parecidos al tuyo." if self.discovery_ran else ""
 
+    def keep_picture_of(self, tenant_id: UUID, brand_id: UUID, profile: Any) -> None:
+        """The saved `profile`'s kept picture (m-24852537): its key and content type, and
+        a `/r2media` view of it — only for a kept picture of THIS tenant's brand
+        (`kept_pictures.is_kept_key`); anything else is ignored. Not an event handler."""
+        self.forget_kept_picture()
+        key = profile.get("pic_key") if isinstance(profile, dict) else None
+        if not kept_pictures.is_kept_key(tenant_id, brand_id, key):
+            return
+        self.profile_pic_key = str(key)
+        self.profile_pic_content_type = str(profile.get("pic_content_type") or "image/jpeg")
+        try:
+            self.profile_pic_view = issue_view_path(
+                tenant_id, self.profile_pic_key, "image", self.profile_pic_content_type
+            )
+        except Exception as exc:  # noqa: BLE001 - cosmetic: the proxy stands in
+            logger.warning("brand connect: picture view not issued: %s", type(exc).__name__)
+            self.profile_pic_view = ""
+
+    def forget_kept_picture(self) -> None:
+        """Drop the kept picture (a new read, or the account forgotten)."""
+        self.profile_pic_key = ""
+        self.profile_pic_content_type = ""
+        self.profile_pic_view = ""
+
     @rx.var
     def profile_avatar_src(self) -> str:
         """The read account's own picture through the backend proxy (`avatar_proxy.py`),
         like every referente card — never the vendor's signed URL straight in an `<img>`:
         Instagram's expire (§ request 2026-09-29, "en algunas cuentas no carga la foto de
-        perfil"), and the proxy serves its kept copy or finds a fresh one."""
+        perfil"), and the proxy serves its kept copy or finds a fresh one. The copy the
+        Alta kept in R2 (m-24852537) comes first."""
+        if self.profile_pic_view:
+            return self.profile_pic_view
         return creator_discovery.avatar_path(
             {"network": self.network, "handle": self.profile_username, "avatar": self.profile_pic}
         )
@@ -5076,6 +5110,7 @@ class BrandConnectState(rx.State):
                 self.profile_followers = str(profile.get("followers", ""))
                 self.profile_followers_count = int(profile.get("followers_count", 0) or 0)
                 self.profile_pic = str(profile.get("pic", ""))
+                self.keep_picture_of(ids[0], ids[1], profile)
                 metrics = [m for m in profile.get("metrics", []) if isinstance(m, dict)]
                 try:
                     self._set_metrics(metrics)
@@ -5228,6 +5263,7 @@ class BrandConnectState(rx.State):
             self.profile_followers = f"{followers:,}".replace(",", ".") if followers else "—"
             self.profile_followers_count = int(followers) if followers else 0
             self.profile_pic = str(profile.get("profilePicUrl", ""))
+            self.forget_kept_picture()  # a new read: the previous account's copy goes
             if self.logo_from_profile:
                 await self._forget_profile_picture_logo()  # the previous read's picture
             self.logo_from_profile = False  # a new read: its picture was not taken yet

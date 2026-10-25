@@ -257,6 +257,7 @@ class BrandMinimalState(rx.State):
         connect.profile_followers = ""
         connect.profile_followers_count = 0
         connect.profile_pic = ""
+        connect.forget_kept_picture()
         connect.profile_pic_is_real = False
         connect.logo_from_profile = False
         connect.sector = ""

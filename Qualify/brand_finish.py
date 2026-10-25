@@ -300,6 +300,15 @@ def _profile_document(connect: Any) -> dict[str, Any] | None:
         "followers": connect.profile_followers,
         "followers_count": connect.profile_followers_count,
         "pic": connect.profile_pic,
+        # m-24852537: the copy kept in R2 survives every save of the wizard
+        **(
+            {
+                "pic_key": connect.profile_pic_key,
+                "pic_content_type": connect.profile_pic_content_type,
+            }
+            if getattr(connect, "profile_pic_key", "")
+            else {}
+        ),
         "metrics": [
             {"label": label, "hint": hint, "suffix": suffix, "decimals": decimals, "target": target}
             for label, hint, suffix, decimals, target in zip(

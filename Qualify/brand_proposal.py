@@ -295,6 +295,12 @@ async def _into_wizard(state: rx.State, proposal: Mapping[str, Any]) -> None:
     connect.profile_followers = str(profile.get("followers", ""))
     connect.profile_followers_count = int(profile.get("followers_count", 0) or 0)
     connect.profile_pic = str(profile.get("pic", ""))
+    # m-24852537: the kept copy, already checked and viewed for the card
+    connect.forget_kept_picture()
+    found = brand_prefill_review.picture_key(proposal)
+    if found is not None:
+        _tenant, connect.profile_pic_key, connect.profile_pic_content_type = found
+        connect.profile_pic_view = str(getattr(state, "pic_view", "") or "")
     metrics = [m for m in profile.get("metrics", []) if isinstance(m, Mapping)]
     try:
         connect._set_metrics([dict(m) for m in metrics])

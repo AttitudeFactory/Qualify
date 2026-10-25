@@ -449,3 +449,60 @@ def test_a_proposal_without_a_copy_issues_no_view(
     monkeypatch.setattr(brand_proposal, "issue_view_path", lambda *_a: pytest.fail("issued"))
     state = _pending(states)
     assert state.pic_view == ""
+
+
+async def test_approve_hands_the_kept_picture_to_the_wizard(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from . import brand_finish
+
+    kept = _kept_connect()[PREFILL_KEY]["proposal"]
+    monkeypatch.setattr(brand_proposal, "issue_view_path", lambda *_a: "/r2media/tok")
+    monkeypatch.setattr(
+        brand_prefill_review, "approve_prefill", lambda *_ids: PrefillDecision(True, kept)
+    )
+    state = states(BrandProposalState)
+    state.show(review_of(_kept_connect(), has_kit=False))
+    _ = [e async for e in BrandProposalState.approve.fn(state)]
+    connect = states(wiz.BrandConnectState)
+    assert connect.profile_pic_key == kept["profile"]["pic_key"]
+    assert connect.profile_pic_view == "/r2media/tok"
+    assert connect.profile_avatar_src == "/r2media/tok"
+    # the wizard's next save keeps the copy in the profile document
+    saved = brand_finish._profile_document(connect)
+    assert saved is not None and saved["pic_key"] == kept["profile"]["pic_key"]
+    assert saved["pic_content_type"] == "image/jpeg" and saved["pic"] == ""
+
+
+def test_the_wizard_shows_the_kept_copy_before_the_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import kept_pictures
+
+    issued: list[UUID] = []
+
+    def issue(tenant_id: UUID, key: str, media_type: str, content_type: str) -> str:
+        issued.append(tenant_id)
+        return "/r2media/own"
+
+    monkeypatch.setattr(wiz, "issue_view_path", issue)
+    tenant, brand, _user = IDS
+    own = kept_pictures.kept_key(tenant, brand, kept_pictures.KIND_PROFILE, b"p", ".jpg")
+    other_tenant = UUID("c0000000-0000-4000-8000-0000000000ee")
+    theirs = kept_pictures.kept_key(other_tenant, brand, kept_pictures.KIND_PROFILE, b"p", ".jpg")
+
+    connect = wiz.BrandConnectState()
+    connect.network, connect.profile_username = "instagram", "heladeria.polar"
+    proxy = connect.profile_avatar_src
+    assert proxy and "r2media" not in proxy
+
+    connect.keep_picture_of(tenant, brand, {"pic_key": theirs})  # never another tenant's
+    assert connect.profile_pic_key == "" and issued == []
+    assert connect.profile_avatar_src == proxy
+
+    connect.keep_picture_of(tenant, brand, {"pic_key": own, "pic_content_type": "image/jpeg"})
+    assert issued == [tenant] and connect.profile_pic_key == own
+    assert connect.profile_avatar_src == "/r2media/own"
+
+    connect.forget_kept_picture()
+    assert connect.profile_avatar_src == proxy
