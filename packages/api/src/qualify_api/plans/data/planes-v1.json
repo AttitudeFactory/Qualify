@@ -1,0 +1,35 @@
+{
+  "version": "planes-v1",
+  "source": "founder 2026-10-24 (D14, D15, D17, D18 of docs/modelo-cobro-generacion.md) + ADR 43 F4 (2026-10-25); m-24852145",
+  "default_plan": "basico",
+  "businesses_ceiling": 8,
+  "plans": {
+    "basico": {
+      "name": "Básico",
+      "rank": 1,
+      "creations": 30,
+      "videos": 4,
+      "previews": 20,
+      "usd_alert_cap": "120",
+      "included_businesses": 2
+    },
+    "plus": {
+      "name": "Plus",
+      "rank": 2,
+      "creations": 60,
+      "videos": 8,
+      "previews": 40,
+      "usd_alert_cap": "240",
+      "included_businesses": 3
+    },
+    "pro": {
+      "name": "Pro",
+      "rank": 3,
+      "creations": 120,
+      "videos": 16,
+      "previews": 80,
+      "usd_alert_cap": "480",
+      "included_businesses": 5
+    }
+  }
+}

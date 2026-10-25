@@ -1,0 +1,22 @@
+{
+  "version": "precios-planes-v1",
+  "plans_version": "planes-v1",
+  "currency": "USD",
+  "source": "founder 2026-10-24, option C of docs/precios-planes-qualify.md; billing rules in the comments of m-24852145 (2026-10-25)",
+  "plans": {
+    "basico": {"monthly": "79", "first_month": "39"},
+    "plus": {"monthly": "149", "first_month": "75"},
+    "pro": {"monthly": "279", "first_month": "139"}
+  },
+  "packs": {
+    "videos_2": {"creations": 0, "videos": 2, "previews": 0, "price": "29"},
+    "creations_20": {"creations": 20, "videos": 0, "previews": 0, "price": "12"},
+    "previews_10": {"creations": 0, "videos": 0, "previews": 10, "price": "19"}
+  },
+  "rules": [
+    "The first month is charged at first_month for the plan the subscription STARTED with; every later month at monthly.",
+    "An upgrade applies at once and charges the month's difference, no proration by days: new monthly minus what the month already paid (in the first month: new monthly minus first_month).",
+    "A downgrade applies from the next month.",
+    "Packs are always full price, first month included."
+  ]
+}
