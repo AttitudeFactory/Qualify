@@ -26,10 +26,13 @@ the setting is off is settled `disabled` without a comment.
 cap becomes `CallCaps` through unit costs taken from what the repo versions:
 
     u_sc = SCRAPECREATORS_USD_PER_CREDIT                      (1 request = 1 credit)
-    u_cl = (CLAUDE_RUN_INPUT_TOKENS  * p_in
+    u_cl = (CLAUDE_RUN_INPUT_TOKENS  * p_in * w
           + CLAUDE_RUN_OUTPUT_TOKENS * p_out) / 1e6           (one Claude run)
            p_in / p_out = `claude_tools.PRICES` of the DEAREST model the prefill runs
            (`hashtags.from_profile.MODEL`, `hashtags.ai.SELECT_MODEL`)
+           w = `claude_tools.CACHE_WRITE_MULTIPLIER` (1.25): the system prompt is sent
+           cached, so a first turn bills it as a cache write — the dearest an input
+           token can be; uncached or cache-read input only makes the run cheaper
     min  = MIN_RUN.sc * u_sc + MIN_RUN.claude * u_cl          (2 requests + 2 runs)
     cap < min                       → refuse (the prefill does not run)
     sc     = min(6, 2 + floor((cap - min) / u_sc))            (post pages first: cheap,
@@ -78,7 +81,7 @@ from functools import partial
 from typing import Any, Protocol
 from uuid import UUID
 
-from qualify_api.claude_tools import PRICES
+from qualify_api.claude_tools import CACHE_WRITE_MULTIPLIER, PRICES
 from qualify_api.creative.brand_prefill import (
     DEFAULT_CAPS,
     PREFILL_VERSION,
@@ -198,8 +201,11 @@ def unit_costs() -> UnitCosts | None:
         if model not in PRICES:
             return None
         price_in, price_out = PRICES[model]
+        # input at the cache-WRITE rate: the dearest any input token can bill (a run's
+        # first turn writes its cached system prompt), so the estimate is a ceiling
+        price_in_ceiling = Decimal(str(price_in)) * Decimal(str(CACHE_WRITE_MULTIPLIER))
         run = (
-            Decimal(CLAUDE_RUN_INPUT_TOKENS) * Decimal(str(price_in))
+            Decimal(CLAUDE_RUN_INPUT_TOKENS) * price_in_ceiling
             + Decimal(CLAUDE_RUN_OUTPUT_TOKENS) * Decimal(str(price_out))
         ) / Decimal(1_000_000)
         priced.append((run, model))

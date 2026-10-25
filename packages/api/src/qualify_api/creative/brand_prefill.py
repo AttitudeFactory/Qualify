@@ -168,6 +168,7 @@ class PrefillUsage:
     claude_cache_read_tokens: int = 0
     claude_cost_usd: float = 0.0
     claude_tokens_complete: bool = True
+    claude_cache_creation_tokens: int = 0
 
     def as_document(self) -> dict[str, Any]:
         return {
@@ -177,6 +178,7 @@ class PrefillUsage:
             "claude_input_tokens": self.claude_input_tokens,
             "claude_output_tokens": self.claude_output_tokens,
             "claude_cache_read_tokens": self.claude_cache_read_tokens,
+            "claude_cache_creation_tokens": self.claude_cache_creation_tokens,
             "claude_cost_usd": round(self.claude_cost_usd, 6),
             "claude_tokens_complete": self.claude_tokens_complete,
         }
@@ -280,6 +282,7 @@ class CallBudget:
             claude_cache_read_tokens=sum(s.cache_read_tokens for s in self.claude_stats),
             claude_cost_usd=sum(s.cost_usd for s in self.claude_stats),
             claude_tokens_complete=self.claude_tokens_complete,
+            claude_cache_creation_tokens=sum(s.cache_creation_tokens for s in self.claude_stats),
         )
 
 
@@ -535,6 +538,7 @@ class _Trail:
                 "input_tokens": stats.input_tokens,
                 "output_tokens": stats.output_tokens,
                 "cache_read_tokens": stats.cache_read_tokens,
+                "cache_creation_tokens": stats.cache_creation_tokens,
                 "turns": stats.turns,
                 "cost_usd": round(stats.cost_usd, 6),
             }

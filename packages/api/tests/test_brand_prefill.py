@@ -421,6 +421,27 @@ def test_the_catalogs_claude_choice_comes_first_and_its_tokens_are_counted(
     assert (runs[1]["input_tokens"], runs[1]["turns"]) == (4000, 3)
 
 
+def test_the_usage_prices_cache_reads_and_writes() -> None:
+    """m-24852516: what an Alta's cap is checked against counts the cached tokens."""
+    budget = brand_prefill.CallBudget()
+    budget.claude_stats.append(
+        CallStats(
+            "claude-sonnet-5",
+            None,
+            input_tokens=1000,
+            output_tokens=200,
+            cache_read_tokens=4000,
+            cache_creation_tokens=2000,
+        )
+    )
+    usage = budget.usage()
+    assert usage.claude_cache_read_tokens == 4000
+    assert usage.claude_cache_creation_tokens == 2000
+    # Sonnet 5: $2 in, $10 out, $0.20 cache read, $2.50 cache write (1.25x) per MTok
+    assert usage.claude_cost_usd == pytest.approx(0.002 + 0.002 + 0.0008 + 0.005)
+    assert usage.as_document()["claude_cache_creation_tokens"] == 2000
+
+
 def test_the_catalogs_rule_path_makes_no_claude_call(world: World) -> None:
     world.catalog = _catalog()  # no key: the rule path over the seeded taxonomy
     result = world.run()
