@@ -29,7 +29,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Mapping
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 import reflex as rx
 from qualify_api.auth import (
@@ -203,6 +203,16 @@ def _draft_destination_blocking(tenant_id) -> str:
 #: The Brand Kit's first view, before any login: asks for the email (§ 2026-10-02).
 BRAND_START_ROUTE = "/brand/start"
 
+
+def brand_gate_url(path: str) -> str:
+    """Where an unfinished brand is sent from another page: /brand, saying which page
+    it came from (`?desde=responder`), so /brand can tell why (PASOS-4 UX review)."""
+    slug = (path or "").strip().strip("/")
+    if not slug or slug.startswith("brand"):
+        return "/brand"
+    return f"/brand?{urlencode({'desde': slug})}"
+
+
 #: m-24842965: a signup that adopted the pre-login Brand Kit ends on the same «Tu marca
 #: está lista» card a logged-in finish shows — the manual wizard's page raises it when the
 #: URL carries this query (`creative_wizard_pages._asks_for_ready_card`).
@@ -296,7 +306,7 @@ class AuthState(rx.State):
         if not self.session_tenant_id:
             return rx.redirect("/brand" if self.guest_tenant_id else BRAND_START_ROUTE)
         if not self.brand_kit_complete:
-            return rx.redirect("/brand")
+            return rx.redirect(brand_gate_url(self.router.url.path))
         return None
 
     @rx.event

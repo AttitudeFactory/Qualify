@@ -44,10 +44,10 @@ from typing import Any, Literal
 
 import reflex as rx
 
-from ..nav_url import push_url_script
 from . import tokens as T
 from .steps_vm import (
     BACK_LABEL,
+    DIR_BACK,
     DIR_NEXT,
     LATER_LABEL,
     shows_back,
@@ -287,6 +287,7 @@ def step_frame(
     step: rx.Var[int] | int,
     direction: rx.Var[str] | str = DIR_NEXT,
     on_pop: Any | None = None,
+    on_leave: Any | None = None,
     spacing: str = "4",
 ) -> rx.Component:
     """A full-page wizard: ``head`` (`step_head`) fixed on top, the step's ``children``
@@ -300,7 +301,10 @@ def step_frame(
     detect, so ``on_load`` does not run (measured 2026-10-25 on `/design/pasos`). The
     frame renders a hidden trigger for it and `step_settle_script` installs, once per
     tab, a `popstate` listener that presses it. The handler must be idempotent: when the
-    router does notice the change, ``on_load`` runs too."""
+    router does notice the change, ``on_load`` runs too.
+
+    ``on_leave`` runs when the frame unmounts (the owner left the route): the place to
+    clear a `step_sync` readiness flag."""
     body = rx.vstack(
         *children,
         width="100%",
@@ -338,6 +342,7 @@ def step_frame(
         flex="1 0 auto",
         display="flex",
         flex_direction="column",
+        **({"on_unmount": on_leave} if on_leave is not None else {}),
     )
 
 
@@ -365,33 +370,60 @@ def step_settle_script(scope: Scope = "page") -> str:
     )
 
 
-def step_sync_script(step: rx.Var[int] | int) -> str:
-    """JS that writes ``?paso=<step>`` for the step on screen, then `step_settle_script`.
-    No ``paso`` in the address yet (the route's first load) → ``replaceState``; another
-    number → ``pushState`` (a new «atrás» entry); the same number (the browser's «atrás»
-    put it there) → nothing. Other parameters stay."""
-    return (
-        "(() => { const n = String("
-        + str(step if _is_static(step) else f"{step}")
-        + "); const u = new URL(window.location.href);"
-        " const cur = u.searchParams.get('paso');"
-        " if (cur !== n) { u.searchParams.set('paso', n);"
-        " window.history[cur === null ? 'replaceState' : 'pushState']"
-        "(window.history.state, '', u.pathname + u.search + u.hash); } })();"
-        + step_settle_script("page")
+#: Installed once per tab: how a step change writes the address (PASOS-4 UX review).
+#: Forward → ``pushState``, remembering in ``history.state.qPrevPaso`` the step it
+#: came from. «Atrás» → ``history.back()`` when the entry below IS that step, else
+#: ``replaceState``: so «Atrás» never stacks entries, and after «Atrás» to step 1 the
+#: browser's «atrás» leaves for where the owner came from — never to a later step. No
+#: ``paso`` yet (the route's first write) → ``replaceState``; the same step (the
+#: browser's «atrás» put it there) → nothing.
+_STEP_GO_JS = (
+    "if (!window.__qStepGo) window.__qStepGo = (target, back) => {"
+    " const cur = new URL(window.location.href).searchParams.get('paso');"
+    " const to = new URL(target, window.location.href);"
+    " const n = to.searchParams.get('paso'); if (cur === n) return;"
+    " const st = window.history.state || {}; const url = to.pathname + to.search + to.hash;"
+    " if (cur === null) { window.history.replaceState(st, '', url); return; }"
+    " if (back) { if (st.qPrevPaso === n) window.history.back();"
+    " else window.history.replaceState(st, '', url); return; }"
+    " window.history.pushState({ ...st, qPrevPaso: cur }, '', url); };"
+)
+
+
+def step_address_script(target: str, back: bool | str = False) -> str:
+    """JS that moves the address to ``target`` (a JS expression for a URL with
+    ``?paso=``) by the rule of `_STEP_GO_JS`. ``back`` is a bool, or a JS expression."""
+    flag = ("true" if back else "false") if isinstance(back, bool) else back
+    return _STEP_GO_JS + f"window.__qStepGo({target}, {flag});"
+
+
+def step_sync_script(step: rx.Var[int] | int, direction: rx.Var[str] | str = DIR_NEXT) -> str:
+    """JS that writes ``?paso=<step>`` for the step on screen (`step_address_script`;
+    ``direction`` "back" is «Atrás»), then `step_settle_script`. Other parameters stay."""
+    n = str(step) if _is_static(step) else f"{step}"
+    if isinstance(direction, str):
+        back: bool | str = direction == DIR_BACK
+    else:
+        back = f"({direction} === {json.dumps(DIR_BACK)})"
+    target = (
+        "(() => { const u = new URL(window.location.href);"
+        f" u.searchParams.set('paso', String({n})); return u.href; }})()"
     )
+    return step_address_script(target, back) + step_settle_script("page")
 
 
-def step_sync(step: rx.Var[int]) -> rx.Component:
+def step_sync(step: rx.Var[int], direction: rx.Var[str] | str = DIR_NEXT) -> rx.Component:
     """The address and the settle of a flow whose step is changed by many handlers
     (Tu marca: answering a question, a read profile, an upload all move it on) — the
     alternative to returning `go_to_step` from each one. An invisible box keyed by
     ``step``: every step change remounts it, and its mount runs `step_sync_script`.
     Put it in the frame's body only once the route's ``on_load`` has decided the step,
-    or the first render would write the default step into the address first."""
+    and clear that flag with ``step_frame(on_leave=...)``: a state left from an earlier
+    visit would otherwise write its old step into the address before ``on_load``
+    reads it (PASOS-4 UX review: `/brand?paso=1` opened step 4)."""
     return rx.box(
         key=step,
-        on_mount=rx.call_script(step_sync_script(step)),
+        on_mount=rx.call_script(step_sync_script(step, direction)),
         display="none",
         class_name="q-step-sync",
     )
@@ -403,9 +435,14 @@ def settle_step(scope: Scope = "page") -> rx.event.EventSpec:
     return rx.call_script(step_settle_script(scope))
 
 
-def go_to_step(path: str, n: int, scope: Scope = "page", **params: str) -> rx.event.EventSpec:
-    """Event a handler returns after moving to step ``n``: writes ``path?…&paso=n`` as a
-    new history entry (so the browser's «atrás» goes back one step), then
-    `settle_step`. ``params`` are kept before ``paso`` (`volver=…`)."""
-    script = push_url_script(step_url(path, n, **params)) + step_settle_script(scope)
+def go_to_step(
+    path: str, n: int, scope: Scope = "page", *, back: bool = False, **params: str
+) -> rx.event.EventSpec:
+    """Event a handler returns after moving to step ``n``: writes ``path?…&paso=n``
+    (forward: a new history entry, so the browser's «atrás» goes back one step;
+    ``back=True`` for «Atrás»: back through that entry instead of stacking one —
+    `step_address_script`), then `settle_step`. ``params`` are kept before ``paso``
+    (`volver=…`)."""
+    target = json.dumps(step_url(path, n, **params))
+    script = step_address_script(target, back) + step_settle_script(scope)
     return rx.call_script(script)

@@ -70,6 +70,10 @@ def test_an_unfinished_brand_is_the_first_thing_to_finish() -> None:
     assert vm.first_steps_pending and not vm.all_clear
     assert vm.first_steps_progress == "Llevas 2 de 3"
     assert all(s.key != "brand" for s in build_home_vm(HomeCounts()).first_steps)
+    said = build_home_vm(
+        HomeCounts(), brand_done=False, brand_label="Termina tu marca: te falta tu logo"
+    )
+    assert said.first_steps[0].label == "Termina tu marca: te falta tu logo"
 
 
 def test_nothing_pending_and_set_up_is_all_clear() -> None:

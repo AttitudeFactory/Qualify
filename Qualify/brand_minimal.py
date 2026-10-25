@@ -144,6 +144,12 @@ class BrandMinimalState(rx.State):
     account_country: str = ""
     #: `data-dir` of the step frame's body (PASOS-4): the side the next step comes from.
     direction: str = DIR_NEXT
+    #: `enter` decided the step on THIS visit: only then may `step_sync` write the
+    #: address (cleared when the frame unmounts, `leave_frame`).
+    synced: bool = False
+    #: Why the owner is here when another page sent them (`?desde=`, N1): «Para usar
+    #: Por responder, primero termina tu marca…». Cleared on the first step change.
+    gate_notice: str = ""
 
     @rx.var
     def step_number(self) -> int:
@@ -181,10 +187,18 @@ class BrandMinimalState(rx.State):
         )
 
     def _go(self, name: str) -> None:
+        if name != self.step:
+            self.gate_notice = ""
         self.direction = step_direction(
             vm.step_index(self.step) + 1, vm.step_index(name) + 1, self.direction
         )
         self.step = name
+
+    @rx.event
+    def leave_frame(self) -> None:
+        """The frame unmounted: the next visit's first render must not write this
+        visit's step into the address (`step_sync`)."""
+        self.synced = False
 
     @rx.event
     async def pop_step(self) -> None:
@@ -213,7 +227,10 @@ class BrandMinimalState(rx.State):
         (`brand_minimal_vm.resume_step`); nothing saved opens on Tus redes. Read from the
         database itself, so it does not depend on the order the page's loads land in."""
         async with self:
-            self.entered = False
+            # the browser's «atrás» inside the flow (`?paso=` already there) keeps the
+            # step on screen while the entry is read: no «Cargando» flash per step
+            if not (self.entered and step_param(self) is not None):
+                self.entered = False
             auth = await self.get_state(AuthState)
             tenant = brand_tenant_id(auth)
             in_session = auth.session_tenant_id != ""
@@ -241,6 +258,9 @@ class BrandMinimalState(rx.State):
             self.more_logo_versions = False
             self.show_place = False
             raw = step_param(self)
+            label = entry_label(self.router.url.query_parameters.get(vm.GATE_PARAM, ""))
+            facts = entry.facts if entry is not None else vm.KitFacts()
+            self.gate_notice = vm.gate_notice(label, len(vm.missing_steps(facts))) if label else ""
             if entry is None:
                 self.step = vm.FIRST_STEP
             elif raw is not None:
@@ -290,6 +310,7 @@ class BrandMinimalState(rx.State):
                     active=False, answers=answers_vm.Answers(), hints={}, drafts={}, has_tags=False
                 )
             self.entered = True
+            self.synced = True
         yield None
 
     # -- moving ------------------------------------------------------------------
@@ -493,6 +514,33 @@ def _read_account_country(tenant_id: UUID) -> str:
 
     locale = read_locale(tenant_id)
     return locale.country if locale is not None else ""
+
+
+def entry_label(slug: object) -> str:
+    """The menu entry (its name, N1) whose page sent the owner here (`?desde=`), or ""
+    for anything that is not a page of the menu."""
+    from .ui.layout import NAV_ITEMS
+    from .ui.nav_vm import ROUTE_ALIASES
+
+    if isinstance(slug, list | tuple):
+        slug = slug[0] if slug else ""
+    path = "/" + str(slug or "").strip().strip("/")
+    if path == "/":
+        return ""
+    best = ("", 0)
+    for label, _icon, route, enabled in NAV_ITEMS:
+        if not enabled or route == "/":
+            continue
+        for prefix in (route, *ROUTE_ALIASES.get(route, ())):
+            if (path == prefix or path.startswith(f"{prefix}/")) and len(prefix) > best[1]:
+                best = (label, len(prefix))
+    return best[0]
+
+
+def read_brand_facts(tenant_id: UUID) -> vm.KitFacts:
+    """What the saved kit holds (Inicio's «Termina tu marca: te faltan …»)."""
+    entry = _read_entry(tenant_id)
+    return entry.facts if entry is not None else vm.KitFacts()
 
 
 def _read_entry(tenant_id: UUID) -> _Entry | None:
@@ -986,6 +1034,10 @@ def _head(title: str | rx.Var[str]) -> rx.Component:
 def _notices() -> rx.Component:
     return rx.vstack(
         rx.cond(
+            BrandMinimalState.gate_notice != "",
+            callout(BrandMinimalState.gate_notice, "info"),
+        ),
+        rx.cond(
             CreativeState.kit_error != "",
             callout(CreativeState.kit_error, "error"),
         ),
@@ -1042,7 +1094,10 @@ def _frame(loading: rx.Var[bool]) -> rx.Component:
             loading,
             _loading_card(),
             rx.fragment(
-                step_sync(BrandMinimalState.n),
+                rx.cond(
+                    BrandMinimalState.synced,
+                    step_sync(BrandMinimalState.n, BrandMinimalState.direction),
+                ),
                 rx.text(_heading_for(1), size="3", color=T.TEXT_MUTED, width="100%"),
                 _step_card(),
             ),
@@ -1052,6 +1107,7 @@ def _frame(loading: rx.Var[bool]) -> rx.Component:
         step=BrandMinimalState.n,
         direction=BrandMinimalState.direction,
         on_pop=BrandMinimalState.pop_step,
+        on_leave=BrandMinimalState.leave_frame,
     )
 
 

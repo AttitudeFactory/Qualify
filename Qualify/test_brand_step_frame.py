@@ -317,3 +317,89 @@ def test_no_paso_keeps_the_usual_resume(monkeypatch: pytest.MonkeyPatch) -> None
     assert wiz.step_param(Holder()) is None
     Router.url.query_parameters = {"paso": "3"}
     assert wiz.step_param(Holder()) == "3"
+
+
+# --------------------------------------------------------------------------------------
+# UX review of PR #363 (2026-10-26)
+# --------------------------------------------------------------------------------------
+
+
+def test_atras_goes_back_through_history_instead_of_stacking() -> None:
+    """«Atrás» and the browser's «atrás» agree: back one step uses the entry below
+    when it is that step (`history.back()`), else rewrites the current one; forward
+    pushes and remembers where it came from."""
+    from .ui import steps
+
+    back = str(steps.go_to_step("/design/pasos", 1, back=True))
+    assert "history.back()" in back and "replaceState" in back and "true)" in back
+    forward = str(steps.go_to_step("/design/pasos", 2))
+    assert "qPrevPaso: cur" in forward and "false)" in forward
+
+    script = steps.step_sync_script(BrandMinimalState.n, BrandMinimalState.direction)
+    assert '=== "back"' in script and "__qStepGo" in script
+
+
+def test_an_earlier_visit_never_writes_its_step_into_the_address() -> None:
+    """`/brand?paso=1` opened step 4: the state left from an earlier visit wrote its
+    step before `enter` read the address. The sync waits for this visit's `enter`, and
+    leaving the frame clears it."""
+    import inspect
+
+    state = BrandMinimalState()
+    state.synced = True
+    BrandMinimalState.leave_frame.fn(state)
+    assert state.synced is False
+    assert "self.synced = True" in inspect.getsource(BrandMinimalState.enter.fn)
+    page = inspect.getsource(minimal._frame)
+    assert "BrandMinimalState.synced" in page and "on_leave=BrandMinimalState.leave_frame" in page
+    for flow in (wiz.BrandWizardState, wiz.BrandConnectState):
+        other = flow()
+        other.steps_ready = True
+        flow.leave_frame.fn(other)
+        assert other.steps_ready is False
+    # an earlier step in the address is honoured: the guard only clamps forward
+    assert guard_step(1, [True, True, True, False, False]) == 1
+
+
+def test_another_page_says_why_it_sent_the_owner_here() -> None:
+    from .auth_state import brand_gate_url
+
+    assert brand_gate_url("/responder") == "/brand?desde=responder"
+    assert brand_gate_url("/drafts/abc/") == "/brand?desde=drafts%2Fabc"
+    assert brand_gate_url("/brand/kit") == "/brand" and brand_gate_url("") == "/brand"
+    assert minimal.entry_label("responder") == "Por responder"
+    assert minimal.entry_label("inbox") == "Por responder"  # an alias of the entry
+    assert minimal.entry_label("drafts/abc") == "Por aprobar"
+    assert minimal.entry_label(["catalog"]) == "Tus productos"
+    assert minimal.entry_label("nada") == "" and minimal.entry_label("") == ""
+    assert vm.gate_notice("Por responder", 2) == (
+        "Para usar Por responder, primero termina tu marca: te faltan 2 pasos."
+    )
+    assert vm.gate_notice("Tu semana", 1).endswith("te falta 1 paso.")
+
+
+def test_the_notice_goes_once_the_owner_moves() -> None:
+    state = BrandMinimalState()
+    state.gate_notice = "Para usar Por responder, primero termina tu marca: te falta 1 paso."
+    state._go(vm.STEP_SOCIALS)  # the same step: it stays
+    assert state.gate_notice
+    state._go(vm.STEP_BUSINESS)
+    assert state.gate_notice == ""
+
+
+def test_inicio_says_what_is_left_of_the_brand() -> None:
+    nothing = vm.KitFacts()
+    assert vm.missing_steps(nothing) == list(vm.STEP_NAMES)
+    assert vm.brand_left_label(vm.missing_steps(nothing)) == "Termina tu marca: te faltan 5 pasos"
+    two = vm.KitFacts(
+        socials_answered=True,
+        rubro="Shawarma",
+        positioning="x",
+        audience="y",
+        has_logo_answer=True,
+    )
+    assert vm.brand_left_label(vm.missing_steps(two)) == (
+        "Termina tu marca: te faltan tus colores y cómo hablas"
+    )
+    assert vm.brand_left_label([vm.STEP_LOGO]) == "Termina tu marca: te falta tu logo"
+    assert vm.brand_left_label([]) == "Termina tu marca"

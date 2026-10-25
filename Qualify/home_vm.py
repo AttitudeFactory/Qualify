@@ -37,8 +37,9 @@ CONNECTIONS_URL = "/connections"
 CREATE_URL = "/create"
 BRAND_URL = "/brand"
 #: PASOS-4 (m-24852243): Tu marca left halfway is the first thing to finish (N2: Inicio
-#: shows what was left halfway). Only listed while the kit is unfinished.
-BRAND_STEP_LABEL = "Termina tu marca: tu logo, tus colores y cómo hablas"
+#: shows what was left halfway). Only listed while the kit is unfinished; the caller
+#: passes the line with what is left (`brand_minimal_vm.brand_left_label`).
+BRAND_STEP_LABEL = "Termina tu marca"
 
 
 @dataclass(frozen=True)
@@ -166,10 +167,12 @@ def _today(counts: HomeCounts) -> list[TodayCardVM]:
     return [card for card in cards if card.count > 0]
 
 
-def _first_steps(counts: HomeCounts, *, brand_done: bool = True) -> list[FirstStepVM]:
+def _first_steps(
+    counts: HomeCounts, *, brand_done: bool = True, brand_label: str = BRAND_STEP_LABEL
+) -> list[FirstStepVM]:
     connected = counts.instagram_connected
     created = counts.has_publication
-    brand = [] if brand_done else [FirstStepVM("brand", BRAND_STEP_LABEL, BRAND_URL, "palette")]
+    brand = [] if brand_done else [FirstStepVM("brand", brand_label, BRAND_URL, "palette")]
     return brand + [
         FirstStepVM(
             "connect",
@@ -215,13 +218,16 @@ def _week(counts: HomeCounts) -> list[WeekStatVM]:
     ]
 
 
-def build_home_vm(counts: HomeCounts, *, brand_done: bool = True) -> HomeVM:
-    """``brand_done=False`` (Tu marca unfinished) puts «Termina tu marca» first."""
+def build_home_vm(
+    counts: HomeCounts, *, brand_done: bool = True, brand_label: str = BRAND_STEP_LABEL
+) -> HomeVM:
+    """``brand_done=False`` (Tu marca unfinished) puts «Termina tu marca» first, said
+    as ``brand_label`` (what is left)."""
     week = _week(counts)
     nothing_counted = all(stat.value == 0 for stat in week)
     return HomeVM(
         today=_today(counts),
-        first_steps=_first_steps(counts, brand_done=brand_done),
+        first_steps=_first_steps(counts, brand_done=brand_done, brand_label=brand_label),
         week=week,
         week_needs_connection=nothing_counted and not counts.instagram_connected,
         week_quiet=nothing_counted and counts.instagram_connected,

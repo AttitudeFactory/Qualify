@@ -444,6 +444,11 @@ class BrandWizardState(rx.State):
         self.step = index
 
     @rx.event
+    def leave_frame(self) -> None:
+        """The frame unmounted: the next visit writes no address until `resume`."""
+        self.steps_ready = False
+
+    @rx.event
     async def pop_step(self) -> None:
         """The browser's «atrás»/«adelante» (`step_frame(on_pop=...)`): the step in
         `?paso=`, never past the first step still unanswered. Idempotent."""
@@ -519,7 +524,7 @@ class BrandWizardState(rx.State):
     def go_to(self, index: int) -> None:
         """Jump straight to a step. Clamped so a stale client event cannot park the
         cursor outside the flow and render nothing."""
-        self.step = max(0, min(index, LAST_STEP))
+        self._go(index)
 
     @rx.event
     def next_step(self) -> None:
@@ -653,7 +658,7 @@ class BrandWizardState(rx.State):
         """Answering step 2 moves straight on — the question has no other content, so
         making the user press Next again would be a dead click."""
         self.has_logo = value
-        self.step = min(self.step + 1, LAST_STEP)
+        self._go(self.step + 1)
 
     @rx.event
     def set_logo_brief_1(self, value: str) -> None:
@@ -3093,7 +3098,10 @@ def brand_manual_index() -> rx.Component:
                     loading,
                     _frame_loading(_loading_view("Cargando tu marca")),
                     rx.fragment(
-                        rx.cond(BrandWizardState.steps_ready, step_sync(BrandWizardState.step_n)),
+                        rx.cond(
+                            BrandWizardState.steps_ready,
+                            step_sync(BrandWizardState.step_n, BrandWizardState.direction),
+                        ),
                         _frame_step(
                             _window(),
                             subtitle=_heading_for(1),
@@ -3113,6 +3121,7 @@ def brand_manual_index() -> rx.Component:
                 step=BrandWizardState.step_n,
                 direction=BrandWizardState.direction,
                 on_pop=BrandWizardState.pop_step,
+                on_leave=BrandWizardState.leave_frame,
             )
         )
     )
@@ -4146,6 +4155,11 @@ class BrandConnectState(rx.State):
         self._land(index)
 
     @rx.event
+    def leave_frame(self) -> None:
+        """The frame unmounted: the next visit writes no address until its load."""
+        self.steps_ready = False
+
+    @rx.event
     async def pop_step(self) -> None:
         """The browser's «atrás»/«adelante» (`step_frame(on_pop=...)`). Idempotent."""
         if self.steps_ready and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
@@ -4188,6 +4202,8 @@ class BrandConnectState(rx.State):
     def _land(self, target: int) -> None:
         if target == _RUBRO_STEP:
             self.rubro_asked = True
+        if target != self.step:
+            self.direction = DIR_NEXT if target > self.step else DIR_BACK
         self.step = target
 
     @rx.var
@@ -7897,7 +7913,9 @@ def brand_connect_index() -> rx.Component:
                             rx.fragment(
                                 rx.cond(
                                     BrandConnectState.steps_ready,
-                                    step_sync(BrandConnectState.step_n),
+                                    step_sync(
+                                        BrandConnectState.step_n, BrandConnectState.direction
+                                    ),
                                 ),
                                 _frame_step(
                                     rx.fragment(
@@ -7931,6 +7949,7 @@ def brand_connect_index() -> rx.Component:
                 step=BrandConnectState.step_n,
                 direction=BrandConnectState.direction,
                 on_pop=BrandConnectState.pop_step,
+                on_leave=BrandConnectState.leave_frame,
             )
         )
     )
