@@ -135,3 +135,19 @@ def test_a_soon_screen_says_what_is_coming_and_where_to_go_today(
     assert 'tone_badge("Pronto"' in source
     assert "empty_state(" in source and "action=" in source
     assert action_href in source
+
+
+def test_pronto_goes_under_the_name_and_counts_stay_on_the_right() -> None:
+    """m-24854881 (founder, 2026-10-26): «Pronto» sits on a second line under the name,
+    so «Oportunidades» and «Creadores» are never cut; a counted entry (N11) keeps its
+    badge on the right of a one-line row."""
+    for label, icon, route, enabled in NAV_ITEMS:
+        rendered = str(layout._nav_item(label, icon, route, enabled).render())
+        if enabled:
+            assert '["flexDirection"] : "column"' not in rendered, label
+            continue
+        assert '["flexDirection"] : "column"' in rendered, label
+        # the name comes first, «Pronto» after it inside the same label column
+        column = rendered.split('["flexDirection"] : "column"', 1)[1]
+        assert column.index(label) < column.index("Pronto"), label
+        assert "q-soon" in rendered and "q-label" in rendered, label

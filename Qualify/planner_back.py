@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .planner_vm import BACK_TO_WEEK, back_to_week_href
+from .planner_vm import BACK_TO_DRAFTS, BACK_TO_WEEK, back_to_week_href
 from .ui import tokens as T
+from .ui.nav_vm import DRAFTS_ROUTE
 
 # N12: a target a thumb can hit on a phone.
 _TOUCH_MIN = "44px"
@@ -33,15 +34,32 @@ class WeekBackState(rx.State):
         self.href = back_to_week_href(params)
 
 
-def back_to_week_link() -> rx.Component:
-    """«‹ Tu semana»: the ficha's way back to the week and view it was opened from."""
+def _back_link(label: str, href: rx.Var | str) -> rx.Component:
+    """«‹ <place>»: a way back a thumb can hit (N7 names the place, N12 the size)."""
     return rx.link(
         rx.button(
             rx.icon("chevron-left", size=T.ICON_MD),
-            BACK_TO_WEEK,
+            label,
             variant="ghost",
             size="3",
             min_height=_TOUCH_MIN,
         ),
-        href=WeekBackState.href,
+        href=href,
+    )
+
+
+def back_to_week_link() -> rx.Component:
+    """«‹ Tu semana»: the ficha's way back to the week and view it was opened from."""
+    return _back_link(BACK_TO_WEEK, WeekBackState.href)
+
+
+def ficha_back_link() -> rx.Component:
+    """The ficha's way back, in every state — loading, loaded, not found, error
+    (m-24854881, N7/N8): «‹ Tu semana» when it was opened from there, else
+    «‹ Por aprobar». Drawn outside the ficha's own conditions so a publication that
+    does not load still leaves the person a way out."""
+    return rx.cond(
+        WeekBackState.href != "",
+        back_to_week_link(),
+        _back_link(BACK_TO_DRAFTS, DRAFTS_ROUTE),
     )
