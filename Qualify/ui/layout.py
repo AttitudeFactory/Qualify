@@ -31,6 +31,7 @@ from qualify_api.auth import SIGNUP_ROUTE
 from ..auth_state import AuthState
 from ..pending_state import HEARTBEAT_MS, PendingState
 from . import tokens as T
+from .nav_vm import FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
 from .primitives import tone_badge
 from .state import NavState
 
@@ -53,7 +54,6 @@ MENTION_ICON = "qualify-mention"
 # Inicio (NAV-4, m-24842962), «Por responder» (ATENDER-1, m-24842990) and «Resultados»
 # (RESULTADOS-5, m-24843003) have their own screens. Menciones and Tu página web are tabs
 # of Resultados; their old routes only redirect there.
-HOME_ROUTE = "/"
 RESPOND_ROUTE = "/responder"
 RESULTS_ROUTE = "/resultados"
 
@@ -131,6 +131,12 @@ NAV_ITEMS: list[Item] = [
     *NAV_RESULTS,
     *NAV_BUSINESS,
 ]
+
+# m-24852260: the routes of each navigation, which `nav_vm.is_current` weighs against
+# one another (the most specific entry wins). The bottom bar is lit by the sidebar's
+# own routes, so «Más» lights exactly when the current entry is not one of its four.
+NAV_ROUTES: tuple[str, ...] = tuple(route for _label, _icon, route, _enabled in NAV_ITEMS)
+GUEST_ROUTES: tuple[str, ...] = ("/brand", "/brand/kit", SIGNUP_ROUTE, "/login")
 
 # m-24842964 (NAV-7, docs/design-system.md §4.4): the phone's bottom bar. Four accesses
 # taken from the sidebar's own entries — same icon and route (N1), so when a hub moves
@@ -324,12 +330,24 @@ def _count_badge(label: str) -> rx.Component | None:
     )
 
 
-def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
+def route_is_current(route: str, routes: Sequence[str] = NAV_ROUTES) -> rx.Var:
+    """Whether ``route``'s entry is «you are here» — the one helper both navigations use
+    (m-24852260). It reads the path the browser shows (``router.url.path``), never the
+    matched pattern (``router.page.path`` is ``/index`` on «/» and ``/drafts/[draft_id]``
+    on a ficha); the rule itself lives in ``nav_vm.is_current``."""
+    url = NavState.router.url
+    from_week = url.query_parameters[URL_FROM].to(str) == FROM_WEEK
+    return is_current(route, routes, url.path, from_week)
+
+
+def _nav_item(
+    label: str, icon: str, route: str, enabled: bool, routes: Sequence[str] = NAV_ROUTES
+) -> rx.Component:
     """One menu entry, always a link. A «Pronto» entry (``enabled=False``) carries the
     word «Pronto» as text next to its label (N10: never only by colour or by looking
     off) and opens its own screen, which says what is coming and where to go today. An
     entry with something waiting carries its count (N11, m-24842963)."""
-    active = NavState.router.page.path == route
+    active = route_is_current(route, routes)
     soon = (
         _count_badge(label)
         if enabled
@@ -478,7 +496,7 @@ def _guest_islands() -> rx.Component:
     # too. "Crea tu marca" is the creation entry (/brand), same words as its header.
     return rx.fragment(
         _island(
-            _nav_item("Crea tu marca", "palette", "/brand", True),
+            _nav_item("Crea tu marca", "palette", "/brand", True, GUEST_ROUTES),
             rx.text(
                 "Guardando en ",
                 rx.text.strong(AuthState.guest_email),
@@ -492,10 +510,10 @@ def _guest_islands() -> rx.Component:
         rx.spacer(),
         _island(
             _zone_head(BUSINESS_ZONE_LABEL, "business"),
-            _nav_item("Tu marca", "swatch-book", "/brand/kit", True),
+            _nav_item("Tu marca", "swatch-book", "/brand/kit", True, GUEST_ROUTES),
             rx.divider(margin="0.15rem 0"),
-            _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True),
-            _nav_item("Iniciar sesión", "log-in", "/login", True),
+            _nav_item("Crear cuenta", "user-plus", SIGNUP_ROUTE, True, GUEST_ROUTES),
+            _nav_item("Iniciar sesión", "log-in", "/login", True, GUEST_ROUTES),
             rx.divider(margin="0.15rem 0"),
             rx.el.button(
                 _nav_row("mail", "Usar otro correo"),
@@ -665,15 +683,6 @@ def page_body(
     )
 
 
-def _route_is_current(route: str) -> rx.Var:
-    """Whether the current page is ``route`` or one of its own views (``/planner/…``
-    marks «Tu semana»). Home is matched exactly: every route starts with ``/``."""
-    path = NavState.router.page.path
-    if route == HOME_ROUTE:
-        return path == route
-    return (path == route) | path.startswith(f"{route}/")
-
-
 def _bottom_badge(text: rx.Var | str, tone: str) -> rx.Component:
     """A count on the icon's corner (absolute, like the old menu button's): the cell
     keeps its size and nothing is drawn at 0."""
@@ -754,7 +763,7 @@ def _bottom_bar() -> rx.Component:
     button used to. Only at ≤ 640 px (`.q-bottom-bar` in assets/qualify.css); above,
     the sidebar gives the same accesses. The counts are the menu's (`NAV_COUNTERS`),
     never read again here; «Más» carries what waits only inside the drawer."""
-    actives = [_route_is_current(route) for _label, _source, _icon, route in NAV_BOTTOM]
+    actives = [route_is_current(route) for _label, _source, _icon, route in NAV_BOTTOM]
     cells: list[rx.Component] = []
     for (label, source, icon, route), active in zip(NAV_BOTTOM, actives, strict=True):
         counter = NAV_COUNTERS.get(source)
