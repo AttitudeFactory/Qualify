@@ -32,7 +32,7 @@ SENTIMENT mode (m-24854495) — Haiku vs robertuito on the sentiment golden set
     just eval-replies --sentiment --smoke 10 --golden-sentiment <unlabelled>.jsonl
 
 `--robertuito` runs the local baseline (needs the `ml` group: transformers + torch).
-Haiku's prompt is `--prompt-version` (default `atender4a.2`, with confidence). The report
+Haiku's prompt is `--prompt-version` (default `atender4a.1-conf`, with confidence). The report
 (per-class P/R/F1, macro-F1, confusion, slices, calibration, cost, p50/p95 per batch of
 25, cache reads) goes to `--out-dir`, OUTSIDE the repo by default: it lists texts.
 """
@@ -480,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sentiment.add_argument("--robertuito", action="store_true", help="local baseline (ml)")
     sentiment.add_argument("--no-haiku", action="store_true", help="skip the paid candidate")
-    sentiment.add_argument("--prompt-version", default="atender4a.2")
+    sentiment.add_argument("--prompt-version", default="atender4a.1-conf")
     sentiment.add_argument("--smoke", type=int, default=0, help="first N items, any labels")
     sentiment.add_argument("--batch-size", type=int, default=25)
     sentiment.add_argument("--out-dir", type=Path, default=SENTIMENT_DIR / "results")

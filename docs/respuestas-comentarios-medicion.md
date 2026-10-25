@@ -6,7 +6,7 @@ Este documento explica cómo se mide, antes de responder a todos los comentarios
 
 ## Resultado
 
-- **Sentimiento (2026-10-25, m-24854495):** el sentimiento se mide aparte, sobre comentarios reales y contra robertuito, con su propia guía ([`guia-etiquetado-sentimiento.md`](guia-etiquetado-sentimiento.md)) y el prompt `atender4a.2` del clasificador (con confianza). Plan y estado en la [bitácora, SENT-HAIKU-001](modelos-generativos/pruebas.md#sent-haiku-001).
+- **Sentimiento (2026-10-25, m-24854495):** el sentimiento se mide aparte, sobre los 408 comentarios públicos y contra robertuito, con su propia guía ([`guia-etiquetado-sentimiento.md`](guia-etiquetado-sentimiento.md)) y el prompt `atender4a.1-conf` del clasificador (con confianza). Plan y estado en la [bitácora, SENT-HAIKU-001](modelos-generativos/pruebas.md#sent-haiku-001).
 
 - **La medición sigue pendiente.** Las herramientas están listas y probadas. Lo que falta son los datos: un conjunto real de unos 400 comentarios, etiquetado por dos personas que no vean las etiquetas de la otra, y una persona que revise los borradores. La sección 8 dice exactamente qué tiene que conseguir el fundador.
 - **Prueba de humo sintética (2026-10-23):** se hizo con 80 comentarios que escribió el agente. No hay acuerdo entre etiquetadores (κ) porque solo hubo uno, y los negocios son ficticios. La prueba sirve para comprobar que las herramientas funcionan. **No mide calidad.** En esos comentarios, el clasificador candidato pasó todos los umbrales en `test`. Los borradores no inventaron precios ni hablaron en tercera persona según los controles automáticos. La parte «usable» sigue sin revisión humana.

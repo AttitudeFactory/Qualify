@@ -1,4 +1,9 @@
 -- m-24854495: READ-ONLY export of real comment texts for the sentiment golden set.
+--
+-- NO USADO: el fundador eligió solo comentarios públicos el 2026-10-25. The measurement
+-- runs on the 408 public comments only; this export was never run. Kept for a future
+-- measurement on real complaints, which would need the founder's approval again.
+--
 -- NEEDS THE FOUNDER'S APPROVAL before it runs: it reads production. Never run by an agent.
 --
 -- What leaves the database: the comment text (already masked here: @mentions, e-mails,

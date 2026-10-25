@@ -1,5 +1,5 @@
 """m-24854495: the sentiment golden set, its blind labelling kit and the Haiku-vs-robertuito
-scorer — and the `atender4a.2` triage prompt with confidence. Offline, no network."""
+scorer — and the `atender4a.1-conf` triage prompt with confidence. Offline, no network."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _item(ident: str, sentiment: str | None = None, **kw: Any) -> cs.SentimentIt
     )
 
 
-# --- atender4a.2 -----------------------------------------------------------------------
+# --- atender4a.1-conf ------------------------------------------------------------------
 
 
 def test_v2_prompt_is_v1_plus_the_confidence_section_only() -> None:
@@ -89,7 +89,9 @@ def test_parse_confidence(raw: Any, expected: float | None) -> None:
 
 def test_parse_triage_keeps_labels_when_the_confidence_is_malformed() -> None:
     item = {"sentiment": "pos", "kind": "praise", "needs_reply": False, "confidence": "alta"}
-    triage = parse_triage(item, model_id="m", prompt_version="atender4a.2", with_confidence=True)
+    triage = parse_triage(
+        item, model_id="m", prompt_version="atender4a.1-conf", with_confidence=True
+    )
     assert triage is not None and triage.sentiment is Sentiment.POS
     assert triage.confidence is None
     v1 = parse_triage({**item, "confidence": 0.9}, model_id="m", prompt_version="atender4a.1")
@@ -143,7 +145,7 @@ def test_v2_triager_sends_the_v2_prompt_and_returns_confidence_and_latency() -> 
     )
     first, second = triager.triage(["llegó frío", "excelente servicio, tres horas"])
     assert first is not None and first.confidence == 0.92
-    assert second is not None and second.prompt_version == "atender4a.2"
+    assert second is not None and second.prompt_version == "atender4a.1-conf"
     assert client.calls[0]["system"][0]["text"] == SYSTEM_PROMPT_CONFIDENCE
     assert len(triager.last_latencies_s) == 2
     report = cs.cache_report(
@@ -332,6 +334,8 @@ def test_merge_agreement_disagreement_and_adjudication() -> None:
     assert by_id["i1"].sentiment == "neg"
     assert result.double_labeled == 60 and result.status == "passed"
     assert len(result.disagreements) == 1
+    support = result.to_json()["support_by_split"]
+    assert support["test"]["neg"] == 20 and support["dev"]["neg"] == 0
     decided = cs.merge_labels(master, {"raul": raul, "yesika": yesika}, {"i0": "POS"})
     assert {it.id: it for it in decided.items}["i0"].sentiment == "pos"
 

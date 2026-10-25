@@ -21,12 +21,11 @@ The contract (labeling rules in `docs/respuestas-comentarios-medicion.md` §2):
 Prompt versions (`TRIAGE_PROMPTS`, m-24854495):
 
 - `atender4a.1` — the three fields above. Still the default: it is what ATENDER-4b ships.
-- `atender4a.2` — the same rules plus a `confidence` (0..1) on the sentiment, so a stored
+- `atender4a.1-conf` — the same rules plus a `confidence` (0..1) on the sentiment, so a stored
   sentiment keeps a real `score` once Haiku replaces robertuito (whose `score` is the
-  softmax of its label). Measured on real comments before it becomes the default
-  (`docs/modelos-generativos/pruebas.md`, SENT-HAIKU-001). NOTE: the drafts prompt in
-  `any_comment_drafts` also has an `atender4a.2`; they are different detectors, stored
-  in different provenance fields (`triage.prompt_version` vs `generator_version`).
+  softmax of its label). Measured on the golden set before it becomes the default
+  (`docs/modelos-generativos/pruebas.md`, SENT-HAIKU-001). Not called `atender4a.2`:
+  that name belongs to the drafts prompt in `any_comment_drafts`.
 
 Provenance: every `Triage` carries the model id and its prompt version; the batch
 cost is in `last_stats` and the wall time of each batch in `last_latencies_s`. Same API
@@ -63,7 +62,7 @@ TRIAGE_EFFORT: Final = "low"
 #: reliability report is written under.
 TRIAGE_PROMPT_VERSION: Final = "atender4a.1"
 #: Same rules + a sentiment confidence (m-24854495). Not the default until measured.
-TRIAGE_PROMPT_VERSION_CONFIDENCE: Final = "atender4a.2"
+TRIAGE_PROMPT_VERSION_CONFIDENCE: Final = "atender4a.1-conf"
 TRIAGE_BATCH: Final = 25
 TRIAGE_TOOL: Final = "registrar_comentarios"
 
@@ -88,7 +87,7 @@ class Triage:
     needs_reply: bool
     model_id: str = TRIAGE_MODEL
     prompt_version: str = TRIAGE_PROMPT_VERSION
-    #: The model's own confidence in `sentiment`, 0..1 — `atender4a.2` on; None under
+    #: The model's own confidence in `sentiment`, 0..1 — `atender4a.1-conf` on; None under
     #: `atender4a.1` (no score is ever invented).
     confidence: float | None = None
 
@@ -138,7 +137,7 @@ Reglas:
 cada comentario recibido, usando su número.
 """
 
-#: `atender4a.2`: `SYSTEM_PROMPT` word for word plus the confidence section, so any
+#: `atender4a.1-conf`: `SYSTEM_PROMPT` word for word plus the confidence section, so any
 #: difference measured against `atender4a.1` comes from asking for the confidence.
 SYSTEM_PROMPT_CONFIDENCE: Final = SYSTEM_PROMPT.replace(
     "\nReglas:\n",

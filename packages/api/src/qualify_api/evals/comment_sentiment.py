@@ -519,6 +519,16 @@ def read_sheet(path: Path) -> dict[str, SheetRow]:
     return rows
 
 
+def support_by_split(items: Sequence[SentimentItem]) -> dict[str, dict[str, int]]:
+    """Labelled items per split and class — the `neg` count in `test` is what the NEG
+    recall bar rests on (it needs ≥ `MIN_SUPPORT`; ≥ 15 is recommended)."""
+    out = {split: dict.fromkeys(SENTIMENTS, 0) for split in ("dev", "test")}
+    for it in items:
+        if it.sentiment in SENTIMENTS and it.split in out:
+            out[it.split][it.sentiment] += 1
+    return out
+
+
 @dataclass(frozen=True)
 class MergeResult:
     items: list[SentimentItem]
@@ -546,6 +556,7 @@ class MergeResult:
             "missing_labels": dict(self.missing),
             "labelled": sum(1 for it in self.items if it.sentiment),
             "total": len(self.items),
+            "support_by_split": support_by_split(self.items),
         }
 
 
@@ -652,5 +663,6 @@ __all__ = [
     "score",
     "sliced_scores",
     "slices",
+    "support_by_split",
     "write_sheet",
 ]

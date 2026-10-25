@@ -2,6 +2,8 @@
 
 Ticket m-24854495 · versión 1 · 2026-10-25
 
+> Esta medición usa solo los 408 comentarios públicos (decisión del fundador, 2026-10-25). La exportación de comentarios reales de los negocios del fundador quedó **no usada: el fundador eligió solo comentarios públicos el 2026-10-25**.
+
 Vas a leer comentarios que la gente deja en publicaciones de Instagram y Facebook de pequeños negocios (comida, servicios, inmobiliaria, turismo). Para cada uno decides **qué tono tiene quien comenta hacia el negocio**. Con tus etiquetas se mide si Qualify acierta antes de mostrarle ese dato a los dueños.
 
 ## Cómo llenar la hoja
