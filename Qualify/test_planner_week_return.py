@@ -212,4 +212,4 @@ def test_the_bar_controls_are_thumb_sized() -> None:
 def test_the_draft_ficha_reads_the_way_back_on_load() -> None:
     app = _source("Qualify.py")
     assert "WeekBackState.read" in app
-    assert "back_to_week_link()" in _source("creative_pages.py")
+    assert "ficha_back_link()" in _source("creative_pages.py")

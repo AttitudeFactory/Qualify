@@ -259,10 +259,11 @@ def mention_icon(size: int) -> rx.Component:
 
 
 def nav_icon(icon: str, size: int) -> rx.Component:
-    """A menu item's icon: a Lucide name, or one of the app's own composed icons."""
+    """A menu item's icon: a Lucide name, or one of the app's own composed icons.
+    Never shrinks: a long label next to «Pronto» squeezed it to a sliver (m-24854881)."""
     if icon == MENTION_ICON:
         return mention_icon(size)
-    return rx.icon(icon, size=size)
+    return rx.icon(icon, size=size, flex_shrink="0")
 
 
 def brand_mark(size: int = 22, heading_size: str = "5") -> rx.Component:
@@ -296,7 +297,15 @@ def _nav_row(
         rx.el.span(
             label,
             class_name="q-label",
-            style={"whiteSpace": "nowrap", "fontSize": "var(--font-size-3)"},
+            # A label too long for its row ends in «…» (full name in `data-label`)
+            # instead of pushing the icon out of its column (m-24854881).
+            style={
+                "whiteSpace": "nowrap",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "minWidth": "0",
+                "fontSize": "var(--font-size-3)",
+            },
         ),
         *([trailing] if trailing is not None else []),
         # Centred on the label's line box: Reflex's hstack defaults to `start`, which
