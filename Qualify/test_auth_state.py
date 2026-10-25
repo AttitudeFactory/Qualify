@@ -51,12 +51,14 @@ def test_require_login_passes_when_authenticated() -> None:
 
 def test_a_session_without_a_finished_brand_kit_is_sent_to_make_it() -> None:
     """§ request 2026-10-02: logged in but no complete Brand Kit → the Brand Kit, from
-    every protected page and from `/`; the Brand Kit's own pages stay open."""
+    every protected page; the Brand Kit's own pages stay open. PASOS-4 (m-24852243,
+    N2): `/` (Inicio) opens too — «Seguir después» and «‹ Inicio» lead there, and it
+    lists «Termina tu marca» first."""
     state = _state()
     state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
     state.brand_kit_complete = False
     assert AuthState.require_login.fn(state) is not None
-    assert AuthState.require_login_or_brand_start.fn(state) is not None
+    assert AuthState.require_login_or_brand_start.fn(state) is None
     assert AuthState.require_brand_access.fn(state) is None
     state.brand_kit_complete = True
     assert AuthState.require_login.fn(state) is None

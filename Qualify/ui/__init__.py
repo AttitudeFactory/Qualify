@@ -63,6 +63,7 @@ from .steps import (
     step_frame,
     step_head,
     step_progress,
+    step_sync,
 )
 
 __all__ = [
@@ -113,6 +114,7 @@ __all__ = [
     "step_frame",
     "step_head",
     "step_progress",
+    "step_sync",
     "tag",
     "tenant_block",
     "tokens",

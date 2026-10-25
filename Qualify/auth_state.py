@@ -319,9 +319,14 @@ class AuthState(rx.State):
     @rx.event
     def require_login_or_brand_start(self) -> rx.event.EventSpec | None:
         """`on_load` of `/`: the Brand Kit comes before the login (§ 2026-10-02), so an
-        anonymous visitor lands on its first view — which links to /login."""
+        anonymous visitor lands on its first view — which links to /login.
+
+        PASOS-4 (m-24852243, N2): a session opens Inicio even with Tu marca half done —
+        «‹ Inicio» and «Seguir después» lead there from every step, and Inicio lists
+        «Termina tu marca» first (`home_vm`). Every other page still sends an
+        unfinished kit to /brand (`require_login`)."""
         if self.session_tenant_id:
-            return None if self.brand_kit_complete else rx.redirect("/brand")
+            return None
         return rx.redirect("/brand" if self.guest_tenant_id else BRAND_START_ROUTE)
 
     @rx.event

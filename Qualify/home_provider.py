@@ -40,7 +40,7 @@ def _drafts_to_review(tenant_id: UUID) -> int | None:
     return count_needs_review(posts)
 
 
-def load_home(tenant_id: UUID) -> HomeVM:
+def load_home(tenant_id: UUID, *, brand_done: bool = True) -> HomeVM:
     counts: HomeCounts = read_home_counts(tenant_id)
     try:
         to_review = _drafts_to_review(tenant_id)
@@ -49,7 +49,7 @@ def load_home(tenant_id: UUID) -> HomeVM:
         to_review = None
     if to_review is not None:
         counts = replace(counts, drafts_to_approve=to_review)
-    return build_home_vm(counts)
+    return build_home_vm(counts, brand_done=brand_done)
 
 
 __all__ = ["count_needs_review", "load_home"]

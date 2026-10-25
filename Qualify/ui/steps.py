@@ -191,7 +191,7 @@ def step_head(
 
 
 def step_foot(
-    primary_label: str | rx.Var,
+    primary_label: str | rx.Var | None,
     *,
     step: rx.Var[int] | int,
     on_primary: Any,
@@ -208,7 +208,12 @@ def step_foot(
     the step is not valid yet, read next to the button (§5.8) — pass "" or None when it
     is. «Seguir después» (``on_later``: save and go to Inicio, N2) is a ghost button.
     ``in_drawer`` renders it for a drawer's ``footer`` (the drawer's foot is already
-    fixed) instead of the page's island."""
+    fixed) instead of the page's island.
+
+    ``primary_label=None`` leaves the primary out, for a step whose way forward is in
+    its body (Tu marca's «Tus redes»: the network buttons read the profile and move
+    on); a step that can go on but is not valid yet keeps it, disabled, with
+    ``reason``."""
     back_button = rx.button(
         BACK_LABEL,
         variant="soft",
@@ -223,7 +228,7 @@ def step_foot(
         back = back_button if shows_back(step) else None
     else:
         back = rx.cond(step > 1, back_button)
-    primary = rx.button(
+    primary = None if primary_label is None else rx.button(
         primary_label,
         size="3",
         on_click=on_primary,
@@ -252,7 +257,8 @@ def step_foot(
         cells.append(rx.cond(reason, why) if isinstance(reason, rx.Var) else why)
     if later is not None:
         cells.append(later)
-    cells.append(primary)
+    if primary is not None:
+        cells.append(primary)
     island = rx.box(
         *cells,
         class_name="q-step-foot q-step-foot--drawer" if in_drawer else "q-step-foot",
@@ -352,6 +358,38 @@ def step_settle_script(scope: Scope = "page") -> str:
         f"const box = document.querySelector({scroller}); if (box) box.scrollTo({{top: 0}});"
         f"const h = document.querySelector({title}); if (h) h.focus({{preventScroll: true}});"
         "}));"
+    )
+
+
+def step_sync_script(step: rx.Var[int] | int) -> str:
+    """JS that writes ``?paso=<step>`` for the step on screen, then `step_settle_script`.
+    No ``paso`` in the address yet (the route's first load) → ``replaceState``; another
+    number → ``pushState`` (a new «atrás» entry); the same number (the browser's «atrás»
+    put it there) → nothing. Other parameters stay."""
+    return (
+        "(() => { const n = String("
+        + str(step if _is_static(step) else f"{step}")
+        + "); const u = new URL(window.location.href);"
+        " const cur = u.searchParams.get('paso');"
+        " if (cur !== n) { u.searchParams.set('paso', n);"
+        " window.history[cur === null ? 'replaceState' : 'pushState']"
+        "(window.history.state, '', u.pathname + u.search + u.hash); } })();"
+        + step_settle_script("page")
+    )
+
+
+def step_sync(step: rx.Var[int]) -> rx.Component:
+    """The address and the settle of a flow whose step is changed by many handlers
+    (Tu marca: answering a question, a read profile, an upload all move it on) — the
+    alternative to returning `go_to_step` from each one. An invisible box keyed by
+    ``step``: every step change remounts it, and its mount runs `step_sync_script`.
+    Put it in the frame's body only once the route's ``on_load`` has decided the step,
+    or the first render would write the default step into the address first."""
+    return rx.box(
+        key=step,
+        on_mount=rx.call_script(step_sync_script(step)),
+        display="none",
+        class_name="q-step-sync",
     )
 
 
