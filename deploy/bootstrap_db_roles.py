@@ -19,6 +19,12 @@ Environment:
   QUALIFY_DB_CREDENTIAL_PASSWORD   -> qualify_credential
   QUALIFY_DB_WEBHOOK_PASSWORD      -> qualify_webhook
   QUALIFY_DB_WEBHOOK_WORKER_PASSWORD -> qualify_webhook_worker
+  QUALIFY_DB_CREATIVE_WORKER_PASSWORD -> qualify_creative_worker (OPTIONAL, see below)
+
+0096 creates `qualify_creative_worker` (ADR 41, the generation queue's worker). Its
+password is optional until that worker is deployed (m-24852163): while
+QUALIFY_DB_CREATIVE_WORKER_PASSWORD is unset the role is made NOLOGIN, so the committed dev
+password never opens a production login; once set, the role gets LOGIN + that password.
 """
 
 from __future__ import annotations
@@ -36,8 +42,20 @@ ROLE_PASSWORD_ENVS: dict[str, str] = {
     "qualify_webhook": "QUALIFY_DB_WEBHOOK_PASSWORD",
     "qualify_webhook_worker": "QUALIFY_DB_WEBHOOK_WORKER_PASSWORD",
 }
+# Roles whose password may be absent: NOLOGIN until it is set (never the dev password).
+OPTIONAL_ROLE_PASSWORD_ENVS: dict[str, str] = {
+    "qualify_creative_worker": "QUALIFY_DB_CREATIVE_WORKER_PASSWORD",
+}
 DEV_PASSWORDS = frozenset(
-    {"app_dev", "admin_dev", "credential_dev", "webhook_dev", "webhook_worker_dev", "dev_only"}
+    {
+        "app_dev",
+        "admin_dev",
+        "credential_dev",
+        "webhook_dev",
+        "webhook_worker_dev",
+        "creative_worker_dev",
+        "dev_only",
+    }
 )
 MIN_PASSWORD_LENGTH = 16
 
@@ -45,6 +63,32 @@ MIN_PASSWORD_LENGTH = 16
 def _libpq_dsn(sqlalchemy_dsn: str) -> str:
     """`postgresql+psycopg://...` (SQLAlchemy form) -> `postgresql://...` (libpq form)."""
     return sqlalchemy_dsn.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def _password_problem(env: str, value: str) -> str | None:
+    if len(value) < MIN_PASSWORD_LENGTH:
+        return f"{env} is missing or shorter than {MIN_PASSWORD_LENGTH} chars"
+    if value in DEV_PASSWORDS:
+        return f"{env} is a committed dev password"
+    return None
+
+
+def _optional_passwords_from_env() -> dict[str, str | None]:
+    """role -> password, or None when unset (the role is then made NOLOGIN). A value that
+    IS set must still pass the same checks as a required one."""
+    passwords: dict[str, str | None] = {}
+    problems: list[str] = []
+    for role, env in OPTIONAL_ROLE_PASSWORD_ENVS.items():
+        value = os.environ.get(env, "")
+        if not value:
+            passwords[role] = None
+        elif (problem := _password_problem(env, value)) is not None:
+            problems.append(problem)
+        else:
+            passwords[role] = value
+    if problems:
+        raise SystemExit("bootstrap_db_roles: " + "; ".join(problems))
+    return passwords
 
 
 def _passwords_from_env() -> dict[str, str]:
@@ -68,6 +112,7 @@ def main() -> int:
     if not dsn:
         raise SystemExit("bootstrap_db_roles: QUALIFY_MIGRATION_DSN is not set")
     passwords = _passwords_from_env()
+    optional = _optional_passwords_from_env()
     with psycopg.connect(_libpq_dsn(dsn), autocommit=True) as conn:
         for role, password in passwords.items():
             exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
@@ -79,6 +124,21 @@ def main() -> int:
                 )
             )
             print(f"bootstrap_db_roles: password set for {role}")
+        for role, password in optional.items():
+            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
+            if exists is None:
+                print(f"bootstrap_db_roles: role {role} not created yet — skipped")
+                continue
+            if password is None:
+                conn.execute(sql.SQL("ALTER ROLE {} WITH NOLOGIN").format(sql.Identifier(role)))
+                print(f"bootstrap_db_roles: {role} has no password set — NOLOGIN")
+            else:
+                conn.execute(
+                    sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                        sql.Identifier(role), sql.Literal(password)
+                    )
+                )
+                print(f"bootstrap_db_roles: password set for {role}")
     return 0
 
 

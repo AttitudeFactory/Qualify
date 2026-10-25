@@ -31,6 +31,12 @@ DEFAULT_WEBHOOK_WORKER_DSN = (
     "postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify"
 )
 
+# `qualify_creative_worker`: the generation queue's worker (ADR 41, m-24852160) — the queue
+# columns of `creative_jobs` and `vendor_slots`, nothing else; NOBYPASSRLS. See 0096.
+DEFAULT_CREATIVE_WORKER_DSN = (
+    "postgresql+psycopg://qualify_creative_worker:creative_worker_dev@localhost:5432/qualify"
+)
+
 
 def app_dsn() -> str:
     return os.environ.get("QUALIFY_APP_DSN", DEFAULT_APP_DSN)
@@ -50,3 +56,7 @@ def webhook_dsn() -> str:
 
 def webhook_worker_dsn() -> str:
     return os.environ.get("QUALIFY_WEBHOOK_WORKER_DSN", DEFAULT_WEBHOOK_WORKER_DSN)
+
+
+def creative_worker_dsn() -> str:
+    return os.environ.get("QUALIFY_CREATIVE_WORKER_DSN", DEFAULT_CREATIVE_WORKER_DSN)
