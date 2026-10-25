@@ -131,13 +131,13 @@ Origen: [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674)
 ## 6. Revisión pendiente
 
 - data-scientist-fde: costo medido en PB-6 ([PB6-001](modelos-generativos/pruebas.md#pb6-001), 2026-10-25, precios verificados). El tope ya está fijado (§5.2). El encendido en producción espera el límite duro de tokens.
-- Ola 2 (§7): revisada por principal-architect y data-scientist-fde el 2026-10-25 (§7.11); sus cambios ya están en las historias. Tickets creados el 2026-10-25 (§7.0); los textos nuevos siguen pendientes de aprobación.
+- Ola 2 (§7): revisada por principal-architect y data-scientist-fde el 2026-10-25 (§7.11); sus cambios ya están en las historias. Tickets creados el 2026-10-25 (§7.0); los 26 textos nuevos fueron aprobados por el fundador el 2026-10-25 (§7.10).
 
 ---
 
 ## 7. Ola 2 — «Esto es lo que vimos en tu Instagram»
 
-`[HISTORIAS EN MEEGLE · product-owner · 2026-10-25 · revisadas por arquitectura y datos · creadas con el visto bueno del fundador el 2026-10-25 · textos nuevos pendientes de aprobación (§7.10)]`
+`[HISTORIAS EN MEEGLE · product-owner · 2026-10-25 · revisadas por arquitectura y datos · creadas con el visto bueno del fundador el 2026-10-25 · textos nuevos aprobados el 2026-10-25 (§7.10)]`
 
 **Evidencia común a todas las historias:** decisiones del fundador del 2026-10-25 (§5 puntos 5–8 y
 las del encargo de esta ola, abajo); propuesta de UX v2 [`ux-esto-es-lo-que-vimos.md`](ux-esto-es-lo-que-vimos.md)
@@ -171,7 +171,7 @@ principal-architect y de data-scientist-fde contra `main` (2026-10-25, §7.11).
 Todas: tipo **Issue**, plantilla Default Issue, Feature [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192),
 Reporter y Assignee Herwin (reasignar al tomarla). Código: `just ci-test` verde, aislamiento por
 tenant con test, procedencia en todo dato derivado. **Sin migración:** todo vive en JSONB de tablas
-que ya tienen RLS. Textos nuevos: **BORRADOR** hasta que el fundador apruebe la tabla de §7.10; los
+que ya tienen RLS. Textos nuevos: **aprobados** por el fundador el 2026-10-25 (tabla de §7.10); los
 cinco textos aprobados de PB-5 se mantienen literales.
 
 ### 7.0 Resumen
@@ -463,7 +463,7 @@ corregir lo que esté mal, para aprobar una identidad de marca que reconozco com
 - [ ] Textos aprobados, literales: el aviso «Preparamos una propuesta de tu identidad de marca a
   partir de tu cuenta de Instagram @{usuario}. Revísala y apruébala para empezar a crear
   publicaciones.» y los botones «Aprobar», «Cambiar», «Empezar de cero».
-- [ ] Textos nuevos: los de §7.10 marcados OL2-5, una vez aprobados por el fundador.
+- [ ] Textos nuevos: los de §7.10 marcados OL2-5 (aprobados el 2026-10-25).
 - [ ] Cada bloque sin datos se oculta; **ninguna cifra en cero** en pantalla. Cuenta sin
   publicaciones: sin cuadrícula, sin «La que más gustó», sin frecuencia, y con la línea T14.
 - [ ] «Cada cuánto publicas» y «La que más gustó» solo con `posted_last_30d = true`; la miniatura
@@ -517,7 +517,7 @@ tres respuestas y contestarlas una por una, para terminar mi marca y crear mi pr
 - [ ] «Crear mi primera publicación» abre Crear pieza; «Ver mi identidad de marca» abre la identidad
   de marca terminada.
 - [ ] «Cambiar» y «Empezar de cero» siguen abriendo los pasos como en PB-5.
-- [ ] Textos nuevos de §7.10 marcados OL2-6, una vez aprobados; funciona a 360 px.
+- [ ] Textos nuevos de §7.10 marcados OL2-6 (aprobados el 2026-10-25); funciona a 360 px.
 - [ ] Revisión local de ux-designer; `just ci-test` verde; aislamiento por tenant con test.
 
 **Fuera de alcance**
@@ -561,13 +561,15 @@ resultado **PB6-002** en `docs/modelos-generativos/pruebas.md` y en la ficha de 
 **Fuera de alcance**
 - Encender B1 en producción (decisión del fundador).
 
-### 7.10 Textos nuevos — BORRADOR para que el fundador apruebe
+### 7.10 Textos nuevos — aprobados por el fundador el 2026-10-25
+
+**Aprobados los 26 (T1–T26) tal como están en la tabla** (Herwin, 2026-10-25). Se usan literales.
 
 Se conservan literales (aprobados en PB-5): el aviso de Instagram, «Aprobar», «Cambiar», «Empezar
 de cero», «Listo. Guardamos tu identidad de marca.» y los avisos de cuenta ilegible y privada. La
 revisión técnica no agregó ni quitó textos.
 
-| # | Historia | Dónde | Texto propuesto (BORRADOR) |
+| # | Historia | Dónde | Texto aprobado |
 |---|---|---|---|
 | T1 | OL2-5 | Título | Esto es lo que vimos en tu Instagram |
 | T2 | OL2-5 | Cifras | {n} seguidores · {n} publicaciones |
