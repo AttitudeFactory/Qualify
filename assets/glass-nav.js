@@ -314,6 +314,12 @@
   function relevant(records) {
     for (var i = 0; i < records.length; i += 1) {
       var record = records[i];
+      /* m-24852260: the active row can change by attribute alone (`aria-current` moving
+         between links that stay in place), which no childList record reports. */
+      if (record.type === 'attributes') {
+        if (navOf(record.target)) return true;
+        continue;
+      }
       var added = Array.prototype.slice.call(record.addedNodes);
       var removed = Array.prototype.slice.call(record.removedNodes);
       if (added.concat(removed).every(isOurs)) continue;
@@ -324,7 +330,9 @@
   }
   new MutationObserver(function (records) {
     if (relevant(records)) watch();
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  }).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['aria-current']
+  });
   window.addEventListener('resize', scheduleSettle, { passive: true });
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', watch, { once: true });

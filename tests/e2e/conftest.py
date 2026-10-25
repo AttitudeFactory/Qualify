@@ -167,6 +167,19 @@ def _finish_brand_kit(email: str) -> tuple[uuid.UUID, uuid.UUID]:
         ),
     )
     BrandKitService().upsert_kit(tenant_id=tenant_id, brand_id=brand_id, kit=kit, user_id=user_id)
+    # The signup opens the Brand Kit wizard, which records its position as unfinished
+    # (`connect.progress.completed = False`) — and an unfinished kit sends every page
+    # back to /brand (`brand_finish.kit_status`). Mark it finished, as the wizard's last
+    # step would.
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+
+    BrandKitStore().set_document_key(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        document="connect",
+        key="progress",
+        value={"completed": True},
+    )
     return tenant_id, user_id
 
 
@@ -235,11 +248,18 @@ def _open_business(app_server: str, context, scopes: list[str] | None):  # noqa:
     signup = context.new_page()
     signup.set_default_timeout(30_000)
     signup.goto(f"{app_server}/registro")
-    signup.get_by_placeholder("Nombre del negocio").fill("E2E · Arepera Doña Carmen")
-    signup.get_by_placeholder("Correo del negocio (uno por negocio)").fill(email)
-    signup.get_by_placeholder("Contraseña (mínimo 8 caracteres)").fill(password)
+    # Labelled fields since m-24842967 (a placeholder is not a label); the country is
+    # required since the signup deduces zone and currency from it.
+    signup.locator("#signup-business").fill("E2E · Arepera Doña Carmen")
+    signup.locator("#signup-email").fill(email)
+    signup.locator("#signup-password").fill(password)
+    signup.locator("#signup-country").click()
+    signup.get_by_role("option", name="Colombia").click()
     signup.get_by_role("button", name="Registrar y entrar").click()
     expect(signup).not_to_have_url(re.compile(r"/registro"), timeout=60_000)
+    # Let the wizard the signup lands on write its progress before the kit is finished
+    # under it (a late write would mark the kit unfinished again).
+    signup.wait_for_timeout(3_000)
     signup.close()
 
     tenant_id, user_id = _finish_brand_kit(email)
