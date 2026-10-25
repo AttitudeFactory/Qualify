@@ -16,6 +16,65 @@ commit `f7290c3e`; aún no está en `main`).
 
 ---
 
+## Decisión del fundador (2026-10-24)
+
+**Esta sección manda sobre el resto.** El fundador eligió la **Opción C** del §3 y fijó la oferta de
+arranque y los paquetes. La recomendación del §4 (Opción B, Pro no ofrecido al inicio, tope igual al
+precio) **no se adoptó**; se conserva como el análisis que hubo antes de la decisión.
+
+| | Básico | Plus | Pro |
+|---|---:|---:|---:|
+| **Precio completo, USD/mes** | **79** | **149** | **279** |
+| COP (a 3.160) | 250.000 | 470.000 | 880.000 |
+| UYU (a 40,3) | 3.190 | 6.000 | 11.200 |
+| **Primer mes a mitad de precio, USD** | **39** | **75** | **139** |
+| COP / UYU del primer mes | 120.000 / 1.570 | 235.000 / 3.020 | 440.000 / 5.600 |
+
+Los tres planes se ofrecen desde el lanzamiento. Después del primer mes, precio completo.
+
+**Paquetes de 90 días (USD / COP / UYU):** +2 videos **29** / 90.000 / 1.170 · +20 creaciones **12** /
+38.000 / 480 · +10 vistas previas **19** / 60.000 / 770.
+
+**Alertas de gasto en dólares por marca (siguen como estaban decididas):** Básico 120, Plus 240, Pro
+480. Solo avisan en Lark y **nunca bloquean**. No se adoptó la sugerencia de igualar el tope al precio.
+
+### Márgenes recalculados (margen bruto sobre generación; mismos costos y supuestos del §3)
+
+Costos: típico 20 / 40 / 80 (Básico 15–25; Plus y Pro `[H]` proporcionales al cupo), peor caso
+55 / 110 / 220, peor caso con videos de referencia 111 / 222 / 444.
+
+| Caso | Básico | Plus | Pro |
+|---|---:|---:|---:|
+| **Precio completo**, mes típico | 75 % (rango 68–81 %) | 73 % | 71 % |
+| Precio completo, peor caso | 30 % | 26 % | 21 % |
+| Precio completo, peor caso con referencias | −41 % | −49 % | −59 % |
+| **Primer mes (mitad de precio)**, mes típico | 49 % (rango 36–62 %) | 47 % | 42 % |
+| Primer mes, peor caso | −41 % | −47 % | −58 % |
+| Primer mes, peor caso con referencias | −185 % | −196 % | −219 % |
+
+| Paquete | Precio | Margen mes típico | Margen peor caso |
+|---|---:|---:|---:|
+| +2 videos (final 5 s = 2,85 c/u típico; 10 s = 5,70 peor) | 29 | 80 % | 61 % |
+| +20 creaciones (típico 0,06; techo 0,15) | 12 | 90 % | 75 % |
+| +10 vistas previas (típico 5 s = 0,60; peor 10 s = 1,12) | 19 | 68 % | 41 % |
+
+**Lo que esto implica, sin tocar la decisión:**
+
+- A precio completo los tres planes cubren el peor caso (21–30 %) sin referencias; con videos de
+  referencia de duración desconocida ninguno lo cubre.
+- **El primer mes a mitad de precio no cubre el peor caso en ningún plan** y deja 42–49 % en un mes
+  típico. Es una inversión en aprender el costo y el precio real; el costo por cliente que se regala
+  en un primer mes pesado es de USD 16 (Básico), 35 (Plus) y 81 (Pro) según el peor caso.
+- Las alertas de 120 / 240 / 480 equivalen a 2,2 veces el peor caso sin referencias y a 1,5 veces el
+  precio completo del Básico: avisan, no limitan. Un negocio que llegue a la alerta ya costó más de lo
+  que pagó (Básico: 120 contra 79). Quien mire Lark debe decidir qué hace en ese momento. `[H]` sobre
+  cuántas veces ocurrirá; no hay datos.
+- Las hipótesis P1–P6 del §4 y la escalera de preguntas del §6 siguen vigentes. La más frágil sigue
+  siendo P1: ahora a USD 79 en vez de 49. El segmento es de presupuesto acotado y ningún cliente real
+  ha dicho cuánto pagaría; la oferta de arranque es el instrumento para saberlo.
+
+---
+
 ## 0. Lo primero: lo que contradice la dirección actual
 
 1. **Los cupos de video no se pueden pagar con un precio «de herramienta».** Las herramientas con las
