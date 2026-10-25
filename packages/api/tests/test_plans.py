@@ -359,9 +359,10 @@ def test_only_configuracion_reads_the_plan_in_the_app() -> None:
         if not p.name.startswith("test_")
         and any(m.startswith("qualify_api.plans") for m in _imports_of(p))
     )
-    assert readers == ["settings_provider.py", "settings_vm.py"]
+    # m-24852129: «Pedir más a Qualify» (ask_more_*) is shared by Configuración and Crear
+    assert readers == ["ask_more_provider.py", "settings_provider.py", "settings_vm.py"]
     for path in (REPO / "Qualify").glob("*.py"):
-        if path.name.startswith(("test_", "settings_")):
+        if path.name.startswith(("test_", "settings_", "ask_more_")):
             continue
         body = path.read_text(encoding="utf-8")
         assert "Tu plan:" not in body and "Pedir más a Qualify" not in body, path.name
@@ -370,7 +371,7 @@ def test_only_configuracion_reads_the_plan_in_the_app() -> None:
 def test_the_app_never_imports_the_teams_plan_doors() -> None:
     for path in (REPO / "Qualify").glob("*.py"):
         imports = _imports_of(path)
-        for door in ("service", "cli", "report", "cost_alerts", "billing"):
+        for door in ("service", "pack_service", "cli", "report", "cost_alerts", "billing"):
             assert f"qualify_api.plans.{door}" not in imports, (path.name, door)
     assert "qualify_shared.db.admin" not in _imports_of(
         REPO / "packages/api/src/qualify_api/plans/read.py"
