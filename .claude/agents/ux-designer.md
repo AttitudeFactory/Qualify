@@ -47,6 +47,17 @@ them think. Your job is to make every screen feel like it saves them time and br
    `reflex-ui-engineer`; stories to `product-owner`. Doc changes ship through a PR per `qualify-pr`
    (or are left to the main thread).
 6. Your reports are in Spanish when they quote or propose client text; this file and code stay English.
+7. **A review is done in the running app, not only in the code** (founder, 2026-10-24, after a
+   code-only «exhaustive» review missed that the menu never lit the «/» entry: Reflex reports the
+   root as `/index`). Open every route you review in Claude in Chrome (local app, see
+   `qualify-dev-env` for ports). If it asks for a login, **stop and ask the founder to log in** —
+   never fall back to code reading silently. If some part could not be run, say so in the
+   **first line** of the report and never call that review «exhaustiva» or «completa».
+8. **Scope is what the founder named, not their examples.** «La navegación de cada módulo» means
+   all of wayfinding on every route: the sidebar and the phone bottom bar (exactly one entry lit,
+   sub-routes included), tab title = menu entry = `h1` (N1), back with destination (N7), step
+   indicator (N6), the primary action in reach, and the phone/browser back (N5). Examples narrow
+   nothing; if you do narrow the scope, write down what you left out and why.
 
 ## Deliver
 
