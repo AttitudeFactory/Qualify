@@ -1182,6 +1182,7 @@ def _read_instagram(
     captions: list[str],
     *,
     ai_labels: bool = True,
+    max_post_pages: int = _MAX_POST_PAGES,
 ) -> dict[str, Any]:
     """The Instagram half of `fetch_profile_and_posts`: one profile read (1 credit),
     then the post list.
@@ -1215,6 +1216,7 @@ def _read_instagram(
                 handle,
                 since=since,
                 client=client,
+                max_pages=max_post_pages,
                 hashtag_counts=hashtags,
                 caption_sink=captions,
             )
@@ -1255,6 +1257,7 @@ def _read_instagram(
             handle,
             since=since,
             client=client,
+            max_pages=max_post_pages,
             hashtag_counts=hashtags,
             caption_sink=captions,
             start_cursor=cursor,
@@ -1274,6 +1277,8 @@ def _read_tiktok(
     client: httpx.Client,
     hashtags: Counter[str],
     captions: list[str],
+    *,
+    max_post_pages: int = _MAX_POST_PAGES,
 ) -> dict[str, Any]:
     """The TikTok half: the profile carries no videos (`itemList` came empty,
     2026-10-24), so the windowed video list is always read, as before; `recentMedia`
@@ -1291,6 +1296,7 @@ def _read_tiktok(
             handle,
             since=now - _WINDOW_SECONDS,
             client=client,
+            max_pages=max_post_pages,
             hashtag_counts=hashtags,
             caption_sink=captions,
             item_sink=items,
@@ -1310,6 +1316,7 @@ def fetch_profile_and_posts(
     *,
     client: httpx.Client | None = None,
     ai_labels: bool = True,
+    max_post_pages: int = _MAX_POST_PAGES,
 ) -> dict[str, Any]:
     """What `BrandConnectState.analyze`, Referentes and the Alta prefill call: the
     profile read plus the windowed post list, as ONE normalized dict — `fetch_profile`'s
@@ -1339,6 +1346,10 @@ def fetch_profile_and_posts(
     prefill, which records no growth history) it is ONE credit unless `needs_post_list`
     (a very active account, or a profile that came without its posts). TikTok is the
     profile plus the video pages either way (they carry the label).
+
+    `max_post_pages` bounds the post-list pages read (one credit each; default
+    `_MAX_POST_PAGES`): the Alta prefill reads one at most (m-24854322), so its credits
+    are bounded by its own ceiling instead of failing at it.
     """
     if network not in SUPPORTED_NETWORKS:
         raise ValueError(f"unsupported network: {network!r}")
@@ -1350,9 +1361,18 @@ def fetch_profile_and_posts(
     captions: list[str] = []
     try:
         if network == "instagram":
-            profile = _read_instagram(handle, active, hashtags, captions, ai_labels=ai_labels)
+            profile = _read_instagram(
+                handle,
+                active,
+                hashtags,
+                captions,
+                ai_labels=ai_labels,
+                max_post_pages=max_post_pages,
+            )
         else:
-            profile = _read_tiktok(handle, active, hashtags, captions)
+            profile = _read_tiktok(
+                handle, active, hashtags, captions, max_post_pages=max_post_pages
+            )
         profile["topHashtags"] = [tag for tag, _ in hashtags.most_common(TOP_HASHTAGS)]
         profile["recentCaptions"] = captions[:RECENT_CAPTIONS]
     finally:

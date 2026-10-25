@@ -42,6 +42,7 @@ from ..claude_tools import (
     CallStats,
     ClaudeToolError,
     ClientFactory,
+    DollarMeter,
     Meter,
     MissingAPIKey,
     ModelConfig,
@@ -71,6 +72,16 @@ CLASSIFY_BATCH = 80
 
 #: Model turns an agent run may take before it must have called `elegir_hashtags`.
 MAX_TURNS = 8
+#: Output ceiling per turn of a thinking run (the SDK's non-streaming maximum) — the web
+#: wizard's; the Alta passes its own (`meegle.prefill.ALTA_CATALOG_MAX_TOKENS`).
+SELECT_MAX_TOKENS = 16000
+#: Appended to the tool results before the LAST turn when `last_turn_hint` is on (the
+#: Alta's 3-turn run, m-24854322): a thinking model gets `tool_choice: auto`, so it is
+#: told — not forced — to choose now.
+LAST_TURN_HINT = (
+    "Este es tu último turno: no busques más y entrega ahora tu selección con {tool}, "
+    "con lo que ya viste."
+)
 #: Rows a catalog tool returns per call — enough to see the variants of a word.
 TOOL_RESULTS = 25
 
@@ -413,11 +424,19 @@ def select_hashtags(
     config: ModelConfig = ModelConfig(SELECT_MODEL, SELECT_EFFORT),
     client_factory: ClientFactory | None = None,
     max_turns: int = MAX_TURNS,
+    max_tokens: int | None = None,
+    budget: DollarMeter | None = None,
+    last_turn_hint: bool = False,
 ) -> tuple[list[HashtagPick], CallStats]:
     """Let Claude explore the catalog with its tools and choose, for this brand, at most
     `max_picks` hashtags, best first. Only tags a tool (or `starting`) showed it can come
     back — never one the brand already uses, never two spellings of one word. Raises
-    `HashtagAIError` when the run ends without `elegir_hashtags`."""
+    `HashtagAIError` (with the run's `stats`) when the run ends without
+    `elegir_hashtags`, is cut by `max_tokens`, or meets a turn its `budget` cannot pay.
+
+    `max_tokens` / `budget` / `last_turn_hint` are the Alta's limits (m-24854322): the
+    defaults — `SELECT_MAX_TOKENS` on a thinking model, no meter, no hint — are the web
+    wizard's, unchanged."""
     client = (client_factory or default_client)(api_key)
     meter = Meter(config)
     tools = _select_tools(list(niches))
@@ -445,7 +464,10 @@ def select_hashtags(
             shown.setdefault(fold(c.tag), c.tag)
         return (_candidate_lines(found) if found else empty), False
 
-    for _ in range(max_turns):
+    turn_tokens = max_tokens or (SELECT_MAX_TOKENS if config.thinks else 4096)
+    for turn in range(max_turns):
+        if last_turn_hint and turn == max_turns - 1 and turn > 0:
+            _hint_last_turn(messages)
         response = create_turn(
             client,
             config,
@@ -454,7 +476,8 @@ def select_hashtags(
             messages=messages,
             tools=tools,
             tool_choice={"type": "auto"},
-            max_tokens=16000 if config.thinks else 4096,
+            max_tokens=turn_tokens,
+            budget=budget,
         )
         uses = tool_uses(response)
         meter.tool_calls += len(uses)
@@ -480,7 +503,23 @@ def select_hashtags(
                 result["is_error"] = True
             results.append(result)
         messages.append({"role": "user", "content": results})
-    raise HashtagAIError(f"{config.model_id} ended without calling {CHOOSE_TOOL}")
+    raise HashtagAIError(
+        f"{config.model_id} ended without calling {CHOOSE_TOOL}", stats=meter.stats()
+    )
+
+
+def _hint_last_turn(messages: list[dict[str, Any]]) -> None:
+    """`LAST_TURN_HINT` as a text block after the last user message's tool results."""
+    hint = {"type": "text", "text": LAST_TURN_HINT.format(tool=CHOOSE_TOOL)}
+    last = messages[-1]
+    if last.get("role") != "user":
+        messages.append({"role": "user", "content": [hint]})
+        return
+    content = last["content"]
+    if isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content}, hint]
+    else:
+        last["content"] = [*content, hint]
 
 
 def _picks(

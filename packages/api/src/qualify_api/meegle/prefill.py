@@ -12,7 +12,7 @@ Two halves, both inside the webhook-worker and never in the webhook request:
   can retry the event, so nothing here can send a second invitation.
 - **`AltaPrefillRunner.run_once`** — the worker loop (and `--once`) drains due jobs:
   `creative.brand_prefill.prefill_brand_kit(..., source={"kind": "alta",
-  "meegle_work_item_id": <id>}, propose=True)` with `CallCaps` derived from the cost cap,
+  "meegle_work_item_id": <id>}, propose=True)` with the Alta's limits and a dollar meter,
   then ONE comment on the Alta item with the outcome.
 
 **Off by default.** `QUALIFY_ALTA_PREFILL_ENABLED` (`1`/`true`/`yes`/`on`) turns it on and
@@ -22,28 +22,32 @@ unset, invalid, or below the cheapest useful run → `schedule` does nothing at 
 draft, no job, no comment — and the Alta works exactly as before PB-4. A job found while
 the setting is off is settled `disabled` without a comment.
 
-**The cost cap** (`caps_for_budget`). `prefill_brand_kit` budgets in CALLS, so the USD
-cap becomes `CallCaps` through unit costs taken from what the repo versions:
+**The cost cap: a dollar meter per turn** (m-24854322, `limits_for_budget`). PB6-001
+measured that counting calls bounds nothing: one catalog turn at 16,000 output tokens
+costs more than the whole cap. So every run carries ONE `claude_tools.DollarMeter` of
+`cap - spent` USD:
 
-    u_sc = SCRAPECREATORS_USD_PER_CREDIT                      (1 request = 1 credit)
-    u_cl = (CLAUDE_RUN_INPUT_TOKENS  * p_in * w
-          + CLAUDE_RUN_OUTPUT_TOKENS * p_out) / 1e6           (one Claude run)
-           p_in / p_out = `claude_tools.PRICES` of the DEAREST model the prefill runs
-           (`hashtags.from_profile.MODEL`, `hashtags.ai.SELECT_MODEL`)
-           w = `claude_tools.CACHE_WRITE_MULTIPLIER` (1.25): the system prompt is sent
-           cached, so a first turn bills it as a cache write — the dearest an input
-           token can be; uncached or cache-read input only makes the run cheaper
-    min  = MIN_RUN.sc * u_sc + MIN_RUN.claude * u_cl          (2 requests + 2 runs)
-    cap < min                       → refuse (the prefill does not run)
-    sc     = min(6, 2 + floor((cap - min) / u_sc))            (post pages first: cheap,
-    claude = min(3, 2 + floor((cap - min - (sc-2)*u_sc) / u_cl))   and a short read fails)
+- every ScrapeCreators request books `SCRAPECREATORS_USD_PER_CREDIT` in it before it is
+  sent (one that does not fit is not made);
+- every Claude turn is priced before it is sent at its worst — input bound
+  (`claude_tools.turn_input_ceiling`) x p_in x 1.25 (cache write) + `max_tokens` x p_out
+  — and goes as asked, with a lower `max_tokens` that fits, or not at all
+  (`BudgetExhausted`); it is then booked as billed (its reservation when no answer came);
+- the Alta's own limits make a full run fit the cap: profile + at most one post page
+  (`ALTA_SCRAPECREATORS_CREDITS`), the rubro run at `ALTA_RUBRO_MAX_TOKENS` x
+  `ALTA_RUBRO_ATTEMPTS`, the catalog run at `ALTA_CATALOG_MAX_TURNS` x
+  `ALTA_CATALOG_MAX_TOKENS` with effort `ALTA_CATALOG_EFFORT` and a «choose now» hint
+  before its last turn, and no creation run (`ALTA_CAPS.claude_calls = 2`).
+  `worst_case_usd()` is that run with every turn's `max_tokens` full over the measured
+  input envelopes (a test pins it under US$0.15); `minimum_run_usd()` (credits + the
+  first turn of each Claude run) is the least cap that runs at all.
 
-so `sc * u_sc + claude * u_cl <= cap`, with 6 / 3 the most one run can use
-(`brand_prefill.DEFAULT_CAPS`). The single retry gets `caps_for_budget(cap - spent)`,
-`spent` = what the first attempt really cost (`usage_cost`), so the two together stay
-within the cap; if what is left buys no minimum run, there is no retry. The token
-envelope is an ESTIMATE (PB-6 measures the real one and replaces these two numbers); the
-real cost of every attempt is stored in the job (`runs`, `spent_usd`).
+A refused or cut Claude turn degrades its step — the rubro falls to the profile's
+category, the catalog to the account's own tags or the rubro run's — and the run still
+ends `OK`: the meter never turns a readable account into a failed Alta. The single retry
+gets `cap - spent` (`usage_cost` = what the meter booked), so the two together stay
+within the cap; if what is left is under the minimum run, there is no retry. The web
+wizard has no meter and keeps its own limits.
 
 **Outcomes → the comment** (one per Alta; Meegle Free allows 500 Open API calls a day):
 `OK` with the proposal written → «Identidad de marca propuesta.»; `PRIVATE_ACCOUNT` →
@@ -76,14 +80,13 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_FLOOR, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from functools import partial
 from typing import Any, Protocol
 from uuid import UUID
 
-from qualify_api.claude_tools import CACHE_WRITE_MULTIPLIER, PRICES
+from qualify_api.claude_tools import DollarMeter, ModelConfig, worst_turn_usd
 from qualify_api.creative.brand_prefill import (
-    DEFAULT_CAPS,
     PREFILL_VERSION,
     CallCaps,
     PrefillOutcome,
@@ -103,37 +106,70 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 NETWORK = "instagram"
 #: This queue's version; the prefill's own rides with it (provenance of every job).
-QUEUE_VERSION = 1
+#: 2: the dollar meter and the Alta's own Claude limits (m-24854322).
+QUEUE_VERSION = 2
 PIPELINE_VERSION = f"alta_prefill:{QUEUE_VERSION}+brand_prefill:{PREFILL_VERSION}"
 
 #: ScrapeCreators, plan Freelance: US$47 for 25,000 credits = US$0.00188, rounded up
-#: (`docs/plan-superadmin-alta-clientes.md` §172, from
-#: `docs/scrapecreators-crecimiento-organico-y-contenido-ia.md`). One request on the
-#: prefill's endpoints is one credit (`brand_prefill.PrefillUsage`). Unverified against
-#: an invoice — PB-6 (m-24852200) verifies it.
+#: (PB6-001, `docs/modelos-generativos/pruebas.md`; the CLI balance matched the requests
+#: counted one to one). One request on the prefill's endpoints is one credit.
 SCRAPECREATORS_USD_PER_CREDIT = Decimal("0.0019")
-#: The token envelope of ONE Claude run of the prefill, an estimate until PB-6 measures
-#: it: the rubro run reads at most 12 captions x 280 chars + a 600-char bio
-#: (`from_profile.MAX_*`, ~2.5k tokens with the system prompt) and the catalog run takes a
-#: few tool turns over it; output is thinking + one tool call.
-CLAUDE_RUN_INPUT_TOKENS = 6_000
-CLAUDE_RUN_OUTPUT_TOKENS = 2_500
-#: The cheapest run that can end in a proposal: the profile + one page of posts (a page
-#: refused by the cap fails the read), the rubro run + the catalog run.
-MIN_RUN = CallCaps(scrapecreators_requests=2, claude_calls=2)
-#: The Claude models a prefill may run — priced at the dearest.
-PREFILL_MODELS = (from_profile.MODEL, hashtag_ai.SELECT_MODEL)
+
+# --------------------------------------------------------------------------------------
+# The Alta's limits (m-24854322)
+# --------------------------------------------------------------------------------------
+
+#: Snapshot 5 (#348): the Alta reads Instagram's profile alone — 1 credit — and pays
+#: for the post list only when the profile's 12 posts do not cover the week
+#: (`scrapecreators_client.needs_post_list`); then ONE page at most (`alta_read_profile`
+#: passes `max_post_pages`), so a very active account reads a shorter week instead of
+#: failing at the ceiling. Was 6 (profile + 5 pages) before snapshot 5.
+ALTA_SCRAPECREATORS_CREDITS = 2
+#: The rubro run (`from_profile.generate`): PB6-001 measured 245-280 output tokens; the
+#: wizard's 4,000 left a 15x unused margin the cap pays for. Two attempts (the second
+#: only when the first answered without the tool).
+ALTA_RUBRO_MAX_TOKENS = 1_500
+ALTA_RUBRO_ATTEMPTS = 2
+#: The catalog run (`hashtag_ai.select_hashtags`): PB6-001 measured 3-4 turns and
+#: 383-986 output tokens per RUN at effort medium; the wizard allows 8 x 16,000. Three
+#: turns, not four: a fourth adds ~US$0.04 to the worst case and breaks the US$0.15 cap.
+#: Effort low, and the last turn is told to choose now (`hashtag_ai.LAST_TURN_HINT`).
+ALTA_CATALOG_MAX_TURNS = 3
+ALTA_CATALOG_MAX_TOKENS = 1_200
+ALTA_CATALOG_EFFORT = "low"
+#: The rubro run + the catalog run; the third (creating tags when the rubro run gave
+#: none) is off in the Alta — PB6-001 never needed it, and the proposal falls to the
+#: account's own tags instead.
+ALTA_CLAUDE_CALLS = 2
+ALTA_CAPS = CallCaps(
+    scrapecreators_requests=ALTA_SCRAPECREATORS_CREDITS, claude_calls=ALTA_CLAUDE_CALLS
+)
+#: The cheapest run that can end in a proposal: the profile + one post page (the
+#: structural ceiling), and the first turn of each Claude run.
+MIN_RUN_CREDITS = ALTA_SCRAPECREATORS_CREDITS
+
+#: Input envelopes of the computed worst case (tokens; PB6-001's maxima with margin).
+#: The meter does not trust them: every real turn is bounded by its own request bytes.
+#: Rubro: <= 2,311 measured (bio + 12 captions + system); its retry carries the first
+#: answer back (+ its output) and a one-line nudge.
+ALTA_RUBRO_INPUT_TOKENS = 2_500
+_NUDGE_TOKENS = 100
+#: Catalog: the first turn (system + tools + brand + starting candidates) and what each
+#: later turn adds besides the previous output (one tool result of <= 25 tags): 5,200 +
+#: 7,200 + 9,200 = 21,600 cumulative input, under the 22k PB6-001 allows.
+ALTA_CATALOG_INPUT_TOKENS = 5_200
+ALTA_CATALOG_RESULT_TOKENS = 800
 
 #: The Claude client of a prefill run: one HTTP wait at most this long per turn and no SDK
 #: retries (its defaults are 600 s and 2 retries — over half an hour per turn).
 CLAUDE_TIMEOUT_SECONDS = 90.0
-#: The turns a run can take at most: rubro (2) + catalog (`hashtag_ai.MAX_TURNS`) +
-#: created hashtags (2), each bounded by the timeout above.
-CLAUDE_MAX_TURNS = 2 + hashtag_ai.MAX_TURNS + 2
-#: ScrapeCreators: `DEFAULT_CAPS` requests x the client's 20 s; the picture: 4 hops x 8 s.
-_SCRAPECREATORS_SECONDS = 6 * 20.0
+#: The turns a run can take at most: the rubro's attempts + the catalog's turns (no
+#: creation run in the Alta), each bounded by the timeout above.
+CLAUDE_MAX_TURNS = ALTA_RUBRO_ATTEMPTS + ALTA_CATALOG_MAX_TURNS
+#: ScrapeCreators: the Alta's credits x the client's 20 s; the picture: 4 hops x 8 s.
+_SCRAPECREATORS_SECONDS = ALTA_SCRAPECREATORS_CREDITS * 20.0
 _PICTURE_SECONDS = 4 * 8.0
-#: The slowest a run can be (~21 min) — `prefill_jobs.STALE_AFTER` stays above it.
+#: The slowest a run can be (~8.7 min) — `prefill_jobs.STALE_AFTER` stays above it.
 MAX_RUN_SECONDS = (
     CLAUDE_MAX_TURNS * CLAUDE_TIMEOUT_SECONDS + _SCRAPECREATORS_SECONDS + _PICTURE_SECONDS
 )
@@ -168,86 +204,118 @@ _TRANSIENT = frozenset({PrefillOutcome.READ_FAILED.value, OUTCOME_NOT_WRITTEN})
 
 
 @dataclass(frozen=True)
-class UnitCosts:
-    """USD of one ScrapeCreators request and of one Claude run (the estimate above)."""
+class WorstCase:
+    """The dearest run the Alta's limits allow, by part (USD)."""
 
-    scrapecreators_request: Decimal
-    claude_run: Decimal
-    claude_model: str
+    credits: Decimal
+    rubro: Decimal
+    catalog: Decimal
 
-    def cost(self, caps: CallCaps) -> Decimal:
-        return (
-            caps.scrapecreators_requests * self.scrapecreators_request
-            + caps.claude_calls * self.claude_run
-        )
+    @property
+    def total(self) -> Decimal:
+        return self.credits + self.rubro + self.catalog
+
+
+def _turns(model: str, first_input: int, max_tokens: int, turns: int, added: int) -> Decimal | None:
+    """Every turn with its `max_tokens` full: each carries the last one's prompt, its
+    output and `added` tokens more (`claude_tools.turn_input_ceiling`'s own rule)."""
+    total = Decimal(0)
+    prompt = first_input
+    for _ in range(turns):
+        cost = worst_turn_usd(model, prompt, max_tokens)
+        if cost is None:
+            return None
+        total += cost
+        prompt += max_tokens + added
+    return total
+
+
+def worst_case() -> WorstCase | None:
+    """The dearest Alta run: every credit, every rubro attempt and every catalog turn
+    with its `max_tokens` full over the input envelopes. None when a model has no
+    price (refuse to guess a zero)."""
+    rubro = _turns(
+        from_profile.MODEL,
+        ALTA_RUBRO_INPUT_TOKENS,
+        ALTA_RUBRO_MAX_TOKENS,
+        ALTA_RUBRO_ATTEMPTS,
+        _NUDGE_TOKENS,
+    )
+    catalog = _turns(
+        hashtag_ai.SELECT_MODEL,
+        ALTA_CATALOG_INPUT_TOKENS,
+        ALTA_CATALOG_MAX_TOKENS,
+        ALTA_CATALOG_MAX_TURNS,
+        ALTA_CATALOG_RESULT_TOKENS,
+    )
+    if rubro is None or catalog is None:
+        return None
+    return WorstCase(ALTA_SCRAPECREATORS_CREDITS * SCRAPECREATORS_USD_PER_CREDIT, rubro, catalog)
+
+
+def worst_case_usd() -> Decimal | None:
+    worst = worst_case()
+    return worst.total if worst is not None else None
+
+
+def minimum_run_usd() -> Decimal | None:
+    """The least cap worth running: the structural credits and the first turn of each
+    Claude run, full. Below it the prefill does not run at all."""
+    rubro = worst_turn_usd(from_profile.MODEL, ALTA_RUBRO_INPUT_TOKENS, ALTA_RUBRO_MAX_TOKENS)
+    catalog = worst_turn_usd(
+        hashtag_ai.SELECT_MODEL, ALTA_CATALOG_INPUT_TOKENS, ALTA_CATALOG_MAX_TOKENS
+    )
+    if rubro is None or catalog is None:
+        return None
+    return MIN_RUN_CREDITS * SCRAPECREATORS_USD_PER_CREDIT + rubro + catalog
+
+
+@dataclass(frozen=True)
+class AltaLimits:
+    """What one attempt may use: `budget_usd` for its dollar meter and the Alta's call
+    counts and per-run Claude limits."""
+
+    budget_usd: Decimal
+    caps: CallCaps = ALTA_CAPS
 
     def as_document(self) -> dict[str, Any]:
+        worst = worst_case()
         return {
-            "scrapecreators_request_usd": str(self.scrapecreators_request),
-            "claude_run_usd": str(self.claude_run),
-            "claude_model": self.claude_model,
-            "claude_run_tokens": {
-                "input": CLAUDE_RUN_INPUT_TOKENS,
-                "output": CLAUDE_RUN_OUTPUT_TOKENS,
+            "budget_usd": str(self.budget_usd),
+            "scrapecreators_requests": self.caps.scrapecreators_requests,
+            "claude_calls": self.caps.claude_calls,
+            "scrapecreators_usd_per_credit": str(SCRAPECREATORS_USD_PER_CREDIT),
+            "rubro": {"max_tokens": ALTA_RUBRO_MAX_TOKENS, "attempts": ALTA_RUBRO_ATTEMPTS},
+            "catalog": {
+                "max_turns": ALTA_CATALOG_MAX_TURNS,
+                "max_tokens": ALTA_CATALOG_MAX_TOKENS,
+                "effort": ALTA_CATALOG_EFFORT,
             },
+            "worst_case_usd": str(worst.total) if worst is not None else None,
         }
 
 
-def unit_costs() -> UnitCosts | None:
-    """From the versioned prices; None when a prefill model has no price (refuse to
-    guess a zero)."""
-    priced: list[tuple[Decimal, str]] = []
-    for model in PREFILL_MODELS:
-        if model not in PRICES:
-            return None
-        price_in, price_out = PRICES[model]
-        # input at the cache-WRITE rate: the dearest any input token can bill (a run's
-        # first turn writes its cached system prompt), so the estimate is a ceiling
-        price_in_ceiling = Decimal(str(price_in)) * Decimal(str(CACHE_WRITE_MULTIPLIER))
-        run = (
-            Decimal(CLAUDE_RUN_INPUT_TOKENS) * price_in_ceiling
-            + Decimal(CLAUDE_RUN_OUTPUT_TOKENS) * Decimal(str(price_out))
-        ) / Decimal(1_000_000)
-        priced.append((run, model))
-    run, model = max(priced)
-    return UnitCosts(SCRAPECREATORS_USD_PER_CREDIT, run, model)
-
-
-def _floor_div(amount: Decimal, unit: Decimal) -> int:
-    if unit <= 0:
-        return 10**6
-    return int((amount / unit).to_integral_value(rounding=ROUND_FLOOR))
-
-
-def caps_for_budget(budget_usd: Decimal, units: UnitCosts) -> CallCaps | None:
-    """The `CallCaps` a run may use within `budget_usd`; None when even `MIN_RUN` costs
-    more. Post pages are added before the third Claude run (they cost ~1/20 of it)."""
-    minimum = units.cost(MIN_RUN)
-    if budget_usd < minimum:
+def limits_for_budget(budget_usd: Decimal) -> AltaLimits | None:
+    """The limits of an attempt with `budget_usd` left; None when it is under the
+    minimum run (or a model has no price)."""
+    minimum = minimum_run_usd()
+    if minimum is None or budget_usd < minimum:
         return None
-    left = budget_usd - minimum
-    extra_sc = min(
-        DEFAULT_CAPS.scrapecreators_requests - MIN_RUN.scrapecreators_requests,
-        _floor_div(left, units.scrapecreators_request),
-    )
-    left -= extra_sc * units.scrapecreators_request
-    extra_cl = min(
-        DEFAULT_CAPS.claude_calls - MIN_RUN.claude_calls, _floor_div(left, units.claude_run)
-    )
-    return CallCaps(
-        scrapecreators_requests=MIN_RUN.scrapecreators_requests + extra_sc,
-        claude_calls=MIN_RUN.claude_calls + extra_cl,
-    )
+    return AltaLimits(budget_usd=budget_usd)
 
 
-def usage_cost(usage: PrefillUsage, units: UnitCosts) -> Decimal:
-    """What an attempt really cost: credits at the unit price + Claude as measured. A run
-    whose tokens were lost (`claude_tokens_complete` False) is charged at least the
-    estimate per run, so a retry never gets budget it does not have."""
+def usage_cost(usage: PrefillUsage) -> Decimal:
+    """What an attempt really cost: what its dollar meter booked (credits + every turn
+    as billed, a turn with no answer at its reservation). Without a meter (a fake, an
+    older row): credits at the unit price + Claude as measured, and a run whose tokens
+    were lost charged its worst case — a retry never gets budget it does not have."""
+    if usage.metered_usd is not None:
+        return usage.metered_usd
     claude = Decimal(str(round(usage.claude_cost_usd, 6)))
     if not usage.claude_tokens_complete:
-        claude = max(claude, usage.claude_calls * units.claude_run)
-    return usage.scrapecreators_credits * units.scrapecreators_request + claude
+        worst = worst_case()
+        claude = max(claude, (worst.rubro + worst.catalog) if worst else claude)
+    return usage.scrapecreators_credits * SCRAPECREATORS_USD_PER_CREDIT + claude
 
 
 # --------------------------------------------------------------------------------------
@@ -258,17 +326,16 @@ def usage_cost(usage: PrefillUsage, units: UnitCosts) -> Decimal:
 @dataclass(frozen=True)
 class AltaPrefillSettings:
     """Read on every use, so a change of `.env` + restart is all it takes. `active` only
-    when on AND the cap buys at least `MIN_RUN`; `reason` says why not (logs only)."""
+    when on AND the cap pays at least the minimum run; `reason` says why not (logs only)."""
 
     enabled: bool
     max_usd: Decimal | None = None
-    units: UnitCosts | None = None
-    caps: CallCaps | None = None
+    limits: AltaLimits | None = None
     reason: str = ""
 
     @property
     def active(self) -> bool:
-        return self.enabled and self.caps is not None
+        return self.enabled and self.limits is not None
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> AltaPrefillSettings:
@@ -286,15 +353,12 @@ class AltaPrefillSettings:
             return cls(enabled=True, reason="max_usd_invalid")
         if not max_usd.is_finite() or max_usd <= 0:
             return cls(enabled=True, reason="max_usd_invalid")
-        units = unit_costs()
-        if units is None:
+        if minimum_run_usd() is None:
             return cls(enabled=True, max_usd=max_usd, reason="model_price_unknown")
-        caps = caps_for_budget(max_usd, units)
-        if caps is None:
-            return cls(
-                enabled=True, max_usd=max_usd, units=units, reason="max_usd_below_minimum_run"
-            )
-        return cls(enabled=True, max_usd=max_usd, units=units, caps=caps)
+        limits = limits_for_budget(max_usd)
+        if limits is None:
+            return cls(enabled=True, max_usd=max_usd, reason="max_usd_below_minimum_run")
+        return cls(enabled=True, max_usd=max_usd, limits=limits)
 
 
 def comment_for(outcome: str) -> str | None:
@@ -334,6 +398,7 @@ class PrefillFn(Protocol):
         source: dict[str, Any] | None = ...,
         caps: CallCaps = ...,
         propose: bool = ...,
+        budget_usd: Decimal = ...,
     ) -> PrefillResult: ...
 
 
@@ -362,22 +427,79 @@ def bounded_claude_client(api_key: str) -> Any:
     return anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_TIMEOUT_SECONDS, max_retries=0)
 
 
-def bounded_ports() -> Any:
-    """The prefill's real ports, with both Claude callers on `bounded_claude_client`."""
-    from qualify_api.creative.brand_prefill import CatalogHashtags, PrefillPorts  # noqa: PLC0415
+def alta_read_profile(network: str, handle: str, client: Any) -> dict[str, Any]:
+    """The Alta's account read: snapshot 5's 1-credit Instagram read (no AI labels: the
+    Alta records no growth history) with at most ONE post-list page, so the read never
+    asks for more than `ALTA_SCRAPECREATORS_CREDITS`."""
+    from qualify_api.referentes import scrapecreators_client  # noqa: PLC0415
 
+    return scrapecreators_client.fetch_profile_and_posts(
+        network,
+        handle,
+        client=client,
+        ai_labels=False,
+        max_post_pages=ALTA_SCRAPECREATORS_CREDITS - 1,
+    )
+
+
+def bounded_ports(meter: DollarMeter | None = None) -> Any:
+    """The prefill's real ports, with both Claude callers on `bounded_claude_client`.
+    With the run's `meter` (the Alta): the Alta's read and Claude limits, every turn
+    booked in it, and a failed catalog run answering no tags (not the rule path)."""
+    from qualify_api.creative.brand_prefill import (  # noqa: PLC0415
+        CatalogHashtags,
+        PrefillPorts,
+        catalog_prompt_version,
+    )
+
+    if meter is None:
+        return PrefillPorts(
+            generate=partial(from_profile.generate, client_factory=bounded_claude_client),
+            catalog=CatalogHashtags(
+                selector=partial(hashtag_ai.select_hashtags, client_factory=bounded_claude_client)
+            ),
+        )
     return PrefillPorts(
-        generate=partial(from_profile.generate, client_factory=bounded_claude_client),
+        read_profile=alta_read_profile,
+        generate=partial(
+            from_profile.generate,
+            client_factory=bounded_claude_client,
+            max_tokens=ALTA_RUBRO_MAX_TOKENS,
+            attempts=ALTA_RUBRO_ATTEMPTS,
+            budget=meter,
+        ),
         catalog=CatalogHashtags(
-            selector=partial(hashtag_ai.select_hashtags, client_factory=bounded_claude_client)
+            selector=partial(
+                hashtag_ai.select_hashtags,
+                client_factory=bounded_claude_client,
+                config=ModelConfig(hashtag_ai.SELECT_MODEL, ALTA_CATALOG_EFFORT),
+                max_turns=ALTA_CATALOG_MAX_TURNS,
+                max_tokens=ALTA_CATALOG_MAX_TOKENS,
+                budget=meter,
+                last_turn_hint=True,
+            ),
+            rule_fallback=False,
+            prompt_version=catalog_prompt_version(
+                ALTA_CATALOG_EFFORT, max_turns=ALTA_CATALOG_MAX_TURNS, last_turn_hint=True
+            ),
         ),
     )
 
 
-def _prefill(*args: Any, **kwargs: Any) -> PrefillResult:
+def _prefill(*args: Any, budget_usd: Decimal, **kwargs: Any) -> PrefillResult:
+    """One metered Alta attempt: a fresh `DollarMeter` of `budget_usd`, the Alta's ports
+    on it, the credits booked in it, and no creation run."""
     from qualify_api.creative.brand_prefill import prefill_brand_kit  # noqa: PLC0415
 
-    return prefill_brand_kit(*args, ports=bounded_ports(), **kwargs)
+    meter = DollarMeter(budget_usd)
+    return prefill_brand_kit(
+        *args,
+        ports=bounded_ports(meter),
+        meter=meter,
+        credit_usd=SCRAPECREATORS_USD_PER_CREDIT,
+        create_hashtags=False,
+        **kwargs,
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -537,10 +659,10 @@ class AltaPrefillRunner:
             # settlement): running it again could exceed the cap or race that worker.
             logger.warning("alta prefill: job=%s reclaimed, closed without a rerun", job.id)
             return finish(OUTCOME_INTERRUPTED)
-        if not settings.active or settings.units is None:
+        if not settings.active:
             return finish(OUTCOME_DISABLED)
-        caps = caps_for_budget(job.max_usd - job.spent_usd, settings.units)
-        if caps is None:
+        limits = limits_for_budget(job.max_usd - job.spent_usd)
+        if limits is None:
             return finish(OUTCOME_NO_BUDGET)
         result = self._prefill(
             job.tenant_id,
@@ -548,23 +670,19 @@ class AltaPrefillRunner:
             job.network,
             job.handle,
             source={"kind": "alta", "meegle_work_item_id": job.meegle_work_item_id},
-            caps=caps,
+            caps=limits.caps,
             propose=True,
+            budget_usd=limits.budget_usd,
         )
         outcome = result.outcome.value
         if result.ok and not result.written:
             outcome = OUTCOME_NOT_WRITTEN
-        cost = usage_cost(result.usage, settings.units)
+        cost = usage_cost(result.usage)
         run = {
             "attempt": job.attempts,
             "at": now.isoformat(),
             "outcome": outcome,
-            "caps": {
-                "scrapecreators_requests": caps.scrapecreators_requests,
-                "claude_calls": caps.claude_calls,
-                "budget_usd": str(job.max_usd - job.spent_usd),
-                "units": settings.units.as_document(),
-            },
+            "limits": limits.as_document(),
             "usage": result.usage.as_document(),
             "cost_usd": str(cost),
             "detail": result.detail[:200],

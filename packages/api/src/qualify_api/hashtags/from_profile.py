@@ -32,6 +32,7 @@ from ..claude_tools import (
     CallStats,
     ClaudeToolError,
     ClientFactory,
+    DollarMeter,
     Meter,
     ModelConfig,
     create_turn,
@@ -48,6 +49,10 @@ from .repository import normalize_tag
 #: did not (`packages/api/evals/hashtag_ai`). Low effort: one read, no exploration.
 MODEL = "claude-sonnet-5"
 EFFORT = "low"
+#: The web wizard's per-turn output ceiling and attempts (the Alta passes its own:
+#: `qualify_api.meegle.prefill.ALTA_RUBRO_MAX_TOKENS`, m-24854322).
+MAX_TOKENS = 4000
+ATTEMPTS = 2
 TOOL = "proponer_hashtags"
 #: What the model reads of the account — enough to see what it is about, bounded so one
 #: verbose caption cannot dominate the prompt.
@@ -200,16 +205,21 @@ def generate(
     max_tags: int,
     config: ModelConfig = ModelConfig(MODEL, EFFORT),
     client_factory: ClientFactory | None = None,
+    max_tokens: int = MAX_TOKENS,
+    attempts: int = ATTEMPTS,
+    budget: DollarMeter | None = None,
 ) -> Proposal:
     """Claude reads the account and proposes up to `max_tags` hashtags. Raises
-    `ClaudeToolError` on a refusal, a truncation or no tool call; `ValueError` when there
-    is nothing to read at all."""
+    `ClaudeToolError` (with the run's `stats`) on a refusal, a truncation, no tool call
+    or a turn the `budget` cannot pay (`BudgetExhausted`); `ValueError` when there is
+    nothing to read at all. `max_tokens` / `attempts` / `budget`: the Alta's limits
+    (m-24854322); the defaults are the web wizard's."""
     if not account.has_content:
         raise ValueError("nothing to read: no bio, category, posts or rubro")
     client = (client_factory or default_client)(api_key)
     meter = Meter(config)
     messages: list[dict[str, Any]] = [{"role": "user", "content": _message(account, max_tags)}]
-    for attempt in range(2):
+    for attempt in range(attempts):
         response = create_turn(
             client,
             config,
@@ -218,7 +228,8 @@ def generate(
             messages=messages,
             tools=[_tool(max_tags)],
             tool_choice=forced_or_auto(config, TOOL),
-            max_tokens=4000,
+            max_tokens=max_tokens,
+            budget=budget,
         )
         calls = [u for u in tool_uses(response) if u.name == TOOL]
         if calls:
@@ -228,10 +239,10 @@ def generate(
             tags = _clean(answer.get("hashtags"), max_tags)
             rubro = " ".join(str(answer.get("rubro") or "").split())[:MAX_RUBRO_CHARS]
             return Proposal(tags, stats, "ai", stats.model_revision or stats.model_id, rubro)
-        if attempt == 0:
+        if attempt + 1 < attempts:
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": f"Entrega la respuesta con {TOOL}."})
-    raise ClaudeToolError(f"{config.model_id} did not call {TOOL}")
+    raise ClaudeToolError(f"{config.model_id} did not call {TOOL}", stats=meter.stats())
 
 
 #: Reach-only tags an account's own list is full of; never a topic.

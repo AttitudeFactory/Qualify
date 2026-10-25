@@ -552,9 +552,7 @@ def create_turn(
     if response.stop_reason == "refusal":
         raise ClaudeToolError(f"{config.model_id} refused the request", stats=meter.stats())
     if response.stop_reason == "max_tokens":
-        raise ClaudeToolError(
-            f"{config.model_id} hit max_tokens={max_tokens}", stats=meter.stats()
-        )
+        raise ClaudeToolError(f"{config.model_id} hit max_tokens={max_tokens}", stats=meter.stats())
     return response
 
 
