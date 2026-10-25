@@ -393,3 +393,59 @@ def test_the_page_swaps_the_steps_for_the_review_while_pending() -> None:
     page = str(brand_minimal.brand_minimal_index())
     assert "Tu identidad de marca" in page and "Empezar de cero" in page
     assert isinstance(brand_minimal.brand_minimal_index(), rx.Component)
+
+
+# --------------------------------------------------------------------------------------
+# m-24852537: the card shows the R2 copy of the picture, never the expiring CDN link
+# --------------------------------------------------------------------------------------
+
+
+def _kept_connect() -> dict[str, Any]:
+    from qualify_api.creative import kept_pictures
+
+    connect = _connect()
+    key = kept_pictures.kept_key(IDS[0], IDS[1], kept_pictures.KIND_PROFILE, b"p", ".jpg")
+    connect[PREFILL_KEY]["proposal"]["profile"] |= {
+        "pic": "",
+        "pic_key": key,
+        "pic_content_type": "image/jpeg",
+    }
+    return connect
+
+
+def test_the_card_shows_the_picture_kept_in_r2(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issued: list[tuple[Any, ...]] = []
+
+    def issue(tenant_id: UUID, key: str, media_type: str, content_type: str) -> str:
+        issued.append((tenant_id, key, media_type, content_type))
+        return "/r2media/tok"
+
+    monkeypatch.setattr(brand_proposal, "issue_view_path", issue)
+    state = states(BrandProposalState)
+    state.show(review_of(_kept_connect(), has_kit=False))
+    assert state.pic_view == "/r2media/tok" and state.avatar_src == "/r2media/tok"
+    [(tenant, key, media_type, content_type)] = issued
+    assert tenant == IDS[0] and key.startswith(f"t/{IDS[0]}/brand/{IDS[1]}/kept/profile/")
+    assert (media_type, content_type) == ("image", "image/jpeg")
+
+
+def test_a_view_that_cannot_be_issued_leaves_the_card_without_picture(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def down(*_a: Any) -> str:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(brand_proposal, "issue_view_path", down)
+    state = states(BrandProposalState)
+    state.show(review_of(_kept_connect(), has_kit=False))
+    assert state.pic_view == "" and state.notice == "proposal"
+
+
+def test_a_proposal_without_a_copy_issues_no_view(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(brand_proposal, "issue_view_path", lambda *_a: pytest.fail("issued"))
+    state = _pending(states)
+    assert state.pic_view == ""

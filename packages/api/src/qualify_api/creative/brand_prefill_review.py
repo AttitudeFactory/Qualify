@@ -9,7 +9,10 @@ the other half — what the owner's three buttons do with it:
 - **«Aprobar»** (`approve_prefill`): the proposal becomes the Brand Kit's own answers —
   its `connect` keys over the top-level `connect`, its `profile` as the `profile`
   document, its colours merged into `brand_kits.palette_rgb` — and the proposal is
-  marked `approved`, its provenance kept.
+  marked `approved`, its provenance kept. The profile picture that becomes the logo is
+  the R2 copy the run kept (`profile.pic_key`, m-24852537), checked to sit under this
+  brand's own prefix (`approved_profile`); the network's CDN link, which expires in
+  days, is never promoted.
 - **«Cambiar»** (`change_prefill`): marked `changed` and handed back for the wizard to
   open its steps with it; nothing is promoted here (the wizard saves the owner's own
   answers as they walk, as for any draft).
@@ -57,7 +60,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from qualify_api.creative import logo_palette
+from qualify_api.creative import kept_pictures, logo_palette
 from qualify_api.creative.brand_kit_store import PREFILL_KEY
 from qualify_api.creative.brand_service import _apply_kit, kit_from_row
 from qualify_api.creative.models import BrandKit as BrandKitRow
@@ -304,6 +307,42 @@ def approved_connect(
     return out
 
 
+def approved_profile(tenant_id: UUID, brand_id: UUID, profile: Mapping[str, Any]) -> dict[str, Any]:
+    """The proposal's `profile` as it is promoted (m-24852537): its picture is the R2
+    copy (`pic_key`) when it is a kept picture of THIS brand, and the CDN link (`pic`)
+    is cleared then — it expires in days. A key that is not this brand's is dropped,
+    never trusted. A proposal written before the copy existed (no `pic_key`) is promoted
+    as it was."""
+    out = dict(profile)
+    key = out.get("pic_key")
+    if not key:
+        out.pop("pic_key", None)
+        out.pop("pic_content_type", None)
+        return out
+    if kept_pictures.is_kept_key(tenant_id, brand_id, key):
+        out["pic"] = ""
+        return out
+    out.pop("pic_key", None)
+    out.pop("pic_content_type", None)
+    return out
+
+
+def picture_key(proposal: Mapping[str, Any] | None) -> tuple[UUID, str, str] | None:
+    """`(tenant id, R2 key, content type)` of the proposal's kept profile picture, or
+    None — what the review card shows (through a `/r2media` view of that tenant). The
+    tenant is read from the key itself (`kept_pictures.owner_of`) and the key re-checked
+    as that brand's kept picture; the proposal came from the caller's own tenant-scoped
+    read, and the view door re-checks the prefix once more."""
+    profile = (proposal or {}).get("profile")
+    if not isinstance(profile, Mapping):
+        return None
+    key = profile.get("pic_key")
+    owner = kept_pictures.owner_of(key)
+    if owner is None or not kept_pictures.is_kept_key(owner[0], owner[1], key):
+        return None
+    return owner[0], str(key), str(profile.get("pic_content_type") or "image/jpeg")
+
+
 def merged_palette(stored: list[str] | tuple[str, ...] | None, colours: list[str]) -> list[str]:
     """The kit's palette with the proposal's colours added after the ones already there
     (`logo_palette.merge_into_palette`: no duplicates, nothing hand-picked removed)."""
@@ -399,7 +438,7 @@ def _decide(
             proposal = {}
         if state == STATE_APPROVED:
             row.connect = approved_connect(connect, proposal, user_id, now)
-            row.profile = dict(proposal["profile"])
+            row.profile = approved_profile(tenant_id, brand_id, proposal["profile"])
             colours = palette_colours(proposal)
             if colours:
                 _set_palette(session, tenant_id, brand_id, kit, colours)
@@ -464,6 +503,7 @@ __all__ = [
     "PrefillReview",
     "approve_prefill",
     "approved_connect",
+    "approved_profile",
     "change_prefill",
     "discard_prefill",
     "is_decided",
@@ -471,5 +511,6 @@ __all__ = [
     "kit_finished",
     "merged_palette",
     "palette_colours",
+    "picture_key",
     "review_of",
 ]

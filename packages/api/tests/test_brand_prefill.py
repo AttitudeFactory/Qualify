@@ -24,7 +24,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from qualify_api.claude_tools import CallStats, MissingAPIKey
-from qualify_api.creative import brand_prefill, brand_prefill_review
+from qualify_api.creative import brand_prefill, brand_prefill_review, kept_pictures
 from qualify_api.creative.account_claims import AccountTaken
 from qualify_api.creative.brand_kit_store import BrandKitDetails, carry_reserved
 from qualify_api.creative.brand_prefill import (
@@ -180,6 +180,23 @@ class Store:
         return True
 
 
+class Pictures:
+    """`kept_pictures.PictureKeeper` in memory: never R2. `fail` makes every copy fail."""
+
+    def __init__(self) -> None:
+        self.kept: list[tuple[UUID, UUID, str, bytes]] = []
+        self.fail = False
+
+    def keep(
+        self, tenant_id: UUID, brand_id: UUID, kind: str, data: bytes
+    ) -> kept_pictures.KeptPicture:
+        if self.fail:
+            raise kept_pictures.PictureNotKept("object store write failed: OSError")
+        self.kept.append((tenant_id, brand_id, kind, data))
+        key = kept_pictures.kept_key(tenant_id, brand_id, kind, data, ".png")
+        return kept_pictures.KeptPicture(key, "image/png", "ab" * 32, len(data))
+
+
 class Claude:
     """`from_profile.generate`'s signature; the answer is set per test."""
 
@@ -204,6 +221,7 @@ class World:
         self.cache = Cache()
         self.store = Store()
         self.claude = Claude()
+        self.pictures = Pictures()
         self.api_key: Callable[[], str] = lambda: "sk-ant-test"
         #: None skips the catalog step; tests of that step set a `CatalogHashtags`.
         self.catalog: Any = None
@@ -217,6 +235,7 @@ class World:
             "api_key": lambda: self.api_key(),
             "transport": httpx.MockTransport(self.vendor.handler),
             "catalog": self.catalog,
+            "pictures": self.pictures,
         }
         return PrefillPorts(**(values | overrides))
 
@@ -280,7 +299,12 @@ def test_a_public_account_becomes_a_proposal_in_connect_prefill_only(world: Worl
     assert proposal["profile"]["username"] == "heladeria.demo"
     assert proposal["profile"]["followers"] == "12.400"
     assert proposal["profile"]["followers_count"] == 12_400
-    assert proposal["profile"]["pic"] == PICTURE
+    # m-24852537: the picture is the R2 copy; the CDN link is only provenance
+    assert proposal["profile"]["pic"] == ""
+    assert proposal["profile"]["pic_key"].startswith(f"t/{TENANT}/brand/{BRAND}/kept/profile/")
+    assert proposal["profile"]["pic_content_type"] == "image/png"
+    assert PICTURE not in json.dumps(proposal)
+    assert prefill["provenance"]["picture"]["source_url"] == PICTURE
     assert proposal["profile"]["metrics"]  # three posts inside the window
     # the profile picture's colours, as «Mi foto de perfil es mi logo» would put them
     palette = proposal["palette"]
@@ -349,6 +373,84 @@ def test_a_default_picture_proposes_no_palette(world: World) -> None:
     world.vendor.picture = (FIXTURES.parent / "instagram_default_avatar.jpg").read_bytes()
     world.run()
     assert world.prefill()["proposal"]["palette"] is None
+    # nor any copy: the silhouette is not the brand's logo
+    assert world.pictures.kept == []
+    assert world.prefill()["proposal"]["picture"] == {"status": brand_prefill.PICTURE_NONE}
+    assert world.prefill()["proposal"]["profile"]["pic_key"] == ""
+
+
+# --------------------------------------------------------------------------------------
+# m-24852537: the profile picture kept in R2
+# --------------------------------------------------------------------------------------
+
+
+def test_the_picture_downloaded_for_the_palette_is_the_one_kept(world: World) -> None:
+    world.run()
+    cdn = [r for r in world.vendor.requests if r.startswith("scontent.cdninstagram.com")]
+    assert len(cdn) == 1  # one download, shared by the palette and the copy
+    [(tenant, brand, kind, data)] = world.pictures.kept
+    assert (tenant, brand, kind) == (TENANT, BRAND, kept_pictures.KIND_PROFILE)
+    assert data == world.vendor.picture
+    picture = world.prefill()["proposal"]["picture"]
+    assert picture["status"] == brand_prefill.PICTURE_KEPT
+    assert picture["key"] == world.prefill()["proposal"]["profile"]["pic_key"]
+    provenance = world.prefill()["provenance"]["picture"]
+    assert provenance["status"] == "kept" and provenance["bytes"] == len(data)
+    assert provenance["keeper"] == "qualify_api.creative.kept_pictures"
+
+
+def test_the_proposal_does_not_need_the_cdn_once_written(world: World) -> None:
+    """Days later the CDN link is dead: the review and «Aprobar» read only the copy."""
+    world.run()
+    world.vendor.picture = b""  # the link expired
+    review = brand_prefill_review.review_of(
+        world.store.rows[(TENANT, BRAND)].connect, has_kit=False
+    )
+    found = brand_prefill_review.picture_key(review.proposal)
+    assert found is not None
+    tenant, key, content_type = found
+    assert tenant == TENANT and key.startswith(f"t/{TENANT}/brand/{BRAND}/")
+    assert content_type == "image/png"
+    promoted = brand_prefill_review.approved_profile(TENANT, BRAND, review.proposal["profile"])
+    assert promoted["pic_key"] == key and promoted["pic"] == ""
+
+
+def test_a_copy_that_fails_still_writes_the_proposal_with_the_picture_missing(
+    world: World,
+) -> None:
+    kept = world.run()
+    world.pictures.fail = True
+    world.store.rows.clear()
+    failed = world.run()
+
+    assert failed.outcome is PrefillOutcome.OK and failed.written
+    proposal = world.prefill()["proposal"]
+    assert proposal["picture"] == {"status": brand_prefill.PICTURE_MISSING}
+    assert proposal["profile"]["pic_key"] == "" and proposal["profile"]["pic"] == ""
+    assert proposal["palette"] is not None  # the colours do not need the copy
+    assert world.prefill()["provenance"]["picture"]["status"] == "missing"
+    # the same Claude spend with or without the copy; the 2nd read came from the cache
+    assert failed.usage.claude_calls == kept.usage.claude_calls
+    assert failed.usage.scrapecreators_credits == 0
+    assert world.prefill()["usage"] == failed.usage.as_document()
+
+
+def test_a_keeper_that_answers_another_brands_key_is_not_trusted(world: World) -> None:
+    other = UUID("b0000000-0000-4000-8000-0000000000ff")
+
+    class Wrong(Pictures):
+        def keep(self, tenant_id: UUID, brand_id: UUID, kind: str, data: bytes) -> Any:
+            return super().keep(tenant_id, other, kind, data)
+
+    result = world.run(ports=world.ports(pictures=Wrong()))
+    assert result.ok
+    assert world.prefill()["proposal"]["picture"]["status"] == brand_prefill.PICTURE_MISSING
+    assert world.prefill()["proposal"]["profile"]["pic_key"] == ""
+
+
+def test_the_wizards_read_keeps_no_picture(world: World) -> None:
+    world.run(propose=False)
+    assert world.pictures.kept == []
 
 
 def test_a_wizard_save_keeps_the_proposal(world: World) -> None:
@@ -846,6 +948,7 @@ def test_a_run_writes_only_its_own_tenants_brand_kit(seeded_ab: tuple[UUID, UUID
         generate=Claude(),
         api_key=lambda: "sk-ant-test",
         transport=httpx.MockTransport(vendor.handler),
+        pictures=Pictures(),
     )
 
     result = prefill_brand_kit(tenant_a, brands[tenant_a], "instagram", handle, ports=ports)
@@ -900,6 +1003,7 @@ def test_an_owners_save_during_the_run_survives_in_postgres(
         api_key=lambda: "sk-ant-test",
         transport=httpx.MockTransport(vendor.handler),
         catalog=None,
+        pictures=Pictures(),
     )
     result = prefill_brand_kit(tenant_a, brand, "instagram", handle, ports=ports)
 
