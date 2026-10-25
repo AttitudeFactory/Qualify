@@ -7,7 +7,7 @@
 | Precio | Por token, inferencia en línea ([model-pricing](https://docs.byteplus.com/en/docs/ModelArk/model-pricing)). **Sin video de entrada:** 480p/720p USD 10,70/M, 1080p 11,70/M. **Con video de entrada:** 480p/720p USD 6,40/M, 1080p 7,00/M. El final de un borrador paga la tarifa que corresponde a su borrador. Tabla de precios `v7` (`qualify_creative/pricing_data/v7.json`) |
 | Uso en Qualify | `SeedanceVideoAdapter` (`qualify_creative/adapters/byteplus_ark.py`) desde `MediaProducer` (`qualify_api/creative/media.py`): clip, video con presentador de Seedance y diapositiva animada de la galería. Con 2.5 todo video sale como **borrador a 480p** y el final a 1080p se hace al aprobar (`docs/pendientes-generador-contenido.md` §4.1) |
 | Datos | Imágenes del catálogo y de la marca, videos y audios que sube el operador. Los videos y audios de referencia viajan como URL pública temporal (`/public/media/{token}`); ModelArk no acepta Base64 para ellos. Endpoint personalizado, no los preajustes autorizados que ceden datos |
-| Tickets | m-24820142 (modo borrador), m-24820832 (criterios 3–4), m-24849431, m-24848887, m-24849137 |
+| Tickets | m-24820142 (modo borrador), m-24820832 (criterios 3–4), m-24849431, m-24848887, m-24849137, m-24854841 (SD25-002) |
 
 ## Prueba SD25-001 — borradores con y sin video de referencia — 2026-10-23
 
@@ -35,9 +35,29 @@
 
 **Pendiente:**
 
-- Medir en vivo un **final a 1080p** de un borrador con video. No se sabe si sus tokens vuelven a contar el video de entrada; la estimación supone que sí, para no quedarse corta. Con 5 s a 1080p (9:16) y 7,33 s de entrada serían ≈ 600.000 tokens, ≈ US$4,20 a 7,00/M. Sin el video de entrada serían ≈ 243.000 tokens, ≈ US$1,70.
+- Medir en vivo un **final a 1080p** de un borrador con video (el de un borrador sin video ya está medido: SD25-002, USD 2,87 frente a 2,85, H2 confirmada). No se sabe si sus tokens vuelven a contar el video de entrada; la estimación supone que sí, para no quedarse corta. Con 5 s a 1080p (9:16) y 7,33 s de entrada serían ≈ 600.000 tokens, ≈ US$4,20 a 7,00/M. Sin el video de entrada serían ≈ 243.000 tokens, ≈ US$1,70.
 - Confirmar las tarifas con la primera factura de BytePlus.
 - Seedance 2.0 (y fast, mini) también tiene tarifa con video, pero no está en la tabla. Hoy se cobra a la tarifa sin video, que es la más alta: el registro se pasa, nunca se queda corto.
+
+## Prueba SD25-002 — primer final 1080p medido en vivo — 2026-10-24 (m-24854841)
+
+- **Modelo:** `dreamina-seedance-2-5-260628`, endpoint personalizado de ModelArk (no los preajustes que ceden datos).
+- **Tarea:** `cgt-20261024004332-yguur`, el **final** del borrador `cgt-20261024004006-2xl5m` (borrador 480p, 5 s, 49.673 tokens, **sin video de entrada**).
+- **Ajustes:** final a 1080p desde el borrador (`draft_task_id`), 5 s, misma proporción que el borrador (3:4 por su conteo de tokens). Tarifa 1080p sin video de entrada, USD 11,70/M (tabla `v7`).
+- **Cómo se leyó:** `arkcli gen list` (solo lectura, tareas de los últimos 7 días) durante el análisis de concurrencia (`docs/escalar-generacion-concurrencia.md` §1.3). La tarea ya existía en la cuenta; este análisis no lanzó ninguna generación. Tiempo = `updated_at − created_at`, cola de BytePlus incluida (cero a este volumen).
+
+| Medida | Calculado (`docs/modelo-cobro-generacion.md`) | Medido |
+|---|---|---|
+| Tokens (`usage.completion_tokens`) | 243.360 (48.672 tokens/s × 5 s, 1080p 3:4) | **245.388** (+0,8 %) |
+| Costo | USD 2,85 (0,5695/s × 5 s) | **USD 2,87** (245.388 × 11,70/M = 2,871; +0,7 %) |
+| Tiempo de render | — | **38 s** |
+
+**Resultado:**
+
+- **H2 confirmada** («el final 1080p cuesta lo que dice la fórmula», `docs/modelo-cobro-generacion.md`, D26): la desviación es 0,7 %, dentro de lo que ya se vio en los borradores (49.673 cobrados frente a 49.350 calculados a 3:4, +0,65 %). Los techos de costo del final no cambian.
+- El final tarda **menos que su borrador** (38 s frente a 66 s): para planificar la cola, 60 s por final es conservador (n = 1).
+- **No responde** si un final vuelve a cobrar el video de entrada de su borrador: este borrador no tenía video. Ese pendiente de SD25-001 sigue abierto.
+- n = 1, un solo día, sin carga en BytePlus.
 
 ## Revisión de precios para los pesos v2 — 2026-10-24 (m-24851828)
 
