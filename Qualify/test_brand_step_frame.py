@@ -336,7 +336,7 @@ def test_atras_goes_back_through_history_instead_of_stacking() -> None:
     assert "qPrevPaso: cur" in forward and "false)" in forward
 
     script = steps.step_sync_script(BrandMinimalState.n, BrandMinimalState.direction)
-    assert '=== "back"' in script and "__qStepGo" in script
+    assert "' === \"back\"" in script and "__qStepGo" in script
 
 
 def test_an_earlier_visit_never_writes_its_step_into_the_address() -> None:

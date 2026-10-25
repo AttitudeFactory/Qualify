@@ -404,7 +404,8 @@ def step_sync_script(step: rx.Var[int] | int, direction: rx.Var[str] | str = DIR
     if isinstance(direction, str):
         back: bool | str = direction == DIR_BACK
     else:
-        back = f"({direction} === {json.dumps(DIR_BACK)})"
+        # the Var's VALUE lands in the JS source, so it is quoted here ("next"/"back")
+        back = f"('{direction}' === {json.dumps(DIR_BACK)})"
     target = (
         "(() => { const u = new URL(window.location.href);"
         f" u.searchParams.set('paso', String({n})); return u.href; }})()"
