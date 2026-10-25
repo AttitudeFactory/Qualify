@@ -1,9 +1,9 @@
 # ADR 42 — Un login, varios negocios, y una suscripción para todos
 
-**Estado:** `[PROPUESTO — pendiente de firma del fundador]` · propuesto por principal-architect el 2026-10-25.
+**Estado:** `[FIRMADO por el fundador, 2026-10-25]` · propuesto por principal-architect el mismo día. Decisiones F1–F5 en §7 y su registro textual en §9; en F2 el fundador eligió una opción distinta de la recomendada (§2.9).
 **Ticket:** [m-24849187](https://project.larksuite.com/5h2wsx/issue/detail/24849187) (historia S0) · **Épica:** [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (`docs/epica-multi-negocio-una-sesion.md`).
 **Reabre:** `docs/modelo-negocio-operador-multi-emprendimiento.md` §6.1 («`1 login = 1 tenant = 1 negocio`, sin switch», firmado el 2026-08-16, revertido por el fundador el 2026-10-23).
-**Cambia:** D15 de `docs/modelo-cobro-generacion.md` («todo negocio empieza en Básico»: el plan deja de ser del negocio y pasa a ser de la suscripción; ver §2.8 y §2.10).
+**Cambia:** D15 de `docs/modelo-cobro-generacion.md` («todo negocio empieza en Básico»: el plan y el saldo pasan a ser de la suscripción; ver §2.9.3).
 **Evidencia de mercado:** `docs/oferta-limites-negocios-por-plan.md` (market-analyst, 2026-10-25, PR #341). Sus cifras son del analista, no decisiones del fundador.
 **Numeración:** el ticket y la épica dicen «ADR 41», pero el 41 se firmó el 2026-10-24 para la cola de generación (`docs/adr-41-cola-generacion-concurrencia.md`). Esta decisión es la **42**. La rama del PR conserva el nombre que pidió el ticket (`docs/m-24849187-adr-41-multi-negocio`).
 **Convención:** `[V]` verificado en disco o en fuente primaria el 2026-10-25 · `[H]` hipótesis o aritmética del autor.
@@ -15,9 +15,9 @@
 1. **Cada negocio sigue siendo un tenant con RLS** (ADR 24). Lo que cambia es que un login puede ser miembro de varios: una fila `users` por (tenant, login), con `UNIQUE(tenant_id, auth_user_id)` en lugar del `UNIQUE(auth_user_id)` global de hoy.
 2. **Cambiar de negocio abre una instancia limpia:** el servidor valida la membresía, emite un pase de un solo uso, **rota el token de sesión de Reflex** y recarga. El estado del negocio anterior queda huérfano y nunca vuelve a pintarse; lo que siga corriendo para él termina en su propio tenant.
 3. **Toda generación lleva el negocio sellado desde el servidor** y el worker lo vuelve a comprobar antes de leer el Brand Kit, el catálogo o un archivo y antes de escribir. Publicar y responder nombran el negocio **y** la cuenta de destino.
-4. **La suscripción es de quien paga, por encima de los tenants:** tabla `subscriptions` sin `tenant_id`, aislada por GRANT (solo `qualify_admin`), y `tenants.subscription_id`. La app nunca la lee: lo que el negocio necesita ver (su plan, su cupo) le llega en filas con `tenant_id` y RLS normal.
-5. **Se diseña ahora y se construye después de 60 días de operación a mano** con Bianki y Polette (dos tenants, un Básico cada uno, una factura): la medición dice si el cupo compartido le sirve al dueño antes de migrar nada.
-6. **El máximo de negocios por suscripción es un parámetro** del catálogo de planes, sin número en el código, y se controla en el Alta. Cada negocio extra cuesta en infraestructura menos de USD 0,25 al mes `[H]`; lo caro es la generación, que se paga por uso.
+4. **La suscripción es de quien paga, por encima de los tenants:** tabla `subscriptions` sin `tenant_id`, aislada por GRANT (solo `qualify_admin`), y `tenants.subscription_id`. La app nunca la lee.
+5. **Un solo saldo de generación para todos los negocios de la suscripción** (F2), movido por funciones `SECURITY DEFINER` que toman el tenant de la sesión y devuelven solo números; tope opcional por negocio y aviso por porcentaje, los dos como parámetros. Pasa por `security-review`. **Se construye ya** (F3).
+6. **Negocios por suscripción:** Básico 2, Plus 3 y Pro 5 incluidos, extras comprables hasta un techo de 8 (F4); son parámetros del catálogo de planes y se controlan en el Alta. Cada negocio extra cuesta en infraestructura menos de USD 0,25 al mes `[H]`.
 
 ## 1. Contexto
 
@@ -148,10 +148,10 @@ El control que lo mantiene: el test inverso de `test_auth_state.py:350` solo enc
 | `subscriptions` | `id`, `display_name`, `billing_owner_auth_user_id` (quien paga; puede ser NULL para una cuenta del equipo), `max_businesses` (NULL = lo que diga el plan), `status` (`active`/`paused`/`closed`), `created_via` (id del ítem de Meegle), `created_at` | **Sin `tenant_id`, aislada por GRANT:** `ENABLE` + `FORCE ROW LEVEL SECURITY` **sin ninguna política** (todo rol sin BYPASSRLS ve cero filas) y GRANT solo a `qualify_admin`. Excepción deliberada a «todo lleva `tenant_id`», declarada en el docstring de la migración, con un test que prueba que `qualify_app` no puede leerla |
 | `subscription_plan_assignments` | `subscription_id`, `plan` (`basico`/`plus`/`pro`), `effective_month`, origen, motivo, quién, clave de idempotencia | Igual que `subscriptions`. **Reemplaza** a `tenant_plan_assignments` del diseño de D15, que no se llegó a construir |
 | `tenants.subscription_id` | `uuid NOT NULL` FK a `subscriptions` | La columna vive en `tenants`, que ya tiene RLS por `id`; el negocio puede ver **el id** de su suscripción, no la fila |
-| `tenant_quota_allotments` | `tenant_id`, `subscription_id`, `period_month`, `plan`, `creations`, `videos`, `previews`, `businesses_in_subscription`, origen, clave de idempotencia | **Tabla de tenant normal**: `tenant_id` + RLS con la política estándar. Es lo único de la suscripción que la app lee: «Tu plan: Básico · compartido por 2 negocios» y el saldo de cada contador |
-| `creation_packs`, `creation_payments` (D12, D19) | Como en el diseño de D17 | Los paquetes siguen siendo **por negocio** (con RLS); los pagos, solo `qualify_admin`, como ya decía el diseño |
+| `subscription_pool_months`, `subscription_pool_business_usage`, `subscription_pool_movements` | El saldo común, lo usado por negocio y cada movimiento (§2.9.1) | Sin política; GRANT solo a `qualify_pool` (dueño de las funciones) y `qualify_admin`. La app las toca solo a través de `pool_reserve` / `pool_release` / `pool_balance` |
+| `creation_packs`, `creation_payments` (D12, D19) | Como en el diseño de D17, pero con `subscription_id` | Los paquetes son **de la suscripción** y suman al saldo común; los pagos, solo `qualify_admin`, como ya decía el diseño |
 
-**Por qué así y no una política propia:** cualquier lectura de la suscripción desde la app tendría que cruzar tenants (una suscripción tiene varios), y eso exige o bien una política con subconsulta, que rompe la forma única de la política (`test_rls_policy_shape`), o bien `admin_session` en el camino de la petición, que es la puerta que salta RLS. Ninguna de las dos hace falta: **el equipo escribe la suscripción** (por `just` y por el Alta, ambos fuera de la petición, por `admin_session`) y **proyecta en cada tenant lo que ese tenant debe ver** (`tenant_quota_allotments`). Mismo principio que `0044_social_account_claims.py:15-20`: el negocio se entera de lo que necesita sin leer nunca la fila de otro.
+**Por qué así y no una política propia:** cualquier lectura de la suscripción desde la app tendría que cruzar tenants (una suscripción tiene varios), y eso exige o bien una política con subconsulta, que rompe la forma única de la política (`test_rls_policy_shape`), o bien `admin_session` en el camino de la petición, que es la puerta que salta RLS. Ninguna de las dos hace falta: **el equipo escribe la suscripción** (por `just` y por el Alta, ambos fuera de la petición, por `admin_session`), y el único dato cruzado que la petición necesita, el saldo común, sale de las funciones de §2.9.1 como un número, sin que la app lea ninguna fila de otro negocio.
 
 **Relleno inicial:** una suscripción por cada tenant que existe (1:1), con su plan actual (sin fila = Básico). Nadie nota nada.
 
@@ -159,38 +159,64 @@ El control que lo mantiene: el test inverso de `test_auth_state.py:350` solo enc
 
 1. El servicio del Alta (webhook-worker, `admin_session`, fuera de la petición) busca la suscripción cuyo `billing_owner_auth_user_id` es ese login. Cero o más de una: el Alta falla a la vista con un comentario en el ítem; nunca adivina.
 2. **Toma la fila de la suscripción con `SELECT … FOR UPDATE`**, cuenta sus tenants activos y compara con el máximo efectivo (§2.10). Así dos Altas a la vez no pasan las dos.
-3. Crea el tenant con `subscription_id` y escribe las `tenant_quota_allotments` de todos los negocios de la suscripción según la regla que firme el fundador (§2.9), en la misma transacción.
+3. Crea el tenant con `subscription_id` y su fila del mes en `subscription_pool_business_usage` (con el tope opcional del campo «Tope de este negocio»); si el negocio pasa de los incluidos, registra el negocio extra comprado. Todo en la misma transacción.
 4. Todo con clave de idempotencia por ítem de Meegle: repetir el evento no crea un segundo negocio.
 
 «Inicio de sesión existente» (membresía, ya en S7) y «Suscripción» (factura) son campos distintos: lo normal es que vayan juntos, pero no se obligan.
 
-### 2.9 Cupo compartido o por negocio (decide el fundador)
+### 2.9 Cupo común para todos los negocios de la suscripción (F2 = B, firmado)
 
-Con el diseño de D15 tal como está, cada negocio tiene su Básico: 3 negocios son 3 × USD 55 = **USD 165 de peor caso** al mes; con cupo compartido, el peor caso es el del plan, **USD 55**, con 1 o con 5 negocios (cifras del analista sobre `modelo-cobro-generacion.md` §6, `[V]` como aritmética). La pregunta técnica es dónde se descuenta cada creación.
+El fundador eligió **B: un solo saldo para todos los negocios de la suscripción** (2026-10-25), en lugar de la C que recomendaba este ADR. Con el diseño de D15, 3 negocios eran 3 × USD 55 = **USD 165 de peor caso**; con el saldo común, el peor caso es el del plan (**USD 55** en Básico) con 1 o con 5 negocios (aritmética del analista sobre `modelo-cobro-generacion.md` §6). Qué ve el dueño: «Te quedan 18 de 30 este mes, entre tus 2 negocios».
 
-| Opción | Qué ve el dueño | Riesgo de que un negocio agote a los otros | Cómo se cobra cada creación | Peor caso, 3 negocios en Básico |
-|---|---|---|---|---|
-| **A. Cupo propio por negocio** (D15 hoy) | «Te quedan 18 de 30» en cada negocio | Ninguno | Como hoy: en el tenant, por `tenant_session` | USD 165 |
-| **B. Un saldo común, sin reparto** | «Te quedan 18 de 30, entre tus 3 negocios» | **Sí**: el primero que genera se lo lleva | Hay que leer o bloquear un saldo que es de varios tenants **en la petición**: una función `SECURITY DEFINER` nueva que reciba el tenant de la sesión y devuelva solo el saldo. Es una puerta nueva, con revisión de seguridad | USD 55 |
-| **C. Común en la factura, repartido en el contador** (recomendada) | «Te quedan 8 de 15 en Polette» | Ninguno, por construcción | El cupo del plan se reparte entre los negocios en `tenant_quota_allotments` (por defecto, en partes iguales; el resto al negocio más antiguo). Cada creación se descuenta en su tenant, como hoy. Mover cupo de un negocio a otro lo hace el equipo («Pedir más a Qualify», D11) y vale desde ese momento hacia adelante | USD 55 |
+#### 2.9.1 El problema técnico y cómo se resuelve sin saltarse RLS
 
-**Recomendación: C.** Da al dueño lo que pidió (una suscripción, un precio, un peor caso acotado al plan), hace imposible que un negocio vacíe a otro y no agrega ninguna puerta ni ninguna lectura cruzada en la petición: el cobro sigue siendo el de `0088`. El costo es que el reparto es rígido; si en la medición el dueño pide mover cupo más de una vez al mes, se pasa a B con su revisión de seguridad.
+Cobrar una creación exige saber cuánto queda del saldo común, y ese saldo lo gastan **varios tenants**. Desde `tenant_session` del negocio A no se puede leer lo que gastó B (RLS), y no se debe usar `admin_session` en la petición. La solución es un **contador propio de la suscripción** que nadie lee directamente, movido solo por **funciones `SECURITY DEFINER`** que toman el tenant de la sesión y devuelven solo números.
 
-**Encaja con la opción comercial del analista** (`oferta-limites-negocios-por-plan.md` §5, su opción C: cupos de generación compartidos más una cuota baja por negocio): la «cuota por negocio» es una línea de la factura, no del esquema, y no cambia este diseño. **Ojo con un número del analista:** un Básico de 30 / 4 / 20 repartido entre 2 negocios da 15 / 2 / 10 a cada uno, y entre 3 da 10 / 1 / 6. Un contador de 1 video al mes por negocio es probablemente demasiado poco; es un argumento para que Básico incluya 2 negocios y no 3.
+**Tablas del contador** (migración de S10; sin política RLS para ningún rol de la app: `ENABLE` + `FORCE ROW LEVEL SECURITY` sin política, GRANT solo al dueño de las funciones y a `qualify_admin`):
 
-**Qué cambia en D15:** «todo negocio empieza en Básico» pasa a ser **«toda suscripción empieza en Básico, y su cupo se reparte entre sus negocios»**. Con un negocio por suscripción (todos los de hoy) el resultado es idéntico. El tope de alerta en dólares (D18) sigue siendo por marca, proporcional a su parte del cupo, porque sumar el gasto de varios tenants también sería una lectura cruzada; el informe del equipo (por `admin_session`, fuera de la petición) puede sumarlo por suscripción.
+| Tabla | Qué guarda | Clave |
+|---|---|---|
+| `subscription_pool_months` | Cupo del mes de la suscripción (plan + paquetes vigentes, escrito por el equipo al asignar plan o paquete) y lo usado: `creations_used`, `videos_used`, `previews_used` | `(subscription_id, period_month)` |
+| `subscription_pool_business_usage` | Lo usado por cada negocio en el mes, su tope opcional (`cap_creations`, `cap_videos`, `cap_previews`; NULL = sin tope) y `alert_sent_at` | `(subscription_id, tenant_id, period_month)` |
+| `subscription_pool_movements` | Cada reserva y cada devolución, con su clave de idempotencia `(draft_id, revision, kind, movement)` `UNIQUE`, el tenant, la cantidad y qué fuente pagó (plan o paquete, D17) | Procedencia y conciliación |
 
-**Secuencia (recomendación del analista, adoptada):**
+**Las funciones** (`pool_reserve`, `pool_release` y `pool_balance`):
 
-1. **Ahora, sin código de facturación:** S1–S7 y S9. Bianki y Polette, cada uno con su Básico por defecto (ya construido en `0088`), **una factura a mano** (D19). Durante 60 días se mide, por negocio: creaciones, videos y vistas previas usadas; si alguno se queda sin cupo mientras el otro sobra más de la mitad (criterio 2 del analista, §6 de su doc).
-2. **Con esa medición, el fundador elige A, B o C** y fija el máximo de negocios. Recién entonces se construye S10. Si elige A, S10 se reduce a `subscriptions` + `tenants.subscription_id` para agrupar la factura.
-3. **Lo que no puede esperar:** que m-24852145 (planes y paquetes) **no** construya `tenant_plan_assignments` tal como está diseñada. Si se construye antes de S10, se construye con la forma de §2.8 (`subscription_plan_assignments` y la suscripción 1:1), para no migrar dos veces.
+1. **De dónde sale el tenant:** de `NULLIF(current_setting('app.tenant_id', true), '')::uuid`, el mismo valor que usa la política RLS. Sin tenant en la sesión, la función lanza un error. **Nunca recibe un `tenant_id` ni un `subscription_id` como argumento.**
+2. **De dónde sale la suscripción:** de `tenants.subscription_id` del tenant de la sesión. Las funciones son propiedad de un rol propio, `qualify_pool` (`NOLOGIN`, `NOBYPASSRLS`): al leer `tenants`, la política RLS de esa tabla le deja ver **solo la fila del tenant de la sesión**. La función no puede ver otro tenant aunque quisiera.
+3. **Qué tocan:** solo las tres tablas del contador (GRANT por tabla a `qualify_pool`). No leen `creation_charges` ni ninguna tabla de negocio.
+4. **Cómo reserva** (`pool_reserve(kind, units, draft_id, revision)`): bloquea la fila del mes de la suscripción con `SELECT … FOR UPDATE` (serializa los cobros de una suscripción, no los de otras), comprueba el saldo común **y** el tope del negocio si lo tiene, suma lo usado y escribe el movimiento. Si la clave de idempotencia ya existe, no hace nada y devuelve el mismo resultado. Devuelve `ok`, `pool_left`, `business_used`, `business_cap` y `alert` (verdadero una sola vez al mes, cuando el negocio cruza el umbral de §2.9.2).
+5. **Cómo devuelve** (`pool_release(kind, units, draft_id, revision)`): resta lo usado una vez por clave; una devolución sin reserva previa no hace nada.
+6. **Qué devuelven:** números del saldo común y del propio negocio. **Nunca** cuánto gastó cada uno de los otros negocios ni quiénes son.
+7. **Endurecimiento obligatorio:** `SET search_path = pg_catalog, public` fijado en la definición, nombres calificados, `REVOKE ALL ON FUNCTION … FROM PUBLIC` y `GRANT EXECUTE` solo a `qualify_app`.
+8. **Atomicidad con el cobro de hoy:** `pool_reserve` se llama dentro de la misma transacción de `tenant_session` que inserta la fila de `creation_charges` (`0088`). Si el `INSERT` falla, la reserva se deshace con él; si la reserva dice que no, no se inserta nada. `creation_charges` sigue siendo la procedencia por negocio; el contador es solo el saldo. Las devoluciones (generación fallida, final que falla) llaman a `pool_release` en la misma transacción que marcan la fila `refunded`.
+9. **Conciliación:** un trabajo diario del equipo (`calendar-worker`, `admin_session`, fuera de la petición) compara, por suscripción y mes, la suma de `creation_charges` con `subscription_pool_months` y avisa en Lark si no cuadran.
 
-### 2.10 Cuántos negocios por suscripción (abierto; decide el fundador)
+**Por qué esto respeta las reglas:** la política RLS no cambia de forma, ningún rol nuevo tiene `BYPASSRLS`, el rol de la aplicación sigue sin poder leer nada de otro tenant y lo único cruzado que sale de la base es un número agregado. **Es una puerta nueva de la base** (la primera función `SECURITY DEFINER` del repo; `0044_social_account_claims.py:18` la había evitado a propósito), y por eso **S10 no se fusiona sin la revisión de `security-review`** de las funciones, sus GRANT y sus tests.
 
-**Es un parámetro, nunca un número en el código.** Vive en el catálogo versionado de planes (`creations_data/planes-v<n>.json`, diseño de D15) como `max_negocios` por plan, y `subscriptions.max_businesses` lo puede subir o bajar para una suscripción concreta (una excepción negociada). `NULL` en los dos = sin tope. Cambiar el del plan es un PR, como cualquier cambio de plan.
+#### 2.9.2 Las protecciones para que un negocio no se lleve todo el saldo
 
-**Dónde se controla:** solo en el Alta (§2.8, paso 2), porque es la única puerta para agregar un negocio. Bajar el tope nunca cierra un negocio que ya existe: impide el siguiente.
+Las dos son parámetros; ninguna es un número en el código.
+
+| Protección | Dónde vive | Quién la pone | Qué pasa |
+|---|---|---|---|
+| **Tope por negocio (opcional)** | `subscription_pool_business_usage.cap_*`, por contador; NULL = sin tope | El equipo, en el Alta (campo «Tope de este negocio», vacío por defecto) o con `just pool-cap` | `pool_reserve` rechaza la creación aunque quede saldo común. El dueño ve «Este negocio ya usó lo que tenía reservado este mes. Pide más a Qualify.» |
+| **Aviso por porcentaje** | `alerta_negocio_pct` en el catálogo de planes; `subscriptions.alert_business_pct` lo cambia para una suscripción | El catálogo (PR) o el equipo | Cuando un negocio cruza ese porcentaje del saldo común del mes, `pool_reserve` devuelve `alert = true` una sola vez; el servicio avisa al equipo en Lark (mismo canal que D18) y muestra en ese negocio «Este negocio ya usó el {X} % del cupo que compartes con tus otros negocios.» Nunca bloquea |
+
+#### 2.9.3 Qué cambia en D15 y en lo diseñado
+
+- **D15:** «todo negocio empieza en Básico» pasa a **«toda suscripción empieza en Básico; sus negocios comparten un solo saldo»**. Con un negocio por suscripción (todos los de hoy) el resultado es idéntico.
+- **Planes y paquetes (m-24852145)** se construyen con la forma de la suscripción: `subscription_plan_assignments` reemplaza a `tenant_plan_assignments`; los **paquetes de 90 días son de la suscripción** y suman al cupo de `subscription_pool_months`; D17 (primero el plan, después el paquete que vence antes) se aplica dentro de `pool_reserve`, que registra en el movimiento qué fuente pagó.
+- **El tope de alerta en dólares (D18)** pasa a ser por suscripción, calculado por el trabajo diario del equipo (fuera de la petición). El freno duro por marca (`creative_engine_config.monthly_budget_cap_usd`) queda solo para emergencias, como ya decía D18.
+- **Se construye ya** (F3): no hay fase manual de 60 días. Bianki y Polette arrancan en una suscripción compartida con saldo común. Desaparece `tenant_quota_allotments` del diseño anterior: cada negocio lee el saldo con `pool_balance()`.
+
+### 2.10 Cuántos negocios por suscripción (F4, firmado)
+
+**Valores firmados:** Básico **2**, Plus **3** y Pro **5** negocios incluidos; se pueden comprar negocios extra hasta un **techo de 8 por suscripción**.
+
+**Son parámetros, nunca números en el código.** Viven en el catálogo versionado de planes (`creations_data/planes-v<n>.json`, diseño de D15) como `negocios_incluidos` por plan y `negocios_techo` (8); `subscriptions.extra_businesses` cuenta los extras comprados y `subscriptions.max_businesses` puede fijar una excepción negociada. Máximo efectivo = `min(negocios_incluidos + extra_businesses, max_businesses o negocios_techo)`. Cambiar un valor del catálogo es un PR, como cualquier cambio de plan.
+
+**Dónde se controla:** solo en el Alta (§2.8, paso 2), porque es la única puerta para agregar un negocio. Pasar de los incluidos exige marcar en el Alta «Negocio extra comprado»; pasar del techo no se puede. Bajar un valor nunca cierra un negocio que ya existe: impide el siguiente.
 
 **Lo que cuesta un negocio más** (lo que el negocio cuesta exista o no uso; la generación se paga por uso y queda fuera):
 
@@ -206,19 +232,19 @@ Con el diseño de D15 tal como está, cada negocio tiene su Básico: 3 negocios 
 | Precarga del Alta (una vez, no por mes): tope USD 0,15, media medida USD 0,0275 | ≤ USD 0,15 una vez | `[V]` `epica-prellenado-brand-kit-alta.md:118` |
 | Atención del equipo: el Alta, conectar los activos de Meta, dudas | Sin medir | El costo fijo real, y el que más pesa |
 
-**Total de infraestructura: menos de USD 0,25 por negocio al mes** `[H]`. El tope de negocios no protege la infraestructura; protege el cupo (§2.9, la nota del reparto) y el tiempo del equipo. La medición por tenant que pide el analista (llamadas a Meta, GB en R2, mensajes) se agrega como criterio de S10.
+**Total de infraestructura: menos de USD 0,25 por negocio al mes** `[H]`. El tope de negocios no protege la infraestructura; protege el saldo común (más negocios, menos cupo por negocio) y el tiempo del equipo. La medición por tenant que pide el analista (llamadas a Meta, GB en R2, mensajes) es criterio de S10 para fijar el precio del negocio extra.
 
 **El tope visto desde Meta** (hallazgo 3 del analista). Una corrección: el carril de acceso de Meta **es de la app de Qualify, no de cada suscripción**. La fila «my app is only for a business I own or manage» (Standard Access, sin App Review) vale para Qualify solo mientras **todos** los activos conectados sean de negocios que Attitude Factory posee o administra, y los conecte alguien con un rol en la app (ADR 29). El primer cliente externo que conecte su propia cuenta exige Advanced Access y App Review **por permiso**, tenga ese cliente 1 negocio o 8. Por eso:
 
 - El tope de negocios **no cambia el carril de Meta** de Qualify; lo cambia el primer cliente externo. `V-TP-7` sigue abierto y no lo cierra este ADR; se resuelve como manda ADR 25, en vivo contra el panel de la app, no contra la documentación.
 - Lo que sí toca a Meta es **de quién son los activos** que entran en una suscripción. Una suscripción con muchos negocios de dueños distintos es una agencia con otro contrato (`oferta-mercado-agencia-gestionada.md`). El control no es el número, es el Alta: el campo «Suscripción: la de {correo}» exige que el equipo confirme en el ítem que el negocio nuevo es **del mismo dueño o lo administra él** (sí/no), y un «no» deja el Alta como suscripción nueva.
-- El número que recomiende el analista (2 / 3 / 5 incluidos, 8 como techo) entra como valor del parámetro si el fundador lo adopta; no necesita ningún cambio de diseño.
+- Los valores que firmó el fundador (2 / 3 / 5, techo 8) coinciden con los del analista y entran como valores del parámetro; no hizo falta ningún cambio de diseño.
 
 ### 2.11 Qué no cambia
 
 - **Tenant = frontera de aislamiento (ADR 24)**, y `tenant_id` ≠ `brand_id`. La suscripción es un nivel **encima** de los tenants y **no** entra en ninguna clave de tabla de negocio ni del plano analítico.
 - **Una sola Postgres (ADR 31).** Ningún almacén, runtime, cola ni proveedor nuevo: Redis ya existe y ya guarda pases del mismo tipo.
-- **La forma de la política RLS no cambia.** Las tablas nuevas de negocio llevan la política estándar; las de la suscripción quedan fuera del alcance de `qualify_app` por GRANT.
+- **La forma de la política RLS no cambia.** Las tablas nuevas de negocio llevan la política estándar; las de la suscripción y del saldo común quedan fuera del alcance de `qualify_app` por GRANT. La única puerta nueva son las funciones del saldo (§2.9.1), sin `BYPASSRLS`.
 - **Workers y webhooks** siguen resolviendo el tenant como hoy; S6 cierra la única ambigüedad (una cuenta de IG/FB en dos tenants).
 - **El superadmin del equipo** sigue siendo otra épica. La facturación automática (proveedor de pago) sigue fuera: D19, cobro a mano.
 
@@ -234,6 +260,9 @@ Con el diseño de D15 tal como está, cada negocio tiene su Básico: 3 negocios 
 | Una puerta nueva `operator_session` con identidad global de operador (opción (c) de `modelo-negocio-operador-multi-emprendimiento.md` §3) | No hace falta para cambiar de negocio, que es lo pedido; la vista de cartera sigue fuera. Se reabre si llega la vista unificada |
 | Suscripción con política RLS propia (subconsulta sobre `tenants`) | Rompe la forma única de la política y su test, y deja leer a la app algo que solo escribe el equipo |
 | Saldo común leído con `admin_session` en la petición | Usaría en la petición la puerta que salta RLS para todo, para leer un número |
+| Saldo común sumando `creation_charges` de todos los tenants en cada cobro | Exige leer filas de otros tenants; el contador propio de §2.9.1 da el mismo número sin leerlas |
+| C: cupo común en la factura y repartido por negocio (lo que recomendaba este ADR) | El fundador eligió B (F2): el dueño quiere un saldo que use donde lo necesite; las protecciones de §2.9.2 cubren el riesgo de que un negocio se lo lleve |
+| Construir la suscripción después de 60 días de factura a mano | El fundador eligió construir ya (F3) |
 | Cupo por marca dentro de un solo tenant (Bianki y Polette como dos marcas de un tenant) | Mezcla en un tenant dos negocios con cuentas, clientes y dueños de activos distintos; la épica decidió tenant por negocio (D1 de §6 del modelo de negocio) |
 
 ## 4. Criterios de aceptación verificables, por historia
@@ -257,18 +286,24 @@ Los textos que ve el dueño siguen `qualify-copy-es`; los nuevos o cambiados van
 | A13 | Test de cobertura del cambio de negocio: enumera en ejecución todas las subclases de `rx.State`; cada una está en la lista de lo que el cambio abandona o en una lista explícita de estados sin datos del negocio | **S4** |
 | A14 | Test: no aparece en `Qualify/` un diccionario de módulo, un `@cache` o un `lru_cache` nuevo sin estar en la lista revisada de §2.7 | **S4** |
 | A15 | Publicar y enviar comprueban la membresía sin caché; quitar a alguien de un negocio con la sesión abierta bloquea su siguiente publicación con «Ya no tienes acceso a este negocio. Vuelve a entrar para elegir otro.» | **S5** |
-| A16 | `subscriptions` y `subscription_plan_assignments`: test de base de datos que prueba que `qualify_app` no lee ni escribe ninguna fila, y que `tenant_quota_allotments` sigue la política estándar (`test_rls_policy_shape`) | **S10** |
+| A16 | `subscriptions`, `subscription_plan_assignments` y las tres tablas del saldo: test de base de datos que prueba que `qualify_app` no lee ni escribe ninguna fila directamente | **S10** |
 | A17 | Relleno: cada tenant existente queda con su propia suscripción y su plan; el saldo que ve cada negocio no cambia | **S10** |
-| A18 | Alta con «Suscripción: la de {correo}»: une el negocio a esa suscripción, reparte el cupo según la regla firmada y es idempotente; con el máximo alcanzado, falla a la vista con un comentario en el ítem; dos Altas a la vez no superan el máximo (test con dos transacciones) | **S7** (requiere S10) |
+| A22 | `pool_reserve` / `pool_release` / `pool_balance`: con dos tenants en una suscripción, A gasta y B ve bajar el saldo común, pero ninguna llamada desde A devuelve cuánto gastó B; sin `app.tenant_id` lanzan error; una reserva repetida con la misma clave no cobra dos veces; dos reservas concurrentes nunca dejan el saldo negativo (test con dos transacciones) | **S10** |
+| A23 | Las funciones tienen `search_path` fijo, `EXECUTE` solo para `qualify_app` y son propiedad de `qualify_pool`, sin `BYPASSRLS`; un test lo comprueba en el catálogo de Postgres. **Revisión de `security-review` antes de fusionar** | **S10** |
+| A24 | Tope por negocio: con el tope de A alcanzado, A no puede crear aunque quede saldo común y ve «Este negocio ya usó lo que tenía reservado este mes. Pide más a Qualify.»; B sigue creando | **S10** |
+| A25 | Aviso: cuando A cruza `alerta_negocio_pct` del saldo común, el equipo recibe un aviso en Lark y A ve «Este negocio ya usó el {X} % del cupo que compartes con tus otros negocios.», una sola vez al mes; el porcentaje sale del catálogo o de la suscripción, nunca del código | **S10** |
+| A26 | El cobro en `creation_charges` y la reserva van en la misma transacción, y también la devolución y la liberación: si uno falla, no queda el otro (test) | **S10** |
+| A27 | Conciliación diaria: la suma de `creation_charges` por suscripción y mes cuadra con `subscription_pool_months`; si no, aviso en Lark | **S10** |
+| A18 | Alta con «Suscripción: la de {correo}»: une el negocio a esa suscripción con su tope opcional y es idempotente; pasar de los incluidos exige «Negocio extra comprado»; con el máximo efectivo alcanzado (nunca más de 8), falla a la vista con un comentario en el ítem; dos Altas a la vez no superan el máximo (test con dos transacciones) | **S7** (requiere S10) |
 | A19 | El Alta con «Suscripción: la de…» exige la confirmación «el negocio es del mismo dueño o lo administra él»; sin ella, queda como suscripción nueva | **S7** |
-| A20 | El máximo de negocios no aparece como número en el código (test: sale del catálogo de planes o de `subscriptions.max_businesses`) | **S10** |
-| A21 | Medición de 60 días por negocio (creaciones, videos, vistas previas; llamadas a Meta, GB en R2, mensajes) en un informe del equipo, antes de construir S10 | **S10** (primera tarea) |
+| A20 | Ni los negocios incluidos (2 / 3 / 5) ni el techo (8) ni el porcentaje de aviso aparecen como números en el código (test: salen del catálogo de planes o de `subscriptions`) | **S10** |
+| A21 | Medición por negocio (llamadas a Meta, GB en R2, mensajes) en el informe del equipo, para fijar el precio del negocio extra; no bloquea la construcción | **S10** |
 
 ## 5. Consecuencias
 
-**Positivas.** Un dueño con varios negocios trabaja en una sola sesión. El cambio de negocio deja de depender de que un reset no olvide nada: el estado viejo no se reutiliza. La generación gana la misma garantía que publicar ya tenía por esquema. La suscripción queda diseñada sin abrir ninguna puerta nueva ni ninguna política nueva.
+**Positivas.** Un dueño con varios negocios trabaja en una sola sesión. El cambio de negocio deja de depender de que un reset no olvide nada: el estado viejo no se reutiliza. La generación gana la misma garantía que publicar ya tenía por esquema. El dueño tiene un solo saldo para sus negocios y el peor caso queda acotado al plan.
 
-**Negativas.** Cambiar de negocio cuesta una carga completa de página (1–2 s) y deja estados huérfanos hasta que caducan (memoria del backend; acotada por la vida de los estados). El pase lleva el token de Supabase por Redis durante 60 s. El reparto del cupo (opción C) es rígido. Dos tablas quedan fuera de la regla «todo lleva `tenant_id`», con su test.
+**Negativas.** Cambiar de negocio cuesta una carga completa de página (1–2 s) y deja estados huérfanos hasta que caducan (memoria del backend; acotada por la vida de los estados). El pase lleva el token de Supabase por Redis durante 60 s. **Una puerta nueva de la base:** las funciones `SECURITY DEFINER` del saldo, con su rol `qualify_pool`, su revisión de seguridad y sus tests. Los cobros de una misma suscripción se serializan en una fila (a este volumen, milisegundos). Cinco tablas quedan sin `tenant_id` como columna de aislamiento, con su test. Un negocio sin tope puede gastar el saldo de los otros: es la contrapartida de B, aceptada por el fundador.
 
 **Riesgos.**
 
@@ -276,25 +311,30 @@ Los textos que ve el dueño siguen `qualify-copy-es`; los nuevos o cambiados van
 |---|---|
 | Reflex no da un estado nuevo al borrar el token | A5 es la primera tarea de S4; si falla, S4 vuelve al ADR |
 | Un manejador nuevo relee el negocio a mitad de camino | A3 y la revisión de §2.4; con §2.2 el daño queda en el estado huérfano |
-| m-24852145 construye `tenant_plan_assignments` antes de S10 | §2.9, paso 3: se construye con la forma de §2.8 |
+| m-24852145 construye `tenant_plan_assignments` | Prohibido por F3: se construye con la forma de la suscripción (§2.9.3) y depende de S10 |
+| Un error en las funciones del saldo expone datos de otro negocio | Devuelven solo números, el rol no tiene `BYPASSRLS` y solo ve su fila de `tenants`; A22, A23 y `security-review` |
+| Un negocio se lleva el saldo común | Tope opcional y aviso por porcentaje (§2.9.2) |
 | Una suscripción de muchos negocios de dueños distintos (agencia encubierta) | El tope en el Alta y la confirmación de A19 |
 
 ## 6. Qué lo reabriría
 
 - Que A5 falle (Reflex no rota el estado): se rediseña el cambio de negocio.
 - Que el fundador pida una vista unificada de varios negocios: vuelve la opción (c), con su ADR.
-- Que la medición de 60 días muestre que el reparto fijo no le sirve al dueño (pide mover cupo más de una vez al mes): opción B, con revisión de seguridad.
+- Que `security-review` rechace las funciones del saldo sin un arreglo posible: se vuelve a la opción C (cupo repartido por negocio, sin puerta nueva).
+- Que la fila del mes de la suscripción se vuelva un cuello de botella (reserva con p95 > 100 ms): se parte el contador por tipo.
 - Que `V-TP-7` se resuelva en contra (Meta trata como Tech Provider incluso a negocios propios): cambia el carril de Qualify, no este diseño.
 
 ## 7. Decisiones del fundador
 
-| # | Pregunta | Recomendación |
-|---|---|---|
-| **F1** | ¿Firmas el diseño de §2.1–§2.7 (membresías, cambio = instancia nueva con rotación del token, generación sellada, confirmaciones con negocio y cuenta)? | Sí. Es lo que cierra el miedo de crear o publicar en el otro negocio |
-| **F2** | Cupo: ¿A (por negocio), B (saldo común) o C (común en la factura, repartido en el contador)? | **C**, decidido después de los 60 días de medición; hasta entonces, A a mano |
-| **F3** | ¿Se diseña la suscripción ahora y se construye después de 60 días con Bianki y Polette en factura única a mano? | Sí, con una excepción: planes y paquetes (m-24852145), si se construyen antes, con la forma de §2.8 |
-| **F4** | ¿Cuántos negocios por suscripción? | Parámetro sin número en el código. El valor lo eliges con el estudio del analista (propone 2 / 3 / 5 incluidos y 8 como techo); con cupo repartido, 2 en Básico |
-| **F5** | Las dos preguntas abiertas de la épica: TTL de la revisión de membresía al cargar páginas (propuesta 60 s; publicar y enviar siempre sin caché) y el correo neutro del login de Bianki y Polette | 60 s; un correo sin el nombre de ningún negocio |
+Respondidas el 2026-10-25; registro textual en §9.
+
+| # | Pregunta | Recomendación del ADR | Decisión |
+|---|---|---|---|
+| **F1** | ¿Firmas el diseño de §2.1–§2.7? | Sí | **Firmado tal como se propuso** |
+| **F2** | Cupo: A (por negocio), B (saldo común) o C (común en la factura, repartido) | C | **B**, con tope opcional por negocio y aviso por porcentaje (§2.9) |
+| **F3** | ¿Diseñar ahora y construir después de 60 días? | Sí | **Construir ya**; sin fase manual |
+| **F4** | ¿Cuántos negocios por suscripción? | Parámetro; 2 en Básico | **Básico 2, Plus 3, Pro 5; extras hasta 8**, como parámetro del catálogo, controlado en el Alta |
+| **F5** | TTL de la revisión de membresía; correo del login de Bianki y Polette | 60 s; correo neutro | **60 s al cargar páginas, nunca caché antes de publicar o enviar; el correo personal del dueño, sin alias por marca** |
 
 ## 8. Fuentes
 
@@ -306,3 +346,13 @@ Los textos que ve el dueño siguen `qualify-copy-es`; los nuevos o cambiados van
 - `docs/oferta-limites-negocios-por-plan.md` (market-analyst, 2026-10-25).
 - `docs/adr-41-cola-generacion-concurrencia.md` (cola, `creative-worker`, correo de la mañana).
 - `docs/arquitectura.md` §6: ADR 24, 25, 29, 31, 39, 40.
+
+## 9. Registro de decisiones del fundador (Herwin, 2026-10-25)
+
+Respuestas dadas una por una en la sesión principal y transmitidas por el coordinador:
+
+- **F1 — FIRMADO tal como se propuso:** una fila `users` por (tenant, login); el cambio de negocio descarta la sesión (rota el token y recarga); la generación lleva el negocio sellado y el worker lo vuelve a comprobar; la confirmación de publicar o enviar nombra el negocio y la @cuenta.
+- **F2 = B, cupo común entre los negocios de la suscripción.** Reemplaza la recomendación C. Protecciones para que un negocio no agote el saldo: un tope opcional por negocio, fijado en el Alta, y un aviso cuando un negocio pasa el X % del saldo, con X como parámetro. Las dos como parámetros, no en el código. La función de base de datos que hace falta (`SECURITY DEFINER` o equivalente) se diseña dentro de las reglas de RLS y pasa por `security-review`.
+- **F3 = construir ya.** S10 (m-24854773) sube a P1 dentro de la épica y se elimina la fase manual de 60 días. Bianki y Polette arrancan directamente en la suscripción compartida con saldo común. Planes y paquetes (m-24852145) usan la forma de la suscripción.
+- **F4 = Básico 2, Plus 3, Pro 5 negocios incluidos;** se pueden comprar extras hasta un techo de 8 por suscripción; vive como parámetro del catálogo de planes y se controla en el Alta.
+- **F5 = 60 s de caché** para la revisión de membresía al cargar páginas, nunca caché antes de publicar o enviar. El login único de Bianki y Polette usa el **correo personal del dueño**, sin alias por marca.

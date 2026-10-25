@@ -1,10 +1,10 @@
 # Épica — Varios negocios en una sola sesión
 
-**Fecha:** 2026-10-23, revisada 2026-10-25 · **Estado:** `[HISTORIAS · sin implementar · ADR 42 propuesto, pendiente de firma del fundador]` · **Meegle:** épica [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (mapa de tickets en §4)
+**Fecha:** 2026-10-23, revisada 2026-10-25 · **Estado:** `[HISTORIAS · sin implementar · ADR 42 FIRMADO por el fundador 2026-10-25]` · **Meegle:** épica [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (mapa de tickets en §4)
 **Decisión del fundador (Herwin, 2026-10-23, explícita):** se **revierte** la regla firmada «1 login = 1 tenant = 1 negocio, sin switch» ([`modelo-negocio-operador-multi-emprendimiento.md`](modelo-negocio-operador-multi-emprendimiento.md) §6.1, 2026-08-16). Objetivo nuevo: un dueño maneja varios negocios (tenants separados) desde **una** sesión, con un selector para cambiar. Primer caso real: un mismo dueño con **Bianki** (shawarma y ensaladas) y **Polette** (helados de yogur), que se manejan por separado.
 **Producción hoy (chequeo de solo lectura, 2026-10-23):** existen 8 tenants, cada uno con 1 marca y 1 dueño. Bianki no existe; POLETTE es su propio tenant con su login `+polette`. Las únicas 2 conexiones de IG están en tenants distintos. No hay datos que separar: S8 se cerró como «no aplica». **Limpieza decidida y pendiente:** el 2026-10-23 el fundador decidió dejar solo «Zapatería» (IG qualifymkt.co) y «Raul Dev Games» y borrar POLETTE y los 5 «Mi marca» con sus logins de Supabase. Todavía **no se ejecutó**: falta el respaldo y la confirmación del fundador.
 **Restricción — única puerta de entrada (fundador, 2026-10-23):** un cliente entra a Qualify **solo** por el ítem «Alta de cliente» de Lark/Meegle (skill `meegle-altas`). Agregar un negocio a un login existente también se dispara solo desde ese ítem (S7). Nunca autoservicio, nunca una invitación desde la app.
-**ADR (S0):** [`adr-42-un-login-varios-negocios.md`](adr-42-un-login-varios-negocios.md) `[PROPUESTO]` — el ticket decía «ADR 41», pero el 41 ya es la cola de generación.
+**ADR (S0):** [`adr-42-un-login-varios-negocios.md`](adr-42-un-login-varios-negocios.md) `[FIRMADO 2026-10-25]` — el ticket decía «ADR 41», pero el 41 ya es la cola de generación.
 **Pedido nuevo del fundador (2026-10-25):** (1) cambiar de negocio es abrir una **instancia limpia**: nunca publicar ni **crear piezas** para el otro negocio; (2) **la suscripción se comparte** entre los negocios del dueño (antes fuera de alcance); (3) el máximo de negocios por suscripción queda abierto, como parámetro. Todo eso entra en ADR 42 y en las historias S9 y S10.
 **Revisión técnica:** principal-architect, 2026-10-23; líneas re-verificadas el 2026-10-25 (§1). Las historias de §3 son su corte, revisado contra el código en `main`. Las líneas de código citadas abajo se comprobaron en disco el mismo día.
 
@@ -18,7 +18,7 @@
 4. El riesgo número uno es **que se cruce un dato** entre negocios. Por eso hay criterios de aceptación con tests de cobertura y un Playwright con dos tenants en la misma pestaña.
 5. Agregar un negocio a un login existente **nunca** es autoservicio ni sale de la app: solo desde un «Alta de cliente» del fundador en Lark, con el campo «Inicio de sesión existente» y la contraseña del dueño (S7).
 6. **Cambiar de negocio rota el token de sesión de Reflex:** el estado del negocio anterior queda huérfano y lo que siga corriendo para él termina en su propio negocio (ADR 42 §2.2). Toda generación lleva el negocio sellado y el worker lo vuelve a comprobar (S9).
-7. **Una suscripción para varios negocios** (S10), diseñada ahora y construida después de 60 días de operación a mano con Bianki y Polette.
+7. **Una suscripción para varios negocios con un solo saldo de generación** (S10, P1, se construye ya): tope opcional por negocio y aviso por porcentaje; Básico 2, Plus 3 y Pro 5 negocios incluidos, extras hasta 8. Bianki y Polette arrancan directamente en ella.
 
 ## 1. Qué existe hoy (medido en el código)
 
@@ -43,10 +43,10 @@
 - **Supabase:** `app_metadata.tenant_id` pasa a ser solo el negocio **por defecto**.
 - **Selector:** después del login, si hay más de una membresía.
 - **Cambio de negocio:** `switch_tenant` validado en el servidor (el `auth_user_id` sale de la sesión, nunca del cliente). **Revisado en ADR 42 §2.2:** no reutiliza el reset del logout sobre el mismo estado; emite un pase de un solo uso, **borra el token de Reflex** y recarga, para que un evento en segundo plano del negocio anterior no escriba en el nuevo.
-- **Revisión de membresía:** en `require_login` con TTL corto, y sin caché antes de publicar o enviar.
+- **Revisión de membresía:** en `require_login` con caché de 60 s (firmado, F5), y sin caché antes de publicar o enviar.
 - **Auditoría:** cada cambio queda registrado en el tenant de destino.
 - **Generación sellada (S9):** el `tenant_id` sale de la sesión del servidor al encolar y el worker lo vuelve a comprobar antes de leer y de escribir (ADR 42 §2.4).
-- **Suscripción (S10):** `subscriptions` encima de los tenants, aislada por GRANT; lo que el negocio ve le llega en `tenant_quota_allotments` con RLS normal (ADR 42 §2.8).
+- **Suscripción (S10):** `subscriptions` encima de los tenants, aislada por GRANT; un solo saldo de generación para todos sus negocios, leído y movido por funciones `SECURITY DEFINER` que devuelven solo números (ADR 42 §2.8).
 - **No cambia:** RLS, workers, webhooks, una sola Postgres (ADR 31), tenant = frontera de aislamiento (ADR 24).
 - **Fuera:** el superadmin del equipo (staff) es otra épica.
 
@@ -56,13 +56,13 @@
 |---|---|
 | Al cambiar de negocio queda pintado algo del anterior | S4: test de cobertura ampliado, caches de módulo, Playwright con dos tenants en la misma pestaña |
 | Dos pestañas con negocios distintos: publicar en el equivocado | S3: negocio activo siempre visible arriba · S4: la confirmación de publicar/enviar nombra el negocio |
-| Quitar a alguien de un negocio no surte efecto con la sesión abierta | S5: revisión con TTL corto y antes de publicar/enviar |
+| Quitar a alguien de un negocio no surte efecto con la sesión abierta | S5: revisión con caché de 60 s al cargar y sin caché antes de publicar/enviar |
 | La misma cuenta de IG/FB activa en dos tenants: el webhook no sabe a cuál va | S6: chequeo al conectar + índice único global parcial + test de enrutamiento |
 | Alguien se agrega por su cuenta a un negocio ajeno | S7: solo desde un «Alta de cliente» del fundador, con contraseña |
 | Crear una pieza para el otro negocio (miedo explícito del fundador, 2026-10-25) | S9: negocio sellado al encolar, relectura en el worker, control de claves de R2 |
 | Un trabajo de A termina después de cambiar a B y se pinta en B | S4: rotación del token (ADR 42 §2.2) + Playwright · S9: el trabajo termina en A |
 | Publicar en la cuenta equivocada | S4: la confirmación nombra el negocio **y** la cuenta de destino, releída al confirmar |
-| Un negocio agota el cupo de los otros de la misma suscripción | S10: cupo repartido por negocio (opción C de ADR 42 §2.9, decide el fundador) |
+| Un negocio agota el saldo común de los otros de la misma suscripción | S10: tope opcional por negocio (en el Alta) y aviso al pasar un porcentaje del saldo, los dos como parámetros (ADR 42 §2.9.2) |
 | Hoy un segundo Alta con un correo ya registrado mete la marca nueva en el negocio anterior (`_resolve_identity_for_signup`, `auth/service.py:96-123`, devuelve el `tenant_id` existente) | S7: con «Inicio de sesión existente» se crea un tenant nuevo; sin él, el Alta falla a la vista |
 
 ## 3. Historias
@@ -78,9 +78,9 @@ Owner = área que lo construye; Assignee en Meegle: Herwin hasta que se reparta 
 | **S4** | Cambiar de negocio desde el encabezado: pase de un solo uso + **rotación del token de Reflex** + recarga; dos pestañas; confirmaciones con negocio y cuenta de destino; test de cobertura por enumeración de estados; Playwright sin fugas (criterios A5–A14 de ADR 42) | reflex-ui-engineer (+ backend; `security-review` del pase) | S3 | P1 · L |
 | **S5** | Revisión de membresía al cargar la página y antes de publicar/enviar + auditoría de cada cambio | backend-engineer | S4 | P1 · M |
 | **S6** | Una cuenta de IG/FB no puede estar activa en dos negocios + revisión del enrutamiento de webhooks | backend-engineer | — (en paralelo) | P2 · M |
-| **S7** | Campo «Inicio de sesión existente» en el «Alta de cliente»: invitación de tipo «agregar negocio» → tenant nuevo con el mismo login como owner; sin el campo y con correo ya registrado, el Alta falla a la vista. **Cuando exista S10:** campo «Suscripción» (nueva / la de {correo}), máximo de negocios con `FOR UPDATE`, confirmación de que el negocio es del mismo dueño (A18, A19) | backend + reflex-ui | S1 (S10 para la suscripción) | P1 · M |
+| **S7** | Campo «Inicio de sesión existente» en el «Alta de cliente»: invitación de tipo «agregar negocio» → tenant nuevo con el mismo login como owner; sin el campo y con correo ya registrado, el Alta falla a la vista. Campos «Suscripción» (nueva / la de {correo}), «Tope de este negocio» (opcional) y «Negocio extra comprado»; máximo efectivo con `FOR UPDATE`, nunca más de 8; confirmación de que el negocio es del mismo dueño (A18, A19) | backend + reflex-ui | S1, S10 | P1 · M |
 | **S9** | Generación con el negocio sellado: `tenant_id` de la sesión al encolar, relectura por `tenant_session` en el worker, `tenant_mismatch` sin llamar al proveedor, `require_tenant_prefix` en toda clave de R2; trabajos en curso terminan en su negocio (A1–A4) | creative-engineer | — (en paralelo; con la cola de ADR 41 cuando exista) | P1 · M |
-| **S10** | Suscripción compartida: informe de 60 días primero; luego `subscriptions` + `subscription_plan_assignments` (solo `qualify_admin`), `tenants.subscription_id`, `tenant_quota_allotments` con RLS; máximo de negocios como parámetro (A16, A17, A20, A21) | backend-engineer | S1; 60 días de medición; decisión de cupo (F2) | P2 · M |
+| **S10** | Suscripción compartida con saldo común: `subscriptions` + `subscription_plan_assignments` (solo `qualify_admin`), `tenants.subscription_id`, contador del saldo y funciones `SECURITY DEFINER` `pool_reserve` / `pool_release` / `pool_balance` (rol `qualify_pool`, sin `BYPASSRLS`), tope por negocio y aviso por porcentaje como parámetros, negocios incluidos y techo en el catálogo de planes, conciliación diaria (A16, A17, A20–A27). **`security-review` obligatorio** | backend-engineer | S0 | P1 · L |
 | ~~**S8**~~ | ~~Separar los datos de Bianki y Polette si hoy comparten tenant~~ — **cerrada, no aplica**: Bianki no existe en producción y POLETTE ya es su propio tenant (chequeo del 2026-10-23) | — | — | — |
 
 S3, S4 y S7 llevan la nota «Sugerencias de UX»: se corre el subagente `ux-designer` sobre el diff antes de abrir el PR (`qualify-pr` paso 5).
@@ -126,19 +126,22 @@ Los enlaces «Bloqueado por» de Meegle siguen la columna «Depende de» de §3.
 
 ## 5. Orden de construcción
 
-1. **S0** (firma de ADR 42) y, en paralelo, **S6** y **S9**.
-2. **S1** → **S7** → **S2** (Altas de Polette y Bianki en Lark con el mismo inicio de sesión), y **S3** en paralelo a S7.
-3. **S4** → **S5**. Con S5 cerrado, el cambio de negocio es seguro para clientes.
-4. **60 días** con Bianki y Polette en una factura a mano (un Básico cada uno) → el fundador elige el cupo (ADR 42 F2) y el máximo de negocios (F4) → **S10** y la parte de suscripción de **S7**.
+1. **S0** firmado (ADR 42, 2026-10-25).
+2. En paralelo: **S1** (P1), **S10** (P1, con `security-review`), **S9** (P1) y **S6** (P2). Planes y paquetes (m-24852145) se construyen sobre S10, con la forma de la suscripción.
+3. **S7** (necesita S1 y S10) y **S3** (necesita S1), en paralelo.
+4. **S2**: Altas de Polette y Bianki en Lark con el mismo inicio de sesión y la misma suscripción, saldo común desde el primer día (necesita S1, S7 y S10).
+5. **S4** → **S5**. Con S5 cerrado, el cambio de negocio sin salir es seguro para clientes. Hasta S4, el dueño cambia de negocio con el selector de S3 al entrar.
+
+Sin fase manual de 60 días (F3).
 
 ## 6. Preguntas abiertas para el fundador
 
-1. **TTL de la revisión de membresía (S5):** propuesta 60 s al cargar páginas; publicar y enviar siempre se revisan sin caché. ¿Te sirve?
-2. **¿Qué inicio de sesión usa el dueño de Polette y Bianki? (S2)** Una vez hecha la limpieza (que borra el login `+polette`), se crea desde cero en el primer Alta y el segundo Alta se le vincula. Recomendación: un correo neutro, sin el nombre de ningún negocio, porque va a abrir los dos.
+1. ~~TTL de la revisión de membresía (S5)~~ **Respondida (2026-10-25, F5):** 60 s al cargar páginas; nunca caché antes de publicar o enviar.
+2. ~~¿Qué inicio de sesión usa el dueño de Polette y Bianki? (S2)~~ **Respondida (2026-10-25, F5):** el correo personal del dueño, sin alias por marca. Se crea en el primer Alta y el segundo se le vincula.
 3. ~~¿Aparcar S7?~~ **Respondida (2026-10-23):** no. El Alta es la única puerta de entrada, así que S7 es el mecanismo del primer caso (S2) y sube a P1.
 4. ~~Cuenta de IG/FB ya activa en dos negocios: ¿cuál se la queda?~~ **Respondida por producción (2026-10-23):** ninguna cuenta está en dos tenants hoy (las 2 conexiones de IG están en tenants distintos), así que el índice único global de S6 se puede crear sin limpiar datos.
 
-5. **Nuevas (2026-10-25), con recomendación en ADR 42 §7:** cupo compartido o por negocio (F2), diseñar ahora y construir la suscripción después de 60 días (F3), máximo de negocios por suscripción (F4).
+5. ~~Cupo, momento de construir la suscripción y máximo de negocios~~ **Respondidas (2026-10-25, ADR 42 §9):** saldo común con tope opcional por negocio y aviso por porcentaje (F2 = B); construir ya (F3); Básico 2, Plus 3, Pro 5, extras hasta 8 (F4).
 
 ## 7. Fuera de alcance
 
