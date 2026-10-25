@@ -421,6 +421,7 @@ def test_env_file_quotes_and_empty_values(tmp_path: Path, monkeypatch: pytest.Mo
     for name in runner.ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     assert runner._env_names(str(env)) == {
+        "QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY": "ausente",
         "QUALIFY_BYTEPLUS_ARK_API_KEY": "ausente",
         "QUALIFY_ANTHROPIC_API_KEY": ".env",
     }

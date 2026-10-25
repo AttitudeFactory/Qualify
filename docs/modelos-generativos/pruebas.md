@@ -4,6 +4,22 @@ Aquí queda toda prueba real contra un modelo o un proveedor, también las que f
 
 > La entrada PR-001 (smoke test de BytePlus, 2026-10-07) todavía está sin commitear en otra rama. Cuando llegue a `main`, se agrega debajo de esta.
 
+<a id="byteplus-llave-y-horario"></a>
+
+## Antes de una prueba con BytePlus: llave propia y horario (m-24852161)
+
+**Las evaluaciones con video comparten la cuota de los clientes.** Seedance permite 10 tareas a la vez **por modelo y por cuenta principal, sumando todas las subcuentas** ([`escalar-generacion-concurrencia.md`](../escalar-generacion-concurrencia.md) §1.1). Una llave o una subcuenta aparte **no da más cupo**: una evaluación de 10 videos ocupa las 10 de los clientes, y sus vistas previas quedan en la cola de BytePlus. Solo una segunda cuenta principal separaría la cuota, y eso es la Fase 3 (último recurso). OmniHuman es peor: 1 tarea a la vez. Seedream (imagen, 500 por minuto) no tiene este problema.
+
+| Regla | Detalle |
+|---|---|
+| Llave propia | `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` en el `.env` local, distinta de la de la app (`QUALIFY_BYTEPLUS_ARK_API_KEY`) y de la de producción. Sirve para separar el gasto, ver las tareas de evaluación bajo su propia llave (`arkcli`, solo lectura) y revocarla sin tocar producción. `just eval-escenas` y `plantillas_ai` la usan primero; sin ella usan la de la app y lo avisan. Nunca va a `.env.prod` |
+| Comprobar que no es la de producción | La huella (8 primeros caracteres del sha256, la misma de `just env-push --dry-run`) de la llave de producción va en `QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT`. Con ella la evaluación se niega a gastar con la llave de producción, y `just byteplus-llaves` compara las huellas sin imprimir valores (sale con 1 si dos coinciden) |
+| Horario de las evaluaciones con video | **De 23:00 a 05:00, hora de Bogotá** (00:00–06:00 en Caracas, 01:00–07:00 en Montevideo): fuera del día de los comercios en los tres mercados. Correrla de día pide el visto bueno del fundador. `qualify_api.evals.byteplus_eval_guard.off_hours_refusal` lo comprueba |
+| Tareas a la vez | **Como mucho 3** de las 10 (`cap_video_concurrency`), para que un cliente nocturno tenga 7 |
+| Cuando exista la cola propia (ADR 41, m-24852163) | Las evaluaciones encolan en el carril `scheduled` en lugar de mirar el reloj |
+
+Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai` y `plantillas_ai`, son de Seedream). La primera que lo haga llama a `off_hours_refusal` y a `cap_video_concurrency` antes de su primera tarea.
+
 ---
 
 <a id="sent-haiku-001"></a>

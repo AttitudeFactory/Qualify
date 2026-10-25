@@ -416,6 +416,12 @@ eval-voz *args:
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
 
+# m-24852161: fingerprints (never values) of the BytePlus keys in .env — the eval key
+# (QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY) must differ from the app's and from production's
+# (QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT). Exit 1 on a clash. Calls nothing.
+byteplus-llaves *args:
+    PYTHONUTF8=1 uv run --no-sync python -m qualify_api.evals.byteplus_eval_guard {{args}}
+
 # --- Puerta de merge (infra/github/README.md) ---------------------------------------
 # Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:
 # `just merge 81` se niega si falta o falló alguno de los checks requeridos; un admin puede
