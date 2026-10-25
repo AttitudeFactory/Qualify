@@ -86,6 +86,15 @@ calendar-worker *args:
 piece-purge *args:
     uv run --no-sync python -m qualify_api.planner.worker --purge-pieces {{args}}
 
+# m-24852492: compare our Seedance tasks (creative_vendor_tasks) with BytePlus's own task
+# list — billed videos not collected, tasks without a piece, pieces without a task.
+# READ-ONLY (sends and pays nothing); exit 2 = something to look at. The calendar worker
+# already recovers billed videos on its own (QUALIFY_VENDOR_RECOVERY=off turns it off).
+#   just creative-tasks-report --tenant <uuid> [--days 7] [--json]   # use this locally
+#   just creative-tasks-report --all-tenants [--days 7] [--json]     # production
+creative-tasks-report *args:
+    uv run --no-sync python -m qualify_api.creative.vendor_reconcile {{args}}
+
 # QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
 # resolution + ingestion; every other field, comments included -> `unsupported`).
 #   just webhook-tick                 # one batch, then exit
