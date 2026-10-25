@@ -34,7 +34,10 @@ relevant part before acting; this skill holds the rules around it.
    `just edge-install` from an up-to-date `main`.
 7. **Actions minutes are a budget** (GitHub Free from 2026-11: 2,000 min/month, each job rounded
    up to a minute). A new job or trigger states its minute cost.
-8. **Workers in production** run `--all-tenants`; locally they never do.
+8. **Workers in production** run `--all-tenants`; locally they never do. Local-model sentiment
+   (robertuito, torch) is **off** unless `QUALIFY_SENTIMENT_ENABLED` is set (m-24854340): it
+   peaks at ~904 MiB and OOM-killed `webhook-worker` (cap 320m). Do not turn it on in
+   `.env.prod`; sentiment is moving to Claude Haiku. `webhook-worker` logs `sentiment=off` at start.
 9. **Memory caps** (`mem_limit` = `memswap_limit` per service in
    `deploy/docker-compose.prod.yml`, m-24852229): a change that adds work to a worker loop is
    measured under its cap before it is turned on. `just mem-webhook-worker` (m-24852538,

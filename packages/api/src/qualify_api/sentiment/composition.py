@@ -28,7 +28,13 @@ from qualify_api.sentiment.repository import (
     ReelListCursor,
     ReelSummary,
 )
-from qualify_api.sentiment.service import AnalysisSummary, SentimentService
+from qualify_api.sentiment.service import (
+    ENABLED_ENV,
+    AnalysisSummary,
+    SentimentDisabled,
+    SentimentService,
+    sentiment_enabled,
+)
 
 
 @cache
@@ -98,7 +104,11 @@ def analyze_pending_comments(
     Synchronous — see `service.py`'s module docstring for why. Raises
     `UnknownSentimentConnection` if the connection id is not visible to this tenant, and
     `SentimentModelUnavailable` (from the service, before any work) when the local
-    model's runtime is not installed."""
+    model's runtime is not installed — or `SentimentDisabled` (its subclass) when
+    `QUALIFY_SENTIMENT_ENABLED` is off (m-24854340), checked first so nothing reads the
+    database or imports the model library."""
+    if not sentiment_enabled():
+        raise SentimentDisabled(f"{ENABLED_ENV} is off")
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     return production_sentiment_service().analyze_pending_comments(
         tenant_id=tenant_id, connection_id=connection_id, limit=limit

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -65,6 +66,25 @@ class SentimentModelUnavailable(Exception):
     the first non-empty comment, with a bare `ModuleNotFoundError`."""
 
 
+#: m-24854340 (founder, 2026-10-25): the local model (robertuito: torch + ~435 MB of
+#: weights) peaks at ~904 MiB RSS (m-24852538), far above the webhook worker's memory cap,
+#: so the worker was OOM-killed whenever comments were pending. Sentiment is OFF unless
+#: this is `1`/`true`/`yes`/`on`; temporary, until sentiment moves to Claude Haiku.
+ENABLED_ENV = "QUALIFY_SENTIMENT_ENABLED"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def sentiment_enabled() -> bool:
+    """Whether the local sentiment model may run in this process (off by default)."""
+    return os.environ.get(ENABLED_ENV, "").strip().lower() in _TRUTHY
+
+
+class SentimentDisabled(SentimentModelUnavailable):
+    """Sentiment is switched off here (`QUALIFY_SENTIMENT_ENABLED`). A subclass of
+    `SentimentModelUnavailable` on purpose: every caller already degrades on that one
+    (skipped, never an error), and it is raised before anything imports the model."""
+
+
 def local_model_available() -> bool:
     """Whether the default provider's runtime is installed — a `find_spec` probe, so
     nothing heavy is imported to answer it."""
@@ -101,6 +121,10 @@ class SentimentService:
     ) -> AnalysisSummary:
         """One pass over the connection's pending comments — the newest `limit` of them
         when bounded (m-24852204's automatic analysis), every one when `None`."""
+        # m-24854340: the switch comes first, before `qualify_models` is even imported.
+        # Only the DEFAULT (local) provider is switched off; an injected one is not.
+        if self._provider is None and not sentiment_enabled():
+            raise SentimentDisabled(f"{ENABLED_ENV} is off")
         # Lazy on purpose, same reason `SentimentProvider` above is TYPE_CHECKING-only:
         # this is the one real runtime dependency this module has on `qualify_models`
         # (the `ml` group), deferred to the moment analysis actually runs rather than

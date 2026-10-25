@@ -43,6 +43,16 @@ _PLATFORM_INSTAGRAM = "instagram"
 
 
 def _sentiment_pass(tenant_id: UUID, connection_id: UUID, limit: int) -> int:
+    # m-24854340: off by default (robertuito OOM-killed the webhook worker). Checked before
+    # the sentiment composition is imported; the runner reports it as "unavailable".
+    from qualify_api.sentiment.service import (  # noqa: PLC0415
+        ENABLED_ENV,
+        SentimentDisabled,
+        sentiment_enabled,
+    )
+
+    if not sentiment_enabled():
+        raise SentimentDisabled(f"{ENABLED_ENV} is off")
     from qualify_api.sentiment.composition import analyze_pending_comments  # noqa: PLC0415
 
     return analyze_pending_comments(

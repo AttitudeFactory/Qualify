@@ -64,7 +64,13 @@ from uuid import UUID
 
 from qualify_api.mentions.repository import MentionsRepository, PendingMentionSentiment
 from qualify_api.sentiment.repository import AnalysisVersion
-from qualify_api.sentiment.service import SentimentModelUnavailable, local_model_available
+from qualify_api.sentiment.service import (
+    ENABLED_ENV,
+    SentimentDisabled,
+    SentimentModelUnavailable,
+    local_model_available,
+    sentiment_enabled,
+)
 
 if TYPE_CHECKING:
     # Same TYPE_CHECKING-only import `sentiment/service.py` uses for the identical
@@ -114,6 +120,9 @@ class MentionSentimentService:
         """One pass over the tenant's pending mentions (or just `mention_id`). Raises
         `SentimentModelUnavailable` — having recorded nothing — when the model cannot run
         here; a failure on one mention is recorded and the pass continues."""
+        # m-24854340: switched off before `qualify_models` is imported (default provider).
+        if self._provider is None and not sentiment_enabled():
+            raise SentimentDisabled(f"{ENABLED_ENV} is off")
         # Lazy, same reason `SentimentService.analyze_pending_comments` defers this same
         # import: the one real runtime dependency this module has on `qualify_models`
         # (the `ml` group), deferred to the moment analysis actually runs.
