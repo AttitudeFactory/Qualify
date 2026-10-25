@@ -22,7 +22,6 @@ from .creative_state import CreativeState
 from .ui.steps_vm import guard_step
 
 _TENANT = "a0000000-0000-4000-8000-000000000001"
-_DRAFT = "b0000000-0000-4000-8000-000000000002"
 
 
 def _shown(rendered: str, text: str) -> bool:
@@ -52,10 +51,10 @@ def test_every_page_is_the_step_frame_with_its_way_out(page: Any) -> None:
 class _Leaving:
     """A background handler's `self` for `leave_flow`: the lock and `get_state`."""
 
-    def __init__(self, session: str, guest: str = "") -> None:
+    def __init__(self, session: str) -> None:
+        # a guest is a session without `session_tenant_id` (`leave_flow` reads only it)
         self.auth = AuthState()
         self.auth.session_tenant_id = session
-        self.auth.guest_tenant_id = guest
 
     async def __aenter__(self) -> _Leaving:
         return self
@@ -100,10 +99,10 @@ async def test_a_guest_saves_and_stays_or_leaves_to_the_email(
 ) -> None:
     """No Inicio before the login: «Seguir después» saves and says how to come back;
     «‹ Tu correo» saves and asks for an email again (the draft stays under its own)."""
-    saved, events = await _leave(monkeypatch, _Leaving("", _DRAFT), later=True)
+    saved, events = await _leave(monkeypatch, _Leaving(""), later=True)
     assert saved == [vm.MINIMAL_FLOW] and len(events) == 1
     assert _shown(events[0], wiz.SAVED_FOR_LATER_GUEST) and "_redirect" not in events[0]
-    saved, events = await _leave(monkeypatch, _Leaving("", _DRAFT), later=False)
+    saved, events = await _leave(monkeypatch, _Leaving(""), later=False)
     assert saved == [vm.MINIMAL_FLOW] and len(events) == 1
     assert "leave_brand_draft" in events[0]
 
