@@ -283,34 +283,56 @@ def _nav_row(
     *,
     active: rx.Var | bool = False,
     trailing: rx.Component | None = None,
+    below: rx.Component | None = None,
     tooltip: str | None = None,
 ) -> rx.Component:
     """The geometry of every sidebar row, whatever wraps it.
+
+    ``below`` goes on a second line under the name (a «Pronto» entry, m-24854881): the
+    name keeps the whole row and never has to share it with the badge; the icon stays on
+    the name's line.
 
     Kept in one place because zen centres the icon by collapsing the label to zero
     width: if a link row and a button row had different padding, their icons would land
     in different columns the moment the rail collapses. The wrapper (``rx.link`` or
     ``rx.el.button``) carries no padding of its own.
     """
-    return rx.hstack(
-        nav_icon(icon, T.ICON_MD),
-        rx.el.span(
-            label,
+    # Last resort only: a name too long for its row ends in «…» (full name in
+    # `data-label`) instead of pushing the icon out of its column (m-24854881).
+    name_style = {
+        "whiteSpace": "nowrap",
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+        "minWidth": "0",
+        "fontSize": "var(--font-size-3)",
+    }
+    if below is None:
+        icon_part = nav_icon(icon, T.ICON_MD)
+        text_part = rx.el.span(label, class_name="q-label", style=name_style)
+    else:
+        # The icon sits in a box one text line tall, so it centres on the name's line
+        # and not between the name and the line below it.
+        icon_part = rx.box(
+            nav_icon(icon, T.ICON_MD),
+            display="flex",
+            align_items="center",
+            height="var(--line-height-3)",
+            flex_shrink="0",
+        )
+        text_part = rx.el.span(
+            rx.el.span(label, style={**name_style, "display": "block"}),
+            below,
             class_name="q-label",
-            # A label too long for its row ends in «…» (full name in `data-label`)
-            # instead of pushing the icon out of its column (m-24854881).
-            style={
-                "whiteSpace": "nowrap",
-                "overflow": "hidden",
-                "textOverflow": "ellipsis",
-                "minWidth": "0",
-                "fontSize": "var(--font-size-3)",
-            },
-        ),
+            style={"display": "flex", "flexDirection": "column", "minWidth": "0"},
+        )
+    return rx.hstack(
+        icon_part,
+        text_part,
         *([trailing] if trailing is not None else []),
         # Centred on the label's line box: Reflex's hstack defaults to `start`, which
-        # pinned the 18 px icon to the top of the 24 px text line.
-        align="center",
+        # pinned the 18 px icon to the top of the 24 px text line. A two-line row
+        # starts at the top instead: its icon box is already the name's line.
+        align="center" if below is None else "start",
         width="100%",
         gap="0.6rem",
         padding="0.5rem 0.6rem",
@@ -353,21 +375,24 @@ def _nav_item(
     label: str, icon: str, route: str, enabled: bool, routes: Sequence[str] = NAV_ROUTES
 ) -> rx.Component:
     """One menu entry, always a link. A «Pronto» entry (``enabled=False``) carries the
-    word «Pronto» as text next to its label (N10: never only by colour or by looking
-    off) and opens its own screen, which says what is coming and where to go today. An
-    entry with something waiting carries its count (N11, m-24842963)."""
+    word «Pronto» as text on a second line under its name (N10: never only by colour or
+    by looking off; founder, 2026-10-26: the name is never cut to make room for it) and
+    opens its own screen, which says what is coming and where to go today. An entry
+    with something waiting carries its count on the right (N11, m-24842963)."""
     active = route_is_current(route, routes)
+    count = _count_badge(label) if enabled else None
     soon = (
-        _count_badge(label)
+        None
         if enabled
-        else rx.box(tone_badge("Pronto", "neutral"), class_name="q-soon", margin_left="auto")
+        else rx.box(tone_badge("Pronto", "neutral"), class_name="q-soon", line_height="1")
     )
     return rx.link(
         _nav_row(
             icon,
             label,
             active=active,
-            trailing=soon,
+            trailing=count,
+            below=soon,
             tooltip=None if enabled else f"{label} · Pronto",
         ),
         href=route,
