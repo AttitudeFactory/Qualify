@@ -1,6 +1,8 @@
 # Descubrir reels — los reels con más vistas de los referentes, solo del producto de la marca
 
-`[IMPLEMENTADO 2026-10-15, sin commitear · sin prueba en vivo de punta a punta]`
+`[IMPLEMENTADO 2026-10-15 · en main · rediseño firmado el 2026-10-25 en ADR 42]`
+
+> **Este documento describe la versión actual, que se reemplaza.** El costo no está controlado: abrir la pantalla lee y paga; la memoria es del proceso y cada merge despliega (15–54 por día), así que casi toda apertura es en frío; sin brief se paga y no se muestra nada; si Claude falla, cada reintento vuelve a pagar la lectura entera; nadie lee `credits_remaining`. El diseño firmado — «Ideas para tus reels», corrida semanal, reels públicos compartidos entre tenants, una sola puerta medida con topes — está en [ADR 42](adr-42-ideas-reels-costo.md).
 
 En `/create`, la opción **«Descubrir reels»** muestra los reels con más vistas de los referentes de la marca en tres pestañas, **Esta semana**, **Este mes** y **90 días** (esta última, bajo demanda: ver el punto 6), con filtros por plataforma y por referente. Solo entran los reels **del producto de la marca**, los publique quien los publique: una hamburguesería que sigue a un creador de comida recibe sus hamburguesas, no su receta de pollo ni su reel de maquillaje (regla del fundador, 2026-10-15 noche: «si es hamburguesas que solo traiga hamburguesas»).
 
@@ -36,7 +38,7 @@ referentes de la marca ──► ScrapeCreators (1 lectura por cuenta, 30 días)
    - **Los veredictos de Claude se recuerdan** por reel y brief mientras el proceso vive (`reels_discovery._verdicts`, máximo 5.000): la lectura de 90 días y «Actualizar» no vuelven a pagar por un reel ya juzgado. Si cambia lo que el modelo leería (texto, sonido, transcripción o el Brand Kit), se vuelve a preguntar.
    - Una transcripción de Instagram se descarga **una sola vez aunque las lecturas del mes y de 90 días corran a la vez**: la segunda espera a la primera.
    - Si el proceso se reinicia, la siguiente apertura vuelve a leer y a pagar.
-   - Una caché en Postgres necesitaría una migración (`creator_profile_cache` solo admite `kind='snapshot'`). Queda pendiente.
+   - La caché en Postgres no va sobre `creator_profile_cache` sino sobre el patrón compartido de 0036 (`vendor_payloads`) con tablas nuevas: ver [ADR 42](adr-42-ideas-reels-costo.md) §3.
 6. **Filtros y 90 días** (m-24820844, 2026-10-20):
    - **Plataforma** (Todas / Instagram / TikTok, solo si los referentes están en las dos redes) y **referente** (uno concreto o todos). Recortan las tarjetas ya leídas en el estado de la vista: **no llaman al proveedor ni a Claude**, no gastan créditos.
    - **90 días** es una lectura aparte y más profunda: hasta 12 páginas por cuenta (el triple del mes). La pestaña **no lee nada al abrirse**: primero avisa que tiene un **cargo extra** y espera al botón «Leer». Por decisión del fundador (2026-10-20), no se muestran créditos ni dólares en pantalla. Orden de magnitud con 8 referentes: unos 60 créditos, como mucho ~140 (≈0,26 USD).
@@ -164,6 +166,7 @@ Medido en vivo el 2026-10-15 con 6 llamadas sobre una cuenta pública de restaur
 - **Coste:** 1 crédito por página.
   - Con ~10 referentes, **15–35 créditos por lectura completa**.
   - Con una lectura diaria, entre **0,45 y 2 USD por marca al mes**: Freelance a 1,88 USD por 1.000 créditos, Business a 0,99 USD por 1.000. Los créditos no caducan.
+  - **Corrección 2026-10-25 (ADR 42 §1.3):** esa cifra suponía una lectura diaria y dejaba fuera dos cosas. (1) Las **transcripciones de Instagram** (hasta 40 créditos por lectura) y (2) **Claude**, que cuesta lo mismo que el proveedor en cada apertura en frío (≈ USD 0,001 por reel revisado). Con la memoria real (15–90 min por los despliegues), una marca con 3 aperturas al día gasta **≈ USD 6,5 al mes**, no 0,45–2.
   - Saldo el 2026-10-15: **3.681 créditos**.
 - **Rate limits:** el proveedor dice que no impone ninguno; recomienda no pasar de 500 peticiones concurrentes.
 
