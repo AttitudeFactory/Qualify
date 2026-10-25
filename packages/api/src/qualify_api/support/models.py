@@ -25,7 +25,10 @@ class SupportRequest(Base):
 
     __tablename__ = "support_requests"
     __table_args__ = (
-        CheckConstraint("topic IN ('connect_accounts','other')", name="ck_support_requests_topic"),
+        CheckConstraint(
+            "topic IN ('connect_accounts','more_creations','other')",
+            name="ck_support_requests_topic",
+        ),
         CheckConstraint(
             "status IN ('open','contacted','closed')", name="ck_support_requests_status"
         ),

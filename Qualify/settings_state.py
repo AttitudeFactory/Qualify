@@ -2,6 +2,9 @@
 timezone follows — and the currency prices are shown in. The signup only asks for the
 country; this is where the owner changes either one afterwards.
 
+Configuración › «Tu plan» (m-24852145): the plan's name and what it brings a month, and
+«Pedir más a Qualify». Read-only: the owner never changes a plan, never sees a price.
+
 Tenant data, so `AuthState.logout` resets this state with the others."""
 
 from __future__ import annotations
@@ -14,8 +17,16 @@ import reflex as rx
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .settings_provider import LocaleInvalid, read_locale, save_locale
-from .settings_vm import currency_after_country_change, currency_options
+from .settings_provider import LocaleInvalid, read_locale, read_plan, save_locale
+from .settings_provider import request_more as send_more_request
+from .settings_vm import (
+    ASK_MORE_FAILED,
+    ASK_MORE_SENT,
+    PLAN_FAILED,
+    currency_after_country_change,
+    currency_options,
+    plan_label,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -32,6 +43,13 @@ class SettingsState(rx.State):
     locale_saving: bool = False
     locale_saved: bool = False
     locale_error: str = ""
+    # «Tu plan» (m-24852145)
+    plan_text: str = ""
+    plan_code: str = ""
+    plan_error: str = ""
+    more_requesting: bool = False
+    more_notice: str = ""
+    more_error: str = ""
 
     @rx.var
     def currency_choices(self) -> list[dict[str, str]]:
@@ -113,3 +131,51 @@ class SettingsState(rx.State):
             self.country = locale.country
             self.currency = locale.currency
             self.locale_saved = True
+
+    @rx.event(background=True)
+    async def load_plan(self):
+        async with self:
+            self.plan_error = ""
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            async with self:
+                self.plan_error = _NO_SESSION
+            return
+        try:
+            plan = await asyncio.to_thread(read_plan, tenant_id)
+        except SQLAlchemyError as exc:
+            logger.error("business plan unreadable: %s", type(exc).__name__)
+            async with self:
+                self.plan_error = PLAN_FAILED
+            return
+        async with self:
+            self.plan_text = plan_label(plan)
+            self.plan_code = plan.code
+
+    @rx.event(background=True)
+    async def request_more(self):
+        async with self:
+            if self.more_requesting or self.more_notice:
+                return
+            self.more_requesting = True
+            self.more_error = ""
+            auth = await self.get_state(AuthState)
+            email = auth.user_email
+            plan_code = self.plan_code
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            async with self:
+                self.more_requesting = False
+                self.more_error = _NO_SESSION
+            return
+        try:
+            await asyncio.to_thread(send_more_request, tenant_id, email=email, plan_code=plan_code)
+        except Exception as exc:  # noqa: BLE001 — the owner gets a retry, the log the type
+            logger.error("more creations request not saved: %s", type(exc).__name__)
+            async with self:
+                self.more_requesting = False
+                self.more_error = ASK_MORE_FAILED
+            return
+        async with self:
+            self.more_requesting = False
+            self.more_notice = ASK_MORE_SENT

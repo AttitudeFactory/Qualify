@@ -4,6 +4,7 @@ turns them into the option lists the selects render."""
 
 from __future__ import annotations
 
+from qualify_api.plans.catalog import Plan, owner_plan_text
 from qualify_api.tenancy.locale import COUNTRIES, CURRENCY_NAMES, LocaleInvalid, locale_for_country
 
 # The ISO code goes in parentheses so a price tag («USD 12») can be matched to it.
@@ -34,3 +35,17 @@ def currency_after_country_change(country_code: str, currency: str) -> str:
     except LocaleInvalid:
         return currency
     return currency if currency in country.currencies else country.default_currency
+
+
+# --- «Tu plan» (m-24852145): the plan's name and what it brings, never a price ---------
+
+#: The one button the owner has to get more: the same request m-24852129 answers.
+ASK_MORE_BUTTON = "Pedir más a Qualify"
+ASK_MORE_SENT = "Listo, le avisamos al equipo de Qualify. Te escribimos por correo."
+ASK_MORE_FAILED = "No pudimos enviar tu pedido. Vuelve a intentarlo en un rato."
+PLAN_FAILED = "No pudimos leer tu plan. Recarga la página."
+
+
+def plan_label(plan: Plan) -> str:
+    """«Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes»."""
+    return owner_plan_text(plan)

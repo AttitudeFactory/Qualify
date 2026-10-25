@@ -36,6 +36,9 @@ Tables:
   vendor cost crosses the plan's USD cap (UNIQUE `(subscription_id, period_month)`);
   `notified_at` stays NULL until Lark accepted it. Same isolation as `subscriptions`.
 
+`support_requests.topic` gains `more_creations`: the «Pedir más a Qualify» button of
+Configuración (the request m-24852129 answers); the downgrade turns those into `other`.
+
 The USD amounts the team charges are never stored: the report computes them from the
 assignments and the versioned prices file (`qualify_api/plans/data/`).
 
@@ -274,8 +277,26 @@ def upgrade() -> None:
     op.execute("GRANT SELECT, INSERT, UPDATE ON subscription_cost_alerts TO qualify_admin;")
     _isolate_by_grant("subscription_cost_alerts")
 
+    # «Pedir más a Qualify» (Configuración) is a support request of its own topic — the
+    # same request m-24852129 answers with a pack or a plan change
+    op.drop_constraint("ck_support_requests_topic", "support_requests", type_="check")
+    op.create_check_constraint(
+        "ck_support_requests_topic",
+        "support_requests",
+        "topic IN ('connect_accounts','more_creations','other')",
+    )
+
 
 def downgrade() -> None:
+    # the topic is lost (documented): its requests become `other`
+    op.execute("SET LOCAL row_security = off;")
+    op.execute("UPDATE support_requests SET topic = 'other' WHERE topic = 'more_creations';")
+    op.drop_constraint("ck_support_requests_topic", "support_requests", type_="check")
+    op.create_check_constraint(
+        "ck_support_requests_topic",
+        "support_requests",
+        "topic IN ('connect_accounts','other')",
+    )
     op.drop_table("subscription_cost_alerts")
     op.drop_index("ix_business_plans_subscription", table_name="business_plans")
     op.drop_table("business_plans")
