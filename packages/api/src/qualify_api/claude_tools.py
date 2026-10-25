@@ -50,13 +50,15 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-opus-5": (5.0, 25.0),
 }
 
-#: $ per million cache-read tokens. Not one multiplier: 0.1x input on most models, 0.05x
-#: on Opus 5.5 ($0.20) — `claude-api` skill, shared/prompt-caching.md «Economics» and the
-#: per-model pricing lines of shared/model-migration.md (read 2026-10-24, m-24852516).
+#: $ per million cache-read tokens ("Cache hits and refreshes"). Not one multiplier: 0.1x
+#: input on most models, 0.05x on Opus 5.5 and Sonnet 5.5. Source: the official pricing
+#: table, https://platform.claude.com/docs/en/about-claude/pricing (read 2026-10-25,
+#: m-24852539) — every row below checked against it. The `claude-api` skill (cached
+#: 2026-10-06) still says $0.20 for Sonnet 5.5; the live page's $0.10 wins.
 CACHE_READ_PRICES: dict[str, float] = {
     "claude-haiku-5-5": 0.01,
     "claude-haiku-4-5": 0.10,
-    "claude-sonnet-5-5": 0.20,
+    "claude-sonnet-5-5": 0.10,
     "claude-sonnet-5": 0.20,
     "claude-opus-5-5": 0.20,
     "claude-opus-5": 0.50,

@@ -34,6 +34,8 @@ from qualify_creative.providers import (
 )
 from qualify_shared import observability
 
+from qualify_api.claude_tools import cost_breakdown
+
 logger = logging.getLogger(__name__)
 
 #: The providers whose calls are traced, and what Langfuse calls each observation.
@@ -51,8 +53,9 @@ UsageAndCost = tuple[dict[str, int], dict[str, float]]
 def _copy_usage(
     pricing: PricingTable, request: GenerationRequest, result: GenerationResult
 ) -> UsageAndCost:
-    """Tokens, priced like `ContentService._call_cost`: cache reads and writes at the
-    full input rate until the table carries cache units (conservative on purpose)."""
+    """Tokens, priced like `ContentService._call_cost` (m-24852539): a Claude model
+    `claude_tools` prices gets its per-kind `cost_breakdown` (cache reads and writes at
+    their own rates); any other model keeps the table, cache at the full input rate."""
     usage = result.usage
     tokens = {
         "input": usage.input_tokens,
@@ -60,6 +63,15 @@ def _copy_usage(
         "cache_read": usage.cache_read_tokens,
         "cache_creation": usage.cache_creation_tokens,
     }
+    cost = cost_breakdown(
+        result.model_id,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_creation_tokens=usage.cache_creation_tokens,
+    )
+    if cost:
+        return tokens, cost
     per_in = pricing.unit_price(model_id=result.model_id, unit="per_mtok_in")
     per_out = pricing.unit_price(model_id=result.model_id, unit="per_mtok_out")
     billable_in = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens

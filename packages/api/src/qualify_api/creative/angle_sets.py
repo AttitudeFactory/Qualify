@@ -1706,6 +1706,7 @@ def _sum_stats(a: CallStats, b: CallStats) -> CallStats:
         a.cache_read_tokens + b.cache_read_tokens,
         a.turns + b.turns,
         a.tool_calls + b.tool_calls,
+        a.cache_creation_tokens + b.cache_creation_tokens,
     )
 
 
