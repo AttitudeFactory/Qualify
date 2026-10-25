@@ -322,7 +322,7 @@ def test_the_provenance_and_the_usage_ride_with_the_proposal(world: World) -> No
     read = provenance["read"]
     assert read["provider"] == "scrapecreators"
     assert read["client"] == "qualify_api.referentes.scrapecreators_client"
-    assert read["snapshot_schema"] == 4 and read["from_cache"] is False
+    assert read["snapshot_schema"] == 5 and read["from_cache"] is False
     assert read["endpoints"] == ["/v1/instagram/profile", "/v2/instagram/user/posts"]
     assert isinstance(read["fetched_at"], float)
     [rubro] = provenance["claude"]

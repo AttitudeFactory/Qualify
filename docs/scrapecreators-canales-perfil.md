@@ -318,3 +318,42 @@ venga y oculta lo nulo.
   `user-posts`, `user-reels`, `user-highlights`, `search-*` y `profile-videos` no lo ofrecen en
   `--help` (`search-profiles` lo rechazó: «unknown option»). Toda página de publicaciones cobra.
 - Copias crudas con datos públicos de perfiles: fuera del repositorio (carpeta de trabajo de la sesión del 2026-10-24, no versionada).
+
+## 7. Verificado para OL2-1a (m-24854324, 2026-10-25) — instantánea 5
+
+Con la CLI (`just sc …`, 2 créditos: saldo 6839 → 6837; las lecturas de perfil salieron de la
+caché, 0 créditos):
+
+```bash
+just sc instagram profile --handle crepesywaffles --cache-max-age 7d   # 0 (caché)
+just sc instagram profile --handle paraisodelpan --cache-max-age 7d    # 0 (caché)
+just sc instagram user-posts --handle crepesywaffles                   # 1
+just sc instagram user-posts --handle crepesywaffles --next-max-id "mobile:web:<token>"  # HTTP 500, 0
+just sc instagram user-posts --handle crepesywaffles --next-max-id "web:<token>"         # 1
+```
+
+- **Los textos del perfil llegan completos, no cortados**: los 12 de `crepesywaffles` (76 a
+  1191 caracteres) son idénticos byte a byte a `caption.text` de `user-posts`.
+- **Ni el perfil ni `user-posts` traen marca de «fijada»** (ninguna clave con `pin` en las 24
+  publicaciones). Las dos listas vinieron en orden de fecha. El cliente marca `pinned` con la
+  marca del proveedor si algún día aparece (`is_top` en TikTok, `timeline_pinned_user_ids`) y,
+  si no, por el orden: una de las 3 primeras más antigua que una posterior está fijada.
+- **El `end_cursor` del perfil continúa `user-posts`** quitándole el prefijo `mobile:`
+  (`mobile:web:<token>` → `web:<token>`): devolvió las publicaciones 13–24, sin repetir las 12
+  del perfil. Con el prefijo, HTTP 500 (sin cobro). Funcionó con un perfil de caché de un día.
+- Cifras del perfil frente a `user-posts`: me gusta = `edge_media_preview_like.count`,
+  comentarios = `comment_count`, reproducciones = `video_play_count` (coincide con
+  `play_count`; `video_view_count` es otra cifra, menor). El perfil **no** trae `ai_label_info`:
+  cuando no se pide `user-posts`, las publicaciones de Instagram quedan sin etiqueta de IA.
+
+Qué guarda la instantánea 5 (`SNAPSHOT_SCHEMA = 5`, `fetch_profile_and_posts`):
+`bioLinks[{title, url, kind: whatsapp|social|web}]` y `recentMedia[{postId, url, kind:
+photo|video|carousel, isReel, takenAt, caption (completo), hashtags, likes, comments, views,
+pinned, isOwner, isCollab, location, thumbnailUrl}]` (12; en TikTok, de las páginas de videos que
+ya se pagan). `recentPosts`, `topHashtags` y `recentCaptions` no cambian de forma.
+
+Regla de `user-posts`. Por defecto (`ai_labels=True`: asistente web y Referentes) se sigue pidiendo la primera página como antes, porque solo ella trae la etiqueta de IA por publicación que guarda el historial de crecimiento. El prellenado del Alta, que no guarda historial, pide `ai_labels=False` y aplica `needs_post_list`: solo si la publicación no fijada más antigua de las 12
+sigue dentro de los 7 días (y entonces desde el cursor del perfil), o si el perfil vino sin
+publicaciones y la cuenta dice tener alguna (no si dice 0 ni si es privada). Instagram típico = 1
+crédito en el Alta. Las instantáneas de esquema 4 en caché cuentan como fallo de caché: cada cuenta se vuelve
+a leer una vez (1 crédito).
