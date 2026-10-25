@@ -17,7 +17,14 @@ says `failed`/`expired` → the piece fails and its creations come back (CREAR-5
 
 `slot` names the call inside the generation: `seedance-N` for the N-th Seedance task of
 a run (the pipeline is deterministic for a brief, so a resumed run makes the same calls
-in the same order), `final:<asset id>` for a 1080p final.
+in the same order), `omnihuman-N` for a talking presenter's render (m-24852495),
+`final:<asset id>` for a 1080p final.
+
+m-24852495 — OmniHuman's renders take the same road: kept by id when OmniHuman accepts
+them, the wait counted from `generating`, the piece left in progress when the wait runs
+out and resumed by id. An OmniHuman row's `context` also carries what the render was
+made from (`presenter`: the photo and voice keys in R2, the voice's length and
+provenance), so the resumed run pays neither the presenter nor the voice again.
 """
 
 from __future__ import annotations
@@ -212,12 +219,23 @@ class PostgresVendorTaskStore:
 
 
 class VendorTaskBinding(Protocol):
-    """One run's view of its tasks, for `MediaProducer`: which id to resume for a slot,
-    the observer that records a new one, and the settlement of a slot."""
+    """One run's view of its tasks, for `MediaProducer`: which id to resume for a slot
+    (and what was kept with it), the observer that records a new one — with `context`
+    merged into the row's copy snapshot (m-24852495: an OmniHuman render keeps what it
+    was made from) — and the settlement of a slot."""
 
     def resume_id(self, slot: str) -> str | None: ...
 
-    def observer(self, slot: str, provider: str, model_id: str) -> VendorTaskObserver: ...
+    def resume_context(self, slot: str) -> Mapping[str, Any] | None: ...
+
+    def observer(
+        self,
+        slot: str,
+        provider: str,
+        model_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> VendorTaskObserver: ...
 
     def settle(self, slot: str, status: str) -> None: ...
 
@@ -276,14 +294,30 @@ class DraftVendorTasks:
         self._pipeline_version = pipeline_version
         self._context = dict(context)
         self._heartbeat = heartbeat
-        self._known = {t.slot: t.vendor_task_id for t in existing if t.status != FAILED}
+        live = [t for t in existing if t.status != FAILED]
+        self._known = {t.slot: t.vendor_task_id for t in live}
+        self._contexts: dict[str, Mapping[str, Any]] = {t.slot: t.context for t in live}
 
     def resume_id(self, slot: str) -> str | None:
         return self._known.get(slot)
 
-    def observer(self, slot: str, provider: str, model_id: str) -> VendorTaskObserver:
+    def resume_context(self, slot: str) -> Mapping[str, Any] | None:
+        """What was kept with the slot's live task (its row's `context`), or None."""
+        return self._contexts.get(slot) if slot in self._known else None
+
+    def observer(
+        self,
+        slot: str,
+        provider: str,
+        model_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> VendorTaskObserver:
+        row_context = {**self._context, **dict(context or {})}
+
         def record(task_id: str) -> None:
             self._known[slot] = task_id
+            self._contexts[slot] = row_context
             self._store.record(
                 tenant_id=self._tenant_id,
                 draft_id=self._draft_id,
@@ -293,7 +327,7 @@ class DraftVendorTasks:
                 model_id=model_id,
                 vendor_task_id=task_id,
                 pipeline_version=self._pipeline_version,
-                context=self._context,
+                context=row_context,
             )
 
         return _Observer(record, self._heartbeat)
@@ -349,8 +383,18 @@ class FinalVendorTasks(DraftVendorTasks):
     def resume_id(self, slot: str) -> str | None:
         return super().resume_id(self.slot)
 
-    def observer(self, slot: str, provider: str, model_id: str) -> VendorTaskObserver:
-        return super().observer(self.slot, provider, model_id)
+    def resume_context(self, slot: str) -> Mapping[str, Any] | None:
+        return super().resume_context(self.slot)
+
+    def observer(
+        self,
+        slot: str,
+        provider: str,
+        model_id: str,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> VendorTaskObserver:
+        return super().observer(self.slot, provider, model_id, context=context)
 
     def settle(self, slot: str, status: str) -> None:
         super().settle(self.slot, status)
