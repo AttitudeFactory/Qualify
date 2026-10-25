@@ -121,3 +121,102 @@ class SubscriptionCostAlert(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- 90-day packs (migration 0094, m-24852129) ------------------------------------------
+
+
+class CreationPack(Base):
+    """One fixed pack granted by the team after the payment (D12, D19, D23): the units it
+    adds come from the versioned prices file, it lasts 90 days, it is never deleted.
+    Standard tenant RLS; `qualify_app` SELECT only."""
+
+    __tablename__ = "creation_packs"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    subscription_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("subscriptions.id"), nullable=False
+    )
+    pack_code: Mapped[str] = mapped_column(Text, nullable=False)
+    prices_version: Mapped[str] = mapped_column(Text, nullable=False)
+    creations: Mapped[int] = mapped_column(Integer, nullable=False)
+    videos: Mapped[int] = mapped_column(Integer, nullable=False)
+    previews: Mapped[int] = mapped_column(Integer, nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    support_request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    meegle_work_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    granted_by: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CreationAllocation(Base):
+    """Which source — the plan's month or a pack — paid units of one charge (D17), written
+    with the charge under the brand's lock. `reversed_units` grows when they come back."""
+
+    __tablename__ = "creation_allocations"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    charge_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("creation_charges.id"), nullable=False
+    )
+    dimension: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    pack_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("creation_packs.id"), nullable=True
+    )
+    plan_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plans_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    period_month: Mapped[date] = mapped_column(Date, nullable=False)
+    units: Mapped[int] = mapped_column(Integer, nullable=False)
+    reversed_units: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class CreationPayment(Base):
+    """What the team was paid for a pack, by hand (D19). No grant to `qualify_app`."""
+
+    __tablename__ = "creation_payments"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    pack_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("creation_packs.id"), nullable=True
+    )
+    plan_assignment_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("subscription_plan_assignments.id"), nullable=True
+    )
+    period_month: Mapped[date] = mapped_column(Date, nullable=False)
+    usd_paid: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    prices_version: Mapped[str] = mapped_column(Text, nullable=False)
+    payment_ref: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
