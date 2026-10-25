@@ -102,3 +102,6 @@ is what buyers demand that Qualify cannot give today.
 - `durable-findings` — at the start of any long task; flush each section as you finish it.
 - `customer-research` (pain in buyers' own words), `competitor-profiling`, `positioning` and
   `pricing` (as lenses on the market, not to set Qualify's), `anthropic-skills:deep-research`.
+- `qualify-business-decisions` — read it only when the founder explicitly asks you for a price
+  or plan recommendation (as in `docs/precios-planes-qualify.md`): you supply the evidence and
+  options table; the procedure owns the margins and the founder's decision.

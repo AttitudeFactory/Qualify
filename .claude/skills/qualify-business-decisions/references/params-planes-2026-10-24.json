@@ -1,0 +1,51 @@
+{
+  "version": "planes-v1 · precios del fundador 2026-10-24 · costos tabla v7 / pesos-creaciones-v2",
+  "currency": "USD",
+  "notes": "Snapshot of docs/precios-planes-qualify.md (Decisión del fundador + Márgenes recalculados) and docs/modelo-cobro-generacion.md §5-§6. Generation cost only, per business per month. Copy this file for a new decision; never edit it in place: it is the regression fixture of the calculator's test.",
+  "plans": [
+    {
+      "name": "Básico",
+      "price": {"amount": 79, "tier": "V", "source": "precios-planes-qualify.md, decisión del fundador 2026-10-24"},
+      "first_month_price": {"amount": 39, "tier": "V", "source": "ídem, primer mes a mitad de precio"},
+      "costs": {
+        "typical": {"amount": 20, "tier": "H", "source": "estimación del fundador 15-25; modelo-cobro §6 estima 9,90; nadie creó un video en producción"},
+        "worst": {"amount": 55, "tier": "V", "source": "calculado con tarifas oficiales v7 (modelo-cobro §6, cota conservadora)"},
+        "worst_refs": {"amount": 111, "tier": "V", "source": "calculado, referencias de 30 s y H3 confirmada (modelo-cobro §6)"}
+      },
+      "alert_cap": 120
+    },
+    {
+      "name": "Plus",
+      "price": {"amount": 149, "tier": "V", "source": "precios-planes-qualify.md, decisión del fundador 2026-10-24"},
+      "first_month_price": {"amount": 75, "tier": "V", "source": "ídem"},
+      "costs": {
+        "typical": {"amount": 40, "tier": "H", "source": "proporcional al cupo (2x Básico), sin datos"},
+        "worst": {"amount": 110, "tier": "V", "source": "calculado, 2x Básico (modelo-cobro D15)"},
+        "worst_refs": {"amount": 222, "tier": "V", "source": "calculado, 2x Básico (modelo-cobro D15)"}
+      },
+      "alert_cap": 240
+    },
+    {
+      "name": "Pro",
+      "price": {"amount": 279, "tier": "V", "source": "precios-planes-qualify.md, decisión del fundador 2026-10-24"},
+      "first_month_price": {"amount": 139, "tier": "V", "source": "ídem"},
+      "costs": {
+        "typical": {"amount": 80, "tier": "H", "source": "proporcional al cupo (4x Básico), sin datos"},
+        "worst": {"amount": 220, "tier": "V", "source": "calculado, 4x Básico (modelo-cobro D15)"},
+        "worst_refs": {"amount": 444, "tier": "V", "source": "calculado, 4x Básico (modelo-cobro D15)"}
+      },
+      "alert_cap": 480
+    }
+  ],
+  "fixed_monthly": {
+    "vps_hetzner_compartido": {"amount": 8, "tier": "H", "source": "orden de magnitud de un CX23/CAX de 2 vCPU 4 GB con backups (plan-cicd-staging.md §5.8); compartido con Pedidos; leer la factura"},
+    "r2": {"amount": 0, "tier": "H", "source": "dentro del free tier de 10 GB-mes (backlog-retencion-datos-r2.md); medir con la factura"},
+    "resend": {"amount": 0, "tier": "S", "source": "plan gratis hasta ~100 negocios (adr-41 §dependencias)"}
+  },
+  "assumptions": {
+    "tenants": null,
+    "monthly_churn": null,
+    "cac": null,
+    "ops_cost_per_tenant": null
+  }
+}
