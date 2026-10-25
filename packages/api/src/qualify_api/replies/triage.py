@@ -18,14 +18,26 @@ The contract (labeling rules in `docs/respuestas-comentarios-medicion.md` §2):
 - `needs_reply`: whether the business owes an answer (a question, a request or a
   complaint). Missing one is the expensive error, so its recall bar is 0.95.
 
-Provenance: every `Triage` carries the model id and `TRIAGE_PROMPT_VERSION`; the batch
-cost is in `last_stats`. Same API facts as `intent.classifier` (Haiku 5.5 thinks by
-default → `tool_choice: auto` and the caller checks the tool was called).
+Prompt versions (`TRIAGE_PROMPTS`, m-24854495):
+
+- `atender4a.1` — the three fields above. Still the default: it is what ATENDER-4b ships.
+- `atender4a.1-conf` — the same rules plus a `confidence` (0..1) on the sentiment, so a stored
+  sentiment keeps a real `score` once Haiku replaces robertuito (whose `score` is the
+  softmax of its label). Measured on the golden set before it becomes the default
+  (`docs/modelos-generativos/pruebas.md`, SENT-HAIKU-001). Not called `atender4a.2`:
+  that name belongs to the drafts prompt in `any_comment_drafts`.
+
+Provenance: every `Triage` carries the model id and its prompt version; the batch
+cost is in `last_stats` and the wall time of each batch in `last_latencies_s`. Same API
+facts as `intent.classifier` (Haiku 5.5 thinks by default → `tool_choice: auto` and the
+caller checks the tool was called).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import math
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final, Protocol
@@ -49,6 +61,8 @@ TRIAGE_EFFORT: Final = "low"
 #: Bump whenever `SYSTEM_PROMPT` or the tool changes: it is the detector version a
 #: reliability report is written under.
 TRIAGE_PROMPT_VERSION: Final = "atender4a.1"
+#: Same rules + a sentiment confidence (m-24854495). Not the default until measured.
+TRIAGE_PROMPT_VERSION_CONFIDENCE: Final = "atender4a.1-conf"
 TRIAGE_BATCH: Final = 25
 TRIAGE_TOOL: Final = "registrar_comentarios"
 
@@ -73,6 +87,9 @@ class Triage:
     needs_reply: bool
     model_id: str = TRIAGE_MODEL
     prompt_version: str = TRIAGE_PROMPT_VERSION
+    #: The model's own confidence in `sentiment`, 0..1 — `atender4a.1-conf` on; None under
+    #: `atender4a.1` (no score is ever invented).
+    confidence: float | None = None
 
 
 class CommentTriager(Protocol):
@@ -120,23 +137,65 @@ Reglas:
 cada comentario recibido, usando su número.
 """
 
+#: `atender4a.1-conf`: `SYSTEM_PROMPT` word for word plus the confidence section, so any
+#: difference measured against `atender4a.1` comes from asking for the confidence.
+SYSTEM_PROMPT_CONFIDENCE: Final = SYSTEM_PROMPT.replace(
+    "\nReglas:\n",
+    """
+4. confidence — qué tan seguro estás del sentiment que elegiste, un número de 0 a 1:
+- 0.9 o más cuando el tono es inequívoco ("qué rico", "pésimo servicio").
+- entre 0.5 y 0.8 cuando dudas entre dos tonos: posible sarcasmo, solo emojis, \
+mezcla de elogio y queja, texto muy corto o sin contexto.
+- menos de 0.5 cuando casi adivinas.
+No pongas siempre el mismo valor: debe reflejar la duda de cada comentario.
 
-def _triage_tool() -> dict[str, Any]:
+Reglas:
+""",
+    1,
+)
+
+
+@dataclass(frozen=True)
+class TriagePrompt:
+    system: str
+    with_confidence: bool
+
+
+TRIAGE_PROMPTS: Final[Mapping[str, TriagePrompt]] = {
+    TRIAGE_PROMPT_VERSION: TriagePrompt(SYSTEM_PROMPT, with_confidence=False),
+    TRIAGE_PROMPT_VERSION_CONFIDENCE: TriagePrompt(SYSTEM_PROMPT_CONFIDENCE, with_confidence=True),
+}
+
+
+def _triage_tool(*, with_confidence: bool = False) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "id": {"type": "integer"},
+        "sentiment": {"type": "string", "enum": [s.value for s in Sentiment]},
+        "kind": {"type": "string", "enum": [k.value for k in CommentKind]},
+        "needs_reply": {"type": "boolean"},
+    }
+    description = "Registra sentimiento, tipo y si necesita respuesta de cada comentario."
+    if with_confidence:
+        # Strict tool schemas reject `minimum`/`maximum`: the range is in the prompt and
+        # `parse_confidence` clamps.
+        properties["confidence"] = {
+            "type": "number",
+            "description": "Confianza en el sentiment, de 0 a 1.",
+        }
+        description = (
+            "Registra sentimiento (con su confianza), tipo y si necesita respuesta de "
+            "cada comentario."
+        )
     return strict_tool(
         TRIAGE_TOOL,
-        "Registra sentimiento, tipo y si necesita respuesta de cada comentario.",
+        description,
         {
             "results": {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "properties": {
-                        "id": {"type": "integer"},
-                        "sentiment": {"type": "string", "enum": [s.value for s in Sentiment]},
-                        "kind": {"type": "string", "enum": [k.value for k in CommentKind]},
-                        "needs_reply": {"type": "boolean"},
-                    },
-                    "required": ["id", "sentiment", "kind", "needs_reply"],
+                    "properties": properties,
+                    "required": list(properties),
                     "additionalProperties": False,
                 },
             }
@@ -144,15 +203,29 @@ def _triage_tool() -> dict[str, Any]:
     )
 
 
+def parse_confidence(raw: Any) -> float | None:
+    """A model confidence into 0..1, or None when it is not a finite number (a bool is
+    not a number here, whatever Python says)."""
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    value = float(raw)
+    if not math.isfinite(value):
+        return None
+    return min(1.0, max(0.0, value))
+
+
 def _user_message(texts: Sequence[str]) -> str:
     lines = "\n".join(f"{i}. {' '.join(text.split())}" for i, text in enumerate(texts, 1))
     return f"Comentarios ({len(texts)}):\n{lines}"
 
 
-def parse_triage(item: Any, *, model_id: str, prompt_version: str) -> Triage | None:
+def parse_triage(
+    item: Any, *, model_id: str, prompt_version: str, with_confidence: bool = False
+) -> Triage | None:
     """One tool-result entry into a `Triage`, or None when anything is off-contract.
     A complaint or question always needs a reply, whatever the model said: that is the
-    labeling rule, and it can only raise `needs_reply` (the recall-critical side)."""
+    labeling rule, and it can only raise `needs_reply` (the recall-critical side). A
+    missing or malformed confidence leaves `confidence=None` but keeps the labels."""
     if not isinstance(item, dict):
         return None
     try:
@@ -171,6 +244,7 @@ def parse_triage(item: Any, *, model_id: str, prompt_version: str) -> Triage | N
         needs_reply=needs,
         model_id=model_id,
         prompt_version=prompt_version,
+        confidence=parse_confidence(item.get("confidence")) if with_confidence else None,
     )
 
 
@@ -188,8 +262,14 @@ class ClaudeCommentTriager:
     model_revision: str | None = None
 
     def __post_init__(self) -> None:
+        if self.prompt_version not in TRIAGE_PROMPTS:
+            known = ", ".join(sorted(TRIAGE_PROMPTS))
+            raise ValueError(f"unknown triage prompt {self.prompt_version!r} (known: {known})")
+        self._prompt = TRIAGE_PROMPTS[self.prompt_version]
         self._client: Any = None
         self.last_stats: list[CallStats] = []
+        #: Wall time of each batch call, seconds (evals report p50/p95 per batch).
+        self.last_latencies_s: list[float] = []
 
     @property
     def model_id(self) -> str:
@@ -198,9 +278,12 @@ class ClaudeCommentTriager:
     @observability.traced("clasificar comentarios para responder", tags=("interacciones",))
     def triage(self, texts: Sequence[str]) -> list[Triage | None]:
         self.last_stats = []
+        self.last_latencies_s = []
         results: list[Triage | None] = []
         for start in range(0, len(texts), self.batch_size):
+            began = time.perf_counter()
             found, stats = self._triage_batch(texts[start : start + self.batch_size])
+            self.last_latencies_s.append(time.perf_counter() - began)
             self.last_stats.append(stats)
             results.extend(found)
         return results
@@ -213,9 +296,9 @@ class ClaudeCommentTriager:
             self._client,
             self.config,
             meter,
-            system=SYSTEM_PROMPT,
+            system=self._prompt.system,
             messages=[{"role": "user", "content": _user_message(texts)}],
-            tools=[_triage_tool()],
+            tools=[_triage_tool(with_confidence=self._prompt.with_confidence)],
             tool_choice=forced_or_auto(self.config, TRIAGE_TOOL),
             max_tokens=max(4096, 100 * len(texts)),
         )
@@ -229,18 +312,27 @@ class ClaudeCommentTriager:
             if not isinstance(index, int) or not 1 <= index <= len(texts) or index in by_id:
                 continue
             by_id[index] = parse_triage(
-                item, model_id=self.model_id, prompt_version=self.prompt_version
+                item,
+                model_id=self.model_id,
+                prompt_version=self.prompt_version,
+                with_confidence=self._prompt.with_confidence,
             )
         return [by_id.get(i) for i in range(1, len(texts) + 1)], meter.stats()
 
 
 __all__ = [
+    "SYSTEM_PROMPT",
+    "SYSTEM_PROMPT_CONFIDENCE",
     "TRIAGE_MODEL",
+    "TRIAGE_PROMPTS",
     "TRIAGE_PROMPT_VERSION",
+    "TRIAGE_PROMPT_VERSION_CONFIDENCE",
     "ClaudeCommentTriager",
     "CommentKind",
     "CommentTriager",
     "Sentiment",
     "Triage",
+    "TriagePrompt",
+    "parse_confidence",
     "parse_triage",
 ]

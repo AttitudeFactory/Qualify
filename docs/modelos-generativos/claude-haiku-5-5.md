@@ -93,3 +93,11 @@
   - Los `other` siguen recibiendo borrador (spam, amigos que se etiquetan); eso se corta en la compuerta de ATENDER-4b, no aquí.
   - La revisión humana sigue pendiente.
 - **Estado:** **PENDIENTE de datos reales**, igual que ATENDER4A-001.
+
+## Prueba SENT-HAIKU-001 — sentimiento con confianza, contra robertuito (m-24854495) — 2026-10-25 · PENDIENTE
+
+- **Qué se va a medir:** si `ClaudeCommentTriager` con el prompt **`atender4a.1-conf`** (el de `atender4a.1` más un campo `confidence` de 0 a 1) puede reemplazar a robertuito en el sentimiento de comentarios y menciones (decisión del fundador del 2026-10-25, opción C). El prompt `atender4a.1` sigue disponible y es el valor por defecto hasta que esto se mida. No se llama `atender4a.2` porque ese nombre ya es del prompt de borradores.
+- **Ajustes:** `claude-haiku-5-5`, esfuerzo `low`, herramienta estricta `registrar_comentarios` (sin `minimum`/`maximum`: la herramienta estricta no los admite, así que el código recorta la confianza a 0..1), `tool_choice: auto`, lotes de 25, prompt de sistema cacheado.
+- **Material:** solo los 408 comentarios públicos del golden set de intención (misma división), etiquetados a ciegas por Raul y Yesika. Los comentarios reales de los negocios del fundador quedaron fuera (decisión del fundador, 2026-10-25), así que el recall de `neg` descansa solo en datos públicos.
+- **Prueba de humo (2026-10-25, corrida con el nombre provisional `atender4a.2`, mismo texto que `atender4a.1-conf`):** 10 comentarios públicos sin etiquetar, 2 lotes de 5. US$0,000591; la caché se leyó en el segundo lote (1.498 tokens); confianza en 10 de 10, entre 0,35 y 0,90; latencia por lote de 5 de 1,74 s (p50) y 4,69 s (p95).
+- **Estado:** pendiente de etiquetas. Detalle, umbrales y pasos en la [entrada SENT-HAIKU-001 de la bitácora](pruebas.md#sent-haiku-001).
