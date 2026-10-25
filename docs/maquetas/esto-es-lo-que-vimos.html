@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Primer ingreso: maqueta</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens tomados de Qualify/ui/tokens.py + assets/qualify.css (Radix gray/teal/grass/blue, radios lq). */
+:root{
+  --ground:#f9f9fb; --panel:#ffffff; --card:#f9f9fb; --raised:#f0f0f3;
+  --border:#d9d9e0; --border-strong:#b9bbc6;
+  --text:#1c2024; --muted:#60646c; --faint:#8b8d98;
+  --accent:#12a594; --accent-text:#008573; --accent-soft:#e0f8f3; --on-accent:#ffffff;
+  --ok-bg:#e9f6e9; --ok-border:#b2ddb5; --ok-text:#2a7e3b;
+  --info-bg:#f4faff; --info-border:#acd8fc; --info-text:#0d74ce;
+  --warn-bg:#fff7c2; --warn-text:#ab6400;
+  --radius-card:20px; --radius-control:12px; --radius-island:32px;
+  --font:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#111113; --panel:#18191b; --card:#1c1d20; --raised:#222325;
+    --border:#363a3f; --border-strong:#5a6169;
+    --text:#edeef0; --muted:#b0b4ba; --faint:#696e77;
+    --accent:#12a594; --accent-text:#0bd8b6; --accent-soft:#0d2d2a; --on-accent:#ffffff;
+    --ok-bg:#1b2a1e; --ok-border:#2d5736; --ok-text:#71d083;
+    --info-bg:#0d1520; --info-border:#205d9e; --info-text:#70b8ff;
+    --warn-bg:#302008; --warn-text:#ffca16;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#111113; --panel:#18191b; --card:#1c1d20; --raised:#222325;
+  --border:#363a3f; --border-strong:#5a6169;
+  --text:#edeef0; --muted:#b0b4ba; --faint:#696e77;
+  --accent:#12a594; --accent-text:#0bd8b6; --accent-soft:#0d2d2a; --on-accent:#ffffff;
+  --ok-bg:#1b2a1e; --ok-border:#2d5736; --ok-text:#71d083;
+  --info-bg:#0d1520; --info-border:#205d9e; --info-text:#70b8ff;
+  --warn-bg:#302008; --warn-text:#ffca16;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font-family:var(--font);line-height:1.45}
+.intro{max-width:1200px;margin:0 auto;padding:24px 16px 8px}
+.intro h1{font-size:1.4rem;margin:0 0 6px}
+.intro p{margin:0 0 6px;color:var(--muted);font-size:.92rem}
+.draft{display:inline-block;background:var(--warn-bg);color:var(--warn-text);font-weight:600;font-size:.75rem;padding:2px 8px;border-radius:999px;margin-right:6px}
+.toolbar{margin:10px 0 0}
+.toolbar button{font:inherit;font-size:.85rem;border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:var(--radius-control);padding:6px 12px;min-height:36px;cursor:pointer}
+.row{display:flex;flex-wrap:wrap;gap:28px;justify-content:center;max-width:1200px;margin:0 auto;padding:16px}
+.frame{width:360px;max-width:100%;display:flex;flex-direction:column;gap:8px}
+.cap{font-size:.8rem;color:var(--muted);padding:0 4px}
+.cap b{color:var(--text)}
+.phone{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-island);overflow:hidden;min-height:700px;position:relative}
+.hdr{padding:20px 16px 12px;border-bottom:1px solid var(--border)}
+.eyebrow{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:0 0 4px}
+.hdr h2{font-size:1.45rem;line-height:1.15;margin:0}
+.hdr p{margin:6px 0 0;color:var(--muted);font-size:.85rem}
+.body{padding:16px;display:flex;flex-direction:column;gap:14px}
+.callout{display:flex;gap:10px;border-radius:var(--radius-control);padding:12px;font-size:.86rem}
+.callout.info{background:var(--info-bg);border:1px solid var(--info-border);color:var(--info-text)}
+.callout.ok{background:var(--ok-bg);border:1px solid var(--ok-border);color:var(--ok-text)}
+.callout svg{flex:none;margin-top:2px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px;display:flex;flex-direction:column;gap:14px}
+.acct{display:flex;gap:12px;align-items:center}
+.avatar{width:56px;height:56px;border-radius:999px;flex:none;background:radial-gradient(circle at 35% 35%,#f5b84a 0 30%,#2f8f83 31% 100%);border:1px solid var(--border);display:grid;place-items:center;color:#fff;font-weight:700}
+.acct h3{margin:0;font-size:1.05rem}
+.acct .meta{font-size:.82rem;color:var(--muted)}
+.quote{border-left:3px solid var(--accent);padding:2px 0 2px 10px;font-size:.9rem}
+.lbl{font-size:.8rem;color:var(--muted);margin:0 0 2px}
+.fact{display:flex;flex-direction:column;gap:2px}
+.fact .top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.fact .val{font-weight:500}
+.src{font-size:.75rem;color:var(--muted)}
+.fix{font:inherit;font-size:.82rem;color:var(--accent-text);background:none;border:0;padding:0 4px;min-height:44px;min-width:44px;cursor:pointer;text-decoration:underline;text-underline-offset:3px;flex:none}
+hr{border:0;border-top:1px solid var(--border);margin:0}
+.dots{display:flex;gap:8px}
+.dot{width:36px;height:36px;border-radius:999px;border:1px solid var(--border)}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:.8rem;background:var(--raised);border:1px solid var(--border);border-radius:999px;padding:3px 10px}
+.tag.mine{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-text)}
+.btn{font:inherit;font-weight:600;font-size:.95rem;border-radius:var(--radius-control);min-height:44px;padding:10px 14px;width:100%;cursor:pointer;border:1px solid transparent}
+.btn.primary{background:var(--accent);color:var(--on-accent)}
+.btn.soft{background:var(--accent-soft);color:var(--accent-text)}
+.btn.ghost{background:transparent;color:var(--muted)}
+.btns{display:flex;flex-direction:column;gap:8px}
+.note{font-size:.78rem;color:var(--muted);text-align:center}
+.check{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.check li{display:flex;gap:10px;align-items:center;font-size:.92rem}
+.ck{width:24px;height:24px;border-radius:999px;display:grid;place-items:center;flex:none;font-size:.75rem;font-weight:700}
+.ck.done{background:var(--accent);color:var(--on-accent)}
+.ck.todo{border:2px solid var(--border-strong);color:var(--muted)}
+.check li.todo{font-weight:600}
+.progress{height:6px;background:var(--raised);border-radius:999px;overflow:hidden}
+.progress span{display:block;height:100%;background:var(--accent)}
+label.f{font-weight:600;font-size:.92rem}
+textarea,input{font:inherit;width:100%;border:1px solid var(--border-strong);background:var(--panel);color:var(--text);border-radius:var(--radius-control);padding:10px;min-height:44px}
+textarea{min-height:96px;resize:vertical}
+.hint{font-size:.78rem;color:var(--muted)}
+.two{display:flex;gap:8px}
+.two .btn{flex:1}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.45)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--panel);border-top-left-radius:var(--radius-card);border-top-right-radius:var(--radius-card);border-top:1px solid var(--border);padding:16px;display:flex;flex-direction:column;gap:12px}
+.grab{width:40px;height:4px;border-radius:999px;background:var(--border-strong);margin:0 auto}
+.sheet h3{margin:0;font-size:1.05rem}
+.dim{opacity:.55}
+.summary{display:flex;gap:12px;align-items:center}
+.next{font-size:.8rem;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;border-radius:var(--radius-control);overflow:hidden}
+.grid.tt{grid-template-columns:repeat(3,1fr)}
+.th{position:relative;aspect-ratio:1/1;background:var(--raised)}
+.grid.tt .th{aspect-ratio:9/16}
+.th .badge{position:absolute;left:4px;bottom:4px;right:4px;font-size:.66rem;font-weight:600;background:rgba(0,0,0,.72);color:#fff;border-radius:6px;padding:2px 5px;text-align:center}
+.th.top{outline:3px solid var(--accent);outline-offset:-3px}
+.t1{background:linear-gradient(135deg,#f5b84a,#e98a3c)}.t2{background:linear-gradient(135deg,#2f8f83,#1d5e57)}
+.t3{background:linear-gradient(135deg,#f3e6d0,#d9c3a0)}.t4{background:linear-gradient(135deg,#e9a6b8,#c46b85)}
+.t5{background:linear-gradient(135deg,#8ad1c6,#2f8f83)}.t6{background:linear-gradient(135deg,#6b4b3a,#3b2a20)}
+.link{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:var(--radius-control);padding:10px 12px;min-height:44px;font-size:.88rem}
+.link .k{font-weight:600}
+.link .m{color:var(--muted);font-size:.8rem;margin-left:auto}
+.stats{display:flex;gap:14px;font-size:.82rem;color:var(--muted)}
+.stats b{color:var(--text)}
+.need{display:inline-block;font-size:.68rem;font-weight:600;border:1px solid var(--border-strong);border-radius:999px;padding:0 6px;margin:2px 2px 0 0;color:var(--text)}
+.legend{font-size:.8rem;color:var(--muted);margin-top:6px}
+.avatar.tt{background:radial-gradient(circle at 40% 35%,#ffd36b 0 28%,#c0392b 29% 100%)}
+.avatar.none{background:var(--raised);color:var(--muted)}
+@media (max-width:420px){.row{padding:16px 0}.frame{width:100%}}
+</style>
+</head>
+<body>
+<div class="intro">
+  <h1>Primer ingreso con identidad de marca precargada</h1>
+  <p><span class="draft">BORRADOR</span>Textos nuevos sin aprobar. Los cinco textos ya aprobados aparecen literales. Datos de ejemplo, ninguna cuenta es de un cliente real; las miniaturas son recuadros de color en lugar de fotos.</p>
+  <p>Variante mostrada: B1, con borradores de IA para las 3 preguntas, dentro de la llamada que ya existe. Con la opción A, los campos llegan vacíos con un ejemplo según el rubro.</p>
+  <p class="legend">Etiquetas de las notas al pie de cada pantalla, sobre lo que necesita cada dato: <span class="need">0</span> ya está en la propuesta · <span class="need">G</span> el proveedor lo entrega y hoy lo descartamos: guardarlo · <span class="need">R2</span> imagen que vence: copiarla · <span class="need">IA</span> una llamada más de Claude · <span class="need">+1</span> un crédito más.</p>
+  <div class="toolbar"><button type="button" id="theme">Cambiar claro / oscuro</button></div>
+</div>
+
+<div class="row">
+
+  <!-- 1 Instagram -->
+  <section class="frame" aria-label="Pantalla 1, Instagram">
+    <div class="cap"><b>1 · Instagram: esto es lo que vimos.</b> Sus fotos, sus palabras, su botón de pedidos. Cada dato dice de dónde salió y tiene «Corregir».<br>
+      <span class="need">foto R2</span><span class="need">cuadrícula G+R2</span><span class="need">enlaces G</span><span class="need">más gustó G</span><span class="need">etiquetas propias G</span><span class="need">frecuencia G</span><span class="need">lugar etiquetado G</span><span class="need">rubro, colores, sugeridas 0</span></div>
+    <div class="phone">
+      <div class="hdr"><h2>Esto es lo que vimos en tu Instagram</h2></div>
+      <div class="body">
+        <div class="callout info" role="note">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+          <span>Preparamos una propuesta de tu identidad de marca a partir de tu cuenta de Instagram @heladeria.polar. Revísala y apruébala para empezar a crear publicaciones.</span>
+        </div>
+        <div class="card">
+          <div class="acct">
+            <div class="avatar" role="img" aria-label="Tu foto de perfil"></div>
+            <div><h3>@heladeria.polar</h3><div class="meta">Heladería Polar · Heladería</div>
+              <div class="stats"><span><b>1.250</b> seguidores</span><span><b>86</b> publicaciones</span></div></div>
+          </div>
+          <div class="fact">
+            <p class="lbl">Tus últimas publicaciones</p>
+            <div class="grid" role="list">
+              <div class="th t1" role="listitem" aria-label="Publicación del 22 de octubre"></div>
+              <div class="th t2 top" role="listitem" aria-label="La que más gustó: 214 me gusta"><span class="badge">La que más gustó</span></div>
+              <div class="th t3" role="listitem" aria-label="Publicación del 18 de octubre"></div>
+              <div class="th t4" role="listitem" aria-label="Publicación del 15 de octubre"></div>
+              <div class="th t5" role="listitem" aria-label="Publicación del 12 de octubre"></div>
+              <div class="th t6" role="listitem" aria-label="Publicación del 9 de octubre"></div>
+            </div>
+            <span class="src">La que más gustó: 214 me gusta. De tus últimas 12.</span>
+          </div>
+          <div>
+            <p class="lbl">Así te presentas</p>
+            <div class="quote">«Helado de yogur hecho cada mañana 🍦 Toppings frescos. Av. 0 con calle 11.»</div>
+          </div>
+          <div class="fact">
+            <p class="lbl">Tus enlaces</p>
+            <div class="link"><span class="k">Pedir por WhatsApp</span><span class="m">+57 ••• ••• ••48</span></div>
+            <div class="link"><span class="k">Tu web</span><span class="m">heladeriapolar.co</span></div>
+          </div>
+          <hr>
+          <div class="fact"><div class="top"><div><p class="lbl">A qué te dedicas</p><div class="val">Heladería de yogur</div></div><button class="fix" type="button" aria-label="Corregir a qué te dedicas">Corregir</button></div><span class="src">Lo leímos en tu descripción y tus publicaciones.</span></div>
+          <div class="fact"><div class="top"><div><p class="lbl">Dónde estás</p><div class="val">Cúcuta, Colombia</div></div><button class="fix" type="button" aria-label="Corregir dónde estás">Corregir</button></div><span class="src">Lo marcaste en 7 publicaciones.</span></div>
+          <div class="fact"><div class="top"><div class="summary"><div class="avatar" style="width:40px;height:40px" aria-hidden="true"></div><div><p class="lbl">Tu logo</p><div class="val">Tu foto de perfil</div></div></div><button class="fix" type="button" aria-label="Corregir tu logo">Corregir</button></div></div>
+          <div class="fact"><div class="top"><div><p class="lbl">Tus colores</p><div class="dots" role="group" aria-label="Tus colores: 3 colores"><span class="dot" style="background:#2f8f83"></span><span class="dot" style="background:#f5b84a"></span><span class="dot" style="background:#ffffff"></span></div></div><button class="fix" type="button" aria-label="Corregir tus colores">Corregir</button></div><span class="src">Salen de tu foto de perfil.</span></div>
+          <hr>
+          <div class="fact"><p class="lbl">De qué publicas</p><div class="tags"><span class="tag mine">#yogurhelado</span><span class="tag mine">#toppings</span><span class="tag mine">#cucuta</span></div><span class="src">Las etiquetas que más usas.</span></div>
+          <div class="fact"><p class="lbl">Cada cuánto publicas</p><div class="val">Publicas unas 3 veces por semana.</div></div>
+          <div class="fact"><div class="top"><p class="lbl">Etiquetas que te sugerimos</p><button class="fix" type="button" aria-label="Corregir etiquetas sugeridas">Corregir</button></div><div class="tags"><span class="tag">#helados</span><span class="tag">#postrescucuta</span><span class="tag">#yogurt</span></div></div>
+          <div class="btns">
+            <button class="btn primary" type="button">Aprobar</button>
+            <button class="btn soft" type="button">Cambiar</button>
+            <button class="btn ghost" type="button" style="margin-top:8px">Empezar de cero</button>
+          </div>
+          <p class="note">Solo miramos lo que ya es público en tu perfil.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 TikTok -->
+  <section class="frame" aria-label="Pantalla 1, TikTok">
+    <div class="cap"><b>1t · La misma pantalla con TikTok.</b> Mismos bloques: videos en 9:16, «me gusta recibidos» en lugar del total de publicaciones, sin categoría. El aviso con «TikTok» es un BORRADOR, porque el texto aprobado dice Instagram.<br>
+      <span class="need">foto y portadas R2 (vencen en ~1–2 días)</span><span class="need">más visto G +1</span><span class="need">me gusta recibidos G</span><span class="need">lugar G</span></div>
+    <div class="phone">
+      <div class="hdr"><h2>Esto es lo que vimos en tu TikTok</h2></div>
+      <div class="body">
+        <div class="callout info" role="note">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+          <span>Preparamos una propuesta de tu identidad de marca a partir de tu cuenta de TikTok @comidas.donpepe. Revísala y apruébala para empezar a crear publicaciones.</span>
+        </div>
+        <div class="card">
+          <div class="acct">
+            <div class="avatar tt" role="img" aria-label="Tu foto de perfil"></div>
+            <div><h3>@comidas.donpepe</h3><div class="meta">Comidas Don Pepe</div>
+              <div class="stats"><span><b>3.600</b> seguidores</span><span><b>41.000</b> me gusta recibidos</span></div></div>
+          </div>
+          <div class="fact">
+            <p class="lbl">Tus últimos videos</p>
+            <div class="grid tt" role="list">
+              <div class="th t6 top" role="listitem" aria-label="El más visto: 39.000 reproducciones"><span class="badge">El más visto</span></div>
+              <div class="th t1" role="listitem" aria-label="Video del 20 de octubre"></div>
+              <div class="th t4" role="listitem" aria-label="Video del 17 de octubre"></div>
+            </div>
+            <span class="src">El más visto: 39.000 reproducciones. De todos tus videos.</span>
+          </div>
+          <div><p class="lbl">Así te presentas</p><div class="quote">«Perros, hamburguesas y salchipapas 🌭 Domicilios en Cúcuta.»</div></div>
+          <div class="fact"><p class="lbl">Tu enlace</p><div class="link"><span class="k">Tu Instagram</span><span class="m">@comidas.donpepe</span></div></div>
+          <hr>
+          <div class="fact"><div class="top"><div><p class="lbl">A qué te dedicas</p><div class="val">Comidas rápidas a domicilio</div></div><button class="fix" type="button" aria-label="Corregir a qué te dedicas">Corregir</button></div><span class="src">Lo leímos en tu descripción y tus videos.</span></div>
+          <div class="fact"><div class="top"><div><p class="lbl">Dónde estás</p><div class="val">Cúcuta, Colombia</div></div><button class="fix" type="button" aria-label="Corregir dónde estás">Corregir</button></div><span class="src">Lo marcaste en 10 videos.</span></div>
+          <div class="fact"><p class="lbl">Cada cuánto publicas</p><div class="val">Subes unos 3 videos por semana.</div></div>
+          <p class="src">(Logo, colores y etiquetas: igual que en Instagram.)</p>
+          <div class="btns">
+            <button class="btn primary" type="button">Aprobar</button>
+            <button class="btn soft" type="button">Cambiar</button>
+            <button class="btn ghost" type="button" style="margin-top:8px">Empezar de cero</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 cuenta nueva -->
+  <section class="frame" aria-label="Pantalla 1, cuenta sin publicaciones">
+    <div class="cap"><b>1n · Cuenta sin publicaciones</b> (así están hoy Bianki y la cuenta de Qualify). Sin cuadrícula, sin cifras en cero y sin frecuencia: queda lo que sí hay, más una línea que mira hacia adelante.</div>
+    <div class="phone">
+      <div class="hdr"><h2>Esto es lo que vimos en tu Instagram</h2></div>
+      <div class="body">
+        <div class="callout info" role="note">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+          <span>Preparamos una propuesta de tu identidad de marca a partir de tu cuenta de Instagram @shawarma.korner. Revísala y apruébala para empezar a crear publicaciones.</span>
+        </div>
+        <div class="card">
+          <div class="acct">
+            <div class="avatar" style="background:radial-gradient(circle at 40% 35%,#ffffff 0 26%,#b5462f 27% 100%)" role="img" aria-label="Tu foto de perfil"></div>
+            <div><h3>@shawarma.korner</h3><div class="meta">Shawarma Korner · Restaurante</div></div>
+          </div>
+          <div class="callout ok" role="note"><span>Tu cuenta está empezando. Tus primeras publicaciones las armamos juntos.</span></div>
+          <div><p class="lbl">Así te presentas</p><div class="quote">«Shawarma y ensaladas. Lunes a sábado, 11 a 9.»</div></div>
+          <div class="fact"><p class="lbl">Tus enlaces</p><div class="link"><span class="k">Pedir por WhatsApp</span><span class="m">+58 ••• ••• ••07</span></div></div>
+          <hr>
+          <div class="fact"><div class="top"><div><p class="lbl">A qué te dedicas</p><div class="val">Shawarma y ensaladas</div></div><button class="fix" type="button" aria-label="Corregir a qué te dedicas">Corregir</button></div><span class="src">Lo leímos en tu descripción.</span></div>
+          <div class="fact"><div class="top"><div><p class="lbl">Dónde estás</p><div class="val">Venezuela</div></div><button class="fix" type="button" aria-label="Corregir dónde estás">Corregir</button></div><span class="src">Lo elegiste al registrarte. Toca «Corregir» para sumar tu ciudad.</span></div>
+          <div class="fact"><div class="top"><div class="summary"><div class="avatar" style="width:40px;height:40px;background:radial-gradient(circle at 40% 35%,#ffffff 0 26%,#b5462f 27% 100%)" aria-hidden="true"></div><div><p class="lbl">Tu logo</p><div class="val">Tu foto de perfil</div></div></div><button class="fix" type="button" aria-label="Corregir tu logo">Corregir</button></div></div>
+          <div class="fact"><div class="top"><div><p class="lbl">Tus colores</p><div class="dots" role="group" aria-label="Tus colores: 2 colores"><span class="dot" style="background:#b5462f"></span><span class="dot" style="background:#ffffff"></span></div></div><button class="fix" type="button" aria-label="Corregir tus colores">Corregir</button></div><span class="src">Salen de tu foto de perfil.</span></div>
+          <div class="fact"><div class="top"><p class="lbl">Etiquetas que te sugerimos</p><button class="fix" type="button" aria-label="Corregir etiquetas sugeridas">Corregir</button></div><div class="tags"><span class="tag">#shawarma</span><span class="tag">#comidaarabe</span><span class="tag">#sancristobal</span></div></div>
+          <div class="btns">
+            <button class="btn primary" type="button">Aprobar</button>
+            <button class="btn soft" type="button">Cambiar</button>
+            <button class="btn ghost" type="button" style="margin-top:8px">Empezar de cero</button>
+          </div>
+          <p class="note">Solo miramos lo que ya es público en tu perfil.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1b -->
+  <section class="frame" aria-label="Pantalla 1, corregir">
+    <div class="cap"><b>1b · Corregir en un toque.</b> Cajón con un solo campo ya lleno. No sale de la pantalla y no aprueba nada.</div>
+    <div class="phone">
+      <div class="hdr dim"><h2>Esto es lo que vimos en tu Instagram</h2></div>
+      <div class="body dim">
+        <div class="card"><div class="acct"><div class="avatar"></div><div><h3>@heladeria.polar</h3><div class="meta">1.250 seguidores</div></div></div>
+        <div class="fact"><p class="lbl">Dónde estás</p><div class="val">Cúcuta, Colombia</div></div></div>
+      </div>
+      <div class="scrim" aria-hidden="true"></div>
+      <div class="sheet" role="dialog" aria-label="Corrige este dato">
+        <div class="grab" aria-hidden="true"></div>
+        <h3>Corrige este dato</h3>
+        <label class="f" for="city">¿En qué ciudad está tu negocio?</label>
+        <input id="city" value="San Cristóbal">
+        <span class="hint">País: Venezuela (lo elegiste al registrarte).</span>
+        <button class="btn primary" type="button">Guardar</button>
+        <button class="btn ghost" type="button">Cancelar</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="frame" aria-label="Pantalla 2">
+    <div class="cap"><b>2 · Después de «Aprobar».</b> En lugar de «Paso 2 de 5»: lo que ya está hecho y lo poco que falta.</div>
+    <div class="phone">
+      <div class="hdr"><h2>Te faltan 3 cosas que solo tú sabes</h2></div>
+      <div class="body">
+        <div class="callout ok" role="status">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>
+          <span>Listo. Guardamos tu identidad de marca.</span>
+        </div>
+        <div class="card">
+          <ul class="check">
+            <li><span class="ck done" aria-hidden="true">✓</span><span>Tu cuenta <span class="src">(hecho)</span></span></li>
+            <li><span class="ck done" aria-hidden="true">✓</span><span>A qué te dedicas <span class="src">(hecho)</span></span></li>
+            <li><span class="ck done" aria-hidden="true">✓</span><span>Tu logo y tus colores <span class="src">(hecho)</span></span></li>
+            <li><span class="ck done" aria-hidden="true">✓</span><span>Tus etiquetas <span class="src">(hecho)</span></span></li>
+            <li class="todo"><span class="ck todo" aria-hidden="true">1</span><span>Qué te hace distinto</span></li>
+            <li class="todo"><span class="ck todo" aria-hidden="true">2</span><span>Quién te compra</span></li>
+            <li class="todo"><span class="ck todo" aria-hidden="true">3</span><span>Cómo le hablas a tus clientes</span></li>
+          </ul>
+          <div class="btns">
+            <button class="btn primary" type="button">Responder ahora</button>
+            <button class="btn ghost" type="button">Lo hago después</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="frame" aria-label="Pantalla 3">
+    <div class="cap"><b>3 · Una pregunta por pantalla.</b> Con B1 llega un borrador sacado de sus propias palabras; con A, vacía con un ejemplo de su rubro.</div>
+    <div class="phone">
+      <div class="hdr">
+        <p class="eyebrow">1 de 3</p>
+        <div class="progress" aria-hidden="true"><span style="width:33%"></span></div>
+        <h2 style="margin-top:12px">¿Qué te hace distinto?</h2>
+      </div>
+      <div class="body">
+        <div class="card">
+          <label class="f" for="dist">Lo que tus clientes no encuentran en otro lado</label>
+          <textarea id="dist">Helado de yogur hecho cada mañana, con toppings frescos.</textarea>
+          <span class="hint">Lo escribimos leyendo tus publicaciones. Cámbialo si no es así.</span>
+          <button class="btn primary" type="button">Sí, así es</button>
+          <div class="two"><button class="btn ghost" type="button">Atrás</button></div>
+        </div>
+        <p class="next">Siguen: Quién te compra · Cómo le hablas a tus clientes</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="frame" aria-label="Pantalla final">
+    <div class="cap"><b>6 · Listo, y el siguiente paso.</b> La tarea termina llevando a la primera publicación. Recuerda que nada sale sin aprobar.</div>
+    <div class="phone">
+      <div class="hdr"><h2>Tu marca está lista</h2></div>
+      <div class="body">
+        <div class="card">
+          <div class="summary">
+            <div class="avatar" role="img" aria-label="Tu logo"></div>
+            <div><h3 style="margin:0;font-size:1.05rem">Heladería Polar</h3><div class="src">Heladería de yogur · San Cristóbal</div></div>
+          </div>
+          <div class="dots" role="group" aria-label="Tus colores: 3 colores"><span class="dot" style="background:#2f8f83"></span><span class="dot" style="background:#f5b84a"></span><span class="dot" style="background:#ffffff"></span></div>
+          <p style="margin:0;font-size:.92rem">Cada publicación que crees va a salir con tu logo, tus colores y tu forma de hablar. Nada se publica sin que lo apruebes.</p>
+          <div class="btns">
+            <button class="btn primary" type="button">Crear mi primera publicación</button>
+            <button class="btn ghost" type="button">Ver mi identidad de marca</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script>
+document.getElementById('theme').addEventListener('click',function(){
+  var r=document.documentElement;
+  var dark=r.getAttribute('data-theme')==='dark'||(!r.getAttribute('data-theme')&&matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme',dark?'light':'dark');
+});
+</script>
+</body>
+</html>
