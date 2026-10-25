@@ -256,10 +256,13 @@ def test_the_brand_kit_is_only_its_views() -> None:
     ):
         assert "_wizard_shell(" in inspect.getsource(page), page.__name__
     assert "rail=False" in inspect.getsource(wiz._wizard_shell)
-    for controls in (wiz._controls, wiz._connect_controls):
-        source = inspect.getsource(controls)
-        # step 0: no Atrás; its slot holds the way back to the email screen
-        assert "step == 0" in source and "_change_email_button()" in source, controls.__name__
+    # PASOS-4 (m-24852243): the step frame — no Atrás on step 1 (`step_foot`), the way
+    # out in the head on every step; a guest keeps «Usar otro correo» on step 1
+    for page in (wiz.brand_manual_index, wiz.brand_connect_index):
+        source = inspect.getsource(page)
+        assert "step_head(" in source and "back_label=exit_label()" in source, page.__name__
+        assert "first_step=" in source, page.__name__
+    assert "_change_email_button()" in inspect.getsource(wiz._frame_step)
 
 
 def test_the_first_view_is_the_brand_kit_not_the_login() -> None:
