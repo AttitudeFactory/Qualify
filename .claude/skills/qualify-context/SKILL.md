@@ -21,8 +21,8 @@ exists** — `ls`, `git log`, `gh pr list` beat any paragraph here, including th
 - **Model (signed 2026-08-16):** the *multi-business operator* — one installation serving N
   businesses, each a tenant. The 2026-08-16 rule «`1 login = 1 tenant`, no switcher» was
   **reversed by the founder on 2026-10-23**: one login may own several businesses and switch
-  without logging out, with a subscription shared across them (ADR 42, signed 2026-10-25,
-  `docs/adr-42-un-login-varios-negocios.md`; epic `docs/epica-multi-negocio-una-sesion.md`).
+  without logging out, with a subscription shared across them (ADR 43, signed 2026-10-25,
+  `docs/adr-43-un-login-varios-negocios.md`; epic `docs/epica-multi-negocio-una-sesion.md`).
   Not built yet: today the schema still enforces one login per tenant. Agency-managed service for third
   parties also exists (`docs/oferta-mercado-agencia-gestionada.md`).
 - **Real users today** are businesses the founder operates or administers: food/beverage

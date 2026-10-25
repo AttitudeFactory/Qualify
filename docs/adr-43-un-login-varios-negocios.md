@@ -1,11 +1,11 @@
-# ADR 42 — Un login, varios negocios, y una suscripción para todos
+# ADR 43 — Un login, varios negocios, y una suscripción para todos
 
 **Estado:** `[FIRMADO por el fundador, 2026-10-25]` · propuesto por principal-architect el mismo día. Decisiones F1–F5 en §7 y su registro textual en §9; en F2 el fundador eligió una opción distinta de la recomendada (§2.9).
 **Ticket:** [m-24849187](https://project.larksuite.com/5h2wsx/issue/detail/24849187) (historia S0) · **Épica:** [m-24849186](https://project.larksuite.com/5h2wsx/story/detail/24849186) (`docs/epica-multi-negocio-una-sesion.md`).
 **Reabre:** `docs/modelo-negocio-operador-multi-emprendimiento.md` §6.1 («`1 login = 1 tenant = 1 negocio`, sin switch», firmado el 2026-08-16, revertido por el fundador el 2026-10-23).
 **Cambia:** D15 de `docs/modelo-cobro-generacion.md` («todo negocio empieza en Básico»: el plan y el saldo pasan a ser de la suscripción; ver §2.9.3).
 **Evidencia de mercado:** `docs/oferta-limites-negocios-por-plan.md` (market-analyst, 2026-10-25, PR #341). Sus cifras son del analista, no decisiones del fundador.
-**Numeración:** el ticket y la épica dicen «ADR 41», pero el 41 se firmó el 2026-10-24 para la cola de generación (`docs/adr-41-cola-generacion-concurrencia.md`). Esta decisión es la **42**. La rama del PR conserva el nombre que pidió el ticket (`docs/m-24849187-adr-41-multi-negocio`).
+**Numeración:** el ticket y la épica dicen «ADR 41», pero el 41 se firmó el 2026-10-24 para la cola de generación (`docs/adr-41-cola-generacion-concurrencia.md`). El 42 se firmó el mismo 2026-10-25 para «Ideas para tus reels» (`docs/adr-42-ideas-reels-costo.md`, PR #343). Esta decisión es la **43**. La rama del PR conserva el nombre que pidió el ticket (`docs/m-24849187-adr-41-multi-negocio`).
 **Convención:** `[V]` verificado en disco o en fuente primaria el 2026-10-25 · `[H]` hipótesis o aritmética del autor.
 
 ---
