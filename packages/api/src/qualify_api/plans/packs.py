@@ -1,7 +1,7 @@
 """The 90-day packs on the request path (m-24852129): what a brand's live packs still
 bring, and which source pays a charge (D17). Pure, plus one read in the caller's session.
 
-A pack (`creation_packs`, 0094) is one of the three fixed packs of `precios-planes-v1`
+A pack (`creation_packs`, 0095) is one of the three fixed packs of `precios-planes-v1`
 granted by the team after the payment (D19, D23). It counts from the moment it is granted
 until `expires_at` = granted + 90 days (D12): on day 91 what is left of it stops
 counting, whatever the month. Its units are spent only after the plan's month, the pack

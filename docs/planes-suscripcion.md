@@ -46,15 +46,15 @@ just revoke-pack <id> --reason "…" --by …
 
 ## Paquetes de 90 días y «Pedir más a Qualify» (m-24852129)
 
-**Estado:** construido en la rama `feat/m-24852129-pedir-mas` (migración `0094_creation_packs`).
+**Estado:** construido en la rama `feat/m-24852129-pedir-mas` (migración `0095_creation_packs`).
 Diseño: segunda revisión de arquitectura en los comentarios de m-24852129, con la forma de ADR 43.
 
 | Pieza | Dónde | Qué hace |
 |---|---|---|
 | Paquetes fijos | `precios-planes-v1` + `PACK_NAMES` en `plans/catalog.py` | «+2 videos» (USD 29), «+20 creaciones» (USD 12), «+10 vistas previas» (USD 19). Se eligen **por nombre**; una cantidad suelta o un nombre que no existe se rechaza sin escribir nada |
-| `creation_packs` | 0094 | Un paquete dado: negocio, marca, suscripción, código, versión de precios, unidades (leídas de la tabla), `granted_at`, `expires_at = granted_at + 90 días` (CHECK), origen, motivo, quién, clave de idempotencia, revocación (nunca se borra). RLS por negocio; `qualify_app` solo lectura |
-| `creation_allocations` | 0094 | Qué fuente pagó cada unidad de cada cargo (plan o paquete), escrito en la misma transacción bloqueada del cargo y devuelto con él. Los cargos de antes de 0094 se rellenaron como «plan» sin código de plan |
-| `creation_payments` | 0094 | Lo que el equipo cobró por un paquete (USD, versión de precios, referencia, quién). RLS por negocio y **ningún permiso para `qualify_app`** |
+| `creation_packs` | 0095 | Un paquete dado: negocio, marca, suscripción, código, versión de precios, unidades (leídas de la tabla), `granted_at`, `expires_at = granted_at + 90 días` (CHECK), origen, motivo, quién, clave de idempotencia, revocación (nunca se borra). RLS por negocio; `qualify_app` solo lectura |
+| `creation_allocations` | 0095 | Qué fuente pagó cada unidad de cada cargo (plan o paquete), escrito en la misma transacción bloqueada del cargo y devuelto con él. Los cargos de antes de 0095 se rellenaron como «plan» sin código de plan |
+| `creation_payments` | 0095 | Lo que el equipo cobró por un paquete (USD, versión de precios, referencia, quién). RLS por negocio y **ningún permiso para `qualify_app`** |
 | Saldo | `qualify_api/plans/packs.py` + `creative/creations.py` | Primero el cupo del mes del plan; después los paquetes vigentes, el que vence antes primero (D17). Lo que queda de un paquete pasa al mes siguiente y deja de contar el día 91 |
 | «Pedir más a Qualify» | `qualify_api/plans/ask_more.py`, `Qualify/ask_more_*` | Pedido de soporte `more_creations` con qué se agotó, el plan y el contacto (WhatsApp conectado del negocio o, si no hay, el correo). Uno por mes mientras nadie lo atienda: el botón queda en «Pedido enviado» hasta fin de mes o hasta que llegue un paquete o un cambio de plan |
 | Crear | `Qualify/content_generator.py` | Con un contador en 0 para la pieza (videos, vistas previas o creaciones), «Crear» queda desactivado y aparece el aviso con «Pedir más a Qualify». Con videos en 0 una imagen se sigue creando |

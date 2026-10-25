@@ -1,8 +1,8 @@
 """creation_packs: fixed 90-day packs on top of the plan, which source paid each charge,
 and what the team was paid for them (m-24852129)
 
-Revision ID: 0094
-Revises: 0093
+Revision ID: 0095
+Revises: 0094
 Create Date: 2026-10-26
 
 «Pedir más a Qualify» ends in one of two things the team does by hand after the payment
@@ -51,8 +51,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0094"
-down_revision = "0093"
+revision = "0095"
+down_revision = "0094"
 branch_labels = None
 depends_on = None
 

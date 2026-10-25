@@ -123,7 +123,7 @@ class SubscriptionCostAlert(Base):
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-# --- 90-day packs (migration 0094, m-24852129) ------------------------------------------
+# --- 90-day packs (migration 0095, m-24852129) ------------------------------------------
 
 
 class CreationPack(Base):

@@ -63,8 +63,9 @@ class AskMoreState(rx.State):
             return
         async with self:
             self.sent = status.pending
-            if not status.pending:
-                self.notice = ""
+            # On a reload the disabled «Pedido enviado» still says where the link will
+            # arrive (the D13 confirmations, no new copy).
+            self.notice = ask_more_sent_text(status.by_whatsapp) if status.pending else ""
 
     @rx.event(background=True)
     async def request(self, exhausted: str):

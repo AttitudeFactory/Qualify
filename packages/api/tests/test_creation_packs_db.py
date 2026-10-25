@@ -1,4 +1,4 @@
-"""`db`-marked tests for the 90-day packs (0094, m-24852129): `add_pack` and its payment,
+"""`db`-marked tests for the 90-day packs (0095, m-24852129): `add_pack` and its payment,
 the isolation of packs and payments (RLS + grants: the owner can neither create a pack
 nor read an amount), the consumption order written at charge time, given back with the
 charge, day 91 and the month change, the cost report and the «Pedir más» request.

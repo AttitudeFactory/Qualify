@@ -183,3 +183,50 @@ def test_no_money_in_what_the_owner_reads() -> None:
         creations_left_label(5, 6, 5, 6, 10, 30, extras=(1, "1 de enero", 2, "x", 10, "y")),
     ]
     assert not [t for t in texts if _MONEY.search(t)]
+
+
+# --- reload: «Pedido enviado» still says where the link arrives -------------------------
+
+
+@pytest.mark.parametrize(
+    ("pending", "by_whatsapp", "sent", "notice"),
+    [
+        (True, True, True, "Listo. Te escribimos por WhatsApp con el enlace de pago."),
+        (True, False, True, ask_more_sent_text(False)),
+        (False, True, False, ""),
+    ],
+)
+def test_reload_keeps_the_confirmation_next_to_pedido_enviado(
+    monkeypatch: pytest.MonkeyPatch, pending: bool, by_whatsapp: bool, sent: bool, notice: str
+) -> None:
+    """UX review (m-24852129): after a reload the grey «Pedido enviado» used to stand
+    alone; now it carries the same D13 confirmation (WhatsApp or email)."""
+    import asyncio
+    from uuid import uuid4
+
+    from qualify_api.plans.ask_more import AskMoreStatus
+
+    from . import ask_more_state
+    from .ask_more_state import AskMoreState
+
+    state = AskMoreState()
+    state.notice = "stale"
+
+    async def _tenant(self):  # noqa: ANN001, ANN202
+        return uuid4()
+
+    class _Ctx:
+        async def __aenter__(self):  # noqa: ANN204
+            return state
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(AskMoreState, "_tenant", _tenant)
+    monkeypatch.setattr(AskMoreState, "__aenter__", _Ctx.__aenter__, raising=False)
+    monkeypatch.setattr(AskMoreState, "__aexit__", _Ctx.__aexit__, raising=False)
+    monkeypatch.setattr(
+        ask_more_state, "read_status", lambda _t: AskMoreStatus(pending, by_whatsapp)
+    )
+    asyncio.run(AskMoreState.load.fn(state))
+    assert (state.sent, state.notice) == (sent, notice)
