@@ -43,6 +43,7 @@ from .creative_wizard_pages import (
     BrandConnectState,
     BrandWizardState,
 )
+from .r2_media import issue_view_path
 from .ui import callout, card, media_thumb, tag
 from .ui import tokens as T
 
@@ -67,6 +68,9 @@ class BrandProposalState(rx.State):
     category: str = ""
     followers: str = ""
     pic: str = ""
+    #: m-24852537: the `/r2media` view of the profile picture the Alta kept in R2 ("" when
+    #: none was kept) — shown first; the CDN link expires in days.
+    pic_view: str = ""
     rubro: str = ""
     place: str = ""
     colours: list[str] = []
@@ -93,7 +97,11 @@ class BrandProposalState(rx.State):
 
     @rx.var
     def avatar_src(self) -> str:
-        """The account's picture through the backend proxy, like the read profile's."""
+        """The account's picture: the copy kept in R2 (m-24852537), else — a proposal
+        written before the copy existed — through the backend proxy, like the read
+        profile's."""
+        if self.pic_view:
+            return self.pic_view
         return creator_discovery.avatar_path(
             {"network": self.network, "handle": self.username, "avatar": self.pic}
         )
@@ -112,6 +120,7 @@ class BrandProposalState(rx.State):
         self.category = view.category
         self.followers = view.followers
         self.pic = view.pic
+        self.pic_view = _picture_view(review.proposal if review.pending else None)
         self.rubro = view.rubro
         self.place = view.place
         self.colours = view.colours
@@ -246,6 +255,20 @@ class BrandProposalState(rx.State):
         self._proposal = {}
 
 
+def _picture_view(proposal: Mapping[str, Any] | None) -> str:
+    """`/r2media/<token>` of the proposal's kept profile picture, or "" (none kept, or
+    the token store is down — the card then shows its icon, never an error)."""
+    found = brand_prefill_review.picture_key(proposal)
+    if found is None:
+        return ""
+    tenant_id, key, content_type = found
+    try:
+        return issue_view_path(tenant_id, key, "image", content_type)
+    except Exception as exc:  # noqa: BLE001 - cosmetic: Redis down must not break the card
+        logger.warning("brand proposal: picture view not issued: %s", type(exc).__name__)
+        return ""
+
+
 async def _into_wizard(state: rx.State, proposal: Mapping[str, Any]) -> None:
     """Put the proposal into the wizard's own states (caller holds the lock) — the same
     fields `BrandConnectState.load_saved_details` fills from a saved draft, the colours
@@ -272,6 +295,12 @@ async def _into_wizard(state: rx.State, proposal: Mapping[str, Any]) -> None:
     connect.profile_followers = str(profile.get("followers", ""))
     connect.profile_followers_count = int(profile.get("followers_count", 0) or 0)
     connect.profile_pic = str(profile.get("pic", ""))
+    # m-24852537: the kept copy, already checked and viewed for the card
+    connect.forget_kept_picture()
+    found = brand_prefill_review.picture_key(proposal)
+    if found is not None:
+        _tenant, connect.profile_pic_key, connect.profile_pic_content_type = found
+        connect.profile_pic_view = str(getattr(state, "pic_view", "") or "")
     metrics = [m for m in profile.get("metrics", []) if isinstance(m, Mapping)]
     try:
         connect._set_metrics([dict(m) for m in metrics])
@@ -365,7 +394,8 @@ def _account() -> rx.Component:
     return rx.hstack(
         media_thumb(
             _AVATAR_BASE + BrandProposalState.avatar_src,
-            has=(BrandProposalState.pic != "") & (BrandProposalState.avatar_src != ""),
+            has=(BrandProposalState.pic_view != "")
+            | ((BrandProposalState.pic != "") & (BrandProposalState.avatar_src != "")),
             size="3.5rem",
             round=True,
             icon="user",

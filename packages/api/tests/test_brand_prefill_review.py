@@ -19,7 +19,7 @@ from uuid import UUID
 
 import pytest
 
-from qualify_api.creative import brand_prefill, brand_prefill_review
+from qualify_api.creative import brand_prefill, brand_prefill_review, kept_pictures
 from qualify_api.creative.brand_context import build_context
 from qualify_api.creative.brand_kit_store import PREFILL_KEY, BrandKitDetails
 from qualify_api.creative.brand_prefill_review import (
@@ -284,6 +284,57 @@ def test_approve_fills_the_empty_kit_the_wizard_saved_first() -> None:
     assert world.kit is kit and not world.added
     assert kit.palette_rgb == ["#0f766e", "#f8fafc"]
     assert kit.tone_axes["formal_casual"] == 70
+
+
+# --------------------------------------------------------------------------------------
+# m-24852537: «Aprobar» takes the R2 copy of the picture, never the CDN link
+# --------------------------------------------------------------------------------------
+
+OTHER_TENANT = UUID("c0000000-0000-4000-8000-0000000000c6")
+KEPT = kept_pictures.kept_key(TENANT, BRAND, kept_pictures.KIND_PROFILE, b"pic", ".jpg")
+
+
+def _kept_proposal(key: str = KEPT) -> dict[str, Any]:
+    proposal = _proposal()
+    proposal["profile"] |= {"pic": "", "pic_key": key, "pic_content_type": "image/jpeg"}
+    return proposal
+
+
+def test_approve_promotes_the_r2_copy_as_the_logos_picture() -> None:
+    world = World({PREFILL_KEY: _document(proposal=_kept_proposal())})
+    assert approve_prefill(TENANT, BRAND, USER, session_factory=world.session).done
+    assert world.row.profile["pic_key"] == KEPT
+    assert world.row.profile["pic_content_type"] == "image/jpeg"
+    assert world.row.profile["pic"] == ""  # no CDN link reaches the Brand Kit
+    assert world.row.connect["progress"]["logo_from_profile"] is True
+
+
+def test_approve_clears_a_cdn_link_left_next_to_the_copy() -> None:
+    proposal = _kept_proposal()
+    proposal["profile"]["pic"] = "https://scontent.cdninstagram.com/p.jpg"
+    promoted = brand_prefill_review.approved_profile(TENANT, BRAND, proposal["profile"])
+    assert promoted["pic"] == "" and promoted["pic_key"] == KEPT
+
+
+def test_approve_never_trusts_a_key_of_another_tenant_or_brand() -> None:
+    theirs = kept_pictures.kept_key(OTHER_TENANT, BRAND, kept_pictures.KIND_PROFILE, b"p", ".jpg")
+    for key in (theirs, f"t/{TENANT}/brand/{BRAND}/logo.png", "https://cdn/p.jpg"):
+        world = World({PREFILL_KEY: _document(proposal=_kept_proposal(key))})
+        assert approve_prefill(TENANT, BRAND, USER, session_factory=world.session).done
+        assert "pic_key" not in world.row.profile
+        assert "pic_content_type" not in world.row.profile
+
+
+def test_a_proposal_written_before_the_copy_is_promoted_as_it_was() -> None:
+    promoted = brand_prefill_review.approved_profile(TENANT, BRAND, _proposal()["profile"])
+    assert promoted == _proposal()["profile"]
+
+
+def test_the_card_shows_the_kept_copy_of_the_proposals_own_tenant() -> None:
+    assert brand_prefill_review.picture_key(_kept_proposal()) == (TENANT, KEPT, "image/jpeg")
+    assert brand_prefill_review.picture_key(_proposal()) is None  # no copy: no R2 view
+    assert brand_prefill_review.picture_key(_kept_proposal("t/x/brand/y/kept/a.jpg")) is None
+    assert brand_prefill_review.picture_key(None) is None
 
 
 @pytest.mark.parametrize("button", [change_prefill, discard_prefill])

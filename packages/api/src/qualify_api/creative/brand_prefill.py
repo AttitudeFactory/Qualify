@@ -24,6 +24,16 @@ document are what generation reads (`brand_context.build_context`), so they are 
 touched: nothing proposed reaches a piece until the owner approves it (PB-5 moves the
 proposal there). No logo or avatar is generated, and no website is read.
 
+**The profile picture is kept in R2** (m-24852537): the network's CDN link expires in
+days (Instagram ~4.4 days, TikTok ~47 h, measured 2026-10-25), and «Aprobar» uses the
+picture as the logo. The bytes the run already downloaded for the palette are copied —
+no second download, no credit — under the brand's own prefix
+(`kept_pictures.kept_key`: `t/{tenant}/brand/{brand}/kept/profile/{sha256}.{ext}`). The
+proposal's `profile` carries that key (`pic_key`, `pic_content_type`) and an empty
+`pic`; the CDN URL survives only as provenance (`provenance.picture.source_url`). A copy
+that fails leaves the proposal written with `provenance.picture.status = "missing"` and
+no key — the run, its outcome and its cap accounting are unchanged.
+
 Other rows a run writes, both tenant-scoped and both what the wizard already writes:
 the account claim (`creative.account_claims`, so one email never reads another's
 account) and the tenant's profile cache (`referentes.profile_cache`, so a second run
@@ -67,7 +77,7 @@ from qualify_api.claude_tools import (
     MissingAPIKey,
     api_key_from_env,
 )
-from qualify_api.creative import account_claims, logo_palette
+from qualify_api.creative import account_claims, kept_pictures, logo_palette
 from qualify_api.creative.brand_kit_store import PREFILL_DOCUMENT, PREFILL_KEY, BrandKitStore
 from qualify_api.creative.brand_prefill_review import is_decided
 from qualify_api.hashtags import ai as hashtag_ai
@@ -83,7 +93,7 @@ from qualify_api.referentes.profile_cache import (
 logger = logging.getLogger(__name__)
 
 #: The pipeline's own version, bumped when what a run proposes changes shape or meaning.
-PREFILL_VERSION = 1
+PREFILL_VERSION = 2  # 2: the profile picture kept in R2 (m-24852537)
 #: The proposal's review state. PB-5 writes the others ("approved", "discarded").
 STATE_PROPOSED = "proposed"
 #: The pills Tu rubro holds — the referentes search's own cap.
@@ -482,6 +492,8 @@ class PrefillPorts:
     catalog: HashtagCatalog | None = field(default_factory=CatalogHashtags)
     #: `from_profile.generate`'s signature; tests pass a fake Claude.
     generate: AccountReader = from_profile.generate
+    #: Copies the profile picture to the brand's R2 prefix (m-24852537); tests fake it.
+    pictures: kept_pictures.PictureKeeper = field(default_factory=kept_pictures.R2PictureKeeper)
     api_key: Callable[[], str] = api_key_from_env
     #: Only for tests: every HTTP request of the run goes through it.
     transport: httpx.BaseTransport | None = None
@@ -949,7 +961,9 @@ def _run(
     # 4. the proposal
     trail = _Trail()
     try:
-        proposal = _propose(tenant_id, network, profile, seed, metrics, budget, trail, ports)
+        proposal = _propose(
+            tenant_id, brand_id, network, profile, seed, metrics, budget, trail, ports
+        )
     except ClaudeCapReached as exc:
         result = done(PrefillOutcome.CAP_REACHED, str(exc), **read)
         _write_status(
@@ -965,6 +979,7 @@ def _run(
 
 def _propose(
     tenant_id: UUID,
+    brand_id: UUID,
     network: str,
     profile: dict[str, Any],
     seed: DiscoverySeed,
@@ -1008,7 +1023,14 @@ def _propose(
         generate=ports.generate,
         api_key=ports.api_key,
     )
-    palette = _palette(network, profile, ports)
+    data = _picture(profile, ports)
+    palette = _palette(data)
+    picture = _keep_picture(tenant_id, brand_id, profile, data, ports)
+    account_doc = profile_document(profile, metrics)
+    # m-24852537: what is promoted points at the R2 copy, never at the expiring CDN link
+    account_doc["pic"] = ""
+    account_doc["pic_key"] = picture.get("key", "")
+    account_doc["pic_content_type"] = picture.get("content_type", "")
     return {
         "connect": {
             "network": network,
@@ -1019,14 +1041,15 @@ def _propose(
             "city": city,
             "hashtags": pills_from_choice(choice) if choice is not None else [],
         },
-        "profile": profile_document(profile, metrics),
+        "profile": account_doc,
         "palette": palette,
+        "picture": picture,
     }
 
 
-def _palette(network: str, profile: Mapping[str, Any], ports: PrefillPorts) -> dict | None:
-    """The profile picture's colours, when it is a real picture (not the network's
-    default silhouette): what «Mi foto de perfil es mi logo» puts in the palette."""
+def _picture(profile: Mapping[str, Any], ports: PrefillPorts) -> bytes | None:
+    """The profile picture's bytes, downloaded ONCE from the network's CDN, when it is a
+    real picture (not the network's default silhouette) — or None."""
     url = str(profile.get("profilePicUrl", ""))
     if not url or logo_palette.is_default_avatar_url(url):
         return None
@@ -1036,16 +1059,70 @@ def _palette(network: str, profile: Mapping[str, Any], ports: PrefillPorts) -> d
     except Exception as exc:  # noqa: BLE001 - an optional proposal never fails the run
         logger.info("brand prefill: profile picture unavailable: %s", type(exc).__name__)
         return None
-    if not picture_is_real(url, data):
+    return data if picture_is_real(url, data) else None
+
+
+def _palette(data: bytes | None) -> dict | None:
+    """The profile picture's colours: what «Mi foto de perfil es mi logo» puts in the
+    palette."""
+    if not data:
         return None
     try:
-        palette, colours = logo_colours_update("", [], data or b"")
+        palette, colours = logo_colours_update("", [], data)
     except Exception as exc:  # noqa: BLE001 - an unreadable picture contributes nothing
         logger.info("brand prefill: palette not extracted: %s", type(exc).__name__)
         return None
     if not colours:
         return None
     return {"palette": palette, "logo_colors": colours, "logo_source": LOGO_SOURCE_PROFILE}
+
+
+#: `proposal.picture.status`: kept in R2, could not be kept, or no real picture at all.
+PICTURE_KEPT = "kept"
+PICTURE_MISSING = "missing"
+PICTURE_NONE = "none"
+
+
+def _keep_picture(
+    tenant_id: UUID,
+    brand_id: UUID,
+    profile: Mapping[str, Any],
+    data: bytes | None,
+    ports: PrefillPorts,
+) -> dict[str, Any]:
+    """The same bytes the palette read, copied to the brand's R2 prefix (m-24852537).
+    Never raises: a copy that fails is `missing`, and the proposal is written anyway.
+    The CDN link is not in here: it is provenance only (`_picture_provenance`)."""
+    if not data:
+        return {"status": PICTURE_NONE}
+    try:
+        kept = ports.pictures.keep(tenant_id, brand_id, kept_pictures.KIND_PROFILE, data)
+    except Exception as exc:  # noqa: BLE001 - the picture is optional, the run is not
+        logger.warning("brand prefill: profile picture not kept: %s", type(exc).__name__)
+        return {"status": PICTURE_MISSING}
+    if not kept_pictures.is_kept_key(tenant_id, brand_id, kept.key):
+        logger.warning("brand prefill: kept picture key outside the brand prefix, dropped")
+        return {"status": PICTURE_MISSING}
+    return {
+        "status": PICTURE_KEPT,
+        "key": kept.key,
+        "content_type": kept.content_type,
+        "sha256": kept.sha256,
+        "bytes": kept.size,
+    }
+
+
+def _picture_provenance(result: PrefillResult) -> dict[str, Any] | None:
+    """Where the kept picture came from: the CDN link (only here), its hash and size."""
+    picture = (result.proposal or {}).get("picture")
+    if not isinstance(picture, Mapping):
+        return None
+    return {
+        "store": "r2",
+        "keeper": kept_pictures.__name__,
+        "source_url": str((result.profile or {}).get("profilePicUrl", "")),
+        **{k: picture[k] for k in ("status", "sha256", "bytes") if k in picture},
+    }
 
 
 def _write_status(
@@ -1090,6 +1167,8 @@ def _write_status(
                 if result.proposal and result.proposal.get("palette")
                 else None
             ),
+            # m-24852537: where the R2 copy came from (the CDN link, kept only here)
+            "picture": _picture_provenance(result),
             "source": dict(source) if source else None,
         },
     }
@@ -1118,6 +1197,9 @@ __all__ = [
     "CHOSEN_HASHTAGS",
     "DEFAULT_CAPS",
     "PREFILL_KEY",
+    "PICTURE_KEPT",
+    "PICTURE_MISSING",
+    "PICTURE_NONE",
     "PREFILL_VERSION",
     "STATE_PROPOSED",
     "CallBudget",
