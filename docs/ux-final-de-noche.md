@@ -355,7 +355,7 @@ usa (`creative_vm.py:1110`, `1169`). {día} y {hora} en la zona del negocio, for
 | `CONFIRM_VIDEO` | botón sólido | Confirmar video |
 | `REVIEW_VIDEO` | botón de la tarjeta de Por aprobar | Revisar video |
 | `ASK_OTHER_VERSION` | botón suave | Pedir otra versión |
-| `OTHER_VERSION_USE` | línea debajo de «Pedir otra versión» | Usa 1 vista previa y 1 de tus videos del mes. Te quedarían {v}. / … Te quedaría 1. |
+| `OTHER_VERSION_USE` | línea debajo de «Pedir otra versión» | Usa 1 vista previa y 1 de tus videos del mes. Te quedarían {v}. / (si queda 1) Usa 1 vista previa y 1 de tus videos del mes. Te quedaría 1. Se lee antes de tocar: «quedarían», no «quedan». |
 | `CONFIRMED_TITLE` | panel/página tras confirmar, con fecha | Confirmado. Sale el {día} a las {hora}. |
 | `CONFIRMED_TWO_DATES` | ídem, la pieza tiene dos fechas | Confirmado. Sale en las 2 fechas que elegiste. |
 | `CONFIRMED_NO_DATE` | ídem, sin fecha | Confirmado. Ahora elige cuándo sale. |
@@ -368,7 +368,10 @@ usa (`creative_vm.py:1110`, `1169`). {día} y {hora} en la zona del negocio, for
 | `PICK_OTHER_TIME` | botón suave, estado E | Elegir otra hora |
 | `FINAL_FAILED_NOTE_NIGHT` | panel y página, estado G | No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video. |
 | `RETRY_FINAL` | botón (el de hoy) | Intentar de nuevo |
-| `OTHER_VERSION_PENDING` | panel, estado H | Estamos creando otra versión. Cuando esté, la revisas y la apruebas; la fecha no cambia. |
+| `OTHER_VERSION_PENDING` | panel y página, estado H, con fecha | Estamos creando otra versión. Cuando esté, la revisas y la apruebas. Sigue programada para el {día} a las {hora}: si no la confirmas antes, no se publica. |
+| `OTHER_VERSION_PENDING_TODAY` | ídem, sale hoy | Estamos creando otra versión. Cuando esté, la revisas y la apruebas. Sigue programada para hoy a las {hora}: si no la confirmas antes, no se publica. |
+| `OTHER_VERSION_PENDING_TWO_DATES` | ídem, la pieza tiene dos fechas | Estamos creando otra versión. Cuando esté, la revisas y la apruebas. Sigue programada en las 2 fechas que elegiste: si no la confirmas antes, no se publica. |
+| `OTHER_VERSION_PENDING_NO_DATE` | ídem, sin fecha | Estamos creando otra versión. Cuando esté, la revisas y la apruebas. |
 | `HOME_TO_REVIEW` | Inicio | 1 video listo para revisar / {n} videos listos para revisar |
 | `HOME_LATE` | Inicio (reemplaza la anterior) | 1 video no salió: falta tu confirmación / {n} videos esperan tu confirmación; {m} ya debía salir |
 | `HOME_FAILED` | Inicio | 1 video final no se pudo preparar / {n} videos finales no se pudieron preparar |
@@ -478,13 +481,19 @@ confirmar nunca muestra «Publicado» ni «Fallido»; Inicio sin línea en A/B; 
 | Remitente (nombre) | **Qualify**, ⚑ decidido: solo para este correo automático; la invitación sigue firmando «Herwin de Qualify» (dirección: la de los correos de hoy en `send.qualify.la`, `QUALIFY_MAIL_FROM`; ver §8.4) |
 | Asunto, 1 video | {negocio}: tu video está listo para revisar |
 | Asunto, varios | {negocio}: tus {n} videos están listos para revisar |
-| Asunto, si alguno sale hoy | {negocio}: {n} video sale hoy y espera tu confirmación / {n} videos salen hoy y esperan tu confirmación |
-| Asunto, solo fallos | {negocio}: no pudimos preparar {n} video / {n} videos |
+| Asunto, si alguno sale hoy | {negocio}: 1 video sale hoy y espera tu confirmación / {negocio}: {n} videos salen hoy y esperan tu confirmación |
+| Asunto, solo fallos | {negocio}: no pudimos preparar 1 video / {negocio}: no pudimos preparar {n} videos |
+| Qué asunto gana | El primero que aplique: «sale hoy» → «listos» → «solo fallos» |
 | Línea de vista previa (gris junto al asunto) | Míralo y confírmalo para que salga. Sin tu confirmación, no se publica. / (plural) Míralos y confírmalos para que salgan. Sin tu confirmación, no se publican. |
+| Línea de vista previa, solo fallos | Ábrelo para intentarlo de nuevo; no usa otro video. / (plural) Ábrelos para intentarlo de nuevo; no usan otro video. |
 | Título | Tu video está listo / Tus videos están listos |
-| Saludo y entrada | Hola, {nombre}. Esta noche preparamos el video final de {n} publicación(es) de {negocio}. Míralos y confírmalos para que salgan el día que elegiste. |
+| Título, solo fallos | No pudimos preparar tu video / No pudimos preparar {n} videos |
+| Saludo y entrada, 1 video | Hola, {nombre}. Anoche preparamos el video final de 1 publicación de {negocio}. Míralo y confírmalo para que salga. |
+| Saludo y entrada, varios | Hola, {nombre}. Anoche preparamos el video final de {n} publicaciones de {negocio}. Míralos y confírmalos para que salgan. |
+| Saludo y entrada, solo fallos | Hola, {nombre}. Anoche no pudimos preparar el video final de 1 publicación de {negocio}. / … de {n} publicaciones de {negocio}. |
+| Saludo sin nombre | «Hola.» en lugar de «Hola, {nombre}.» |
 | Bloque «Sale hoy» (si hay) | **Sale hoy** — y debajo sus filas |
-| Fila de cada video | miniatura · **{título}** · «Sale el {día} a las {hora} · Instagram, reel» (o «Todavía sin fecha») · enlace «Ver video ›» |
+| Fila de cada video | miniatura · **{título}** · «Sale el {día} a las {hora} · Instagram, reel» (en «Sale hoy»: «Sale hoy a las {hora} · Instagram, reel»; sin fecha: «Todavía sin fecha») · enlace «Ver video ›» |
 | Fila de un video que falló | miniatura · **{título}** · «No pudimos preparar el video final. Ábrelo para intentarlo de nuevo; no usa otro video.» · enlace «Abrir ›» |
 | Botón | **Revisar mis videos** |
 | Línea de calma, debajo del botón | Nada sale sin tu confirmación. Si no confirmas un video, no se publica y lo verás en Inicio. |
@@ -508,10 +517,10 @@ Sin «render», «HD», «1080», «notificación», «link» ni «click»: «en
 │        [Q] Qualify                   │
 │                                      │
 │  Tus videos están listos             │
-│  Hola, Ana. Esta noche preparamos    │
-│  el video final de 2 publicaciones   │
-│  de Bianki. Míralos y confírmalos    │
-│  para que salgan el día que elegiste.│
+│  Hola, Ana. Anoche preparamos el     │
+│  video final de 2 publicaciones de   │
+│  Bianki. Míralos y confírmalos para  │
+│  que salgan.                         │
 │                                      │
 │  SALE HOY                            │
 │  ┌──────┐ Combo Vecino al mediodía   │

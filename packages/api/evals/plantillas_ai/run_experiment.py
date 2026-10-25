@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from qualify_api.evals import spend_control as sc
+from qualify_api.evals.byteplus_eval_guard import EVAL_KEY_ENV, EvalKeyError, resolve_eval_key
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[3]
@@ -35,7 +36,7 @@ RUNNER = "uv run --no-sync python packages/api/evals/plantillas_ai/run_experimen
 #: The wall clock every latency is read from (tests replace it with a fake).
 _clock = time.perf_counter
 LITE_MODEL = "seedream-5-0-lite-260128"
-ENV_NAMES = ("QUALIFY_BYTEPLUS_ARK_API_KEY", "QUALIFY_ANTHROPIC_API_KEY")
+ENV_NAMES = (EVAL_KEY_ENV, "QUALIFY_BYTEPLUS_ARK_API_KEY", "QUALIFY_ANTHROPIC_API_KEY")
 EPILOG = """exit codes:
   0  done (or a dry run or a readiness check with nothing sent)
   2  bad arguments, invalid or missing matrix file, missing images, no
@@ -379,10 +380,13 @@ def _paid_run(args: argparse.Namespace, tt: Any, table: Any) -> int:
         print(f"El máximo de la corrida (USD {worst:.4f}) pasa el tope de USD {args.max_usd}.")
         return 2
     _load_env(args.env_file)
-    key = os.environ.get("QUALIFY_BYTEPLUS_ARK_API_KEY", "").strip()
-    if not key:
-        print("QUALIFY_BYTEPLUS_ARK_API_KEY is not set", file=sys.stderr)
+    try:
+        eval_key = resolve_eval_key()
+    except EvalKeyError as exc:
+        print(exc, file=sys.stderr)
         return 2
+    print(eval_key.describe())
+    key = eval_key.value
     reader = None
     if args.reader == "claude":  # only here: past the authorization gate and every check
         reader = _build_reader(args)

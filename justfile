@@ -108,6 +108,15 @@ plan-report *args:
 plan-cost-alerts *args:
     uv run --no-sync python -m qualify_api.plans.cost_alerts {{args}}
 
+# m-24852492: compare our Seedance tasks (creative_vendor_tasks) with BytePlus's own task
+# list — billed videos not collected, tasks without a piece, pieces without a task.
+# READ-ONLY (sends and pays nothing); exit 2 = something to look at. The calendar worker
+# already recovers billed videos on its own (QUALIFY_VENDOR_RECOVERY=off turns it off).
+#   just creative-tasks-report --tenant <uuid> [--days 7] [--json]   # use this locally
+#   just creative-tasks-report --all-tenants [--days 7] [--json]     # production
+creative-tasks-report *args:
+    uv run --no-sync python -m qualify_api.creative.vendor_reconcile {{args}}
+
 # QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
 # resolution + ingestion; every other field, comments included -> `unsupported`).
 #   just webhook-tick                 # one batch, then exit
@@ -382,6 +391,11 @@ langfuse-reset:
 langfuse-setup:
     PYTHONUTF8=1 uv run --no-sync --env-file .env python -c "from qualify_api.creative.review import main; raise SystemExit(main())"
 
+# BytePlus concurrency: demand + queue simulation behind docs/escalar-generacion-concurrencia.md
+# §3 (m-24855154). Offline, stdlib only, seeded: `just sim-concurrencia --replicas 5`.
+sim-concurrencia *args:
+    PYTHONUTF8=1 uv run --no-sync python -m qualify_creative.concurrency_sim {{args}}
+
 # Model experiments in Langfuse (docs/plan-observabilidad-langfuse.md §7). They SPEND REAL
 # MONEY (Claude calls) and need `just langfuse-up`; never part of CI.
 # `just eval-copy --limit 3` is a pilot; `--configs opus-5.5@low` runs one config.
@@ -432,6 +446,12 @@ eval-voz *args:
 # Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
+
+# m-24852161: fingerprints (never values) of the BytePlus keys in .env — the eval key
+# (QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY) must differ from the app's and from production's
+# (QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT). Exit 1 on a clash. Calls nothing.
+byteplus-llaves *args:
+    PYTHONUTF8=1 uv run --no-sync python -m qualify_api.evals.byteplus_eval_guard {{args}}
 
 # --- Puerta de merge (infra/github/README.md) ---------------------------------------
 # Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:

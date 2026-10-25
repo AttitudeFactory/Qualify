@@ -22,8 +22,8 @@
   1080p, **38 s** y US$2,87 (n = 1, el primer final medido en vivo).
 - **Demanda** (24/48/96 tareas al mes por negocio Básico/Plus/Pro; picos como hipótesis): 10 a la
   vez **sobran para 10 y 50 negocios** en cualquier escenario. Con uso típico **alcanzan hasta
-  ~500**. Desde ahí fallan los picos del lunes (19 % de tareas con más de 6 min de cola a 1 000
-  negocios) y del fin de semana: a 1 000 negocios, **35–52 min de espera**. En el peor caso (todos
+  ~500**. Desde ahí fallan los picos del lunes (18 % de tareas con más de 6 min de cola a 1 000
+  negocios) y del fin de semana: a 1 000 negocios, **38–57 min de espera**. En el peor caso (todos
   agotan el cupo y BytePlus va el doble de lento) el límite llega a **~200 negocios**.
 - **Recomendación:** (1) ya, los arreglos baratos de §4.0, para que una cola nunca cueste un video
   perdido; (2) medir la espera real; (3) ticket a BytePlus hacia los 100 negocios; (4) cola propia
@@ -171,10 +171,22 @@ recibirlo.
 
 ## 3. Modelo de demanda
 
-Simulación de colas reproducible:
-`/private/tmp/claude-501/-Users-herwin-Desktop-Qualify/c255668b-5f9b-4506-b5ad-cd3f8cc2ee30/scratchpad/concurrency_sim.py`
-(`python3 -I concurrency_sim.py 10`; Python puro, sin llamadas a proveedores). 10 servidores FIFO,
-igual que la cola de BytePlus. 30 réplicas de un pico de 3 horas, midiendo la hora central.
+Simulación de colas reproducible, en el repo:
+`packages/creative/src/qualify_creative/concurrency_sim.py` (`just sim-concurrencia`, o
+`python -m qualify_creative.concurrency_sim`; Python puro, solo biblioteca estándar, con semilla
+fija, sin llamadas a proveedores). 10 servidores FIFO, igual que la cola de BytePlus; duraciones
+fijas (120 s borrador, 60 s final). 30 réplicas de un pico de 3 horas que empieza con la cola vacía;
+espera medida en las tareas de la hora central; «máximo en sistema» es el máximo de las 3 horas en
+todas las réplicas. Imprime las tablas completas (los tres escenarios duros con los cinco tamaños y
+los tres picos). `packages/creative/tests/test_concurrency_sim.py` fija las cifras de esta sección
+en el CI.
+
+> **Reconstruida el 2026-10-26 (m-24855154).** El script original vivía en un directorio temporal
+> de sesión que se perdió. Se rehízo desde los supuestos de §3.1; las conclusiones no cambian, pero
+> las cifras sueltas se movieron por el azar de la simulación (otra semilla, otra secuencia), y las
+> tablas de abajo ya son las del código: lunes a 1 000 negocios 18 % (antes 19 %); fin de semana a
+> 1 000, 38 / 57 min (antes 35 / 52); peor caso a 200 el fin de semana 82 % (antes 86 %); BytePlus
+> lento a 500 en día normal 3,8 % (antes 2,6 %). OmniHuman (§3.4) coincide exacto: es analítico.
 
 ### 3.1 Supuestos
 
@@ -195,30 +207,30 @@ igual que la cola de BytePlus. 30 réplicas de un pico de 3 horas, midiendo la h
 |---:|---|---:|---:|---:|---|---:|
 | 10 | fin de semana ×6 | 5 | 0,1 | 8 | 0 / 0 s | 0 % |
 | 50 | fin de semana ×6 | 23 | 0,7 | 13 | 0 / 0 s | 0 % |
-| 200 | fin de semana ×6 | 92 | 2,8 | 21 | 0 / 3 s | 0 % |
-| 500 | día normal ×3 | 115 | 3,5 | 23 | 0 / 35 s | 0 % |
-| 500 | fin de semana ×6 | 229 | 7,0 | 65 | 0 / 139 s | 0 % |
-| 1 000 | día normal ×3 | 229 | 7,0 | 65 | 0 / 139 s | 0 % |
-| 1 000 | lunes ×4 | 306 | 9,3 | 97 | 153 / 624 s | **19 %** |
-| 1 000 | fin de semana ×6 | 458 | 14,0 | 508 | 35 / 52 min | **100 %** |
+| 200 | fin de semana ×6 | 92 | 2,8 | 23 | 0 / 0 s | 0 % |
+| 500 | día normal ×3 | 115 | 3,5 | 24 | 0 / 45 s | 0 % |
+| 500 | fin de semana ×6 | 229 | 7,0 | 49 | 1 / 164 s | 0,1 % |
+| 1 000 | día normal ×3 | 229 | 7,0 | 49 | 1 / 164 s | 0,1 % |
+| 1 000 | lunes ×4 | 305 | 9,3 | 159 | 127 s / 15 min | **18 %** |
+| 1 000 | fin de semana ×6 | 458 | 14,0 | 526 | 38 / 57 min | **100 %** |
 
 ### 3.3 Resultados: escenarios duros
 
 | Escenario | Primer tamaño con fallas | Detalle |
 |---|---|---|
-| Cupo al 100 %, BytePlus normal | **~500 negocios** el lunes (19 % > 6 min) y el fin de semana (100 %) | 200 negocios el fin de semana: p95 77 s, 0 % de fallas |
-| Cupo al 50 %, BytePlus lento ×2 | **~500** en un día normal (2,6 %); el lunes, 36 % | 200 negocios el fin de semana: p95 152 s, 0,2 % |
-| Cupo al 100 % y BytePlus lento ×2 (el peor caso) | **~200**: lunes 7 %, fin de semana **86 %** (espera p50 16 min) | 50 negocios: p95 51 s, 0 % |
+| Cupo al 100 %, BytePlus normal | **~500 negocios** el lunes (18 % > 6 min) y el fin de semana (100 %) | 200 negocios el fin de semana: p95 79 s, 0 % de fallas |
+| Cupo al 50 %, BytePlus lento ×2 | **~500** en un día normal (3,8 %); el lunes, 38 % | 200 negocios el fin de semana: p95 125 s, 0 % |
+| Cupo al 100 % y BytePlus lento ×2 (el peor caso) | **~200**: lunes 5 %, fin de semana **82 %** (espera p50 15 min) | 50 negocios: p95 35 s, 0 % |
 
 ### 3.4 Lectura
 
 - **Para 10 y 50 negocios, 10 tareas a la vez sobran** en todos los escenarios, incluido el peor (0 %
-  de fallas; espera p95 ≤ 51 s). Ahí lo único que llena las 10 es una ráfaga de un mismo dueño: un
+  de fallas; espera p95 ≤ 35 s). Ahí lo único que llena las 10 es una ráfaga de un mismo dueño: un
   juego de ángulos con 5 videos ocupa la mitad de la cuota él solo.
 - **A ~200 negocios empieza a doler,** pero solo en el peor caso (todos agotan el cupo y BytePlus va
-  lento): el viernes, 86 % de fallas. En el caso típico va bien.
+  lento): el viernes, 82 % de fallas. En el caso típico va bien.
 - **A ~500 negocios las 10 ya no alcanzan** en los picos de lunes y fin de semana, aun con uso
-  típico. **A 1 000, el pico del fin de semana se vuelve una cola de 35–52 minutos** (14 de carga
+  típico. **A 1 000, el pico del fin de semana se vuelve una cola de 38–57 minutos** (14 de carga
   media sobre 10 de capacidad: la cola crece sin parar mientras dure el pico).
 - **Regla práctica:** hacen falta unas **14 tareas a la vez por cada 1 000 negocios con uso
   típico** en el pico del fin de semana, y unas 28 si todos agotan el cupo. Para que la espera p95 no
@@ -266,7 +278,7 @@ otro runtime (ADR 31, «sin Celery»).
 
 | Costo | Latencia para el dueño | Esfuerzo | Riesgo |
 |---|---|---|---|
-| USD 0 de proveedor; el worker vive en el VPS actual | Igual que hoy sin saturación. Saturado, la espera se reparte por igual y se puede mostrar («Tu video está en fila: unos 4 minutos») | M | Bajo. Patrón ya usado en el repo (outbox + worker idempotente). **No crea capacidad**: a 1 000 negocios el viernes sigue habiendo 35–52 min de espera, solo que repartida y visible, en lugar de fallas cobradas |
+| USD 0 de proveedor; el worker vive en el VPS actual | Igual que hoy sin saturación. Saturado, la espera se reparte por igual y se puede mostrar («Tu video está en fila: unos 4 minutos») | M | Bajo. Patrón ya usado en el repo (outbox + worker idempotente). **No crea capacidad**: a 1 000 negocios el viernes sigue habiendo 38–57 min de espera, solo que repartida y visible, en lugar de fallas cobradas |
 
 ### 4.2 «Agendar» frente a «Generar ya»
 

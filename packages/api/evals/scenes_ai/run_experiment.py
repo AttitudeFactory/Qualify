@@ -45,11 +45,15 @@ def main(argv: list[str] | None = None) -> int:
     from qualify_shared import observability
 
     from qualify_api.evals import ad_scenes as sc
+    from qualify_api.evals.byteplus_eval_guard import EvalKeyError, resolve_eval_key
 
-    key = os.environ.get("QUALIFY_BYTEPLUS_ARK_API_KEY", "").strip()
-    if not key:
-        print("QUALIFY_BYTEPLUS_ARK_API_KEY is not set", file=sys.stderr)
+    try:
+        eval_key = resolve_eval_key()
+    except EvalKeyError as exc:
+        print(exc, file=sys.stderr)
         return 2
+    print(eval_key.describe())
+    key = eval_key.value
     labels = args.configs.split(",") if args.configs else list(sc.CONFIGS)
     items = sc.load_cases(HERE / "cases.json", HERE.parent / "copy_ai" / "cases.json")
     observability.sync_dataset(

@@ -380,6 +380,29 @@ confirmarlas con un toque en lugar de escribirlas desde cero.
   borradores.
 - Los borradores no llegan a lo que lee la generación hasta que el dueño los confirme (OL2-6).
 
+**Contrato con la pantalla (OL2-6, ya construida — reflex-ui-engineer, 2026-10-25).** La pantalla
+lee los borradores de `connect.prefill.proposal.borradores` **solo cuando `connect.prefill.state`
+es `approved`** (`Qualify/brand_answers_vm.drafts_from`). Forma que debe escribir OL2-3:
+
+```json
+"borradores": {
+  "distinto":      {"texto": "Helado de yogur hecho cada mañana.", "fuente": "<fragmento literal>"},
+  "quien_compra":  {"texto": "…", "fuente": "…"},
+  "frase_ejemplo": {"texto": "…", "fuente": "…"},
+  "tono":          {"formal_casual": 70, "sober_enthusiastic": 60, "technical_plain": 80, "brief_elaborate": 30}
+}
+```
+
+- Claves fijas: `distinto` → «¿Qué te hace distinto?» (`positioning`), `quien_compra` →
+  «¿Quién te compra?» (`audience`), `frase_ejemplo` → «¿Cómo le dirías a un cliente que llegó
+  algo nuevo?» (primera línea de `do_examples`). `tono` lo lee la pantalla más adelante (hoy no).
+- Un campo sin `texto`, con `texto` vacío, o que no sea objeto ni cadena, es **sin borrador**: la
+  pregunta sale vacía con el ejemplo del rubro (T22–T25). La pantalla no valida `fuente`; eso es
+  de OL2-3.
+- El borrador **nunca se escribe en el kit al leerlo**: solo «Sí, así es» lo guarda tal cual, o
+  «Corregir» seguido de «Continuar» guarda lo que el dueño dejó en el campo (test en
+  `Qualify/test_brand_answers.py`). Sin borradores (B1 apagado) la pantalla funciona igual.
+
 **Criterios de aceptación**
 - [ ] Sigue siendo **una** llamada a Claude para rubro + borradores (`PrefillUsage.claude_calls` no sube).
 - [ ] Con B1 apagado o fuera del Alta, la herramienta que se envía es idéntica a la de hoy y la
@@ -597,6 +620,21 @@ revisión técnica no agregó ni quitó textos.
 | T24 | OL2-6 | Ejemplo (inmobiliaria) | Por ejemplo: «Te acompañamos desde la visita hasta la firma.» · «Familias que buscan su primera casa.» · «Tenemos un apartamento nuevo en la zona que buscabas.» |
 | T25 | OL2-6 | Ejemplo (agencia de viajes) | Por ejemplo: «Armamos el viaje completo, tú solo haces la maleta.» · «Parejas y familias que viajan en vacaciones.» · «Abrimos cupos para un destino nuevo.» |
 | T26 | OL2-6 | Final | Tu marca está lista · Cada publicación que crees va a salir con tu logo, tus colores y tu forma de hablar. Nada se publica sin que lo apruebes. · Crear mi primera publicación · Ver mi identidad de marca |
+
+**Agregados después de la revisión de UX de OL2-6 — aprobados por el fundador el 2026-10-25:**
+
+| # | Historia | Dónde | Texto aprobado |
+|---|---|---|---|
+| T27 | OL2-6 | Bajo «Continuar» (o «Terminar mi marca») apagado, con la respuesta vacía | Para seguir, escribe tu respuesta. |
+| T28 | OL2-6 | Aviso al tocar «Lo hago después» (lleva a la pantalla «Te faltan 3 cosas…») | Guardamos lo que llevas. Cuando vuelvas, sigues con lo que te falta. |
+
+**Aprobados por el fundador el 2026-10-26:** el título de la pantalla «te faltan» cuenta hacia
+atrás según las preguntas que siguen vacías; el contador «{n} de 3» (T17) de cada pregunta no cambia.
+
+| # | Historia | Dónde | Texto aprobado |
+|---|---|---|---|
+| T16b | OL2-6 | Pantalla «te faltan», con una pregunta respondida | Te faltan 2 cosas que solo tú sabes |
+| T16c | OL2-6 | Pantalla «te faltan», con dos preguntas respondidas (o las tres, falta terminar) | Te falta 1 cosa que solo tú sabes |
 
 Descartado por la decisión 1: «Lo escribimos con lo que dice tu perfil.» (sin publicaciones no hay
 borrador). Aplazados con TikTok (decisión 4): su aviso, «Tus últimos videos», «El más visto», «{n}

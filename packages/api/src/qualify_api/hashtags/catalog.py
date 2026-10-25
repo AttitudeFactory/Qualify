@@ -360,6 +360,7 @@ def ai_hashtags_for(
     | None = None,
     now: float | None = None,
     max_picks: int = discovery_seed.SECTOR_CATALOG_TAGS,
+    rule_fallback: bool = True,
 ) -> HashtagChoice:
     """The catalog hashtags that fit this brand, chosen by Claude with its catalog tools
     (`hashtag_ai.select_hashtags` over `CatalogTools`, at most `max_picks`: the search's
@@ -371,9 +372,17 @@ def ai_hashtags_for(
     Falls back to the rule path (`catalog_hashtags_for`) when there is no key, the SDK
     is not installed, or the run fails for any reason: the AI improves the search, it is
     never allowed to stop it. Database errors are NOT swallowed here — the caller already
-    treats an unreadable catalog as "search without it"."""
+    treats an unreadable catalog as "search without it".
+
+    `rule_fallback=False` (the Alta prefill, m-24854322): a run that fails — cut by its
+    `max_tokens`, refused by its dollar meter, or anything else — answers an EMPTY
+    choice (`attempted`, with the failed run's `stats` when the error carries them), so
+    the caller falls to the account's own tags or the rubro run's, never to the rule
+    path. Its answers are remembered apart from the wizard's (other limits)."""
     repo = repository or REPOSITORY
     cache_key = (str(tenant_id), seed.signature(), bio, category, str(max_picks))
+    if not rule_fallback:
+        cache_key += ("no_rule_fallback",)
     moment = now if now is not None else time.time()
     with _choices_lock:
         hit = _choices.get(cache_key)
@@ -400,6 +409,9 @@ def ai_hashtags_for(
             max_picks=max_picks,
         )
     except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
+        if not rule_fallback:
+            logger.warning("hashtags: AI selection failed, no catalog tags: %s", exc)
+            return HashtagChoice((), "ai", stats=getattr(exc, "stats", None), attempted=True)
         logger.warning("hashtags: AI selection failed, using the rule path: %s", exc)
         try:
             rule = fallback()
@@ -496,6 +508,7 @@ def suggest_hashtags(
     api_key: str | None = None,
     selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
     | None = None,
+    rule_fallback: bool = True,
 ) -> HashtagChoice:
     """The rubro step's hashtags (run on arrival and whenever the rubro is edited, § third
     round of 2026-10-05 — there is no "Sugerir" button any more): the same tool run as the
@@ -512,6 +525,7 @@ def suggest_hashtags(
         api_key=api_key,
         selector=selector,
         max_picks=discovery_seed.CHOSEN_HASHTAGS,
+        rule_fallback=rule_fallback,
     )
 
 

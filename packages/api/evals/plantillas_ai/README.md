@@ -170,7 +170,7 @@ Sin ninguna solicitud de red y con el mismo planificador que el simulacro (respe
 `--size`, `--block`, `--limit`, `--skip-fixtures` y `--cases`), informa: los totales de esa
 matriz, el precio de un ítem pagado y el comando de la sonda PNG con su cotización para cada
 modelo de `--configs`, el tope de gasto aceptado, los topes del lector, si las variables
-`QUALIFY_BYTEPLUS_ARK_API_KEY` y `QUALIFY_ANTHROPIC_API_KEY` están en el entorno, en `.env` o
+`QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY`, `QUALIFY_BYTEPLUS_ARK_API_KEY` y `QUALIFY_ANTHROPIC_API_KEY` están en el entorno, en `.env` o
 ausentes (**solo el nombre, nunca el valor**; `NOMBRE=""` cuenta como ausente), las imágenes que
 faltan por tipo y cuántas fotos propias faltan. Una matriz inválida o un `--cases` que no existe
 sale con código 2; un modelo sin precio en la tabla, con código 3.
@@ -189,7 +189,9 @@ Antes de la primera solicitud la corrida se niega a empezar si: falta un precio 
 (código 3), o con código 2 si falta una imagen de entrada, si el máximo de la corrida pasa el
 tope (el simulacro lo avisa con el mismo mensaje: reduce el alcance con `--limit`, `--block`,
 `--skip-fixtures` o `--size`, o ajusta `--max-usd`) o si no hay
-`QUALIFY_BYTEPLUS_ARK_API_KEY`. Las imágenes salen en `imagenes/salidas/<fecha>/` y los números
+llave de BytePlus (usa `QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY` y, sin ella, `QUALIFY_BYTEPLUS_ARK_API_KEY`
+avisándolo; se niega si coincide con `QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT`, m-24852161).
+Las imágenes salen en `imagenes/salidas/<fecha>/` y los números
 con su procedencia (proveedor, id de modelo, versión de prompt, versión de precios, costo) en
 `results/<fecha>.json`.
 

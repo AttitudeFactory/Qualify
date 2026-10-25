@@ -86,6 +86,8 @@ RESUME_TASK_PARAM = "resume_task_id"
 #: `execution_expires_after` defaults to 172800 s (create-video-generation-task-api).
 VENDOR_TASK_EXPIRY_SECONDS = 48 * 3600
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+#: A page of `list_tasks` (m-24852492); the docs allow up to 500.
+TASK_LIST_PAGE_SIZE = 100
 MAX_CONSECUTIVE_POLL_ERRORS = 3
 #: A creating POST (an image, a video task) is sent again only when the vendor most
 #: likely never started the work: the connection was refused, the server dropped it
@@ -953,6 +955,20 @@ class SeedanceVideoAdapter(_ArkClient):
         path = f"/contents/generations/tasks/{quote(task_id, safe='')}"
         with self._client(api_key) as client:
             return _body_or_raise(client.get(path))
+
+    def list_tasks(
+        self, *, api_key: str, page_num: int = 1, page_size: int = TASK_LIST_PAGE_SIZE
+    ) -> Mapping[str, Any]:
+        """One page of the account's video tasks, newest first (m-24852492: the
+        reconciliation report). A read: nothing is created or billed.
+
+        `GET /contents/generations/tasks?page_num=&page_size=` answers
+        `{"items": [{"id", "model", "status", "created_at", …}], "total": N}` per
+        BytePlus's «Query video generation task list» docs — NOT yet verified live
+        (docs/recuperar-videos-sin-pantalla.md says how to check it)."""
+        params = {"page_num": max(1, page_num), "page_size": max(1, min(page_size, 500))}
+        with self._client(api_key) as client:
+            return _body_or_raise(client.get("/contents/generations/tasks", params=params))
 
     # -- internals ----------------------------------------------------------------------
 

@@ -21,3 +21,15 @@ just eval-precarga --handles cuenta1,cuenta2 --max-usd 0.5
 - En un worktree sin `.env`, pasar `--env-file /ruta/al/.env`. Lee solo `QUALIFY_ANTHROPIC_API_KEY` y `SCRAPECREATORS_API_KEY`, y nunca las imprime.
 
 Resultados de 2026-10-25: [`docs/modelos-generativos/pruebas.md#pb6-001`](../../../../docs/modelos-generativos/pruebas.md#pb6-001).
+
+## El camino del worker del Alta, con el medidor en dólares (OL2-0, m-24854322)
+
+```bash
+just eval-precarga --cases /ruta/fuera/del/repo/casos.json --alta-usd 0.15 --skip-cache-run --max-usd 0.30
+```
+
+- `--alta-usd` corre lo mismo que el worker del Alta hoy: `meegle.prefill.metered_prefill` sobre `bounded_ports`, con un medidor de ese tope, la lectura de 2 créditos como máximo, el rubro a 1.500 tokens × 2 intentos y el catálogo a 3 turnos × 1.200 con esfuerzo `low`, sin llamada de creación. Sin la opción, el camino de PB-6 (sin medidor).
+- Cada corrida guarda además lo que anotó el medidor (`metered_usd`), los turnos rechazados y bajados, el rubro y las etiquetas propuestas con su origen.
+- La guarda `--max-usd` se detiene antes de una cuenta cuyo tope la haría pasarse.
+
+Resultados de 2026-10-25: [`pruebas.md`, seguimiento OL2-0 de PB6-001](../../../../docs/modelos-generativos/pruebas.md#pb6-001).

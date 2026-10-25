@@ -67,6 +67,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -76,8 +77,10 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.claude_tools import (
+    BudgetExhausted,
     CallStats,
     ClaudeToolError,
+    DollarMeter,
     MissingAPIKey,
     api_key_from_env,
 )
@@ -184,9 +187,23 @@ class PrefillUsage:
     claude_cost_usd: float = 0.0
     claude_tokens_complete: bool = True
     claude_cache_creation_tokens: int = 0
+    #: With a dollar meter (the Alta, m-24854322): what it booked — credits + every
+    #: Claude turn as billed, or its whole reservation when no answer came. None without.
+    metered_usd: Decimal | None = None
+    refused_turns: int = 0
+    lowered_turns: int = 0
+    overruns: int = 0
 
     def as_document(self) -> dict[str, Any]:
-        return {
+        metered: dict[str, Any] = {}
+        if self.metered_usd is not None:
+            metered = {
+                "metered_usd": str(self.metered_usd),
+                "refused_turns": self.refused_turns,
+                "lowered_turns": self.lowered_turns,
+                "overruns": self.overruns,
+            }
+        return metered | {
             "scrapecreators_requests": self.scrapecreators_requests,
             "scrapecreators_credits": self.scrapecreators_credits,
             "claude_calls": self.claude_calls,
@@ -270,6 +287,10 @@ class CallBudget:
     claude_tokens_complete: bool = True
     #: "scrapecreators" / "claude" once a call was refused.
     exhausted: str = ""
+    #: The run's dollar balance (the Alta, m-24854322): every credit is booked in it
+    #: at `credit_usd` before the request goes, and every Claude turn by `create_turn`.
+    meter: DollarMeter | None = None
+    credit_usd: Decimal = Decimal(0)
 
     def spend_scrapecreators(self, request: httpx.Request) -> None:
         if request.url.host != _SCRAPECREATORS_HOST:
@@ -279,6 +300,12 @@ class CallBudget:
             raise _ScrapeCreatorsCapReached(
                 f"Scrape Creators cap of {self.caps.scrapecreators_requests} requests reached"
             )
+        if self.meter is not None:
+            try:
+                self.meter.charge(self.credit_usd, what="scrapecreators")
+            except BudgetExhausted as exc:
+                self.exhausted = "scrapecreators"
+                raise _ScrapeCreatorsCapReached(str(exc)) from exc
         self.scrapecreators_requests += 1
 
     def spend_claude(self) -> None:
@@ -298,7 +325,18 @@ class CallBudget:
             claude_cost_usd=sum(s.cost_usd for s in self.claude_stats),
             claude_tokens_complete=self.claude_tokens_complete,
             claude_cache_creation_tokens=sum(s.cache_creation_tokens for s in self.claude_stats),
+            **self._metered(),
         )
+
+    def _metered(self) -> dict[str, Any]:
+        if self.meter is None:
+            return {}
+        return {
+            "metered_usd": self.meter.spent_usd + self.meter.reserved_usd,
+            "refused_turns": self.meter.refused_turns,
+            "lowered_turns": self.meter.lowered_turns,
+            "overruns": self.meter.overruns,
+        }
 
 
 # --------------------------------------------------------------------------------------
@@ -331,6 +369,12 @@ class CatalogHashtags:
     repository: Any = None
     selector: Callable[..., Any] | None = None
     api_key: str | None = None
+    #: False on the Alta (m-24854322): a failed or cut run answers no tags, so the
+    #: proposal falls to the account's own or the rubro run's, not the rule path.
+    rule_fallback: bool = True
+    #: The catalog run's prompt version for the provenance ("" = the wizard's own,
+    #: `catalog_prompt_version()`); the Alta's names its effort, turns and hint.
+    prompt_version: str = ""
 
     def suggest(
         self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
@@ -343,6 +387,7 @@ class CatalogHashtags:
             repository=self.repository,
             api_key=self.api_key,
             selector=self.selector,
+            rule_fallback=self.rule_fallback,
         )
 
     def remember_created(
@@ -530,10 +575,22 @@ def rubro_prompt_version(max_tags: int = CHOSEN_HASHTAGS) -> str:
     )
 
 
-def catalog_prompt_version() -> str:
-    """`hashtags.ai.select_hashtags`' prompt (the catalog choice)."""
+def catalog_prompt_version(
+    effort: str = hashtag_ai.SELECT_EFFORT, *, max_turns: int = 0, last_turn_hint: bool = False
+) -> str:
+    """`hashtags.ai.select_hashtags`' prompt (the catalog choice). The wizard's is the
+    default; a run with another effort, a turn limit or the last-turn hint (the Alta,
+    m-24854322) is another version."""
+    if effort == hashtag_ai.SELECT_EFFORT and not max_turns and not last_turn_hint:
+        return "select_hashtags:" + _fingerprint(
+            hashtag_ai.SELECT_SYSTEM, hashtag_ai.SELECT_MODEL, hashtag_ai.SELECT_EFFORT
+        )
     return "select_hashtags:" + _fingerprint(
-        hashtag_ai.SELECT_SYSTEM, hashtag_ai.SELECT_MODEL, hashtag_ai.SELECT_EFFORT
+        hashtag_ai.SELECT_SYSTEM,
+        hashtag_ai.SELECT_MODEL,
+        effort,
+        max_turns,
+        hashtag_ai.LAST_TURN_HINT if last_turn_hint else "",
     )
 
 
@@ -598,8 +655,14 @@ def generate_from_account(
         proposal = generate(account, api_key=key, max_tags=CHOSEN_HASHTAGS)
     except (ClaudeToolError, ValueError) as exc:
         logger.warning("hashtags: creation failed: %s", exc)
+        stats = getattr(exc, "stats", None)
         if budget is not None:
-            budget.claude_tokens_complete = False  # a run was made; its tokens are lost
+            if stats is not None:
+                budget.claude_stats.append(stats)  # what the failed run spent is known
+            else:
+                budget.claude_tokens_complete = False  # a run was made; its tokens are lost
+        if trail is not None and stats is not None and stats.turns:
+            trail.add(step, rubro_prompt_version(), stats)
         return None
     except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
         logger.warning("hashtags: creation failed: %s", exc)
@@ -651,7 +714,10 @@ def _as_choice(proposal: from_profile.Proposal, by: str) -> HashtagChoice:
 
 
 def _account_catalog_run(
-    found: HashtagChoice, budget: CallBudget | None, trail: _Trail | None
+    found: HashtagChoice,
+    budget: CallBudget | None,
+    trail: _Trail | None,
+    prompt_version: str = "",
 ) -> None:
     """The catalog's answer into the run's books: its Claude run (stats and tokens) when
     it made one; no call at all for the rule path or a choice served from memory."""
@@ -665,7 +731,7 @@ def _account_catalog_run(
         else:
             budget.claude_calls -= 1  # no run was made: give the call back
     if trail is not None and attempted:
-        trail.add("hashtags_catalog", catalog_prompt_version(), stats)
+        trail.add("hashtags_catalog", prompt_version or catalog_prompt_version(), stats)
 
 
 def hashtags_db_first(
@@ -681,6 +747,7 @@ def hashtags_db_first(
     trail: _Trail | None = None,
     generate: AccountReader = from_profile.generate,
     api_key: Callable[[], str] = api_key_from_env,
+    create: bool = True,
 ) -> tuple[HashtagChoice | None, str]:
     """Tu rubro's hashtags, in three cases tried in order (§ fourth round of 2026-10-05):
 
@@ -691,6 +758,9 @@ def hashtags_db_first(
     3. **Created** — Claude writes them from the description and the posts (or the
        proposal `created` already made while it named the rubro); with `remember`, they
        are stored in the catalog so the next brand with that rubro finds them in case 1.
+
+    `create=False` (the Alta, m-24854322) makes no NEW Claude run in case 3: only the
+    tags the rubro run already proposed (`created`) are used.
 
     Returns the choice, or None with the note to show (the wizard's own copy)."""
     # 1. the database
@@ -709,7 +779,7 @@ def hashtags_db_first(
                 else:
                     budget.claude_calls -= 1  # failed before any Claude run
         else:
-            _account_catalog_run(found, budget, trail)
+            _account_catalog_run(found, budget, trail, getattr(catalog, "prompt_version", ""))
             if found.tags:
                 return found, ""
     # 2. the latest posts
@@ -718,7 +788,7 @@ def hashtags_db_first(
         return _as_choice(own, "rule"), ""
     # 3. created from the description and the posts
     proposal = created if created is not None and created.tags else None
-    if proposal is None:
+    if proposal is None and create:
         proposal = generate_from_account(
             account,
             budget=budget,
@@ -863,6 +933,9 @@ def prefill_brand_kit(
     caps: CallCaps = DEFAULT_CAPS,
     propose: bool = True,
     ports: PrefillPorts | None = None,
+    meter: DollarMeter | None = None,
+    credit_usd: Decimal = Decimal(0),
+    create_hashtags: bool = True,
 ) -> PrefillResult:
     """Read `handle` on `network` for this brand and, with `propose`, write what it
     proposes for the Brand Kit under `brand_kit_details.connect.prefill`.
@@ -879,12 +952,20 @@ def prefill_brand_kit(
     the claim and the cache — the operator walks the rest. `source` (e.g.
     `{"kind": "alta", "meegle_work_item_id": 123}`) goes into the provenance.
 
+    The Alta (m-24854322) also passes its `meter` — the run's dollar balance: every
+    ScrapeCreators request books `credit_usd` in it before it goes (one that does not fit
+    is not made: `CAP_REACHED`), and the Claude ports it built book every turn in the
+    same meter — and `create_hashtags=False` (no third Claude run). A Claude turn the
+    meter refuses degrades the step like any failed Claude call: the run still ends `OK`.
+
     Never raises: every failure is an outcome (an unexpected error is logged and is
     `READ_FAILED`). Blocking (HTTP + database): run it in a thread from an event loop."""
     ports = ports or PrefillPorts()
-    budget = CallBudget(caps=caps)
+    budget = CallBudget(caps=caps, meter=meter, credit_usd=Decimal(str(credit_usd)))
     try:
-        return _run(tenant_id, brand_id, network, handle, source, propose, ports, budget)
+        return _run(
+            tenant_id, brand_id, network, handle, source, propose, ports, budget, create_hashtags
+        )
     except Exception as exc:  # noqa: BLE001 - a worker and a screen both need an outcome
         logger.exception("brand prefill: unexpected failure")
         return PrefillResult(
@@ -905,6 +986,7 @@ def _run(
     propose: bool,
     ports: PrefillPorts,
     budget: CallBudget,
+    create_hashtags: bool = True,
 ) -> PrefillResult:
     clean = handle.strip()
 
@@ -978,7 +1060,16 @@ def _run(
     trail = _Trail()
     try:
         proposal = _propose(
-            tenant_id, brand_id, network, profile, seed, metrics, budget, trail, ports
+            tenant_id,
+            brand_id,
+            network,
+            profile,
+            seed,
+            metrics,
+            budget,
+            trail,
+            ports,
+            create_hashtags,
         )
     except ClaudeCapReached as exc:
         result = done(PrefillOutcome.CAP_REACHED, str(exc), **read)
@@ -1003,6 +1094,7 @@ def _propose(
     budget: CallBudget,
     trail: _Trail,
     ports: PrefillPorts,
+    create_hashtags: bool = True,
 ) -> dict[str, Any]:
     """What the wizard's rubro step and ¿Tienes logo? «Mi foto de perfil es mi logo»
     would fill for an account whose operator has typed nothing yet."""
@@ -1038,6 +1130,7 @@ def _propose(
         trail=trail,
         generate=ports.generate,
         api_key=ports.api_key,
+        create=create_hashtags,
     )
     data = _picture(profile, ports)
     palette = _palette(data)

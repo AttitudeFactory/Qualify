@@ -24,6 +24,14 @@ any non-local DSN.
 `--cases` is a JSON list of {"handle": ..., "label": ...}; the label (e.g. «heladería
 pública de Cúcuta») is what goes into the docs — third-party handles never enter the
 repo. Results default to a file outside the repo too.
+
+`--alta-usd 0.15` (OL2-0, m-24854322) runs the path the Alta WORKER runs today —
+`meegle.prefill.metered_prefill` over `bounded_ports`: a dollar meter of that cap, the
+Alta's read (at most 2 credits), the rubro at 1,500 tokens x 2 attempts, the catalog at
+3 turns x 1,200 at effort low, no creation run — and records the meter's spend, its
+refused and lowered turns and the proposed tags. Without it, the PB-6 path
+(`prefill_brand_kit` with the default `CallCaps`, no meter) as measured in PB6-001. The
+budget guard stops BEFORE an account whose cap would take the spend over `--max-usd`.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -169,23 +178,45 @@ class RecordingStore:
         return getattr(self.inner, name)
 
 
-def run_once(tenant_id: uuid.UUID, brand_id: uuid.UUID, handle: str, phase: str) -> dict:
+def run_once(
+    tenant_id: uuid.UUID,
+    brand_id: uuid.UUID,
+    handle: str,
+    phase: str,
+    alta_usd: Decimal | None = None,
+) -> dict:
+    from dataclasses import replace
+
     from qualify_api.claude_tools import cost_breakdown
     from qualify_api.creative import brand_prefill
     from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.meegle import prefill as alta
 
     store = RecordingStore(BrandKitStore())
-    ports = brand_prefill.PrefillPorts(store=store)  # every other port is the real one
     start = time.perf_counter()
-    result = brand_prefill.prefill_brand_kit(
-        tenant_id,
-        brand_id,
-        "instagram",
-        handle,
-        source={"kind": "pb6-measurement", "ticket": "m-24852200"},
-        propose=True,
-        ports=ports,
-    )
+    if alta_usd is None:
+        ports = brand_prefill.PrefillPorts(store=store)  # every other port is the real one
+        result = brand_prefill.prefill_brand_kit(
+            tenant_id,
+            brand_id,
+            "instagram",
+            handle,
+            source={"kind": "pb6-measurement", "ticket": "m-24852200"},
+            propose=True,
+            ports=ports,
+        )
+    else:  # the Alta worker's own path, with only the store recorded
+        result = alta.metered_prefill(
+            tenant_id,
+            brand_id,
+            "instagram",
+            handle,
+            source={"kind": "ol2-0-measurement", "ticket": "m-24854322"},
+            caps=alta.ALTA_CAPS,
+            propose=True,
+            budget_usd=alta_usd,
+            ports=lambda meter: replace(alta.bounded_ports(meter), store=store),
+        )
     latency = time.perf_counter() - start
     doc = store.written[-1] if store.written else {}
     provenance = (doc or {}).get("provenance") or {}
@@ -202,6 +233,7 @@ def run_once(tenant_id: uuid.UUID, brand_id: uuid.UUID, handle: str, phase: str)
     usage = result.usage.as_document()
     profile = result.profile or {}
     sc_usd = usage["scrapecreators_credits"] * SC_USD_PER_CREDIT
+    hashtags = ((result.proposal or {}).get("connect") or {}).get("hashtags") or []
     return {
         "phase": phase,
         "outcome": result.outcome.value,
@@ -212,9 +244,10 @@ def run_once(tenant_id: uuid.UUID, brand_id: uuid.UUID, handle: str, phase: str)
         "endpoints": (provenance.get("read") or {}).get("endpoints", []),
         "usage": usage,
         "claude_runs": claude_runs,
-        "hashtags_proposed": len(
-            ((result.proposal or {}).get("connect") or {}).get("hashtags") or []
-        ),
+        "hashtags_proposed": len(hashtags),
+        "hashtags": [{"tag": h.get("tag"), "origin": h.get("origin")} for h in hashtags],
+        "rubro_text": ((result.proposal or {}).get("connect") or {}).get("rubro_text", ""),
+        "metered_usd": usage.get("metered_usd"),
         "palette": bool((result.proposal or {}).get("palette")),
         "written": result.written,
         "cost_usd": {
@@ -255,6 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "pb6.json")
     parser.add_argument("--max-usd", type=float, default=1.0, help="stop before exceeding")
     parser.add_argument("--skip-cache-run", action="store_true")
+    parser.add_argument(
+        "--alta-usd", type=Decimal, help="run the Alta worker's metered path with this cap"
+    )
     args = parser.parse_args(argv)
 
     cases: list[dict[str, str]] = []
@@ -272,8 +308,9 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[dict] = []
     spent = 0.0
+    per_run = float(args.alta_usd) if args.alta_usd is not None else 0.0
     for case in cases:
-        if spent >= args.max_usd:
+        if spent >= args.max_usd or spent + per_run > args.max_usd:
             print(f"budget guard: ${spent:.4f} spent, stopping before {case['label']}")
             break
         tenant_id, brand_id = create_tenant(case["label"])
@@ -282,7 +319,10 @@ def main(argv: list[str] | None = None) -> int:
             for phase in phases:
                 if phase == "cache":
                     clear_catalog_memory()
-                row = run_once(tenant_id, brand_id, case["handle"], phase)
+                    if spent + per_run > args.max_usd:
+                        print(f"budget guard: ${spent:.4f} spent, no cache run")
+                        break
+                row = run_once(tenant_id, brand_id, case["handle"], phase, args.alta_usd)
                 row |= {"label": case["label"], "handle": case["handle"]}
                 rows.append(row)
                 spent += row["cost_usd"]["total"]
@@ -293,6 +333,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"in={row['usage']['claude_input_tokens']} "
                     f"out={row['usage']['claude_output_tokens']} "
                     f"${row['cost_usd']['total']:.4f} {row['latency_s']}s"
+                    + (
+                        f" metered=${row['metered_usd']} refused={row['usage']['refused_turns']}"
+                        f" lowered={row['usage']['lowered_turns']}"
+                        if row.get("metered_usd") is not None
+                        else ""
+                    )
                 )
                 if spent >= args.max_usd:
                     break
@@ -301,12 +347,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  throwaway tenant deleted ({', '.join(emptied) or 'no rows'})")
 
     report = {
-        "ticket": "m-24852200",
+        "ticket": "m-24852200" if args.alta_usd is None else "m-24854322",
+        "alta_usd": str(args.alta_usd) if args.alta_usd is not None else None,
         "date": datetime.now(UTC).isoformat(),
         "pipeline_version": __import__(
             "qualify_api.creative.brand_prefill", fromlist=["PREFILL_VERSION"]
         ).PREFILL_VERSION,
-        "caps": {"scrapecreators_requests": 6, "claude_calls": 3},
+        "caps": (
+            {"scrapecreators_requests": 6, "claude_calls": 3}
+            if args.alta_usd is None
+            else {"scrapecreators_requests": 2, "claude_calls": 2}
+        ),
         "sc_usd_per_credit": SC_USD_PER_CREDIT,
         "spent_usd": round(spent, 6),
         "summary": summarize(rows),
