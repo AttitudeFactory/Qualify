@@ -86,12 +86,17 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
   the budget the first attempt left. A job found while the switch is off is settled `disabled`
   silently. The proposal lands in `brand_kit_details.connect.prefill` of the draft and the
   signup with the Alta's invite adopts it (PB-5 shows it).
-- **Cap → calls** (formula in the module docstring): unit costs from `claude_tools.PRICES` (the
-  dearest prefill model, today `claude-sonnet-5`) with an estimated token envelope per Claude
-  run (6k in / 2.5k out → US$0.037) and ScrapeCreators at US$0.0019/credit (Freelance plan,
-  `docs/plan-superadmin-alta-clientes.md`). Minimum run = 2 requests + 2 Claude runs ≈
-  US$0.078: a cap below it refuses to run. PB-6 should replace the envelope and the credit price
-  with measured values.
+- **Cap → a dollar meter per turn** (OL2-0, m-24854322; formula in the module docstring). Each
+  attempt carries one `claude_tools.DollarMeter` of `max_usd - spent_usd`: every ScrapeCreators
+  credit (US$0.0019, Freelance rounded up) is booked before the request, and every Claude turn is
+  priced before it is sent (input bound × p_in × 1.25 + `max_tokens` × p_out) — sent as asked,
+  with a lowered `max_tokens`, or refused (nothing sent). The Alta's own limits: ≤ 2 credits
+  (snapshot 5: profile, plus one post page only when needed), rubro 1,500 tokens × 2 attempts,
+  catalog 3 turns × 1,200 at effort `low` with a «choose now» hint, no creation run. Worst case
+  US$0.1403 (pinned in `test_alta_dollar_meter.py`), minimum run US$0.0501 (a cap below it does
+  not run). A cut or refused Claude turn degrades the step (catalog → the account's own tags or
+  the rubro run's) and the job still ends `ok`. `runs[].usage` carries `metered_usd`,
+  `refused_turns`, `lowered_turns`, `overruns` (always 0). The web wizard has no meter.
 - **Idempotency / cost on record.** «Datos» twice or a replayed event → `duplicate`, no second
   charge; a corrected username is a new job. Each job keeps `max_usd`, `spent_usd`, `runs` (per
   attempt: caps, usage, real cost, outcome), `pipeline_version`. Inspect:
