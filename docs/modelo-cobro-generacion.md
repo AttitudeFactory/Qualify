@@ -10,6 +10,10 @@ Versiones vigentes: pesos **`pesos-creaciones-v2`** sobre la tabla de precios **
 `dreamina-seedance-2-5-260628`. Presentador: OmniHuman 1.5. Imagen: `seedream-5-0-lite-260128`.
 Texto: `claude-opus-5-5`.
 
+**Revisión del 2026-10-24 (noche).** Se agregaron D20 a D27. El primer final 1080p medido en
+vivo costó USD 2,87 frente a 2,85 calculados, así que H2 queda confirmada (D26). Los arreglos P0
+#325 y #316 ya están en producción (D27).
+
 **Revisión del 2026-10-24 (tarde).** Se agregaron la lectura oficial de precios del mismo día,
 que confirma la tabla `v7` y resuelve las hipótesis H1 y H3 (§7), y las decisiones D12 a D19
 sobre planes con nombre y paquetes extra (§3). El PR #299 ya cuenta el video al aprobar y trae el
@@ -78,6 +82,7 @@ Pro 480). El enlace de pago se manda a mano (D12 a D19). Los precios de venta es
 `v7` en todos los modelos. BytePlus no cobra las tareas que fallan (H1, resuelta). El final 1080p
 cuesta USD 0,5695 por segundo según la tarifa y la fórmula oficiales (H2: falta leer el conteo de
 tokens de un final real). El final sí vuelve a cobrar el video de referencia (H3, resuelta).
+El primer final medido en vivo costó USD 2,87 frente a 2,85 calculados (D26): H2 confirmada.
 Ningún cliente real ha creado todavía un video en producción.
 
 ---
@@ -111,7 +116,7 @@ proporción con más píxeles, que es la más cara). Costos **calculados** con `
 | 2. Vista previa 480p | `draft: true` en Seedance 2.5; 9 870 tokens/s × USD 10,70 por millón = 0,1056/s | 0,53 | 1,06 | calculado; **medido 0,5315** a 5 s (49 673 tokens, tarea `cgt-20261024000242-qe2h5`, m-24849137, SD25-001) |
 | **Subtotal hasta la vista previa** | | **0,60** | **1,12** | |
 | 3. Aprobar | El dueño aprueba; se encarga el final con el id del borrador (`MediaProducer.finalize`) | 0 | 0 | — |
-| 4. Final 1080p | 48 672 tokens/s × USD 11,70 por millón = 0,5695/s; pasa a H.264 y reemplaza la vista previa en la misma fila (`draft_mode.py`) | 2,85 | 5,70 | calculado; **tarifa y fórmula confirmadas** en la lectura oficial del 2026-10-24 (el ejemplo oficial a 1080p 16:9 da 0,569/s). Falta el conteo de tokens de un final real (#304, «Pendiente en vivo») |
+| 4. Final 1080p | 48 672 tokens/s × USD 11,70 por millón = 0,5695/s; pasa a H.264 y reemplaza la vista previa en la misma fila (`draft_mode.py`) | 2,85 | 5,70 | calculado; **tarifa y fórmula confirmadas** en la lectura oficial del 2026-10-24 (el ejemplo oficial a 1080p 16:9 da 0,569/s). **Medido en vivo el 2026-10-24: USD 2,87** a 5 s (tarea `cgt-20261024004332-yguur`, D26) |
 | **Total del video** | | **3,44** | **6,82** | calculado (`creaciones-del-mes-medicion.md` §5.5 y §6.4) |
 | Parte de la vista previa | | 17 % | 16 % | calculado |
 | Parte del final | | 83 % | 84 % | calculado |
@@ -535,6 +540,87 @@ sin código todavía:
 - **Migración `0089`, apilada sobre #299** (que trae `0088_creation_charges`). Se propone un
   ADR 40 `[PROPUESTO]`, que se escribirá en el PR de `0089`.
 
+### D20 a D27 — Otra versión, confirmación del final, precios, medición y arreglos (fundador, 2026-10-24)
+
+**D20 — «Pedir otra versión» de un video final usa 1 vista previa y 1 video.**
+
+- **Por qué:** otra versión es un video nuevo. Pasa por su propia vista previa (cuenta 1 de las
+  20, D7) y, si el dueño la aprueba, por su propio final (cuenta 1 de los 4, D6). Al equipo le
+  cuesta lo mismo que un video nuevo: USD 3,44 a 5 s y 6,82 a 10 s (§2). Si fuera gratis, la
+  forma más barata de tener videos sin límite sería pedir versiones.
+
+**D21 — Todo final se publica solo después de que el dueño lo confirme.** Vale para cualquier
+camino: el final que se termina de noche, el que se encarga a mano, el del mismo día y «Publicar
+ahora». Un final sin confirmar nunca se publica. «Falta tu confirmación» dura 24 h; después pasa
+a «Vencido».
+
+- **Por qué:** la vista previa es en calidad baja y el final se genera otra vez desde ella, así
+  que puede no ser idéntico. El dueño aprobó una vista previa, no el video que va a salir. La regla
+  de la casa es asistido, nunca autónomo: nada se publica sin una persona que lo vea.
+- **Por qué 24 h y «Vencido»:** una publicación programada que espera confirmación sin límite
+  puede salir fuera de su momento (una oferta de ese día). Pasadas 24 h es mejor que el dueño
+  decida otra vez.
+- **Costo:** ninguno nuevo. El final ya está pagado y el video ya se contó al aprobar; vencer la
+  confirmación no devuelve el video.
+
+**D22 — Cuando salta el tope de alerta en dólares (D18), el equipo revisa y nunca pausa el negocio
+de forma automática.**
+
+- **Por qué:** el tope está por encima del peor caso de cada plan. Si se alcanza, hay algo que
+  entender (paquetes grandes, un error, un abuso). Pausar solo frenaría unidades que el negocio ya
+  pagó.
+
+**D23 — Los paquetes de 90 días son paquetes fijos con nombre, cada uno con su precio:** +2
+videos, +20 creaciones y +10 vistas previas.
+
+| Paquete | Unidades | Costo máximo para el equipo (USD, calculado) |
+|---|---|---:|
+| +2 videos | 2 videos de hasta 10 s (finales) | 2 × 5,70 = 11,40 (13,64 si se cuentan también sus vistas previas) |
+| +20 creaciones | 20 creaciones | 20 × 0,15 = 3,00 |
+| +10 vistas previas | 10 vistas previas de hasta 10 s | 10 × 1,12 = 11,24 |
+
+Con video de referencia de 30 s el paquete de videos y el de vistas previas cuestan más: un final
+a 10 s ≈ 13,63 y una vista previa ≈ 2,60 (§6).
+
+- **Por qué fijos:** pocos productos, fáciles de explicar y de cobrar a mano (D19). Responde a la
+  pregunta abierta del tamaño de los paquetes. El tope por paquete que proponía principal-architect
+  queda cubierto, porque cada paquete trae una cantidad fija.
+
+**D24 — El dueño ve el nombre de su plan en Configuración:** «Tu plan: Básico · 30 creaciones, 4
+videos y 20 vistas previas al mes» y el botón «Pedir más a Qualify». En el resto de la app el
+saldo muestra solo números (D16).
+
+- **Por qué:** el nombre del plan sirve cuando el dueño quiere saber qué tiene o pedir más.
+  Mientras crea, solo le importa cuánto le queda.
+
+**D25 — Los precios de planes y paquetes esperan un estudio de market-analyst.**
+
+- **Por qué:** los costos ya están confirmados (§5, §7, D26). Falta saber cuánto paga el segmento
+  (PYMEs de Colombia, Venezuela y Uruguay) y cuánto cobran las alternativas. Las cifras de costo de
+  D15 y D23 son el piso.
+
+**D26 — Primer final 1080p medido en vivo: USD 2,87** (tarea `cgt-20261024004332-yguur`,
+2026-10-24) frente a **2,85 calculados**. H2 queda **confirmada**.
+
+- **Qué dice:** la diferencia es de USD 0,02, un 0,7 %. La fórmula de tokens y la tarifa oficial
+  (§2) predicen bien el final, que es el 83 % del costo de un video. Los techos de §6 se
+  mantienen.
+- **Pendiente:** documentar la tarea en `docs/modelos-generativos/seedance-2-5.md` (tokens,
+  formato, duración), como pide la regla de la casa.
+
+**D27 — Arreglos P0 en producción:** #325 (un video de Seedance ya cobrado se recupera por su id
+de tarea en vez de perderse; m-24852154) y #316 (el proceso que limpia finales atascados mide
+desde el último avance y no desde que nació la vista previa; m-24852156). Los dos se fusionaron el
+2026-10-24.
+
+- **Por qué importan para el cobro:** sin #325, un video que BytePlus terminó y cobró podía
+  perderse: el equipo pagaba un video que el dueño nunca recibía. Sin #316, un final que seguía
+  avanzando podía darse por atascado y reintentarse.
+- **Huecos que quedan** (tickets en preparación):
+  - la recuperación solo ocurre cuando alguien abre la app; si nadie la abre, el video cobrado
+    sigue sin recuperarse;
+  - el presentador (OmniHuman) tiene el mismo problema y no tiene arreglo todavía.
+
 ---
 
 ## 4. Tabla de decisiones
@@ -564,6 +650,14 @@ Estados: **main** = fusionado; **PR #299** = en el PR abierto (`feat/m-24848531-
 | D17 | Primero el cupo del plan, después los paquetes, el que vence antes primero | 2026-10-24 | Fundador; forma de guardarlo: principal-architect | Diseño en m-24852129 (`creation_allocations`) | Ninguno | Diseñado |
 | D18 | Tope de alerta por plan: USD 120 / 240 / 480; avisa en Lark, nunca bloquea | 2026-10-24 | Fundador | Peor caso con referencias: 111 / 222 / 444 (D15) | Alerta temprana; quita el freno duro que podía bloquear lo pagado | Diseñado |
 | D19 | Enlace de pago a mano, sin proveedor nuevo | 2026-10-24 | Fundador | Regla de la casa (proveedor nuevo = tabla de opciones) | Sin costo de proveedor | Vigente (proceso manual) |
+| D20 | «Pedir otra versión» de un final = 1 vista previa + 1 video | 2026-10-24 | Fundador | §2 (otra versión cuesta lo mismo que un video nuevo) | Evita videos gratis por la puerta de las versiones | Pendiente |
+| D21 | Todo final se confirma antes de publicar; «Falta tu confirmación» 24 h, luego «Vencido» | 2026-10-24 | Fundador | Regla de la casa: asistido, nunca autónomo | Ninguno | Pendiente |
+| D22 | Tras una alerta de tope, el equipo revisa; nunca pausa automática | 2026-10-24 | Fundador | D18 | Ninguno | Pendiente (con D18) |
+| D23 | Paquetes fijos de 90 días: +2 videos, +20 creaciones, +10 vistas previas, cada uno con su precio | 2026-10-24 | Fundador | Costos de §5 | Costo máx. ≈ 11,40 / 3,00 / 11,24 USD | Diseñado (`creation_packs`) |
+| D24 | Nombre del plan visible solo en Configuración, con «Pedir más a Qualify» | 2026-10-24 | Fundador | — | Ninguno | Pendiente |
+| D25 | Precios de planes y paquetes tras un estudio de market-analyst | 2026-10-24 | Fundador | — | — | Pendiente |
+| D26 | Final 1080p medido: USD 2,87 frente a 2,85 calculados; H2 confirmada | 2026-10-24 | Medición | Tarea `cgt-20261024004332-yguur` | Confirma los techos de §6 | Medido |
+| D27 | Arreglos P0 #325 y #316 en producción; quedan huecos (recuperación al abrir la app, OmniHuman) | 2026-10-24 | Equipo | PR #325, PR #316 | Evita pagar videos que se pierden | main (#325, #316); huecos con tickets en preparación |
 
 ---
 
@@ -595,7 +689,7 @@ borrador.
 | Vista previa Seedance 2.5, 10 s, sin referencia | — | 1,12 | calculado | §2 | v7 |
 | Vista previa 5 s con una referencia de 7,33 s (solo el video) | — | 0,74 / 0,76 | **medido** (2 tareas) | SD25-001; m-24849431 | v7 |
 | Vista previa 5 s con 22 s de referencias (solo el video) | — | 1,66 | **medido** (1 tarea) | SD25-001; m-24848887 | v7 |
-| Final 1080p, 5 s, sin referencia | — | 2,85 | calculado con tarifa y fórmula oficiales; falta un conteo real | §2 | v7 |
+| Final 1080p, 5 s, sin referencia | — | 2,85 | calculado con tarifa y fórmula oficiales; **medido 2,87** (D26) | §2; tarea `cgt-20261024004332-yguur` | v7 |
 | Final 1080p, 10 s, sin referencia | — | 5,70 | ídem | §2 | v7 |
 | Final 1080p, 5 s, con una referencia de 7,33 s | — | 4,20 | ejemplo oficial (600 126 tokens × 7,00/M) | `seedance-2-5` § Draft mode, leída 2026-10-24 | v7 |
 | Video completo 5 s / 10 s, sin referencia | — | 3,44 / 6,82 | calculado | medición §5.5 y §6.4 | v7 |
@@ -664,7 +758,7 @@ peor caso de cada plan. En el diseño, asignar un plan escribe ese tope y apaga 
 | # | Hipótesis | Qué pasa si es falsa | Cómo verificarla |
 |---|---|---|---|
 | H1 | **BytePlus no cobra las tareas de video que fallan.** **RESUELTA el 2026-10-24:** las reglas oficiales dicen «You are only charged for successfully generated videos. No fee is charged if generation fails» (`model-pricing`). Coincide con lo que asume `byteplus_ark.py` | — | Queda como comprobación, no como hipótesis: cruzar la primera factura tarea por tarea (`cgt-…`) con las tareas que `creative_usage_events` marca como fallidas |
-| H2 | **El final 1080p cuesta lo que dice la fórmula** (48 672 tokens/s a 3:4, USD 0,5695/s). **Precio confirmado el 2026-10-24:** tarifa oficial 11,70/M y fórmula oficial igual a la nuestra; el ejemplo oficial a 1080p 16:9 da 0,569/s. El final de 2.5 solo admite 1080p | Si el conteo real de tokens se aparta de la fórmula, se mueven el costo de video y la cota de USD 55 | Falta solo leer `usage.completion_tokens` de un final real (pendiente desde #304). El ticket m-24849137 tiene marcado el criterio de anotar el costo del final, pero no anota ningún número |
+| H2 | **El final 1080p cuesta lo que dice la fórmula** (48 672 tokens/s a 3:4, USD 0,5695/s). **Precio confirmado el 2026-10-24:** tarifa oficial 11,70/M y fórmula oficial igual a la nuestra; el ejemplo oficial a 1080p 16:9 da 0,569/s. El final de 2.5 solo admite 1080p | Si el conteo real de tokens se aparta de la fórmula, se mueven el costo de video y la cota de USD 55 | **CONFIRMADA el 2026-10-24:** el primer final medido en vivo costó USD 2,87 frente a 2,85 calculados (tarea `cgt-20261024004332-yguur`, D26) |
 | H3 | **El final de una vista previa con video de referencia vuelve a cobrar los segundos de entrada.** **RESUELTA el 2026-10-24: sí.** «The input video duration is calculated based on the input video in Step 1. The Draft video is not counted» (`seedance-2-5` § Draft mode). 5 s con 7,33 s de referencia ≈ USD 4,20 de final, no ≈ 1,70. El supuesto conservador de v2 era el correcto | — | — |
 | H4 | **Duración del video de referencia desconocida = 30 s** en los pesos | Sobreestima el costo; con la regla anterior (video dentro de creaciones) hacía imposible usar referencias. Con el cupo de videos (D5) ya no afecta al dueño, solo al techo del equipo | Guardar en el brief la duración leída con PyAV (ya se lee para la estimación previa) y usarla en el techo |
 | H5 | **El sonido no cambia el precio** de Seedance 2.5 | Habría que versionar `v8` y la tabla de pesos | Medido en SD25-001: el clip con sonido (115 690 tokens) y la diapositiva sin sonido (118 851) encajan en la misma fórmula. Falta confirmarlo con la factura (medición §5.4) |
@@ -688,6 +782,8 @@ m-24851828, pesos v2 y precios):
 
 - **La medición de producción es casi vacía:** 3 días, 2 negocios de prueba, 23 pedidos, solo
   imágenes (medición §2). Solo el peso de la imagen está confirmado.
+- **Videos cobrados que no se recuperan solos** (D27): la recuperación de #325 depende de que
+  alguien abra la app, y el presentador (OmniHuman) no tiene ese arreglo.
 - **Planes y paquetes son solo diseño.** Hasta que exista `0089`, «Pedir más a Qualify» no puede
   sumar unidades: el equipo no tiene por dónde escribirlas.
 - **Las pruebas en vivo son pocas y de un solo negocio de prueba** (Nibbles' Burgers, entorno
@@ -718,7 +814,8 @@ sin textos ni datos de clientes finales):
 
 **Antes de eso, en cuanto se pueda (no esperan a los 30 días):**
 
-- el conteo de tokens del primer final 1080p real (H2);
+- documentar en `docs/modelos-generativos/seedance-2-5.md` el final medido de D26 y medir uno con
+  video de referencia;
 - la primera factura de BytePlus (la comprobación de H1, y H5 y H8);
 - las tablas oficiales de consumo mínimo con video de entrada (H9).
 
@@ -729,18 +826,15 @@ una nueva versión de pesos.
 
 ## 9. Preguntas abiertas
 
-1. **Precio de cada plan y de cada paquete** (D14, D15). Los costos ya están confirmados con los
-   precios oficiales (§5, §7). Referencia de costo, peor caso por mes: Básico ≈ USD 55 (111 con
-   referencias), Plus ≈ 110 (222), Pro ≈ 220 (444). Por unidad: una creación cuesta como mucho
-   USD 0,15, un video de 10 s ≈ 6,82 y una vista previa de 10 s ≈ 1,12.
-2. **Tamaño de los paquetes y tope por paquete.** Cuántas creaciones, videos y vistas previas trae
-   cada paquete de 90 días, y el tope por fila que evita un error de dedo (principal-architect
-   propone, por ejemplo, no más que la cuota de Pro).
-3. **Qué hace el equipo cuando salta el tope de alerta** (D18): revisar y no hacer nada, llamar al
-   negocio, ofrecerle subir de plan o frenar a mano. El aviso debe decir cuánto del gasto vino de
-   paquetes.
-4. **¿El dueño ve el nombre de su plan?** D16 define cómo ve sus unidades, pero no si la app dice
-   «Básico», «Plus» o «Pro».
+1. **Precio de cada plan y de cada paquete** (D25): espera el estudio de market-analyst. Piso de
+   costo, peor caso por mes: Básico ≈ USD 55 (111 con referencias), Plus ≈ 110 (222), Pro ≈ 220
+   (444). Paquetes: +2 videos ≈ 11,40, +20 creaciones ≈ 3,00, +10 vistas previas ≈ 11,24 (D23).
+2. **Recuperar videos cobrados sin esperar a que alguien abra la app** (D27): un proceso en
+   segundo plano, y el mismo arreglo para OmniHuman. Tickets en preparación.
+3. **Proveedor de pago** (D19): cuándo pasar del enlace a mano a un proveedor, con su tabla de
+   opciones.
+4. **Qué pasa con el video de un final «Vencido» sin confirmar** (D21): hoy no se devuelve, porque
+   el final ya está pagado. Falta decir qué ve el dueño y si puede confirmarlo más tarde.
 5. **Final a 720p en vez de 1080p** (opción B, medición §5.6): bajaría el costo de cada video
    unas 2,4 veces sin tocar el cupo. Necesita una prueba de calidad (la misma vista previa con
    final a 720p y a 1080p, vista por una dueña en un teléfono).
@@ -769,6 +863,7 @@ una nueva versión de pesos.
 | **`raw_final`** | El archivo 1080p ya pagado que se guarda en cuanto llega, para no pagarlo dos veces si falla el paso siguiente |
 | **Plan** | Básico, Plus o Pro: cuánto trae cada mes (D15). Todo negocio empieza en Básico |
 | **Paquete** | Unidades extra compradas que duran 90 días desde que se asignan (D12). Se gastan después del cupo del plan, el que vence antes primero (D17) |
+| **Confirmación del final** | El paso en que el dueño ve el video en alta calidad y dice que sale. Sin ella nada se publica; dura 24 h (D21) |
 | **Tope de alerta** | Gasto en dólares por plan y mes que, al alcanzarse, avisa al equipo en Lark. Nunca bloquea (D18) |
 
 ---
@@ -807,6 +902,9 @@ una nueva versión de pesos.
 - Decisiones D12 a D19: comentario del fundador en m-24852128 (2026-10-24). Diseño de planes y
   paquetes: segunda revisión de principal-architect en m-24852129 (2026-10-24), que reemplaza los
   puntos 1, 2 y 5 de la primera.
+- Decisiones D20 a D27 (fundador, 2026-10-24); final medido en vivo, tarea
+  `cgt-20261024004332-yguur`; PR #325 (m-24852154) y PR #316 (m-24852156), fusionados el
+  2026-10-24.
 - PR #299 en `e1bd509c`: `docs/creaciones-del-mes-medicion.md` §7 (videos al aprobar, 20 vistas
   previas, vencimiento visible).
 - Código de presupuesto por marca: `migrations/postgres/versions/0009_creative.py`
