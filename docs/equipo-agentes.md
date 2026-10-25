@@ -23,10 +23,10 @@ Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 | `creative-engineer` | opus | `packages/creative/`, `packages/render/`, `qualify_api.{creative,catalog,stock,canva}` | context, pr, dev-env, copy-es, measure |
 | `reflex-ui-engineer` | opus | `Qualify/`, `assets/`, `rxconfig.py`, E2E | context, pr, dev-env, copy-es |
 | `platform-engineer` | opus | `deploy/`, `.github/`, `infra/`, `docker-compose*.yml`, `justfile` | context, pr, dev-env, prod-ops |
-| `data-scientist-fde` | opus | `packages/models/`, `packages/api/evals/`, `docs/modelos-generativos/` | context, pr, dev-env, measure |
-| `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history |
+| `data-scientist-fde` | opus | `packages/models/`, `packages/api/evals/`, `docs/modelos-generativos/` | context, pr, dev-env, measure, business-decisions |
+| `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history, business-decisions |
 | `market-analyst` | sonnet | Oferta: `docs/*research*`, `*alternativas*`, `ingenieria-inversa-*`, `dolores-*`, `apis-*`, `costos-*`, `comparativa-*` · Vector: `docs/oportunidades-mercado-*.md` · Demanda: `docs/demanda-ventas-*.md` | context |
-| `product-owner` | opus | `docs/backlog-*.md`, `docs/epica-*.md`, tickets de Meegle (Features, Issues, Altas) | context, backlog, copy-es, meegle-ticket, meegle, meegle-altas, lark-admin |
+| `product-owner` | opus | `docs/backlog-*.md`, `docs/epica-*.md`, tickets de Meegle (Features, Issues, Altas) | context, backlog, business-decisions, copy-es, meegle-ticket, meegle, meegle-altas, lark-admin |
 | `ux-designer` | opus | `docs/perfil-cliente-pyme.md`, `docs/ux-*.md`, skill `qualify-ux`; revisión de experiencia local antes de abrir cada PR que toca lo que ve el cliente; sus sugerencias van a la sección «Sugerencias de UX» del PR (solo sugiere, no escribe código de la app) | context, ux, copy-es, design:user-research, design:design-critique, design:ux-copy, design:accessibility-review |
 
 Todos precargan además `durable-findings`. `product-owner` es dueño de los tickets de Meegle y de `docs/backlog-*.md` / `docs/epica-*.md` (vía `qualify-backlog`); el hilo principal le delega y corre el desafío del arquitecto y datasci.
@@ -45,6 +45,7 @@ Todos precargan además `durable-findings`. `product-owner` es dueño de los tic
 | `qualify-measure` | Golden sets, evals, costo, documentar cada prueba de modelo | datasci, creative |
 | `qualify-prod-ops` | Producción, despliegues, secretos, incidentes | platform |
 | `qualify-backlog` | De evidencia a historias y tickets | Hilo principal |
+| `qualify-business-decisions` | Decisiones entre negocio y técnica para que firme el fundador: precios y planes (qué incluye cada uno, límites como cuántos negocios por suscripción, cupos, paquetes, descuentos), costo por unidad y margen (con la calculadora `unit_economics.py`), comprar o construir según su impacto en el negocio. Procedimiento: encuadrar → evidencia `[V]`/`[S]`/`[H]` → costo por unidad → tabla de opciones → puerta de una o dos vías → pre-mortem → recomendación → decide el fundador → registro en `docs/` y Meegle. Pedida por el fundador el 2026-10-25 en lugar de un agente nuevo (m-24854766) | architect, datasci, product-owner (precargada); market-analyst cuando el fundador pide una recomendación de precio; hilo principal |
 | `qualify-lark-admin` | Ítems y configuración de Meegle, administración de Lark: MCP, CLIs oficiales (`meegle`, `lark-cli` y sus skills) o Chrome para las consolas | Hilo principal, platform |
 | `qualify-history` | Visión original, pipeline de earned media, mapa de fases, decisiones pasadas | architect |
 | `qualify-team-dev` / `qualify-team-po` / `qualify-team-research` | Squads que dispara el fundador (`/qualify-team-…`) | Hilo principal |

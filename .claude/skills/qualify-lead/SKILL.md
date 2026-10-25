@@ -24,6 +24,7 @@ the task. The main thread keeps only conclusions.
 | Evals, golden sets, model/vendor tests, `packages/models` | `data-scientist-fde` | opus |
 | Architecture, schema design, ADRs, Meta constraints, docs↔code audit | `principal-architect` | opus |
 | Market research (name the mode: oferta / vector / demanda) | `market-analyst` | sonnet |
+| A business-technical decision for the founder (price, plan content or limits, margin, build-vs-buy with business impact) | main thread runs `qualify-business-decisions`; evidence fans out to market-analyst / datasci / architect per its step 3 | — |
 | Run the test suite / read a CI run / read long logs — verdict only | `general-purpose` with `model: sonnet` (or `haiku` for plain log reading) | — |
 | Find where something is across many files | `Explore` | — |
 

@@ -107,6 +107,7 @@ module by module, the signed decisions and the house rules.
 | `qualify-prod-ops` | Production, deploys, secrets, outages |
 | `qualify-lark-admin` | Meegle work items and space config, Lark admin — via MCP, `meegle`/`lark-cli` or Chrome |
 | `qualify-backlog` | Writing stories / planning an epic |
+| `qualify-business-decisions` | Price, plan content/limits, unit economics, build-vs-buy with business impact — options table for the founder |
 | `qualify-history` | Earned-media pipeline, roadmap phases, why a past decision was made |
 | `qualify-scrapecreators` | Any ScrapeCreators discovery, question, ticket or code — query and test with the CLI (`just sc`) |
 | `qualify-team-dev` / `-po` / `-research` | The founder asks for a squad |
