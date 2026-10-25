@@ -461,6 +461,8 @@ Te escribimos a tu correo con el enlace de pago.» y se usa el correo de la cuen
 - **Por qué:** un dueño entiende «paso a Plus» más fácil que «compro 12 creaciones y 2 videos».
   Además el equipo arma menos combinaciones a mano.
 
+> **Cambio propuesto por ADR 42 (2026-10-25, `[PROPUESTO]`):** el plan pasa a ser de la **suscripción**, no del negocio: «toda suscripción empieza en Básico, y su cupo se reparte entre sus negocios». Con un negocio por suscripción (todos los de hoy) nada cambia. `tenant_plan_assignments` no se construye con esa forma: la reemplaza `subscription_plan_assignments` (`docs/adr-42-un-login-varios-negocios.md` §2.8–§2.9).
+
 **D15 — Tres planes, cada uno el doble del anterior. Todo negocio empieza en Básico; encima se
 suman paquetes de 90 días. Reemplaza «el mismo cupo para todos» (D3, D10f).**
 
