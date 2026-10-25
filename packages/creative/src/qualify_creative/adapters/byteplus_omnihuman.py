@@ -83,6 +83,8 @@ RESUME_TASK_PARAM = "resume_task_id"
 #: Consecutive polls that say nothing about the task (a dropped connection, a 5xx / 429)
 #: before the wait stops — as a TIMEOUT, so the id is kept and the render recovered.
 MAX_CONSECUTIVE_POLL_ERRORS = 3
+#: A refused key or access (the docs' 50400 / 50401): about the account, not the task.
+ACCESS_ERROR_CODES = frozenset({50400, 50401})
 QUEUED = "in_queue"
 GENERATING = "generating"
 DONE = "done"
@@ -295,9 +297,10 @@ class OmniHumanVideoAdapter:
                 response = client.post(path, json={"req_key": self.req_key, "task_id": task_id})
             except httpx.TransportError:
                 response = None
-            if response is None or response.status_code >= 500 or response.status_code == 429:
-                # OmniHuman said nothing about the task: ask again; past a few in a row,
-                # stop waiting WITHOUT failing it — the render may well go on
+            if not says_about_task(response):
+                # OmniHuman said nothing about the task (no answer, a 5xx / 429, a key
+                # refused): ask again; past a few in a row, stop waiting WITHOUT failing
+                # it — the render may well go on, and is recovered by id later
                 errors += 1
                 if errors >= MAX_CONSECUTIVE_POLL_ERRORS:
                     raise OmniHumanTimeout(
@@ -363,6 +366,20 @@ class OmniHumanVideoAdapter:
         if self.req_key == OMNIHUMAN_20:
             return 720
         return 1080 if int(params.get("resolution") or 720) >= 1080 else 720
+
+
+def says_about_task(response: Any) -> bool:
+    """Whether a `get_result` answer speaks about the task itself — a 200 that is not a
+    refused key. No answer, a 4xx/5xx/429 or an access error (50400/50401) says nothing:
+    the render may still be going on (m-24852495), so it never fails the task."""
+    if response is None or response.status_code != 200:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    code = body.get("code") if isinstance(body, dict) else None
+    return code not in ACCESS_ERROR_CODES
 
 
 def _resume_id(params: Mapping[str, object]) -> str:

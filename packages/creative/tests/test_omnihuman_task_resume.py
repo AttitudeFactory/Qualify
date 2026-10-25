@@ -238,3 +238,27 @@ def test_get_task_reads_one_tasks_state_without_submitting() -> None:
         "req_key": "realman_avatar_picture_omni15_cv",
         "task_id": "oh-9",
     }
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (200, {"code": 50400, "message": "access denied"}),
+        (401, {"code": 50401, "message": "bad key"}),
+        (403, {}),
+    ],
+)
+def test_a_refused_key_on_a_poll_is_not_the_tasks_failure(
+    status_code: int, body: dict[str, Any]
+) -> None:
+    """A key or account problem says nothing about the render: keep the id (pending)."""
+    clock = Clock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("submit_task"):
+            return httpx.Response(200, json={"code": 10000, "data": {"task_id": "oh-1"}})
+        return httpx.Response(status_code, json=body)
+
+    with pytest.raises(OmniHumanTimeout) as exc:
+        _adapter(handler, clock).generate(_request(), api_key="k")
+    assert exc.value.task_id == "oh-1"
