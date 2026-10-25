@@ -4895,7 +4895,7 @@ class CreativeState(rx.State):
 
     def _exhausted(self, price: CreationPrice | None) -> str:
         """The counter at 0 that keeps the piece in the form from being created ("" =
-        none): Crear is disabled and «Pedir más a Qualify» offered (m-24852129)."""
+        none): Crear is disabled and the ask-more block offered (m-24852129)."""
         if self.creations_left < 0 or price is None:
             return ""
         return exhausted_kind(

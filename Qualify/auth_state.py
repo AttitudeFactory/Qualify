@@ -976,7 +976,7 @@ class AuthState(rx.State):
                 PendingState,
                 # m-24842967: Configuración's country and currency of the business
                 SettingsState,
-                # m-24852129: «Pedir más a Qualify» — whether this business's request waits
+                # m-24852129: the ask-more button — whether this business's request waits
                 AskMoreState,
             ):
                 substate = await self.get_state(state_cls)
