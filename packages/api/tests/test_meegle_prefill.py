@@ -622,7 +622,7 @@ class _Engine:
     def node_name(self, work_item_id: int, key: str) -> str | None:
         return "Datos"
 
-    def start_invitation(self, work_item_id: int) -> InvitationResult:
+    def start_invitation(self, work_item_id: int, **_: str) -> InvitationResult:
         self.started += 1
         return InvitationResult(
             ok=True, invite_id=uuid4(), instagram_handle=self.handle, email=EMAIL

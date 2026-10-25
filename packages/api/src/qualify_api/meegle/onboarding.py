@@ -23,6 +23,18 @@ Three use-cases, all synchronous, all writing back to the same item:
   (`abierta`) or bounced (`rebotó` + a comment with the provider's reason). Called
   best-effort from `qualify_api.mail.handlers`, after the invite row is updated.
 
+- `apply_plan_update(work_item_id, …)` (m-24852131) — the team completed **Plan
+  ampliado**: read «Plan» / «Paquete» / «Motivo», apply them to the business the Alta
+  became (`plan_request.apply_alta_plan`) and comment the result. If the business has not
+  registered yet, the choice replaces the one waiting on its invite. An invalid value or a
+  refusal of the plan services: `Estado Qualify = error`, a comment with the reason and
+  **Plan ampliado** rolled back, like **Datos**.
+
+`start_invitation` also validates «Plan» / «Paquete» (m-24852131) BEFORE creating the
+invite — a value that is not a plan or a pack fails like a bad email — and stores the
+choice on the invite; `auth.service.register_business` applies it once the business exists
+(`apply_on_registration`).
+
 Field reads tolerate what Meegle returns for each type: a `text` is a string, a
 `multi_text` arrives as `{"doc_text": …}` (or that object as a JSON string), a `select` as
 its option value. Writes go through `SchemaResolver` so labels become keys and values.
@@ -40,16 +52,27 @@ from uuid import UUID
 
 from qualify_api.auth.invite_email import date_es
 from qualify_api.auth.invites import (
+    AltaPlanChoice,
     CreatedInvite,
     SignupNotAllowed,
     create_invite,
     expire_invites_for_work_item,
+    registered_tenant_for_work_item,
     send_invite_email,
+    set_pending_alta_plan,
     signup_base_url,
 )
 from qualify_api.mail import Mailer, MailError, MailNotConfigured, default_mailer, mail_reply_to
 from qualify_api.meegle.client import MeegleApiError, MeegleClient, WorkItem
 from qualify_api.meegle.instagram import normalize_instagram_handle
+from qualify_api.meegle.plan_request import (
+    InvalidPlanRequest,
+    PlanApplied,
+    apply_alta_plan,
+    confirmation_text,
+    describe_choice,
+    read_plan_choice,
+)
 from qualify_api.meegle.schema import MeegleSchemaError, SchemaResolver
 from qualify_api.meegle.settings import (
     STATUS_BOUNCED,
@@ -81,6 +104,14 @@ class InvitationResult:
     instagram_handle: str | None = None
     # The address the invitation went to (the Alta draft is prepared for it, PB-4).
     email: str = ""
+
+
+@dataclass(frozen=True)
+class PlanUpdateResult:
+    ok: bool
+    #: `applied`, `pending_registration`, or a short failure code
+    reason: str = ""
+    applied: PlanApplied | None = None
 
 
 def text_value(value: Any) -> str:
@@ -181,7 +212,15 @@ class OnboardingEngine:
 
     # -- use-cases -------------------------------------------------------------------
 
-    def start_invitation(self, work_item_id: int) -> InvitationResult:
+    def plan_choice(self, item: WorkItem, *, event_key: str, actor: str) -> AltaPlanChoice:
+        """«Plan» / «Paquete» / «Motivo» of the item; `InvalidPlanRequest` if invalid."""
+        return read_plan_choice(
+            item, self._resolver, self._names, event_key=event_key, requested_by=actor
+        )
+
+    def start_invitation(
+        self, work_item_id: int, *, event_key: str = "", actor: str = ""
+    ) -> InvitationResult:
         item = self._read_item(work_item_id)
         names = self._names
         email = self._field_text(item, names.email)
@@ -189,6 +228,11 @@ class OnboardingEngine:
         note = self._field_text(item, names.note)
         business = item.name.strip()
         instagram = self.instagram_handle(item)
+        try:
+            choice = self.plan_choice(item, event_key=event_key, actor=actor)
+        except InvalidPlanRequest as exc:
+            return self._fail(work_item_id, "invalid_plan", exc.message, None, instagram)
+        extra: dict[str, Any] = {} if choice.empty else {"alta_plan": choice}
 
         invite: CreatedInvite | None = None
         try:
@@ -199,6 +243,7 @@ class OnboardingEngine:
                 business_name=business,
                 note=note,
                 meegle_work_item_id=work_item_id,
+                **extra,
             )
             send_invite_email(
                 self._mailer(),
@@ -224,10 +269,10 @@ class OnboardingEngine:
                 self._resolver.field_key(names.qualify_ref): str(invite.id),
             },
         )
-        self._client.comment(
-            work_item_id,
-            f"Invitación enviada a {invite.email}. Vence el {date_es(invite.expires_at)}.",
-        )
+        sent = f"Invitación enviada a {invite.email}. Vence el {date_es(invite.expires_at)}."
+        if not choice.empty:
+            sent += f"\nAl registrarse el negocio se aplica: {describe_choice(choice)}."
+        self._client.comment(work_item_id, sent)
         logger.info("meegle onboarding: work_item=%s invite=%s sent", work_item_id, invite.id)
         return InvitationResult(
             ok=True, invite_id=invite.id, instagram_handle=instagram, email=invite.email
@@ -372,3 +417,89 @@ class OnboardingEngine:
                 type(exc).__name__,
             )
         logger.info("meegle onboarding: work_item=%s registered tenant=%s", work_item_id, tenant_id)
+
+    # -- plan and pack (m-24852131) ----------------------------------------------------
+
+    def apply_plan_update(
+        self, work_item_id: int, *, event_key: str, actor: str
+    ) -> PlanUpdateResult:
+        """**Plan ampliado** completed: apply «Plan» / «Paquete» to the business."""
+        from qualify_api.plans.catalog import UnknownPlan  # noqa: PLC0415
+        from qualify_api.plans.pack_service import PackRefused  # noqa: PLC0415
+        from qualify_api.plans.schedule import PlanChangeRefused  # noqa: PLC0415
+        from qualify_api.plans.service import TenantNotFound  # noqa: PLC0415
+
+        item = self._read_item(work_item_id)
+        names = self._names
+        try:
+            choice = self.plan_choice(item, event_key=event_key, actor=actor)
+        except InvalidPlanRequest as exc:
+            return self._fail_plan(work_item_id, "invalid_plan", exc.message)
+        if choice.empty:
+            return self._fail_plan(
+                work_item_id,
+                "nothing_chosen",
+                f"«{names.plan}» y «{names.pack}» están vacíos: elige un plan o un paquete.",
+            )
+        tenant_id = registered_tenant_for_work_item(work_item_id)
+        if tenant_id is None:
+            if set_pending_alta_plan(work_item_id, choice):
+                self._client.comment(
+                    work_item_id,
+                    "El negocio todavía no se registró. Cuando se registre se aplica: "
+                    f"{describe_choice(choice)}.",
+                )
+                logger.info("meegle plan: work_item=%s choice waits for signup", work_item_id)
+                return PlanUpdateResult(ok=True, reason="pending_registration")
+            return self._fail_plan(
+                work_item_id,
+                "not_registered",
+                "este negocio no se registró y no tiene una invitación vigente. "
+                f"Envía la invitación de nuevo completando «{names.node_data}».",
+            )
+        try:
+            applied = apply_alta_plan(tenant_id, choice, work_item_id=work_item_id)
+        except (PlanChangeRefused, PackRefused, TenantNotFound, UnknownPlan) as exc:
+            return self._fail_plan(work_item_id, "plan_refused", str(exc))
+        self._set_status(work_item_id, STATUS_REGISTERED)
+        self._client.comment(work_item_id, confirmation_text(applied))
+        logger.info("meegle plan: work_item=%s tenant=%s applied", work_item_id, tenant_id)
+        return PlanUpdateResult(ok=True, reason="applied", applied=applied)
+
+    def _fail_plan(self, work_item_id: int, reason: str, detail: str) -> PlanUpdateResult:
+        names = self._names
+        self._set_status(work_item_id, STATUS_ERROR)
+        self._client.comment(
+            work_item_id,
+            f"No se aplicó el plan: {detail}\n"
+            f"Corrige «{names.plan}» o «{names.pack}» y vuelve a completar «{names.node_plan}».",
+        )
+        try:
+            node_id = self._resolver.node_id(work_item_id, names.node_plan)
+            self._client.operate_node(
+                work_item_id, node_id, action="rollback", rollback_reason=detail[:200]
+            )
+        except (MeegleApiError, MeegleSchemaError) as exc:
+            logger.warning(
+                "meegle plan: work_item=%s rollback of %r refused (%s)",
+                work_item_id,
+                names.node_plan,
+                type(exc).__name__,
+            )
+        logger.warning("meegle plan: work_item=%s not applied (%s)", work_item_id, reason)
+        return PlanUpdateResult(ok=False, reason=reason)
+
+    def report_registration_plan(
+        self, work_item_id: int, applied: PlanApplied | None, error: str = ""
+    ) -> None:
+        """After `register_business` applied (or failed to apply) the Alta's plan."""
+        names = self._names
+        if applied is not None:
+            self._client.comment(work_item_id, confirmation_text(applied))
+            return
+        self._set_status(work_item_id, STATUS_ERROR)
+        self._client.comment(
+            work_item_id,
+            f"El negocio se registró, pero no se aplicó el plan: {error or 'error interno'}\n"
+            f"Revisa «{names.plan}» y «{names.pack}» y completa «{names.node_plan}».",
+        )

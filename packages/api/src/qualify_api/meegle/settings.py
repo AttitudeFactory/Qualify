@@ -31,7 +31,9 @@ engine — off until its webhook is set, with the six above still required:
 
 The names of the fields and nodes Qualify reads and writes (`MeegleNames`) default to the
 plan's §2 and can be overridden one by one (`QUALIFY_MEEGLE_FIELD_*`, `QUALIFY_MEEGLE_NODE_*`)
-if the item is created with other labels. Keys and node ids are never configured: the
+if the item is created with other labels (e.g. `QUALIFY_MEEGLE_FIELD_PLAN`,
+`QUALIFY_MEEGLE_FIELD_PACK`, `QUALIFY_MEEGLE_FIELD_PLAN_REASON`, `QUALIFY_MEEGLE_NODE_PLAN`
+for the plan fields and node of m-24852131). Keys and node ids are never configured: the
 engine resolves them from the names through the metadata calls, once, and caches them.
 """
 
@@ -132,6 +134,11 @@ class MeegleNames:
     note: str = "Nota personal"
     # optional: absent from the type, or empty, the invitation goes out as before (PB-1)
     instagram: str = "Cuenta de Instagram"
+    # optional (m-24852131): the plan and fixed pack the team gives the business; absent
+    # from the type, or empty, the business stays on the default plan (Básico)
+    plan: str = "Plan"
+    pack: str = "Paquete"
+    plan_reason: str = "Motivo"
     # fields Qualify writes
     status: str = "Estado Qualify"
     invite_link: str = "Enlace de invitación"
@@ -143,6 +150,8 @@ class MeegleNames:
     node_data: str = "Datos"
     node_invited: str = "Invitada"
     node_registered: str = "Registrada"
+    # m-24852131: completed (again) on a registered Alta to apply «Plan» / «Paquete»
+    node_plan: str = "Plan ampliado"
 
     @classmethod
     def from_env(cls) -> MeegleNames:

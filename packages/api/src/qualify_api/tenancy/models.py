@@ -175,6 +175,16 @@ class SignupInvite(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Migration 0096 (m-24852131): the plan/pack the Alta asked for, applied when the
+    # business registers, and the business the invite became.
+    alta_plan_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    alta_pack_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    alta_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    alta_requested_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    alta_event_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    registered_tenant_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True
+    )
 
 
 class Brand(Base):

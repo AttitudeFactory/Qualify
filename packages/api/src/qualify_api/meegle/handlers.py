@@ -31,6 +31,10 @@ Onboarding, per event (plan §2):
   event's outcome into a retry — a retry would send the invitation again — so it is
   swallowed and logged; with the prefill on, its label rides in `last_error`
   (`prefill=<label>`) of the `processed` event.
+  **Plan ampliado** (m-24852131) triggers `OnboardingEngine.apply_plan_update` with the
+  event's `idempotent_key` (the idempotency of the plan and the pack) and who completed
+  it: `processed` with `plan=applied` / `plan=pending_registration`, or `processed` with
+  `plan_failed:<reason>` when the item shows the error and the node was rolled back.
 - **1005 terminated** — `expire_for_terminated`.
 - **2004 rolled back** — nothing (`ignored:rollback`).
 - **1001 / 1009 / 3001** on the onboarding type — nothing to do (`processed`,
@@ -59,6 +63,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
+from functools import partial
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic import ValidationError
@@ -160,6 +165,29 @@ def _parse(event: ClaimedEvent) -> tuple[MeegleEvent, int] | Outcome:
     return parsed, work_item_id
 
 
+def _requested_by(parsed: MeegleEvent) -> str:
+    """Who completed the node, for the provenance of a plan or pack (m-24852131)."""
+    user = parsed.data.user_info
+    who = (user.email or user.display_name()) if user is not None else ""
+    return f"meegle:{who or parsed.actor}"
+
+
+async def _plan_update(
+    engine: OnboardingEngine, work_item_id: int, event_key: str, actor: str
+) -> Outcome:
+    """**Plan ampliado** completed. A refused value is settled (`plan_failed:<reason>`):
+    the item shows it and the node is rolled back; retrying would only repeat it."""
+    try:
+        result = await asyncio.to_thread(
+            partial(engine.apply_plan_update, event_key=event_key, actor=actor), work_item_id
+        )
+    except WorkItemNotFound:
+        return Outcome(STATUS_DEAD, WORK_ITEM_NOT_FOUND)
+    if not result.ok:
+        return Outcome(STATUS_PROCESSED, f"plan_failed:{result.reason}")
+    return Outcome(STATUS_PROCESSED, f"plan={result.reason}")
+
+
 def _onboarding_handlers(
     engine: OnboardingEngine, names: MeegleNames, prefill: PrefillScheduler | None = None
 ) -> Mapping[int, TypedHandler]:
@@ -175,11 +203,18 @@ def _onboarding_handlers(
             ]
         except WorkItemNotFound:
             return Outcome(STATUS_DEAD, WORK_ITEM_NOT_FOUND)
-        if not any(name.casefold() == names.node_data.casefold() for name in completed):
+        event_key = parsed.data.idempotent_key
+        actor = _requested_by(parsed)
+        folded = {name.casefold() for name in completed}
+        if names.node_data.casefold() not in folded:
+            if names.node_plan.casefold() in folded:
+                return await _plan_update(engine, work_item_id, event_key, actor)
             label = ",".join(completed) or ",".join(keys) or "?"
             return Outcome(STATUS_PROCESSED, f"ignored:node={label}"[:200])
         try:
-            result = await asyncio.to_thread(engine.start_invitation, work_item_id)
+            result = await asyncio.to_thread(
+                partial(engine.start_invitation, event_key=event_key, actor=actor), work_item_id
+            )
         except WorkItemNotFound:
             return Outcome(STATUS_DEAD, WORK_ITEM_NOT_FOUND)
         if not result.ok:

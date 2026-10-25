@@ -25,6 +25,10 @@ item (`meegle_work_item_id`, migration 0064): terminating the item expires its u
 invites (`expire_invites_for_work_item`), and the signup that consumes it writes back to
 the item (`auth.service`). `send_invite_email` keeps the Resend email id
 (`resend_email_id`) so M2 can match delivery webhooks to the invite.
+
+Since m-24852131 (migration 0096) an Alta invite may also carry the plan and pack the
+team chose (`AltaPlanChoice`, applied by `meegle.plan_request` once the business exists),
+and spending an invite stamps the business it became (`registered_tenant_id`).
 """
 
 from __future__ import annotations
@@ -95,6 +99,22 @@ class InviteView:
     meegle_work_item_id: int | None = None
 
 
+@dataclass(frozen=True)
+class AltaPlanChoice:
+    """The plan and pack an «Alta de cliente» asked for (catalog codes, already validated),
+    with its provenance. Stored on the invite; applied at registration (m-24852131)."""
+
+    plan_code: str | None = None
+    pack_code: str | None = None
+    reason: str = ""
+    requested_by: str = ""
+    event_key: str = ""
+
+    @property
+    def empty(self) -> bool:
+        return self.plan_code is None and self.pack_code is None
+
+
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -147,10 +167,12 @@ def create_invite(
     business_name: str | None = None,
     note: str | None = None,
     meegle_work_item_id: int | None = None,
+    alta_plan: AltaPlanChoice | None = None,
 ) -> CreatedInvite:
     """Store a new invite for `email` (literal, like every login email — the `+alias`
     is the business). Earlier unused invites for the same email stay valid.
-    `meegle_work_item_id` links it to the "Alta de cliente" item that asked for it."""
+    `meegle_work_item_id` links it to the "Alta de cliente" item that asked for it;
+    `alta_plan` is what that item chose, applied when the business registers."""
     email = email.strip()
     if not _valid_email(email):
         raise SignupNotAllowed("El email no es válido.")
@@ -174,6 +196,7 @@ def create_invite(
                 note=note or None,
                 expires_at=expires_at,
                 meegle_work_item_id=meegle_work_item_id,
+                **_alta_columns(alta_plan),
             )
         )
     return CreatedInvite(
@@ -185,6 +208,70 @@ def create_invite(
         note=note,
         id=invite_id,
     )
+
+
+def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
+    """The 0096 columns for `choice`; all NULL for an empty one (nothing asked)."""
+    if choice is None or choice.empty:
+        return dict.fromkeys(
+            (
+                "alta_plan_code",
+                "alta_pack_code",
+                "alta_reason",
+                "alta_requested_by",
+                "alta_event_key",
+            )
+        )
+    return {
+        "alta_plan_code": choice.plan_code,
+        "alta_pack_code": choice.pack_code,
+        "alta_reason": choice.reason.strip()[:500] or None,
+        "alta_requested_by": choice.requested_by.strip()[:200] or None,
+        "alta_event_key": choice.event_key.strip()[:200] or None,
+    }
+
+
+def alta_plan_of(invite: SignupInvite) -> AltaPlanChoice | None:
+    """What a (locked) invite row asked for, or None when it asked for nothing."""
+    choice = AltaPlanChoice(
+        plan_code=invite.alta_plan_code,
+        pack_code=invite.alta_pack_code,
+        reason=invite.alta_reason or "",
+        requested_by=invite.alta_requested_by or "",
+        event_key=invite.alta_event_key or "",
+    )
+    return None if choice.empty else choice
+
+
+def set_pending_alta_plan(work_item_id: int, choice: AltaPlanChoice) -> int:
+    """Replace the plan/pack of every still-usable invite of that Meegle item («Plan
+    ampliado» completed before the business registered). Returns how many changed."""
+    with admin_session() as session:
+        result = session.execute(
+            update(SignupInvite)
+            .where(
+                SignupInvite.meegle_work_item_id == work_item_id,
+                SignupInvite.used_at.is_(None),
+                SignupInvite.expires_at > _now(),
+            )
+            .values(**_alta_columns(choice))
+        )
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+
+def registered_tenant_for_work_item(work_item_id: int) -> UUID | None:
+    """The business the latest spent invite of that Meegle item became, or None."""
+    with admin_session() as session:
+        return session.scalar(
+            select(SignupInvite.registered_tenant_id)
+            .where(
+                SignupInvite.meegle_work_item_id == work_item_id,
+                SignupInvite.used_at.is_not(None),
+                SignupInvite.registered_tenant_id.is_not(None),
+            )
+            .order_by(SignupInvite.used_at.desc())
+            .limit(1)
+        )
 
 
 def _usable(invite: SignupInvite | None) -> bool:
@@ -244,9 +331,12 @@ def lock_invite(session: Session, invite_id: UUID, email: str) -> SignupInvite:
     return invite
 
 
-def mark_invite_used(session: Session, invite: SignupInvite) -> None:
-    """Spend a locked invite — called once the business really exists."""
+def mark_invite_used(session: Session, invite: SignupInvite, tenant_id: UUID | None = None) -> None:
+    """Spend a locked invite — called once the business really exists. `tenant_id` is
+    that business (0096): the «Plan ampliado» node of its Alta finds it through here."""
     invite.used_at = _now()
+    if tenant_id is not None:
+        invite.registered_tenant_id = tenant_id
     session.flush()
 
 
