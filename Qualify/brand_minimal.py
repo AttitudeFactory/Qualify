@@ -147,6 +147,7 @@ class BrandMinimalState(rx.State):
     #: `enter` decided the step on THIS visit: only then may `step_sync` write the
     #: address (cleared when the frame unmounts, `leave_frame`).
     synced: bool = False
+    _entry_hydrated: bool = False
     #: Why the owner is here when another page sent them (`?desde=`, N1): «Para usar
     #: Por responder, primero termina tu marca…». Cleared on the first step change.
     gate_notice: str = ""
@@ -227,6 +228,7 @@ class BrandMinimalState(rx.State):
         (`brand_minimal_vm.resume_step`); nothing saved opens on Tus redes. Read from the
         database itself, so it does not depend on the order the page's loads land in."""
         async with self:
+            self.synced = False
             # the browser's «atrás» inside the flow (`?paso=` already there) keeps the
             # step on screen while the entry is read: no «Cargando» flash per step
             if not (self.entered and step_param(self) is not None):
@@ -261,15 +263,7 @@ class BrandMinimalState(rx.State):
             label = entry_label(self.router.url.query_parameters.get(vm.GATE_PARAM, ""))
             facts = entry.facts if entry is not None else vm.KitFacts()
             self.gate_notice = vm.gate_notice(label, len(vm.missing_steps(facts))) if label else ""
-            if entry is None:
-                self.step = vm.FIRST_STEP
-            elif raw is not None:
-                # PASOS-4: `?paso=N` (the browser's «atrás», a reload, a shared link) —
-                # but never past the first step the saved kit has not answered
-                requested = parse_step_param(raw, vm.TOTAL_STEPS)
-                self.step = vm.STEP_NAMES[guard_step(requested, vm.step_completes(entry.facts)) - 1]
-            else:
-                self.step = vm.resume_step(entry.saved_step, entry.facts)
+            if entry is not None and not self._entry_hydrated:
                 self.phrase = entry.facts.example
                 connect = await self.get_state(BrandConnectState)
                 progress = entry.progress
@@ -282,6 +276,14 @@ class BrandMinimalState(rx.State):
                     wizard = await self.get_state(BrandWizardState)
                     if not wizard.has_logo:
                         wizard.has_logo = HAS_LOGO_PROFILE
+                self._entry_hydrated = True
+            if entry is None:
+                self.step = vm.FIRST_STEP
+            elif raw is not None:
+                requested = parse_step_param(raw, vm.TOTAL_STEPS)
+                self.step = vm.STEP_NAMES[guard_step(requested, vm.step_completes(entry.facts)) - 1]
+            else:
+                self.step = vm.resume_step(entry.saved_step, entry.facts)
             connect = await self.get_state(BrandConnectState)
             connect.country_code = vm.account_country(
                 connect.country_code, self.account_country, _KNOWN_COUNTRIES
@@ -1116,7 +1118,7 @@ def brand_minimal_index() -> rx.Component:
     usual header: «Tu marca está lista» after the finish, the Alta's proposal to review
     (m-24852199) and «Te faltan 3 cosas» (m-24854331) — none of them is one of the
     five steps."""
-    loading = ~BrandMinimalState.entered | CreativeState.kit_loading
+    loading = ~BrandMinimalState.synced | ~BrandMinimalState.entered | CreativeState.kit_loading
     # m-24852199: a pending proposal is reviewed before any step is shown (no step is
     # mounted meanwhile, so the save-as-you-go writes nothing until the owner decides)
     reviewing = BrandProposalState.pending & ~loading

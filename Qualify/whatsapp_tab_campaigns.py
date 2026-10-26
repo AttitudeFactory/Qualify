@@ -26,6 +26,7 @@ from .ui import (
     stepper,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .whatsapp_campaigns_state import WhatsAppCampaignsState as S
 from .whatsapp_campaigns_vm import (
     PACE_OPTIONS,
@@ -696,6 +697,7 @@ def _wizard_footer() -> rx.Component:
 def campaign_wizard() -> rx.Component:
     return drawer(
         rx.vstack(
+            flow_sync("promocion", S.step + 1, ready=S.flow_ready & ~S.templates_loading),
             rx.text(
                 "Paso ",
                 S.step + 1,

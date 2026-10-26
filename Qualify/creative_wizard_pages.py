@@ -495,6 +495,7 @@ class BrandWizardState(rx.State):
         """
         # m-24842965: entering the wizard opens the steps, never a card left from before
         # — unless the signup that adopted this draft sent the owner here for the card
+        self.steps_ready = False
         self.brand_ready = _asks_for_ready_card(self)
         creative = await self.get_state(CreativeState)
         # ¿Quién es la marca? carries the brief (§ request 2026-10-05): an empty or
@@ -3089,7 +3090,7 @@ def brand_manual_index() -> rx.Component:
     §4.5): «‹ Inicio» on every step, «Paso N de 7» with its bar and the step's name as
     the h1 in the fixed head; the step in the body; Atrás · Seguir después · Siguiente
     in the fixed foot. While the kit loads, the head stays and the foot waits."""
-    loading = CreativeState.kit_loading
+    loading = CreativeState.kit_loading | ~BrandWizardState.steps_ready
     return _wizard_shell(
         _or_ready_frame(
             step_frame(
@@ -5303,6 +5304,8 @@ class BrandConnectState(rx.State):
         async with self:
             (await self.get_state(BrandWizardState)).brand_ready = _asks_for_ready_card(self)
             on_route = self.router.url.path.rstrip("/") == CONNECT_ROUTE
+            if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
+                self.steps_ready = False
         ids = await session_ids(self)
         saved = None
         if ids is not None:
@@ -5313,7 +5316,7 @@ class BrandConnectState(rx.State):
         if saved is None:
             async with self:
                 self.details_loaded = True  # nothing to read: the editor must not wait on it
-                if on_route:
+                if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
                     await self._enter_steps()
             return
         connect, profile = saved.details.connect, saved.details.profile
@@ -5376,7 +5379,7 @@ class BrandConnectState(rx.State):
                     self.metric_values = list(self.metric_targets)  # no count-up on entry
                 except (KeyError, TypeError, ValueError):
                     self._set_metrics([])
-            if on_route:
+            if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
                 await self._enter_steps()
 
     async def _enter_steps(self) -> None:
@@ -7894,6 +7897,7 @@ def brand_connect_index() -> rx.Component:
     the sort step (`waiting_for_referentes`)."""
     waiting = (
         CreativeState.kit_loading
+        | ~BrandConnectState.steps_ready
         | BrandConnectState.analyzing
         | BrandConnectState.waiting_for_referentes
     )
@@ -7902,7 +7906,7 @@ def brand_connect_index() -> rx.Component:
             step_frame(
                 _kit_notices(),
                 rx.cond(
-                    CreativeState.kit_loading,
+                    CreativeState.kit_loading | ~BrandConnectState.steps_ready,
                     _frame_loading(_loading_view("Cargando tu marca")),
                     rx.cond(
                         BrandConnectState.analyzing,
@@ -7939,7 +7943,11 @@ def brand_connect_index() -> rx.Component:
                     ),
                 ),
                 head=step_head(
-                    rx.cond(CreativeState.kit_loading, "Tu marca", _connect_heading_for(0)),
+                    rx.cond(
+                        CreativeState.kit_loading | ~BrandConnectState.steps_ready,
+                        "Tu marca",
+                        _connect_heading_for(0),
+                    ),
                     step=BrandConnectState.step_n,
                     total=BrandConnectState.step_m,
                     back_label=exit_label(),

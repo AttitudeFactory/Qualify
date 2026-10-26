@@ -47,6 +47,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .whatsapp_chats_state import UNASSIGNED, WhatsAppChatsState
 from .whatsapp_chats_vm import (
     ASK_CONSENT_LABEL,
@@ -1044,6 +1045,12 @@ def _templates_footer() -> rx.Component:
 
 def _templates_drawer() -> rx.Component:
     return drawer(
+        flow_sync(
+            "mensaje-chat",
+            rx.cond(S.tpl_reviewing, 2, 1),
+            ready=S.flow_ready & ~S.tpl_loading,
+            objeto=S.tpl_selected,
+        ),
         _templates_body(),
         open=S.tpl_open,
         on_open_change=S.set_templates_open,

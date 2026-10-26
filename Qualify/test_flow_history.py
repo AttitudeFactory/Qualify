@@ -1,0 +1,177 @@
+"""Execute the browser's flow history protocol, including Radix portals, offline."""
+
+from __future__ import annotations
+
+import json
+
+from .nav_url import close_flow_script
+from .test_route_history import _node
+from .ui.flow_history import _FLOW_SCRIPT
+
+_HARNESS = r"""
+let observer;
+class MutationObserver {constructor(callback){observer=callback;} observe(){}}
+const entries=[{href:'/catalog?volver=%2Fcreate', state:{key:'router', idx:2}}];
+let pos=0, page=null, drawer=null;
+const window={requestAnimationFrame(fn){fn();}};
+function apply(){
+ const url=new URL(entries[pos].href, 'https://qualify.test');
+ window.location={href:url.href, pathname:url.pathname, search:url.search, hash:url.hash};
+}
+window.history={get state(){return entries[pos].state;},
+ pushState(state, _, href){entries.splice(pos+1);entries.push({state,href});pos++;apply();},
+ replaceState(state, _, href){entries[pos]={state,href};apply();},
+ back(){pos--;apply();}, go(delta){pos+=delta;apply();}
+};
+const document={querySelector(selector){
+ if(selector === '.q-drawer[data-state="open"] .q-flow-sync') return drawer;
+ if(selector === 'main.q-panel .q-flow-sync') return page;
+ throw Error('Unexpected selector: '+selector);
+}};
+apply();
+"""
+
+
+def test_portal_form_steps_back_and_close_restore_the_place_that_opened_it() -> None:
+    script = (
+        _HARNESS
+        + f"""
+const sync={json.dumps(_FLOW_SCRIPT)};
+drawer={{dataset:{{flow:'producto',step:'1'}}}};
+eval(sync);
+const first={{pos,href:entries[pos].href,depth:window.history.state.qFlowDepth}};
+eval(sync); const repeated=pos;
+drawer.dataset.step='2'; eval(sync);
+const second={{pos,depth:window.history.state.qFlowDepth}};
+drawer.dataset.step='1'; eval(sync); const back=pos;
+drawer.dataset.step='2'; eval(sync);
+{close_flow_script("producto")}
+console.log(JSON.stringify({{first,repeated,second,back,pos,href:entries[pos].href}}));
+"""
+    )
+    result = _node(script)
+    assert result["first"] == {
+        "pos": 1,
+        "href": "/catalog?volver=%2Fcreate&flujo=producto&paso=1",
+        "depth": 1,
+    }
+    assert result["repeated"] == 1
+    assert result["second"] == {"pos": 2, "depth": 2}
+    assert result["back"] == 1
+    assert result["pos"] == 0
+    assert result["href"] == "/catalog?volver=%2Fcreate"
+
+
+def test_open_portal_takes_priority_over_a_page_marker_and_rejects_non_uuid_ids() -> None:
+    script = (
+        _HARNESS
+        + f"""
+page={{dataset:{{flow:'menu',step:'3'}}}};
+drawer={{dataset:{{flow:'mensaje-chat',step:'1',objeto:'not-a-uuid'}}}};
+{_FLOW_SCRIPT}
+console.log(JSON.stringify({{href:entries[pos].href,root:window.history.state.qFlowRoot}}));
+"""
+    )
+    result = _node(script)
+    assert "flujo=mensaje-chat&paso=1" in result["href"]
+    assert "objeto=" not in result["href"]
+    assert "menu" not in result["href"]
+    assert result["root"] == "/catalog?volver=%2Fcreate"
+
+
+def test_guarded_direct_link_replaces_the_invalid_step_without_stacking_history() -> None:
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/catalog?flujo=producto&paso=3'; apply();
+drawer={{dataset:{{flow:'producto',step:'2'}}}};
+{_FLOW_SCRIPT}
+const guarded=entries[pos].href;
+{close_flow_script("producto")}
+console.log(JSON.stringify({{guarded,pos,href:entries[pos].href,length:entries.length}}));
+"""
+    )
+    assert _node(script) == {
+        "guarded": "/catalog?flujo=producto&paso=2",
+        "pos": 0,
+        "href": "/catalog",
+        "length": 1,
+    }
+
+
+def test_marker_attribute_changes_resync_without_mounting_the_effect_again() -> None:
+    script = (
+        _HARNESS
+        + f"""
+drawer={{dataset:{{flow:'producto',step:'1'}}, matches: selector => selector === '.q-flow-sync'}};
+{_FLOW_SCRIPT}
+const first=entries[pos].href;
+drawer.dataset.step='2';
+observer([{{type:'attributes', attributeName:'data-step', target:drawer}}]);
+const second=entries[pos].href;
+drawer.dataset.step='1';
+observer([{{type:'attributes', attributeName:'data-step', target:drawer}}]);
+console.log(JSON.stringify({{first,second,pos,href:entries[pos].href}}));
+"""
+    )
+    result = _node(script)
+    assert result["first"].endswith("paso=1")
+    assert result["second"].endswith("paso=2")
+    assert result["pos"] == 1 and result["href"].endswith("paso=1")
+
+
+def test_switching_query_identity_cannot_consume_a_previous_querys_step() -> None:
+    a = "a0000000-0000-4000-8000-000000000001"
+    b = "b0000000-0000-4000-8000-000000000001"
+    script = (
+        _HARNESS
+        + f"""
+drawer={{dataset:{{flow:'consulta',step:'2',consulta:{json.dumps(a)}}},
+ matches: selector => selector === '.q-flow-sync'}};
+{_FLOW_SCRIPT}
+drawer.dataset.step='3'; observer([{{type:'attributes', target:drawer}}]);
+drawer.dataset.consulta={json.dumps(b)}; drawer.dataset.step='2';
+observer([{{type:'attributes', target:drawer}}]);
+console.log(JSON.stringify({{pos,href:entries[pos].href,depth:window.history.state.qFlowDepth}}));
+"""
+    )
+    result = _node(script)
+    assert result["pos"] == 3
+    assert result["depth"] == 1
+    assert "consulta=" + b in result["href"]
+
+
+def test_page_step_marker_lifecycle_preserves_cold_deep_link_then_updates_on_attributes() -> None:
+    from .ui.steps import _STEP_SYNC_DOM_JS
+
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/brand?paso=4'; apply();
+window.addEventListener=()=>{{}}; window.setTimeout=fn=>fn();
+let mark={{dataset:{{step:'1',direction:'next'}},nodeType:1,
+ matches:s=>s==='.q-step-sync',querySelector:()=>null}};
+document.querySelector=selector=>selector==='main.q-panel .q-step-sync' ? mark : null;
+{_STEP_SYNC_DOM_JS}
+const cold=entries[pos].href;
+const previous=mark; mark=null;
+observer([{{type:'childList',addedNodes:[],removedNodes:[previous]}}]);
+mark={{...previous,dataset:{{step:'4',direction:'next'}}}};
+observer([{{type:'childList',addedNodes:[mark],removedNodes:[]}}]);
+mark.dataset.step='5'; observer([{{type:'attributes',target:mark}}]);
+const next=entries[pos].href;
+window.history.back();
+observer([{{type:'attributes',target:{{matches:()=>false}}}}]);
+const waiting=entries[pos].href;
+mark.dataset.step='4';mark.dataset.direction='back';
+observer([{{type:'attributes',target:mark}}]);
+console.log(JSON.stringify({{cold,next,waiting,final:entries[pos].href,pos}}));
+"""
+    )
+    assert _node(script) == {
+        "cold": "/brand?paso=4",
+        "next": "/brand?paso=5",
+        "waiting": "/brand?paso=4",
+        "final": "/brand?paso=4",
+        "pos": 0,
+    }

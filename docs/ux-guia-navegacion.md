@@ -87,6 +87,33 @@ Cada regla tiene un **cómo se comprueba**, para que la revisión local de exper
 | **N12** | **Celular primero.** A 360 px: una columna, menú alcanzable, máximo 4 pestañas visibles sin deslizar de lado (las demás, agrupadas como sub-pestañas), objetivos ≥ 44 px, nada solo al pasar el mouse. | Prueba a 360 px en cada ruta tocada. |
 | **N13** | **Asistido, nunca autónomo.** Los botones dicen quién actúa y qué pasa: «Aprobar», «Programar para el jueves», «Enviar a 128 clientes». Ningún texto dice o insinúa que Qualify publica o responde solo. | Revisión de copy contra la decisión firmada (ADR 21). |
 
+### Contrato de direcciones internas (PASOS-3, m-24852246)
+
+Las pantallas que cambian contenido sin navegar montan `ui.route_history.route_history`.
+El `pushState` puede ser invisible a React Router: al volver a la entrada que recuerda,
+`on_load` puede no ejecutarse. El manejador explícito de `popstate` vuelve a leer la
+URL y restaura el estado de forma idempotente. No envía, publica ni crea borradores.
+
+| Parámetros | Significado |
+|---|---|
+| `tab`, `sub` | Pestaña y subpestaña de WhatsApp; Por responder usa `/responder?tab=…`. |
+| `cuenta`, `chat` | UUID internos de conexión y conversación. Se validan contra las cuentas del negocio y se leen con el proveedor limitado a tenant y conexión. |
+| `ficha` | UUID de la publicación de Tu semana abierta como detalle; `evento` conserva su significado en la revisión de videos. |
+| `flujo`, `paso` | Asistente o cajón activo y su paso visible, contado desde 1. |
+| `objeto`, `consulta` | UUID interno del menú/evento/mensaje o de la consulta que necesita el flujo. |
+
+Valores de `flujo`: `producto`, `programar`, `reprogramar`, `menu`, `consulta`,
+`promocion`, `mensaje-aprobado` y `mensaje-chat`. `ui.flow_history.flow_sync` escribe
+solo el flujo activo, después de restaurarlo. Los valores dinámicos se leen de atributos
+DOM, nunca se interpolan como código JavaScript. Los pasos de página completa siguen
+usando `ui.steps.step_sync`.
+
+El «Atrás» consume la entrada propia del paso. Cerrar un cajón consume sus entradas y
+restaura la dirección que lo abrió; no agrega una lista nueva encima de los pasos viejos.
+Las guardias abren el primer paso pendiente si faltan datos. Las respuestas y archivos
+conservados en la sesión se reutilizan; una sesión nueva empieza por lo que falte y nunca
+simula un guardado ni un envío. La URL no incluye nombres, teléfonos ni textos del cliente.
+
 ## 5. El recorrido principal (cómo se encadenan los módulos)
 
 ```

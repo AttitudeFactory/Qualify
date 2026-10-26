@@ -69,6 +69,7 @@ from .post_card import (
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 
 #: m-24842985 (N6): what is not the day and the hour waits behind this fold.
 MORE_OPTIONS = "Más opciones"
@@ -1472,6 +1473,12 @@ def assign_drawer() -> rx.Component:
     Programación → Confirmar. A step must be valid to leave it; a completed step is one
     click away to fix; «Confirmar» is where the service's answer lands."""
     return drawer(
+        flow_sync(
+            PlannerState.form_flow_name,
+            PlannerState.form_flow_step,
+            ready=PlannerState.flow_ready,
+            objeto=PlannerState.form_event_id,
+        ),
         rx.box(
             stepper(
                 list(ASSIGN_STEPS),

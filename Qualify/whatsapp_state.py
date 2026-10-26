@@ -39,7 +39,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .connections_provider import request_support
-from .nav_url import push_url_script
+from .nav_url import flow_param, push_url_script, scalar_param, uuid_param
 from .tenant import tenant_uuid
 from .whatsapp_provider import (
     UnknownWhatsAppNumber,
@@ -271,14 +271,63 @@ class WhatsAppState(rx.State):
     # ==================================================================================
 
     @rx.event
-    def enter_page(self) -> rx.event.EventSpec:
+    def enter_page(self) -> list[rx.event.EventHandler]:
         """`/whatsapp` on_load: pick the panel from `?tab=`/`?sub=` and load the numbers.
         Also runs on «atrás» (a real navigation), so the previous tab comes back."""
         params = self.router.url.query_parameters
         self.active_tab = resolve_panel(
             str(params.get(TAB_PARAM, "") or ""), str(params.get(SUB_PARAM, "") or "")
         )
-        return WhatsAppState.load_numbers
+        return [WhatsAppState.prepare_flow_address, WhatsAppState.load_numbers]
+
+    @rx.event
+    async def prepare_flow_address(self) -> None:
+        """Close stale views before reads begin, never after a user has opened a new form."""
+        from .whatsapp_campaigns_state import WhatsAppCampaignsState
+        from .whatsapp_chats_state import WhatsAppChatsState
+        from .whatsapp_menu_state import WhatsAppMenuState
+        from .whatsapp_templates_state import WhatsAppTemplatesState
+
+        params = self.router.url.query_parameters
+        flow = scalar_param(params, "flujo")
+        if flow != "promocion":
+            state = await self.get_state(WhatsAppCampaignsState)
+            state.wizard_open = False
+            state.flow_ready = False
+        if flow != "mensaje-aprobado":
+            state = await self.get_state(WhatsAppTemplatesState)
+            state.form_open = False
+            state.flow_ready = False
+        if flow != "mensaje-chat":
+            state = await self.get_state(WhatsAppChatsState)
+            state.tpl_open = False
+            state.flow_ready = False
+        if flow != "menu":
+            (await self.get_state(WhatsAppMenuState)).flow_ready = False
+
+    @rx.event
+    def pop_page(self) -> rx.event.EventSpec:
+        """Explicit POP restoration also covers the router's initial history entry."""
+        return WhatsAppState.enter_page
+
+    @rx.event
+    async def leave_page_flows(self) -> None:
+        from .whatsapp_campaigns_state import WhatsAppCampaignsState
+        from .whatsapp_chats_state import WhatsAppChatsState
+        from .whatsapp_menu_state import WhatsAppMenuState
+        from .whatsapp_templates_state import WhatsAppTemplatesState
+
+        for cls in (
+            WhatsAppCampaignsState,
+            WhatsAppChatsState,
+            WhatsAppMenuState,
+            WhatsAppTemplatesState,
+        ):
+            state = await self.get_state(cls)
+            state.flow_ready = False
+        (await self.get_state(WhatsAppCampaignsState)).wizard_open = False
+        (await self.get_state(WhatsAppChatsState)).tpl_open = False
+        (await self.get_state(WhatsAppTemplatesState)).form_open = False
 
     def _show_panel(self, panel: str) -> rx.event.EventSpec | None:
         if panel == self.active_tab:
@@ -286,7 +335,12 @@ class WhatsAppState(rx.State):
         self.active_tab = panel
         # N5: a new history step, so «atrás» returns to the previous tab and reloading
         # keeps this one; `enter_page` reads it back on either.
-        return rx.call_script(push_url_script(tab_url(panel)))
+        return rx.call_script(push_url_script(self._panel_address(panel)))
+
+    def _panel_address(self, panel: str) -> str:
+        address = tab_url(panel)
+        connection = uuid_param({"cuenta": self.selected_connection_id}, "cuenta")
+        return address + ("&cuenta=" + connection if connection else "")
 
     @rx.event
     def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:
@@ -356,7 +410,7 @@ class WhatsAppState(rx.State):
             self.connect_request_notice = template.format(reference=ticket.reference, email=email)
 
     @rx.event
-    def select_connection(self, connection_id: str) -> None:
+    def select_connection(self, connection_id: str) -> rx.event.EventSpec | None:
         """The number selector. The tab body is keyed by the selection, so its `on_mount`
         loads the new number's data; everything tied to the old one is dropped here."""
         if connection_id == self.selected_connection_id:
@@ -365,6 +419,7 @@ class WhatsAppState(rx.State):
             return  # arrived over the wire; refuse an id the list does not hold
         self.selected_connection_id = connection_id
         self._reset_number_scoped()
+        return rx.call_script(push_url_script(self._panel_address(self.active_tab)))
 
     def _reset_number_scoped(self) -> None:
         self.connection_banner = ""
@@ -385,8 +440,10 @@ class WhatsAppState(rx.State):
         return session_tenant_id, tenant_uuid(session_tenant_id) if session_tenant_id else None
 
     @rx.event(background=True)
-    async def load_numbers(self) -> None:
+    async def load_numbers(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
+            if self.is_loading:
+                return
             self.is_loading = True
             self.load_error = ""
             session_tenant_id, tenant_id = await self._session_tenant()
@@ -410,9 +467,36 @@ class WhatsAppState(rx.State):
             self.numbers = data
             self.is_loading = False
             ids = {n.connection_id for n in data}
+            requested = uuid_param(self.router.url.query_parameters, "cuenta")
+            if requested in ids and requested != self.selected_connection_id:
+                self.selected_connection_id = requested
+                self._reset_number_scoped()
             if self.selected_connection_id not in ids:
                 self.selected_connection_id = data[0].connection_id if data else ""
                 self._reset_number_scoped()
+
+        if self.active_tab == "chats":
+            from .whatsapp_chats_state import WhatsAppChatsState
+
+            yield WhatsAppChatsState.restore_address
+            if flow_param(self.router.url.query_parameters, "mensaje-chat", 2):
+                yield WhatsAppChatsState.restore_flow
+        elif self.active_tab == "menu" and flow_param(self.router.url.query_parameters, "menu", 4):
+            from .whatsapp_menu_state import WhatsAppMenuState
+
+            yield WhatsAppMenuState.restore_flow
+        elif self.active_tab == "campanas":
+            from .whatsapp_campaigns_state import WhatsAppCampaignsState
+
+            yield WhatsAppCampaignsState.ensure_loaded
+            if flow_param(self.router.url.query_parameters, "promocion", 3):
+                yield WhatsAppCampaignsState.restore_flow
+        elif self.active_tab == "plantillas":
+            from .whatsapp_templates_state import WhatsAppTemplatesState
+
+            yield WhatsAppTemplatesState.ensure_loaded
+            if flow_param(self.router.url.query_parameters, "mensaje-aprobado", 4):
+                yield WhatsAppTemplatesState.restore_flow
 
     # ==================================================================================
     # Conexión

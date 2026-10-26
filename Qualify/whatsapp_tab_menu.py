@@ -46,6 +46,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ACTION_MORE,
@@ -2186,6 +2187,9 @@ def menu_tab() -> rx.Component:
     ready = S.loaded_for == WhatsAppState.selected_connection_id
     failed = ~ready & (S.loading_for == "") & (S.banner != "")
     return rx.vstack(
+        flow_sync(
+            "menu", S.guided_step, ready=ready & S.has_menu & S.flow_ready, objeto=S.menu.menu_id
+        ),
         _banner(S.banner, S.banner_tone),
         rx.cond(
             ready,

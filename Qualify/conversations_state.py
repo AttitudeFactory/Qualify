@@ -166,6 +166,14 @@ from .conversations_vm import (
     validate_reply,
     voice_note_name,
 )
+from .nav_url import (
+    back_url_script,
+    conversation_href,
+    push_url_script,
+    replace_url_script,
+    thread_param,
+    uuid_param,
+)
 from .next_steps_vm import all_clear as is_all_clear
 from .pending_state import PendingState
 from .tenant import tenant_uuid
@@ -780,6 +788,10 @@ class ConversationsState(rx.State):
             self.accounts_loading = False
             self.accounts_loaded = True
             ids = {a.connection_id for a in accounts}
+            requested = uuid_param(self.router.url.query_parameters, "cuenta")
+            if requested in ids and requested != self.selected_connection_id:
+                self.selected_connection_id = requested
+                self._reset_list()
             if self.selected_connection_id not in ids:
                 self.selected_connection_id = default_account(accounts)
                 self._reset_list()
@@ -787,11 +799,14 @@ class ConversationsState(rx.State):
         if selected:
             failed = await self._read_access(silent=False)
             await self._read_list(silent=False)
+            yield ConversationsState.restore_address
             if failed:
                 yield rx.toast.warning(_SYNC_FAILED_TOAST, duration=_TOAST_MS)
 
     @rx.event
-    def select_account(self, connection_id: str) -> rx.event.EventSpec | None:
+    def select_account(
+        self, connection_id: str
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
         """The header's account selector."""
         if not isinstance(connection_id, str) or connection_id == self.selected_connection_id:
             return None
@@ -800,7 +815,10 @@ class ConversationsState(rx.State):
         self.selected_connection_id = connection_id
         self._reset_list()
         self._sync_failure_key = ""
-        return ConversationsState.load_list
+        return [
+            rx.call_script(push_url_script(conversation_href("instagram", connection_id))),
+            ConversationsState.load_list,
+        ]
 
     # ==================================================================================
     # Access + list
@@ -906,26 +924,52 @@ class ConversationsState(rx.State):
     # ==================================================================================
 
     @rx.event
-    def open_conversation(self, thread_id: str) -> rx.event.EventSpec | None:
+    def restore_address(self) -> rx.event.EventSpec | None:
+        """Deep-link reads are scoped by the selected tenant-owned account/provider."""
+        params = self.router.url.query_parameters
+        thread = thread_param(params, self.selected_connection_id)
+        if thread == self.open_thread_id:
+            return None
+        self.open_thread_id = thread
+        self._reset_conversation()
+        return ConversationsState.load_conversation if thread else None
+
+    @rx.event
+    def open_conversation(
+        self, thread_id: str
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
         if not isinstance(thread_id, str) or thread_id == self.open_thread_id:
             return None
         if thread_id not in {r.thread_id for r in self.rows}:
             return None  # arrived over the wire; refuse an id the list does not hold
+        writer = replace_url_script if self.open_thread_id else push_url_script
         self.open_thread_id = thread_id
         self._reset_conversation()
-        return ConversationsState.load_conversation
+        return [
+            rx.call_script(
+                writer(conversation_href("instagram", self.selected_connection_id, thread_id))
+            ),
+            ConversationsState.load_conversation,
+        ]
 
     @rx.event
-    def close_conversation(self) -> rx.event.EventSpec | None:
+    def close_conversation(self) -> list[rx.event.EventSpec]:
         """Leave the conversation pane (✕ on desktop, ← on a phone). A recording in
         progress is dropped."""
         was_recording = self.recording
         self.open_thread_id = ""
         self._reset_conversation()
-        return rx.call_script(_JS_VOICE_CANCEL) if was_recording else None
+        events = [
+            rx.call_script(
+                back_url_script(conversation_href("instagram", self.selected_connection_id))
+            )
+        ]
+        if was_recording:
+            events.append(rx.call_script(_JS_VOICE_CANCEL))
+        return events
 
     @rx.event
-    def back_to_list(self) -> rx.event.EventSpec | None:
+    def back_to_list(self) -> list[rx.event.EventSpec]:
         return self.close_conversation()
 
     @rx.event(background=True)

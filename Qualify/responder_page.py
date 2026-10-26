@@ -58,6 +58,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.route_history import route_history
 
 R = ResponderState
 
@@ -289,6 +290,7 @@ def _who_is_waiting() -> rx.Component:
 
 def responder_index() -> rx.Component:
     return app_shell(
+        route_history(ResponderState.enter_page, on_leave=ResponderState.leave_page_flows),
         responder_header(),
         page_body(
             _who_is_waiting(),

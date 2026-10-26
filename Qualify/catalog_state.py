@@ -71,6 +71,7 @@ from .catalog_vm import (
     steps_done,
 )
 from .creative_provider import acting_user_id, default_brand_id
+from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,7 @@ class CatalogState(rx.State):
 
     # -- the "Agregar producto" form ------------------------------------------------------
     form_open: bool = False
+    flow_ready: bool = False
     new_name: str = ""
     new_description: str = ""
     new_category: str = ""
@@ -396,6 +398,7 @@ class CatalogState(rx.State):
             self.loading = not self.products
             self.error = ""
             arrival = self._read_return_query()
+            self.restore_flow()
             if self.products:
                 self._sync_url(final=False)
         for event in arrival:  # the address loses `?nuevo=1`
@@ -427,6 +430,9 @@ class CatalogState(rx.State):
             follow = self._sync_url(final=True)
         for event in follow:
             yield event
+        async with self:
+            if flow_param(self.router.url.query_parameters, "producto", 3):
+                self.restore_flow()
 
     def _read_return_query(self) -> list[rx.event.EventSpec]:
         """«Agregar producto» from Crear or Variaciones (m-24842973, N4) lands here as
@@ -449,7 +455,8 @@ class CatalogState(rx.State):
         if not self.form_open:
             self.selected_id = ""
             self.open_form()
-        return [rx.redirect(f"{_CATALOG_PATH}?{urlencode({RETURN_PARAM: back})}", replace=True)]
+        query = urlencode({RETURN_PARAM: back, "flujo": "producto", "paso": str(self.new_step + 1)})
+        return [rx.redirect(f"{_CATALOG_PATH}?{query}", replace=True)]
 
     async def _refresh(self, tenant_id: UUID, brand_id: UUID) -> None:
         """Re-read the list after a write (the service is the source of truth for
@@ -472,8 +479,30 @@ class CatalogState(rx.State):
     # -- the new-product form ---------------------------------------------------------------
 
     @rx.event
+    def restore_flow(self) -> None:
+        params = self.router.url.query_parameters
+        requested = flow_param(params, "producto", 3)
+        if not requested:
+            if not opens_new_product_form(params):
+                self.form_open = False
+                self.flow_ready = False
+            return
+        self.form_open = True
+        target = requested - 1
+        if target == STEP_DONE and self._find(self.created_product_id) is None:
+            target = STEP_NAME
+        self.new_step = target
+        self.flow_ready = True
+
+    @rx.event
+    def leave_flow(self) -> None:
+        self.flow_ready = False
+        self.form_open = False
+
+    @rx.event
     def open_form(self) -> None:
         self.form_open = True
+        self.flow_ready = True
         self.form_error = ""
         self.new_media_error = ""
         if self.new_step == STEP_DONE:
@@ -482,7 +511,7 @@ class CatalogState(rx.State):
             self.new_currency = self._business_currency
 
     @rx.event
-    def close_form(self) -> None:
+    def close_form(self) -> rx.event.EventSpec:
         self.form_open = False
         self.form_error = ""
         self.new_media_error = ""
@@ -492,7 +521,9 @@ class CatalogState(rx.State):
         else:
             # N6: what was typed AND the photos already chosen stay for the next time
             # the form opens (the photos are the hardest part to repeat); the step does not
-            self.new_step = STEP_PHOTO
+            pass  # the session draft keeps both its answers and its step
+        self.flow_ready = False
+        return rx.call_script(close_flow_script("producto"))
 
     @rx.event
     def upload_photo_for_created(self) -> list[rx.event.EventSpec] | None:
@@ -505,12 +536,13 @@ class CatalogState(rx.State):
         return self._go_to(product)
 
     @rx.event
-    def set_form_open(self, value: bool) -> None:
+    def set_form_open(self, value: bool) -> rx.event.EventSpec | None:
         """The drawer's own close (Esc, the ×, the backdrop)."""
         if value:
             self.open_form()
         else:
-            self.close_form()
+            return self.close_form()
+        return None
 
     def _reset_new_form(self) -> None:
         self.new_step = STEP_PHOTO

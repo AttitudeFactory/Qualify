@@ -477,7 +477,7 @@ def test_selecting_a_tab_writes_the_address() -> None:
     source = (_HERE / "whatsapp_state.py").read_text()
     start = source.index("def _show_panel(")
     block = source[start : source.index("@rx.event", start)]
-    assert "push_url_script(tab_url(panel))" in block
+    assert "push_url_script(self._panel_address(panel))" in block
     start = source.index("def enter_page(")
     block = source[start : source.index("def _show_panel(", start)]
     assert "resolve_panel(" in block and "SUB_PARAM" in block

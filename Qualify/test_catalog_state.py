@@ -682,7 +682,7 @@ def test_closing_from_listo_resets_and_closing_midway_keeps_the_text() -> None:
     state.next_new_step()
     state.set_new_name("Combo")
     state.close_form()
-    assert state.new_step == catalog_state_module.STEP_PHOTO and state.new_name == "Combo"
+    assert state.new_step == catalog_state_module.STEP_NAME and state.new_name == "Combo"
     state.set_form_open(True)
     state.new_step = catalog_state_module.STEP_DONE
     state.created_name = "Combo"

@@ -100,6 +100,11 @@ class ResponderState(rx.State):
         return events
 
     @rx.event
+    async def leave_page_flows(self) -> None:
+        followups = await self.get_state(FollowupsState)
+        followups.flow_card_id = ""
+
+    @rx.event
     def select_tab(self, tab: str | list[str]) -> rx.event.EventSpec | None:
         """`on_change` of the tab strip (segmented control or, on a phone, the select).
         A navigation, not a state flip, so the tab has its own address in the history."""

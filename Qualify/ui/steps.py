@@ -381,8 +381,9 @@ _STEP_GO_JS = (
     "if (!window.__qStepGo) window.__qStepGo = (target, back) => {"
     " const cur = new URL(window.location.href).searchParams.get('paso');"
     " const to = new URL(target, window.location.href);"
-    " const n = to.searchParams.get('paso'); if (cur === n) return;"
+    " const n = to.searchParams.get('paso');"
     " const st = window.history.state || {}; const url = to.pathname + to.search + to.hash;"
+    " if (window.location.pathname + window.location.search + window.location.hash === url) return;"
     " if (cur === null) { window.history.replaceState(st, '', url); return; }"
     " if (back) { if (st.qPrevPaso === n) window.history.back();"
     " else window.history.replaceState(st, '', url); return; }"
@@ -413,18 +414,59 @@ def step_sync_script(step: rx.Var[int] | int, direction: rx.Var[str] | str = DIR
     return step_address_script(target, back) + step_settle_script("page")
 
 
+_STEP_SYNC_DOM_JS = (
+    _STEP_GO_JS
+    + r"""
+(() => {
+ if (!window.__qStepSync) {
+  let pending = false;
+  window.__qStepSync = () => {
+   if (pending) return;
+   pending = true;
+   window.requestAnimationFrame(() => {
+    pending = false;
+    const mark = document.querySelector('main.q-panel .q-step-sync');
+    if (!mark) return;
+    const u = new URL(window.location.href);
+    const n = String(Math.max(1, Number(mark.dataset.step) || 1));
+    if (!window.__qStepBoot) {
+     window.__qStepBoot = true;
+     // A cold document may briefly render the previous visit's server state.
+     // Entry clears readiness, restores the requested step and remounts this marker.
+     const requested = u.searchParams.get('paso');
+     if (requested && requested !== n) { window.__qStepBootTarget = requested; return; }
+    }
+    u.searchParams.set('paso', n);
+    if (window.__qStepBootTarget) {
+     delete window.__qStepBootTarget;
+     window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+    } else window.__qStepGo(u.href, mark.dataset.direction === 'back');
+"""
+    + step_settle_script("page")
+    + r"""
+   });
+  };
+  const carries = node => node?.nodeType === 1 &&
+   (node.matches('.q-step-sync') || node.querySelector('.q-step-sync'));
+  new MutationObserver(records => {
+   if (records.some(record => record.type === 'attributes'
+      ? record.target.matches('.q-step-sync')
+      : [...record.addedNodes, ...record.removedNodes].some(carries))) window.__qStepSync();
+  }).observe(document.body, {subtree: true, childList: true, attributes: true,
+    attributeFilter: ['data-step', 'data-direction']});
+ }
+ window.__qStepSync();
+})();
+"""
+)
+
+
 def step_sync(step: rx.Var[int], direction: rx.Var[str] | str = DIR_NEXT) -> rx.Component:
-    """The address and the settle of a flow whose step is changed by many handlers
-    (Tu marca: answering a question, a read profile, an upload all move it on) — the
-    alternative to returning `go_to_step` from each one. An invisible box keyed by
-    ``step``: every step change remounts it, and its mount runs `step_sync_script`.
-    Put it in the frame's body only once the route's ``on_load`` has decided the step,
-    and clear that flag with ``step_frame(on_leave=...)``: a state left from an earlier
-    visit would otherwise write its old step into the address before ``on_load``
-    reads it (PASOS-4 UX review: `/brand?paso=1` opened step 4)."""
+    """Observe marker data changes: Reflex can memoize the effect outside the DOM key."""
     return rx.box(
         key=step,
-        on_mount=rx.call_script(step_sync_script(step, direction)),
+        custom_attrs={"data-step": step, "data-direction": direction},
+        on_mount=rx.call_script(_STEP_SYNC_DOM_JS),
         display="none",
         class_name="q-step-sync",
     )

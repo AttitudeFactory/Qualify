@@ -471,3 +471,50 @@ async def test_going_to_the_catalog_saves_first_or_says_what_to_fix(
     events = [e async for e in run(_Proxy(state))]
     assert len(saved) == 1 and not state.dirty  # saved, then off to Catálogo
     assert len(events) == 1 and "/catalog" in str(events[0])
+
+
+@pytest.mark.parametrize("step", ["2", "4"])
+def test_history_restores_a_known_menu_without_losing_local_edits(
+    monkeypatch: pytest.MonkeyPatch,
+    step: str,
+) -> None:
+    state = _state(monkeypatch)
+    state.set_guided_greeting("Saludo escrito sin publicar")
+    params = {"flujo": "menu", "paso": step, "objeto": state.menu.menu_id}
+    monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda self: params)
+    assert state.restore_flow() is None
+    assert state.guided_step == int(step)
+    assert state.guided.greeting == "Saludo escrito sin publicar"
+    assert state.flow_ready
+
+
+def test_history_back_to_menu_root_does_not_reinsert_the_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    state.guided_go(3)
+    monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda self: {})
+    state.restore_flow()
+    assert state.guided_step == 1
+    assert not state.flow_ready
+
+
+def test_history_menu_cannot_open_another_numbers_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _state(monkeypatch)
+    before = state.menu.menu_id
+    params = {"flujo": "menu", "paso": "4", "objeto": str(uuid4())}
+    monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda self: params)
+    assert state.restore_flow() is None
+    assert state.menu.menu_id == before
+    assert not state.flow_ready
+
+
+def test_history_deep_link_stops_at_the_first_missing_menu_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    state.set_guided_greeting("")
+    params = {"flujo": "menu", "paso": "99", "objeto": state.menu.menu_id}
+    monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda self: params)
+    state.restore_flow()
+    assert state.guided_step == 1

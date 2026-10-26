@@ -67,6 +67,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.route_history import route_history
 
 _TONES = ("ok", "warn", "error", "info", "neutral", "accent")
 _GRID_COLUMNS = "4.5rem repeat(7, minmax(0, 1fr))"
@@ -1279,6 +1280,7 @@ def _loading() -> rx.Component:
 
 def planner_index() -> rx.Component:
     return app_shell(
+        route_history(PlannerState.restore_address, on_leave=PlannerState.leave_flow),
         page_header(
             "Tu semana",
             "Tus publicaciones de la semana, listas para aprobar y programar.",

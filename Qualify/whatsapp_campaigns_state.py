@@ -45,6 +45,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from . import inbox_provider
 from .auth_state import AuthState
+from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
 from .whatsapp_campaigns_provider import (
     UnknownUser,
@@ -182,6 +183,7 @@ class WhatsAppCampaignsState(rx.State):
 
     # -- wizard --------------------------------------------------------------------------
     wizard_open: bool = False
+    flow_ready: bool = False
     step: int = STEP_MESSAGE
     templates: list[TemplateVM] = []
     templates_loading: bool = False
@@ -363,7 +365,12 @@ class WhatsAppCampaignsState(rx.State):
                 self.loaded_for = ""
                 self.banner = ""
                 self.detail_open = False
+                self.templates = []
+                self.templates_loading = False
+                self._components = {}
+                self._reset_wizard()
                 self.wizard_open = False
+                self.flow_ready = False
             self.loading_for = connection_id
         if tenant_id is None:
             async with self:
@@ -444,7 +451,7 @@ class WhatsAppCampaignsState(rx.State):
             self.detail_id = ""
 
     @rx.event(background=True)
-    async def launch_campaign(self, campaign_id: str) -> None:
+    async def launch_campaign(self, campaign_id: str) -> rx.event.EventSpec | None:
         """«Lanzar» — from the wizard's last step or from the detail."""
         async with self:
             if self.launching:
@@ -477,6 +484,7 @@ class WhatsAppCampaignsState(rx.State):
         async with self:
             self.launching = False
             self.wizard_open = False
+            self.flow_ready = False
             self.detail_id = campaign_id
             self.detail_open = True
             self.detail_banner = launch_message(
@@ -485,6 +493,9 @@ class WhatsAppCampaignsState(rx.State):
             self.detail_banner_tone = "ok"
         await self._load(force=True)
         await self._load_detail()
+        if flow_param(self.router.url.query_parameters, "promocion", len(STEPS)):
+            return rx.call_script(close_flow_script("promocion"))
+        return None
 
     @rx.event(background=True)
     async def cancel_campaign(self) -> None:
@@ -540,11 +551,43 @@ class WhatsAppCampaignsState(rx.State):
         self.w_campaign_id = ""
         self.w_estimate = EMPTY_ESTIMATE
 
+    def _apply_flow_step(self) -> None:
+        requested = flow_param(self.router.url.query_parameters, "promocion", len(STEPS))
+        if not requested:
+            return
+        target = requested - 1
+        for index in range(target):
+            if self._step_problem(index):
+                target = index
+                break
+        # Reviewing an existing draft is safe; restoring must never create one.
+        if target == STEP_REVIEW and not self.w_campaign_id:
+            target = STEP_AUDIENCE
+        self.step = target
+        self.wizard_open = True
+        self.flow_ready = True
+
+    @rx.event
+    def restore_flow(self) -> rx.event.EventSpec | None:
+        requested = flow_param(self.router.url.query_parameters, "promocion", len(STEPS))
+        if not requested:
+            self.wizard_open = False
+            self.flow_ready = False
+            return None
+        if self.templates_loading:
+            return None
+        if not self.templates:
+            return WhatsAppCampaignsState.open_wizard
+        self._apply_flow_step()
+        return None
+
     @rx.event(background=True)
     async def open_wizard(self) -> None:
         async with self:
-            self._reset_wizard()
+            if self.templates_loading:
+                return
             self.wizard_open = True
+            self.flow_ready = True
             self.templates_loading = True
             connection_id, tenant_id, _email = await self._scope()
         if tenant_id is None or not connection_id:
@@ -564,6 +607,9 @@ class WhatsAppCampaignsState(rx.State):
                 self.w_error, self.w_error_tone = _LOAD_FAILED, "error"
             return
         async with self:
+            current, _tenant, _email = await self._scope()
+            if current != connection_id:
+                return
             self.templates_loading = False
             self.total_count = total
             self._zone_name = zone.key
@@ -574,6 +620,8 @@ class WhatsAppCampaignsState(rx.State):
                 *[OptionVM(value=bid, label=name) for bid, name in brands],
             ]
         await self._count()
+        async with self:
+            self._apply_flow_step()
 
     @rx.event
     def set_wizard_open(self, is_open: bool) -> rx.event.EventSpec | None:
@@ -581,15 +629,12 @@ class WhatsAppCampaignsState(rx.State):
             return None
         return self._close_wizard()
 
-    def _close_wizard(self) -> rx.event.EventSpec | None:
+    def _close_wizard(self) -> rx.event.EventSpec:
         self.wizard_open = False
+        self.flow_ready = False
         if self.w_campaign_id:
-            # The draft stays: it is in the list, launchable or cancellable from there.
             self.banner, self.banner_tone = _DRAFT_SAVED, "info"
-            self._reset_wizard()
-            return WhatsAppCampaignsState.reload
-        self._reset_wizard()
-        return None
+        return rx.call_script(close_flow_script("promocion"))
 
     @rx.event
     def set_w_name(self, value: str) -> None:
