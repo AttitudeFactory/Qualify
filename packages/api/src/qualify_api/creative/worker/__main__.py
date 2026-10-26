@@ -24,6 +24,7 @@ from types import FrameType
 from uuid import UUID
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.worker.background import BackgroundChore
 from qualify_api.creative.worker.downloads import DownloadGate, downloads_allowed
 from qualify_api.creative.worker.executor import JobExecutor
 from qualify_api.creative.worker.runner import (
@@ -196,13 +197,11 @@ def main(
     from qualify_api.mail.final_summary import morning_chore
 
     morning = morning_chore(scope_ids) if store is None and executors is None else None
+    mail_runner: BackgroundChore | None = None
 
     def maintenance() -> None:
-        if morning is not None:
-            try:
-                morning()
-            except Exception:
-                logger.exception("creative.worker.morning_mail_failed")
+        if mail_runner is not None:
+            mail_runner.schedule()
         if original_recovery is not None:
             try:
                 original_recovery()
@@ -231,6 +230,8 @@ def main(
         downloads=gate,
         on_vendor_busy=vendor_busy,
     )
+    if morning is not None:
+        mail_runner = BackgroundChore(morning, worker.stop)
     if install_signals:
         _stop_on_signals(worker.stop)
     logger.info(

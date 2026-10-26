@@ -35,7 +35,8 @@ def final_review_panel() -> rx.Component:
                     ("warn", tone_badge(p.badge, "warn")),
                     tone_badge(p.badge, "neutral"),
                 ),
-                rx.text(p.note, size="2"),
+                rx.cond(p.state != "other_version", rx.text(p.note, size="2")),
+                rx.text(p.date_note, size="2", weight="medium"),
                 rx.foreach(
                     p.videos,
                     lambda video: rx.video(
@@ -48,7 +49,6 @@ def final_review_panel() -> rx.Component:
                         style={"object_fit": "contain"},
                     ),
                 ),
-                rx.text(p.date_note, size="2", weight="medium"),
                 rx.cond(p.other_version_pending != "", callout(p.other_version_pending, "info")),
                 rx.cond(
                     p.state == "other_version",
