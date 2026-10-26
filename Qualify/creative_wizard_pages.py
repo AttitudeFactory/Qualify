@@ -107,6 +107,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.steps import step_entry_script
 from .ui.steps_vm import (
     DIR_BACK,
     DIR_NEXT,
@@ -335,6 +336,7 @@ class BrandWizardState(rx.State):
     #: has decided the step (until then the address is not written — `step_sync`).
     direction: str = DIR_NEXT
     steps_ready: bool = False
+    steps_epoch: int = 0
 
     # -- step 2/3 -------------------------------------------------------------
     has_logo: str = ""  # "si" | "no" | "" (unanswered)
@@ -483,7 +485,7 @@ class BrandWizardState(rx.State):
             yield event
 
     @rx.event
-    async def resume(self) -> None:
+    async def resume(self) -> rx.event.EventSpec:
         """Open the flow on the FIRST step still missing data, not wherever the cursor
         happened to be left. Runs on page load, after `CreativeState.load_brand` has
         filled the kit — so re-entering never parks you on step 6 while step 2 is empty.
@@ -519,7 +521,11 @@ class BrandWizardState(rx.State):
             target = guard_step(parse_step_param(raw, len(STEPS)), await self._completes())
             self.step = target - 1
         self.direction = DIR_NEXT
+        self.steps_epoch += 1
         self.steps_ready = True
+        return rx.call_script(
+            step_entry_script("/brand/manual", self.step_n, self.steps_epoch, raw)
+        )
 
     @rx.event
     def go_to(self, index: int) -> None:
@@ -3101,7 +3107,11 @@ def brand_manual_index() -> rx.Component:
                     rx.fragment(
                         rx.cond(
                             BrandWizardState.steps_ready,
-                            step_sync(BrandWizardState.step_n, BrandWizardState.direction),
+                            step_sync(
+                                BrandWizardState.step_n,
+                                BrandWizardState.direction,
+                                epoch=BrandWizardState.steps_epoch,
+                            ),
                         ),
                         _frame_step(
                             _window(),
@@ -3117,6 +3127,7 @@ def brand_manual_index() -> rx.Component:
                     total=len(STEPS),
                     back_label=exit_label(),
                     on_exit=BrandWizardState.leave,
+                    show_progress=~loading,
                 ),
                 foot=rx.cond(loading, rx.fragment(), _controls()),
                 step=BrandWizardState.step_n,
@@ -3839,6 +3850,7 @@ class BrandConnectState(rx.State):
     #: route's load has decided the step (until then the address is not written).
     direction: str = DIR_NEXT
     steps_ready: bool = False
+    steps_epoch: int = 0
     network: str = ""
     username: str = ""
     analyzing: bool = False
@@ -5292,7 +5304,7 @@ class BrandConnectState(rx.State):
             yield navigation
 
     @rx.event(background=True)
-    async def load_saved_details(self) -> None:
+    async def load_saved_details(self) -> rx.event.EventSpec | None:
         """The Brand Kit editor (§ request 2026-10-01): the connect flow's saved
         answers and the account as read, with its metrics, back into this state — only
         where the session holds nothing of its own. On /brand/connect it is also how a
@@ -5317,8 +5329,8 @@ class BrandConnectState(rx.State):
             async with self:
                 self.details_loaded = True  # nothing to read: the editor must not wait on it
                 if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
-                    await self._enter_steps()
-            return
+                    return await self._enter_steps()
+            return None
         connect, profile = saved.details.connect, saved.details.profile
         raw_progress = (connect or {}).get(PROGRESS_KEY)
         progress = raw_progress if isinstance(raw_progress, dict) else {}
@@ -5380,13 +5392,18 @@ class BrandConnectState(rx.State):
                 except (KeyError, TypeError, ValueError):
                     self._set_metrics([])
             if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
-                await self._enter_steps()
+                return await self._enter_steps()
+        return None
 
-    async def _enter_steps(self) -> None:
+    async def _enter_steps(self) -> rx.event.EventSpec:
         """PASOS-4: once the saved walk is back, `?paso=N` (guarded) decides the step,
         and the address may be written from now on (`step_sync`). Under the lock."""
         await self._apply_step_param()
+        self.steps_epoch += 1
         self.steps_ready = True
+        return rx.call_script(
+            step_entry_script(CONNECT_ROUTE, self.step_n, self.steps_epoch, step_param(self))
+        )
 
     @rx.event
     async def finish_to_signals(self) -> rx.event.EventSpec | None:
@@ -7918,7 +7935,9 @@ def brand_connect_index() -> rx.Component:
                                 rx.cond(
                                     BrandConnectState.steps_ready,
                                     step_sync(
-                                        BrandConnectState.step_n, BrandConnectState.direction
+                                        BrandConnectState.step_n,
+                                        BrandConnectState.direction,
+                                        epoch=BrandConnectState.steps_epoch,
                                     ),
                                 ),
                                 _frame_step(
@@ -7952,6 +7971,7 @@ def brand_connect_index() -> rx.Component:
                     total=BrandConnectState.step_m,
                     back_label=exit_label(),
                     on_exit=BrandConnectState.leave,
+                    show_progress=BrandConnectState.steps_ready & ~CreativeState.kit_loading,
                 ),
                 foot=rx.cond(waiting, rx.fragment(), _connect_controls()),
                 step=BrandConnectState.step_n,

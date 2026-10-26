@@ -47,7 +47,7 @@ from .responder_vm import (
     whatsapp_tab_text,
 )
 from .tenant import tenant_uuid
-from .ui.route_history import route_history_ready
+from .ui.route_history import history_ack_value, route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesió
 
 
 class ResponderState(rx.State):
+    history_ack: str = ""
     active_tab: str = DEFAULT_TAB
     rows: list[CountRowVM] = []
     counts_loading: bool = False
@@ -104,6 +105,7 @@ class ResponderState(rx.State):
     async def enter_history(self, lease: dict) -> list[rx.event.EventSpec]:
         (await self.get_state(FollowupsState)).flow_card_id = ""
         events = await self.enter_page()
+        self.history_ack = history_ack_value(lease)
         return [*events, route_history_ready("/responder", lease)]
 
     @rx.event
