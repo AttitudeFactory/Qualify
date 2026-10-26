@@ -1001,3 +1001,33 @@ class CreativeAngle(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+class ContentDraftPurgeWarning(Base):
+    """Successful warning per piece, exact deadline and recipient and stage (0101, m-24842840)."""
+
+    __tablename__ = "content_draft_purge_warnings"
+    __table_args__ = (
+        UniqueConstraint(
+            "draft_id", "deadline", "recipient", "stage", name="uq_purge_warnings_draft_deadline"
+        ),
+        Index("ix_purge_warnings_tenant", "tenant_id"),
+        CheckConstraint("stage IN ('window_15d', 'last_day')", name="ck_purge_warning_stage"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient: Mapped[str] = mapped_column(Text, nullable=False)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+    notified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

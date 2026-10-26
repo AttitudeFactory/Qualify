@@ -13,11 +13,12 @@ from uuid import UUID, uuid4
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
+from qualify_api.creative.models import ContentDraftPurgeWarning, ImageAsset
 from qualify_api.creative.pieces import DbPieceFiles
 from qualify_api.creative.retention import (
     RETENTION,
@@ -29,10 +30,12 @@ from qualify_api.creative.retention import (
     tenants_with_expired_pieces,
 )
 from qualify_api.creative.retention_job import run_piece_purge
+from qualify_api.creative.retention_mail import send_tenant_warnings
+from qualify_api.mail import FakeMailer, MailError
 from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import NotPublishable, UnpublishableReason
-from qualify_api.tenancy.models import Brand, Tenant, User
+from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 
 pytestmark = pytest.mark.db
 
@@ -437,3 +440,93 @@ def test_the_purge_log_is_isolated_by_tenant_and_by_the_nullif() -> None:
                     expired_at=NOW,
                 )
             )
+
+
+def test_warning_once_per_deadline_grouped_and_isolated_with_retry() -> None:
+    tenant_a, tenant_b = uuid4(), uuid4()
+    brand, user, connection = _provision(tenant_a, "warning-A")
+    other_brand, _, _ = _provision(tenant_b, "warning-B")
+    foreign_piece = _piece(tenant_b, other_brand, generated_days_ago=80)
+    auth_id = uuid4()
+    with tenant_session(tenant_a) as session:
+        session.execute(update(User).where(User.id == user).values(auth_user_id=auth_id))
+        session.add(TenantMember(tenant_id=tenant_a, user_id=user, role="owner"))
+    first = _piece(tenant_a, brand, generated_days_ago=80)
+    second = _piece(tenant_a, brand, generated_days_ago=75)
+    held = _piece(tenant_a, brand, generated_days_ago=80)
+    _piece(tenant_a, brand, generated_days_ago=50)
+    _piece(tenant_a, brand, generated_days_ago=90)
+    with tenant_session(tenant_a) as session:
+        session.add(
+            CalendarEvent(
+                tenant_id=tenant_a,
+                brand_id=brand,
+                scheduled_tz="UTC",
+                post_id=held,
+                connection_id=connection,
+                scheduled_at=NOW - timedelta(days=1),
+                status="scheduled",
+                created_by_user_id=user,
+            )
+        )
+    mailer = FakeMailer()
+
+    def verify(uid, email):
+        return email if uid == auth_id else None
+
+    assert (
+        send_tenant_warnings(tenant_a, NOW, mailer=mailer, verify=verify, draft_ids=[foreign_piece])
+        == 0
+    )
+    assert mailer.sent == []
+    assert send_tenant_warnings(tenant_a, NOW, mailer=mailer, verify=verify) == 1
+    assert "Los archivos de estas 2 piezas" in mailer.sent[0].text
+    assert (
+        send_tenant_warnings(tenant_a, NOW + timedelta(days=1), mailer=mailer, verify=verify) == 0
+    )
+    with tenant_session(tenant_a) as session:
+        rows = session.scalars(
+            select(ContentDraftPurgeWarning).where(
+                ContentDraftPurgeWarning.draft_id.in_([first, second])
+            )
+        ).all()
+        assert len(rows) == 2
+        warning_id = rows[0].id
+    with tenant_session(tenant_b) as session:
+        assert session.get(ContentDraftPurgeWarning, warning_id) is None
+    with pytest.raises(DBAPIError), tenant_session(tenant_b) as session:
+        session.add(
+            ContentDraftPurgeWarning(
+                tenant_id=tenant_a,
+                draft_id=first,
+                recipient="forbidden@example.test",
+                stage="window_15d",
+                deadline=NOW,
+                notified_at=NOW,
+            )
+        )
+        session.flush()
+    # A second independent warning is sent only during the last 24 hours.
+    last_day = NOW + timedelta(days=9, hours=12)
+    assert send_tenant_warnings(tenant_a, last_day, mailer=mailer, verify=verify) == 1
+    assert "24 horas" in mailer.sent[-1].text
+    assert send_tenant_warnings(tenant_a, last_day, mailer=mailer, verify=verify) == 0
+    with tenant_session(tenant_a) as session:
+        stages = session.scalars(
+            select(ContentDraftPurgeWarning.stage).where(ContentDraftPurgeWarning.draft_id == first)
+        ).all()
+        assert set(stages) == {"window_15d", "last_day"}
+    # New generation extends the deadline; first daily pass sees it active, then warns again.
+    with tenant_session(tenant_a) as session:
+        session.execute(
+            update(ImageAsset).where(ImageAsset.draft_id == first).values(created_at=NOW)
+        )
+
+    class FailingMailer:
+        def send(self, mail):
+            raise MailError("offline failure")
+
+    later = NOW + timedelta(days=75)
+    assert send_tenant_warnings(tenant_a, later, mailer=FailingMailer(), verify=verify) == 0
+    assert send_tenant_warnings(tenant_a, later, mailer=mailer, verify=verify) == 1
+    assert send_tenant_warnings(tenant_a, later, mailer=mailer, verify=verify) == 0
