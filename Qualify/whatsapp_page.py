@@ -352,7 +352,7 @@ def _whatsapp_body() -> rx.Component:
 
 def whatsapp_index() -> rx.Component:
     return app_shell(
-        route_history(WhatsAppState.pop_page, on_leave=WhatsAppState.leave_page_flows),
+        route_history(WhatsAppState.enter_history, on_leave=WhatsAppState.leave_page_flows),
         whatsapp_header(),
         _whatsapp_body(),
     )

@@ -18,6 +18,8 @@ _FLOW_INSTALL_SCRIPT = r"""
    pending = true;
    window.requestAnimationFrame(() => {
     pending = false;
+    const route = document.querySelector('main.q-panel .q-route-pop');
+    if (!route || window.__qFlowRouteNode !== route) return;
     const mark = document.querySelector('.q-drawer[data-state="open"] .q-flow-sync')
       || document.querySelector('main.q-panel .q-flow-sync');
     if (!mark) return;

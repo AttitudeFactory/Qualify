@@ -73,6 +73,7 @@ from .catalog_vm import (
 from .creative_provider import acting_user_id, default_brand_id
 from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
+from .ui.route_history import route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -480,6 +481,11 @@ class CatalogState(rx.State):
                 self._fill_editor(self.selected)
 
     # -- the new-product form ---------------------------------------------------------------
+
+    @rx.event
+    def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        self.restore_flow()
+        return [CatalogState.load_catalog, route_history_ready("/catalog", lease)]
 
     @rx.event
     def restore_flow(self) -> None:

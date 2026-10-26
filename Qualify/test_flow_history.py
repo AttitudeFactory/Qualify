@@ -13,6 +13,7 @@ let observer;
 class MutationObserver {constructor(callback){observer=callback;} observe(){}}
 const entries=[{href:'/catalog?volver=%2Fcreate', state:{key:'router', idx:2}}];
 let pos=0, page=null, drawer=null;
+const routeNode={dataset:{historyLease:'1'}};
 const window={requestAnimationFrame(fn){fn();}, addEventListener(){}};
 function apply(){
  const url=new URL(entries[pos].href, 'https://qualify.test');
@@ -23,7 +24,9 @@ window.history={get state(){return entries[pos].state;},
  replaceState(state, _, href){entries[pos]={state,href};apply();},
  back(){pos--;apply();}, go(delta){pos+=delta;apply();}
 };
+window.__qFlowRouteNode=routeNode;
 const document={querySelector(selector){
+ if(selector === 'main.q-panel .q-route-pop') return routeNode;
  if(selector === '.q-drawer[data-state="open"] .q-flow-sync') return drawer;
  if(selector === 'main.q-panel .q-flow-sync') return page;
  throw Error('Unexpected selector: '+selector);
@@ -234,3 +237,65 @@ const window={location:{href:'https://qualify.test/create?paso=4',
         + "console.log(JSON.stringify({calls}));"
     )
     assert _node(script) == {"calls": 1}
+
+
+def test_late_inherited_portal_waits_for_this_visits_backend_ack() -> None:
+    from .ui.flow_history import _FLOW_INSTALL_SCRIPT
+    from .ui.route_history import route_history_ready
+
+    ack = str(
+        route_history_ready("/catalog", {"visit": "2", "href": "https://qualify.test/catalog"})
+        .args[0][1]
+        ._js_expr
+    )
+    # EventSpec wraps the script as a literal string; decode it before executing.
+    ack = json.loads(ack)
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/catalog';apply();
+routeNode.dataset.historyLease='2';window.__qFlowRouteNode=null;
+{_FLOW_INSTALL_SCRIPT}
+drawer={{dataset:{{flow:'producto',step:'2'}},nodeType:1,
+ matches:s=>s==='.q-flow-sync',querySelector:()=>null}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+const inherited=entries[pos].href;
+const old=drawer;drawer=null;
+observer([{{type:'childList',addedNodes:[],removedNodes:[old]}}]);
+{ack}
+drawer={{...old,dataset:{{flow:'producto',step:'1'}}}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+drawer.dataset.step='2';observer([{{type:'attributes',target:drawer}}]);
+console.log(JSON.stringify({{inherited,final:entries[pos].href,pos}}));
+"""
+    )
+    result = _node(script)
+    assert result["inherited"] == "/catalog"
+    assert result["final"] == "/catalog?flujo=producto&paso=2"
+    assert result["pos"] == 2
+
+
+def test_only_the_ack_for_the_current_visit_and_address_can_arm_history_writes() -> None:
+    from .ui.route_history import route_history_ready
+
+    def script(visit, href):
+        spec = route_history_ready("/catalog", {"visit": visit, "href": href})
+        return json.loads(str(spec.args[0][1]._js_expr))
+
+    old = script("old-document:1", "https://qualify.test/catalog")
+    departed = script("new-document:2", "https://qualify.test/catalog?flujo=producto&paso=2")
+    valid = script("new-document:2", "https://qualify.test/catalog")
+    program = (
+        _HARNESS
+        + f"""
+entries[0].href='/catalog';apply();
+routeNode.dataset.historyLease='new-document:2';window.__qFlowRouteNode=null;
+{old}
+const oldArmed=window.__qFlowRouteNode===routeNode;
+{departed}
+const departedArmed=window.__qFlowRouteNode===routeNode;
+{valid}
+console.log(JSON.stringify({{oldArmed,departedArmed,validArmed:window.__qFlowRouteNode===routeNode}}));
+"""
+    )
+    assert _node(program) == {"oldArmed": False, "departedArmed": False, "validArmed": True}

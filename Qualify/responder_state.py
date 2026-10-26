@@ -47,6 +47,7 @@ from .responder_vm import (
     whatsapp_tab_text,
 )
 from .tenant import tenant_uuid
+from .ui.route_history import route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,12 @@ class ResponderState(rx.State):
         elif self.active_tab == TAB_LEADS:
             events.append(LeadsState.load_leads)
         return events
+
+    @rx.event
+    async def enter_history(self, lease: dict) -> list[rx.event.EventSpec]:
+        (await self.get_state(FollowupsState)).flow_card_id = ""
+        events = await self.enter_page()
+        return [*events, route_history_ready("/responder", lease)]
 
     @rx.event
     async def leave_page_flows(self) -> None:
