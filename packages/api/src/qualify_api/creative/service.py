@@ -58,6 +58,7 @@ from qualify_creative.providers import (
     RenderedPrompt,
     Usage,
 )
+from qualify_creative.queue_errors import UNCERTAIN_REASON, UNCERTAIN_VIDEO_TEXT, uncertain_error
 from qualify_creative.router import BudgetContext, CreativeRouter, Hop, HopAction
 from qualify_creative.schemas import (
     BrandContext,
@@ -115,6 +116,12 @@ from qualify_api.creative.media import (
     MediaWrite,
     TemplateRunWrite,
     ai_generated_media,
+)
+from qualify_api.creative.pipeline import frozen_inputs, pipeline_assembly
+from qualify_api.creative.queue_dispatch import (
+    CheckpointError,
+    QueueDispatcher,
+    transactional_dispatch,
 )
 from qualify_api.creative.vendor_tasks import (
     PENDING as TASK_PENDING,
@@ -885,6 +892,7 @@ class PostgresContentRepository:
             ).all()
         return _openings(edited or copy for copy, edited in rows)
 
+    @pipeline_assembly
     def finish_generation(
         self,
         *,
@@ -1198,6 +1206,7 @@ class PostgresContentRepository:
             params["draft"] = {**block, "status": DRAFT_FAILED, "error": error}
             row.params = params
 
+    @pipeline_assembly
     def settle_final(
         self,
         *,
@@ -1337,6 +1346,8 @@ def _failure_from_hops(hops: tuple[Hop, ...]) -> str:
     """Classify a router walk that produced no result. Budget wins (it is the reason the
     walk stopped under hard_stop); a swallowed ``CopyRefused`` — the router records
     exceptions as hops — is a policy refusal; anything else is a provider error."""
+    if any(hop.reason == UNCERTAIN_REASON for hop in hops):
+        return FailureReason.SUBMISSION_UNCERTAIN.value
     if any(hop.action is HopAction.BUDGET_BLOCKED for hop in hops):
         return FailureReason.BUDGET_EXCEEDED.value
     if any(hop.reason is not None and CopyRefused.__name__ in hop.reason for hop in hops):
@@ -1409,6 +1420,7 @@ class ContentService:
 
     # -- create -------------------------------------------------------------
 
+    @transactional_dispatch
     def create_draft(
         self,
         *,
@@ -1632,6 +1644,8 @@ class ContentService:
             return
         try:
             self._generate(tenant_id=tenant_id, draft=draft)
+        except CheckpointError:
+            raise
         except CopyRefused:
             self._fail(tenant_id=tenant_id, draft_id=draft_id, reason=FailureReason.REFUSAL.value)
         except Exception:
@@ -1648,7 +1662,9 @@ class ContentService:
     def _tasks_of(self, tenant_id: UUID, draft: DraftRecord) -> tuple[VendorTaskRecord, ...]:
         """The vendor tasks of this draft's current revision (m-24852154); none without
         a store, or when they cannot be read (the run then starts afresh)."""
-        if self._vendor_tasks is None:
+        from qualify_api.creative.pipeline import in_preparation
+
+        if self._vendor_tasks is None or in_preparation():
             return ()
         try:
             return self._vendor_tasks.tasks(
@@ -1733,7 +1749,11 @@ class ContentService:
         whose vendor task outlived its thread are handed to a run that resumes them
         (m-24852154, `claim_waiting_drafts`). Never a reason to fail the read."""
         reap_stale_drafts(tenant_id=tenant_id)
-        if self._vendor_tasks is None or self.dispatcher is None:
+        if (
+            self._vendor_tasks is None
+            or self.dispatcher is None
+            or isinstance(self.dispatcher, QueueDispatcher)
+        ):
             return
         try:
             claimed = claim_waiting_drafts(tenant_id=tenant_id)
@@ -1841,6 +1861,7 @@ class ContentService:
                     if not present
                 )
             )
+        brief, kit, voice = frozen_inputs(brief=brief, kit=kit, voice=voice)
         budget = (
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
@@ -2446,6 +2467,7 @@ class ContentService:
             raise UnknownVariant(str(variant_id))
         return CopyPayload.model_validate(variant.edited_copy or variant.copy)
 
+    @transactional_dispatch
     def approve(
         self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID
     ) -> DraftDetail:
@@ -2504,6 +2526,8 @@ class ContentService:
         except Exception:
             # the approval stands: a video left at its draft on an approved piece shows
             # «Final pendiente» with «Reintentar» (`final_retryable(approved=True)`)
+            if isinstance(self.dispatcher, QueueDispatcher):
+                raise
             logger.exception("draft %s approved, but its finals could not be ordered", draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
@@ -2588,7 +2612,9 @@ class ContentService:
                 changes={
                     "status": DRAFT_RENDERING,
                     "error": None,
-                    "rendering_at": time.time(),
+                    "rendering_at": (
+                        None if isinstance(self.dispatcher, QueueDispatcher) else time.time()
+                    ),
                     "attempt": uuid4().hex,
                     "claim": None,
                 },
@@ -2611,6 +2637,7 @@ class ContentService:
             )
             raise
 
+    @transactional_dispatch
     def retry_final(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail:
         """Order again the finals that failed (or were left half-made by a dead process:
         `rendering` past `FINAL_STALE_SECONDS` since their own work started, or never
@@ -2623,9 +2650,16 @@ class ContentService:
         if record.status != APPROVED:
             raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
         now = time.time()
+        all_assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        if any(
+            uncertain_error((draft_state(asset.params) or {}).get("failure_reason"))
+            or uncertain_error((draft_state(asset.params) or {}).get("error"))
+            for asset in all_assets
+        ):
+            raise InvalidTransition(UNCERTAIN_VIDEO_TEXT)
         assets = tuple(
             asset
-            for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+            for asset in all_assets
             if final_retryable(draft_state(asset.params), now, approved=True)
         )
         expired = tuple(a for a in assets if draft_expired(draft_state(a.params) or {}))
@@ -2719,6 +2753,32 @@ class ContentService:
                 continue
             self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, claim, outcome)
 
+    def run_queued_final(self, *, tenant_id: UUID, draft_id: UUID, asset_id: UUID) -> None:
+        """Prepare/assemble one final under its durable pipeline lease, with no polling."""
+        assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        asset = next((a for a in assets if a.id == asset_id), None)
+        if asset is None or (draft_state(asset.params) or {}).get("status") != DRAFT_RENDERING:
+            return
+        draft, brief, kit = self._final_context(tenant_id, draft_id)
+        if self._media is None:
+            raise RuntimeError("no media producer")
+        budget = (
+            self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
+            or _UNLIMITED_BUDGET
+        )
+        outcome = self._media.finalize(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            brief=brief,
+            kit=kit,
+            asset=asset,
+            budget=BudgetContext(remaining_usd=budget.remaining_usd, hard_stop=budget.hard_stop),
+            revision=draft.revision,
+            on_raw_kept=self._raw_final_recorder(tenant_id, asset.id),
+        )
+        if not outcome.pending:
+            self._settle_final(tenant_id, draft_id, draft.brand_id, asset.id, None, outcome)
+
     def _final_binding(
         self, tenant_id: UUID, draft: DraftRecord, asset_id: UUID
     ) -> FinalVendorTasks | None:
@@ -2770,6 +2830,7 @@ class ContentService:
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id) if draft else None
         if draft is None or brief is None or kit is None:
             raise RuntimeError("the draft, its brief or its brand kit is unreadable")
+        brief, kit = frozen_inputs(brief=brief, kit=kit)
         return draft, brief, kit
 
     def _fail_final(self, tenant_id: UUID, asset_id: UUID, claim: str, error: str) -> None:
@@ -2785,7 +2846,7 @@ class ContentService:
         draft_id: UUID,
         brand_id: UUID,
         asset_id: UUID,
-        claim: str,
+        claim: str | None,
         outcome: FinalOutcome,
     ) -> None:
         """The final (or its failure) and its spend in one write — and when that write
@@ -2858,6 +2919,7 @@ class ContentService:
         except Exception:
             logger.exception("draft %s: final video refund failed", draft_id)
 
+    @transactional_dispatch
     def reject(
         self,
         *,

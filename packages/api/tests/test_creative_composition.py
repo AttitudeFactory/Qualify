@@ -33,8 +33,12 @@ def test_production_service_wires_the_remotion_template_engine(fresh_service) ->
     # the render client points at the configured service
     assert media._remotion._client._base == "http://render.test:3200"
     # and the router knows the engine by the adapter's name
-    assert "remotion" in fresh_service._router._providers
-    assert fresh_service._router._providers["remotion"] is media._remotion
+    from qualify_api.creative.pipeline import CheckpointRouter
+
+    assert isinstance(fresh_service._router, CheckpointRouter)
+    providers = fresh_service._router.router._providers
+    assert "remotion" in providers
+    assert providers["remotion"] is media._remotion
 
 
 @pytest.mark.parametrize(

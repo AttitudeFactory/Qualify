@@ -18,6 +18,7 @@ from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 
 from qualify_api.creative.creations import refund_final_in_session, refund_in_session
 from qualify_api.creative.fsm import DRAFTING, DraftTrigger, apply_transition
@@ -74,7 +75,7 @@ def _load() -> Mapping[str, Any]:
 
 
 def _jobs(session: Any, draft: ContentDraft, *, lock: bool = False) -> list[Any]:
-    clause = "FOR UPDATE" if lock else ""
+    clause = "FOR UPDATE NOWAIT" if lock else ""
     return list(
         session.execute(
             text(f"""
@@ -169,7 +170,7 @@ def queue_status(
     return QueueStatus(available, available, cancelled, max(estimates) if estimates else None)
 
 
-def cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = None) -> bool:
+def _cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = None) -> bool:
     """Cancel the whole revision's current phase or nothing, racing safely with claim.
 
     Locking jobs fences the claim query. A claimed job is rejected even before its
@@ -178,21 +179,13 @@ def cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = Non
     """
     at = now or datetime.now(UTC)
     with tenant_session(tenant_id) as session:
-        draft = session.scalar(
-            select(ContentDraft).where(ContentDraft.id == draft_id).with_for_update()
-        )
+        draft = session.get(ContentDraft, draft_id)
         if draft is None:
             raise QueueCancellationUnavailable(CANCEL_NOT_AVAILABLE)
-        jobs = _jobs(session, draft, lock=True)
-        if jobs and all(row["status"] == "cancelled" for row in jobs):
-            return False
-        if (
-            not jobs
-            or any(row["status"] != "queued" or row["vendor_task_id"] for row in jobs)
-            or _preparing(session, draft, jobs, at)
-        ):
-            raise QueueCancellationUnavailable(CANCEL_NOT_AVAILABLE)
-        generation = draft.status == DRAFTING
+        revision = draft.revision
+        generation = draft.status == DRAFTING or draft.failure_reason == "cancelled"
+        # Assembly fences its run before locking the draft. Use the same order;
+        # NOWAIT turns an active assembly/claim into a safe, retryable refusal.
         phases = list(
             session.execute(
                 text("""
@@ -200,11 +193,34 @@ def cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = Non
             WHERE draft_id=:draft AND revision=:revision
               AND ((:generation AND phase='generation')
                    OR (NOT :generation AND phase LIKE 'final:%'))
-            FOR UPDATE
+            FOR UPDATE NOWAIT
         """),
-                {"draft": draft_id, "revision": draft.revision, "generation": generation},
+                {"draft": draft_id, "revision": revision, "generation": generation},
             ).scalars()
         )
+        draft = session.scalar(
+            select(ContentDraft)
+            .where(ContentDraft.id == draft_id)
+            .execution_options(populate_existing=True)
+            .with_for_update(nowait=True)
+        )
+        if (
+            draft is None
+            or draft.revision != revision
+            or generation != (draft.status == DRAFTING or draft.failure_reason == "cancelled")
+        ):
+            raise QueueCancellationUnavailable(CANCEL_NOT_AVAILABLE)
+        jobs = _jobs(session, draft, lock=True)
+        if jobs and all(row["status"] == "cancelled" for row in jobs):
+            return False
+        # Hold the run locks before inspecting leases/intents. Otherwise preparation
+        # could acquire a lease between the eligibility read and its invalidation.
+        if (
+            not jobs
+            or any(row["status"] != "queued" or row["vendor_task_id"] for row in jobs)
+            or _preparing(session, draft, jobs, at)
+        ):
+            raise QueueCancellationUnavailable(CANCEL_NOT_AVAILABLE)
         session.execute(
             text("""
             UPDATE creative_pipeline_runs
@@ -245,3 +261,13 @@ def cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = Non
                 now=at,
             )
         return True
+
+
+def cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = None) -> bool:
+    """A racing claim/preparation is unavailable, never a partial refund or a 500."""
+    try:
+        return _cancel_queued(tenant_id=tenant_id, draft_id=draft_id, now=now)
+    except OperationalError as exc:
+        if getattr(exc.orig, "sqlstate", None) in {"55P03", "40P01", "40001"}:
+            raise QueueCancellationUnavailable(CANCEL_NOT_AVAILABLE) from None
+        raise

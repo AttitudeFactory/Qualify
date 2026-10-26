@@ -1345,7 +1345,15 @@ def _drafting_panel() -> rx.Component:
     return _card(
         rx.hstack(
             loading_spinner("md"),
-            rx.heading("Creando tu publicación…", size="4", as_="h2"),
+            rx.heading(
+                rx.cond(
+                    CreativeState.draft.queue.label != "",
+                    CreativeState.draft.queue.label,
+                    "Creando tu publicación…",
+                ),
+                size="4",
+                as_="h2",
+            ),
             rx.spacer(),
             rx.text(CreativeState.poll_elapsed_label, size="1", color=T.TEXT_MUTED),
             width="100%",
@@ -2707,7 +2715,11 @@ def draft_detail_index() -> rx.Component:
                         CreativeState.draft,
                         status_badge(
                             CreativeState.draft.status,
-                            CreativeState.draft.status_label,
+                            rx.cond(
+                                CreativeState.draft.queue.label != "",
+                                CreativeState.draft.queue.label,
+                                CreativeState.draft.status_label,
+                            ),
                             CreativeState.draft.status_tone,
                         ),
                     ),

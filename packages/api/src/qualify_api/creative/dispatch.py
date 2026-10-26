@@ -41,7 +41,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
     DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_POLL_TIMEOUT_SECONDS,
 )
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import and_, exists, select, update
+from sqlalchemy import and_, exists, select, text, update
 
 from qualify_api.creative.creations import refund_in_session
 from qualify_api.creative.fsm import (
@@ -185,6 +185,11 @@ def reap_stale_drafts(
                 ContentDraft.status == DRAFTING,
                 ContentDraft.updated_at < cutoff,
                 ~_pending_task(now),
+                text("""NOT EXISTS (
+                    SELECT 1 FROM creative_jobs j
+                    WHERE j.draft_id=content_drafts.id AND j.revision=content_drafts.revision
+                      AND j.status='queued'
+                )"""),
             )
         ).all()
         stale = [

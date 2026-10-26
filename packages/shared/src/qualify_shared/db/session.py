@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from uuid import UUID
 
 from sqlalchemy import create_engine, text
@@ -38,6 +39,22 @@ from qualify_shared.db.config import app_dsn
 # Private to the module. Built lazily so importing this module never opens a socket
 # (tests that don't touch the DB, tooling, etc. import it freely).
 _engine: Engine | None = None
+_unit: ContextVar[tuple[UUID, Session] | None] = ContextVar("tenant_unit", default=None)
+
+
+@contextmanager
+def tenant_unit_of_work(tenant_id: UUID) -> Iterator[Session]:
+    """Opt in to one transaction across repository calls (transactional outbox).
+
+    Normal sessions remain independent. Only the owning request's context inherits
+    this transaction; a different tenant is rejected before executing SQL.
+    """
+    with tenant_session(tenant_id) as session:
+        token = _unit.set((tenant_id, session))
+        try:
+            yield session
+        finally:
+            _unit.reset(token)
 
 
 def _get_engine() -> Engine:
@@ -56,6 +73,13 @@ def tenant_session(tenant_id: UUID) -> Iterator[Session]:
     the same work under the same tenant is safe; a write for another tenant is rejected
     by the policies' `WITH CHECK`.
     """
+    active = _unit.get()
+    if active is not None:
+        if active[0] != tenant_id:
+            raise ValueError("a tenant unit of work cannot change tenant")
+        yield active[1]
+        active[1].flush()
+        return
     with _get_engine().begin() as conn:
         conn.execute(
             text("SELECT set_config('app.tenant_id', :tid, true)"),

@@ -43,6 +43,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from qualify_api.creative.final_deadline import deadline_for_preview
+
 # --- vocabularies (the CHECK constraints of 0096 pin the same sets) ---------------------
 
 KIND_PREVIEW = "preview"
@@ -157,12 +159,18 @@ def enqueue_job(
     priority: int = 0,
     not_before: datetime | None = None,
     deadline: datetime | None = None,
+    preview_created_at: float | datetime | None = None,
     charge_id: UUID | None = None,
     pricing_version: str | None = None,
     pipeline_version: str | None = None,
 ) -> Enqueued:
     """Queue one paid vendor call of a piece, once. Call it inside the transaction that
     changes the piece. A second call for the same step returns the existing job."""
+    if preview_created_at is not None:
+        if kind != KIND_FINAL:
+            raise ValueError("preview_created_at only applies to a final")
+        preview_deadline = deadline_for_preview(preview_created_at)
+        deadline = min(deadline, preview_deadline) if deadline is not None else preview_deadline
     if kind not in KINDS:
         raise ValueError(f"unknown job kind {kind!r}")
     if lane not in LANES:
@@ -244,7 +252,8 @@ def record_submission(
             text(
                 """
                 UPDATE creative_jobs
-                SET vendor_task_id = :vendor_task_id, status = 'submitted', submitted_at = :now
+                SET vendor_task_id = :vendor_task_id, status = 'submitted', submitted_at = :now,
+                    not_before = :now
                 WHERE id = :id AND claim_token = :token AND status = 'claimed'
                   AND vendor_task_id IS NULL
                 RETURNING id
@@ -315,7 +324,10 @@ def claim_next(
             """
             SELECT id, tenant_id FROM creative_jobs
             WHERE status = 'queued' AND vendor_model = :pool AND not_before <= :now
-            ORDER BY (vendor_task_id IS NOT NULL) DESC, priority DESC, queued_at, id
+            ORDER BY (vendor_task_id IS NOT NULL) DESC,
+                     (kind = 'final' AND deadline < :now + interval '24 hours') DESC
+                         NULLS LAST,
+                     priority DESC, deadline NULLS LAST, queued_at, id
             LIMIT 1
             FOR UPDATE SKIP LOCKED
             """
@@ -528,7 +540,8 @@ def recover_expired(
               )
               AND NOT EXISTS (
                     SELECT 1 FROM creative_jobs AS j
-                    WHERE j.id = s.holder_job_id AND j.vendor_task_id IS NOT NULL
+                    WHERE j.id = s.holder_job_id
+                      AND (j.vendor_task_id IS NOT NULL OR j.not_before > :now)
                       AND j.status NOT IN ('succeeded','failed','cancelled')
               )
               AND (
@@ -584,6 +597,7 @@ class QueueRow:
     queued_at: datetime
     status: str
     holds_slot: bool  # requeued with a vendor task still to poll: it keeps its slot
+    deadline: datetime | None = None
 
 
 def _scope(tenant_ids: Sequence[UUID] | None) -> dict[str, object]:
@@ -603,6 +617,7 @@ def _queue_row(row: Any) -> QueueRow:
         queued_at=row.queued_at,
         status=row.status,
         holds_slot=bool(row.holds_slot),
+        deadline=row.deadline,
     )
 
 
@@ -637,7 +652,7 @@ def queue_snapshot(
     in_flight = session.execute(
         text(
             """
-            SELECT j.id, j.tenant_id, j.kind, j.lane, j.priority, j.queued_at, j.status,
+            SELECT j.id, j.tenant_id, j.kind, j.lane, j.priority, j.queued_at, j.status, j.deadline,
                    (s.slot_no IS NOT NULL) AS holds_slot
             FROM creative_jobs AS j
             LEFT JOIN vendor_slots AS s ON s.holder_job_id = j.id
@@ -651,14 +666,17 @@ def queue_snapshot(
     waiting = session.execute(
         text(
             """
-            SELECT id, tenant_id, kind, lane, priority, queued_at, status, holds_slot
+            SELECT id, tenant_id, kind, lane, priority, queued_at, status, holds_slot, deadline
             FROM (
                 SELECT j.id, j.tenant_id, j.kind, j.lane, j.priority, j.queued_at, j.status,
+                       j.deadline,
                        (s.slot_no IS NOT NULL) AS holds_slot,
                        row_number() OVER (
                            PARTITION BY j.tenant_id, j.lane, (j.kind = 'final'),
-                                        (j.priority >= :now_priority)
-                           ORDER BY j.queued_at, j.id
+                                        (j.priority >= :now_priority),
+                                        (j.kind = 'final' AND
+                                         j.deadline < :now + interval '24 hours')
+                           ORDER BY j.deadline NULLS LAST, j.queued_at, j.id
                        ) AS rn
                 FROM creative_jobs AS j
                 LEFT JOIN vendor_slots AS s ON s.holder_job_id = j.id
@@ -690,14 +708,14 @@ def hand_back(
                 claim_token = claim_token + 1,
                 attempts = CASE WHEN :count THEN attempts ELSE GREATEST(attempts - 1, 0) END
             WHERE id = :job AND claim_token = :token AND status IN ('claimed','submitted')
-            RETURNING vendor_task_id
+            RETURNING vendor_task_id, not_before
             """
         ),
-        {"job": job_id, "token": claim_token, "count": count_attempt},
+        {"job": job_id, "token": claim_token, "count": count_attempt, "now": now},
     ).one_or_none()
     if row is None:
         return False
-    if row.vendor_task_id is None:
+    if row.vendor_task_id is None and (not count_attempt or row.not_before <= now):
         session.execute(
             text(
                 "UPDATE vendor_slots SET holder_job_id = NULL, lease_until = NULL, "

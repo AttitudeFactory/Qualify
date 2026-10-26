@@ -45,6 +45,7 @@ from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
+from qualify_api.creative.final_deadline import final_is_urgent
 from qualify_api.creative.job_queue import KIND_FINAL, LANE_NIGHTLY, QueueRow
 
 NOW = "now"
@@ -90,6 +91,8 @@ def lane_of(row: QueueRow) -> str:
 def effective_lane(row: QueueRow, now: datetime) -> str:
     """The lane after aging: one lane up once the job has waited `AGING_AFTER`."""
     lane = lane_of(row)
+    if row.kind == KIND_FINAL and final_is_urgent(row.deadline, now) and lane != NOW:
+        return FINAL
     if now - row.queued_at >= AGING_AFTER and _RANK[lane] > 0:
         return LANES[_RANK[lane] - 1]
     return lane
@@ -126,9 +129,12 @@ def pick_next(
             common_in_use += 1
             common_by_tenant[row.tenant_id] += 1
 
-    def order(row: QueueRow) -> tuple[int, int, datetime, str]:
+    def order(row: QueueRow) -> tuple[int, int, datetime, int, datetime, str]:
+        urgent = row.kind == KIND_FINAL and final_is_urgent(row.deadline, now)
         return (
-            _RANK[effective_lane(row, now)],
+            0 if lane_of(row) == NOW else (1 if urgent else 2),
+            _RANK[effective_lane(row, now)] if not urgent else 0,
+            row.deadline if urgent and row.deadline is not None else now,
             total_by_tenant[row.tenant_id],
             row.queued_at,
             str(row.job_id),
@@ -150,9 +156,17 @@ def pick_next(
 
 
 def vendor_priority(
-    *, lane: str, kind: str, priority: int, queued_at: datetime, now: datetime
+    *,
+    lane: str,
+    kind: str,
+    priority: int,
+    queued_at: datetime,
+    now: datetime,
+    deadline: datetime | None = None,
 ) -> int:
     """BytePlus's `priority` for a job about to be submitted: that of its aged lane."""
+    if kind == KIND_FINAL and final_is_urgent(deadline, now):
+        return 9
     row_lane = base_lane(lane=lane, kind=kind, priority=priority)
     if now - queued_at >= AGING_AFTER and _RANK[row_lane] > 0:
         row_lane = LANES[_RANK[row_lane] - 1]

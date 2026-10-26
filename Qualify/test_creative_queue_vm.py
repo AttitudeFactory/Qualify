@@ -49,3 +49,10 @@ def test_cancelled_is_not_labelled_as_a_generation_failure() -> None:
     )
     assert vm.status == "failed"  # backend FSM remains unchanged
     assert vm.status_label == "Cancelado" and vm.status_tone == "gray"
+
+
+def test_wait_label_matches_notice_and_returns_to_generation_once_sent() -> None:
+    assert queue_vm(queued=True, can_cancel=True, estimated_minutes=6).label == "En fila"
+    assert queue_vm(queued=True, estimated_minutes=0).label == ""
+    assert queue_vm(queued=False, estimated_minutes=6).label == ""
+    assert queue_vm(cancelled=True).label == ""

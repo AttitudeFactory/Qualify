@@ -25,6 +25,12 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
+from qualify_creative.queue_errors import (
+    UNCERTAIN_PUBLICATION_TEXT,
+    UNCERTAIN_REASON,
+    UNCERTAIN_VIDEO_TEXT,
+    uncertain_error,
+)
 from qualify_creative.schemas import CopyPayload, ImagePolicy
 
 from .ask_more_vm import balance_with_extras
@@ -95,6 +101,11 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     "credential_invalid": (
         "La clave del proveedor de IA no es válida o expiró.",
         "Renueva la clave de la plataforma",
+        "",
+    ),
+    UNCERTAIN_REASON: (
+        UNCERTAIN_PUBLICATION_TEXT,
+        "Escríbenos para revisarlo",
         "",
     ),
     "provider_error": (
@@ -933,6 +944,7 @@ class QueueVM:
     can_cancel: bool = False
     cancelled: bool = False
     note: str = ""
+    label: str = ""
 
 
 def queue_vm(
@@ -948,7 +960,7 @@ def queue_vm(
     elif queued and estimated_minutes is not None and estimated_minutes >= 1:
         end = "1 minuto" if estimated_minutes == 1 else f"unos {estimated_minutes} minutos"
         note = f"Tu video está en fila. Estará listo en {end}."
-    return QueueVM(queued, can_cancel, cancelled, note)
+    return QueueVM(queued, can_cancel, cancelled, note, "En fila" if queued and note else "")
 
 
 @dataclass(frozen=True)
@@ -1217,6 +1229,15 @@ def video_draft_vm(
             "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
             "y lo verás aquí cuando esté listo.",
             rendering=True,
+        )
+    if state == VIDEO_FAILED and uncertain_error(error):
+        return VideoDraftVM(
+            state,
+            "En revisión",
+            "warn",
+            UNCERTAIN_VIDEO_TEXT,
+            can_retry=False,
+            rendering=still_rendering,
         )
     if state == VIDEO_FAILED and not approved:
         return VideoDraftVM(

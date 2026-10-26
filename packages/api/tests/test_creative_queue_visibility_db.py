@@ -258,3 +258,70 @@ def test_publisher_contains_only_anonymous_counts() -> None:
     assert str(tenant) not in store.data and str(draft) not in store.data
     value = json.loads(store.data)[q.SEEDANCE_POOL]["standard"]
     assert set(value) == {"waiting", "mean_seconds", "free"}
+
+
+def test_cancellation_fences_preparation_acquisition_before_eligibility_read(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+
+    from qualify_api.creative import queue_visibility as visibility
+    from qualify_api.creative.pipeline import PipelineStore
+
+    tenant, brand, draft, ledger, _, at, _ = _setup()
+    runs_locked, proceed = Event(), Event()
+    original = visibility._preparing
+
+    def paused_eligibility(*args, **kwargs):
+        runs_locked.set()
+        assert proceed.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(visibility, "_preparing", paused_eligibility)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        cancellation = executor.submit(cancel_queued, tenant_id=tenant, draft_id=draft, now=at)
+        assert runs_locked.wait(5)
+        preparation = executor.submit(PipelineStore().acquire, tenant, draft, 1, "generation")
+        try:
+            # Preparation must wait for the cancellation's eligibility decision.
+            with pytest.raises(TimeoutError):
+                preparation.result(timeout=0.1)
+        finally:
+            proceed.set()
+        assert cancellation.result(timeout=5)
+        # The committed cancellation closed dirty_version before lease acquisition.
+        assert preparation.result(timeout=5) is None
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).used == 0
+
+
+def test_active_assembly_run_lock_is_safe_unavailable_without_a_draft_deadlock() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    tenant, brand, draft, ledger, _, at, _ = _setup()
+    run_locked, release = Event(), Event()
+
+    def assembly():
+        # The actual pipeline assembly holds this run before it locks its draft.
+        with tenant_session(tenant) as session:
+            session.execute(
+                text("SELECT phase FROM creative_pipeline_runs WHERE draft_id=:d FOR UPDATE"),
+                {"d": draft},
+            )
+            run_locked.set()
+            assert release.wait(5)
+            session.execute(
+                text("SELECT id FROM content_drafts WHERE id=:d FOR UPDATE"), {"d": draft}
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        active = executor.submit(assembly)
+        try:
+            assert run_locked.wait(5)
+            with pytest.raises(QueueCancellationUnavailable):
+                cancel_queued(tenant_id=tenant, draft_id=draft, now=at)
+            assert ledger.balance(tenant_id=tenant, brand_id=brand).used == 1
+        finally:
+            release.set()
+        active.result(timeout=5)
+    assert cancel_queued(tenant_id=tenant, draft_id=draft, now=at)
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).used == 0
