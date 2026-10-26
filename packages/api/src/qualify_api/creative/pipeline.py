@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 
 from qualify_creative.enums import GenerationTask
 from qualify_creative.providers import GenerationRequest, GenerationResult, RenderedPrompt, Usage
+from qualify_creative.queue_errors import UNCERTAIN_REASON
 from qualify_creative.router import Hop, HopAction, RouterOutcome
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
@@ -30,10 +31,6 @@ from qualify_api.creative import job_queue as q
 from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
 
 LEASE = timedelta(minutes=10)
-UNCERTAIN_TEXT = (
-    "No pudimos confirmar el estado de tu video. "
-    "El equipo debe revisarlo antes de intentarlo de nuevo."
-)
 
 
 @dataclass
@@ -394,7 +391,7 @@ class CheckpointRouter:
                     Hop(
                         provider,
                         HopAction.FAILED,
-                        UNCERTAIN_TEXT
+                        UNCERTAIN_REASON
                         if row["error"] in {"in_flight", "submission_uncertain"}
                         else row["error"],
                     ),

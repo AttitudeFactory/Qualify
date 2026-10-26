@@ -58,6 +58,7 @@ from qualify_creative.providers import (
     RenderedPrompt,
     Usage,
 )
+from qualify_creative.queue_errors import UNCERTAIN_REASON, UNCERTAIN_VIDEO_TEXT, uncertain_error
 from qualify_creative.router import BudgetContext, CreativeRouter, Hop, HopAction
 from qualify_creative.schemas import (
     BrandContext,
@@ -1345,6 +1346,8 @@ def _failure_from_hops(hops: tuple[Hop, ...]) -> str:
     """Classify a router walk that produced no result. Budget wins (it is the reason the
     walk stopped under hard_stop); a swallowed ``CopyRefused`` — the router records
     exceptions as hops — is a policy refusal; anything else is a provider error."""
+    if any(hop.reason == UNCERTAIN_REASON for hop in hops):
+        return FailureReason.SUBMISSION_UNCERTAIN.value
     if any(hop.action is HopAction.BUDGET_BLOCKED for hop in hops):
         return FailureReason.BUDGET_EXCEEDED.value
     if any(hop.reason is not None and CopyRefused.__name__ in hop.reason for hop in hops):
@@ -2647,9 +2650,16 @@ class ContentService:
         if record.status != APPROVED:
             raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
         now = time.time()
+        all_assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        if any(
+            uncertain_error((draft_state(asset.params) or {}).get("failure_reason"))
+            or uncertain_error((draft_state(asset.params) or {}).get("error"))
+            for asset in all_assets
+        ):
+            raise InvalidTransition(UNCERTAIN_VIDEO_TEXT)
         assets = tuple(
             asset
-            for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+            for asset in all_assets
             if final_retryable(draft_state(asset.params), now, approved=True)
         )
         expired = tuple(a for a in assets if draft_expired(draft_state(a.params) or {}))

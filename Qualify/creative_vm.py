@@ -25,6 +25,12 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
+from qualify_creative.queue_errors import (
+    UNCERTAIN_PUBLICATION_TEXT,
+    UNCERTAIN_REASON,
+    UNCERTAIN_VIDEO_TEXT,
+    uncertain_error,
+)
 from qualify_creative.schemas import CopyPayload, ImagePolicy
 
 from .ask_more_vm import balance_with_extras
@@ -95,6 +101,11 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     "credential_invalid": (
         "La clave del proveedor de IA no es válida o expiró.",
         "Renueva la clave de la plataforma",
+        "",
+    ),
+    UNCERTAIN_REASON: (
+        UNCERTAIN_PUBLICATION_TEXT,
+        "Escríbenos para revisarlo",
         "",
     ),
     "provider_error": (
@@ -1192,6 +1203,15 @@ def video_draft_vm(
             "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
             "y lo verás aquí cuando esté listo.",
             rendering=True,
+        )
+    if state == VIDEO_FAILED and uncertain_error(error):
+        return VideoDraftVM(
+            state,
+            "En revisión",
+            "warn",
+            UNCERTAIN_VIDEO_TEXT,
+            can_retry=False,
+            rendering=still_rendering,
         )
     if state == VIDEO_FAILED and not approved:
         return VideoDraftVM(

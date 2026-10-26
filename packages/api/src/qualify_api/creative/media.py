@@ -117,6 +117,11 @@ from qualify_creative.providers import (
     RenderedPrompt,
     VendorTaskObserver,
 )
+from qualify_creative.queue_errors import (
+    UNCERTAIN_PUBLICATION_TEXT,
+    UNCERTAIN_REASON,
+    UNCERTAIN_VIDEO_TEXT,
+)
 from qualify_creative.render import (
     PostFacts,
     TemplateRegistry,
@@ -1466,7 +1471,11 @@ class MediaProducer:
                 usage=tuple(usage),
                 failure=exc.failure,
                 detail=exc.detail,
-                draft_changes=kept or None,
+                draft_changes=(
+                    {**(kept or {}), "failure_reason": exc.failure}
+                    if exc.failure == FailureReason.SUBMISSION_UNCERTAIN.value
+                    else kept or None
+                ),
             )
         except CheckpointError:
             raise
@@ -2030,6 +2039,13 @@ class MediaProducer:
             if verdict:
                 run.tasks.settle(slot, verdict)
         if outcome.result is None:
+            if any(h.reason == UNCERTAIN_REASON for h in outcome.hops):
+                raise _MediaFailed(
+                    FailureReason.SUBMISSION_UNCERTAIN.value,
+                    UNCERTAIN_VIDEO_TEXT
+                    if link in {SEEDANCE, OMNIHUMAN}
+                    else UNCERTAIN_PUBLICATION_TEXT,
+                )
             blocked = any(h.action is HopAction.BUDGET_BLOCKED for h in outcome.hops)
             detail = "; ".join(h.reason or h.action.value for h in outcome.hops)
             raise _MediaFailed(

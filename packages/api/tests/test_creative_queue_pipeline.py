@@ -134,3 +134,55 @@ def test_queue_switch_is_explicit_and_inline_is_the_unchanged_default(monkeypatc
     monkeypatch.setenv("QUALIFY_CREATIVE_DISPATCHER", "typo")
     with pytest.raises(ValueError):
         queue_enabled()
+
+
+def test_ambiguous_checkpoint_reaches_a_non_paid_retry_failure_view_model():
+    from Qualify.creative_vm import failure_vm
+    from qualify_creative.providers import GenerationRequest, RenderedPrompt
+    from qualify_creative.queue_errors import UNCERTAIN_REASON
+
+    from qualify_api.creative.service import _failure_from_hops
+
+    checkpoints = Checkpoints()
+    checkpoints.rows[0] = {"request": {}, "job_id": None, "result": None, "error": "in_flight"}
+
+    class NeverPay:
+        def run(self, **kwargs):
+            pytest.fail("an uncertain paid step was submitted again")
+
+    router = CheckpointRouter(NeverPay(), checkpoints, media._store())
+    run = Preparation(media.TENANT_ID, uuid4(), 1, "generation", uuid4(), 1)
+    with preparing(run):
+        outcome = router.run(
+            tenant_id=media.TENANT_ID,
+            brand_id=media.BRAND_ID,
+            chain=("anthropic",),
+            request=GenerationRequest(
+                task=media.GenerationTask.COPY, rendered_prompt=RenderedPrompt("", "", "")
+            ),
+        )
+    reason = _failure_from_hops(outcome.hops)
+    assert reason == UNCERTAIN_REASON
+    vm = failure_vm(reason)
+    assert vm is not None and vm.action_route == ""
+    assert "publicación" in vm.label and "equipo" in vm.label
+    assert UNCERTAIN_REASON not in vm.label
+
+
+def test_uncertain_final_preserves_cause_and_has_no_retry_in_backend_or_vm():
+    from Qualify.creative_vm import video_draft_vm
+    from qualify_creative.queue_errors import UNCERTAIN_REASON, UNCERTAIN_VIDEO_TEXT
+
+    from qualify_api.creative.draft_mode import draft_summary, final_retryable
+
+    block = {
+        "status": "failed",
+        "error": UNCERTAIN_VIDEO_TEXT,
+        "failure_reason": UNCERTAIN_REASON,
+    }
+    assert not final_retryable(block, approved=True)
+    state, cost, error = draft_summary([{"draft": block}], approved=True)
+    vm = video_draft_vm(state, cost, error, approved=True)
+    assert not vm.can_retry
+    assert vm.note == UNCERTAIN_VIDEO_TEXT
+    assert UNCERTAIN_REASON not in vm.note
