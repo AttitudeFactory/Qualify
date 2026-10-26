@@ -20,7 +20,6 @@ from qualify_creative.video.fit import DETAIL_X264
 
 from qualify_api.creative.draft_mode import (
     DRAFT_EXPIRED_TEXT,
-    DRAFT_FINAL,
     DRAFT_READY,
     draft_expired,
     draft_pending,
@@ -255,13 +254,13 @@ def test_the_final_comes_from_the_draft_id_alone_and_is_re_encoded_with_the_logo
     assert (media.width, media.height) == (1080, 1920)
     assert media.params["resolution"] == "1080p"
     block = media.params["draft"]
-    assert block["status"] == DRAFT_FINAL
+    assert block["status"] == "final_ready"
     assert block["final_task_id"] == "cgt-final"
     assert block["draft_object_key"] == draft.object_key
     # the final's spend is its own (243k tokens at 11.7/M)
     assert Decimal(block["final_cost_usd"]) == Decimal("2.843100")
     assert outcome.spent_usd == Decimal("2.843100")
-    assert not draft_pending(media.params)
+    assert draft_pending(media.params)  # A real final still needs the human confirmation.
 
 
 def test_a_logo_that_will_not_lay_leaves_the_final_without_it() -> None:

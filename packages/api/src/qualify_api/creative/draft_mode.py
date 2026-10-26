@@ -18,7 +18,7 @@ from decimal import Decimal
 from typing import Any
 
 from qualify_creative.adapters.byteplus_ark import DRAFT_TTL_SECONDS
-from qualify_creative.queue_errors import uncertain_error
+from qualify_creative.queue_errors import FINAL_EXPIRED_TEXT, uncertain_error
 
 #: `params["draft"]["status"]`: the 480p draft waiting for approval; the final being
 #: made; the final in place; the final failed (retried while the draft id lives).
@@ -122,6 +122,8 @@ def final_retryable(
     the finals failed: still at its draft)."""
     if block is None:
         return False
+    if block.get("error") == FINAL_EXPIRED_TEXT or block.get("failure_reason") == "cancelled":
+        return False
     if uncertain_error(block.get("failure_reason")) or uncertain_error(block.get("error")):
         return False
     status = block.get("status") or DRAFT_READY
@@ -179,7 +181,10 @@ def draft_summary(
                 status = DRAFT_FINAL_READY
         if status not in _SUMMARY_ORDER:
             status = DRAFT_READY
-        if final_stale(block, now):
+        if block.get("error") == FINAL_EXPIRED_TEXT and status != DRAFT_FINAL:
+            status = DRAFT_EXPIRED
+            errors.append(FINAL_EXPIRED_TEXT)
+        elif final_stale(block, now):
             # a dead process left it: retryable, like a failed final (`final_retryable`)
             status = DRAFT_FAILED
             errors.append(FINAL_STALE_TEXT)
@@ -197,4 +202,5 @@ def draft_summary(
     cost = None
     if all(isinstance(c, str) and c for c in costs):
         cost = str(sum((Decimal(str(c)) for c in costs), Decimal(0)))
-    return state, cost, uncertain or (errors[-1] if errors else "")
+    expired_error = FINAL_EXPIRED_TEXT if FINAL_EXPIRED_TEXT in errors else None
+    return state, cost, uncertain or expired_error or (errors[-1] if errors else "")

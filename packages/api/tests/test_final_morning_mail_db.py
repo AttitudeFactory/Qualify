@@ -277,3 +277,48 @@ def test_piece_waits_for_all_finals_and_mixed_terminal_failure_is_reported_as_fa
     fake = UniqueFakeMailer()
     assert send_pending(tenant, now=NOW, mailer=fake) == 2
     assert all("no pudimos preparar 1 video" in mail.subject for mail in fake.sent)
+
+
+@pytest.mark.parametrize("was_failed,now_failed", [(True, False), (False, True)])
+def test_first_attempt_refreshes_current_result_and_source_before_freezing(was_failed, now_failed):
+    tenant, _, draft = fixture()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""
+            UPDATE image_assets SET params=jsonb_set(params,'{draft,status}',CAST(:status AS jsonb))
+            WHERE draft_id=:d
+        """),
+            {"d": draft, "status": '"failed"' if was_failed else '"final_ready"'},
+        )
+    assert stage(tenant) == 2
+    newer_job = uuid4()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""
+            UPDATE image_assets SET params=jsonb_set(params,'{draft,status}',CAST(:status AS jsonb))
+            WHERE draft_id=:d
+        """),
+            {"d": draft, "status": '"failed"' if now_failed else '"final_ready"'},
+        )
+        session.execute(
+            text("""
+            INSERT INTO creative_jobs(id,tenant_id,draft_id,kind,revision,vendor_model,lane,
+                                      position,final_attempt,status,finished_at)
+            VALUES(:id,:t,:d,'final',1,'byteplus:seedance-2-5','nightly',0,1,:status,:at)
+        """),
+            {
+                "id": newer_job,
+                "t": tenant,
+                "d": draft,
+                "status": "failed" if now_failed else "succeeded",
+                "at": NOW,
+            },
+        )
+    fake = UniqueFakeMailer()
+    assert send_pending(tenant, now=NOW, mailer=fake) == 2
+    for mail in fake.sent:
+        assert ("no pudimos preparar" in mail.subject) is now_failed
+        assert ("No pudimos preparar el video final." in mail.text) is now_failed
+    with tenant_session(tenant) as session:
+        sources = session.scalars(text("SELECT payload FROM final_mail_batches")).all()
+        assert all(p["context"]["videos"][0]["source_job_id"] == str(newer_job) for p in sources)

@@ -6,13 +6,10 @@ import math
 from datetime import UTC, datetime, timedelta
 
 from qualify_creative.adapters.byteplus_ark import DRAFT_TTL_SECONDS
+from qualify_creative.queue_errors import FINAL_EXPIRED_TEXT as FINAL_EXPIRED_TEXT
 
 FINAL_MARGIN = timedelta(minutes=15)
 FINAL_URGENT_WITHIN = timedelta(hours=24)
-FINAL_EXPIRED_TEXT = (
-    "La vista previa de este video ya venció. "
-    "Crea una vista previa nueva para hacer el video final."
-)
 
 
 class FinalDeadlineExpired(ValueError):

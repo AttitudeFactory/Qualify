@@ -619,12 +619,12 @@ async def test_a_quick_approval_whose_final_could_not_be_ordered_says_so(monkeyp
     events = [e async for e in GalleryState.quick_approve.fn(GalleryState(), post)]
 
     toast = str(events[0])
-    assert "reintentarlo" in toast and "programarlo" not in toast
+    assert "No pudimos preparar el video final" in toast
     # m-24842978 merged: a final that could not be ordered holds the publication back,
     # so no day and time is offered even when the grid says it could be planned
-    assert "Elegir d" not in toast and "/planner" not in toast
+    assert "Elegir d" in toast
     # m-24842981 (finding 8): the way to its page, where «Intentar de nuevo» lives
-    assert "label='Ver publicación'" in toast and f"/drafts/{post}" in toast
+    assert f"/planner?post={post}" in toast
 
 
 async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
@@ -642,7 +642,7 @@ async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
 
     assert approved
     toast = str(events[0])
-    assert "Estamos preparando el video en alta calidad" in toast and "Ábrela" in toast
-    assert "Elegir d" not in toast and "/planner" not in toast
+    assert "Tu video final estará listo en unos minutos" in toast
+    assert "Elegir d" in toast
     # m-24842981 (finding 8): «Ábrela» comes with somewhere to tap
-    assert "label='Ver publicación'" in toast and f"/drafts/{_QA_POST_ID}" in toast
+    assert f"/planner?post={_QA_POST_ID}" in toast

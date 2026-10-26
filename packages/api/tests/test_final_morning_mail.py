@@ -104,6 +104,13 @@ def test_mail_outage_does_not_stop_worker_recovery(monkeypatch):
         raise RuntimeError("mail not configured")
 
     monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
+    monkeypatch.setattr(cli, "production_executors", lambda: {})
+    monkeypatch.setattr(
+        "qualify_api.creative.composition.production_content_service", lambda: object()
+    )
+    monkeypatch.setattr(
+        "qualify_api.creative.worker.pipeline.PipelinePreparation", lambda *args: lambda: None
+    )
     monkeypatch.setattr("qualify_api.mail.final_summary.morning_chore", lambda scope: broken_mail)
     monkeypatch.setattr(
         "qualify_api.creative.worker.operations.production_monitor", lambda ids: None
@@ -117,7 +124,6 @@ def test_mail_outage_does_not_stop_worker_recovery(monkeypatch):
     assert (
         cli.main(
             ["--tenant", str(uuid4()), "--once"],
-            executors={},
             recovery=lambda: recovered.append(True),
             install_signals=False,
         )
@@ -162,3 +168,60 @@ def test_nightly_failure_does_not_stop_pipeline_preparation(monkeypatch):
         == 0
     )
     assert prepared == [True] and recovered == [True]
+
+
+def test_public_load_failure_does_not_silence_queue_monitor(monkeypatch):
+    from qualify_api.creative.worker import __main__ as cli
+    from qualify_api.creative.worker.operations import Snapshot
+
+    calls = []
+
+    class Monitor:
+        clock = staticmethod(lambda: NOW)
+        beat = staticmethod(lambda: None)
+
+        def check(self, snapshot):
+            calls.append("monitor")
+
+    def failed_load():
+        calls.append("load")
+        raise RuntimeError("Redis unavailable")
+
+    monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
+    monkeypatch.setattr(
+        "qualify_api.creative.worker.operations.production_monitor", lambda ids: Monitor()
+    )
+    monkeypatch.setattr(
+        "qualify_api.creative.worker.operations.read_snapshot", lambda **kwargs: Snapshot()
+    )
+    monkeypatch.setattr(
+        "qualify_api.creative.worker.queue_load.production_load_chore", lambda **kwargs: failed_load
+    )
+
+    def loop(worker, **kwargs):
+        kwargs["sidecar"]()
+        return 0
+
+    monkeypatch.setattr(cli, "run_loop", loop)
+    assert (
+        cli.main(
+            ["--all-tenants", "--once"],
+            executors={},
+            recovery=lambda: calls.append("recover"),
+            install_signals=False,
+        )
+        == 0
+    )
+    assert calls == ["recover", "load", "monitor"]
+
+
+def test_only_failures_main_button_opens_the_first_displayed_piece():
+    from html import escape
+
+    from qualify_api.mail.final_template import review_url
+
+    failed = FinalVideo(uuid4(), "Falló", failed=True)
+    mail = build([failed])
+    target = review_url("https://app.example.invalid", failed.piece_id)
+    assert target in mail.text
+    assert f'class="mail-cta" href="{escape(target, quote=True)}"' in mail.html

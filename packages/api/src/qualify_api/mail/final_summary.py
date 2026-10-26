@@ -300,22 +300,49 @@ def send_pending(tenant_id: UUID, *, now: datetime, mailer: Mailer) -> int:
                 context = dict(payload["context"])
                 snapshots = context.pop("videos")
                 ids = [UUID(v["piece_id"]) for v in snapshots]
-                live = set(
+                live_rows = (
                     session.execute(
                         text("""
-                    SELECT DISTINCT d.id,d.revision FROM content_drafts d
-                    JOIN image_assets a ON a.draft_id=d.id
+                    SELECT d.id,d.revision,d.title,
+                      bool_or(a.params->'draft'->>'status'='failed') AS failed,
+                      (SELECT min(e.scheduled_at) FROM calendar_events e
+                       WHERE e.post_id=d.id AND e.status='scheduled') AS scheduled_at,
+                      (SELECT j.id FROM creative_jobs j WHERE j.draft_id=d.id
+                         AND j.revision=d.revision AND j.kind='final'
+                       ORDER BY j.final_attempt DESC,j.created_at DESC,j.id
+                       LIMIT 1) AS source_job_id
+                    FROM content_drafts d JOIN image_assets a ON a.draft_id=d.id
                     WHERE d.id=ANY(CAST(:ids AS uuid[])) AND d.status='approved'
                       AND a.params->'draft'->>'status' IN ('final_ready','failed')
                       AND NOT EXISTS (SELECT 1 FROM image_assets pending
                           WHERE pending.draft_id=d.id AND pending.params ? 'draft'
                             AND COALESCE(pending.params->'draft'->>'status','draft')
                                 NOT IN ('final_ready','final','failed'))
+                    GROUP BY d.id,d.revision,d.title
                 """),
                         {"ids": ids},
-                    ).all()
+                    )
+                    .mappings()
+                    .all()
                 )
-                current = [v for v in snapshots if (UUID(v["piece_id"]), v["revision"]) in live]
+                live = {(r["id"], r["revision"]): r for r in live_rows}
+                current = []
+                for snapshot in snapshots:
+                    actual = live.get((UUID(snapshot["piece_id"]), snapshot["revision"]))
+                    if actual is not None:
+                        current.append(
+                            {
+                                **snapshot,
+                                "title": actual["title"] or "Tu publicación",
+                                "failed": actual["failed"],
+                                "scheduled_at": (
+                                    actual["scheduled_at"].isoformat()
+                                    if actual["scheduled_at"]
+                                    else None
+                                ),
+                                "source_job_id": str(actual["source_job_id"]),
+                            }
+                        )
                 if not current:
                     session.execute(
                         text("""

@@ -243,7 +243,7 @@ def configured_night_hours() -> tuple[int, int]:
     )
 
 
-def nightly_maintenance(tenant_ids: Sequence[UUID] | None, *, now: datetime | None = None) -> int:
+def nightly_maintenance(tenant_ids: Sequence[UUID], *, now: datetime | None = None) -> int:
     """Promote missed windows and retry a known terminal failure at most three times."""
     from sqlalchemy import text
 
@@ -251,18 +251,6 @@ def nightly_maintenance(tenant_ids: Sequence[UUID] | None, *, now: datetime | No
     from qualify_api.tenancy.models import Tenant
 
     moment = now or datetime.now(UTC)
-    if tenant_ids is None:
-        from qualify_shared.db.creative_worker import creative_worker_session
-
-        with creative_worker_session() as session:
-            tenant_ids = tuple(
-                session.scalars(
-                    text("""
-                SELECT DISTINCT tenant_id FROM creative_jobs
-                WHERE kind='final' AND status IN ('queued','failed')
-            """)
-                )
-            )
     _, end = configured_night_hours()
     changed_count = 0
     for tenant_id in tenant_ids:

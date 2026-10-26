@@ -165,7 +165,7 @@ def build_summary(
         f"Recibes este correo porque tienes videos por revisar en Qualify para {business}. "
         "Te escribimos como máximo una vez al día y solo cuando hay algo listo."
     )
-    target = review_url(base_url)
+    target = review_url(base_url, ordered[0].piece_id if not ready else None)
     lines.extend(
         [
             "Revisar mis videos: " + target,

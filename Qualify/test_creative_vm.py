@@ -1052,3 +1052,51 @@ def test_a_presenter_waiting_in_line_shows_the_wait_never_the_slow_failure() -> 
     expired = vm("failed", waiting=True, detail=slow)
     assert expired.is_failed and expired.waiting_vendor is False  # type: ignore[attr-defined]
     assert expired.failure_detail == slow  # type: ignore[attr-defined]
+
+
+def test_deadline_failure_keeps_exact_copy_and_never_offers_the_same_final_again() -> None:
+    from qualify_api.creative.draft_mode import draft_summary, final_retryable
+    from qualify_creative.queue_errors import FINAL_EXPIRED_TEXT
+
+    from .creative_vm import video_draft_vm
+
+    now = 1_800_000_000
+    for age in (7 * 86400 - 15 * 60 + 1, 7 * 86400, 8 * 86400):
+        block = {"status": "failed", "created_at": now - age, "error": FINAL_EXPIRED_TEXT}
+        for approved in (False, True):
+            state, cost, error = draft_summary([{"draft": block}], now=now, approved=approved)
+            vm = video_draft_vm(state, cost, error, approved=approved)
+            assert vm.note == FINAL_EXPIRED_TEXT
+            assert vm.badge == "La vista previa venció"
+            assert not vm.can_retry and vm.expired
+            assert not final_retryable(block, now=now, approved=approved)
+
+
+def test_other_final_failures_and_normal_expiry_keep_their_existing_presentation() -> None:
+    from qualify_api.creative.draft_mode import DRAFT_EXPIRED_TEXT, draft_summary, final_retryable
+
+    from .creative_vm import video_draft_vm
+
+    now = 1_800_000_000
+    block = {"status": "failed", "created_at": now - 86400, "error": "ModelArk falló."}
+    state, cost, error = draft_summary([{"draft": block}], now=now, approved=True)
+    vm = video_draft_vm(state, cost, error, approved=True)
+    assert vm.can_retry and vm.note == "ModelArk falló."
+    assert final_retryable(block, now=now, approved=True)
+    old = {"draft": {**block, "created_at": now - 8 * 86400}}
+    state, cost, error = draft_summary([old], now=now, approved=True)
+    vm = video_draft_vm(state, cost, error, approved=True)
+    assert not vm.can_retry and vm.note == DRAFT_EXPIRED_TEXT
+
+
+def test_carousel_deadline_copy_is_not_replaced_by_another_asset_failure() -> None:
+    from qualify_api.creative.draft_mode import draft_summary
+    from qualify_creative.queue_errors import FINAL_EXPIRED_TEXT
+
+    now = 1_800_000_000
+    expired = {
+        "draft": {"status": "failed", "created_at": now - 8 * 86400, "error": FINAL_EXPIRED_TEXT}
+    }
+    other = {"draft": {"status": "failed", "created_at": now, "error": "Otro error."}}
+    state, _, error = draft_summary([expired, other], now=now, approved=True)
+    assert state == "expired" and error == FINAL_EXPIRED_TEXT

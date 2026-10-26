@@ -31,6 +31,7 @@ from pydantic import ValidationError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
+from qualify_api.creative.queue_visibility import CANCEL_NOT_AVAILABLE, QueueCancellationUnavailable
 from qualify_api.creative.service import (
     ApprovalBlocked,
     BrandNotReady,
@@ -90,11 +91,13 @@ from .creative_provider import (
     brand_media,
     brand_pieces,
     brand_readiness,
+    cancel_draft_queue,
     catalog_products,
     configured_video_engine,
     creations_balance,
     default_brand_id,
     draft_detail,
+    draft_queue,
     edit_variant,
     enhance_generator_context,
     final_video_state,
@@ -4550,10 +4553,14 @@ class CreativeState(rx.State):
                 elif time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
                     self.gen_timed_out = True
                     return
+                if vm is not None and vm.queue.queued:
+                    started = time.monotonic()
                 if not outcome and time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
                     self.gen_timed_out = True
                     return
             if outcome:
+                if vm is not None and vm.queue.cancelled:
+                    return
                 for event in _generation_done_events(outcome):
                     yield event
                 return
@@ -5741,6 +5748,51 @@ class CreativeState(rx.State):
             self.selected_variant_id = vm.variants[0].variant_id if vm.variants else ""
         self._fill_edit_fields()
 
+    queue_cancelling: bool = False
+
+    @rx.event(background=True)
+    async def cancel_queue(self, requested_draft_id: str) -> None:
+        ids = await self._session_ids()
+        async with self:
+            draft_id = tenant_uuid(requested_draft_id)
+            if ids is None or draft_id is None or self.queue_cancelling:
+                return
+            self.queue_cancelling = True
+            self.action_error = ""
+        tenant_id, brand_id, _ = ids
+        try:
+            await asyncio.to_thread(cancel_draft_queue, tenant_id, draft_id)
+        except QueueCancellationUnavailable:
+            async with self:
+                self.action_error = CANCEL_NOT_AVAILABLE
+        except SQLAlchemyError:
+            async with self:
+                self.action_error = _DB_ERROR
+        finally:
+            try:
+                vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
+                async with self:
+                    if (
+                        vm is not None
+                        and self.draft is not None
+                        and self.draft.draft_id == str(draft_id)
+                    ):
+                        self._refresh_video(vm)
+                    if vm is not None and self.gen_draft_id == str(draft_id):
+                        self.gen_draft = vm
+                    if vm is not None and vm.queue.cancelled:
+                        if self._final_polling_id == str(draft_id):
+                            self._final_polling_id = ""
+                        if self._polling_draft_id == str(draft_id):
+                            self._polling_draft_id = ""
+            except SQLAlchemyError:
+                async with self:
+                    self.action_error = _DB_ERROR
+            finally:
+                async with self:
+                    self.queue_cancelling = False
+        await self._refresh_creations(tenant_id, brand_id)
+
     def _refresh_video(self, vm: DraftVM) -> None:
         """The piece on screen read again while its 1080p final is made (m-24820142):
         its media, badge and draft state change — the operator's edits in progress
@@ -5857,7 +5909,11 @@ class CreativeState(rx.State):
         try:
             while True:
                 elapsed = time.monotonic() - started
-                if elapsed >= _POLL_BUDGET_SECONDS:
+                async with self:
+                    queued = self.draft is not None and self.draft.queue.queued
+                if queued:
+                    started = time.monotonic()
+                if elapsed >= _POLL_BUDGET_SECONDS and not queued:
                     async with self:
                         if self._polling_draft_id == polling_id:
                             self.poll_timed_out = True
@@ -5884,6 +5940,8 @@ class CreativeState(rx.State):
                         if not vm.is_drafting:
                             outcome = "failed" if vm.is_failed else "ready"
                 if outcome:
+                    if vm is not None and vm.queue.cancelled:
+                        return
                     for event in _generation_done_events(outcome, source="draft"):
                         yield event
                     return
@@ -6330,6 +6388,13 @@ class CreativeState(rx.State):
                     if not self._final_poll_on_screen(polling_id):
                         return  # another piece is on screen, or another poll took over
                 try:
+                    if os.environ.get("QUALIFY_CREATIVE_DISPATCHER", "inline") == "queue":
+                        queue = await asyncio.to_thread(draft_queue, tenant_id, draft_id)
+                        async with self:
+                            if self._final_poll_on_screen(polling_id):
+                                import dataclasses
+
+                                self.draft = dataclasses.replace(self.draft, queue=queue)
                     video = await asyncio.to_thread(final_video_state, tenant_id, draft_id)
                 except SQLAlchemyError as exc:
                     logger.error("final poll failed: %s", type(exc).__name__)
