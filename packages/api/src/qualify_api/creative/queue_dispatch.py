@@ -14,6 +14,7 @@ from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.final_deadline import deadline_for_preview
 
 SWITCH = "QUALIFY_CREATIVE_DISPATCHER"
 # Preparation makes a job eligible only after its immutable request is stored.
@@ -96,11 +97,19 @@ class QueueDispatcher:
                     draft,
                     f"final:{asset.id}",
                     [(q.KIND_FINAL, asset.position, q.SEEDANCE_POOL)],
+                    preview_created_at=block.get("created_at"),
                 )
 
     def _enqueue(
-        self, tenant_id: UUID, draft: Any, phase: str, jobs: list[tuple[str, int, str]]
+        self,
+        tenant_id: UUID,
+        draft: Any,
+        phase: str,
+        jobs: list[tuple[str, int, str]],
+        *,
+        preview_created_at: float | datetime | None = None,
     ) -> None:
+        deadline = deadline_for_preview(preview_created_at) if phase.startswith("final:") else None
         with tenant_session(tenant_id) as session:
             session.execute(
                 text("""
@@ -134,6 +143,7 @@ class QueueDispatcher:
                     vendor_model=pool,
                     lane=q.LANE_IMMEDIATE,
                     not_before=UNPREPARED,
+                    deadline=deadline,
                     charge_id=charge_id,
                     pricing_version=self.pricing_version,
                     pipeline_version=draft.pipeline_version,

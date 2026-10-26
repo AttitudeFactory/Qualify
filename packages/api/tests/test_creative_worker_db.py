@@ -22,6 +22,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.final_deadline import FINAL_EXPIRED_TEXT, deadline_for_preview
 from qualify_api.creative.worker import lanes, runner
 from qualify_api.creative.worker.downloads import DownloadGate
 from qualify_api.creative.worker.runner import CreativeWorker, WorkerConfig
@@ -333,3 +334,48 @@ def test_shutdown_hand_back_keeps_the_slot_of_a_submitted_job(
     # the next claim takes it first and keeps the same slot
     again = _claim(store, pool, now)
     assert again is not None and again.job_id == job_id and again.slot_no == claim.slot_no
+
+
+# -- preview deadlines (m-24852168) ---------------------------------------------------------
+
+
+def test_final_enqueue_keeps_vendor_preview_deadline_and_tenant_rls(
+    seeded_ab: tuple[UUID, UUID], pool: str, owner: Engine
+) -> None:
+    tenant_a, tenant_b = seeded_ab
+    created_at = datetime.now(UTC) - timedelta(days=2)
+    job_id = _enqueue(tenant_a, pool, kind=q.KIND_FINAL, preview_created_at=created_at.timestamp())
+    assert _job(owner, job_id)["deadline"] == deadline_for_preview(created_at)
+    with tenant_session(tenant_b) as session:
+        assert q.load_job(session, job_id) is None
+    # Worker scope is enforced before the fair pick as well as in the tenant-side load.
+    assert _claim(PostgresQueueStore(), pool, datetime.now(UTC), [tenant_b]) is None
+
+
+def test_urgent_final_is_not_hidden_behind_the_three_oldest_heads(
+    seeded_ab: tuple[UUID, UUID], pool: str
+) -> None:
+    tenant_a, tenant_b = seeded_ab
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    for _ in range(5):
+        _enqueue(tenant_a, pool, kind=q.KIND_FINAL, deadline=now + timedelta(days=3))
+    _enqueue(tenant_b, pool)
+    urgent = _enqueue(tenant_a, pool, kind=q.KIND_FINAL, deadline=now + timedelta(hours=23))
+    claim = _claim(PostgresQueueStore(), pool, now)
+    assert claim is not None and claim.job_id == urgent
+
+
+def test_expired_final_never_posts_under_real_tenant_and_worker_doors(
+    seeded_ab: tuple[UUID, UUID], pool: str, owner: Engine
+) -> None:
+    tenant_a, _ = seeded_ab
+    clock, vendor = Clock(), FakeBytePlus()
+    job_id = _enqueue(tenant_a, pool, kind=q.KIND_FINAL, deadline=clock() - timedelta(seconds=1))
+    worker = _worker(pool, vendor, clock, [tenant_a])
+    claims = worker.claim_round(1)
+    assert len(claims) == 1
+    assert worker.process(claims[0]) == runner.FAILED_OUTCOME
+    assert vendor.submits == []
+    assert vendor.finished == [(job_id, None, "expired")]
+    assert _job(owner, job_id)["last_error"] == FINAL_EXPIRED_TEXT
+    assert _slot(owner, job_id) is None

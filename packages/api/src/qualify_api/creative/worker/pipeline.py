@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
@@ -12,10 +13,15 @@ from uuid import UUID
 from qualify_creative.adapters.byteplus_ark import VendorBusy
 from qualify_creative.providers import GenerationRequest
 from qualify_shared.db.creative_worker import creative_worker_session
-from qualify_shared.db.session import tenant_session
+from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.final_deadline import (
+    FINAL_EXPIRED_TEXT,
+    FinalDeadlineExpired,
+    final_deadline_passed,
+)
 from qualify_api.creative.pipeline import (
     PipelineStore,
     encode_result,
@@ -58,10 +64,14 @@ class PipelineExecutor:
             provider,
         )
 
-    def _request(self, job: JobContext) -> tuple[Any, GenerationRequest, Any]:
+    def _step(self, job: JobContext) -> Any:
         row = self.pipeline.job_step(job.tenant_id, job.job_id)
         if row["draft_id"] != job.draft_id or row["revision"] != job.revision:
             raise ValueError("job does not match its immutable preparation")
+        return row
+
+    def _request(self, job: JobContext) -> tuple[Any, GenerationRequest, Any]:
+        row = self._step(job)
         request = request_from(row["request"])
         key = self.service._credentials.resolve(
             tenant_id=job.tenant_id, brand_id=row["brand_id"], provider=self.provider
@@ -81,6 +91,9 @@ class PipelineExecutor:
             raise ValueError("generation budget no longer covers this task")
         self._validate_reservation(job)
         self._stamp_started(job)
+        # Credentials/budget checks can take time: recheck at the paid boundary too.
+        if job.kind == q.KIND_FINAL and final_deadline_passed(job.deadline, datetime.now(UTC)):
+            raise FinalDeadlineExpired(FINAL_EXPIRED_TEXT)
         with tenant_session(job.tenant_id) as session:
             session.execute(
                 text("""
@@ -242,7 +255,7 @@ class PipelineExecutor:
         return TaskPoll(status, 5)
 
     def finish(self, job: JobContext, vendor_task_id: str | None, status: str) -> None:
-        row, request, key = self._request(job)
+        row = self._step(job)
         identity = {
             "t": job.tenant_id,
             "d": job.draft_id,
@@ -266,8 +279,11 @@ class PipelineExecutor:
                 )
             if vendor_task_id is None:
                 status = "submission_uncertain"
+        if status == "expired" and vendor_task_id is None and job.kind == q.KIND_FINAL:
+            self._expire_final(job, row["phase"])
         result = None
         if status == "succeeded" and vendor_task_id:
+            _, request, key = self._request(job)
             if self.provider == "seedance":
                 state = self.adapter.poll(vendor_task_id, api_key=key.api_key)
                 result = self.adapter.result(request, state)
@@ -299,6 +315,56 @@ class PipelineExecutor:
             self.pipeline.complete_step(job.tenant_id, identity=identity, result=data)
         else:
             self.pipeline.complete_step(job.tenant_id, identity=identity, result=None, error=status)
+
+    def _expire_final(self, job: JobContext, phase: str) -> None:
+        """Fail only this revision's asset, without credentials or any vendor call."""
+        asset_id = UUID(phase.split(":", 1)[1])
+        with tenant_unit_of_work(job.tenant_id), tenant_session(job.tenant_id) as session:
+            current = session.execute(
+                text("""
+                SELECT a.id FROM image_assets a
+                JOIN content_drafts d ON d.id=a.draft_id AND d.tenant_id=a.tenant_id
+                JOIN creative_jobs j ON j.draft_id=d.id AND j.tenant_id=d.tenant_id
+                WHERE j.id=:j AND j.claim_token=:token AND j.status='claimed'
+                  AND j.vendor_task_id IS NULL AND d.revision=:r
+                  AND a.id=:a AND a.position=:pos
+                FOR UPDATE OF a,d,j
+                """),
+                {
+                    "j": job.job_id,
+                    "token": job.claim_token,
+                    "r": job.revision,
+                    "a": asset_id,
+                    "pos": job.position,
+                },
+            ).scalar_one_or_none()
+            if current is None:
+                raise ValueError("expired final no longer belongs to this claim")
+            session.execute(
+                text("""
+                UPDATE image_assets
+                SET params=jsonb_set(COALESCE(params, '{}'::jsonb), '{draft}',
+                    COALESCE(params->'draft', '{}'::jsonb) || CAST(:changes AS jsonb))
+                WHERE id=:a
+                """),
+                {
+                    "a": asset_id,
+                    "changes": json.dumps(
+                        {
+                            "status": "failed",
+                            "error": FINAL_EXPIRED_TEXT,
+                        }
+                    ),
+                },
+            )
+            if self.service._creations is not None:
+                self.service._creations.refund_final(
+                    tenant_id=job.tenant_id,
+                    draft_id=job.draft_id,
+                    revision=job.revision,
+                    reason="draft_expired",
+                    asset_ids=(asset_id,),
+                )
 
 
 class PipelinePreparation:
