@@ -300,6 +300,7 @@ def _stage_batches(
                     )
                 else:
                     batch.cancelled_at = now
+                    blocked.discard(group)  # safe rejection must not suppress a new last-day piece
                 continue
             ready.append(batch.id)
         session.flush()  # free partial unique slots before inserting new batches

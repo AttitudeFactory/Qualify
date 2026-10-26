@@ -582,7 +582,8 @@ def test_warning_retry_after_unknown_acceptance_keeps_frozen_http_body_and_key(m
                 )
             )
             assert staged is not None and staged.sent_at is None
-            assert staged.first_attempt_at == NOW
+            expected_first = NOW if len(requests) <= 2 else NOW + timedelta(days=1)
+            assert staged.first_attempt_at == expected_first
             assert staged.payload["mail"]["html"] == kwargs["json"]["html"]
         if len(requests) == 1:
             accepted[key] = kwargs["json"]
@@ -913,3 +914,31 @@ def test_warning_uncertain_batch_protection_reserves_all_original_piece_identiti
     assert str(first) not in recording.sent[0].text and str(second) not in recording.sent[0].text
     assert len(warning_review_ids(tenant)) == 1
     assert send_tenant_warnings(tenant, NOW, mailer=recording, verify=verify) == 0
+
+
+def test_warning_safe_cancel_does_not_miss_a_new_piece_entering_its_final_day() -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    first = _piece(tenant, brand, generated_days_ago=89.5)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    class Rejected:
+        def send(self, mail: OutgoingMail) -> str | None:
+            raise MailRejected("definitive rejection before acceptance")
+
+    assert send_tenant_warnings(tenant, NOW, mailer=Rejected(), verify=verify) == 0
+    with tenant_session(tenant) as session:
+        original = session.scalar(select(ContentDraftWarningBatch))
+        batch_id = original.id
+        assert original.first_attempt_at is None
+    second = _piece(tenant, brand, generated_days_ago=88.5)
+    recording = FakeMailer()
+    assert (
+        send_tenant_warnings(tenant, NOW + timedelta(days=1), mailer=recording, verify=verify) == 1
+    )
+    assert str(second) in recording.sent[0].text and str(first) not in recording.sent[0].text
+    with tenant_session(tenant) as session:
+        original = session.get(ContentDraftWarningBatch, batch_id)
+        assert original.cancelled_at is not None and original.needs_review_at is None
+        assert session.scalars(select(ContentDraftPurgeWarning.draft_id)).all() == [second]
