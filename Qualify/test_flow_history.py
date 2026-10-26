@@ -425,20 +425,32 @@ console.log(JSON.stringify({count,href:entries[pos].href}));
     assert _node(script) == {"count": 3, "href": "/create/?paso=1"}
 
 
-def test_entry_ack_finishes_first_marker_already_at_guarded_step_without_another_mutation() -> None:
+@pytest.mark.parametrize(
+    "path,requested",
+    [
+        ("/brand", "5"),
+        ("/brand/manual", "6"),
+        ("/brand/connect", "7"),
+        ("/create", "99"),
+        ("/publish", "99"),
+    ],
+)
+def test_entry_ack_finishes_first_marker_already_at_guarded_step_without_another_mutation(
+    path, requested
+) -> None:
     from .ui.steps import _STEP_SYNC_DOM_JS, step_entry_script
 
     script = (
         _HARNESS
+        + f"entries[0].href={json.dumps(path + '?paso=' + requested)};apply();"
         + """
-entries[0].href='/brand/connect?paso=7';apply();
 window.addEventListener=()=>{};window.setTimeout=fn=>fn();
 const mark={dataset:{step:'1',entry:'4',direction:'next'},nodeType:1,
  matches:s=>s==='.q-step-sync',querySelector:()=>null};
 document.querySelector=s=>s==='main.q-panel .q-step-sync'?mark:null;
 """
         + _STEP_SYNC_DOM_JS
-        + step_entry_script("/brand/connect", 1, 4, "7")
+        + step_entry_script(path, 1, 4, requested)
         + "console.log(JSON.stringify({href:entries[pos].href,pos}));"
     )
-    assert _node(script) == {"href": "/brand/connect?paso=1", "pos": 0}
+    assert _node(script) == {"href": path + "?paso=1", "pos": 0}
