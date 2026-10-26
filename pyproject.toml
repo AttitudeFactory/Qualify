@@ -56,7 +56,7 @@ ml = ["qualify-models"]
 # zero API cost). Only what `LocalRobertuitoSentimentProvider` and the hosted
 # `InferenceClient` paths import — not the rest of `ml` (whisper, torchvision, accelerate,
 # av). `qualify_models` itself reaches the image through PYTHONPATH (deploy/Dockerfile).
-sentiment = ["torch>=2.14.1", "transformers>=5.19.0", "huggingface-hub>=1.24.0"]
+sentiment = ["torch>=2.14.1", "transformers>=5.20.1", "huggingface-hub>=1.24.0"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=0.24.0",
@@ -65,8 +65,8 @@ dev = [
     # `Qualify/test_voice_lab.py` builds a WAV from samples; numpy alone (no torch) lets
     # it run in CI's default sync instead of being skipped there
     "numpy>=2.5.4",
-    "ruff>=0.17.0",
-    "pre-commit>=4.6.2",
+    "ruff>=0.17.1",
+    "pre-commit>=4.7.0",
 ]
 
 [tool.pytest.ini_options]
