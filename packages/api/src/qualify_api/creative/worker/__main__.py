@@ -108,12 +108,35 @@ def main(
 
         recovery = recovery_chore(scope_ids)
     chosen = dict(production_executors() if executors is None else executors)
+    # Monitor only the production store; injected stores never reach Redis/webhooks.
+    from qualify_api.creative.worker.operations import (  # noqa: PLC0415
+        production_monitor,
+        read_snapshot,
+    )
+
+    monitor = production_monitor(scope_ids) if store is None else None
+    original_recovery = recovery
+
+    def maintenance() -> None:
+        if original_recovery is not None:
+            try:
+                original_recovery()
+            except Exception:
+                logger.exception("creative.worker.legacy_recovery_failed")
+        if monitor is not None:
+            monitor.check(read_snapshot(now=monitor.clock(), tenant_ids=scope_ids))
+
+    def vendor_busy(busy: object) -> None:
+        if monitor is not None and getattr(busy, "code", None) == "QuotaExceeded":
+            monitor.quota_exceeded()
+
     gate = DownloadGate(downloads_allowed())
     worker = CreativeWorker(
         store or PostgresQueueStore(),
         chosen,
         WorkerConfig(pools=pools, tenant_ids=scope_ids),
         downloads=gate,
+        on_vendor_busy=vendor_busy,
     )
     if install_signals:
         _stop_on_signals(worker.stop)
@@ -129,8 +152,9 @@ def main(
         worker,
         once=args.once,
         interval=args.interval,
-        sidecar=recovery,
+        sidecar=maintenance,
         sidecar_every=RECOVERY_EVERY_SECONDS,
+        on_round=monitor.beat if monitor is not None else None,
     )
     logger.info("creative.worker.stopped downloads_peak=%s", gate.peak)
     return code
