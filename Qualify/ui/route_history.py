@@ -33,9 +33,14 @@ _LEASE_SCRIPT = """(() => {
 })()"""
 
 
+def history_ack_value(lease: dict) -> str:
+    value = lease.get("visit", "") if isinstance(lease, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
 def route_history_ready(path: str, lease: dict) -> rx.event.EventSpec:
     """Only the backend ACK for this exact DOM visit and address can arm writes."""
-    visit = lease.get("visit", "") if isinstance(lease, dict) else ""
+    visit = history_ack_value(lease)
     href = lease.get("href", "") if isinstance(lease, dict) else ""
     return rx.call_script(
         "(() => { const node = document.querySelector('main.q-panel .q-route-pop');"
@@ -46,13 +51,16 @@ def route_history_ready(path: str, lease: dict) -> rx.event.EventSpec:
     )
 
 
-def route_history(on_pop: Any, *, on_leave: Any | None = None) -> rx.Component:
+def route_history(
+    on_pop: Any, *, ack: str | rx.Var[str] = "", on_leave: Any | None = None
+) -> rx.Component:
     return rx.el.button(
         type="button",
         hidden=True,
         tab_index=-1,
         aria_hidden="true",
         class_name="q-route-pop",
+        custom_attrs={"data-history-ack": ack},
         on_click=rx.call_script(_LEASE_SCRIPT, callback=on_pop),
         on_mount=[
             rx.call_script(_POP_SCRIPT + _FLOW_INSTALL_SCRIPT),

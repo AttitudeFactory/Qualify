@@ -335,6 +335,7 @@ class BrandWizardState(rx.State):
     #: has decided the step (until then the address is not written — `step_sync`).
     direction: str = DIR_NEXT
     steps_ready: bool = False
+    steps_epoch: int = 0
 
     # -- step 2/3 -------------------------------------------------------------
     has_logo: str = ""  # "si" | "no" | "" (unanswered)
@@ -519,6 +520,7 @@ class BrandWizardState(rx.State):
             target = guard_step(parse_step_param(raw, len(STEPS)), await self._completes())
             self.step = target - 1
         self.direction = DIR_NEXT
+        self.steps_epoch += 1
         self.steps_ready = True
 
     @rx.event
@@ -3101,7 +3103,11 @@ def brand_manual_index() -> rx.Component:
                     rx.fragment(
                         rx.cond(
                             BrandWizardState.steps_ready,
-                            step_sync(BrandWizardState.step_n, BrandWizardState.direction),
+                            step_sync(
+                                BrandWizardState.step_n,
+                                BrandWizardState.direction,
+                                epoch=BrandWizardState.steps_epoch,
+                            ),
                         ),
                         _frame_step(
                             _window(),
@@ -3117,6 +3123,7 @@ def brand_manual_index() -> rx.Component:
                     total=len(STEPS),
                     back_label=exit_label(),
                     on_exit=BrandWizardState.leave,
+                    show_progress=~loading,
                 ),
                 foot=rx.cond(loading, rx.fragment(), _controls()),
                 step=BrandWizardState.step_n,
@@ -3839,6 +3846,7 @@ class BrandConnectState(rx.State):
     #: route's load has decided the step (until then the address is not written).
     direction: str = DIR_NEXT
     steps_ready: bool = False
+    steps_epoch: int = 0
     network: str = ""
     username: str = ""
     analyzing: bool = False
@@ -5386,6 +5394,7 @@ class BrandConnectState(rx.State):
         """PASOS-4: once the saved walk is back, `?paso=N` (guarded) decides the step,
         and the address may be written from now on (`step_sync`). Under the lock."""
         await self._apply_step_param()
+        self.steps_epoch += 1
         self.steps_ready = True
 
     @rx.event
@@ -7918,7 +7927,9 @@ def brand_connect_index() -> rx.Component:
                                 rx.cond(
                                     BrandConnectState.steps_ready,
                                     step_sync(
-                                        BrandConnectState.step_n, BrandConnectState.direction
+                                        BrandConnectState.step_n,
+                                        BrandConnectState.direction,
+                                        epoch=BrandConnectState.steps_epoch,
                                     ),
                                 ),
                                 _frame_step(
@@ -7952,6 +7963,7 @@ def brand_connect_index() -> rx.Component:
                     total=BrandConnectState.step_m,
                     back_label=exit_label(),
                     on_exit=BrandConnectState.leave,
+                    show_progress=BrandConnectState.steps_ready & ~CreativeState.kit_loading,
                 ),
                 foot=rx.cond(waiting, rx.fragment(), _connect_controls()),
                 step=BrandConnectState.step_n,
