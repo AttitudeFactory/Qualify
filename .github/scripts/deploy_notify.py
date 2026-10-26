@@ -1,9 +1,11 @@
-"""Post the outcome of a production deploy to the Lark group *Qualify-devs*.
+"""Post deploy outcomes to Qualify-devs and, optionally, the affected epic chats.
 
 Used by the `notify` job of `.github/workflows/deploy.yml`. It builds ONE Lark interactive
-card (a Lark custom bot is the only receiver: no Cliq/Slack `text` key) from the results
+card for the general Lark custom bot from the results
 of the `resolve` → `images` → `deploy` jobs plus what the GitHub REST API knows about the
 run (job durations, the failed step) and the commit (subject, author, pull request).
+`deploy_epics` optionally resolves the changed tickets' Meegle Features and sends one
+application-bot post per chat. It does not depend on the custom-bot webhook.
 
 Pure stdlib. It never fails the workflow: a missing webhook is a notice, an unreachable
 or rejecting Lark is a warning, the deploy result stands either way.
@@ -27,6 +29,8 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from typing import Any
+
+from deploy_epics import notify_epics
 
 STAGES = ("resolve", "images", "deploy")  # the jobs of deploy.yml, in order
 _PR_IN_SUBJECT = re.compile(r"Merge pull request #(\d+)|\(#(\d+)\)\s*$")
@@ -109,6 +113,7 @@ def run_info(repo: str, run_id: str) -> dict[str, Any]:
         begin, end = _parse_ts(job.get("started_at")), _parse_ts(job.get("completed_at"))
         stage = stages[name]
         stage["conclusion"] = job.get("conclusion")
+        stage["started_at"] = job.get("started_at")
         stage["duration"] = (end - begin).total_seconds() if begin and end else None
         failed = [s.get("name") for s in job.get("steps") or [] if s.get("conclusion") == "failure"]
         if failed:
@@ -269,8 +274,8 @@ def trigger_text(event: str, actor: str) -> str:
 
 def main() -> int:
     webhook = _env("DEVOPS_WEBHOOK_URL")
-    if not webhook:
-        print("::notice::DEVOPS_WEBHOOK_URL is not set; no deploy notice.")
+    if not webhook and _env("DEPLOY_EPIC_NOTIFICATIONS").lower() != "true":
+        print("::notice::No deploy notification destination is enabled.")
         return 0
     repo = _env("GITHUB_REPOSITORY")
     run_id = _env("GITHUB_RUN_ID")
@@ -289,7 +294,14 @@ def main() -> int:
         "commit": commit_info(repo, sha),
         "run": run_info(repo, run_id),
     }
-    post(webhook, payload(build_card(ctx), _env("DEVOPS_WEBHOOK_SECRET")))
+    if webhook:
+        post(webhook, payload(build_card(ctx), _env("DEVOPS_WEBHOOK_SECRET")))
+    try:
+        notify_epics(ctx, _github)
+    except Exception as exc:
+        # Notification failures must never change the deployment result. Only the type
+        # is logged: upstream exceptions can contain tokens or request bodies.
+        print(f"::warning::Epic deploy notices unavailable ({type(exc).__name__}).")
     return 0
 
 
