@@ -108,6 +108,7 @@ from .planner_vm import (
     week_return_query,
 )
 from .tenant import tenant_uuid
+from .ui.route_history import history_ack_value, route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,7 @@ async def schedule_plan_rows(
 
 
 class PlannerState(rx.State):
+    history_ack: str = ""
     # -- week -----------------------------------------------------------------
     loading: bool = True
     load_error: str = ""
@@ -835,6 +837,14 @@ class PlannerState(rx.State):
         from .nav_url import replace_url_script
 
         return rx.call_script(replace_url_script(self._planner_address()))
+
+    @rx.event
+    def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        self.flow_ready = False
+        event = self.restore_address()
+        events = [event] if event is not None else []
+        self.history_ack = history_ack_value(lease)
+        return [*events, route_history_ready("/planner", lease)]
 
     @rx.event
     def restore_address(self) -> rx.event.EventSpec | None:

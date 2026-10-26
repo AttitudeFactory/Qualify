@@ -143,6 +143,7 @@ def step_head(
     back_href: str | rx.Var | None = None,
     on_exit: Any | None = None,
     below: rx.Component | None = None,
+    show_progress: bool | rx.Var[bool] = True,
 ) -> rx.Component:
     """The frame's fixed head, in place of `page_header`: «‹ ``back_label``» (to
     ``back_href``, or the ``on_exit`` event when leaving needs a handler — on every
@@ -153,6 +154,10 @@ def step_head(
     if (back_href is None) == (on_exit is None):
         raise ValueError("step_head needs exactly one of back_href or on_exit")
     count, bar = _progress_parts(step, total, COUNT_ID_PAGE)
+    if show_progress is False:
+        count, bar = rx.fragment(), rx.fragment()
+    elif show_progress is not True:
+        count, bar = rx.cond(show_progress, count), rx.cond(show_progress, bar)
     return rx.vstack(
         # «‹ destino» and «Paso N de M» share a row; the bar gets a line of its own, so
         # a long destination never squeezes it (§4.5 mockup).
@@ -385,8 +390,10 @@ _STEP_GO_JS = (
     " const st = window.history.state || {}; const url = to.pathname + to.search + to.hash;"
     " if (window.location.pathname + window.location.search + window.location.hash === url) return;"
     " if (cur === null) { window.history.replaceState(st, '', url); return; }"
-    " if (back) { if (st.qPrevPaso === n) window.history.back();"
-    " else window.history.replaceState(st, '', url); return; }"
+    " if (back) { if (st.qPrevPaso === n) {"
+    " if (window.__qStepBackTarget === url) return; window.__qStepBackTarget = url;"
+    " window.addEventListener('popstate', () => { window.__qStepBackTarget = null; }, {once:true});"
+    " window.history.back(); } else window.history.replaceState(st, '', url); return; }"
     " window.history.pushState({ ...st, qPrevPaso: cur }, '', url); };"
 )
 
@@ -453,7 +460,7 @@ _STEP_SYNC_DOM_JS = (
       ? record.target.matches('.q-step-sync')
       : [...record.addedNodes, ...record.removedNodes].some(carries))) window.__qStepSync();
   }).observe(document.body, {subtree: true, childList: true, attributes: true,
-    attributeFilter: ['data-step', 'data-direction']});
+    attributeFilter: ['data-step', 'data-direction', 'data-entry']});
  }
  window.__qStepSync();
 })();
@@ -461,11 +468,13 @@ _STEP_SYNC_DOM_JS = (
 )
 
 
-def step_sync(step: rx.Var[int], direction: rx.Var[str] | str = DIR_NEXT) -> rx.Component:
+def step_sync(
+    step: rx.Var[int], direction: rx.Var[str] | str = DIR_NEXT, *, epoch: int | rx.Var[int] = 0
+) -> rx.Component:
     """Observe marker data changes: Reflex can memoize the effect outside the DOM key."""
     return rx.box(
         key=step,
-        custom_attrs={"data-step": step, "data-direction": direction},
+        custom_attrs={"data-step": step, "data-direction": direction, "data-entry": epoch},
         on_mount=rx.call_script(_STEP_SYNC_DOM_JS),
         display="none",
         class_name="q-step-sync",

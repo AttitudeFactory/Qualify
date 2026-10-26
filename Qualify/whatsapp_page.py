@@ -353,7 +353,11 @@ def _whatsapp_body() -> rx.Component:
 
 def whatsapp_index() -> rx.Component:
     return app_shell(
-        route_history(WhatsAppState.pop_page, on_leave=WhatsAppState.leave_page_flows),
+        route_history(
+            WhatsAppState.enter_history,
+            ack=WhatsAppState.history_ack,
+            on_leave=WhatsAppState.leave_page_flows,
+        ),
         rx.cond(
             (WhatsAppState.active_tab == TAB_MENU)
             & (WhatsAppMenuState.loaded_for == WhatsAppState.selected_connection_id)

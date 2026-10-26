@@ -73,6 +73,7 @@ from .catalog_vm import (
 from .creative_provider import acting_user_id, default_brand_id
 from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
+from .ui.route_history import history_ack_value, route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,8 @@ _STAGING_TTL_S = 24 * 60 * 60
 class CatalogState(rx.State):
     """State for /catalog: the list, the "Agregar producto" form, and one product's
     editor (fields + media) at a time."""
+
+    history_ack: str = ""
 
     products: list[ProductVM] = []
     loading: bool = False
@@ -480,6 +483,12 @@ class CatalogState(rx.State):
                 self._fill_editor(self.selected)
 
     # -- the new-product form ---------------------------------------------------------------
+
+    @rx.event
+    def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        self.restore_flow()
+        self.history_ack = history_ack_value(lease)
+        return [CatalogState.load_catalog, route_history_ready("/catalog", lease)]
 
     @rx.event
     def restore_flow(self) -> None:

@@ -14,10 +14,16 @@ _FLOW_INSTALL_SCRIPT = r"""
  if (!window.__qFlowSync) {
   let pending = false;
   window.__qFlowSync = () => {
-   if (pending) return;
+   const armed = window.__qFlowRouteNode;
+   const visit = armed?.dataset.historyLease;
+   if (!armed || document.querySelector('main.q-panel .q-route-pop') !== armed ||
+       armed.dataset.historyAck !== visit || pending) return;
    pending = true;
    window.requestAnimationFrame(() => {
     pending = false;
+    const route = document.querySelector('main.q-panel .q-route-pop');
+    if (!route || window.__qFlowRouteNode !== route || route !== armed ||
+        route.dataset.historyLease !== visit || route.dataset.historyAck !== visit) return;
     const mark = document.querySelector('.q-drawer[data-state="open"] .q-flow-sync')
       || document.querySelector('main.q-panel .q-flow-sync');
     if (!mark) return;
@@ -55,7 +61,12 @@ _FLOW_INSTALL_SCRIPT = r"""
     const current = window.location.pathname + window.location.search + window.location.hash;
     if (target === current) return;
     if (same && Number(n) < Number(oldStep)) {
-      if (st.qFlowPrevStep === n) { window.history.back(); return; }
+      if (st.qFlowPrevStep === n) {
+       if (window.__qFlowBackTarget === target) return;
+       window.__qFlowBackTarget = target;
+       window.addEventListener('popstate', () => { window.__qFlowBackTarget = null; }, {once:true});
+       window.history.back(); return;
+      }
       window.history.replaceState(st, '', target); return;
     }
     window.history.pushState({ ...st, qPrevHref: current,
@@ -69,11 +80,13 @@ _FLOW_INSTALL_SCRIPT = r"""
   new MutationObserver(records => {
     const changed = records.some(record => record.type === 'attributes'
       ? (record.target.matches('.q-flow-sync') ||
-         (record.attributeName === 'data-state' && record.target.matches('.q-drawer')))
+         (record.attributeName === 'data-state' && record.target.matches('.q-drawer')) ||
+         (record.attributeName === 'data-history-ack' && record.target.matches('.q-route-pop')))
       : [...record.addedNodes, ...record.removedNodes].some(carriesMarker));
     if (changed) window.__qFlowSync();
   }).observe(document.body, {subtree: true, childList: true, attributes: true,
-    attributeFilter: ['data-flow', 'data-step', 'data-consulta', 'data-objeto', 'data-state']});
+    attributeFilter: ['data-flow', 'data-step', 'data-consulta', 'data-objeto',
+      'data-state', 'data-history-ack']});
  }
 })();
 """

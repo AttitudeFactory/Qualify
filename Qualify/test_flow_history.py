@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from .nav_url import close_flow_script
 from .test_route_history import _node
 from .ui.flow_history import _FLOW_SCRIPT
@@ -13,7 +15,9 @@ let observer;
 class MutationObserver {constructor(callback){observer=callback;} observe(){}}
 const entries=[{href:'/catalog?volver=%2Fcreate', state:{key:'router', idx:2}}];
 let pos=0, page=null, drawer=null;
-const window={requestAnimationFrame(fn){fn();}};
+const routeNode={dataset:{historyLease:'1',historyAck:'1'},
+ matches:selector=>selector==='.q-route-pop'};
+const window={requestAnimationFrame(fn){fn();}, addEventListener(){}};
 function apply(){
  const url=new URL(entries[pos].href, 'https://qualify.test');
  window.location={href:url.href, pathname:url.pathname, search:url.search, hash:url.hash};
@@ -23,7 +27,9 @@ window.history={get state(){return entries[pos].state;},
  replaceState(state, _, href){entries[pos]={state,href};apply();},
  back(){pos--;apply();}, go(delta){pos+=delta;apply();}
 };
+window.__qFlowRouteNode=routeNode;
 const document={querySelector(selector){
+ if(selector === 'main.q-panel .q-route-pop') return routeNode;
  if(selector === '.q-drawer[data-state="open"] .q-flow-sync') return drawer;
  if(selector === 'main.q-panel .q-flow-sync') return page;
  throw Error('Unexpected selector: '+selector);
@@ -214,3 +220,159 @@ console.log(JSON.stringify({{href:entries[pos].href,pos}}));
 """
     )
     assert _node(script) == {"href": "/whatsapp?tab=plantillas", "pos": 0}
+
+
+def test_handler_and_marker_cannot_go_back_twice_before_the_pop_arrives() -> None:
+    from .ui.steps import step_address_script
+
+    back = step_address_script(json.dumps("/create?paso=3"), back=True)
+    script = (
+        """
+let calls=0, onPop;
+const window={location:{href:'https://qualify.test/create?paso=4',
+ pathname:'/create',search:'?paso=4',hash:''},
+ addEventListener(type, fn){onPop=fn;},
+ history:{state:{qPrevPaso:'3'},back(){calls++;}}
+};
+"""
+        + back
+        + back
+        + "console.log(JSON.stringify({calls}));"
+    )
+    assert _node(script) == {"calls": 1}
+
+
+def test_late_inherited_portal_waits_for_this_visits_backend_ack() -> None:
+    from .ui.flow_history import _FLOW_INSTALL_SCRIPT
+    from .ui.route_history import route_history_ready
+
+    ack = str(
+        route_history_ready("/catalog", {"visit": "2", "href": "https://qualify.test/catalog"})
+        .args[0][1]
+        ._js_expr
+    )
+    # EventSpec wraps the script as a literal string; decode it before executing.
+    ack = json.loads(ack)
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/catalog';apply();
+routeNode.dataset.historyLease='2';window.__qFlowRouteNode=null;
+{_FLOW_INSTALL_SCRIPT}
+drawer={{dataset:{{flow:'producto',step:'2'}},nodeType:1,
+ matches:s=>s==='.q-flow-sync',querySelector:()=>null}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+const inherited=entries[pos].href;
+const old=drawer;drawer=null;
+observer([{{type:'childList',addedNodes:[],removedNodes:[old]}}]);
+routeNode.dataset.historyAck='2';
+{ack}
+drawer={{...old,dataset:{{flow:'producto',step:'1'}}}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+drawer.dataset.step='2';observer([{{type:'attributes',target:drawer}}]);
+console.log(JSON.stringify({{inherited,final:entries[pos].href,pos}}));
+"""
+    )
+    result = _node(script)
+    assert result["inherited"] == "/catalog"
+    assert result["final"] == "/catalog?flujo=producto&paso=2"
+    assert result["pos"] == 2
+
+
+def test_only_the_ack_for_the_current_visit_and_address_can_arm_history_writes() -> None:
+    from .ui.route_history import route_history_ready
+
+    def script(visit, href):
+        spec = route_history_ready("/catalog", {"visit": visit, "href": href})
+        return json.loads(str(spec.args[0][1]._js_expr))
+
+    old = script("old-document:1", "https://qualify.test/catalog")
+    departed = script("new-document:2", "https://qualify.test/catalog?flujo=producto&paso=2")
+    valid = script("new-document:2", "https://qualify.test/catalog")
+    program = (
+        _HARNESS
+        + f"""
+entries[0].href='/catalog';apply();
+routeNode.dataset.historyLease='new-document:2';window.__qFlowRouteNode=null;
+{old}
+const oldArmed=window.__qFlowRouteNode===routeNode;
+{departed}
+const departedArmed=window.__qFlowRouteNode===routeNode;
+{valid}
+console.log(JSON.stringify({{oldArmed,departedArmed,validArmed:window.__qFlowRouteNode===routeNode}}));
+"""
+    )
+    assert _node(program) == {"oldArmed": False, "departedArmed": False, "validArmed": True}
+
+
+@pytest.mark.parametrize("ack_first", [True, False])
+def test_backend_ack_cannot_sync_the_old_portal_before_react_paints_its_delta(ack_first) -> None:
+    from .ui.flow_history import _FLOW_INSTALL_SCRIPT
+    from .ui.route_history import route_history_ready
+
+    spec = route_history_ready("/catalog", {"visit": "2", "href": "https://qualify.test/catalog"})
+    ack = json.loads(str(spec.args[0][1]._js_expr))
+    render = """
+const old=drawer;drawer=null;
+routeNode.dataset.historyAck='2';
+observer([{type:'attributes',attributeName:'data-history-ack',target:routeNode},
+ {type:'childList',addedNodes:[],removedNodes:[old]}]);
+"""
+    order = (
+        ack + "const beforePaint=entries[pos].href;" + render
+        if ack_first
+        else (render + "const beforePaint=entries[pos].href;" + ack)
+    )
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/catalog';apply();
+routeNode.dataset.historyLease='2';window.__qFlowRouteNode=null;
+{_FLOW_INSTALL_SCRIPT}
+drawer={{dataset:{{flow:'producto',step:'2'}},nodeType:1,
+ matches:s=>s==='.q-flow-sync',querySelector:()=>null}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+{order}
+const afterPaint=entries[pos].href;
+drawer={{dataset:{{flow:'producto',step:'1'}},nodeType:1,
+ matches:s=>s==='.q-flow-sync',querySelector:()=>null}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+drawer.dataset.step='2';observer([{{type:'attributes',target:drawer}}]);
+console.log(JSON.stringify({{beforePaint,afterPaint,final:entries[pos].href,pos}}));
+"""
+    )
+    assert _node(script) == {
+        "beforePaint": "/catalog",
+        "afterPaint": "/catalog",
+        "final": "/catalog?flujo=producto&paso=2",
+        "pos": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "requested", "guarded"), [("/brand/manual", 6, 2), ("/brand/connect", 7, 1)]
+)
+def test_ready_epoch_canonicalizes_a_guarded_entry_even_when_the_step_did_not_change(
+    path, requested, guarded
+) -> None:
+    from .ui.steps import _STEP_SYNC_DOM_JS
+
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href={json.dumps(path + "?paso=" + str(requested))};apply();
+window.addEventListener=()=>{{}}; window.setTimeout=fn=>fn();
+let mark={{dataset:{{step:{json.dumps(str(guarded))},direction:'next',entry:'0'}},nodeType:1,
+ matches:s=>s==='.q-step-sync',querySelector:()=>null}};
+document.querySelector=selector=>selector==='main.q-panel .q-step-sync' ? mark : null;
+{_STEP_SYNC_DOM_JS}
+const waiting=entries[pos].href;
+mark.dataset.entry='1';observer([{{type:'attributes',attributeName:'data-entry',target:mark}}]);
+console.log(JSON.stringify({{waiting,final:entries[pos].href,pos}}));
+"""
+    )
+    assert _node(script) == {
+        "waiting": path + "?paso=" + str(requested),
+        "final": path + "?paso=" + str(guarded),
+        "pos": 0,
+    }

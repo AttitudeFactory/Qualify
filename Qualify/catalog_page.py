@@ -1266,7 +1266,11 @@ def _loading() -> rx.Component:
 
 def catalog_index() -> rx.Component:
     return app_shell(
-        route_history(CatalogState.load_catalog, on_leave=CatalogState.leave_flow),
+        route_history(
+            CatalogState.enter_history,
+            ack=CatalogState.history_ack,
+            on_leave=CatalogState.leave_flow,
+        ),
         page_header(
             "Tus productos",
             "Sube la foto real de lo que vendes y úsala en tus publicaciones.",

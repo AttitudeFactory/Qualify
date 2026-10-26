@@ -1030,6 +1030,7 @@ def _head(title: str | rx.Var[str]) -> rx.Component:
         total=vm.TOTAL_STEPS,
         back_label=exit_label(),
         on_exit=BrandMinimalState.leave,
+        show_progress=BrandMinimalState.synced & ~CreativeState.kit_loading,
     )
 
 
