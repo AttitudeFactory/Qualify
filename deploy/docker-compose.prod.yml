@@ -18,8 +18,9 @@
 # Meta webhooks; read-only toward Meta, never publishes), whatsapp-worker (WA-08: sends
 # what was explicitly enqueued in `whatsapp_outbox`, nothing else) and conversations-worker
 # (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct),
-# and calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
-# in the Planificador). `migrate` is a one-shot (below).
+# calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
+# in the Planificador) and creative-worker (ADR 41, m-24852163: the generation queue; sends
+# to BytePlus only what an owner's request enqueued). `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
 #   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load;
@@ -399,6 +400,9 @@ services:
     environment:
       <<: *app-env
       QUALIFY_PIECE_PURGE_EXECUTE: ${QUALIFY_PIECE_PURGE_EXECUTE:-1}
+      # m-24852163: the recovery of billed BytePlus videos (m-24852492) moved to
+      # creative-worker; forced off here so exactly one service runs it.
+      QUALIFY_CALENDAR_VENDOR_RECOVERY: "off"
     command:
       - python
       - -m
@@ -408,6 +412,49 @@ services:
       # embedded worker), so it is passed through explicitly.
       - --interval
       - ${QUALIFY_CALENDAR_WORKER_INTERVAL:-60}
+    volumes:
+      - uploads:/data/uploaded_files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ADR 41 / m-24852163 generation queue worker. Drains `creative_jobs` with a cap of
+  # QUALIFY_VENDOR_POOLS tasks at once per BytePlus pool (Seedance 10, OmniHuman 1 by
+  # default), lanes now > final > standard > scheduled, 3 slots reserved for now/final,
+  # at most 2 per business, aging after 15 min. It only sends what an owner's request
+  # enqueued (never on its own initiative) and every final still waits for the owner's
+  # confirmation before it can be published (ADR 41 §3). It also runs the recovery of
+  # billed BytePlus videos (m-24852492, moved from calendar-worker) every 60 s.
+  # Always on, like the other workers (a profile is how calendar-worker stayed off for
+  # weeks, m-24828928). Until QUALIFY_DB_CREATIVE_WORKER_PASSWORD is set in .env.prod the
+  # role is NOLOGIN: the queue loop logs `creative.worker.queue_door_unavailable` once a
+  # minute and the recovery keeps running — no crash loop. Several instances are safe
+  # (advisory lock per pool + SKIP LOCKED + claim token), one is enough.
+  # mem_limit 512m (platform-engineer verdict, 2026-10-24): at most
+  # QUALIFY_CREATIVE_WORKER_DOWNLOADS (2, max 3) vendor videos download at once, streamed
+  # to a temporary file, apart from the 10 vendor slots.
+  creative-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      <<: *app-env
+      # Assembled here only (the other services never hold this role). `:-` and not `:?`:
+      # compose interpolates the whole file, so a `:?` would stop every deploy until the
+      # founder sets the password.
+      QUALIFY_CREATIVE_WORKER_DSN: postgresql+psycopg://qualify_creative_worker:${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}@postgres:5432/qualify
+      QUALIFY_VENDOR_POOLS: ${QUALIFY_VENDOR_POOLS:-}
+      QUALIFY_CREATIVE_WORKER_DOWNLOADS: ${QUALIFY_CREATIVE_WORKER_DOWNLOADS:-2}
+    command:
+      - python
+      - -m
+      - qualify_api.creative.worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_CREATIVE_WORKER_INTERVAL:-2}
     volumes:
       - uploads:/data/uploaded_files
     depends_on:

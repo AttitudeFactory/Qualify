@@ -6,8 +6,11 @@ Qualify for 24 h after BytePlus finishes, the task's `video_url` expires, the re
 fails and refunds the owner, and BytePlus has already billed the video.
 
 This module is the same recovery as a pass that runs on its own, every minute, from a
-worker — today the calendar worker (`planner.worker`, `planner.embedded`), tomorrow
-`creative-worker` (ADR 41, m-24852163), which only has to call `recover_once`:
+worker — `creative-worker` (ADR 41, m-24852163: `creative.worker.runner`, its recovery
+sidecar). The calendar worker (`planner.worker`, `planner.embedded`) ran it first and
+still does unless `QUALIFY_CALENDAR_VENDOR_RECOVERY=off` (`runs_in_calendar_worker`);
+production compose sets it off, so one service owns the pass (two at once stay safe, see
+below):
 
 1. **Discovery** — which tenants have a `drafting` draft silent for the quiet window
    (ids only; `discover_tenants`, `qualify_admin` already reads `content_drafts`).
@@ -75,9 +78,21 @@ ENDED = frozenset({"succeeded", "failed", "cancelled", "expired"})
 UNKNOWN = "unknown"
 
 
+_OFF = frozenset({"off", "0", "false", "no"})
+#: m-24852163: the calendar worker leaves the pass to `creative-worker` when this is off.
+CALENDAR_SWITCH = "QUALIFY_CALENDAR_VENDOR_RECOVERY"
+
+
 def enabled(env: Mapping[str, str] | None = None) -> bool:
     env = os.environ if env is None else env
-    return env.get(ENV_SWITCH, "").strip().lower() not in {"off", "0", "false", "no"}
+    return env.get(ENV_SWITCH, "").strip().lower() not in _OFF
+
+
+def runs_in_calendar_worker(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the calendar worker (CLI or embedded) still runs the pass. On by default
+    so a local stack without `creative-worker` keeps recovering; off in production."""
+    env = os.environ if env is None else env
+    return env.get(CALENDAR_SWITCH, "").strip().lower() not in _OFF
 
 
 # -- what the pass works with ---------------------------------------------------------------

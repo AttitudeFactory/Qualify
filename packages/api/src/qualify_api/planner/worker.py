@@ -257,7 +257,9 @@ def main(
     default they are `retention_job.run_piece_purge`, `retention_job.daily_chore` and —
     only with the production wiring — `creative.vendor_recovery.recovery_chore`
     (m-24852492: billed BytePlus videos recovered without a screen read, every
-    `RECOVERY_EVERY_SECONDS`, over the same scope as the ticks)."""
+    `RECOVERY_EVERY_SECONDS`, over the same scope as the ticks). m-24852163 moved that
+    pass to `creative-worker`: `QUALIFY_CALENDAR_VENDOR_RECOVERY=off` (set in production
+    compose) leaves it to that service."""
     args = build_parser().parse_args(argv)
     if args.interval < MIN_INTERVAL_SECONDS:
         build_parser().error(f"--interval must be at least {MIN_INTERVAL_SECONDS} seconds")
@@ -293,9 +295,12 @@ def main(
         if recovery is None:
             from qualify_api.creative.vendor_recovery import (  # noqa: PLC0415 — lazy
                 recovery_chore,
+                runs_in_calendar_worker,
             )
 
-            recovery = recovery_chore(scope_ids)
+            # m-24852163: moved to creative-worker; kept here until the switch says off
+            if runs_in_calendar_worker():
+                recovery = recovery_chore(scope_ids)
 
         scoped = scoped or scoped_tick_runner
         production = production or production_tick_runner
