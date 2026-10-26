@@ -38,6 +38,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .whatsapp_menu_state import WhatsAppMenuState
 
 TITLE = "Inicio"
 SUBTITLE = "Lo que te toca hoy y cómo te fue esta semana"
@@ -286,10 +287,28 @@ def _unfinished_create() -> rx.Component:
     )
 
 
+def _unfinished_whatsapp_menu() -> rx.Component:
+    return rx.cond(
+        AuthState.is_authenticated & WhatsAppMenuState.resume_pending,
+        section(
+            "Tu respuesta automática quedó a medias",
+            card(
+                rx.vstack(
+                    rx.text("Conservamos lo que escribiste en esta sesión.", size="2"),
+                    _full_width_button("Seguir", "arrow-right", WhatsAppMenuState.resume_href),
+                    spacing="3",
+                    width="100%",
+                )
+            ),
+        ),
+    )
+
+
 def home_index() -> rx.Component:
     return app_shell(
         page_header("Inicio", SUBTITLE),
         page_body(
+            _unfinished_whatsapp_menu(),
             _unfinished_publish(),
             _unfinished_create(),
             rx.cond(
