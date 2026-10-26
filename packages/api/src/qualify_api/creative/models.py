@@ -1001,3 +1001,79 @@ class CreativeAngle(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+class ContentDraftPurgeWarning(Base):
+    """Successful warning per piece, exact deadline and recipient and stage (0101, m-24842840)."""
+
+    __tablename__ = "content_draft_purge_warnings"
+    __table_args__ = (
+        UniqueConstraint(
+            "draft_id", "deadline", "recipient", "stage", name="uq_purge_warnings_draft_deadline"
+        ),
+        Index("ix_purge_warnings_tenant", "tenant_id"),
+        CheckConstraint("stage IN ('window_15d', 'last_day')", name="ck_purge_warning_stage"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient: Mapped[str] = mapped_column(Text, nullable=False)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+    notified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ContentDraftWarningBatch(Base):
+    """Frozen retention email outbox; delivery state changes, payload never does (0101)."""
+
+    __tablename__ = "content_draft_warning_batches"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_warning_batch_key"),
+        Index("ix_warning_batches_tenant", "tenant_id"),
+        Index(
+            "uq_warning_batches_pending",
+            "tenant_id",
+            "brand_id",
+            "recipient",
+            "stage",
+            unique=True,
+            postgresql_where=text(
+                "sent_at IS NULL AND cancelled_at IS NULL AND needs_review_at IS NULL"
+            ),
+        ),
+        CheckConstraint("stage IN ('window_15d', 'last_day')", name="ck_warning_batch_stage"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    recipient: Mapped[str] = mapped_column(Text, nullable=False)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+    first_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    needs_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_id: Mapped[str | None] = mapped_column(Text, nullable=True)

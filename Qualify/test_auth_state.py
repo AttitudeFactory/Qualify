@@ -49,6 +49,37 @@ def test_require_login_passes_when_authenticated() -> None:
     assert AuthState.require_login.fn(state) is None
 
 
+def test_piece_email_requires_login_with_its_piece_as_the_return_destination() -> None:
+    from types import SimpleNamespace
+    from urllib.parse import urlencode
+
+    destination = "/drafts/a0000000-0000-4000-8000-000000000001"
+    state = SimpleNamespace(
+        session_tenant_id="",
+        router=SimpleNamespace(url=SimpleNamespace(path=destination, query_parameters={})),
+    )
+    spec = AuthState.require_login.fn(state)
+    assert "/login?" + urlencode({"volver": destination}) in str(spec)
+
+
+async def test_login_from_piece_email_returns_to_that_piece(monkeypatch) -> None:
+    from uuid import UUID
+
+    from qualify_api.auth import LoginResult
+
+    destination = "/drafts/a0000000-0000-4000-8000-000000000001"
+    result = LoginResult(UUID(int=1), UUID(int=2), UUID(int=3), "a@b.co", "Negocio", "tok")
+    monkeypatch.setattr(auth_state_module, "_login_blocking", lambda e, p: result)
+    monkeypatch.setattr(auth_state_module, "_kit_complete_blocking", lambda t: True)
+    events = [
+        event
+        async for event in AuthState.handle_login.fn(
+            _state(), {"email": "a@b.co", "password": "x" * 8, "next": destination}
+        )
+    ]
+    assert len(events) == 1 and destination in str(events[0])
+
+
 def test_a_session_without_a_finished_brand_kit_is_sent_to_make_it() -> None:
     """§ request 2026-10-02: logged in but no complete Brand Kit → the Brand Kit, from
     every protected page; the Brand Kit's own pages stay open. PASOS-4 (m-24852243,
