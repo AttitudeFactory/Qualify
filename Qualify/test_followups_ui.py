@@ -419,13 +419,20 @@ def test_the_ux_review_fixes_are_on_the_card() -> None:
     """m-24842991 UX review: blocked route said on step 1 with a way out, step 2's
     «Siguiente» off while the box is empty (and why), a titled preview with «Cambiar
     mensaje», and a notice label that does not echo the box."""
-    from .followups_page import _notice, _step_asked, _step_reply, _step_review
+    from .followups_page import (
+        _notice,
+        _step_asked,
+        _step_asked_actions,
+        _step_reply,
+        _step_reply_actions,
+        _step_review,
+    )
 
     c = FollowupsState.cards[0]
-    asked = str(_step_asked(c).render())
+    asked = str(_step_asked(c).render()) + str(_step_asked_actions(c).render())
     assert "No disponible todav" in asked and "Volver a comentarios" in asked
     assert "route_available" in asked
-    reply = str(_step_reply(c).render())
+    reply = str(_step_reply(c).render()) + str(_step_reply_actions(c).render())
     assert "para seguir." in reply and "pyStrip" in reply
     review = str(_step_review(c).render())
     assert "Tu mensaje:" in review and "Cambiar mensaje" in review
@@ -628,3 +635,41 @@ def test_query_history_review_requires_a_message(monkeypatch) -> None:
     monkeypatch.setattr(FollowupsState, "_flow_params", lambda self: params)
     state.restore_flow()
     assert state.steps[first.followup_id] == STEP_REPLY
+
+
+def test_query_navigation_chooses_one_card_and_preserves_composer() -> None:
+    cards = [build_card_vm(_card(notice_available=True), now=NOW, zone=ZONE) for _ in range(3)]
+    state = _state_with(*cards)
+    selected = cards[1].followup_id
+    assert state.active_query_id == cards[0].followup_id
+    state.edits = {selected: "Mi respuesta sin enviar"}
+    state.notice_edits = {selected: "Mi aviso"}
+    state.notice_on = {selected: False}
+    FollowupsState.go_step.fn(state, selected, STEP_REVIEW)
+    assert state.active_query_id == selected
+    assert state.flow_direction == "next"
+    FollowupsState.go_step.fn(state, selected, STEP_REPLY)
+    assert state.flow_direction == "back"
+    assert state.edits[selected] == "Mi respuesta sin enviar"
+    assert state.notice_edits[selected] == "Mi aviso"
+    assert state.notice_on[selected] is False
+    assert state.busy_id == ""
+    assert state.steps == {selected: STEP_REPLY}
+
+
+def test_query_frame_limits_only_active_card_and_renders_progress() -> None:
+    from .followups_page import _card as render_card
+    from .followups_page import _frame_props
+    from .followups_state import query_settle_script
+
+    assert "100dvh" in _frame_props(True)["height"]
+    assert _frame_props(False)["height"] == "auto"
+    rendered = str(render_card(FollowupsState.cards[0]))
+    assert "consulta-body-" in rendered
+    assert "q-query-actions" in rendered
+    assert "data-dir" in rendered
+    assert "Paso" in rendered
+    script = query_settle_script(str(uuid4()))
+    assert "getBoundingClientRect" in script
+    assert "preventScroll" in script
+    assert "window.scrollTo" not in script
