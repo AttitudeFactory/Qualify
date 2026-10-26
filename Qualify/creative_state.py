@@ -181,7 +181,7 @@ from .stock_provider import import_video as import_stock_video
 from .stock_provider import search_from_kit as search_stock_from_kit
 from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
-from .ui.steps import go_to_step, settle_step
+from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
 
@@ -1060,6 +1060,7 @@ class CreativeState(rx.State):
     gen_direction: str = "next"
     #: PASOS-5: `enter_create_step` has decided the step from `?paso=` (gates `step_sync`).
     create_entered: bool = False
+    create_entry_epoch: int = 0
     #: Set only when leaving a draft intentionally; logout resets the whole state.
     create_resume_pending: bool = False
     #: The catalog product screen comes first (§ request 2026-10-14: "antes de aparecer
@@ -3697,9 +3698,15 @@ class CreativeState(rx.State):
             self._show_create_step(requested)
         if self.create_step_n != old:
             self.gen_direction = DIR_BACK if self.create_step_n < old else DIR_NEXT
+        self.create_entry_epoch += 1
         self.create_entered = True
         self.create_resume_pending = False
-        return settle_step()
+        return rx.call_script(
+            step_entry_script(
+                self._CREATE_ROUTE, self.create_step_n, self.create_entry_epoch, raw or None
+            )
+            + step_settle_script()
+        )
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
     pop_create_step = enter_create_step

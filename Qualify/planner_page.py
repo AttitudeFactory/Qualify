@@ -1280,7 +1280,11 @@ def _loading() -> rx.Component:
 
 def planner_index() -> rx.Component:
     return app_shell(
-        route_history(PlannerState.restore_address, on_leave=PlannerState.leave_flow),
+        route_history(
+            PlannerState.enter_history,
+            ack=PlannerState.history_ack,
+            on_leave=PlannerState.leave_flow,
+        ),
         page_header(
             "Tu semana",
             "Tus publicaciones de la semana, listas para aprobar y programar.",

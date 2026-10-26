@@ -41,6 +41,7 @@ from .auth_state import AuthState
 from .connections_provider import request_support
 from .nav_url import flow_param, push_url_script, scalar_param, uuid_param
 from .tenant import tenant_uuid
+from .ui.route_history import history_ack_value, route_history_ready
 from .whatsapp_provider import (
     UnknownWhatsAppNumber,
     create_qr_code,
@@ -139,6 +140,8 @@ def _graph_banner(exc: Exception) -> tuple[str, str]:
 
 class WhatsAppState(rx.State):
     """State for `/whatsapp`."""
+
+    history_ack: str = ""
 
     # -- shell ---------------------------------------------------------------------------
     numbers: list[WhatsAppNumberVM] = []
@@ -311,6 +314,13 @@ class WhatsAppState(rx.State):
             state.flow_ready = False
         if flow != "menu":
             (await self.get_state(WhatsAppMenuState)).flow_ready = False
+
+    @rx.event
+    async def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        self.enter_page()
+        await self.prepare_flow_address()
+        self.history_ack = history_ack_value(lease)
+        return [WhatsAppState.load_numbers, route_history_ready("/whatsapp", lease)]
 
     @rx.event
     def pop_page(self) -> rx.event.EventSpec:
@@ -488,7 +498,7 @@ class WhatsAppState(rx.State):
             yield WhatsAppChatsState.restore_address
             if flow_param(self.router.url.query_parameters, "mensaje-chat", 2):
                 yield WhatsAppChatsState.restore_flow
-        elif self.active_tab == "menu" and flow_param(self.router.url.query_parameters, "menu", 4):
+        elif self.active_tab == "menu":
             from .whatsapp_menu_state import WhatsAppMenuState
 
             yield WhatsAppMenuState.restore_flow
