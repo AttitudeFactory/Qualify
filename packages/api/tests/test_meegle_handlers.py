@@ -26,7 +26,7 @@ from qualify_api.meegle.handlers import (
     meegle_handlers,
     production_meegle_handlers,
 )
-from qualify_api.meegle.onboarding import InvitationResult, WorkItemNotFound
+from qualify_api.meegle.onboarding import InvitationResult, PlanUpdateResult, WorkItemNotFound
 from qualify_api.meegle.settings import MeegleNames
 from qualify_api.webhooks.processor import Processor
 from qualify_api.webhooks.repository import MAX_ATTEMPTS, ClaimedEvent
@@ -56,8 +56,15 @@ class FakeQueue:
 
 class FakeEngine:
     def __init__(self) -> None:
-        self.nodes = {"started": "Datos", "state_0": "Invitada", "state_1": "Registrada"}
+        self.nodes = {
+            "started": "Datos",
+            "state_0": "Invitada",
+            "state_1": "Registrada",
+            "state_2": "Plan ampliado",
+        }
         self.started: list[int] = []
+        self.plan_updates: list[tuple[int, str, str]] = []
+        self.plan_result = PlanUpdateResult(ok=True, reason="applied")
         self.expired: list[int] = []
         self.result = InvitationResult(ok=True, invite_id=uuid4())
         self.raises: Exception | None = None
@@ -67,11 +74,17 @@ class FakeEngine:
             raise self.raises
         return self.nodes.get(key)
 
-    def start_invitation(self, work_item_id: int) -> InvitationResult:
+    def start_invitation(self, work_item_id: int, **_: str) -> InvitationResult:
         if self.raises is not None:
             raise self.raises
         self.started.append(work_item_id)
         return self.result
+
+    def apply_plan_update(
+        self, work_item_id: int, *, event_key: str, actor: str
+    ) -> PlanUpdateResult:
+        self.plan_updates.append((work_item_id, event_key, actor))
+        return self.plan_result
 
     def expire_for_terminated(self, work_item_id: int) -> int:
         self.expired.append(work_item_id)
@@ -158,6 +171,24 @@ async def test_an_invitation_the_person_must_fix_is_settled_not_retried(meegle_e
     event = _event(meegle_events.value(nodes=["started"]))
     queue = await _run(engine, event)
     assert queue.settled[event.id] == ("processed", "invite_failed:invalid_input")
+    assert queue.failed == {}
+
+
+async def test_plan_node_applies_the_plan_with_the_event_key_and_who(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    event = _event(meegle_events.value(nodes=["state_2"]))
+    queue = await _run(engine, event)
+    assert queue.settled[event.id] == ("processed", "plan=applied")
+    assert engine.plan_updates == [(ITEM, meegle_events.IDEMPOTENT, "meegle:7697105028321938981")]
+    assert engine.started == []
+
+
+async def test_a_refused_plan_is_settled_not_retried(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    engine.plan_result = PlanUpdateResult(ok=False, reason="invalid_plan")
+    event = _event(meegle_events.value(nodes=["state_2"]))
+    queue = await _run(engine, event)
+    assert queue.settled[event.id] == ("processed", "plan_failed:invalid_plan")
     assert queue.failed == {}
 
 

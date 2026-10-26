@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.drafts import adoptable_draft, claim_draft
-from qualify_api.auth.invites import lock_invite, mark_invite_used
+from qualify_api.auth.invites import AltaPlanChoice, alta_plan_of, lock_invite, mark_invite_used
 from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
@@ -291,6 +291,7 @@ def register_business(
         with admin_session() as session:
             invite = lock_invite(session, invite_id, email)
             meegle_work_item_id = invite.meegle_work_item_id
+            alta_plan = alta_plan_of(invite)
             # Chosen only now, with the invite locked and re-checked: its Meegle item is
             # what unlocks that Alta's reserved draft.
             draft = adoptable_draft(session, email, meegle_work_item_id=meegle_work_item_id)
@@ -305,10 +306,13 @@ def register_business(
                 auth_user_id=auth_user_id,
                 **local,
             )
-            mark_invite_used(session, invite)
+            mark_invite_used(session, invite, tenant_id)
         if meegle_work_item_id is not None:
             # Outside the transaction, best-effort: the business exists whatever Meegle says.
             _notify_meegle_registered(meegle_work_item_id, tenant_id)
+            if alta_plan is not None:
+                # m-24852131: the plan/pack the Alta chose, now that the business exists.
+                _apply_alta_plan(meegle_work_item_id, tenant_id, alta_plan)
     return RegisteredBusiness(
         tenant_id=tenant_id,
         auth_user_id=auth_user_id,
@@ -331,6 +335,26 @@ def _notify_meegle_registered(work_item_id: int, tenant_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001 — never fail a signup over the write-back
         logger.warning(
             "meegle write-back skipped for work_item=%s tenant=%s (%s)",
+            work_item_id,
+            tenant_id,
+            type(exc).__name__,
+        )
+
+
+def apply_alta_plan_on_register(work_item_id: int, tenant_id: UUID, choice: AltaPlanChoice) -> None:
+    """Apply the plan/pack an Alta chose (m-24852131) and tell its Meegle item.
+    Module-level so tests can replace it; `apply_on_registration` never raises."""
+    from qualify_api.meegle.plan_request import apply_on_registration  # noqa: PLC0415
+
+    apply_on_registration(work_item_id, tenant_id, choice)
+
+
+def _apply_alta_plan(work_item_id: int, tenant_id: UUID, choice: AltaPlanChoice) -> None:
+    try:
+        apply_alta_plan_on_register(work_item_id, tenant_id, choice)
+    except Exception as exc:  # noqa: BLE001 — never fail a signup over the plan
+        logger.warning(
+            "alta plan skipped for work_item=%s tenant=%s (%s)",
             work_item_id,
             tenant_id,
             type(exc).__name__,
