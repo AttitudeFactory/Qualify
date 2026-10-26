@@ -117,6 +117,11 @@ from qualify_creative.providers import (
     RenderedPrompt,
     VendorTaskObserver,
 )
+from qualify_creative.queue_errors import (
+    UNCERTAIN_PUBLICATION_TEXT,
+    UNCERTAIN_REASON,
+    UNCERTAIN_VIDEO_TEXT,
+)
 from qualify_creative.render import (
     PostFacts,
     TemplateRegistry,
@@ -146,6 +151,7 @@ from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
 
+from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
 from qualify_api.stock.guard import stock_problems
 from qualify_api.stock.keys import is_stock_key
 
@@ -1380,7 +1386,7 @@ class MediaProducer:
                 media = self._clip(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             else:
                 media = ()
-        except _MediaPending as exc:
+        except (_MediaPending, GenerationDeferred) as exc:
             logger.warning("creative media for draft %s waits for its vendor: %s", draft_id, exc)
             return MediaOutcome(usage=tuple(usage), pending=True, warnings=tuple(warnings))
         except _MediaFailed as exc:
@@ -1394,6 +1400,8 @@ class MediaProducer:
                 template_run=exc.template_run,
                 warnings=tuple(warnings),
             )
+        except CheckpointError:
+            raise
         except Exception as exc:  # a vendor error, a missing upload, a bad image file
             logger.warning("creative media for draft %s failed: %s", draft_id, exc)
             raw = f"{type(exc).__name__}: {exc}"
@@ -1454,7 +1462,7 @@ class MediaProducer:
                 kept,
                 on_raw_kept,
             )
-        except _MediaPending as exc:
+        except (_MediaPending, GenerationDeferred) as exc:
             logger.warning("final of draft %s waits for its vendor: %s", draft_id, exc)
             return FinalOutcome(usage=tuple(usage), pending=True, draft_changes=kept or None)
         except _MediaFailed as exc:
@@ -1463,8 +1471,14 @@ class MediaProducer:
                 usage=tuple(usage),
                 failure=exc.failure,
                 detail=exc.detail,
-                draft_changes=kept or None,
+                draft_changes=(
+                    {**(kept or {}), "failure_reason": exc.failure}
+                    if exc.failure == FailureReason.SUBMISSION_UNCERTAIN.value
+                    else kept or None
+                ),
             )
+        except CheckpointError:
+            raise
         except Exception as exc:  # a vendor error, a file that would not encode
             logger.warning("final of draft %s failed: %s", draft_id, exc)
             return FinalOutcome(
@@ -2025,6 +2039,13 @@ class MediaProducer:
             if verdict:
                 run.tasks.settle(slot, verdict)
         if outcome.result is None:
+            if any(h.reason == UNCERTAIN_REASON for h in outcome.hops):
+                raise _MediaFailed(
+                    FailureReason.SUBMISSION_UNCERTAIN.value,
+                    UNCERTAIN_VIDEO_TEXT
+                    if link in {SEEDANCE, OMNIHUMAN}
+                    else UNCERTAIN_PUBLICATION_TEXT,
+                )
             blocked = any(h.action is HopAction.BUDGET_BLOCKED for h in outcome.hops)
             detail = "; ".join(h.reason or h.action.value for h in outcome.hops)
             raise _MediaFailed(
@@ -2679,6 +2700,8 @@ class MediaProducer:
         # the same for every stock video: read up front, before anything is paid
         stock_videos = self._stock_videos(brief)
         out: list[MediaWrite] = []
+        deferred = False
+        scene_failure = None
         for position, slide in enumerate(media.slides):
             number = position + 1
             if slide.source is SlideSource.EXISTING:
@@ -2765,25 +2788,31 @@ class MediaProducer:
                 if hook or cta
                 else None
             )
-            out.append(
-                self._animated_slide(
-                    tenant_id=tenant_id,
-                    draft_id=draft_id,
-                    brief=brief,
-                    scene=scene,
-                    still=still,
-                    overlay=overlay,
-                    seconds=slide.seconds,
-                    reference_video_key=slide.reference_video_key,
-                    audio=slide.audio,
-                    position=position,
-                    total=total,
-                    params=params,
-                    budget=budget,
-                    usage=usage,
-                    save=save,
+            try:
+                out.append(
+                    self._animated_slide(
+                        tenant_id=tenant_id,
+                        draft_id=draft_id,
+                        brief=brief,
+                        scene=scene,
+                        still=still,
+                        overlay=overlay,
+                        seconds=slide.seconds,
+                        reference_video_key=slide.reference_video_key,
+                        audio=slide.audio,
+                        position=position,
+                        total=total,
+                        params=params,
+                        budget=budget,
+                        usage=usage,
+                        save=save,
+                    )
                 )
-            )
+            except GenerationDeferred:
+                deferred = True
+            except _MediaFailed as exc:
+                exc.detail = f"Diapositiva {number}: {exc.detail}"
+                scene_failure = scene_failure or exc
         if media.closing_slide:
             closing = render_closing_slide(
                 line=copy.cta or copy.hook,
@@ -2808,6 +2837,10 @@ class MediaProducer:
                     params={"slide": total, "slides": total, "source": "closing"},
                 )
             )
+        if deferred:
+            raise GenerationDeferred()
+        if scene_failure is not None:
+            raise scene_failure
         return out
 
     def _require_fitter(self) -> VideoFitter:

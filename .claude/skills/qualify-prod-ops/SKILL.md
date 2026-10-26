@@ -55,3 +55,45 @@ propose — don't execute — the rollback to the founder. A forward fix may shi
 `just merge <pr> --admin` if its checks are red or missing (contingency rule in `qualify-pr`),
 then deployed and verified with `just deploy-status`. `engineering:incident-response` for the
 write-up.
+
+## Generation queue operations (m-24852167)
+
+`just creative-queue [--tenant <uuid>] [--json]` is read-only: lane/status counts,
+actual occupied vendor slots, queue-wait p50/p95 over the last hour/day, top waiting
+tenant ids, expired leases and daily concurrency p95 over the last seven days (UTC,
+sampled at submission, the same definition as MEDIR). The team's admin role reads
+queue metadata only; the creative-worker door reads slots. No new DB grants.
+
+Creative-worker records a Redis beat after each successful claim round; the independent
+calendar-worker checks it every minute. Redis also stores incident latches with SET NX:
+one accepted webhook message while a condition remains active; recovery clears the latch
+and a recurrence alerts again. Failed deliveries are retried. No client names, phones,
+emails, prompts, raw vendor errors or webhook URLs enter the alerts. The channel reuses
+`QUALIFY_SUPPORT_WEBHOOK_URL`; no new secret is required. Redis failure logs degradation
+without stopping generation/publication; it prevents alerting/deduplication until recovery.
+Redis persistence is the existing Redis volume/snapshot: losing it may repeat alerts.
+
+- **Wait p95 >5 min (last hour):** inspect jobs/slots and vendor timings; consider the
+  Phase 2 decision, never turn on paid priority by itself.
+- **Daily simultaneous p95 ≥5 (any day in the rolling week):** prepare the BytePlus
+  capacity request (m-24852172); no automatic account/capacity changes.
+- **429 QuotaExceeded:** inspect the vendor/account quota. The job is deferred, not
+  billed again. One incident until five minutes without another such response.
+- **Final <24 h before its deadline, unfinished:** inspect its queued/submitted state
+  and vendor task id; do not blindly resubmit an already billed task.
+- **No beat >5 min:** inspect creative-worker status/logs, its queue-role credentials
+  and the last deploy. The watchdog has a five-minute grace at first observation. Follow
+  the normal deploy/restart authorization rules above; the alarm changes nothing itself.
+
+
+### Uncertain paid submissions (m-24852166)
+
+`creative.worker.submission_uncertain job_id=<internal id>` means the remote POST may
+have been accepted but its id could not be checkpointed. This is not a retryable vendor
+failure. The job stays queued with a future `not_before` and continues holding its slot
+until the provider's maximum 48-hour lifetime. `just creative-queue --json` exposes that
+occupied capacity, the queued count and expired slot leases; use the internal job id from
+worker logs to reconcile through its tenant session. No prompt, credential or raw vendor
+response is logged. Do not clear the eligibility fence or submit another paid task blindly.
+If the id was checkpointed, normal recovery polls that same id immediately. The client
+sees a review message with no retry action; the team must resolve the incident first.

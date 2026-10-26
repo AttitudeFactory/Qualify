@@ -542,3 +542,7 @@ protect-main:
 # (`just up`) and a Chromium (`uv run --with playwright playwright install chromium`).
 e2e *ARGS:
     uv run --no-sync --with pytest-playwright pytest tests/e2e -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
+
+# m-24852167: team-only, read-only queue/slots/waits report; no generation or messages.
+creative-queue *args:
+    uv run --no-sync python -m qualify_api.creative.worker.queue_cli {{args}}

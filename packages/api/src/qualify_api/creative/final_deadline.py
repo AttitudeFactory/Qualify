@@ -15,6 +15,10 @@ FINAL_EXPIRED_TEXT = (
 )
 
 
+class FinalDeadlineExpired(ValueError):
+    """Local validation proved expiry before any paid vendor submission."""
+
+
 def deadline_for_preview(created_at: float | datetime) -> datetime:
     """Use the vendor preview's creation instant; never reset its TTL on retry/enqueue.
 
