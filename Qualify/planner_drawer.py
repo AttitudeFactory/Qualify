@@ -1039,7 +1039,7 @@ def _step_schedule() -> rx.Component:
         rx.flex(
             _section_title(
                 "calendar-clock",
-                PlannerState.form_step_counter + " · ¿Cuándo sale?",
+                "¿Cuándo sale?",
                 rx.cond(
                     PlannerState.form_is_reschedule,
                     "Elige el nuevo día y la hora.",
