@@ -554,7 +554,7 @@ def _toolbar() -> rx.Component:
         ),
         padding="1rem 1.25rem",
         id=TOOLBAR_ELEMENT_ID,
-        scroll_margin_top="1rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
 
 
@@ -2123,17 +2123,21 @@ def _guided_card() -> rx.Component:
 # ======================================================================================
 
 
+def back_to_guided() -> rx.Component:
+    """Mounted in the module's existing sticky header while the long editor is open."""
+    return rx.button(
+        rx.icon("arrow-left", size=T.ICON_SM),
+        "Volver a los 4 pasos",
+        on_click=S.set_advanced(False),
+        variant="ghost",
+        size="3",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+    )
+
+
 def _advanced() -> rx.Component:
     return rx.vstack(
-        rx.button(
-            rx.icon("arrow-left", size=T.ICON_SM),
-            "Volver a los 4 pasos",
-            on_click=S.set_advanced(False),
-            variant="ghost",
-            size="3",
-            min_height=TARGET_MIN,
-            **T.tone_scheme("neutral"),
-        ),
         _entry_card(),
         _steps_card(),
         _versions_section(),
@@ -2163,7 +2167,7 @@ def _editor() -> rx.Component:
             ),
             position=rx.breakpoints(initial="static", lg="sticky"),
             top="1rem",
-            scroll_margin_top="1rem",
+            scroll_margin_top=T.SCROLL_MARGIN_TOP,
         ),
         grid_template_columns=rx.breakpoints(
             initial="minmax(0, 1fr)", lg="minmax(0, 1fr) minmax(0, 22rem)"

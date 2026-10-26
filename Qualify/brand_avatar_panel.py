@@ -218,5 +218,5 @@ def brand_avatar_card() -> rx.Component:
         ),
         id="seccion-avatar",
         on_mount=BrandAvatarState.load,
-        scroll_margin_top="1rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )

@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .conversations_page import _back_button as messages_back_button
 from .conversations_page import messages_tab
+from .conversations_state import ConversationsState
 from .followups_page import followups_panel
 from .inbox_page import comments_tab
 from .leads_page import leads_tab
@@ -274,6 +276,10 @@ def responder_header() -> rx.Component:
     return page_header(
         "Por responder",
         "Las personas que te escribieron o comentaron y todavía esperan tu respuesta.",
+        kicker=rx.cond(
+            (R.active_tab == TAB_MESSAGES) & ConversationsState.has_open_thread,
+            messages_back_button(),
+        ),
     )
 
 

@@ -2005,21 +2005,6 @@ def event_panel() -> rx.Component:
     out, its tags, and what can be done with it. Confirmations happen in the footer."""
     return drawer(
         rx.vstack(
-            # m-24842987 (N7): on a phone the panel is the whole screen; its way back
-            # names where it goes — the same week, in the same view. Outside the
-            # loading/error branches so it is always there; phone only, since on a
-            # wide screen the week shows behind and the panel's X already says it.
-            rx.el.div(
-                rx.button(
-                    rx.icon("chevron-left", size=T.ICON_MD),
-                    BACK_TO_WEEK,
-                    variant="ghost",
-                    size="3",
-                    min_height="44px",
-                    on_click=PlannerState.set_detail_open(False),
-                ),
-                class_name="q-narrow-only",
-            ),
             rx.cond(
                 PlannerState.detail_loading,
                 # content loading (the POST, its media, dates): a skeleton, never a spinner
@@ -2034,7 +2019,21 @@ def event_panel() -> rx.Component:
         ),
         open=PlannerState.detail_open,
         on_open_change=PlannerState.set_detail_open,
-        title="Publicación planificada",
+        title=rx.el.span(
+            rx.button(
+                rx.icon("chevron-left", size=T.ICON_MD),
+                BACK_TO_WEEK,
+                variant="ghost",
+                size="3",
+                min_height="44px",
+                on_click=PlannerState.set_detail_open(False),
+                class_name="q-narrow-only",
+            ),
+            rx.el.span("Publicación planificada"),
+            display="flex",
+            align_items="center",
+            gap="0.5rem",
+        ),
         icon="calendar-check",
         description="Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas.",
         footer=_detail_footer(),

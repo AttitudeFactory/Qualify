@@ -2707,14 +2707,14 @@ def _history_line() -> rx.Component:
 def draft_detail_index() -> rx.Component:
     from .queue_notice import queue_notice  # noqa: PLC0415
 
-    return _screen(
-        "Revisar publicación",
-        "Tú decides qué sale con el nombre de tu marca.",
+    return app_shell(
+        page_header(
+            "Revisar publicación",
+            "Tú decides qué sale con el nombre de tu marca.",
+            kicker=ficha_back_link(),
+        ),
         _padded(
             rx.hstack(
-                # m-24842987 / m-24854881 (N7, N8): the way back is drawn in every
-                # state — a publication that does not load still leaves a way out.
-                ficha_back_link(),
                 rx.spacer(),
                 rx.cond(
                     CreativeState.detail_loading,

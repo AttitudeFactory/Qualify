@@ -395,7 +395,7 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
         id=f"seccion-{key}",
         # the open section wears the accent edge (`.q-kit-section--open`) over the card
         class_name=rx.cond(is_open, "q-card q-kit-section--open", "q-card"),
-        scroll_margin_top="1rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
 
 
@@ -551,7 +551,7 @@ def _referentes_section() -> rx.Component:
         ),
         id="seccion-referentes",
         class_name=rx.cond(is_open, "q-card q-kit-section--open", "q-card"),
-        scroll_margin_top="1rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
 
 
