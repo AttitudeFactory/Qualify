@@ -721,8 +721,8 @@ def build_draft_summary_vm(
         draft_id=draft_id,
         topic=topic,
         status=status,
-        status_label=status_label(status),
-        status_tone=status_tone(status),
+        status_label="Cancelado" if failure_reason == "cancelled" else status_label(status),
+        status_tone="gray" if failure_reason == "cancelled" else status_tone(status),
         created_label=created_label,
         failure_label=failure.label if failure is not None else "",
     )
@@ -928,6 +928,30 @@ WAITING_VENDOR_TEXT = (
 
 
 @dataclass(frozen=True)
+class QueueVM:
+    queued: bool = False
+    can_cancel: bool = False
+    cancelled: bool = False
+    note: str = ""
+
+
+def queue_vm(
+    *,
+    queued: bool = False,
+    can_cancel: bool = False,
+    cancelled: bool = False,
+    estimated_minutes: int | None = None,
+) -> QueueVM:
+    note = ""
+    if cancelled:
+        note = "Cancelamos tu video. Te devolvimos la creación."
+    elif queued and estimated_minutes is not None and estimated_minutes >= 1:
+        end = "1 minuto" if estimated_minutes == 1 else f"unos {estimated_minutes} minutos"
+        note = f"Tu video está en fila. Estará listo en {end}."
+    return QueueVM(queued, can_cancel, cancelled, note)
+
+
+@dataclass(frozen=True)
 class DraftVM:
     """The §6.6 contract, plus the display facts the detail screen renders."""
 
@@ -984,6 +1008,7 @@ class DraftVM:
     #: video), `draft`, `rendering`, `final`, `failed` or `expired` — and what the
     #: screen says about it.
     video_draft: VideoDraftVM = field(default_factory=lambda: NO_VIDEO_DRAFT)
+    queue: QueueVM = field(default_factory=QueueVM)
 
 
 # -- Seedance 2.5 draft mode (m-24820142) --------------------------------------------------
@@ -1315,8 +1340,8 @@ def build_draft_vm(
     return DraftVM(
         draft_id=draft_id,
         status=status,
-        status_label=status_label(status),
-        status_tone=status_tone(status),
+        status_label="Cancelado" if failure_reason == "cancelled" else status_label(status),
+        status_tone="gray" if failure_reason == "cancelled" else status_tone(status),
         variants=tuple(variants),
         image_url=image_url,
         fidelity_summary=fidelity_summary,

@@ -107,6 +107,20 @@ def main(
         from qualify_api.creative.vendor_recovery import recovery_chore  # noqa: PLC0415
 
         recovery = recovery_chore(scope_ids)
+    if store is None and scope_ids is None:
+        from qualify_api.creative.worker.queue_load import production_load_chore  # noqa: PLC0415
+
+        publish_load = production_load_chore(pools=pools)
+        original_recovery = recovery
+
+        def recovery_and_load() -> None:
+            try:
+                if original_recovery is not None:
+                    original_recovery()
+            finally:
+                publish_load()
+
+        recovery = recovery_and_load
     chosen = dict(production_executors() if executors is None else executors)
     gate = DownloadGate(downloads_allowed())
     worker = CreativeWorker(
