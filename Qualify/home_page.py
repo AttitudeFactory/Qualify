@@ -25,6 +25,7 @@ from .auth_state import AuthState
 from .creative_state import CreativeState
 from .home_state import HomeState
 from .home_vm import CONNECTIONS_URL, CREATE_URL, FirstStepVM, TodayCardVM, WeekStatVM
+from .publish_hub_state import PublishHubState
 from .ui import (
     app_shell,
     callout,
@@ -247,6 +248,24 @@ def _error() -> rx.Component:
     )
 
 
+def _unfinished_publish() -> rx.Component:
+    """The session's upload draft stays available without writing files to storage."""
+    return rx.cond(
+        AuthState.is_authenticated & PublishHubState.resume_pending,
+        section(
+            "Tu publicación quedó a medias",
+            card(
+                rx.vstack(
+                    rx.text("Conservamos las fotos y lo que escribiste en esta sesión.", size="2"),
+                    _full_width_button("Seguir", "arrow-right", "/publish"),
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+        ),
+    )
+
+
 def _unfinished_create() -> rx.Component:
     """Resume the creation draft in this authenticated session, without a paid call."""
     return rx.cond(
@@ -271,6 +290,7 @@ def home_index() -> rx.Component:
     return app_shell(
         page_header("Inicio", SUBTITLE),
         page_body(
+            _unfinished_publish(),
             _unfinished_create(),
             rx.cond(
                 HomeState.loading,
