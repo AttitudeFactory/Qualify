@@ -25,6 +25,8 @@ from qualify_creative.queue_errors import FINAL_EXPIRED_TEXT, uncertain_error
 DRAFT_READY = "draft"
 DRAFT_RENDERING = "rendering"
 DRAFT_FINAL = "final"
+DRAFT_FINAL_SCHEDULED = "final_scheduled"
+DRAFT_FINAL_READY = "final_ready"
 DRAFT_FAILED = "failed"
 #: Client-facing: no vendor name (qualify-copy-es) — what the operator does next.
 DRAFT_EXPIRED_TEXT = (
@@ -44,7 +46,11 @@ def draft_state(params: Mapping[str, object] | None) -> Mapping[str, Any] | None
 def draft_pending(params: Mapping[str, object] | None) -> bool:
     """A video still at its 480p draft — not publishable until its final is in place."""
     block = draft_state(params)
-    return block is not None and block.get("status") != DRAFT_FINAL
+    if block is None:
+        return False
+    from qualify_api.creative.final_review import final_confirmed
+
+    return not final_confirmed(params, object_key=block.get("final_object_key"))
 
 
 def kept_raw_final(block: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -140,7 +146,15 @@ def draft_rendering(params: list[Mapping[str, object] | None], now: float | None
 DRAFT_EXPIRED = "expired"
 #: Which state a piece with several draft videos (a carousel) shows: the one that
 #: needs the operator first.
-_SUMMARY_ORDER = (DRAFT_EXPIRED, DRAFT_FAILED, DRAFT_RENDERING, DRAFT_READY, DRAFT_FINAL)
+_SUMMARY_ORDER = (
+    DRAFT_EXPIRED,
+    DRAFT_FAILED,
+    DRAFT_RENDERING,
+    DRAFT_FINAL_READY,
+    DRAFT_FINAL_SCHEDULED,
+    DRAFT_READY,
+    DRAFT_FINAL,
+)
 
 
 def draft_summary(
@@ -160,6 +174,11 @@ def draft_summary(
     errors = []
     for block in blocks:
         status = str(block.get("status") or DRAFT_READY)
+        if status == DRAFT_FINAL:
+            from qualify_api.creative.final_review import final_confirmed
+
+            if not final_confirmed({"draft": block}, object_key=block.get("final_object_key")):
+                status = DRAFT_FINAL_READY
         if status not in _SUMMARY_ORDER:
             status = DRAFT_READY
         if block.get("error") == FINAL_EXPIRED_TEXT and status != DRAFT_FINAL:

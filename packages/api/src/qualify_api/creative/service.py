@@ -27,6 +27,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import wraps
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
@@ -75,7 +76,7 @@ from qualify_creative.schemas import (
     HardFailure,
 )
 from qualify_shared import observability
-from qualify_shared.db.session import tenant_session
+from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -1184,6 +1185,23 @@ class PostgresContentRepository:
             params["draft"] = {**dict(params.get("draft") or {}), **changes}
             row.params = params
 
+    def final_schedule_context(
+        self, *, tenant_id: UUID, draft_id: UUID
+    ) -> tuple[str, tuple[datetime, ...]]:
+        from qualify_api.planner.models import CalendarEvent
+        from qualify_api.tenancy.models import Tenant
+
+        with tenant_session(tenant_id) as session:
+            tenant = session.get(Tenant, tenant_id)
+            dates = tuple(
+                session.scalars(
+                    select(CalendarEvent.scheduled_at).where(
+                        CalendarEvent.post_id == draft_id, CalendarEvent.status == "scheduled"
+                    )
+                )
+            )
+            return tenant.timezone if tenant is not None else "UTC", dates
+
     def claim_final(
         self, *, tenant_id: UUID, asset_id: UUID, attempt: str | None, claim: str
     ) -> bool:
@@ -1376,6 +1394,35 @@ def call_cost(pricing: PricingTable, usage: Usage, model_id: str) -> Decimal:
     per_out = pricing.unit_price(model_id=model_id, unit="per_mtok_out")
     billable_in = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
     return (Decimal(billable_in) * per_in + Decimal(usage.output_tokens) * per_out) / _MTOK
+
+
+def fenced_regeneration(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize another version with the calendar claim before invalidating its media."""
+
+    @wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if not kwargs.get("regenerate") or not isinstance(self._repo, PostgresContentRepository):
+            return method(self, *args, **kwargs)
+        from qualify_api.planner.models import CalendarEvent
+
+        with (
+            tenant_unit_of_work(kwargs["tenant_id"]),
+            tenant_session(kwargs["tenant_id"]) as session,
+        ):
+            events = session.scalars(
+                select(CalendarEvent)
+                .where(CalendarEvent.post_id == kwargs["draft_id"])
+                .order_by(CalendarEvent.id)
+                .with_for_update()
+            ).all()
+            session.get(orm.ContentDraft, kwargs["draft_id"], with_for_update=True)
+            if any(event.status == "publishing" for event in events):
+                raise ValueError(
+                    "La publicación ya está en curso. Espera a que termine para pedir otra versión."
+                )
+            return method(self, *args, **kwargs)
+
+    return call
 
 
 class ContentService:
@@ -2528,7 +2575,7 @@ class ContentService:
             edited_copy=variant.edited_copy,
         )
         try:
-            self._order_finals(tenant_id, draft_id, drafts)
+            self._order_finals(tenant_id, draft_id, drafts, manual=False)
         except Exception:
             # the approval stands: a video left at its draft on an approved piece shows
             # «Final pendiente» with «Reintentar» (`final_retryable(approved=True)`)
@@ -2605,22 +2652,52 @@ class ContentService:
         )
 
     def _order_finals(
-        self, tenant_id: UUID, draft_id: UUID, assets: tuple[ImageRecord, ...]
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        assets: tuple[ImageRecord, ...],
+        *,
+        manual: bool = True,
     ) -> None:
         if not assets:
             return
+        from qualify_api.creative.final_review import configured_night_hours, schedule_final
+
+        moment = datetime.now(UTC)
+        context = getattr(self._repo, "final_schedule_context", lambda **_: ("UTC", ()))
+        timezone, publications = context(tenant_id=tenant_id, draft_id=draft_id)
+        deferred = bool(getattr(self.dispatcher, "supports_deferred_final", False))
+        night_start, night_end = configured_night_hours()
         for asset in assets:
+            source = draft_state(asset.params) or {}
+            created = source.get("created_at")
+            policy = schedule_final(
+                now=moment,
+                timezone=timezone,
+                publications=publications,
+                preview_created_at=float(created) if isinstance(created, int | float) else None,
+                manual=manual or not deferred,
+                night_start=night_start,
+                night_end=night_end,
+            )
             # a new attempt per order: a run that read an older one (or a run of this
             # one that already took it) never makes it again — `claim_final`
             self._repo.set_video_draft(
                 tenant_id=tenant_id,
                 asset_id=asset.id,
                 changes={
-                    "status": DRAFT_RENDERING,
-                    "error": None,
-                    "rendering_at": (
-                        None if isinstance(self.dispatcher, QueueDispatcher) else time.time()
+                    "status": (
+                        "final_scheduled" if policy.not_before > moment else DRAFT_RENDERING
                     ),
+                    "error": None,
+                    "rendering_at": None if deferred else time.time(),
+                    "final_not_before": policy.not_before.isoformat(),
+                    "final_deadline": policy.deadline.isoformat() if policy.deadline else None,
+                    "final_lane": policy.lane,
+                    "final_priority": policy.priority,
+                    "final_origin": "manual" if manual else "approval",
+                    "final_nightly": policy.lane == "nightly",
+                    "final_batch_not_before": policy.not_before.isoformat(),
                     "attempt": uuid4().hex,
                     "claim": None,
                 },
@@ -2642,6 +2719,32 @@ class ContentService:
                 tenant_id, draft_id, "final_not_ordered", tuple(a.id for a in assets)
             )
             raise
+
+    def review_final(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> tuple[Any, ...]:
+        """Panel-only manifest of the objects to show, with safe legacy hash backfill."""
+        from qualify_api.creative.final_review import review_manifest
+
+        if self._media is None:
+            raise ValueError("El video todavía no está listo para revisar.")
+        return review_manifest(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            user_id=user_id,
+            digest_object=lambda key: self._media.final_object_digest(tenant_id, key),
+        )
+
+    def confirm_final(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        user_id: UUID,
+        expected: Sequence[Any],
+    ) -> DraftDetail:
+        from qualify_api.creative.final_review import confirm_final
+
+        confirm_final(tenant_id=tenant_id, draft_id=draft_id, user_id=user_id, expected=expected)
+        return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     @transactional_dispatch
     def retry_final(self, *, tenant_id: UUID, draft_id: UUID) -> DraftDetail:
@@ -2693,7 +2796,19 @@ class ContentService:
         live = tuple(asset for asset in assets if asset.id not in gone)
         if expired and not live:
             raise DraftExpired()
-        self._order_finals(tenant_id, draft_id, live)
+        if getattr(self.dispatcher, "supports_deferred_final", False):
+            from qualify_api.creative.final_retries import retry_final_asset
+
+            initial = []
+            for asset in live:
+                outcome = retry_final_asset(
+                    tenant_id=tenant_id, draft_id=draft_id, asset_id=asset.id
+                )
+                if outcome == "initial":
+                    initial.append(asset)
+            self._order_finals(tenant_id, draft_id, tuple(initial))
+        else:
+            self._order_finals(tenant_id, draft_id, live)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     def run_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
@@ -2773,7 +2888,10 @@ class ContentService:
         """Prepare/assemble one final under its durable pipeline lease, with no polling."""
         assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
         asset = next((a for a in assets if a.id == asset_id), None)
-        if asset is None or (draft_state(asset.params) or {}).get("status") != DRAFT_RENDERING:
+        if asset is None or (draft_state(asset.params) or {}).get("status") not in {
+            DRAFT_RENDERING,
+            "final_scheduled",
+        }:
             return
         draft, brief, kit = self._final_context(tenant_id, draft_id)
         if self._media is None:
@@ -2935,6 +3053,7 @@ class ContentService:
         except Exception:
             logger.exception("draft %s: final video refund failed", draft_id)
 
+    @fenced_regeneration
     @transactional_dispatch
     def reject(
         self,
@@ -2979,6 +3098,18 @@ class ContentService:
         # scored on the rejected generation's trace, before a regeneration bumps it
         review.score_rejection(draft_id=draft_id, revision=record.revision, reason=reason)
         if regenerate:
+            for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id):
+                self._repo.set_video_draft(
+                    tenant_id=tenant_id,
+                    asset_id=asset.id,
+                    changes={
+                        "confirmed_by": None,
+                        "confirmed_at": None,
+                        "confirmed_sha256": None,
+                        "confirmed_object_key": None,
+                        "confirmed_revision": None,
+                    },
+                )
             self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
         if regenerate and self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)

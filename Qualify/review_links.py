@@ -1,0 +1,35 @@
+"""Allowlisted return links for the final-review panel (m-24852169)."""
+
+from __future__ import annotations
+
+from urllib.parse import parse_qs, urlencode, urlsplit
+from uuid import UUID
+
+
+def review_destination(raw: str) -> str:
+    """Only an internal Tu semana review route; no arbitrary redirects or actions."""
+    try:
+        url = urlsplit(raw)
+        values = parse_qs(url.query)
+        if url.scheme or url.netloc or url.fragment or url.path not in {"/planner", "/planner/"}:
+            return ""
+        if values.get("revisar") != ["videos"]:
+            return ""
+        query = {"revisar": "videos"}
+        for key in ("pieza", "evento"):
+            value = values.get(key, [])
+            if value:
+                if len(value) != 1:
+                    return ""
+                query[key] = str(UUID(value[0]))
+        if values.get("fallos") == ["1"]:
+            query["fallos"] = "1"
+        return "/planner?" + urlencode(query)
+    except (ValueError, TypeError):
+        return ""
+
+
+def review_href(piece_id: str = "") -> str:
+    return "/planner?" + urlencode(
+        {"revisar": "videos", **({"pieza": piece_id} if piece_id else {})}
+    )

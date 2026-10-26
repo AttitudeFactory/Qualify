@@ -596,6 +596,10 @@ class PostgresPlannerRepository:
             ]
             session.add_all(rows)
             session.flush()
+            from qualify_api.creative.final_review import promote_scheduled_final
+
+            for post_id in {row.post_id for row in rows}:
+                promote_scheduled_final(session, tenant_id=tenant_id, draft_id=post_id)
             for row in rows:
                 session.refresh(row)
             return [_snapshot(row) for row in rows]
@@ -693,6 +697,10 @@ class PostgresPlannerRepository:
                 )
                 .returning(CalendarEvent)
             ).one_or_none()
+            if row is not None:
+                from qualify_api.creative.final_review import promote_scheduled_final
+
+                promote_scheduled_final(session, tenant_id=tenant_id, draft_id=row.post_id)
             return _snapshot(row) if row is not None else None
 
     def set_status(

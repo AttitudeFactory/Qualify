@@ -80,7 +80,11 @@ def _jobs(session: Any, draft: ContentDraft, *, lock: bool = False) -> list[Any]
         session.execute(
             text(f"""
         SELECT id, kind, status, vendor_task_id, vendor_model, lane, priority, queued_at, not_before
-        FROM creative_jobs WHERE draft_id=:draft AND revision=:revision
+        FROM creative_jobs j WHERE draft_id=:draft AND revision=:revision
+          AND (kind<>'final' OR final_attempt=(SELECT max(current.final_attempt)
+              FROM creative_jobs current WHERE current.draft_id=j.draft_id
+                AND current.revision=j.revision AND current.position=j.position
+                AND current.kind='final'))
           AND ((:generation AND kind <> 'final') OR (NOT :generation AND kind='final'))
         ORDER BY id {clause}
     """),
@@ -103,7 +107,10 @@ def _preparing(session: Any, draft: ContentDraft, jobs: list[Any], now: datetime
             SELECT 1 FROM creative_pipeline_runs r
             WHERE r.draft_id=:draft AND r.revision=:revision
               AND ((:generation AND r.phase='generation')
-                   OR (NOT :generation AND r.phase LIKE 'final:%'))
+                   OR (NOT :generation AND EXISTS (SELECT 1 FROM image_assets a
+                       WHERE a.draft_id=r.draft_id AND r.phase='final:' || a.id::text ||
+                       CASE WHEN coalesce((a.params->'draft'->>'final_attempt')::int,0)=0
+                       THEN '' ELSE '@' || (a.params->'draft'->>'final_attempt') END)))
               AND (r.lease_until > :now OR EXISTS (
                   SELECT 1 FROM creative_pipeline_steps s
                   WHERE s.tenant_id=r.tenant_id AND s.draft_id=r.draft_id
@@ -210,6 +217,19 @@ def _cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = No
             or generation != (draft.status == DRAFTING or draft.failure_reason == "cancelled")
         ):
             raise QueueCancellationUnavailable(CANCEL_NOT_AVAILABLE)
+        if not generation:
+            from qualify_api.creative.final_retries import final_phase
+
+            current_phases = {
+                final_phase(
+                    asset.id, int((asset.params.get("draft") or {}).get("final_attempt") or 0)
+                )
+                for asset in session.scalars(
+                    select(ImageAsset).where(ImageAsset.draft_id == draft_id)
+                )
+                if asset.params and asset.params.get("draft")
+            }
+            phases = [phase for phase in phases if phase in current_phases]
         jobs = _jobs(session, draft, lock=True)
         if jobs and all(row["status"] == "cancelled" for row in jobs):
             return False
@@ -243,7 +263,7 @@ def _cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = No
             draft.failure_reason = "cancelled"
             refund_in_session(session, ((draft_id, draft.revision),), "queue_cancelled", at)
         else:
-            assets = [UUID(phase.removeprefix("final:")) for phase in phases]
+            assets = [UUID(phase.removeprefix("final:").split("@", 1)[0]) for phase in phases]
             for asset in session.scalars(
                 select(ImageAsset).where(ImageAsset.id.in_(assets)).with_for_update()
             ):

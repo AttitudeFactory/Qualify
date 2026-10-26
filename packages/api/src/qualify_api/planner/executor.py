@@ -320,6 +320,23 @@ class EventExecutor:
 
         verdict = self._publishable(current)
         if isinstance(verdict, NotPublishable):
+            from qualify_api.planner.post_reader import UnpublishableReason
+
+            if verdict.reason in {
+                UnpublishableReason.MEDIA_FINAL_UNCONFIRMED,
+                UnpublishableReason.MEDIA_DRAFT_PENDING,
+                UnpublishableReason.REVISION_NOT_APPROVED,
+                UnpublishableReason.NOT_APPROVED,
+            }:
+                self._repo.set_status(
+                    tenant_id=current.tenant_id,
+                    event_id=current.id,
+                    expected_status=EventStatus.PUBLISHING.value,
+                    new_status=EventStatus.SCHEDULED.value,
+                )
+                return ExecutionResult(
+                    current.id, ExecutionOutcome.NOT_READY, reason=verdict.reason
+                )
             return self._fail_unstarted(
                 current, ExecutionOutcome.FAILED_NOT_PUBLISHABLE, verdict.reason.value
             )

@@ -38,6 +38,7 @@ from .creative_wizard_pages import (
     brand_manual_index,
 )
 from .creators_page import creators_index
+from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
@@ -495,7 +496,7 @@ app.add_page(
 app.add_page(
     planner_index,
     route="/planner",
-    on_load=[AuthState.require_login, PlannerState.load_current_week],
+    on_load=[AuthState.require_login, PlannerState.load_current_week, FinalReviewState.from_route],
     title="Qualify · Tu semana",
 )
 

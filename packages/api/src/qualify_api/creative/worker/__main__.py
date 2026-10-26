@@ -116,6 +116,44 @@ def production_executors() -> dict[str, JobExecutor]:
     }
 
 
+def _night_preparation(
+    prepare_pipeline: Callable[[], None], tenant_ids: Sequence[UUID] | None
+) -> Callable[[], None]:
+    import time
+
+    from qualify_api.creative.final_review import nightly_maintenance
+
+    next_night_maintenance = 0.0
+
+    def preparation() -> None:
+        nonlocal next_night_maintenance
+        now = time.monotonic()
+        if now >= next_night_maintenance:
+            try:
+                night_tenants = tenant_ids
+                if night_tenants is None:
+                    from qualify_shared.db.creative_worker import creative_worker_session
+                    from sqlalchemy import text
+
+                    with creative_worker_session() as session:
+                        night_tenants = tuple(
+                            session.scalars(
+                                text(
+                                    "SELECT DISTINCT tenant_id FROM creative_jobs "
+                                    "WHERE kind='final' AND status IN ('queued','failed')"
+                                )
+                            )
+                        )
+                nightly_maintenance(night_tenants)
+            except Exception:
+                logger.exception("creative.worker.nightly_maintenance_failed")
+            finally:
+                next_night_maintenance = now + 60
+        prepare_pipeline()
+
+    return preparation
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -195,7 +233,11 @@ def main(
         from qualify_api.creative.pipeline import PipelineStore
         from qualify_api.creative.worker.pipeline import PipelinePreparation
 
-        preparation = PipelinePreparation(production_content_service(), PipelineStore(), scope_ids)
+        prepare_pipeline = PipelinePreparation(
+            production_content_service(), PipelineStore(), scope_ids
+        )
+        preparation = _night_preparation(prepare_pipeline, scope_ids)
+
     code = run_loop(
         worker,
         once=args.once,

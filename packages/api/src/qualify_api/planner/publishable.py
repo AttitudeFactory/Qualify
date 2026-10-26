@@ -137,6 +137,7 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.IMAGE_RATIO_NOT_ALLOWED: "Instagram solo acepta en una publicación imágenes entre 4:5 "
     "(vertical) y 1.91:1 (horizontal).",
     R.STOCK_NOT_PUBLISHABLE: "Una imagen de stock no se publica sola: úsala dentro de una pieza.",
+    R.MEDIA_FINAL_UNCONFIRMED: "Falta tu confirmación",
     R.MEDIA_DRAFT_PENDING: "Este video todavía es una vista previa. Espera a que esté listo el "
     "video final o inténtalo de nuevo desde la publicación.",
     R.MEDIA_PURGED: "Los archivos de esta pieza se eliminaron a los 3 meses: ya no se puede "
@@ -279,6 +280,7 @@ class MediaCandidate:
     height: int | None = None
     #: m-24820142: a 480p Seedance draft whose 1080p final is not in place yet.
     draft_pending: bool = False
+    final_unconfirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -404,12 +406,15 @@ def _port_media(media: tuple[MediaCandidate, ...], output_port: str) -> tuple[Me
             position=index,
             output_port=item.output_port,
             draft_pending=item.draft_pending,
+            final_unconfirmed=item.final_unconfirmed,
         )
         for index, item in enumerate(own)
     )
 
 
-def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
+def evaluate(
+    candidate: PostCandidate, *, for_scheduling: bool = False
+) -> PublishablePost | NotPublishable:
     # First: no other check matters once the files are gone, and the key prefix check
     # below would still pass on a purged piece (its keys look right, the bytes are gone).
     if candidate.media_purged:
@@ -475,7 +480,9 @@ def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
     for item, publisher_type in zip(ordered, publisher_types, strict=True):
         if not item.object_key:
             return _refuse(candidate, R.MEDIA_NOT_IN_R2, f"position {item.position}")
-        if item.draft_pending:
+        if item.final_unconfirmed and not for_scheduling:
+            return _refuse(candidate, R.MEDIA_FINAL_UNCONFIRMED, f"position {item.position}")
+        if item.draft_pending and not for_scheduling:
             return _refuse(candidate, R.MEDIA_DRAFT_PENDING, f"position {item.position}")
         try:
             require_tenant_prefix(candidate.tenant_id, item.object_key)

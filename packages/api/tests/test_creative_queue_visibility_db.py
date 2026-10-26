@@ -325,3 +325,42 @@ def test_active_assembly_run_lock_is_safe_unavailable_without_a_draft_deadlock()
         active.result(timeout=5)
     assert cancel_queued(tenant_id=tenant, draft_id=draft, now=at)
     assert ledger.balance(tenant_id=tenant, brand_id=brand).used == 0
+
+
+def test_retry_visibility_and_cancel_use_current_attempt_not_paid_history():
+    from qualify_api.creative.final_retries import retry_final_asset
+
+    from .test_final_retries_db import NOW, _failed
+
+    tenant, draft, asset, previous, _ = _failed()
+    assert (
+        retry_final_asset(tenant_id=tenant, draft_id=draft, asset_id=asset, now=NOW, automatic=True)
+        == "created"
+    )
+    with tenant_session(tenant) as session:
+        # Even an old ambiguous checkpoint/lease is history, never the current attempt.
+        session.execute(
+            text("""
+            UPDATE creative_pipeline_runs SET lease_until=:until
+            WHERE draft_id=:d AND phase NOT LIKE '%@1'
+        """),
+            {"d": draft, "until": NOW + timedelta(hours=1)},
+        )
+        session.execute(
+            text("UPDATE creative_pipeline_steps SET error='submission_uncertain' WHERE job_id=:j"),
+            {"j": previous},
+        )
+    assert queue_status(tenant_id=tenant, draft_id=draft, now=NOW, load={}).can_cancel
+    assert not queue_status(tenant_id=uuid4(), draft_id=draft, now=NOW, load={}).can_cancel
+    assert cancel_queued(tenant_id=tenant, draft_id=draft, now=NOW)
+    with tenant_session(tenant) as session:
+        rows = session.execute(
+            text(
+                "SELECT status,vendor_task_id FROM creative_jobs "
+                "WHERE draft_id=:d ORDER BY final_attempt"
+            ),
+            {"d": draft},
+        ).all()
+        assert rows == [("failed", "paid-final-0"), ("cancelled", None)]
+        block = session.get(ImageAsset, asset).params["draft"]
+        assert block["failure_reason"] == "cancelled" and block["final_attempt"] == 1

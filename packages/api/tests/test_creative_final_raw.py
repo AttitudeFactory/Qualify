@@ -18,7 +18,7 @@ from qualify_creative.enums import ContentFormat, ContentKind, FailureReason, Sl
 from qualify_creative.schemas import CarouselSlide, SlideSource
 from qualify_creative.video import FittedVideo
 
-from qualify_api.creative.draft_mode import DRAFT_FINAL, draft_expired, kept_raw_final
+from qualify_api.creative.draft_mode import draft_expired, kept_raw_final
 from qualify_api.creative.media import SCENE_SIZES, SEEDANCE_RATIOS, MediaProducer
 
 from .test_creative_media_byteplus import BUDGET, COPY, TENANT_ID, _brief, _kit, _seedance_brief
@@ -89,7 +89,7 @@ def test_a_fitter_failure_keeps_the_paid_raw_final_and_the_retry_reuses_it() -> 
     assert retried.failure is None and _finals(seedance) == 1  # not paid again
     assert retried.spent_usd == 0
     media = retried.media
-    assert media is not None and media.params["draft"]["status"] == DRAFT_FINAL
+    assert media is not None and media.params["draft"]["status"] == "final_ready"
     assert media.params["draft"]["final_cost_usd"] == "2.843100"
     assert media.params["draft"]["final_task_id"] == "cgt-final"
     assert media.params["task_id"] == "cgt-final" and media.params["resolution"] == "1080p"

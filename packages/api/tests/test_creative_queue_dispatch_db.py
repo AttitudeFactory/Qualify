@@ -455,13 +455,20 @@ def test_paid_result_download_failure_resumes_same_task_without_second_post(
     assert adapter.calls == 1
 
 
-def _queued_final(setup_queue, *, created_at):
+def _queued_final(setup_queue, *, created_at, attempt=0):
     import json
 
     draft = _request(setup_queue)
     service, tenant, _, _, _ = setup_queue
     asset = uuid4()
     with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "UPDATE content_drafts SET status='approved', "
+                "approved_revision=revision WHERE id=:d"
+            ),
+            {"d": draft},
+        )
         session.execute(
             text("""
             INSERT INTO image_assets
@@ -478,6 +485,7 @@ def _queued_final(setup_queue, *, created_at):
                             "status": "rendering",
                             "task_id": "original-preview",
                             "created_at": created_at,
+                            "final_attempt": attempt,
                         }
                     }
                 ),
@@ -507,8 +515,9 @@ def test_queue_dispatcher_final_uses_vendor_creation_time_not_request_time(setup
         assert q.load_job(session, job).deadline == row.deadline
 
 
+@pytest.mark.parametrize("attempt", [0, 1, 2])
 def test_expired_final_real_executor_marks_only_own_asset_with_exact_text_without_credentials(
-    setup_queue, monkeypatch
+    setup_queue, monkeypatch, attempt
 ):
     from qualify_api.creative.final_deadline import FINAL_EXPIRED_TEXT
     from qualify_api.creative.worker.downloads import DownloadGate
@@ -517,10 +526,11 @@ def test_expired_final_real_executor_marks_only_own_asset_with_exact_text_withou
     from qualify_api.creative.worker.store import PostgresQueueStore
 
     tenant, draft, asset, job = _queued_final(
-        setup_queue, created_at=(datetime.now(UTC) - timedelta(days=7)).timestamp()
+        setup_queue, created_at=(datetime.now(UTC) - timedelta(days=7)).timestamp(), attempt=attempt
     )
+    phase = f"final:{asset}" + (f"@{attempt}" if attempt else "")
     pipeline = PipelineStore()
-    run = pipeline.acquire(tenant, draft, 1, f"final:{asset}")
+    run = pipeline.acquire(tenant, draft, 1, phase)
     assert run is not None
     pipeline.save_step(run, 0, {}, job)
     pipeline.ready(run, job)
@@ -661,3 +671,112 @@ def test_final_expiring_during_preflight_is_rejected_at_actual_paid_boundary(
     assert row.vendor_task_id is None and last_error == FINAL_EXPIRED_TEXT
     assert params["draft"]["status"] == "failed"
     assert params["draft"]["error"] == FINAL_EXPIRED_TEXT
+
+
+def test_nightly_preparation_keeps_schedule_and_submit_uses_current_attempt(
+    setup_queue, monkeypatch
+):
+    """Real checkpoint preparation and queue claim, with only the vendor replaced."""
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from qualify_creative.enums import GenerationTask
+    from qualify_creative.providers import GenerationRequest, RenderedPrompt
+
+    from qualify_api.creative.pipeline import CheckpointRouter, GenerationDeferred
+    from qualify_api.creative.worker.downloads import DownloadGate
+    from qualify_api.creative.worker.pipeline import PipelineExecutor, PipelinePreparation
+    from qualify_api.creative.worker.runner import CreativeWorker, WorkerConfig
+    from qualify_api.creative.worker.store import PostgresQueueStore
+
+    now = datetime.now(UTC)
+    tenant, draft, asset, job = _queued_final(setup_queue, created_at=now.timestamp())
+    when = now + timedelta(hours=2)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""
+            UPDATE image_assets SET params=jsonb_set(params,'{draft}', params->'draft' ||
+                jsonb_build_object('status','final_scheduled',
+                                  'final_not_before',CAST(:when AS text)))
+            WHERE id=:asset
+        """),
+            {"when": when.isoformat(), "asset": asset},
+        )
+    service, _, brand, _, _ = setup_queue
+    pipeline = PipelineStore()
+    router = CheckpointRouter(None, pipeline, None)
+    seen = []
+
+    def prepare(**kwargs):
+        seen.append(kwargs["asset_id"])
+        try:
+            router.run(
+                tenant_id=tenant,
+                brand_id=brand,
+                chain=("seedance",),
+                request=GenerationRequest(
+                    task=GenerationTask.SCENE_VIDEO,
+                    rendered_prompt=RenderedPrompt("test", "test", "test"),
+                ),
+            )
+        except GenerationDeferred:
+            pass
+
+    monkeypatch.setattr(service, "run_queued_final", prepare)
+    PipelinePreparation(service, pipeline, (tenant,))()
+    assert seen == [asset]
+    with tenant_session(tenant) as session:
+        assert (
+            session.scalar(text("SELECT not_before FROM creative_jobs WHERE id=:j"), {"j": job})
+            == when
+        )
+
+    class Adapter:
+        calls = 0
+
+        def estimate_cost_usd(self, *args, **kwargs):
+            return Decimal("0.01")
+
+        def submit(self, request, **kwargs):
+            self.calls += 1
+            request.observer.created("synthetic-final")
+            return "synthetic-final"
+
+        def poll(self, *args, **kwargs):
+            return SimpleNamespace(status="failed", error_code="ServerOverloaded")
+
+    adapter = Adapter()
+    executor = PipelineExecutor(service, pipeline, adapter, "seedance")
+    worker = CreativeWorker(
+        PostgresQueueStore(),
+        {q.SEEDANCE_POOL: executor},
+        WorkerConfig(pools={q.SEEDANCE_POOL: 10}, tenant_ids=(tenant,)),
+        downloads=DownloadGate(2),
+        clock=lambda: now,
+    )
+    assert worker.claim_round(1) == [] and adapter.calls == 0
+    worker.clock = lambda: when
+    claim = worker.claim_round(1)[0]
+    from qualify_api.creative.worker.executor import JobContext
+
+    context = JobContext(
+        job,
+        tenant,
+        draft,
+        q.KIND_FINAL,
+        1,
+        0,
+        q.SEEDANCE_POOL,
+        q.LANE_NIGHTLY,
+        0,
+        now + timedelta(days=6),
+        claim.claim_token,
+    )
+    assert executor.submit(context) == "synthetic-final"
+    assert executor.poll(context, "synthetic-final").status == "failed"
+    with tenant_session(tenant) as session:
+        params = session.scalar(text("SELECT params FROM image_assets WHERE id=:a"), {"a": asset})
+        assert params["draft"]["final_transient_failure"] is True
+        assert params["draft"]["final_vendor_error_code"] == "ServerOverloaded"
+        assert q.load_job(session, job).vendor_task_id == "synthetic-final"
+    assert adapter.calls == 1

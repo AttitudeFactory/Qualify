@@ -156,6 +156,7 @@ def enqueue_job(
     vendor_model: str,
     lane: str,
     position: int = 0,
+    final_attempt: int = 0,
     priority: int = 0,
     not_before: datetime | None = None,
     deadline: datetime | None = None,
@@ -166,6 +167,8 @@ def enqueue_job(
 ) -> Enqueued:
     """Queue one paid vendor call of a piece, once. Call it inside the transaction that
     changes the piece. A second call for the same step returns the existing job."""
+    if final_attempt < 0 or (kind != KIND_FINAL and final_attempt != 0):
+        raise ValueError("only finals support a nonzero final_attempt")
     if preview_created_at is not None:
         if kind != KIND_FINAL:
             raise ValueError("preview_created_at only applies to a final")
@@ -181,17 +184,18 @@ def enqueue_job(
         "kind": kind,
         "revision": revision,
         "position": position,
+        "final_attempt": final_attempt,
     }
     created = session.execute(
         text(
             """
             INSERT INTO creative_jobs (
                 tenant_id, draft_id, kind, revision, position, vendor_model, lane, priority,
-                not_before, deadline, charge_id, pricing_version, pipeline_version
+                not_before, deadline, charge_id, pricing_version, pipeline_version, final_attempt
             ) VALUES (
                 :tenant_id, :draft_id, :kind, :revision, :position, :vendor_model, :lane,
                 :priority, COALESCE(:not_before, now()), :deadline, :charge_id,
-                :pricing_version, :pipeline_version
+                :pricing_version, :pipeline_version, :final_attempt
             )
             ON CONFLICT ON CONSTRAINT uq_creative_jobs_step DO NOTHING
             RETURNING id
@@ -216,7 +220,7 @@ def enqueue_job(
             """
             SELECT id FROM creative_jobs
             WHERE tenant_id = :tenant_id AND draft_id = :draft_id AND kind = :kind
-              AND revision = :revision AND position = :position
+              AND revision = :revision AND position = :position AND final_attempt = :final_attempt
             """
         ),
         params,

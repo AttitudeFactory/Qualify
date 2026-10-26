@@ -180,10 +180,15 @@ class PipelineExecutor:
             row = (
                 session.execute(
                     text("""
-                SELECT j.status, j.claim_token, j.charge_id, d.revision,
+                SELECT j.status, j.claim_token, j.charge_id, d.revision, d.status AS draft_status,
+                       j.final_attempt,
+                       coalesce((a.params->'draft'->>'final_attempt')::int,0) AS asset_attempt,
+                       a.params->'draft'->>'status' AS asset_status,
                        c.status AS charge_status, c.videos,
                        c.final_refunded_assets
                 FROM creative_jobs j JOIN content_drafts d ON d.id=j.draft_id
+                LEFT JOIN image_assets a ON a.draft_id=j.draft_id AND a.position=j.position
+                    AND a.params ? 'draft'
                 LEFT JOIN creation_charges c ON c.id=j.charge_id
                     AND c.tenant_id=j.tenant_id AND c.draft_id=j.draft_id
                     AND c.revision=j.revision
@@ -200,6 +205,15 @@ class PipelineExecutor:
                 or row["revision"] != job.revision
             ):
                 raise ValueError("job no longer belongs to the current piece revision")
+            if job.kind == q.KIND_FINAL:
+                if (
+                    row["draft_status"] != "approved"
+                    or row["asset_attempt"] != row["final_attempt"]
+                    or row["asset_status"] not in {"final_scheduled", "rendering"}
+                ):
+                    raise ValueError("final attempt no longer belongs to the approved piece")
+            elif row["draft_status"] != "drafting":
+                raise ValueError("generation no longer belongs to a drafting piece")
             if self.service._creations is not None:
                 if row["charge_id"] is None or row["charge_status"] != "charged":
                     raise ValueError("generation reservation is no longer active")
@@ -217,13 +231,20 @@ class PipelineExecutor:
             if job.kind == q.KIND_FINAL:
                 session.execute(
                     text("""
-                    UPDATE image_assets SET params=jsonb_set(params, '{draft,rendering_at}',
-                        to_jsonb(CAST(:stamp AS double precision)))
+                    UPDATE image_assets SET params=jsonb_set(
+                        jsonb_set(params, '{draft,rendering_at}',
+                            to_jsonb(CAST(:stamp AS double precision))),
+                        '{draft,status}', '"rendering"'::jsonb)
                     WHERE draft_id=:d AND position=:pos
+                      AND EXISTS (SELECT 1 FROM content_drafts d WHERE d.id=:d AND d.revision=:r)
+                      AND coalesce((params->'draft'->>'final_attempt')::int,0)=
+                          (SELECT final_attempt FROM creative_jobs WHERE id=:job)
                 """),
                     {
                         "d": job.draft_id,
                         "pos": job.position,
+                        "r": job.revision,
+                        "job": job.job_id,
                         "stamp": datetime.now(UTC).timestamp(),
                     },
                 )
@@ -237,6 +258,14 @@ class PipelineExecutor:
         if self.provider == "seedance":
             state = self.adapter.poll(vendor_task_id, api_key=key.api_key)
             status = state.status
+            if status == "failed" and job.kind == q.KIND_FINAL:
+                from qualify_api.creative.final_retries import record_final_vendor_failure
+
+                record_final_vendor_failure(
+                    tenant_id=job.tenant_id,
+                    job_id=job.job_id,
+                    code=getattr(state, "error_code", None),
+                )
         else:
             from qualify_api.creative.vendor_recovery import OMNIHUMAN_STATES
 
@@ -318,7 +347,7 @@ class PipelineExecutor:
 
     def _expire_final(self, job: JobContext, phase: str) -> None:
         """Fail only this revision's asset, without credentials or any vendor call."""
-        asset_id = UUID(phase.split(":", 1)[1])
+        asset_id = UUID(phase.split(":", 1)[1].split("@", 1)[0])
         with tenant_unit_of_work(job.tenant_id), tenant_session(job.tenant_id) as session:
             current = session.execute(
                 text("""
@@ -328,6 +357,7 @@ class PipelineExecutor:
                 WHERE j.id=:j AND j.claim_token=:token AND j.status='claimed'
                   AND j.vendor_task_id IS NULL AND d.revision=:r
                   AND a.id=:a AND a.position=:pos
+                  AND coalesce((a.params->'draft'->>'final_attempt')::int,0)=j.final_attempt
                 FOR UPDATE OF a,d,j
                 """),
                 {
@@ -417,7 +447,7 @@ class PipelinePreparation:
                             self.service.run_queued_final(
                                 tenant_id=tenant_id,
                                 draft_id=run.draft_id,
-                                asset_id=UUID(run.phase.split(":", 1)[1]),
+                                asset_id=UUID(run.phase.split(":", 1)[1].split("@", 1)[0]),
                             )
                     self._settle_local(run)
                     completed = True

@@ -237,3 +237,33 @@ def test_delete_keys_raises_when_r2_refuses_one() -> None:
     store = R2ObjectStore(_SETTINGS, client=client)
     with pytest.raises(RuntimeError, match="AccessDenied"):
         store.delete_keys(["t/x/generated/d/a"])
+
+
+def test_current_final_digest_streams_in_bounded_chunks_and_closes() -> None:
+    import hashlib
+
+    data = b"a" * (3 * 1024 * 1024 + 77)
+    body = io.BytesIO(data)
+    sizes = []
+
+    class Client:
+        def get_object(self, **kwargs):
+            class Body:
+                def read(self, size):
+                    sizes.append(size)
+                    return body.read(size)
+
+                def close(self):
+                    body.close()
+
+            return {"Body": Body()}
+
+    store = R2ObjectStore(_SETTINGS, client=Client())
+    assert store.sha256("final") == hashlib.sha256(data).hexdigest()
+    assert body.closed and max(sizes) == 1024 * 1024
+
+
+def test_current_final_digest_translates_missing_object() -> None:
+    store = R2ObjectStore(_SETTINGS, client=_FakeS3Client())
+    with pytest.raises(ObjectNotFound):
+        store.sha256("missing")

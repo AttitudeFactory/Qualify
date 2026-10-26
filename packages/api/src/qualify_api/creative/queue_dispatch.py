@@ -91,12 +91,15 @@ class QueueDispatcher:
             return
         for asset in self.repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id):
             block = (asset.params or {}).get("draft") or {}
-            if block.get("status") == "rendering":
+            if block.get("status") in {"rendering", "final_scheduled"}:
+                from qualify_api.creative.final_retries import final_phase
+
                 self._enqueue(
                     tenant_id,
                     draft,
-                    f"final:{asset.id}",
+                    final_phase(asset.id, int(block.get("final_attempt") or 0)),
                     [(q.KIND_FINAL, asset.position, q.SEEDANCE_POOL)],
+                    policy=block,
                     preview_created_at=block.get("created_at"),
                 )
 
@@ -107,9 +110,17 @@ class QueueDispatcher:
         phase: str,
         jobs: list[tuple[str, int, str]],
         *,
+        policy: Any = None,
         preview_created_at: float | datetime | None = None,
     ) -> None:
         deadline = deadline_for_preview(preview_created_at) if phase.startswith("final:") else None
+        policy_deadline = (
+            datetime.fromisoformat(policy["final_deadline"])
+            if policy and policy.get("final_deadline")
+            else None
+        )
+        if policy_deadline is not None:
+            deadline = min(deadline, policy_deadline) if deadline else policy_deadline
         with tenant_session(tenant_id) as session:
             session.execute(
                 text("""
@@ -141,7 +152,9 @@ class QueueDispatcher:
                     revision=draft.revision,
                     position=position,
                     vendor_model=pool,
-                    lane=q.LANE_IMMEDIATE,
+                    lane=(policy or {}).get("final_lane", q.LANE_IMMEDIATE),
+                    priority=int((policy or {}).get("final_priority") or 0),
+                    final_attempt=int((policy or {}).get("final_attempt") or 0),
                     not_before=UNPREPARED,
                     deadline=deadline,
                     charge_id=charge_id,

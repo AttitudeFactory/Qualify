@@ -180,14 +180,16 @@ class PipelineStore:
                 .all()
             )
             if run.phase.startswith("final:"):
-                asset = UUID(run.phase.split(":", 1)[1])
+                asset = UUID(run.phase.split(":", 1)[1].split("@", 1)[0])
+                attempt = int(run.phase.split("@", 1)[1]) if "@" in run.phase else 0
                 return session.execute(
                     text("""
                     SELECT j.id FROM creative_jobs j JOIN image_assets a
                       ON a.draft_id=j.draft_id AND a.position=j.position AND a.id=:asset
                     WHERE j.tenant_id=:t AND j.draft_id=:d AND j.revision=:r AND j.kind='final'
+                      AND j.final_attempt=:final_attempt
                 """),
-                    {**run.params(), "asset": asset},
+                    {**run.params(), "asset": asset, "final_attempt": attempt},
                 ).scalar_one()
             if ordinal < len(jobs):
                 return jobs[ordinal]
@@ -207,12 +209,24 @@ class PipelineStore:
     def ready(self, run: Preparation, job_id: UUID) -> None:
         with tenant_session(run.tenant_id) as session:
             self.fence(session, run)
+            moment = datetime.now(UTC)
+            not_before = moment
+            if run.phase.startswith("final:"):
+                asset = UUID(run.phase.split(":", 1)[1].split("@", 1)[0])
+                raw = session.execute(
+                    text(
+                        "SELECT params->'draft'->>'final_not_before' FROM image_assets WHERE id=:a"
+                    ),
+                    {"a": asset},
+                ).scalar()
+                if raw:
+                    not_before = max(moment, datetime.fromisoformat(raw))
             session.execute(
                 text("""
-                UPDATE creative_jobs SET not_before=:now WHERE id=:j AND status='queued'
+                UPDATE creative_jobs SET not_before=:when WHERE id=:j AND status='queued'
                   AND not_before > :now
             """),
-                {"j": job_id, "now": datetime.now(UTC)},
+                {"j": job_id, "now": moment, "when": not_before},
             )
 
     def intent(self, run: Preparation, step: int) -> None:
