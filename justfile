@@ -201,6 +201,19 @@ whatsapp-tick *args:
 whatsapp-worker *args:
     uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
 
+# m-24852163 (ADR 41): the generation queue worker — claims `creative_jobs` fairly (lanes,
+# 3 reserved slots, 2 per business, aging), submits to BytePlus once, polls by id, settles;
+# plus the recovery of billed BytePlus videos (m-24852492). Once the generator enqueues
+# (m-24852166) it SENDS BILLED TASKS TO BYTEPLUS FOR REAL. Scope is mandatory:
+#   just creative-tick --tenant <uuid>     # one round, that tenant only (use this locally)
+#   just creative-worker --tenant <uuid>   # a round every --interval seconds (default 2)
+#   just creative-worker --all-tenants     # production (the compose service)
+creative-tick *args:
+    uv run --no-sync python -m qualify_api.creative.worker --once {{args}}
+
+creative-worker *args:
+    uv run --no-sync python -m qualify_api.creative.worker {{args}}
+
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with
 # QUALIFY_CONVERSATIONS_DM_CHANNEL=memory nothing leaves the process. Scope is mandatory:

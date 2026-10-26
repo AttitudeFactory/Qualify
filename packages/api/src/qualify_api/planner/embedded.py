@@ -33,7 +33,9 @@ Beside the ticks, the same loop runs `creative.vendor_recovery` every
 `RECOVERY_EVERY_SECONDS` over the same scope: a Seedance task whose generation thread
 went quiet (its wait ran out, or a deploy killed it) is asked to BytePlus by id and, once
 ended, its draft is resumed — the video lands in the piece without anyone opening the
-app. `QUALIFY_VENDOR_RECOVERY=off` turns it off.
+app. `QUALIFY_VENDOR_RECOVERY=off` turns it off everywhere;
+`QUALIFY_CALENDAR_VENDOR_RECOVERY=off` only here, because `creative-worker` (m-24852163)
+runs it — production sets that in `deploy/docker-compose.prod.yml`.
 
 ## Crash / restart
 
@@ -265,8 +267,13 @@ class EmbeddedCalendarWorker:
         the same scope — production wiring only (an injected runner means a test)."""
         if self._make_runner is not None:
             return self._sidecar
-        from qualify_api.creative.vendor_recovery import recovery_chore  # noqa: PLC0415
+        from qualify_api.creative.vendor_recovery import (  # noqa: PLC0415
+            recovery_chore,
+            runs_in_calendar_worker,
+        )
 
+        if not runs_in_calendar_worker():  # m-24852163: creative-worker runs it instead
+            return None
         return recovery_chore(None if self._config.all_tenants else self._config.tenant_ids)
 
     def _run(self) -> None:

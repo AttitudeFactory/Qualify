@@ -330,6 +330,15 @@ def test_a_scoped_recovery_needs_a_tenant() -> None:
 @pytest.mark.parametrize(
     ("value", "on"), [("", True), ("on", True), ("off", False), ("0", False), ("OFF", False)]
 )
+def test_the_calendar_worker_switch(value: str, on: bool) -> None:
+    """m-24852163: the pass moved to creative-worker; the calendar worker keeps it only
+    while `QUALIFY_CALENDAR_VENDOR_RECOVERY` is not off (production sets it off)."""
+    assert rec.runs_in_calendar_worker({rec.CALENDAR_SWITCH: value}) is on
+
+
+@pytest.mark.parametrize(
+    ("value", "on"), [("", True), ("on", True), ("off", False), ("0", False), ("OFF", False)]
+)
 def test_the_kill_switch(value: str, on: bool) -> None:
     assert rec.enabled({rec.ENV_SWITCH: value}) is on
 
