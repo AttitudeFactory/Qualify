@@ -66,6 +66,7 @@ def test_open_portal_takes_priority_over_a_page_marker_and_rejects_non_uuid_ids(
     script = (
         _HARNESS
         + f"""
+entries[0].href='/whatsapp?tab=chats';apply();
 page={{dataset:{{flow:'menu',step:'3'}}}};
 drawer={{dataset:{{flow:'mensaje-chat',step:'1',objeto:'not-a-uuid'}}}};
 {_FLOW_SCRIPT}
@@ -76,7 +77,7 @@ console.log(JSON.stringify({{href:entries[pos].href,root:window.history.state.qF
     assert "flujo=mensaje-chat&paso=1" in result["href"]
     assert "objeto=" not in result["href"]
     assert "menu" not in result["href"]
-    assert result["root"] == "/catalog?volver=%2Fcreate"
+    assert result["root"] == "/whatsapp?tab=chats"
 
 
 def test_guarded_direct_link_replaces_the_invalid_step_without_stacking_history() -> None:
@@ -126,6 +127,7 @@ def test_switching_query_identity_cannot_consume_a_previous_querys_step() -> Non
     script = (
         _HARNESS
         + f"""
+entries[0].href='/responder?tab=compran';apply();
 drawer={{dataset:{{flow:'consulta',step:'2',consulta:{json.dumps(a)}}},
  matches: selector => selector === '.q-flow-sync'}};
 {_FLOW_SCRIPT}
@@ -175,3 +177,40 @@ console.log(JSON.stringify({{cold,next,waiting,final:entries[pos].href,pos}}));
         "final": "/brand?paso=4",
         "pos": 0,
     }
+
+
+def test_installing_on_a_cold_document_never_writes_inherited_markup_but_user_open_does() -> None:
+    from .ui.flow_history import _FLOW_INSTALL_SCRIPT
+
+    script = (
+        _HARNESS
+        + f"""
+drawer={{dataset:{{flow:'producto',step:'2'}},nodeType:1,
+ matches:s=>s==='.q-flow-sync', querySelector:()=>null}};
+{_FLOW_INSTALL_SCRIPT}
+const cold=entries[pos].href;
+const old=drawer;drawer=null;
+observer([{{type:'childList',addedNodes:[],removedNodes:[old]}}]);
+const clean=entries[pos].href;
+drawer={{...old,dataset:{{flow:'producto',step:'1'}}}};
+observer([{{type:'childList',addedNodes:[drawer],removedNodes:[]}}]);
+console.log(JSON.stringify({{cold,clean,opened:entries[pos].href,pos}}));
+"""
+    )
+    result = _node(script)
+    assert result["cold"] == result["clean"] == "/catalog?volver=%2Fcreate"
+    assert result["opened"].endswith("flujo=producto&paso=1")
+    assert result["pos"] == 1
+
+
+def test_a_stale_menu_marker_cannot_write_into_another_whatsapp_tab() -> None:
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/whatsapp?tab=plantillas';apply();
+page={{dataset:{{flow:'menu',step:'2'}}}};
+{_FLOW_SCRIPT}
+console.log(JSON.stringify({{href:entries[pos].href,pos}}));
+"""
+    )
+    assert _node(script) == {"href": "/whatsapp?tab=plantillas", "pos": 0}

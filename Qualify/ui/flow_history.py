@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-_FLOW_SCRIPT = r"""
+_FLOW_INSTALL_SCRIPT = r"""
 (() => {
  if (!window.__qFlowSync) {
   let pending = false;
@@ -24,6 +24,21 @@ _FLOW_SCRIPT = r"""
     const flow = mark.dataset.flow;
     const n = String(Math.max(1, Number(mark.dataset.step) || 1));
     const u = new URL(window.location.href);
+    const path = u.pathname.replace(/\/$/, '');
+    const tab = u.searchParams.get('tab') || 'chats';
+    const sub = u.searchParams.get('sub') || '';
+    const parents = {
+      producto: path === '/catalog',
+      programar: path === '/planner', reprogramar: path === '/planner',
+      consulta: path === '/responder' || path === '/conversations',
+      menu: path === '/whatsapp' && ['menu', 'respuesta'].includes(tab),
+      promocion: path === '/whatsapp' &&
+        (tab === 'campanas' || (tab === 'promociones' && (!sub || sub === 'enviadas'))),
+      'mensaje-aprobado': path === '/whatsapp' &&
+        (tab === 'plantillas' || (tab === 'promociones' && sub === 'aprobados')),
+      'mensaje-chat': path === '/whatsapp' && tab === 'chats'
+    };
+    if (!parents[flow]) return;
     const oldFlow = u.searchParams.get('flujo');
     const oldStep = u.searchParams.get('paso');
     const st = window.history.state || {};
@@ -60,9 +75,11 @@ _FLOW_SCRIPT = r"""
   }).observe(document.body, {subtree: true, childList: true, attributes: true,
     attributeFilter: ['data-flow', 'data-step', 'data-consulta', 'data-objeto', 'data-state']});
  }
- window.__qFlowSync();
 })();
 """
+
+# Explicit invocation is useful for tests; production installs before any user-opened marker.
+_FLOW_SCRIPT = _FLOW_INSTALL_SCRIPT + "window.__qFlowSync();"
 
 
 def flow_sync(
@@ -83,7 +100,6 @@ def flow_sync(
             "data-step": step,
             **{f"data-{key}": value for key, value in params.items()},
         },
-        on_mount=rx.call_script(_FLOW_SCRIPT),
         class_name="q-flow-sync",
         display="none",
     )

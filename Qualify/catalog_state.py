@@ -399,6 +399,7 @@ class CatalogState(rx.State):
             self.error = ""
             arrival = self._read_return_query()
             self.restore_flow()
+            self.flow_ready = False
             if self.products:
                 self._sync_url(final=False)
         for event in arrival:  # the address loses `?nuevo=1`
@@ -433,6 +434,8 @@ class CatalogState(rx.State):
         async with self:
             if flow_param(self.router.url.query_parameters, "producto", 3):
                 self.restore_flow()
+            elif opens_new_product_form(self.router.url.query_parameters):
+                self.flow_ready = self.form_open
 
     def _read_return_query(self) -> list[rx.event.EventSpec]:
         """«Agregar producto» from Crear or Variaciones (m-24842973, N4) lands here as
