@@ -26,16 +26,18 @@ submitted again — recovery requeues it holding its slot, and the next claim po
 within the configured size (`QUALIFY_VENDOR_POOLS`), so the jobs in flight never exceed
 it; a slot is released only when its job is terminal or never reached BytePlus.
 
-Fair share between businesses, lanes and the nightly window are the worker's
-(m-24852163), not this module's.
+Fair share between businesses and the lanes are decided by the worker
+(`creative/worker/lanes.py`, m-24852163) over `queue_snapshot`; this module only gives it
+the snapshot, the per-pool lock (`lock_pool`) and the claim of the chosen job (`claim_job`).
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -306,11 +308,12 @@ def claim_next(
     A job that already holds a slot (requeued by `recover_expired` with its vendor task
     still to poll) goes first and keeps its slot; any other job needs a free slot with
     `slot_no <= size`. Both rows are locked `FOR UPDATE SKIP LOCKED`, so concurrent
-    claimers never take the same job nor the same slot, and never more than `size`."""
+    claimers never take the same job nor the same slot, and never more than `size`.
+    (Plain FIFO by priority: the worker's fair order is `claim_job`, m-24852163.)"""
     job = session.execute(
         text(
             """
-            SELECT id, tenant_id, claim_token FROM creative_jobs
+            SELECT id, tenant_id FROM creative_jobs
             WHERE status = 'queued' AND vendor_model = :pool AND not_before <= :now
             ORDER BY (vendor_task_id IS NOT NULL) DESC, priority DESC, queued_at, id
             LIMIT 1
@@ -321,9 +324,71 @@ def claim_next(
     ).one_or_none()
     if job is None:
         return None
+    return _claim_with_slot(
+        session,
+        job_id=job.id,
+        tenant_id=job.tenant_id,
+        vendor_model=vendor_model,
+        size=size,
+        worker_id=worker_id,
+        lease=lease,
+        now=now,
+    )
+
+
+def claim_job(
+    session: Session,
+    *,
+    job_id: UUID,
+    vendor_model: str,
+    size: int,
+    worker_id: str,
+    lease: timedelta,
+    now: datetime,
+) -> ClaimedJob | None:
+    """Claim ONE chosen job (the worker's fair pick, m-24852163) with a slot, or nothing:
+    it is no longer queued, not due yet, locked by another claimer, or the pool is full.
+    Same slot rules as `claim_next`."""
+    job = session.execute(
+        text(
+            """
+            SELECT id, tenant_id FROM creative_jobs
+            WHERE id = :id AND status = 'queued' AND vendor_model = :pool
+              AND not_before <= :now
+            FOR UPDATE SKIP LOCKED
+            """
+        ),
+        {"id": job_id, "pool": vendor_model, "now": now},
+    ).one_or_none()
+    if job is None:
+        return None
+    return _claim_with_slot(
+        session,
+        job_id=job.id,
+        tenant_id=job.tenant_id,
+        vendor_model=vendor_model,
+        size=size,
+        worker_id=worker_id,
+        lease=lease,
+        now=now,
+    )
+
+
+def _claim_with_slot(
+    session: Session,
+    *,
+    job_id: UUID,
+    tenant_id: UUID,
+    vendor_model: str,
+    size: int,
+    worker_id: str,
+    lease: timedelta,
+    now: datetime,
+) -> ClaimedJob | None:
+    """The job row is already locked: keep the slot it holds, or take a free one."""
     slot_no = session.execute(
         text("SELECT slot_no FROM vendor_slots WHERE holder_job_id = :job FOR UPDATE"),
-        {"job": job.id},
+        {"job": job_id},
     ).scalar_one_or_none()
     if slot_no is None:
         slot_no = session.execute(
@@ -348,7 +413,7 @@ def claim_next(
             WHERE vendor_model = :pool AND slot_no = :slot
             """
         ),
-        {"job": job.id, "lease": lease_until, "now": now, "pool": vendor_model, "slot": slot_no},
+        {"job": job_id, "lease": lease_until, "now": now, "pool": vendor_model, "slot": slot_no},
     )
     token = session.execute(
         text(
@@ -360,9 +425,9 @@ def claim_next(
             RETURNING claim_token
             """
         ),
-        {"job": job.id, "worker": worker_id, "lease": lease_until},
+        {"job": job_id, "worker": worker_id, "lease": lease_until},
     ).scalar_one()
-    return ClaimedJob(job_id=job.id, tenant_id=job.tenant_id, claim_token=token, slot_no=slot_no)
+    return ClaimedJob(job_id=job_id, tenant_id=tenant_id, claim_token=token, slot_no=slot_no)
 
 
 def renew_lease(
@@ -417,7 +482,9 @@ def release_slot(session: Session, *, job_id: UUID, now: datetime) -> bool:
     return True
 
 
-def recover_expired(session: Session, *, now: datetime) -> Recovery:
+def recover_expired(
+    session: Session, *, now: datetime, tenant_ids: Sequence[UUID] | None = None
+) -> Recovery:
     """Hand back what a dead (or stalled) worker left behind.
 
     1. Every claimed/submitted job whose lease ran out goes back to `queued`, with a new
@@ -425,7 +492,11 @@ def recover_expired(session: Session, *, now: datetime) -> Recovery:
        BytePlus frees its slot; a job WITH a vendor task keeps it — BytePlus still counts
        that task — and the next claim takes the job first and polls it, never resubmits.
     2. Every slot whose lease ran out is freed unless its job has a vendor task and is not
-       over yet."""
+       over yet.
+
+    `tenant_ids` (a worker run with `--tenant`, m-24852163) limits both steps to those
+    businesses' jobs; `None` is the production pass over every job."""
+    scope = _scope(tenant_ids)
     rows = session.execute(
         text(
             """
@@ -435,12 +506,13 @@ def recover_expired(session: Session, *, now: datetime) -> Recovery:
             WHERE id IN (
                 SELECT id FROM creative_jobs
                 WHERE status IN ('claimed','submitted') AND lease_until < :now
+                  AND (NOT :scoped OR tenant_id = ANY(CAST(:tenants AS uuid[])))
                 FOR UPDATE SKIP LOCKED
             )
             RETURNING id
             """
         ),
-        {"now": now},
+        {"now": now, **scope},
     ).all()
     requeued = tuple(row.id for row in rows)
 
@@ -459,10 +531,18 @@ def recover_expired(session: Session, *, now: datetime) -> Recovery:
                     WHERE j.id = s.holder_job_id AND j.vendor_task_id IS NOT NULL
                       AND j.status NOT IN ('succeeded','failed','cancelled')
               )
+              AND (
+                    NOT :scoped
+                 OR EXISTS (
+                        SELECT 1 FROM creative_jobs AS o
+                        WHERE o.id = s.holder_job_id
+                          AND o.tenant_id = ANY(CAST(:tenants AS uuid[]))
+                    )
+              )
             RETURNING s.slot_no
             """
         ),
-        {"now": now, "requeued": [str(job_id) for job_id in requeued]},
+        {"now": now, "requeued": [str(job_id) for job_id in requeued], **scope},
     ).all()
     kept = session.execute(
         text(
@@ -486,4 +566,222 @@ def slots_in_use(session: Session, vendor_model: str) -> int:
             ),
             {"pool": vendor_model},
         ).scalar_one()
+    )
+
+
+# --- the worker's fair claim (m-24852163) -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QueueRow:
+    """What the worker door may see of one job to decide the order (queue columns only)."""
+
+    job_id: UUID
+    tenant_id: UUID
+    kind: str
+    lane: str
+    priority: int
+    queued_at: datetime
+    status: str
+    holds_slot: bool  # requeued with a vendor task still to poll: it keeps its slot
+
+
+def _scope(tenant_ids: Sequence[UUID] | None) -> dict[str, object]:
+    return {
+        "scoped": tenant_ids is not None,
+        "tenants": [str(t) for t in (tenant_ids or ())],
+    }
+
+
+def _queue_row(row: Any) -> QueueRow:
+    return QueueRow(
+        job_id=row.id,
+        tenant_id=row.tenant_id,
+        kind=row.kind,
+        lane=row.lane,
+        priority=int(row.priority),
+        queued_at=row.queued_at,
+        status=row.status,
+        holds_slot=bool(row.holds_slot),
+    )
+
+
+def lock_pool(session: Session, vendor_model: str) -> None:
+    """Serialise the fair claims of one pool for the rest of this transaction (a
+    transaction-level advisory lock): the snapshot the worker decides on stays true until
+    it claims, so two workers never both give a business its third slot."""
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"creative_jobs:{vendor_model}"},
+    )
+
+
+def queue_snapshot(
+    session: Session,
+    *,
+    vendor_model: str,
+    now: datetime,
+    now_priority: int,
+    tenant_ids: Sequence[UUID] | None = None,
+    heads: int = 3,
+) -> tuple[list[QueueRow], list[QueueRow]]:
+    """`(waiting, in_flight)` of one pool, for the worker's fair pick.
+
+    - `in_flight`: every job holding a slot or claimed — of EVERY business, even in a
+      scoped run, because the cap and the reserved slots belong to the vendor account.
+    - `waiting`: the due queued jobs of the scope, but only the `heads` oldest of each
+      business and class (lane × final × «now» priority) plus every job holding a slot:
+      the fair pick only ever looks at a business's oldest jobs of a class, so a business
+      with 500 jobs queued does not make the snapshot 500 rows."""
+    scope = _scope(tenant_ids)
+    in_flight = session.execute(
+        text(
+            """
+            SELECT j.id, j.tenant_id, j.kind, j.lane, j.priority, j.queued_at, j.status,
+                   (s.slot_no IS NOT NULL) AS holds_slot
+            FROM creative_jobs AS j
+            LEFT JOIN vendor_slots AS s ON s.holder_job_id = j.id
+            WHERE j.vendor_model = :pool
+              AND (j.status IN ('claimed','submitted')
+                   OR (j.status = 'queued' AND s.slot_no IS NOT NULL))
+            """
+        ),
+        {"pool": vendor_model},
+    ).all()
+    waiting = session.execute(
+        text(
+            """
+            SELECT id, tenant_id, kind, lane, priority, queued_at, status, holds_slot
+            FROM (
+                SELECT j.id, j.tenant_id, j.kind, j.lane, j.priority, j.queued_at, j.status,
+                       (s.slot_no IS NOT NULL) AS holds_slot,
+                       row_number() OVER (
+                           PARTITION BY j.tenant_id, j.lane, (j.kind = 'final'),
+                                        (j.priority >= :now_priority)
+                           ORDER BY j.queued_at, j.id
+                       ) AS rn
+                FROM creative_jobs AS j
+                LEFT JOIN vendor_slots AS s ON s.holder_job_id = j.id
+                WHERE j.status = 'queued' AND j.vendor_model = :pool AND j.not_before <= :now
+                  AND (NOT :scoped OR j.tenant_id = ANY(CAST(:tenants AS uuid[])))
+            ) AS c
+            WHERE c.rn <= :heads OR c.holds_slot
+            ORDER BY c.queued_at, c.id
+            """
+        ),
+        {"pool": vendor_model, "now": now, "now_priority": now_priority, "heads": heads, **scope},
+    ).all()
+    return [_queue_row(r) for r in waiting], [_queue_row(r) for r in in_flight]
+
+
+def hand_back(
+    session: Session, *, job_id: UUID, claim_token: int, now: datetime, count_attempt: bool = True
+) -> bool:
+    """Put a job this worker holds back in the queue (worker door): BytePlus was busy
+    (`count_attempt=False`: a 429 is not an attempt), the worker is shutting down, or it
+    cannot go on with it. A new `claim_token` ends this claim. A job that never reached
+    BytePlus frees its slot; a job WITH a vendor task keeps it, and the next claim polls
+    it — never resubmits. False when the claim was already lost."""
+    row = session.execute(
+        text(
+            """
+            UPDATE creative_jobs
+            SET status = 'queued', claimed_by = NULL, lease_until = NULL,
+                claim_token = claim_token + 1,
+                attempts = CASE WHEN :count THEN attempts ELSE GREATEST(attempts - 1, 0) END
+            WHERE id = :job AND claim_token = :token AND status IN ('claimed','submitted')
+            RETURNING vendor_task_id
+            """
+        ),
+        {"job": job_id, "token": claim_token, "count": count_attempt},
+    ).one_or_none()
+    if row is None:
+        return False
+    if row.vendor_task_id is None:
+        session.execute(
+            text(
+                "UPDATE vendor_slots SET holder_job_id = NULL, lease_until = NULL, "
+                "updated_at = :now WHERE holder_job_id = :job"
+            ),
+            {"job": job_id, "now": now},
+        )
+    return True
+
+
+# --- the worker's tenant-side steps (tenant_session, m-24852163) ---------------------------
+
+
+@dataclass(frozen=True)
+class JobRow:
+    """The whole job, read again under `tenant_session(claim.tenant_id)` (security review
+    §3.2): RLS hides it from any other business."""
+
+    job_id: UUID
+    tenant_id: UUID
+    draft_id: UUID
+    kind: str
+    revision: int
+    position: int
+    vendor_model: str
+    lane: str
+    priority: int
+    status: str
+    claim_token: int
+    vendor_task_id: str | None
+    queued_at: datetime
+    deadline: datetime | None
+    attempts: int
+
+
+def load_job(session: Session, job_id: UUID) -> JobRow | None:
+    """The job by id inside the caller's tenant session, or None (RLS: another business)."""
+    row = session.execute(
+        text(
+            """
+            SELECT id, tenant_id, draft_id, kind, revision, position, vendor_model, lane,
+                   priority, status, claim_token, vendor_task_id, queued_at, deadline,
+                   attempts
+            FROM creative_jobs WHERE id = :id
+            """
+        ),
+        {"id": job_id},
+    ).one_or_none()
+    if row is None:
+        return None
+    return JobRow(
+        job_id=row.id,
+        tenant_id=row.tenant_id,
+        draft_id=row.draft_id,
+        kind=row.kind,
+        revision=int(row.revision),
+        position=int(row.position),
+        vendor_model=row.vendor_model,
+        lane=row.lane,
+        priority=int(row.priority),
+        status=row.status,
+        claim_token=int(row.claim_token),
+        vendor_task_id=row.vendor_task_id,
+        queued_at=row.queued_at,
+        deadline=row.deadline,
+        attempts=int(row.attempts),
+    )
+
+
+def defer_job(session: Session, *, job_id: UUID, claim_token: int, until: datetime) -> bool:
+    """BytePlus answered «busy» (429): nothing was created nor billed. Push the job's
+    `not_before` so no claim takes it before `until`; the worker door then hands it back
+    (`hand_back(count_attempt=False)`). Only a job that never reached BytePlus."""
+    return (
+        session.execute(
+            text(
+                """
+                UPDATE creative_jobs SET not_before = :until
+                WHERE id = :id AND claim_token = :token AND status = 'claimed'
+                  AND vendor_task_id IS NULL
+                RETURNING id
+                """
+            ),
+            {"id": job_id, "token": claim_token, "until": until},
+        ).scalar_one_or_none()
+        is not None
     )
