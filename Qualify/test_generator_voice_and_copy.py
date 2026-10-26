@@ -215,7 +215,7 @@ def test_only_the_creators_script_offers_options(kind: str, options: int) -> Non
 
 
 def test_review_waits_until_the_piece_is_done() -> None:
-    from .content_generator import _result_view
+    from .content_generator import _generator_frame
     from .creative_vm import DraftVM
 
     state = CreativeState()
@@ -226,8 +226,15 @@ def test_review_waits_until_the_piece_is_done() -> None:
     assert state.gen_is_done is False
     state.gen_draft = DraftVM(draft_id="d", status="generated", status_label="", status_tone="")
     assert state.gen_is_done is True
-    rendered = str(_result_view())
-    assert "gen_is_done" in rendered and "Disponible cuando termine de crearse" in rendered
+    state.gen_draft_id = "d"
+    state.product_confirmed = True
+    state.generator_view = "result"
+    assert not state.create_primary_disabled
+    state.gen_draft = None
+    assert state.create_primary_disabled
+    assert "Disponible cuando termine de crearse" in state.create_reason
+    rendered = str(_generator_frame())
+    assert "create_primary_disabled" in rendered and "create_reason" in rendered
 
 
 def test_the_picker_offers_its_categories_with_the_ad_image_back() -> None:
@@ -830,8 +837,12 @@ def test_the_four_steps_render_with_mas_opciones_folded() -> None:
         return text in rendered or json.dumps(text)[1:-1] in rendered
 
     view = str(_create_view())
-    assert "gen_step_count" in view and "gen_step_key" in view
-    assert '"Crear"' in view and '"Generar"' not in view
+    assert "gen_step_key" in view
+    from .content_generator import _generator_frame
+
+    frame = str(_generator_frame())
+    assert "create_step_n" in frame and "create_step_m" in frame
+    assert "create_continue" in frame and "q-step-foot" in frame
     say, how = str(_step_say()), str(_step_how())
     # step 2 folds «Datos clave»; step 3 folds «Campaña»
     assert has(say, "Más opciones") and "toggle_rules" in say and "44px" in say
