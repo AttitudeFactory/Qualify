@@ -146,7 +146,7 @@ HOME_COUNTS_SQL = text(
       ) AS videos_ready_late,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id
-        WHERE d.status = 'approved' AND a.params ? 'draft'
+        WHERE d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
           AND (a.params->'draft'->>'status' <> 'final'
                OR a.params->'draft'->>'confirmed_sha256' IS NULL
                OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM
@@ -156,9 +156,13 @@ HOME_COUNTS_SQL = text(
                OR a.params->'draft'->>'confirmed_revision' IS DISTINCT FROM d.revision::text
                OR a.params->'draft'->>'confirmed_by' IS NULL
                OR a.params->'draft'->>'confirmed_at' IS NULL)
-          AND EXISTS (SELECT 1 FROM calendar_events e WHERE e.post_id = d.id
-              AND e.status = 'scheduled' AND e.scheduled_at <= CAST(:now AS timestamptz)
-              AND e.scheduled_at > CAST(:now AS timestamptz) - interval '24 hours')
+          AND NOT EXISTS (SELECT 1 FROM image_assets pending
+               WHERE pending.draft_id=d.id AND pending.params ? 'draft'
+                 AND pending.params->'draft'->>'status' NOT IN ('final_ready','final'))
+
+          AND EXISTS (SELECT 1 FROM calendar_events late WHERE late.post_id=d.id
+              AND late.status='scheduled' AND late.scheduled_at <= CAST(:now AS timestamptz)
+              AND late.scheduled_at > CAST(:now AS timestamptz)-interval '24 hours')
       ) AS videos_late,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id

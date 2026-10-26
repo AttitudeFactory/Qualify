@@ -6,7 +6,9 @@ from uuid import UUID
 
 import pytest
 
+from .creative_pages import _video_draft_notice
 from .creative_vm import video_draft_vm
+from .final_review_panel import final_review_panel
 from .final_review_vm import (
     FinalPanelVM,
     another_version_use,
@@ -165,9 +167,6 @@ async def test_open_only_reads_manifest_and_confirm_uses_that_exact_manifest(mon
 
 
 def test_only_panel_exposes_confirmation_and_mobile_targets() -> None:
-    from .creative_pages import _video_draft_notice
-    from .final_review_panel import final_review_panel
-
     rendered = str(final_review_panel())
     assert "confirm_label" in rendered and "44px" in rendered
     assert "confirm" not in str(_video_draft_notice()).lower() or "FinalReviewState" not in str(
@@ -180,10 +179,15 @@ def test_home_counts_union_avoids_under_count_and_duplicates() -> None:
 
     from .home_vm import build_home_vm
 
-    # One ready future piece + one failed/late piece are two distinct publications.
-    cards = build_home_vm(HomeCounts(videos_to_confirm=1, videos_late=1, videos_ready_late=0)).today
+    # A failed late piece has its own card; only a ready piece asks for confirmation.
+    cards = build_home_vm(
+        HomeCounts(videos_to_confirm=1, videos_late=0, videos_ready_late=0, finals_failed=1)
+    ).today
     review = next(card for card in cards if card.key == "final-review")
-    assert review.count == 2
-    assert review.label == "2 videos esperan tu confirmación; 1 ya debía salir"
+    assert review.count == 1
+    assert review.label == "1 video listo para revisar"
+    failed = next(card for card in cards if card.key == "final-failed")
+    assert failed.count == 1
+    assert failed.label == "1 video final no se pudo preparar"
     cards = build_home_vm(HomeCounts(videos_to_confirm=2, videos_late=1, videos_ready_late=1)).today
     assert next(card for card in cards if card.key == "final-review").count == 2

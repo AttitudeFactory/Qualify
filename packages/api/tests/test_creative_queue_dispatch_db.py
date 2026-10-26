@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ import pytest
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.router import CreativeRouter
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from qualify_api.creative import job_queue as q
 from qualify_api.creative.composition import DbBrandKitReader, DbVoiceProfileReader
@@ -37,7 +38,27 @@ def setup_queue(monkeypatch):
         voice_service=DbVoiceProfileReader(),
     )
     service.dispatcher = QueueDispatcher(service._repo, pricing_version=pricing.version)
-    return service, tenant, brand, user, copy
+    # Queue capacity belongs to an account, including scoped runs. Give each test its
+    # own account so the intentionally quarantined submission test cannot poison later
+    # tests (nor a later pytest invocation against the persistent test database).
+    pool = f"test:queue-dispatch:{uuid4()}"
+    monkeypatch.setattr(q, "SEEDANCE_POOL", pool)
+    owner = create_engine(os.environ["QUALIFY_MIGRATION_DSN"])
+    with owner.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO vendor_slots (vendor_model,slot_no) "
+                "SELECT :pool,n FROM generate_series(1,10) AS n"
+            ),
+            {"pool": pool},
+        )
+    try:
+        yield service, tenant, brand, user, copy
+    finally:
+        with owner.begin() as connection:
+            connection.execute(text("DELETE FROM vendor_slots WHERE vendor_model=:p"), {"p": pool})
+            connection.execute(text("DELETE FROM creative_jobs WHERE vendor_model=:p"), {"p": pool})
+        owner.dispose()
 
 
 def _request(setup_queue, **overrides):
@@ -432,3 +453,211 @@ def test_paid_result_download_failure_resumes_same_task_without_second_post(
     worker.clock = lambda: after
     assert worker.process(recovered) == "succeeded"
     assert adapter.calls == 1
+
+
+def _queued_final(setup_queue, *, created_at):
+    import json
+
+    draft = _request(setup_queue)
+    service, tenant, _, _, _ = setup_queue
+    asset = uuid4()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""
+            INSERT INTO image_assets
+                (id, tenant_id, draft_id, media_url, media_type, position, params)
+            VALUES (:a,:t,:d,'https://example.invalid/preview.mp4','video',0,CAST(:p AS jsonb))
+            """),
+            {
+                "a": asset,
+                "t": tenant,
+                "d": draft,
+                "p": json.dumps(
+                    {
+                        "draft": {
+                            "status": "rendering",
+                            "task_id": "original-preview",
+                            "created_at": created_at,
+                        }
+                    }
+                ),
+            },
+        )
+    service.dispatcher.dispatch_finalize(tenant_id=tenant, draft_id=draft)
+    with tenant_session(tenant) as session:
+        job = session.scalar(
+            text("SELECT id FROM creative_jobs WHERE draft_id=:d AND kind='final'"),
+            {"d": draft},
+        )
+    return tenant, draft, asset, job
+
+
+def test_queue_dispatcher_final_uses_vendor_creation_time_not_request_time(setup_queue):
+    from qualify_api.creative.final_deadline import deadline_for_preview
+
+    created_at = (datetime.now(UTC) - timedelta(days=2)).timestamp()
+    tenant, _, _, job = _queued_final(setup_queue, created_at=created_at)
+    with tenant_session(tenant) as session:
+        row = q.load_job(session, job)
+    assert row.deadline == deadline_for_preview(created_at)
+    # A repeated dispatch cannot extend the paid preview's life.
+    service = setup_queue[0]
+    service.dispatcher.dispatch_finalize(tenant_id=tenant, draft_id=row.draft_id)
+    with tenant_session(tenant) as session:
+        assert q.load_job(session, job).deadline == row.deadline
+
+
+def test_expired_final_real_executor_marks_only_own_asset_with_exact_text_without_credentials(
+    setup_queue, monkeypatch
+):
+    from qualify_api.creative.final_deadline import FINAL_EXPIRED_TEXT
+    from qualify_api.creative.worker.downloads import DownloadGate
+    from qualify_api.creative.worker.pipeline import PipelineExecutor
+    from qualify_api.creative.worker.runner import CreativeWorker, WorkerConfig
+    from qualify_api.creative.worker.store import PostgresQueueStore
+
+    tenant, draft, asset, job = _queued_final(
+        setup_queue, created_at=(datetime.now(UTC) - timedelta(days=7)).timestamp()
+    )
+    pipeline = PipelineStore()
+    run = pipeline.acquire(tenant, draft, 1, f"final:{asset}")
+    assert run is not None
+    pipeline.save_step(run, 0, {}, job)
+    pipeline.ready(run, job)
+    pipeline.release(run, completed=True)
+    service = setup_queue[0]
+    from qualify_api.creative.creations import PostgresCreationsLedger
+
+    service._creations = PostgresCreationsLedger()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""
+            INSERT INTO creation_charges (tenant_id,brand_id,draft_id,revision,request_kind,
+                weight,monthly_quota,weights_version,pricing_table_version,period_month,videos,
+                videos_charged_at,videos_period_month)
+            VALUES (:t,:b,:d,1,'create',1,10,'v1','v1',date_trunc('month',now())::date,1,
+                now(),date_trunc('month',now())::date)
+            """),
+            {"t": tenant, "b": setup_queue[2], "d": draft},
+        )
+    monkeypatch.setattr(
+        service._credentials, "resolve", lambda **kwargs: pytest.fail("expired final resolved key")
+    )
+    # No adapter methods exist: any paid/vendor access fails the test.
+    executor = PipelineExecutor(service, pipeline, object(), "seedance")
+    store = PostgresQueueStore()
+    worker = CreativeWorker(
+        store,
+        {q.SEEDANCE_POOL: executor},
+        WorkerConfig(pools={q.SEEDANCE_POOL: 10}, tenant_ids=(tenant,)),
+        downloads=DownloadGate(2),
+    )
+    claims = worker.claim_round(1)
+    assert len(claims) == 1 and claims[0].job_id == job
+    assert worker.process(claims[0]) == "failed"
+    # A retry of finish does not return another plan video or need a vendor credential.
+    from qualify_api.creative.worker.executor import JobContext
+
+    executor.finish(
+        JobContext(
+            job,
+            tenant,
+            draft,
+            q.KIND_FINAL,
+            1,
+            0,
+            q.SEEDANCE_POOL,
+            "final",
+            9,
+            datetime.now(UTC),
+            claims[0].claim_token,
+        ),
+        None,
+        "expired",
+    )
+    with tenant_session(tenant) as session:
+        row = q.load_job(session, job)
+        charge = (
+            session.execute(
+                text(
+                    "SELECT status,weight,final_refunded_assets FROM creation_charges "
+                    "WHERE draft_id=:d"
+                ),
+                {"d": draft},
+            )
+            .mappings()
+            .one()
+        )
+    assert charge["status"] == "charged" and charge["weight"] == 1
+    assert charge["final_refunded_assets"] == [asset]
+    with tenant_session(tenant) as session:
+        params = session.scalar(text("SELECT params FROM image_assets WHERE id=:a"), {"a": asset})
+    assert row.status == "failed" and row.vendor_task_id is None
+    assert row.deadline < datetime.now(UTC)
+    assert params["draft"]["status"] == "failed"
+    assert params["draft"]["error"] == FINAL_EXPIRED_TEXT
+    # Another tenant cannot address this expired piece or its error via the pipeline.
+    with tenant_session(uuid4()) as session:
+        assert (
+            session.scalar(text("SELECT params FROM image_assets WHERE id=:a"), {"a": asset})
+            is None
+        )
+
+
+def test_final_expiring_during_preflight_is_rejected_at_actual_paid_boundary(
+    setup_queue, monkeypatch
+):
+    from decimal import Decimal
+
+    from qualify_creative.enums import GenerationTask
+    from qualify_creative.providers import GenerationRequest, RenderedPrompt
+
+    from qualify_api.creative.final_deadline import FINAL_EXPIRED_TEXT
+    from qualify_api.creative.pipeline import request_data
+    from qualify_api.creative.worker.downloads import DownloadGate
+    from qualify_api.creative.worker.pipeline import PipelineExecutor
+    from qualify_api.creative.worker.runner import CreativeWorker, WorkerConfig
+    from qualify_api.creative.worker.store import PostgresQueueStore
+
+    tenant, draft, asset, job = _queued_final(
+        setup_queue, created_at=(datetime.now(UTC) - timedelta(days=6)).timestamp()
+    )
+    pipeline = PipelineStore()
+    run = pipeline.acquire(tenant, draft, 1, f"final:{asset}")
+    assert run is not None
+    request = GenerationRequest(
+        task=GenerationTask.SCENE_VIDEO, rendered_prompt=RenderedPrompt("p", "v1", "s")
+    )
+    pipeline.save_step(run, 0, request_data(request, "seedance", setup_queue[2]), job)
+    pipeline.ready(run, job)
+    pipeline.release(run, completed=True)
+
+    class Adapter:
+        def estimate_cost_usd(self, *args, **kwargs):
+            return Decimal("0.01")
+
+        def submit(self, *args, **kwargs):
+            pytest.fail("final expired during preflight was submitted")
+
+    # Simulate expiry during credentials/budget validation, after the runner's first guard.
+    monkeypatch.setattr(
+        "qualify_api.creative.worker.pipeline.final_deadline_passed", lambda *args: True
+    )
+    executor = PipelineExecutor(setup_queue[0], pipeline, Adapter(), "seedance")
+    worker = CreativeWorker(
+        PostgresQueueStore(),
+        {q.SEEDANCE_POOL: executor},
+        WorkerConfig(pools={q.SEEDANCE_POOL: 10}, tenant_ids=(tenant,)),
+        downloads=DownloadGate(2),
+    )
+    claim = worker.claim_round(1)[0]
+    assert worker.process(claim) == "failed"
+    with tenant_session(tenant) as session:
+        row = q.load_job(session, job)
+        last_error = session.scalar(
+            text("SELECT last_error FROM creative_jobs WHERE id=:j"), {"j": job}
+        )
+        params = session.scalar(text("SELECT params FROM image_assets WHERE id=:a"), {"a": asset})
+    assert row.vendor_task_id is None and last_error == FINAL_EXPIRED_TEXT
+    assert params["draft"]["status"] == "failed"
+    assert params["draft"]["error"] == FINAL_EXPIRED_TEXT

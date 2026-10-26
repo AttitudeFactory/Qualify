@@ -170,3 +170,59 @@ def test_home_counts_follow_confirmation_and_stale_revision_under_rls() -> None:
     with tenant_session(tenant) as session:
         session.get(orm.ContentDraft, draft).revision += 1
     assert read_home_counts(tenant).videos_to_confirm == 1
+
+
+def test_home_late_confirmation_excludes_failed_and_unprepared_finals() -> None:
+    """The owner is asked to confirm only a complete, reviewable final."""
+    from datetime import timedelta
+
+    from qualify_api.connections.models import PlatformApp, SocialConnection
+    from qualify_api.home import read_home_counts
+    from qualify_api.planner.models import CalendarEvent
+
+    tenant, draft, owner = _fixture(status="failed")
+    now = datetime.now(UTC)
+    with admin_session() as session:
+        app = PlatformApp(app_id=f"home-night-{uuid4()}", secret_ref="test", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        app_id = app.id
+    with tenant_session(tenant) as session:
+        piece = session.get(orm.ContentDraft, draft)
+        connection = SocialConnection(
+            tenant_id=tenant,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=str(uuid4()),
+            linked_page_id="test",
+            granted_scopes=[],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=owner,
+        )
+        session.add(connection)
+        session.flush()
+        session.add(
+            CalendarEvent(
+                tenant_id=tenant,
+                brand_id=piece.brand_id,
+                post_id=draft,
+                connection_id=connection.id,
+                scheduled_at=now - timedelta(hours=1),
+                scheduled_tz="UTC",
+                status="scheduled",
+            )
+        )
+    counts = read_home_counts(tenant, now=now)
+    assert counts.finals_failed == 1
+    assert counts.videos_to_confirm == counts.videos_late == counts.videos_ready_late == 0
+    for status in ("rendering", "final_scheduled", "final_ready"):
+        with tenant_session(tenant) as session:
+            asset = session.scalar(select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft))
+            asset.params = {**asset.params, "draft": {**asset.params["draft"], "status": status}}
+        counts = read_home_counts(tenant, now=now)
+        expected = int(status == "final_ready")
+        assert counts.videos_to_confirm == counts.videos_late == expected
+        assert counts.videos_ready_late == expected

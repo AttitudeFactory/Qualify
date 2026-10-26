@@ -47,6 +47,11 @@ from qualify_creative.adapters.byteplus_ark import VendorBusy
 from sqlalchemy.exc import OperationalError
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.final_deadline import (
+    FINAL_EXPIRED_TEXT,
+    FinalDeadlineExpired,
+    final_deadline_passed,
+)
 from qualify_api.creative.queue_dispatch import SubmissionUncertain
 from qualify_api.creative.vendor_timings import utcnow
 from qualify_api.creative.worker import lanes
@@ -177,15 +182,26 @@ class CreativeWorker:
             position=row.position,
             vendor_model=row.vendor_model,
             lane=lane,
-            vendor_priority=lanes.VENDOR_PRIORITY[lane],
+            vendor_priority=lanes.vendor_priority(
+                lane=row.lane,
+                kind=row.kind,
+                priority=row.priority,
+                queued_at=row.queued_at,
+                now=now,
+                deadline=row.deadline,
+            ),
             deadline=row.deadline,
             claim_token=claim.claim_token,
         )
 
         task_id = row.vendor_task_id
         if task_id is None:
+            if row.kind == q.KIND_FINAL and final_deadline_passed(row.deadline, self.clock()):
+                return self._end(claim, executor, ctx, None, "expired", error=FINAL_EXPIRED_TEXT)
             try:
                 task_id = executor.submit(ctx)
+            except FinalDeadlineExpired:
+                return self._end(claim, executor, ctx, None, "expired", error=FINAL_EXPIRED_TEXT)
             except VendorBusy as busy:
                 if self.on_vendor_busy is not None:
                     _guarded(lambda busy=busy: self.on_vendor_busy(busy))
@@ -318,6 +334,7 @@ def _as_queue_row(row: q.JobRow) -> q.QueueRow:
         queued_at=row.queued_at,
         status=row.status,
         holds_slot=True,
+        deadline=row.deadline,
     )
 
 

@@ -14,6 +14,7 @@ from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.final_deadline import deadline_for_preview
 
 SWITCH = "QUALIFY_CREATIVE_DISPATCHER"
 # Preparation makes a job eligible only after its immutable request is stored.
@@ -99,6 +100,7 @@ class QueueDispatcher:
                     final_phase(asset.id, int(block.get("final_attempt") or 0)),
                     [(q.KIND_FINAL, asset.position, q.SEEDANCE_POOL)],
                     policy=block,
+                    preview_created_at=block.get("created_at"),
                 )
 
     def _enqueue(
@@ -109,7 +111,16 @@ class QueueDispatcher:
         jobs: list[tuple[str, int, str]],
         *,
         policy: Any = None,
+        preview_created_at: float | datetime | None = None,
     ) -> None:
+        deadline = deadline_for_preview(preview_created_at) if phase.startswith("final:") else None
+        policy_deadline = (
+            datetime.fromisoformat(policy["final_deadline"])
+            if policy and policy.get("final_deadline")
+            else None
+        )
+        if policy_deadline is not None:
+            deadline = min(deadline, policy_deadline) if deadline else policy_deadline
         with tenant_session(tenant_id) as session:
             session.execute(
                 text("""
@@ -143,13 +154,9 @@ class QueueDispatcher:
                     vendor_model=pool,
                     lane=(policy or {}).get("final_lane", q.LANE_IMMEDIATE),
                     priority=int((policy or {}).get("final_priority") or 0),
-                    deadline=(
-                        datetime.fromisoformat(policy["final_deadline"])
-                        if policy and policy.get("final_deadline")
-                        else None
-                    ),
                     final_attempt=int((policy or {}).get("final_attempt") or 0),
                     not_before=UNPREPARED,
+                    deadline=deadline,
                     charge_id=charge_id,
                     pricing_version=self.pricing_version,
                     pipeline_version=draft.pipeline_version,
