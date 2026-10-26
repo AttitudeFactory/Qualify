@@ -141,7 +141,11 @@ def resend_handlers(
     notifier: DeliveryNotifier | None,
     *,
     marker: DeliveryMarker = mark_delivery,
+    final_marker: Callable[..., bool] | None = None,
 ) -> Mapping[str, Handler]:
+    if final_marker is None and marker is mark_delivery:
+        from qualify_api.mail.final_summary import mark_delivery as final_marker
+
     async def handle(event: ClaimedEvent) -> Outcome:
         try:
             parsed = ResendEvent.model_validate(event.value or {})
@@ -161,6 +165,10 @@ def resend_handlers(
             marker, parsed.data.email_id, kind=kind, at=parsed.happened_at()
         )
         if mark is None:
+            if final_marker is not None and await asyncio.to_thread(
+                final_marker, parsed.data.email_id, kind=kind, at=parsed.happened_at()
+            ):
+                return Outcome(STATUS_PROCESSED)
             logger.info(
                 "resend %s: email_id=%s matches no invite", parsed.type, parsed.data.email_id
             )

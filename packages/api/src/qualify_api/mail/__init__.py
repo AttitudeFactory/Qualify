@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from email.utils import formataddr, parseaddr
 from typing import Protocol
 
 import httpx
@@ -46,6 +48,9 @@ class OutgoingMail:
     subject: str
     html: str
     text: str
+    sender_name: str | None = None
+    headers: Mapping[str, str] = field(default_factory=dict)
+    idempotency_key: str | None = None
 
 
 class Mailer(Protocol):
@@ -69,12 +74,19 @@ class ResendMailer:
             "html": mail.html,
             "text": mail.text,
         }
+        if mail.sender_name is not None:
+            payload["from"] = formataddr((mail.sender_name, parseaddr(self._sender)[1]))
+        if mail.headers:
+            payload["headers"] = dict(mail.headers)
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        if mail.idempotency_key:
+            headers["Idempotency-Key"] = mail.idempotency_key
         if self._reply_to:
             payload["reply_to"] = self._reply_to
         try:
             response = httpx.post(
                 _RESEND_URL,
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers=headers,
                 json=payload,
                 timeout=_TIMEOUT_SECONDS,
             )

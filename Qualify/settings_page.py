@@ -351,6 +351,42 @@ def settings_index() -> rx.Component:
         page_header("Configuración", "Tu cuenta, tu plan, tu país, tu contraseña y tu página web"),
         page_body(
             section(
+                "Tus correos",
+                card(
+                    rx.vstack(
+                        rx.hstack(
+                            rx.switch(
+                                id="morning-mail-preference",
+                                checked=SettingsState.morning_mail_enabled,
+                                on_change=SettingsState.save_morning_mail,
+                                disabled=SettingsState.morning_mail_saving,
+                                size="3",
+                            ),
+                            rx.text(
+                                "Avisarme por correo cuando mis videos estén listos",
+                                as_="label",
+                                html_for="morning-mail-preference",
+                                size="2",
+                            ),
+                            align="center",
+                            spacing="3",
+                            min_height="44px",
+                        ),
+                        rx.cond(
+                            SettingsState.morning_mail_error != "",
+                            callout(SettingsState.morning_mail_error, "error"),
+                        ),
+                        rx.text(
+                            "Esta preferencia es solo para ti y para este negocio.",
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                        spacing="2",
+                    ),
+                    on_mount=SettingsState.load_morning_mail,
+                ),
+            ),
+            section(
                 "Tu cuenta",
                 card(
                     rx.vstack(

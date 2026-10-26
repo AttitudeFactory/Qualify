@@ -24,6 +24,7 @@ from types import FrameType
 from uuid import UUID
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.worker.background import BackgroundChore
 from qualify_api.creative.worker.downloads import DownloadGate, downloads_allowed
 from qualify_api.creative.worker.executor import JobExecutor
 from qualify_api.creative.worker.runner import (
@@ -193,17 +194,29 @@ def main(
 
     monitor = production_monitor(scope_ids) if store is None else None
     original_recovery = recovery
+    from qualify_api.mail.final_summary import morning_chore
+
+    morning = morning_chore(scope_ids) if store is None and executors is None else None
+    mail_runner: BackgroundChore | None = None
 
     def maintenance() -> None:
+        if mail_runner is not None:
+            mail_runner.schedule()
         if original_recovery is not None:
             try:
                 original_recovery()
             except Exception:
                 logger.exception("creative.worker.legacy_recovery_failed")
         if publish_load is not None:
-            publish_load()
+            try:
+                publish_load()
+            except Exception:
+                logger.exception("creative.worker.public_load_failed")
         if monitor is not None:
-            monitor.check(read_snapshot(now=monitor.clock(), tenant_ids=scope_ids))
+            try:
+                monitor.check(read_snapshot(now=monitor.clock(), tenant_ids=scope_ids))
+            except Exception:
+                logger.exception("creative.worker.queue_monitor_failed")
 
     def vendor_busy(busy: object) -> None:
         if monitor is not None and getattr(busy, "code", None) == "QuotaExceeded":
@@ -217,6 +230,8 @@ def main(
         downloads=gate,
         on_vendor_busy=vendor_busy,
     )
+    if morning is not None:
+        mail_runner = BackgroundChore(morning, worker.stop)
     if install_signals:
         _stop_on_signals(worker.stop)
     logger.info(
