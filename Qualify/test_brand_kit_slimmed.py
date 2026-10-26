@@ -270,7 +270,7 @@ def test_the_brand_ready_card_says_it_in_the_owners_words() -> None:
     button = str(wiz._finish_button(wiz.BrandWizardState.finish))
     assert "Terminar mi marca" in button and "Terminar y crear mi cuenta" in button
     for page in (wiz.brand_manual_index, wiz.brand_connect_index):
-        assert "_or_ready(" in inspect.getsource(page), page.__name__
+        assert "_or_ready_frame(" in inspect.getsource(page), page.__name__
         assert js("Tu marca está lista") in str(page()), page.__name__
 
 
@@ -457,7 +457,7 @@ def test_the_card_never_covers_a_failed_save() -> None:
     `save_brand_kit` succeeded, and the page also checks there is no `kit_error`."""
     import inspect
 
-    source = inspect.getsource(wiz._or_ready)
+    source = inspect.getsource(wiz._or_ready_frame)
     assert 'CreativeState.kit_error == ""' in source and "BrandWizardState.brand_ready" in source
     for flow in (wiz.BrandWizardState, wiz.BrandConnectState):
         finish = inspect.getsource(flow.finish.fn)

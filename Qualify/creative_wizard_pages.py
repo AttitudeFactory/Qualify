@@ -99,10 +99,24 @@ from .ui import (
     qualify_mark,
     removable_pill,
     skeleton_card,
+    step_foot,
+    step_frame,
+    step_head,
+    step_sync,
     tag,
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.steps_vm import (
+    DIR_BACK,
+    DIR_NEXT,
+    NEXT_LABEL,
+    STEP_PARAM,
+    guard_step,
+    parse_step_param,
+    step_direction,
+    step_position,
+)
 from .upload_names import safe_upload_name as _safe_upload_name
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
@@ -281,6 +295,31 @@ _CONTROL_RADIUS = "large"
 # on top of the current `ui/layout.py` is what visibly broke the layout once already.
 
 
+def manual_completes(
+    *,
+    positioning: str,
+    audience: str,
+    has_logo: str,
+    has_files: bool,
+    brief: str,
+    palette: str,
+) -> list[bool]:
+    """Whether each of the manual flow's seven steps is answered, in order — the same
+    gates as `_manual_requirement` — so `?paso=N` never opens past an unanswered one
+    (PASOS-4, `steps_vm.guard_step`). Tipografía, ¿Todo correcto? and Así quedó ask
+    for nothing."""
+    logo_done = has_files if has_logo == "si" else bool(brief.strip())
+    return [
+        bool(positioning.strip() and audience.strip()),
+        has_logo != "",
+        logo_done,
+        True,
+        bool(palette.strip()),
+        True,
+        True,
+    ]
+
+
 class BrandWizardState(rx.State):
     """The cursor, plus the fields this screen adds that `CreativeState` has no home for.
 
@@ -292,6 +331,10 @@ class BrandWizardState(rx.State):
     """
 
     step: int = 0
+    #: PASOS-4 (m-24852243): `data-dir` of the step frame's body, and whether `resume`
+    #: has decided the step (until then the address is not written — `step_sync`).
+    direction: str = DIR_NEXT
+    steps_ready: bool = False
 
     # -- step 2/3 -------------------------------------------------------------
     has_logo: str = ""  # "si" | "no" | "" (unanswered)
@@ -356,7 +399,7 @@ class BrandWizardState(rx.State):
     # m-24842965 (N3, docs/ux-guia-navegacion.md): the achievement card «Tu marca está
     # lista», shared by BOTH flows' pages. Raised by `_finish_navigation` when a session
     # WITH an account finishes either flow; while it is up, `brand_manual_index`/
-    # `brand_connect_index` show the card instead of the steps (`_or_ready`). Cleared
+    # `brand_connect_index` show the card instead of the steps (`_or_ready_frame`). Cleared
     # when the owner leaves through it and on every entry to a wizard page (`resume`,
     # `BrandConnectState.load_saved_details`), so coming back later opens the steps,
     # not a stale card. Not touched by `_reset_fields`: `finish` resets, THEN raises it.
@@ -374,6 +417,70 @@ class BrandWizardState(rx.State):
         """The «Ver mi marca» link navigates on its own (a real anchor); this only
         closes the card behind it."""
         self.brand_ready = False
+
+    @rx.var
+    def step_n(self) -> int:
+        """«Paso N de 7» and `?paso=N` (every step of this flow is shown)."""
+        return self.step + 1
+
+    @rx.var
+    def is_last(self) -> bool:
+        return self.step == LAST_STEP
+
+    async def _completes(self) -> list[bool]:
+        creative = await self.get_state(CreativeState)
+        return manual_completes(
+            positioning=creative.kit_positioning,
+            audience=creative.kit_audience,
+            has_logo=self.has_logo,
+            has_files=bool(self.logo_versions or self.brand_extras),
+            brief=self.logo_brief_1,
+            palette=creative.kit_palette,
+        )
+
+    def _go(self, index: int) -> None:
+        index = max(0, min(index, LAST_STEP))
+        self.direction = step_direction(self.step + 1, index + 1, self.direction)
+        self.step = index
+
+    @rx.event
+    def leave_frame(self) -> None:
+        """The frame unmounted: the next visit writes no address until `resume`."""
+        self.steps_ready = False
+
+    @rx.event
+    async def pop_step(self) -> None:
+        """The browser's «atrás»/«adelante» (`step_frame(on_pop=...)`): the step in
+        `?paso=`, never past the first step still unanswered. Idempotent."""
+        raw = step_param(self)
+        if raw is None or not self.steps_ready:
+            return
+        target = guard_step(parse_step_param(raw, len(STEPS)), await self._completes())
+        self._go(target - 1)
+
+    @rx.event
+    def primary(self) -> rx.event.EventSpec | None:
+        """The frame's primary: «Siguiente», or the finish on the last step."""
+        if self.step == LAST_STEP:
+            return BrandWizardState.finish
+        self._go(self.step + 1)
+        return None
+
+    @rx.event(background=True)
+    async def save_for_later(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Seguir después»: save, then Inicio (an account) — `leave_flow`."""
+        from .brand_finish import MANUAL_FLOW
+
+        async for event in leave_flow(self, MANUAL_FLOW, later=True):
+            yield event
+
+    @rx.event(background=True)
+    async def leave(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """The head's «‹ Inicio» / «‹ Tu correo»: save, then go — `leave_flow`."""
+        from .brand_finish import MANUAL_FLOW
+
+        async for event in leave_flow(self, MANUAL_FLOW, later=False):
+            yield event
 
     @rx.event
     async def resume(self) -> None:
@@ -404,24 +511,33 @@ class BrandWizardState(rx.State):
             self.step = _M_PALETTE_STEP
         else:
             self.step = _CONFIRM_STEP
+        # PASOS-4: `?paso=N` (a reload, the browser's «atrás», a shared link) opens that
+        # step — never past the first one still unanswered (`guard_step`)
+        raw = step_param(self)
+        if raw is not None:
+            target = guard_step(parse_step_param(raw, len(STEPS)), await self._completes())
+            self.step = target - 1
+        self.direction = DIR_NEXT
+        self.steps_ready = True
 
     @rx.event
     def go_to(self, index: int) -> None:
         """Jump straight to a step. Clamped so a stale client event cannot park the
         cursor outside the flow and render nothing."""
-        self.step = max(0, min(index, LAST_STEP))
+        self._go(index)
 
     @rx.event
     def next_step(self) -> None:
-        self.step = min(self.step + 1, LAST_STEP)
+        self._go(self.step + 1)
 
     @rx.event
     def prev_step(self) -> rx.event.EventSpec | None:
         """Atrás from the very first step leaves the wizard — there is no step -1 to
-        land on, so "back" means back to the fork, not a disabled button."""
+        land on, so "back" means back to the fork, not a disabled button. (The step
+        frame shows no «Atrás» on step 1: the way out is the head's «‹ Inicio».)"""
         if self.step == 0:
             return rx.redirect("/brand")
-        self.step -= 1
+        self._go(self.step - 1)
         return None
 
     def _reset_fields(self) -> None:
@@ -542,7 +658,7 @@ class BrandWizardState(rx.State):
         """Answering step 2 moves straight on — the question has no other content, so
         making the user press Next again would be a dead click."""
         self.has_logo = value
-        self.step = min(self.step + 1, LAST_STEP)
+        self._go(self.step + 1)
 
     @rx.event
     def set_logo_brief_1(self, value: str) -> None:
@@ -1169,6 +1285,62 @@ async def _finish_navigation(state: rx.State) -> rx.event.EventSpec | None:
     return None
 
 
+# ---------------------------------------------------------------------------------------
+# Leaving Tu marca (PASOS-4, m-24852243 — rule N2, docs/design-system.md §4.5)
+
+#: Where an account goes from any step of Tu marca: Inicio, which lists «Termina tu
+#: marca» first while the kit is unfinished (`home_vm`).
+HOME_ROUTE = "/"
+#: The head's «‹ destino»: Inicio for an account; for a guest (a draft before the
+#: login, no Inicio yet) the screen that asked for the email (`/brand/start`).
+EXIT_LABEL_SESSION = "Inicio"
+EXIT_LABEL_GUEST = "Tu correo"
+SAVED_FOR_LATER = "Guardamos lo que llevas. Cuando vuelvas a Tu marca, sigues en este mismo paso."
+SAVED_FOR_LATER_GUEST = (
+    "Guardamos lo que llevas. Cuando vuelvas, escribe tu correo y sigues en este mismo paso."
+)
+SAVE_LATER_FAILED = "No pudimos guardar lo que llevas. Revisa tu conexión e inténtalo de nuevo."
+
+
+def exit_label() -> rx.Var[str]:
+    return rx.cond(AuthState.session_tenant_id != "", EXIT_LABEL_SESSION, EXIT_LABEL_GUEST)
+
+
+async def leave_flow(state: rx.State, flow: str, *, later: bool) -> AsyncIterator[Any]:
+    """«Seguir después» (``later``) and the head's «‹ Inicio» / «‹ Tu correo», from a
+    background handler: what is written is saved first (`brand_finish.save_progress`),
+    never lost (N6). An account then goes to Inicio (N2) — «Seguir después» says it was
+    saved. A guest has no Inicio: «Seguir después» saves and says how to come back,
+    staying on the step; «‹ Tu correo» forgets the draft in this browser (it stays saved
+    under its email) and asks for an email again (`AuthState.leave_brand_draft`). A
+    failed save stays on the step and says so."""
+    from .brand_finish import save_progress
+
+    async with state:
+        in_session = (await state.get_state(AuthState)).session_tenant_id != ""
+    try:
+        await save_progress(state, flow)
+    except Exception as exc:  # noqa: BLE001 — a toast, never a crash
+        logger.warning("brand flow: save before leaving failed: %s", type(exc).__name__)
+        yield brand_documents.notify(SAVE_LATER_FAILED, "error")
+        return
+    if in_session:
+        if later:
+            yield brand_documents.notify(SAVED_FOR_LATER, "ok")
+        yield rx.redirect(HOME_ROUTE)
+        return
+    if later:
+        yield brand_documents.notify(SAVED_FOR_LATER_GUEST, "ok")
+        return
+    yield AuthState.leave_brand_draft
+
+
+def step_param(state: rx.State) -> object | None:
+    """The raw ``?paso=`` of the address the event came from, or None without one."""
+    params = state.router.url.query_parameters
+    return params.get(STEP_PARAM) if STEP_PARAM in params else None
+
+
 #: The final button of both flows (m-24842965): an account finishes its brand; a
 #: pre-login draft finishes it AND goes on to create the account that adopts it.
 _FINISH_LABEL = "Terminar mi marca"
@@ -1278,19 +1450,6 @@ def _brand_ready_card() -> rx.Component:
     )
 
 
-def _or_ready(header: rx.Component, body: rx.Component) -> tuple[rx.Component, rx.Component]:
-    """A wizard page's header and body, swapped for the «Tu marca está lista» ones while
-    `BrandWizardState.brand_ready` — `rx.cond` adds no wrapper element, so `app_shell` still gets
-    a `page_header` and a `page_body` either way."""
-    # never over a failed save: `finish` only raises the card after `save_brand_kit`
-    # succeeded (which clears `kit_error` first); the error check is the second lock
-    shown = BrandWizardState.brand_ready & (CreativeState.kit_error == "")
-    return (
-        rx.cond(shown, page_header("Tu marca", title_size="8"), header),
-        rx.cond(shown, page_body(_brand_ready_card()), body),
-    )
-
-
 #: Placeholder competitor/influencer suggestions (handle, role label, blurb).
 #: Placeholder explicit: hardcoded tuple, not a query — no connection to
 #: `search.content_index` / `signals.events` (Fase 2/3) or anything real.
@@ -1345,6 +1504,10 @@ def _competitors_section() -> rx.Component:
         width="100%",
         align_items="start",
     )
+
+
+def _finish_label() -> rx.Var[str]:
+    return rx.cond(AuthState.session_tenant_id != "", _FINISH_LABEL, _FINISH_DRAFT_LABEL)
 
 
 def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
@@ -2766,26 +2929,6 @@ def _heading_for(index: int) -> rx.Var[str]:
     )
 
 
-def _step_counter(step: rx.Var[int], total: int) -> rx.Component:
-    """The wizard's `kicker` for `ui.page_header` — "PASO 5 DE 10" above the title,
-    same eyebrow treatment `_section_label`/the sidebar's zone labels already use.
-    Was its own header (`_flow_header`, since removed) built a title row from scratch
-    next to `page_header`'s own, duplicating the exact same title+subtitle+colour-mode
-    scaffold for no reason a shared header couldn't cover — the only real difference
-    the wizard needs is a bigger title and this line above it, and `page_header` now
-    takes both as plain parameters (`title_size`, `kicker`)."""
-    return rx.text(
-        "Paso ",
-        step + 1,
-        f" de {total}",
-        size="1",
-        weight="bold",
-        color=T.TEXT_MUTED,
-        letter_spacing="0.08em",
-        text_transform="uppercase",
-    )
-
-
 def _manual_can_continue() -> rx.Var[bool]:
     """Whether the CURRENT step's requirement is satisfied (§ request 2026-09-09) —
     gates `_controls`'s Continuar the same way `_connect_can_continue` gates the
@@ -2825,45 +2968,18 @@ def _wizard_shell(*children: rx.Component) -> rx.Component:
 
 
 def _controls() -> rx.Component:
-    """Small, quiet, at the bottom. The last step (Resultados e insights) swaps
-    Continuar for `_finish_button` — it replaces Finalizar entirely (§ request
-    2026-09-05), `save_kit_form` still chained with it so finishing actually persists
-    before it lands anywhere. ¿Todo correcto? (`_CONFIRM_STEP`) is a plain Continuar
-    now, same as any other step — it no longer sits at the end.
-
-    `back` is never disabled any more: `prev_step` itself redirects to `/brand` once
-    the cursor is already at step 0, so the button always does something. Continuar
-    IS disabled (§ request 2026-09-09, `disabled=~_manual_can_continue()`) while the
-    current step's own requirement is unmet — see that function."""
-    back = rx.button(
-        rx.icon("chevron-left", size=T.ICON_SM),
-        "Atrás",
-        variant="ghost",
-        size="2",
-        radius=_CONTROL_RADIUS,
-        on_click=BrandWizardState.prev_step,
-        disabled=_manual_busy(),
-    )
-    return rx.hstack(
-        # § request 2026-10-02: the first view has no Atrás — nothing to go back to;
-        # its slot, across from Continuar, holds the way back to the email screen
-        rx.cond(BrandWizardState.step == 0, _change_email_button(), back),
-        rx.spacer(),
-        rx.cond(
-            BrandWizardState.step == LAST_STEP,
-            _finish_button(BrandWizardState.finish),
-            rx.button(
-                "Continuar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandWizardState.next_step,
-                disabled=~_manual_can_continue(),
-            ),
-        ),
-        width="100%",
-        align="center",
-        spacing="3",
+    """The manual flow's foot in the step frame (PASOS-4): «Atrás» (never on step 1 —
+    the way out is the head's «‹ Inicio»), «Seguir después» (save, then Inicio) and the
+    primary: «Siguiente», gated by `_manual_can_continue`, or on the last step the
+    finish (`_finish_button`'s label; `BrandWizardState.finish`)."""
+    return step_foot(
+        rx.cond(BrandWizardState.is_last, _finish_label(), NEXT_LABEL),
+        step=BrandWizardState.step_n,
+        on_primary=BrandWizardState.primary,
+        on_back=BrandWizardState.prev_step,
+        on_later=BrandWizardState.save_for_later,
+        primary_disabled=~_manual_can_continue(),
+        primary_loading=BrandWizardState.is_last & CreativeState.kit_saving,
     )
 
 
@@ -2898,114 +3014,116 @@ def _manual_column_width() -> rx.Var[str]:
     )
 
 
-def brand_manual_index() -> rx.Component:
-    """`page_header` (the app's one standard header, `title_size="8"` + `kicker` — see
-    `_step_counter`'s own docstring for why this no longer builds a header of its own)
-    sits OUTSIDE `page_body`, exactly like every other page in the app: it is a sibling
-    `app_shell` child, not content inside the scrolling panel. The border below it
-    fills down to the panel's bottom (`flex="1"` all the way through `page_body`, no
-    `100vh` maths — see the note where `_SCREEN_MIN_HEIGHT` used to be) instead of
-    hugging its own content height. Inside that tall frame, the card is itself a flex
-    column with `justify_content="space-between"`: the fields stay in a narrow,
-    readable, centred column at the top (a single-line hex input stretched to 1440px
-    reads worse than the frame around it being that wide), while `_controls()` spans
-    the card's FULL width and sits pinned to its bottom edge — Atrás at the
-    bottom-left corner, Continuar/Finalizar at the bottom-right, not floating just
-    under the fields."""
-    return _wizard_shell(
-        *_or_ready(
-            page_header(
-                _heading_for(0),
-                _heading_for(1),
-                kicker=_step_counter(BrandWizardState.step, len(STEPS)),
-                title_size="8",
-            ),
-            page_body(
-                rx.vstack(
-                    rx.vstack(
-                        rx.cond(
-                            CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
-                        ),
-                        rx.cond(
-                            CreativeState.kit_notice != "",
-                            callout(CreativeState.kit_notice, "ok", icon="circle-check"),
-                        ),
-                        spacing="3",
-                        width="100%",
-                        max_width="34rem",
-                        align_self="center",
-                        align_items="center",
-                    ),
-                    rx.cond(
-                        CreativeState.kit_loading,
-                        # No controls while loading — same shape `brand_connect_index` uses
-                        # for `BrandConnectState.analyzing`: a spinner, centred in the same
-                        # frame the real step would occupy, nothing to click yet.
-                        card(
-                            _loading_view("Cargando tu marca"),
-                            padding="1.75rem",
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            align_items="center",
-                            justify_content="center",
-                        ),
-                        card(
-                            rx.vstack(
-                                _window(),
-                                width="100%",
-                                max_width=_manual_column_width(),
-                                align_self="center",
-                                align_items="center",
-                                # Takes the card's free height and centres its content in it,
-                                # so a two-field step sits in the middle of its frame instead
-                                # of clinging to the top with a void above the controls.
-                                flex="1",
-                                justify_content="center",
-                            ),
-                            _controls(),
-                            padding="1.75rem",
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            flex_direction="column",
-                            justify_content="space-between",
-                            # `key` on the CARD itself, not just its content — request
-                            # 2026-09-05: the border/frame is part of what should settle in,
-                            # not just what's inside it. Keying only the inner vstack (the
-                            # first cut of this fix) left the card's own DOM node reused
-                            # across steps, so the border/shadow never moved — only the text
-                            # inside it did. Keying the whole `card()` forces IT to remount
-                            # too, which is what makes `page_body`'s own "q-settle" (the
-                            # card is one of ITS direct children) replay on every step
-                            # change, animating the frame and its content as one unit.
-                            key=BrandWizardState.step.to_string(),
-                            # `justify_content="space-between"` alone collapses to ~0 the
-                            # moment the fields fill the card's free height — true on a short
-                            # mobile viewport for most steps (Plan, Paleta, Enséñale a
-                            # hablar, Lo que nunca debe decir, Todo correcto...), pinning
-                            # Atrás/Continuar right under the content. `gap` sets a MINIMUM
-                            # the two flex items are never closer than, regardless of how
-                            # much free space is left — space-between still spreads any
-                            # space beyond it, so a short step still looks exactly as it did
-                            # before.
-                            gap="1.5rem",
-                        ),
-                    ),
-                    spacing="4",
-                    width="100%",
-                    # Fills the panel through `page_body` (`flex: 1 0 auto`) instead of
-                    # computing a height. No top/bottom padding of its own: `page_header`
-                    # (now a sibling, not a sibling-turned-first-child) already gives the
-                    # standard `PAD_HEADER` gap above, and `PAD_BODY` already leaves the
-                    # page's bottom gutter — stacking a manual 3rem on top of that was
-                    # only ever compensating for not using `page_header` in the first
-                    # place.
-                    flex="1",
-                    min_height="0",
-                ),
-            ),
+def _kit_notices() -> rx.Component:
+    return rx.vstack(
+        rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
+        rx.cond(
+            CreativeState.kit_notice != "",
+            callout(CreativeState.kit_notice, "ok", icon="circle-check"),
         ),
+        spacing="3",
+        width="100%",
+        max_width="34rem",
+        align_self="center",
+        align_items="center",
+    )
+
+
+def _frame_loading(content: rx.Component) -> rx.Component:
+    """A wait inside the step frame (the kit loading, a profile read, the search for
+    referentes): its own progress panel in the body; the head and its way out stay."""
+    return card(
+        content,
+        padding="1.75rem",
+        width="100%",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+    )
+
+
+def _frame_step(
+    window: rx.Component,
+    *,
+    subtitle: rx.Var[str],
+    column: rx.Var[str],
+    first_step: rx.Var[bool],
+    padding: rx.Var[str] | str = "1.75rem",
+) -> rx.Component:
+    """A step in the frame's body: its subtitle, then the step in its centred column
+    on a card. A guest keeps «Usar otro correo» on the first step."""
+    return rx.fragment(
+        rx.text(subtitle, size="3", color=T.TEXT_MUTED, width="100%"),
+        card(
+            rx.vstack(
+                window,
+                rx.cond(first_step, _change_email_button()),
+                width="100%",
+                max_width=column,
+                align_self="center",
+                align_items="center",
+                spacing="4",
+            ),
+            padding=rx.breakpoints(initial="1rem", sm=padding),
+            width="100%",
+            # a flex column, so the step's column centres in the card
+            display="flex",
+            flex_direction="column",
+        ),
+    )
+
+
+def _or_ready_frame(frame: rx.Component) -> rx.Component:
+    """The step frame, swapped for «Tu marca está lista» (a header and its body) while
+    `BrandWizardState.brand_ready` — never over a failed save."""
+    shown = BrandWizardState.brand_ready & (CreativeState.kit_error == "")
+    return rx.cond(
+        shown,
+        rx.fragment(page_header("Tu marca", title_size="8"), page_body(_brand_ready_card())),
+        frame,
+    )
+
+
+def brand_manual_index() -> rx.Component:
+    """The manual flow in the step frame (PASOS-4, m-24852243; docs/design-system.md
+    §4.5): «‹ Inicio» on every step, «Paso N de 7» with its bar and the step's name as
+    the h1 in the fixed head; the step in the body; Atrás · Seguir después · Siguiente
+    in the fixed foot. While the kit loads, the head stays and the foot waits."""
+    loading = CreativeState.kit_loading
+    return _wizard_shell(
+        _or_ready_frame(
+            step_frame(
+                _kit_notices(),
+                rx.cond(
+                    loading,
+                    _frame_loading(_loading_view("Cargando tu marca")),
+                    rx.fragment(
+                        rx.cond(
+                            BrandWizardState.steps_ready,
+                            step_sync(BrandWizardState.step_n, BrandWizardState.direction),
+                        ),
+                        _frame_step(
+                            _window(),
+                            subtitle=_heading_for(1),
+                            column=_manual_column_width(),
+                            first_step=BrandWizardState.step == 0,
+                        ),
+                    ),
+                ),
+                head=step_head(
+                    rx.cond(loading, "Tu marca", _heading_for(0)),
+                    step=BrandWizardState.step_n,
+                    total=len(STEPS),
+                    back_label=exit_label(),
+                    on_exit=BrandWizardState.leave,
+                ),
+                foot=rx.cond(loading, rx.fragment(), _controls()),
+                step=BrandWizardState.step_n,
+                direction=BrandWizardState.direction,
+                on_pop=BrandWizardState.pop_step,
+                on_leave=BrandWizardState.leave_frame,
+            )
+        )
     )
 
 
@@ -3089,7 +3207,7 @@ def brand_choice_index() -> rx.Component:
     social profile now, "Empezar de cero" as a parallel path stopped making sense.
     "Sí" walks straight into the scraper (`/brand/connect`); "No" detours through
     `brand_connect_setup_index` first, then joins the exact same door. Same framing
-    the old fork used: `page_header` (§ `_step_counter`'s docstring — the wizard's own
+    the old fork used: `page_header` (the wizard's own
     header was folded into the standard one) sits outside `page_body`, and the border
     below it grows to fill the panel (`flex="1"` on the card, `min_height` on this
     vstack so there is room to grow into) instead of stopping short and leaving bare
@@ -3630,6 +3748,66 @@ def seed_with_pills(
     return replace(seed, chosen_hashtags=tags), picks
 
 
+#: The connect flow's route: its `?paso=` is read only there (`load_saved_details` also
+#: runs on /brand and /brand/kit).
+CONNECT_ROUTE = "/brand/connect"
+_CREATOR_SKIPS = frozenset(
+    {_LOGO_QUESTION_STEP, _LOGO_UPLOAD_STEP, _TYPOGRAPHY_STEP, _PALETTE_STEP}
+)
+
+
+def connect_skipped(account_kind: str, logo_from_profile: bool) -> frozenset[int]:
+    """THE rule of which `CONNECT_STEPS` a session skips (`BrandConnectState.
+    _is_skipped`, see its docstring): the logo block for a creator; Tu logo while the
+    profile picture stands as the logo."""
+    skipped: set[int] = set()
+    if account_kind == "influencer":
+        skipped |= _CREATOR_SKIPS
+    if logo_from_profile:
+        skipped.add(_LOGO_UPLOAD_STEP)
+    return frozenset(skipped)
+
+
+def connect_visible(account_kind: str, logo_from_profile: bool) -> list[int]:
+    """The step indices this owner walks, in order."""
+    skipped = connect_skipped(account_kind, logo_from_profile)
+    return [index for index in range(len(CONNECT_STEPS)) if index not in skipped]
+
+
+def connect_position(step: int, account_kind: str, logo_from_profile: bool) -> tuple[int, int]:
+    """(N, M) of «Paso N de M» over the visible steps (`steps_vm.step_position`)."""
+    visible = [str(index) for index in connect_visible(account_kind, logo_from_profile)]
+    return step_position(str(step), visible)
+
+
+def connect_completes(
+    *,
+    profile_read: bool,
+    account_kind: str,
+    rubro_complete: bool,
+    identity: bool,
+    has_logo: str,
+    logo_done: bool,
+    palette: bool,
+) -> list[bool]:
+    """Whether each of the twelve `CONNECT_STEPS` is answered (the gates of
+    `_connect_requirement`; Tu cuenta and Esto es lo que vemos need a read profile)."""
+    return [
+        profile_read,
+        profile_read,
+        account_kind != "",
+        rubro_complete,
+        identity,
+        has_logo != "",
+        logo_done,
+        True,
+        palette,
+        True,
+        True,
+        True,
+    ]
+
+
 class BrandConnectState(rx.State):
     """Cursor and profile read for the connect flow. Kept apart from `BrandWizardState`
     so the two entry paths cannot fight over one cursor — the kit fields they share
@@ -3656,6 +3834,10 @@ class BrandConnectState(rx.State):
     voice_configured: bool = False
 
     step: int = 0
+    #: PASOS-4 (m-24852243): `data-dir` of the step frame's body, and whether this
+    #: route's load has decided the step (until then the address is not written).
+    direction: str = DIR_NEXT
+    steps_ready: bool = False
     network: str = ""
     username: str = ""
     analyzing: bool = False
@@ -3924,20 +4106,90 @@ class BrandConnectState(rx.State):
           that answer any more (§ request 2026-09-29), so in practice never.
         Lo que te proponemos and the Google Maps pair, which this used to skip
         conditionally, are gone altogether (§ request 2026-10-05)."""
-        if (
-            index
-            in (
-                _LOGO_QUESTION_STEP,
-                _LOGO_UPLOAD_STEP,
-                _TYPOGRAPHY_STEP,
-                _PALETTE_STEP,
-            )
-            and self.account_kind == "influencer"
-        ):
-            return True
-        if index == _LOGO_UPLOAD_STEP:
-            return self.logo_from_profile
-        return False
+        return index in connect_skipped(self.account_kind, self.logo_from_profile)
+
+    @rx.var
+    def step_n(self) -> int:
+        """«Paso N de M» and `?paso=N`, over the steps this owner walks (H5: a creator
+        skips the logo block, so the count never jumps from 5 to 10)."""
+        return connect_position(self.step, self.account_kind, self.logo_from_profile)[0]
+
+    @rx.var
+    def step_m(self) -> int:
+        return connect_position(self.step, self.account_kind, self.logo_from_profile)[1]
+
+    @rx.var
+    def is_last(self) -> bool:
+        return self.step == CONNECT_LAST
+
+    async def _completes(self) -> list[bool]:
+        """Whether each VISIBLE step is answered, in order (`connect_completes`)."""
+        wizard = await self.get_state(BrandWizardState)
+        creative = await self.get_state(CreativeState)
+        everything = connect_completes(
+            profile_read=bool(self.profile_username),
+            account_kind=self.account_kind,
+            rubro_complete=self._rubro_complete(),
+            identity=bool(creative.kit_positioning.strip() and creative.kit_audience.strip()),
+            has_logo=wizard.has_logo,
+            logo_done=(
+                bool(wizard.logo_versions or wizard.brand_extras)
+                if wizard.has_logo == "si"
+                else bool(wizard.logo_brief_1.strip())
+            ),
+            palette=bool(creative.kit_palette.strip()),
+        )
+        visible = connect_visible(self.account_kind, self.logo_from_profile)
+        return [everything[index] for index in visible]
+
+    async def _apply_step_param(self) -> None:
+        """`?paso=N` → the N-th VISIBLE step, never past the first unanswered one."""
+        raw = step_param(self)
+        if raw is None:
+            return
+        visible = connect_visible(self.account_kind, self.logo_from_profile)
+        target = guard_step(parse_step_param(raw, len(visible)), await self._completes())
+        index = visible[target - 1]
+        old = connect_position(self.step, self.account_kind, self.logo_from_profile)[0]
+        self.direction = step_direction(old, target, self.direction)
+        self._land(index)
+
+    @rx.event
+    def leave_frame(self) -> None:
+        """The frame unmounted: the next visit writes no address until its load."""
+        self.steps_ready = False
+
+    @rx.event
+    async def pop_step(self) -> None:
+        """The browser's «atrás»/«adelante» (`step_frame(on_pop=...)`). Idempotent."""
+        if self.steps_ready and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
+            await self._apply_step_param()
+
+    @rx.event
+    def primary(self) -> rx.event.EventSpec | None:
+        """The frame's primary: the finish on the last step, the count-up on the sort
+        step (`advance_to_insights`), «Siguiente» everywhere else."""
+        if self.step == CONNECT_LAST:
+            return BrandConnectState.finish
+        if self.step == _SORT_STEP:
+            return BrandConnectState.advance_to_insights
+        return BrandConnectState.next_step
+
+    @rx.event(background=True)
+    async def save_for_later(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Seguir después»: save, then Inicio (an account) — `leave_flow`."""
+        from .brand_finish import CONNECT_FLOW
+
+        async for event in leave_flow(self, CONNECT_FLOW, later=True):
+            yield event
+
+    @rx.event(background=True)
+    async def leave(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """The head's «‹ Inicio» / «‹ Tu correo»: save, then go — `leave_flow`."""
+        from .brand_finish import CONNECT_FLOW
+
+        async for event in leave_flow(self, CONNECT_FLOW, later=False):
+            yield event
 
     def _walk(self, start: int, direction: int) -> int:
         """From `start`, keep moving in `direction` past skipped steps. Steps 0 and
@@ -3950,6 +4202,8 @@ class BrandConnectState(rx.State):
     def _land(self, target: int) -> None:
         if target == _RUBRO_STEP:
             self.rubro_asked = True
+        if target != self.step:
+            self.direction = DIR_NEXT if target > self.step else DIR_BACK
         self.step = target
 
     @rx.var
@@ -3989,6 +4243,7 @@ class BrandConnectState(rx.State):
         when the answers differ from what the running search was seeded with —
         `run_discovery` handles the token; this only decides whether to fire it."""
         leaving_rubro = self.step == _RUBRO_STEP
+        self.direction = DIR_NEXT
         self._land(self._walk(min(self.step + 1, CONNECT_LAST), +1))
         if leaving_rubro and self._answers() != self.discovery_answers:
             return BrandConnectState.run_discovery
@@ -4014,6 +4269,7 @@ class BrandConnectState(rx.State):
         exactly the steps `next_step` walks forward over (`_is_skipped`)."""
         if self.step == 0:
             return rx.redirect("/brand")
+        self.direction = DIR_BACK
         self._land(self._walk(self.step - 1, -1))
         return None
 
@@ -5046,6 +5302,7 @@ class BrandConnectState(rx.State):
         # m-24842965: entering the wizard opens the steps, never a card left from before
         async with self:
             (await self.get_state(BrandWizardState)).brand_ready = _asks_for_ready_card(self)
+            on_route = self.router.url.path.rstrip("/") == CONNECT_ROUTE
         ids = await session_ids(self)
         saved = None
         if ids is not None:
@@ -5056,6 +5313,8 @@ class BrandConnectState(rx.State):
         if saved is None:
             async with self:
                 self.details_loaded = True  # nothing to read: the editor must not wait on it
+                if on_route:
+                    await self._enter_steps()
             return
         connect, profile = saved.details.connect, saved.details.profile
         raw_progress = (connect or {}).get(PROGRESS_KEY)
@@ -5117,6 +5376,14 @@ class BrandConnectState(rx.State):
                     self.metric_values = list(self.metric_targets)  # no count-up on entry
                 except (KeyError, TypeError, ValueError):
                     self._set_metrics([])
+            if on_route:
+                await self._enter_steps()
+
+    async def _enter_steps(self) -> None:
+        """PASOS-4: once the saved walk is back, `?paso=N` (guarded) decides the step,
+        and the address may be written from now on (`step_sync`). Under the lock."""
+        await self._apply_step_param()
+        self.steps_ready = True
 
     @rx.event
     async def finish_to_signals(self) -> rx.event.EventSpec | None:
@@ -7556,207 +7823,133 @@ def _connect_requirement() -> rx.Var[bool]:
 
 
 def _connect_controls() -> rx.Component:
-    """Same quiet chrome as the manual flow, with three exceptions: Tu cuenta has no
-    forward button (its network buttons read the profile, § 2026-10-05); the last screen
-    before the shared kit-setup steps begin (§ `shows_cancel`) offers Cancel rather
-    than Back; and the sort step's Continue kicks off the metric count-up
-    (`advance_to_insights`) instead of a plain step (the creator discovery itself
-    started long before, at the profile read). `right`'s Resultados e insights branch is
-    `_finish_button` — it replaces
-    Finalizar entirely (§ request 2026-09-05), not alongside it. `back` is never
-    disabled: `prev_step` redirects to `/brand` once already at step 0.
+    """The connect flow's foot in the step frame (PASOS-4). «Atrás» walks back over
+    exactly the steps «Siguiente» walks over (`_is_skipped`) and is never on step 1.
+    Tu cuenta has no primary: its network buttons read the profile (§ 2026-10-05). The
+    sort step's primary starts the metric count-up (`advance_to_insights`), the last
+    one is the finish (`_finish_button`'s label). Every forward button is gated by
+    `_connect_can_continue`. «Cancelar» (Esto es lo que vemos) moved into that step's
+    body as «No es mi cuenta» (`_not_my_account`): the foot's left slot is «Atrás»,
+    which keeps what was read."""
+    common: dict[str, Any] = {
+        "step": BrandConnectState.step_n,
+        "on_back": BrandConnectState.prev_step,
+        "on_later": BrandConnectState.save_for_later,
+    }
+    return rx.cond(
+        BrandConnectState.step == _ACCOUNT_STEP,
+        step_foot(None, on_primary=None, **common),
+        step_foot(
+            rx.cond(BrandConnectState.is_last, _finish_label(), NEXT_LABEL),
+            on_primary=BrandConnectState.primary,
+            primary_disabled=~_connect_can_continue(),
+            primary_loading=BrandConnectState.is_last & CreativeState.kit_saving,
+            **common,
+        ),
+    )
 
-    Every forward button (Continuar, not `_finish_button` — Confirmación
-    already passed this gate) carries `disabled=~_connect_can_continue()` (§ request
-    2026-09-09): a choice step with nothing selected, or a required field left
-    empty, no longer lets Continuar through un-set."""
-    forward_disabled = ~_connect_can_continue()
-    left = rx.cond(
-        BrandConnectState.shows_cancel,
-        rx.button(
-            "Cancelar",
-            # §5.5: destructive is `soft` + the error tone, not `ghost` + a literal
-            # color name — matches "Quitar" on the logo step.
-            variant="soft",
-            color_scheme=T.tone_scale("error"),
-            size="2",
-            radius=_CONTROL_RADIUS,
-            on_click=BrandConnectState.restart,
-            disabled=_connect_busy(),
-        ),
+
+def _not_my_account() -> rx.Component:
+    """Esto es lo que vemos: «No es mi cuenta» drops what was read and starts again
+    (`BrandConnectState.restart`, what «Cancelar» did there)."""
+    return rx.button(
+        rx.icon("rotate-ccw", size=T.ICON_SM),
+        "No es mi cuenta",
+        type="button",
+        variant="soft",
+        color_scheme="gray",
+        size="3",
+        radius=_CONTROL_RADIUS,
+        width="100%",
+        min_height="44px",
+        on_click=BrandConnectState.restart,
+        disabled=_connect_busy(),
+    )
+
+
+def _connect_column() -> rx.Var[str]:
+    # The deck (three panels around a card) needs more room than a field list, and so
+    # does Resultados with its lateral ranking; every other step keeps the 34rem.
+    return rx.cond(
+        BrandConnectState.step == _SORT_STEP,
+        _SORT_COLUMN_MAX,
         rx.cond(
-            # § request 2026-10-02: the first view has no Atrás — nothing to go back to;
-            # its slot, across from Continuar, holds the way back to the email screen
-            BrandConnectState.step == 0,
-            _change_email_button(),
-            rx.button(
-                rx.icon("chevron-left", size=T.ICON_SM),
-                "Atrás",
-                variant="ghost",
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandConnectState.prev_step,
-                disabled=_connect_busy(),
+            BrandConnectState.step == CONNECT_LAST,
+            _RESULTS_COLUMN_MAX,
+            _step_column_width(
+                BrandConnectState.step == _LOGO_UPLOAD_STEP,
+                BrandConnectState.step == _CONNECT_CONFIRM_STEP,
+                on_typography=BrandConnectState.step == _TYPOGRAPHY_STEP,
             ),
         ),
     )
-    right = rx.cond(
-        BrandConnectState.step == CONNECT_LAST,
-        _finish_button(BrandConnectState.finish),
-        rx.cond(
-            # Tu cuenta's network buttons are its way forward (§ 2026-10-05)
-            BrandConnectState.step == _ACCOUNT_STEP,
-            rx.fragment(),
-            rx.cond(
-                BrandConnectState.step == _SORT_STEP,
-                rx.button(
-                    "Continuar",
-                    rx.icon("chevron-right", size=T.ICON_SM),
-                    size="2",
-                    radius=_CONTROL_RADIUS,
-                    on_click=BrandConnectState.advance_to_insights,
-                    disabled=forward_disabled,
-                ),
-                rx.button(
-                    "Continuar",
-                    rx.icon("chevron-right", size=T.ICON_SM),
-                    size="2",
-                    radius=_CONTROL_RADIUS,
-                    on_click=BrandConnectState.next_step,
-                    disabled=forward_disabled,
-                ),
-            ),
-        ),
-    )
-    return rx.hstack(left, rx.spacer(), right, width="100%", align="center", spacing="3")
 
 
 def brand_connect_index() -> rx.Component:
-    """Same shape as `brand_manual_index`, `page_header` included (§ `_step_counter`'s
-    docstring): full-width header outside `page_body`, full-width border filling down
-    to the panel's bottom, fields in a narrow centred column at the top of the card,
-    and `_connect_controls()` spanning the card's full width, pinned to its bottom
-    corners. Two loading states, both a centred spinner with no footer row:
-    `CreativeState.kit_loading` on page load, `BrandConnectState.analyzing` mid-scrape."""
+    """The connect flow in the step frame (PASOS-4, m-24852243; §4.5): the head's «‹
+    Inicio» on every step and «Paso N de M» over the steps this owner walks (H5); the
+    foot fixed. Three waits keep their progress panels in the body, with the head (and
+    its way out) still there and no foot, so no step is skipped half-loaded: the kit
+    loading, the profile read (`analyzing`) and the search for referentes in front of
+    the sort step (`waiting_for_referentes`)."""
+    waiting = (
+        CreativeState.kit_loading
+        | BrandConnectState.analyzing
+        | BrandConnectState.waiting_for_referentes
+    )
     return _wizard_shell(
-        *_or_ready(
-            page_header(
-                _connect_heading_for(0),
-                _connect_heading_for(1),
-                kicker=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
-                title_size="8",
-            ),
-            page_body(
-                rx.vstack(
-                    rx.vstack(
-                        rx.cond(
-                            CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
-                        ),
-                        rx.cond(
-                            CreativeState.kit_notice != "",
-                            callout(CreativeState.kit_notice, "ok", icon="circle-check"),
-                        ),
-                        spacing="3",
-                        width="100%",
-                        max_width="34rem",
-                        align_self="center",
-                        align_items="center",
-                    ),
+        _or_ready_frame(
+            step_frame(
+                _kit_notices(),
+                rx.cond(
+                    CreativeState.kit_loading,
+                    _frame_loading(_loading_view("Cargando tu marca")),
                     rx.cond(
-                        CreativeState.kit_loading,
-                        card(
-                            _loading_view("Cargando tu marca"),
-                            padding="1.75rem",
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            align_items="center",
-                            justify_content="center",
-                        ),
+                        BrandConnectState.analyzing,
+                        _frame_loading(_connect_loading()),
                         rx.cond(
-                            BrandConnectState.analyzing,
-                            card(
-                                _connect_loading(),
-                                padding="1.75rem",
-                                width="100%",
-                                flex="1",
-                                display="flex",
-                                align_items="center",
-                                justify_content="center",
-                            ),
-                            rx.cond(
-                                # The sort step waits for the whole search behind its own
-                                # loading screen — no controls, so it cannot be skipped.
-                                BrandConnectState.waiting_for_referentes,
-                                card(
-                                    _referentes_loading(),
-                                    padding="1.75rem",
-                                    width="100%",
-                                    flex="1",
-                                    display="flex",
-                                    align_items="center",
-                                    justify_content="center",
-                                ),
-                                card(
-                                    rx.vstack(
-                                        _connect_window(),
-                                        width="100%",
-                                        # The deck (three panels around a card) needs more room
-                                        # than a field list, and so does Resultados with its
-                                        # lateral ranking; every other step keeps the 34rem.
-                                        max_width=rx.cond(
-                                            BrandConnectState.step == _SORT_STEP,
-                                            _SORT_COLUMN_MAX,
-                                            rx.cond(
-                                                BrandConnectState.step == CONNECT_LAST,
-                                                _RESULTS_COLUMN_MAX,
-                                                _step_column_width(
-                                                    BrandConnectState.step == _LOGO_UPLOAD_STEP,
-                                                    BrandConnectState.step == _CONNECT_CONFIRM_STEP,
-                                                    on_typography=BrandConnectState.step
-                                                    == _TYPOGRAPHY_STEP,
-                                                ),
-                                            ),
-                                        ),
-                                        align_self="center",
-                                        align_items="center",
-                                        flex="1",
-                                        justify_content="center",
+                            BrandConnectState.waiting_for_referentes,
+                            _frame_loading(_referentes_loading()),
+                            rx.fragment(
+                                rx.cond(
+                                    BrandConnectState.steps_ready,
+                                    step_sync(
+                                        BrandConnectState.step_n, BrandConnectState.direction
                                     ),
-                                    _connect_controls(),
+                                ),
+                                _frame_step(
+                                    rx.fragment(
+                                        _connect_window(),
+                                        rx.cond(
+                                            BrandConnectState.step == _PROFILE_STEP,
+                                            _not_my_account(),
+                                        ),
+                                    ),
+                                    subtitle=_connect_heading_for(1),
+                                    column=_connect_column(),
+                                    first_step=BrandConnectState.step == _ACCOUNT_STEP,
                                     padding=rx.cond(
                                         BrandConnectState.step == _SORT_STEP,
                                         _SORT_CARD_PADDING,
                                         "1.75rem",
                                     ),
-                                    width="100%",
-                                    flex="1",
-                                    display="flex",
-                                    flex_direction="column",
-                                    justify_content="space-between",
-                                    # Same mobile fix as `brand_manual_index`'s card — `gap`
-                                    # floors the distance to Atrás/Continuar so it cannot
-                                    # collapse to ~0 on a short viewport once the step's content
-                                    # fills the free height (Perfil, Lo que te proponemos,
-                                    # Resultados e insights, and the shared steps 5-11).
-                                    gap="1.5rem",
-                                    # `key` on the CARD itself, not just its content — same fix
-                                    # `brand_manual_index` gets: keying only the inner vstack
-                                    # left the card's own border/shadow node reused across
-                                    # steps, so the frame never moved, only the text inside it
-                                    # did. Keying the whole `card()` remounts it too, which is
-                                    # what makes `page_body`'s own "q-settle" (the card is one
-                                    # of its direct children) replay on every step change.
-                                    key=BrandConnectState.step.to_string(),
                                 ),
                             ),
                         ),
                     ),
-                    spacing="4",
-                    width="100%",
-                    flex="1",
-                    min_height="0",
                 ),
-            ),
-        ),
+                head=step_head(
+                    rx.cond(CreativeState.kit_loading, "Tu marca", _connect_heading_for(0)),
+                    step=BrandConnectState.step_n,
+                    total=BrandConnectState.step_m,
+                    back_label=exit_label(),
+                    on_exit=BrandConnectState.leave,
+                ),
+                foot=rx.cond(waiting, rx.fragment(), _connect_controls()),
+                step=BrandConnectState.step_n,
+                direction=BrandConnectState.direction,
+                on_pop=BrandConnectState.pop_step,
+                on_leave=BrandConnectState.leave_frame,
+            )
+        )
     )

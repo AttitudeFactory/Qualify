@@ -10,6 +10,8 @@ from qualify_api.home import HomeCounts
 
 from .conversations_vm import FILTER_PENDING, filter_from_param
 from .home_vm import (
+    BRAND_STEP_LABEL,
+    BRAND_URL,
     COMMENTS_URL,
     CONNECTIONS_URL,
     CONVERSATIONS_PENDING_URL,
@@ -57,6 +59,21 @@ def test_a_done_step_stays_with_its_check() -> None:
     created = build_home_vm(HomeCounts(has_publication=True))
     assert created.first_steps[1].label == "Creaste tu primera publicación"
     assert [s.done for s in created.first_steps] == [False, True]
+
+
+def test_an_unfinished_brand_is_the_first_thing_to_finish() -> None:
+    """PASOS-4 (m-24852243, N2): «Seguir después» on Tu marca lands on Inicio, which
+    shows what was left halfway, first, as a link back to it."""
+    vm = build_home_vm(HomeCounts(**_SET_UP), brand_done=False)
+    assert [(s.key, s.href, s.done) for s in vm.first_steps][0] == ("brand", BRAND_URL, False)
+    assert vm.first_steps[0].label == BRAND_STEP_LABEL
+    assert vm.first_steps_pending and not vm.all_clear
+    assert vm.first_steps_progress == "Llevas 2 de 3"
+    assert all(s.key != "brand" for s in build_home_vm(HomeCounts()).first_steps)
+    said = build_home_vm(
+        HomeCounts(), brand_done=False, brand_label="Termina tu marca: te falta tu logo"
+    )
+    assert said.first_steps[0].label == "Termina tu marca: te falta tu logo"
 
 
 def test_nothing_pending_and_set_up_is_all_clear() -> None:

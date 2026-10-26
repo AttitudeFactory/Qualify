@@ -22,7 +22,7 @@ from qualify_api.planner.gallery import GalleryState, gallery_state
 from qualify_api.planner.post_reader import PostSummary
 
 from .creative_provider import default_brand_id
-from .home_vm import HomeVM, build_home_vm
+from .home_vm import BRAND_STEP_LABEL, HomeVM, build_home_vm
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,16 @@ def _drafts_to_review(tenant_id: UUID) -> int | None:
     return count_needs_review(posts)
 
 
-def load_home(tenant_id: UUID) -> HomeVM:
+def _brand_left(tenant_id: UUID) -> str:
+    """Inicio's «Termina tu marca» line, with what the saved kit still misses."""
+    from . import brand_minimal_vm
+    from .brand_minimal import read_brand_facts
+
+    facts = read_brand_facts(tenant_id)
+    return brand_minimal_vm.brand_left_label(brand_minimal_vm.missing_steps(facts))
+
+
+def load_home(tenant_id: UUID, *, brand_done: bool = True) -> HomeVM:
     counts: HomeCounts = read_home_counts(tenant_id)
     try:
         to_review = _drafts_to_review(tenant_id)
@@ -49,7 +58,13 @@ def load_home(tenant_id: UUID) -> HomeVM:
         to_review = None
     if to_review is not None:
         counts = replace(counts, drafts_to_approve=to_review)
-    return build_home_vm(counts)
+    brand_label = BRAND_STEP_LABEL
+    if not brand_done:
+        try:
+            brand_label = _brand_left(tenant_id)
+        except Exception as exc:  # the line falls back to «Termina tu marca»
+            logger.warning("home brand facts failed: %s", type(exc).__name__)
+    return build_home_vm(counts, brand_done=brand_done, brand_label=brand_label)
 
 
 __all__ = ["count_needs_review", "load_home"]

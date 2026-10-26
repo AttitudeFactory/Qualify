@@ -101,6 +101,19 @@ def step_direction(old: int, new: int, current: str = DIR_NEXT) -> str:
     return DIR_BACK if new < old else DIR_NEXT
 
 
+def guard_step(requested: int, complete: Sequence[bool]) -> int:
+    """The step a deep link (``?paso=N``) may open: ``requested``, unless an earlier step
+    is still not valid — then the first such step (rule N6b: an address never skips a
+    step the owner has not answered). ``complete[i]`` says whether visible step ``i + 1``
+    is valid; the result is clamped to 1..len(complete)."""
+    m = max(len(complete), 1)
+    target = min(max(requested, 1), m)
+    for index, done in enumerate(complete[: target - 1]):
+        if not done:
+            return index + 1
+    return target
+
+
 def step_url(path: str, n: int, **params: str) -> str:
     """``path`` with ``?paso=n`` after any other non-empty parameters (`?volver=…`)."""
     return with_query(path, **params, **{STEP_PARAM: str(max(n, 1))})

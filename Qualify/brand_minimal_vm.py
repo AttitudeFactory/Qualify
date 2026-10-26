@@ -234,6 +234,80 @@ def step_complete(
     return False
 
 
+def step_completes(facts: KitFacts) -> list[bool]:
+    """Whether each of the five steps, in order, is answered — what `steps_vm.guard_step`
+    needs to keep `?paso=N` from opening past an unanswered step (PASOS-4, N6b). Tus
+    redes counts as answered with a read profile or «No tengo redes»."""
+    return [
+        facts.socials_answered,
+        facts.business_complete,
+        facts.has_logo_answer,
+        bool(facts.palette.strip()),
+        bool(facts.example.strip()),
+    ]
+
+
+#: The parameter `AuthState.require_login` adds when it sends an unfinished brand
+#: here from another page (`/brand?desde=responder`): the page names that page (N1).
+GATE_PARAM = "desde"
+
+#: How each step reads in «te faltan …» (Inicio, PASOS-4 UX review).
+MISSING_PARTS: dict[str, str] = {
+    STEP_SOCIALS: "tus redes",
+    STEP_BUSINESS: "tu negocio",
+    STEP_LOGO: "tu logo",
+    STEP_COLOURS: "tus colores",
+    STEP_VOICE: "cómo hablas",
+}
+
+
+def missing_steps(facts: KitFacts) -> list[str]:
+    """The step names still unanswered, in order."""
+    return [name for name, done in zip(STEP_NAMES, step_completes(facts), strict=True) if not done]
+
+
+def _steps_left(n: int) -> str:
+    return "te falta 1 paso" if n == 1 else f"te faltan {n} pasos"
+
+
+def gate_notice(entry_label: str, remaining: int) -> str:
+    """Why the owner landed here instead of the menu entry they tapped (N1: its name)."""
+    if remaining <= 0:
+        return f"Para usar {entry_label}, primero termina tu marca."
+    return f"Para usar {entry_label}, primero termina tu marca: {_steps_left(remaining)}."
+
+
+def _join(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} y {parts[-1]}"
+
+
+#: More missing parts than this and Inicio's line says the count instead (it would wrap
+#: past two lines at 360 px).
+_MAX_NAMED_PARTS = 2
+
+
+def brand_left_label(missing: list[str]) -> str:
+    """Inicio's «Termina tu marca» line: what is left, by name, or the count."""
+    if not missing:
+        return "Termina tu marca"
+    if len(missing) > _MAX_NAMED_PARTS:
+        return f"Termina tu marca: {_steps_left(len(missing))}"
+    verb = "te falta" if len(missing) == 1 else "te faltan"
+    return f"Termina tu marca: {verb} {_join([MISSING_PARTS[name] for name in missing])}"
+
+
+def logo_answered(has_logo: str, *, has_files: bool, brief: str, from_profile: str) -> bool:
+    """Tu logo is answered: the profile picture as logo, an upload on «Sí», or the first
+    brief question on «Todavía no» — the page's own gate (`_can_continue`), in Python."""
+    if has_logo == from_profile:
+        return True
+    if has_logo == "si":
+        return has_files
+    if has_logo == "no":
+        return bool(brief.strip())
+    return False
+
+
 #: What a step still needs, said under its controls while Continuar is off (UX review
 #: of m-24848529: a button that is off without a reason reads as «se trabó»). Tus redes
 #: has none: it shows no Continuar until a profile is read.

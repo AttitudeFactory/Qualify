@@ -51,12 +51,14 @@ def test_require_login_passes_when_authenticated() -> None:
 
 def test_a_session_without_a_finished_brand_kit_is_sent_to_make_it() -> None:
     """§ request 2026-10-02: logged in but no complete Brand Kit → the Brand Kit, from
-    every protected page and from `/`; the Brand Kit's own pages stay open."""
+    every protected page; the Brand Kit's own pages stay open. PASOS-4 (m-24852243,
+    N2): `/` (Inicio) opens too — «Seguir después» and «‹ Inicio» lead there, and it
+    lists «Termina tu marca» first."""
     state = _state()
     state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
     state.brand_kit_complete = False
     assert AuthState.require_login.fn(state) is not None
-    assert AuthState.require_login_or_brand_start.fn(state) is not None
+    assert AuthState.require_login_or_brand_start.fn(state) is None
     assert AuthState.require_brand_access.fn(state) is None
     state.brand_kit_complete = True
     assert AuthState.require_login.fn(state) is None
@@ -254,10 +256,13 @@ def test_the_brand_kit_is_only_its_views() -> None:
     ):
         assert "_wizard_shell(" in inspect.getsource(page), page.__name__
     assert "rail=False" in inspect.getsource(wiz._wizard_shell)
-    for controls in (wiz._controls, wiz._connect_controls):
-        source = inspect.getsource(controls)
-        # step 0: no Atrás; its slot holds the way back to the email screen
-        assert "step == 0" in source and "_change_email_button()" in source, controls.__name__
+    # PASOS-4 (m-24852243): the step frame — no Atrás on step 1 (`step_foot`), the way
+    # out in the head on every step; a guest keeps «Usar otro correo» on step 1
+    for page in (wiz.brand_manual_index, wiz.brand_connect_index):
+        source = inspect.getsource(page)
+        assert "step_head(" in source and "back_label=exit_label()" in source, page.__name__
+        assert "first_step=" in source, page.__name__
+    assert "_change_email_button()" in inspect.getsource(wiz._frame_step)
 
 
 def test_the_first_view_is_the_brand_kit_not_the_login() -> None:

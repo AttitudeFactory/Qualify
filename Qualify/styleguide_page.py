@@ -191,7 +191,7 @@ class StepsDemoState(rx.State):
     def go_back(self) -> rx.event.EventSpec:
         target = max(step_position(self.current, self._visible())[0] - 1, 1)
         self._show(target)
-        return go_to_step(STEPS_DEMO_ROUTE, target)
+        return go_to_step(STEPS_DEMO_ROUTE, target, back=True)
 
     @rx.event
     def later(self) -> rx.event.EventSpec:

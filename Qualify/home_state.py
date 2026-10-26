@@ -52,6 +52,7 @@ class HomeState(rx.State):
             self.session_lost = False
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id)
+            brand_done = auth.brand_kit_complete
         if tenant_id is None:
             async with self:
                 self.loading = False
@@ -59,7 +60,7 @@ class HomeState(rx.State):
                 self.session_lost = True
             return
         try:
-            vm = await asyncio.to_thread(load_home, tenant_id)
+            vm = await asyncio.to_thread(load_home, tenant_id, brand_done=brand_done)
         except SQLAlchemyError as exc:
             logger.error("home counts failed: %s", type(exc).__name__)
             async with self:
