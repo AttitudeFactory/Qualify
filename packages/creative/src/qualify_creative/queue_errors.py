@@ -1,6 +1,13 @@
-"""Shared presentation of a paid call whose acceptance needs reconciliation."""
+"""Shared, pure presentation of generation queue failures."""
 
 from qualify_creative.enums import FailureReason
+
+FINAL_EXPIRED_TEXT = (
+    "La vista previa de este video ya venció. "
+    "Crea una vista previa nueva para hacer el video final."
+)
+
+CANCELLED_TEXT = "Cancelamos tu video. Te devolvimos la creación."
 
 UNCERTAIN_REASON = FailureReason.SUBMISSION_UNCERTAIN.value
 UNCERTAIN_PUBLICATION_TEXT = (

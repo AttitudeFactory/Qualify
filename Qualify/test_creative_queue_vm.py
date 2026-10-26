@@ -56,3 +56,13 @@ def test_wait_label_matches_notice_and_returns_to_generation_once_sent() -> None
     assert queue_vm(queued=True, estimated_minutes=0).label == ""
     assert queue_vm(queued=False, estimated_minutes=6).label == ""
     assert queue_vm(cancelled=True).label == ""
+
+
+def test_cancelled_final_is_not_retryable_even_without_queue_visibility() -> None:
+    from qualify_creative.queue_errors import CANCELLED_TEXT
+
+    from Qualify.creative_vm import video_draft_vm
+
+    vm = video_draft_vm("failed", None, CANCELLED_TEXT, approved=True)
+    assert not vm.can_retry
+    assert vm.badge == "Cancelado"

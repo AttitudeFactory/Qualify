@@ -682,3 +682,44 @@ def test_retry_refuses_an_uncertain_final_without_dispatching_another_paid_task(
     with pytest.raises(InvalidTransition, match="equipo debe revisarlo"):
         service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
     assert dispatcher.finals == []
+
+
+@pytest.mark.parametrize("age", [7 * 86400 - 15 * 60 + 1, 7 * 86400, 8 * 86400])
+def test_retry_refuses_queue_deadline_failure_without_dispatch_or_message_replacement(
+    age: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.queue_errors import FINAL_EXPIRED_TEXT
+
+    now = 1_800_000_000
+    service, repo, dispatcher, draft_id, variant_id, finals = _setup()
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    dispatcher.finals.clear()
+    asset = repo.media[draft_id][0]
+    repo.set_video_draft(
+        tenant_id=TENANT_ID,
+        asset_id=asset.id,
+        changes={"status": DRAFT_FAILED, "created_at": now - age, "error": FINAL_EXPIRED_TEXT},
+    )
+    monkeypatch.setattr("qualify_api.creative.service.time.time", lambda: now)
+    with pytest.raises(DraftExpired) as expired:
+        service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert expired.value.detail == FINAL_EXPIRED_TEXT
+    assert dispatcher.finals == [] and finals.calls == []
+    assert repo._block(asset.id)["error"] == FINAL_EXPIRED_TEXT
+
+
+def test_retry_refuses_a_user_cancelled_final_without_a_free_generation() -> None:
+    from qualify_creative.queue_errors import CANCELLED_TEXT
+
+    service, repo, dispatcher, draft_id, variant_id, _ = _setup()
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    dispatcher.finals.clear()
+    asset = repo.media[draft_id][0]
+    repo.set_video_draft(
+        tenant_id=TENANT_ID,
+        asset_id=asset.id,
+        changes={"status": DRAFT_FAILED, "error": CANCELLED_TEXT, "failure_reason": "cancelled"},
+    )
+    with pytest.raises(InvalidTransition, match="Cancelamos tu video"):
+        service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert dispatcher.finals == []

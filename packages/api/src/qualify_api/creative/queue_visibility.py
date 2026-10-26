@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from qualify_creative.queue_errors import CANCELLED_TEXT
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
@@ -25,7 +26,6 @@ from qualify_api.creative.fsm import DRAFTING, DraftTrigger, apply_transition
 from qualify_api.creative.models import ContentDraft, ImageAsset
 
 logger = logging.getLogger(__name__)
-CANCELLED_TEXT = "Cancelamos tu video. Te devolvimos la creación."
 CANCEL_NOT_AVAILABLE = "Tu video ya se está preparando. Ya no se puede cancelar."
 LOAD_KEY = "qualify:creative-queue:public-load:v1"
 LOAD_TTL = 180
@@ -249,7 +249,7 @@ def _cancel_queued(*, tenant_id: UUID, draft_id: UUID, now: datetime | None = No
             ):
                 params = dict(asset.params or {})
                 block = dict(params.get("draft") or {})
-                block.update(status="failed", error=CANCELLED_TEXT)
+                block.update(status="failed", error=CANCELLED_TEXT, failure_reason="cancelled")
                 params["draft"] = block
                 asset.params = params
             refund_final_in_session(
