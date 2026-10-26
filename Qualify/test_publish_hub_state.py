@@ -456,3 +456,70 @@ async def test_changing_step_brings_the_assistant_into_view(
 
     assert forward is not None and back is not None
     assert state.step == STEP_WHAT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested", "files", "account", "expected"),
+    [
+        ("3", 0, "", STEP_WHAT),
+        ("3", 1, "", STEP_WHERE),
+        ("3", 1, "account", STEP_REVIEW),
+        ("bad", 1, "account", STEP_WHAT),
+    ],
+)
+async def test_step_address_never_skips_missing_files_or_account(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: str,
+    files: int,
+    account: str,
+    expected: int,
+) -> None:
+    posts, _ = _stub_flows(monkeypatch, posts_account=account)
+    _with_files(posts, *[f"photo-{i}.jpg" for i in range(files)])
+    monkeypatch.setattr(PublishHubState, "_requested_step", lambda self: requested)
+    state = PublishHubState()
+    await PublishHubState.read_step.fn(state)
+    assert state.step == expected
+
+
+@pytest.mark.asyncio
+async def test_seguir_despues_keeps_files_caption_flow_and_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts, _ = _stub_flows(monkeypatch, posts_account="account")
+    _with_files(posts, "photo.jpg")
+    posts.caption = "Texto que todavía estoy revisando"
+    monkeypatch.setattr(PublishHubState, "_requested_step", lambda self: None)
+    state = PublishHubState()
+    state.step = STEP_REVIEW
+    state.active_flow = FLOW_STORIES
+    result = await PublishHubState.leave.fn(state)
+    assert '"/"' in str(result)
+    await PublishHubState.enter_publish_page.fn(state)
+    assert state.step == STEP_REVIEW
+    assert state.active_flow == FLOW_STORIES
+    assert posts.caption == "Texto que todavía estoy revisando"
+    assert posts.pending_items[0].filename == "photo.jpg"
+
+
+@pytest.mark.asyncio
+async def test_fixed_primary_advances_without_publishing_before_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts, _ = _stub_flows(monkeypatch, posts_account="account")
+    _with_files(posts, "photo.jpg")
+    state = PublishHubState()
+    result = await PublishHubState.continue_or_publish.fn(state)
+    assert state.step == STEP_WHERE
+    assert result.handler.fn is not PublishState.publish.fn
+    assert "main.q-panel" in str(result.args)
+
+
+def test_session_reset_discards_the_unfinished_publication_marker() -> None:
+    state = PublishHubState()
+    state.resume_pending = True
+    state.step = STEP_REVIEW
+    state.reset()
+    assert not state.resume_pending
+    assert state.step == STEP_WHAT

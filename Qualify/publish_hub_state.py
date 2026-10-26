@@ -27,9 +27,10 @@ import reflex as rx
 from .publish_wizard_vm import (
     FLOW_POSTS,
     FLOW_STORIES,
-    SCROLL_TO_ASSISTANT,
     STEP_REVIEW,
     STEP_WHAT,
+    TOTAL_STEPS,
+    can_advance,
     done_message,
     next_step,
     previous_step,
@@ -37,6 +38,8 @@ from .publish_wizard_vm import (
 from .publishing_state import PublishState
 from .stories_state import StoriesState
 from .trending_state import TrendingState
+from .ui.steps import go_to_step, settle_step
+from .ui.steps_vm import DIR_BACK, DIR_NEXT, guard_step, parse_step_param, step_direction
 
 __all__ = ["FLOW_POSTS", "FLOW_STORIES", "PublishHubState", "can_switch_flow", "resolve_flow"]
 
@@ -62,7 +65,13 @@ def _replace_url_script(flow: str) -> str:
     # `replaceState`, not a navigation: a navigation would re-run `/publish`'s on_load
     # (and reload accounts) for what is only a change of view. Keeps react-router's
     # own `history.state` so its back/forward bookkeeping is untouched.
-    return f"window.history.replaceState(window.history.state, '', '{_FLOW_URLS[flow]}')"
+    return (
+        "window.history.replaceState(window.history.state, '', "
+        f"'{_FLOW_URLS[flow]}'+"
+        "(new URL(window.location.href).searchParams.has('paso') ? "
+        f"'{('&' if flow == FLOW_STORIES else '?')}paso=' + "
+        "new URL(window.location.href).searchParams.get('paso') : ''))"
+    )
 
 
 class PublishHubState(rx.State):
@@ -71,6 +80,9 @@ class PublishHubState(rx.State):
 
     active_flow: str = FLOW_POSTS
     step: int = STEP_WHAT
+    direction: str = DIR_NEXT
+    entered: bool = False
+    resume_pending: bool = False
     #: «Ideas para tu próxima publicación» — the trending panel, outside the steps.
     show_ideas: bool = False
     #: The network the last publish went to, captured in `publish_now` (the flows
@@ -83,7 +95,7 @@ class PublishHubState(rx.State):
         step 1 — or to step 3 when a publish is still running, so its progress is not
         hidden — a lingering «listo» from an earlier visit cleared, and the trending
         panel pointed at the chosen account."""
-        flow = resolve_flow(self._requested_flow())
+        flow = self.active_flow if self.resume_pending else resolve_flow(self._requested_flow())
         self.active_flow = flow
         self.show_ideas = False
         posts = await self.get_state(PublishState)
@@ -92,12 +104,20 @@ class PublishHubState(rx.State):
         if not can_switch_flow(posts.phase, stories.phase):
             self.step = STEP_REVIEW
         else:
-            self.step = STEP_WHAT
+            if not self.resume_pending:
+                self.step = STEP_WHAT
             if posts.phase == "success":
                 events.append(PublishState.reset_form)
             if stories.phase == "success":
                 events.append(StoriesState.reset_form)
+        requested = self._requested_step()
+        if requested is not None and can_switch_flow(posts.phase, stories.phase):
+            self.step = self._guarded_step(requested, posts)
+        self.direction = DIR_NEXT
+        self.entered = True
+        self.resume_pending = False
         events.append(TrendingState.follow_connection(posts.selected_connection_id))
+        events.append(settle_step())
         return events
 
     @rx.event
@@ -132,7 +152,8 @@ class PublishHubState(rx.State):
             flow=self.active_flow,
             connection_id=posts.selected_connection_id,
         )
-        return rx.call_script(SCROLL_TO_ASSISTANT)
+        self.direction = DIR_NEXT
+        return self._step_event()
 
     @rx.event
     async def go_back(self) -> rx.event.EventSpec | None:
@@ -143,7 +164,8 @@ class PublishHubState(rx.State):
         if not can_switch_flow(posts.phase, stories.phase):
             return None
         self.step = previous_step(self.step)
-        return rx.call_script(SCROLL_TO_ASSISTANT)
+        self.direction = DIR_BACK
+        return self._step_event(back=True)
 
     @rx.event
     async def publish_now(self) -> rx.event.EventSpec | None:
@@ -174,11 +196,75 @@ class PublishHubState(rx.State):
         """«Publicar otra»: an empty step 1 again, as a publication."""
         self.step = STEP_WHAT
         self.show_ideas = False
+        self.direction = DIR_BACK
+        self.entered = True
+        self.resume_pending = False
         events: list[rx.event.EventSpec] = [PublishState.reset_form, StoriesState.reset_form]
         if self.active_flow != FLOW_POSTS:
             self.active_flow = FLOW_POSTS
             events.append(rx.call_script(_replace_url_script(FLOW_POSTS)))
+        events.append(self._step_event(back=True))
         return events
+
+    def _step_event(self, *, back: bool = False) -> rx.event.EventSpec:
+        return go_to_step(
+            "/publish",
+            self.step,
+            back=back,
+            flow=FLOW_STORIES if self.active_flow == FLOW_STORIES else "",
+        )
+
+    def _requested_step(self) -> object:
+        try:
+            return self.router.url.query_parameters.get("paso")
+        except Exception:  # noqa: BLE001 — no router in offline state tests
+            return None
+
+    def _guarded_step(self, requested: object, posts: PublishState) -> int:
+        complete = [
+            can_advance(
+                step,
+                file_count=len(posts.pending_items),
+                flow=self.active_flow,
+                connection_id=posts.selected_connection_id,
+            )
+            for step in range(STEP_WHAT, TOTAL_STEPS + 1)
+        ]
+        return guard_step(parse_step_param(requested, TOTAL_STEPS), complete)
+
+    @rx.event
+    async def read_step(self) -> rx.event.EventSpec:
+        """Browser back restores a guarded step without clearing the selected files."""
+        posts = await self.get_state(PublishState)
+        stories = await self.get_state(StoriesState)
+        target = (
+            STEP_REVIEW
+            if not can_switch_flow(posts.phase, stories.phase)
+            else (self._guarded_step(self._requested_step(), posts))
+        )
+        self.direction = step_direction(self.step, target, self.direction)
+        self.step = target
+        return settle_step()
+
+    @rx.event
+    async def continue_or_publish(self) -> rx.event.EventSpec | None:
+        """The fixed primary keeps publication behind the owner's final click."""
+        if self.step == STEP_REVIEW:
+            return await PublishHubState.publish_now.fn(self)
+        return await PublishHubState.go_next.fn(self)
+
+    @rx.event
+    async def leave(self) -> rx.event.EventSpec | None:
+        posts = await self.get_state(PublishState)
+        stories = await self.get_state(StoriesState)
+        if not can_switch_flow(posts.phase, stories.phase):
+            return None
+        self.resume_pending = True
+        return rx.redirect("/")
+
+    @rx.event
+    def leave_frame(self) -> None:
+        self.entered = False
 
     @rx.event
     def toggle_ideas(self) -> None:

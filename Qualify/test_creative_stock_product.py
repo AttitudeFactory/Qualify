@@ -91,7 +91,8 @@ def test_continue_on_the_stock_tab_imports_first(monkeypatch: pytest.MonkeyPatch
     assert state.confirm_product() is not None  # chains confirm_stock_product
     assert state.product_confirmed is False
     state.set_product_tab("catalog")
-    assert state.confirm_product() is None and state.product_confirmed is True
+    state.selected_product_id = "catalog-product"
+    assert state.confirm_product() is not None and state.product_confirmed is True
 
 
 def test_the_imported_image_is_this_pieces_product_photo() -> None:

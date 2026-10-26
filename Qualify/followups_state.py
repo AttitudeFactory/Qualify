@@ -244,6 +244,7 @@ class FollowupsState(rx.State):
         """The route's `on_load`: `?vista=` picks the view (N5 — reloading or «atrás»
         lands on the view the address names); a `?consulta=<id>` opens this view on that
         card."""
+        self.flow_card_id = ""
         params = self.router.url.query_parameters
         self.view = view_from_param(str(params.get(VIEW_PARAM, "") or ""))
         wanted = str(params.get(QUERY_PARAM, "") or "")

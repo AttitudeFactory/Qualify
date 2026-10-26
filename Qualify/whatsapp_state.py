@@ -290,6 +290,13 @@ class WhatsAppState(rx.State):
 
         params = self.router.url.query_parameters
         flow = scalar_param(params, "flujo")
+        for cls in (
+            WhatsAppCampaignsState,
+            WhatsAppChatsState,
+            WhatsAppMenuState,
+            WhatsAppTemplatesState,
+        ):
+            (await self.get_state(cls)).flow_ready = False
         if flow != "promocion":
             state = await self.get_state(WhatsAppCampaignsState)
             state.wizard_open = False

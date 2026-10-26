@@ -11,6 +11,8 @@ from typing import Any
 
 import reflex as rx
 
+from .flow_history import _FLOW_INSTALL_SCRIPT
+
 _POP_SCRIPT = (
     "if (!window.__qRoutePop) { window.__qRoutePop = true;"
     " window.addEventListener('popstate', () => window.setTimeout(() =>"
@@ -26,6 +28,6 @@ def route_history(on_pop: Any, *, on_leave: Any | None = None) -> rx.Component:
         aria_hidden="true",
         class_name="q-route-pop",
         on_click=on_pop,
-        on_mount=rx.call_script(_POP_SCRIPT),
+        on_mount=rx.call_script(_POP_SCRIPT + _FLOW_INSTALL_SCRIPT),
         **({"on_unmount": on_leave} if on_leave is not None else {}),
     )
