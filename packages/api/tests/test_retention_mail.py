@@ -278,3 +278,42 @@ def test_daily_ticks_include_the_final_warning_at_exactly_24_hours_before_expiry
     chore()
     assert ticks == [due - timedelta(days=1), due]
     assert stages == [WarningStage.LAST_DAY]
+
+
+@pytest.mark.parametrize(
+    ("status", "definitive"), [(400, True), (429, True), (408, False), (500, False)]
+)
+def test_provider_distinguishes_rejected_from_unknown_acceptance(
+    monkeypatch, status, definitive
+) -> None:
+    from qualify_api.mail import MailError, MailRejected, OutgoingMail
+
+    monkeypatch.setattr(
+        "qualify_api.mail.httpx.post", lambda *a, **kw: httpx.Response(status, json={})
+    )
+    with pytest.raises(MailError) as caught:
+        ResendMailer("fake", "from@example.test").send(
+            OutgoingMail("to@example.test", "Subject", "HTML", "Text")
+        )
+    assert isinstance(caught.value, MailRejected) is definitive
+
+
+def test_warning_retry_chore_preserves_scope_and_respects_email_kill_switch(monkeypatch) -> None:
+    tenant = uuid4()
+    calls = []
+    monkeypatch.setattr(
+        retention_mail, "run_warning_retries", lambda scope, now: calls.append(scope)
+    )
+    monkeypatch.setattr(
+        retention_mail,
+        "send_tenant_warnings",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not stage new pieces")),
+    )
+    monkeypatch.setenv(retention_job.WARNING_ENV, "1")
+    monkeypatch.setenv(retention_job.EXECUTE_ENV, "off")
+    chore = retention_job.warning_retry_chore([tenant])
+    chore()
+    assert calls == [[tenant]]
+    monkeypatch.setenv(retention_job.WARNING_ENV, "off")
+    chore()
+    assert calls == [[tenant]]

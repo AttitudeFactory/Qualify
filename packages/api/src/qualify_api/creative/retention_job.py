@@ -92,13 +92,34 @@ def run_piece_purge(
     return reports
 
 
+def warning_emails_enabled() -> bool:
+    return os.environ.get(WARNING_ENV, "").strip().lower() not in _OFF
+
+
+def warning_retry_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
+    """Every-minute drain of frozen batches only, with the same explicit worker scope."""
+    scope = list(tenant_ids) if tenant_ids is not None else None
+
+    def run() -> None:
+        if not warning_emails_enabled():
+            return
+        try:
+            from qualify_api.creative.retention_mail import run_warning_retries
+
+            run_warning_retries(scope, datetime.now(UTC))
+        except Exception:
+            logger.exception("pieces.warning retry failed")
+
+    return run
+
+
 def daily_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
     """The calendar worker's chore: the same scope as its ticks; really deletes unless
     `QUALIFY_PIECE_PURGE_EXECUTE` says off (read on every run)."""
     scope = list(tenant_ids) if tenant_ids is not None else None
 
     def run() -> object:
-        if os.environ.get(WARNING_ENV, "").strip().lower() not in _OFF:
+        if warning_emails_enabled():
             try:
                 from qualify_api.creative.retention_mail import run_piece_warnings
 
