@@ -141,6 +141,11 @@ def main(
         from qualify_api.creative.vendor_recovery import recovery_chore  # noqa: PLC0415
 
         recovery = recovery_chore(scope_ids)
+    publish_load = None
+    if store is None and scope_ids is None:
+        from qualify_api.creative.worker.queue_load import production_load_chore  # noqa: PLC0415
+
+        publish_load = production_load_chore(pools=pools)
     chosen = dict(production_executors() if executors is None else executors)
     # Monitor only the production store; injected stores never reach Redis/webhooks.
     from qualify_api.creative.worker.operations import (  # noqa: PLC0415
@@ -157,6 +162,8 @@ def main(
                 original_recovery()
             except Exception:
                 logger.exception("creative.worker.legacy_recovery_failed")
+        if publish_load is not None:
+            publish_load()
         if monitor is not None:
             monitor.check(read_snapshot(now=monitor.clock(), tenant_ids=scope_ids))
 

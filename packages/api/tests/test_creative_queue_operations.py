@@ -268,3 +268,40 @@ def test_heartbeat_callback_failure_does_not_stop_claim_rounds() -> None:
         raise ConnectionError("redis offline")
 
     assert run_loop(worker, once=False, max_rounds=2, interval=0, on_round=failed_beat) == 0
+
+
+def test_maintenance_publishes_load_once_without_recursion_or_silencing_monitor(
+    monkeypatch,
+) -> None:
+    from qualify_api.creative.worker import __main__ as cli
+    from qualify_api.creative.worker import operations, queue_load
+
+    calls = []
+
+    class Monitor:
+        clock = staticmethod(lambda: NOW)
+        beat = staticmethod(lambda: None)
+
+        def check(self, snapshot):
+            calls.append("monitor")
+
+    def recovery():
+        calls.append("recover")
+
+    def loop(worker, **kwargs):
+        kwargs["sidecar"]()
+        return 0
+
+    monkeypatch.setattr(operations, "production_monitor", lambda ids=None: Monitor())
+    monkeypatch.setattr(operations, "read_snapshot", lambda **kwargs: Snapshot())
+    monkeypatch.setattr(
+        queue_load, "production_load_chore", lambda **kwargs: lambda: calls.append("public-load")
+    )
+    monkeypatch.setattr(cli, "run_loop", loop)
+    assert (
+        cli.main(
+            ["--all-tenants", "--once"], executors={}, recovery=recovery, install_signals=False
+        )
+        == 0
+    )
+    assert calls == ["recover", "public-load", "monitor"]

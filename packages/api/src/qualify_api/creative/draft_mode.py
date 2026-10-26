@@ -116,7 +116,7 @@ def final_retryable(
     the finals failed: still at its draft)."""
     if block is None:
         return False
-    if block.get("error") == FINAL_EXPIRED_TEXT:
+    if block.get("error") == FINAL_EXPIRED_TEXT or block.get("failure_reason") == "cancelled":
         return False
     if uncertain_error(block.get("failure_reason")) or uncertain_error(block.get("error")):
         return False

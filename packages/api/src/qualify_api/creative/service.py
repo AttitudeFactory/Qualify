@@ -59,6 +59,7 @@ from qualify_creative.providers import (
     Usage,
 )
 from qualify_creative.queue_errors import (
+    CANCELLED_TEXT,
     FINAL_EXPIRED_TEXT,
     UNCERTAIN_REASON,
     UNCERTAIN_VIDEO_TEXT,
@@ -2656,6 +2657,11 @@ class ContentService:
             raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
         now = time.time()
         all_assets = self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id)
+        if any(
+            (draft_state(asset.params) or {}).get("failure_reason") == "cancelled"
+            for asset in all_assets
+        ):
+            raise InvalidTransition(CANCELLED_TEXT)
         if any(
             uncertain_error((draft_state(asset.params) or {}).get("failure_reason"))
             or uncertain_error((draft_state(asset.params) or {}).get("error"))

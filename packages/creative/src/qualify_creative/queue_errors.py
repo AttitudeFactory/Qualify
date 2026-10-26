@@ -7,6 +7,8 @@ FINAL_EXPIRED_TEXT = (
     "Crea una vista previa nueva para hacer el video final."
 )
 
+CANCELLED_TEXT = "Cancelamos tu video. Te devolvimos la creación."
+
 UNCERTAIN_REASON = FailureReason.SUBMISSION_UNCERTAIN.value
 UNCERTAIN_PUBLICATION_TEXT = (
     "No pudimos confirmar el estado de tu publicación. "
