@@ -1037,6 +1037,7 @@ def variations_view() -> rx.Component:
                     rx.icon("sparkles", size=T.ICON_SM),
                     "Generar los ángulos",
                     size="3",
+                    min_height="44px",
                     disabled=~VariationsState.can_create,
                     loading=VariationsState.creating,
                     on_click=VariationsState.create_set,

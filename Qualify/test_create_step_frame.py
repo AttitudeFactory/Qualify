@@ -125,3 +125,19 @@ async def test_pending_draft_keeps_polling_after_returning_to_the_form(
     assert state.gen_draft == done
     assert not state.gen_generating
     assert not state.create_primary_disabled
+
+
+def test_mobile_kind_picker_opens_on_demand_and_closes_after_a_choice() -> None:
+    state = _chosen()
+    state.confirm_product()
+    assert not state.create_options_open
+    state.toggle_create_options()
+    assert state.create_options_open
+    state.choose_category("image")
+    assert state.gen_category == "image"
+    assert not state.create_options_open
+    assert state.selected_product_id == "catalog-product"
+    assert state.brief_topic == "El almuerzo de hoy"
+    state.toggle_create_options()
+    state.open_variations()
+    assert not state.create_options_open

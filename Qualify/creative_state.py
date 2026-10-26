@@ -1045,6 +1045,8 @@ class CreativeState(rx.State):
     #: `GEN_CATEGORIES` — "video" is Clip, whose type is an avatar kind; "ad" is the
     #: template's video. `brief_kind` stays the real `ContentKind`.
     gen_category: str = "script"
+    #: The full kind list opens on demand on narrow screens; desktop always shows it.
+    create_options_open: bool = False
     #: "create" = the chosen option's views; "discover" = the reels discovery (§ request
     #: 2026-10-14, QUA-223 §2), the panel's own button.
     gen_mode: str = "create"
@@ -2909,6 +2911,11 @@ class CreativeState(rx.State):
         return KIND_LABELS.get(self.brief_kind, "")
 
     @rx.event
+    def toggle_create_options(self) -> None:
+        if not self.gen_generating:
+            self.create_options_open = not self.create_options_open
+
+    @rx.event
     def choose_category(self, category: str) -> _Events:
         """One option of the panel. Clip opens on its first type unless one of its types
         is already chosen. Another option starts on its first view, with a finished
@@ -2917,6 +2924,7 @@ class CreativeState(rx.State):
             return None
         if self._video_product_conflict(category):
             return None
+        self.create_options_open = False
         self.gen_mode = "create"
         if category == self.gen_category and (
             category != "video" or self.video_type in VIDEO_TYPES
@@ -2942,6 +2950,7 @@ class CreativeState(rx.State):
     @rx.event
     def open_discover(self) -> rx.event.EventSpec:
         """The panel's «Descubrir ideas de videos» (ex «Descubrir reels»)."""
+        self.create_options_open = False
         self.gen_mode = "discover"
         return _scroll_to_view()
 
@@ -2950,6 +2959,7 @@ class CreativeState(rx.State):
         """The panel's «Variaciones» (m-24803289): ten visual angles of one catalog
         product. Its own state (`VariationsState`) owns the flow; this only puts the
         centre in that mode."""
+        self.create_options_open = False
         self.gen_mode = "variations"
         return _scroll_to_view()
 

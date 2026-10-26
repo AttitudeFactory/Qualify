@@ -343,6 +343,39 @@ def _options_panel() -> rx.Component:
     return rx.box(
         card(
             rx.vstack(
+                rx.hstack(
+                    rx.text(
+                        rx.match(
+                            CreativeState.gen_mode,
+                            ("variations", _VARIATIONS_HEADING[0]),
+                            ("discover", _DISCOVER_HEADING[0]),
+                            rx.match(
+                                CreativeState.gen_category,
+                                *[(key, title) for key, title, _, _ in CATEGORY_OPTIONS],
+                                "Crear publicación",
+                            ),
+                        ),
+                        size="2",
+                        weight="medium",
+                        flex="1",
+                        min_width="0",
+                    ),
+                    rx.button(
+                        rx.cond(CreativeState.create_options_open, "Cerrar opciones", "Cambiar"),
+                        on_click=CreativeState.toggle_create_options,
+                        variant="ghost",
+                        color_scheme="gray",
+                        size="2",
+                        min_height="44px",
+                        aria_expanded=CreativeState.create_options_open,
+                        aria_controls="create-kind-options",
+                        disabled=CreativeState.gen_generating,
+                    ),
+                    width="100%",
+                    align="center",
+                    spacing="2",
+                    display=rx.breakpoints({"0px": "flex", "900px": "none"}),
+                ),
                 rx.vstack(
                     rx.heading("¿Qué creamos?", size="4", as_="h2"),
                     rx.text("Elige qué hacer.", size="1", color=T.TEXT_MUTED),
@@ -359,8 +392,19 @@ def _options_panel() -> rx.Component:
                     ),
                     spacing="0",
                     align_items="start",
+                    display=rx.breakpoints({"0px": "none", "900px": "flex"}),
                 ),
-                _kind_picker(),
+                rx.box(
+                    _kind_picker(),
+                    id="create-kind-options",
+                    width="100%",
+                    display=rx.breakpoints(
+                        {
+                            "0px": rx.cond(CreativeState.create_options_open, "block", "none"),
+                            "900px": "block",
+                        }
+                    ),
+                ),
                 _product_chip(),
                 spacing="3",
                 width="100%",
