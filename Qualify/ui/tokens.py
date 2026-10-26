@@ -30,6 +30,8 @@ GAP = "var(--q-gap)"
 SIDEBAR_W = "var(--q-sidebar-w)"
 SIDEBAR_ZEN_W = "var(--q-sidebar-zen-w)"
 CONTENT_MAX = "var(--q-content-max)"
+SCROLL_MARGIN_TOP = "var(--q-sticky-header-height, 8rem)"
+"""The measured sticky header's height; safe fallback before its first measurement."""
 
 PAD_HEADER = f"1.5rem {PAGE_X} 1rem {PAGE_X}"
 """Page header block: title row + subtitle."""

@@ -108,10 +108,15 @@ def _progress_parts(
     return count, bar
 
 
-def step_progress(step: rx.Var[int] | int, total: rx.Var[int] | int) -> rx.Component:
+def step_progress(
+    step: rx.Var[int] | int,
+    total: rx.Var[int] | int,
+    *,
+    count_id: str | rx.Var[str] = COUNT_ID_DRAWER,
+) -> rx.Component:
     """«Paso N de M» over its full-width bar, for a drawer's fixed header
     (``drawer(..., step=step_progress(n, m))``), whose title it describes."""
-    count, bar = _progress_parts(step, total, COUNT_ID_DRAWER)
+    count, bar = _progress_parts(step, total, count_id)
     return rx.vstack(
         count, bar, spacing="1", align_items="end", width="100%", class_name="q-step-progress"
     )
