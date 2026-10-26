@@ -262,6 +262,8 @@ def _tab_body() -> rx.Component:
             messages_tab(),
         ),
         width="100%",
+        key=R.active_tab,
+        class_name="q-settle q-content-ready",
     )
 
 

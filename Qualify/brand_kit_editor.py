@@ -46,7 +46,7 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     _tone_sliders,
     _typography_editor,
 )
-from .ui import app_shell, callout, card, page_body, page_header, tone_badge
+from .ui import app_shell, callout, card, page_body, page_header, skeleton_card, tone_badge
 from .ui import tokens as T
 from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
@@ -569,7 +569,7 @@ def _summary_view() -> rx.Component:
         width="100%",
         max_width="46rem",
         align_self="center",
-        class_name="q-settle",
+        class_name="q-settle q-content-ready",
     )
 
 
@@ -596,7 +596,19 @@ def brand_edit_index() -> rx.Component:
                     CreativeState.kit_notice != "",
                     callout(CreativeState.kit_notice, "ok", icon="circle-check"),
                 ),
-                rx.cond(loading, _loading_view("Cargando tu marca"), _summary_view()),
+                rx.cond(
+                    loading,
+                    rx.vstack(
+                        skeleton_card(3),
+                        skeleton_card(3),
+                        skeleton_card(2),
+                        spacing="4",
+                        width="100%",
+                        aria_label="Cargando tu marca",
+                        aria_busy=True,
+                    ),
+                    _summary_view(),
+                ),
                 spacing="4",
                 width="100%",
             ),
