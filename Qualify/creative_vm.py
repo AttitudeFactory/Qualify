@@ -26,6 +26,7 @@ from typing import NamedTuple
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
 from qualify_creative.queue_errors import (
+    FINAL_EXPIRED_TEXT,
     UNCERTAIN_PUBLICATION_TEXT,
     UNCERTAIN_REASON,
     UNCERTAIN_VIDEO_TEXT,
@@ -1203,6 +1204,14 @@ def video_draft_vm(
             "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
             "y lo verás aquí cuando esté listo.",
             rendering=True,
+        )
+    if state in (VIDEO_FAILED, VIDEO_EXPIRED) and error == FINAL_EXPIRED_TEXT:
+        return VideoDraftVM(
+            VIDEO_EXPIRED,
+            "La vista previa venció",
+            "warn",
+            FINAL_EXPIRED_TEXT,
+            rendering=still_rendering,
         )
     if state == VIDEO_FAILED and uncertain_error(error):
         return VideoDraftVM(
