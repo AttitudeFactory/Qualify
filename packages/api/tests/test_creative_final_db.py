@@ -250,9 +250,14 @@ def _approve(draft_id: UUID) -> None:
 
 
 def test_the_read_seam_holds_back_an_approved_piece_until_its_final_is_in_place() -> None:
-    """Downstream modules read the Planificador's rule: a video still at its 480p draft
-    is not the piece that will be published."""
+    """The final remains gated until an approver confirms the exact viewed object."""
+    from uuid import uuid4
+
+    from qualify_shared.db.admin import admin_session
+
+    from qualify_api.creative.final_review import confirm_final, review_manifest
     from qualify_api.creative.read import approved_creative, list_approved
+    from qualify_api.tenancy.models import TenantMember, User
 
     repo = PostgresContentRepository()
     brand_id, draft_id, asset_id = _draft_with_video(repo)
@@ -273,6 +278,32 @@ def test_the_read_seam_holds_back_an_approved_piece_until_its_final_is_in_place(
         usage=(),
         spent_usd=Decimal("0"),
     )
+
+    # A legacy final with no human confirmation is still withheld from every consumer.
+    assert approved_creative(tenant_id=TENANT_F, draft_id=draft_id) is None
+    assert draft_id not in {
+        item.draft_id for item in list_approved(tenant_id=TENANT_F, brand_id=brand_id)
+    }
+    owner = uuid4()
+    with admin_session() as session:
+        session.add(
+            User(
+                id=owner,
+                tenant_id=TENANT_F,
+                email=f"final-review-{owner}@example.invalid",
+                display_name="Test",
+            )
+        )
+        session.flush()
+        session.add(TenantMember(tenant_id=TENANT_F, user_id=owner, role="owner"))
+    manifest = review_manifest(
+        tenant_id=TENANT_F,
+        draft_id=draft_id,
+        user_id=owner,
+        read_object=lambda key: b"exact final fixture bytes",
+    )
+    assert approved_creative(tenant_id=TENANT_F, draft_id=draft_id) is None
+    confirm_final(tenant_id=TENANT_F, draft_id=draft_id, user_id=owner, expected=manifest)
 
     artifact = approved_creative(tenant_id=TENANT_F, draft_id=draft_id)
     assert artifact is not None and str(artifact.image_object_key).endswith("clip-final.mp4")
