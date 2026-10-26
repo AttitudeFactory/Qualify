@@ -47,6 +47,7 @@ from qualify_creative.adapters.byteplus_ark import VendorBusy
 from sqlalchemy.exc import OperationalError
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.queue_dispatch import SubmissionUncertain
 from qualify_api.creative.vendor_timings import utcnow
 from qualify_api.creative.worker import lanes
 from qualify_api.creative.worker.downloads import DownloadGate
@@ -178,6 +179,7 @@ class CreativeWorker:
             lane=lane,
             vendor_priority=lanes.VENDOR_PRIORITY[lane],
             deadline=row.deadline,
+            claim_token=claim.claim_token,
         )
 
         task_id = row.vendor_task_id
@@ -195,8 +197,17 @@ class CreativeWorker:
                     busy.retry_after_seconds,
                 )
                 return DEFERRED
-            except Exception as exc:  # nothing reached BytePlus: not billed
-                logger.exception("creative.worker.submit_failed job_id=%s", claim.job_id)
+            except SubmissionUncertain:
+                logger.error("creative.worker.submission_uncertain job_id=%s", claim.job_id)
+                # Durable pre-POST not_before retains the slot across expired leases.
+                self.store.hand_back(claim, now=self.clock())
+                return INTERRUPTED
+            except Exception as exc:  # a local validation failure, before paid submission
+                logger.error(
+                    "creative.worker.submit_failed job_id=%s error_type=%s",
+                    claim.job_id,
+                    type(exc).__name__,
+                )
                 return self._end(claim, executor, ctx, None, "failed", error=type(exc).__name__)
             if not self.store.record_submission(claim, vendor_task_id=task_id, now=self.clock()):
                 # The claim was lost while submitting: the task is paid but not on this
@@ -270,8 +281,12 @@ class CreativeWorker:
                     executor.finish(ctx, task_id, status)
             else:
                 executor.finish(ctx, task_id, status)
-        except Exception:
-            logger.exception("creative.worker.finish_failed job_id=%s", claim.job_id)
+        except Exception as exc:
+            logger.error(
+                "creative.worker.finish_failed job_id=%s error_type=%s",
+                claim.job_id,
+                type(exc).__name__,
+            )
             attempts = attempts_hint.attempts if attempts_hint is not None else 0
             if attempts < MAX_FINISH_ATTEMPTS:
                 # Left claimed: the lease runs out, recovery requeues it (keeping the slot
@@ -315,6 +330,7 @@ def run_loop(
     once: bool,
     interval: float = DEFAULT_INTERVAL_SECONDS,
     sidecar: Callable[[], object] | None = None,
+    preparation: Callable[[], object] | None = None,
     sidecar_every: float = RECOVERY_EVERY_SECONDS,
     recover_every: float = RECOVER_EVERY_SECONDS,
     monotonic: Callable[[], float] = time.monotonic,
@@ -342,6 +358,8 @@ def run_loop(
                     next_sidecar = started + sidecar_every
             active = {f for f in active if not f.done()}
             try:
+                if preparation is not None:
+                    preparation()
                 if started >= next_recover:
                     worker.recover()
                     next_recover = started + recover_every
@@ -355,8 +373,8 @@ def run_loop(
                 if started - door_down_logged >= 60 or door_down_logged == 0.0:
                     logger.error("creative.worker.queue_door_unavailable", exc_info=True)
                     door_down_logged = started
-            except Exception:
-                logger.exception("creative.worker.round_failed")
+            except Exception as exc:
+                logger.error("creative.worker.round_failed error_type=%s", type(exc).__name__)
             rounds += 1
             if once:
                 for future in list(active):
@@ -378,14 +396,18 @@ def run_loop(
 def _guarded(job: Callable[[], object]) -> object:
     try:
         return job()
-    except Exception:
-        logger.exception("creative.worker.sidecar_failed")
+    except Exception as exc:
+        logger.error("creative.worker.sidecar_failed error_type=%s", type(exc).__name__)
         return None
 
 
 def _guarded_process(worker: CreativeWorker, claim: q.ClaimedJob) -> str:
     try:
         return worker.process(claim)
-    except Exception:
-        logger.exception("creative.worker.process_failed job_id=%s", claim.job_id)
+    except Exception as exc:
+        logger.error(
+            "creative.worker.process_failed job_id=%s error_type=%s",
+            claim.job_id,
+            type(exc).__name__,
+        )
         return INTERRUPTED

@@ -108,12 +108,23 @@ class PostgresQueueStore:
 
     def record_submission(self, claim: q.ClaimedJob, *, vendor_task_id: str, now: datetime) -> bool:
         with tenant_session(claim.tenant_id) as session:
-            return q.record_submission(
+            recorded = q.record_submission(
                 session,
                 job_id=claim.job_id,
                 claim_token=claim.claim_token,
                 vendor_task_id=vendor_task_id,
                 now=now,
+            )
+            if recorded:
+                return True
+            # Production adapters checkpoint the id in their created observer, before
+            # returning. Accept precisely that same id/token, never an overwrite.
+            row = q.load_job(session, claim.job_id)
+            return (
+                row is not None
+                and row.claim_token == claim.claim_token
+                and row.vendor_task_id == vendor_task_id
+                and row.status == q.SUBMITTED
             )
 
     def renew(self, claim: q.ClaimedJob, *, lease: timedelta, now: datetime) -> bool:

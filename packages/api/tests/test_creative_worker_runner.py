@@ -614,7 +614,10 @@ def test_the_cli_refuses_a_malformed_pool_config(monkeypatch: pytest.MonkeyPatch
     )
 
 
-def test_production_registers_no_executor_until_the_generator_enqueues() -> None:
+def test_production_registers_real_executors_for_both_vendor_pools() -> None:
     from qualify_api.creative.worker import __main__ as cli
+    from qualify_api.creative.worker.pipeline import PipelineExecutor
 
-    assert cli.production_executors() == {}
+    executors = cli.production_executors()
+    assert set(executors) == set(q.DEFAULT_POOL_SIZES)
+    assert all(isinstance(executor, PipelineExecutor) for executor in executors.values())
