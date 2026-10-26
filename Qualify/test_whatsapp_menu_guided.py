@@ -518,3 +518,16 @@ def test_history_deep_link_stops_at_the_first_missing_menu_answer(
     monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda self: params)
     state.restore_flow()
     assert state.guided_step == 1
+
+
+def test_browser_back_to_the_menu_root_resets_step_without_erasing_the_definition(monkeypatch):
+    from .whatsapp_menu_state import WhatsAppMenuState
+
+    state = WhatsAppMenuState()
+    state.guided_step = 2
+    state.welcome = "Hola, ¿qué necesitas?"
+    monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda _state: {})
+    state.restore_flow()
+    assert state.guided_step == 1
+    assert state.welcome == "Hola, ¿qué necesitas?"
+    assert not state.flow_ready

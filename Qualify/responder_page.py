@@ -290,7 +290,7 @@ def _who_is_waiting() -> rx.Component:
 
 def responder_index() -> rx.Component:
     return app_shell(
-        route_history(ResponderState.enter_page, on_leave=ResponderState.leave_page_flows),
+        route_history(ResponderState.enter_history, on_leave=ResponderState.leave_page_flows),
         responder_header(),
         page_body(
             _who_is_waiting(),
