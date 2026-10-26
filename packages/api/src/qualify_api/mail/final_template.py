@@ -117,17 +117,28 @@ def build_summary(
     ordered = sorted(
         videos,
         key=lambda v: (
-            not (v.scheduled_at and v.scheduled_at.astimezone(zone).date() == day),
+            not (not v.failed and v.scheduled_at and v.scheduled_at.astimezone(zone).date() == day),
             v.scheduled_at.timestamp() if v.scheduled_at else float("inf"),
             str(v.piece_id),
         ),
     )
     lines = [title, f"{greeting} {introduction}"]
-    rows = []
+    rows = ["<tbody>"]
+    in_today_group = bool(today)
     if today:
         lines.append("Sale hoy")
         rows.append('<tr><td colspan="2"><h2 style="font-size:18px">Sale hoy</h2></td></tr>')
     for video in ordered[:4]:
+        if in_today_group and not (
+            not video.failed
+            and video.scheduled_at
+            and video.scheduled_at.astimezone(zone).date() == day
+        ):
+            rows.append(
+                '</tbody><tbody><tr><td colspan="2" style="padding:12px 0">'
+                '<hr style="border:0;border-top:1px solid #e0e1e6"></td></tr>'
+            )
+            in_today_group = False
         url = review_url(base_url, video.piece_id)
         detail = FAILED if video.failed else schedule_label(video, day, zone)
         action = "Abrir ›" if video.failed else "Ver video ›"
@@ -145,6 +156,7 @@ def build_summary(
             f'<span class="mail-action" style="color:#008573">{action}</span></a></td></tr>'
         )
         lines.append(f"{video.title}\n{detail}\n{action} {url}")
+    rows.append("</tbody>")
     more = len(videos) - 4
     more_text = f"y {more} {'más' if more == 1 else 'más'} en Tu semana" if more > 0 else ""
     if more_text:
@@ -170,9 +182,10 @@ def build_summary(
         .panel{{background:#212225!important;color:#edeef0!important}}
         .panel a,.panel strong{{color:#edeef0!important}}
         .panel p,.panel span{{color:#b0b4ba!important}}
-        .panel .mail-action{{color:#0bd8b6!important}}}}</style></head>
-        <body style="margin:0;background:#f0f0f3;font-family:'IBM Plex
-        Sans',Arial,sans-serif;color:#1c2024">
+        .panel .mail-action{{color:#0bd8b6!important}}
+        .panel .mail-cta{{color:#fff!important}}}}</style></head>
+        <body style="margin:0;background:#f0f0f3;
+        font-family:'IBM Plex Sans',Arial,sans-serif;color:#1c2024">
         <div style="display:none;max-height:0;overflow:hidden">{escape(preheader)}</div>
         <table class="ground" role="presentation" width="100%" style="padding:20px
         12px"><tr><td align="center">
@@ -186,7 +199,7 @@ def build_summary(
         <table role="presentation" width="100%">{"".join(rows)}</table>
         <p>{escape(more_text)}</p><table role="presentation" width="100%"><tr>
         <td align="center" style="background:#008573;border-radius:12px">
-        <a href="{escape(target, quote=True)}"
+        <a class="mail-cta" href="{escape(target, quote=True)}"
         style="display:block;padding:14px;color:#fff;
         text-decoration:none;font-weight:bold">Revisar mis videos</a>
         </td></tr></table><p style="color:#60646c">{CALM}</p>
