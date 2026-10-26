@@ -237,7 +237,10 @@ jobs:
   # duration and the failed step, links. Built by .github/scripts/deploy_notify.py from the
   # job results plus the GitHub REST API (hence `actions: read`). Skipped when auto-deploy is
   # off and nothing was attempted. A missing webhook or an unreachable Lark never fails the
-  # deploy: it is a notice, not a gate. Lark answers HTTP 200 even when it rejects a message
+  # deploy: it is a notice, not a gate. Optional DEPLOY_EPIC_NOTIFICATIONS routes a separate
+  # application-bot post to the Meegle Feature's chat (deploy_epics.py). No extra job or
+  # trigger: normal API traffic adds seconds, within this job's existing 3-minute budget.
+  # Lark answers HTTP 200 even when it rejects a message
   # (keyword / signature), so the script checks its `code` too.
   #   secret  DEVOPS_WEBHOOK_URL     the custom bot's webhook:
   #                                  https://open.larksuite.com/open-apis/bot/v2/hook/<token>
@@ -254,14 +257,22 @@ jobs:
     permissions:
       contents: read # the commit's subject, author and PR
       actions: read # this run's jobs: durations and the failed step
+      pull-requests: read # tickets mentioned in the deployed PR
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github/scripts
-      - name: Post the deploy card to Lark Qualify-devs
+      - name: Notify Qualify-devs and the affected epic chats
         env:
           DEVOPS_WEBHOOK_URL: ${{ secrets.DEVOPS_WEBHOOK_URL }}
           DEVOPS_WEBHOOK_SECRET: ${{ secrets.DEVOPS_WEBHOOK_SECRET }}
+          DEPLOY_EPIC_NOTIFICATIONS: ${{ vars.DEPLOY_EPIC_NOTIFICATIONS }}
+          DEPLOY_EPIC_DRY_RUN: ${{ vars.DEPLOY_EPIC_DRY_RUN }}
+          DEPLOY_MEEGLE_PLUGIN_ID: ${{ vars.DEPLOY_MEEGLE_PLUGIN_ID }}
+          DEPLOY_MEEGLE_USER_KEY: ${{ vars.DEPLOY_MEEGLE_USER_KEY }}
+          DEPLOY_MEEGLE_PLUGIN_SECRET: ${{ secrets.DEPLOY_MEEGLE_PLUGIN_SECRET }}
+          DEPLOY_LARK_APP_ID: ${{ vars.DEPLOY_LARK_APP_ID }}
+          DEPLOY_LARK_APP_SECRET: ${{ secrets.DEPLOY_LARK_APP_SECRET }}
           GITHUB_TOKEN: ${{ github.token }}
           RESULT_RESOLVE: ${{ needs.resolve.result }}
           RESULT_IMAGES: ${{ needs.images.result }}

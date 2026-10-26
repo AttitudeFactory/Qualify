@@ -242,6 +242,48 @@ Montaje (una vez):
 7. **Aviso en el grupo `Qualify-devs` (Lark):** el job `notify` publica una tarjeta por cada deploy intentado (`.github/scripts/deploy_notify.py`): resultado (✅/❌ y en qué etapa), commit con su PR y autor, quién lo disparó (merge, manual o diario), acción (deploy/rollback), duración de `resolve` → `images` → `deploy` con el paso que falló, y botones a la corrida y a la app. Solo habla Lark (bot personalizado; ya no hay respaldo de Cliq). Para activarlo: en Lark, grupo *Qualify-devs → ⚙ Configuración → Bots → Añadir bot → Bot personalizado*, nombre «Qualify deploy»; en *Configuración de seguridad* marcar **Palabras clave personalizadas** = `Deploy` (todos los títulos la llevan) o **Verificación de firma** y copiar el secreto; copiar la URL del webhook. En GitHub, secreto `DEVOPS_WEBHOOK_URL` = `https://open.larksuite.com/open-apis/bot/v2/hook/<token>` y, si se eligió firma, `DEVOPS_WEBHOOK_SECRET`. Sin `DEVOPS_WEBHOOK_URL` el job sólo deja un aviso; un fallo o rechazo de Lark (responde 200 con `code ≠ 0`) deja un *warning* y nunca falla el deploy. El secreto `CLIQ_DEVOPS_WEBHOOK_URL` ya no se lee: borrarlo.
 8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY`. Con `merge` (o `true`) despliega cada push a `main`, es decir, cada merge. Con `daily` despliega una vez al día (07:23 UTC), solo si `main` cambió. Con cualquier otro valor no despliega solo. Comandos y calendario en el README, sección «Operación en producción».
 
+### Avisos al chat de cada épica (m-24822994)
+
+El mismo job `notify` puede enviar además un mensaje por chat de épica. Lee los `m-<id>`
+del commit y su PR y, si encuentra un despliegue anterior exitoso entre las últimas cinco
+corridas exitosas, los commits incluidos desde ese destino. El destino anterior se toma del
+paso de despliegue, no del `head_sha` de Actions (un deploy manual puede usar otro commit).
+Consulta los Issues en Meegle, su campo **Feature** y el grupo de cada Feature. Dos épicas
+que comparten chat reciben un solo mensaje, con sus tickets. No mueve estados en Meegle.
+
+Un webhook de bot personalizado solo sirve para su grupo original. Para este envío se usa
+una **aplicación de Lark con capacidad de bot**, permiso `im:message:send_as_bot` y membresía
+en cada chat de épica. No se usa el token personal de un desarrollador. El plugin de Meegle
+debe poder leer los Issues y Features del espacio Qualify, actuando como el usuario configurado.
+
+Configurar en GitHub Actions, sin poner valores secretos en el repositorio:
+
+| Tipo | Nombre | Contenido |
+|---|---|---|
+| Variable | `DEPLOY_MEEGLE_PLUGIN_ID` | ID del plugin de Meegle |
+| Variable | `DEPLOY_MEEGLE_USER_KEY` | Miembro del espacio autorizado para las lecturas |
+| Secreto | `DEPLOY_MEEGLE_PLUGIN_SECRET` | Secreto del plugin |
+| Variable | `DEPLOY_LARK_APP_ID` | ID de la aplicación de Lark |
+| Secreto | `DEPLOY_LARK_APP_SECRET` | Secreto de la aplicación |
+| Variable | `DEPLOY_EPIC_NOTIFICATIONS` | `true` para habilitar; apagado por defecto |
+| Variable | `DEPLOY_EPIC_DRY_RUN` | `true` resuelve los chats sin enviar mensajes |
+
+Primero activar ambos interruptores para comprobar en el log la relación chat/épicas sin
+enviar nada. Después desactivar `DEPLOY_EPIC_DRY_RUN` y desplegar un PR con un ticket ligado
+a una épica cuyo chat incluya al bot; comprobar un mensaje con el resultado y el enlace a
+la corrida. El envío usa una clave por corrida/intento/chat para deduplicar reintentos.
+Una repetición de Actions es otro intento y puede producir otro aviso.
+
+Si no hay destino anterior, un rollback o una divergencia, solo se enruta el commit destino.
+El rango se limita a 100 commits y 100 tickets: un rango truncado cancela los avisos por
+épica, con un warning, en lugar de presentar una lista parcial como completa. Los tickets
+sin épica/chat quedan identificados en el log. Sin credenciales, ante un error de Meegle o
+si el bot no está en un chat, el despliegue mantiene su resultado y el aviso general a
+Qualify-devs sigue funcionando. Un rechazo en un chat no impide intentar los restantes.
+No se añade ningún job ni trigger de Actions; las llamadas van en el presupuesto de tres
+minutos del job existente. Los cambios de estado de tickets de Meegle son otra integración
+(`QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL`), no se activan con estos interruptores.
+
 Operación:
 
 | Tarea | Cómo |

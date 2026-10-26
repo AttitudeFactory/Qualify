@@ -181,6 +181,8 @@ from .stock_provider import import_video as import_stock_video
 from .stock_provider import search_from_kit as search_stock_from_kit
 from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
+from .ui.steps import go_to_step, settle_step
+from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
@@ -1046,11 +1048,20 @@ class CreativeState(rx.State):
     #: `GEN_CATEGORIES` — "video" is Clip, whose type is an avatar kind; "ad" is the
     #: template's video. `brief_kind` stays the real `ContentKind`.
     gen_category: str = "script"
+    #: The full kind list opens on demand on narrow screens; desktop always shows it.
+    create_options_open: bool = False
     #: "create" = the chosen option's views; "discover" = the reels discovery (§ request
     #: 2026-10-14, QUA-223 §2), the panel's own button.
     gen_mode: str = "create"
     #: The step in front, an index into `generator_steps` (CREAR-2 m-24848530).
     gen_step: int = 0
+    #: PASOS-5 (m-24852244): the step frame's slide direction ("next"/"back"), set by every
+    #: step-changing handler so the body enters from the side the owner moves to.
+    gen_direction: str = "next"
+    #: PASOS-5: `enter_create_step` has decided the step from `?paso=` (gates `step_sync`).
+    create_entered: bool = False
+    #: Set only when leaving a draft intentionally; logout resets the whole state.
+    create_resume_pending: bool = False
     #: The catalog product screen comes first (§ request 2026-10-14: "antes de aparecer
     #: el lateral bar quiero poder seleccionar un producto del catálogo"): False until
     #: the operator continues with a product or without one.
@@ -1891,6 +1902,114 @@ class CreativeState(rx.State):
     def gen_is_last_view(self) -> bool:
         return self._view_index() == len(self._gen_steps()) - 1
 
+    # -- PASOS-5 (m-24852244): the unified create flow as a 5-step step frame ---------------
+    #
+    # The create flow is one step frame across the product screen (step 1), the four
+    # creation steps (2-5) and the result (step 5's second face). The counter is always
+    # «Paso N de 5»: the product screen is step 1, the creation steps are 2-5, the result
+    # stays on step 5. M counts the product screen + this kind's real creation steps (N6:
+    # skipped steps never count). The deep-link guard keeps an owner without a product on
+    # step 1 (N6b). See `docs/design-system.md` §4.5, rule N6b.
+
+    #: The step keys the create flow's body dispatches on.
+    CREATE_STEP_PRODUCT = "product"
+    CREATE_STEP_FORM = "form"
+    CREATE_STEP_RESULT = "result"
+
+    #: The step the frame shows: "product" before a product is confirmed, "form" on the
+    #: creation steps, "result" once a piece is generated.
+    @rx.var
+    def create_step_key(self) -> str:
+        if not self.product_confirmed:
+            return self.CREATE_STEP_PRODUCT
+        if self.generator_view == "result":
+            return self.CREATE_STEP_RESULT
+        return self.CREATE_STEP_FORM
+
+    #: True when the frame owns the page (product, form, result — not discover/variations).
+    @rx.var
+    def create_uses_step_frame(self) -> bool:
+        if not self.product_confirmed:
+            return True
+        if self.gen_mode in ("discover", "variations"):
+            return False
+        return True
+
+    @rx.var
+    def create_step_m(self) -> int:
+        """The flow's total: 1 (product) + the creation steps this kind shows (N6)."""
+        return 1 + max(len(self._gen_steps()), 1)
+
+    @rx.var
+    def create_step_n(self) -> int:
+        """The flow's 1-based step: 1 = product, 2-5 = creation steps, 5 = result."""
+        if not self.product_confirmed:
+            return 1
+        if self.generator_view == "result":
+            return self.create_step_m
+        return self._view_index() + 2
+
+    @rx.var
+    def create_step_title(self) -> str:
+        """The step's name as the page's one ``h1`` (§4.5)."""
+        if not self.product_confirmed:
+            return "Elige el producto"
+        if self.generator_view == "result":
+            return "Tu publicación"
+        return GENERATOR_STEP_LABELS.get(self.gen_step_key, "Crear publicación")
+
+    @rx.var
+    def create_has_back(self) -> bool:
+        """«Atrás» is never on step 1 (the product screen): there the way out is «‹ Inicio»."""
+        return self.create_step_n > 1
+
+    @rx.var
+    def create_primary_label(self) -> str:
+        """The foot's primary: «Continuar» (product), «Siguiente» (steps 2-4),
+        «Crear» (step 5), «Revisar y aprobar» (result)."""
+        if not self.product_confirmed:
+            return "Continuar"
+        if self.generator_view == "result":
+            return "Revisar y aprobar"
+        if self.gen_is_last_view:
+            return "Crear"
+        return "Siguiente"
+
+    @rx.var
+    def create_primary_disabled(self) -> bool:
+        if not self.product_confirmed:
+            return not self.can_continue_product
+        if self.generator_view == "result":
+            return (
+                self.gen_draft_id == ""
+                or not self.gen_is_done
+                or (self.gen_draft is not None and self.gen_draft.queue.cancelled)
+            )
+        if self.gen_is_last_view:
+            return self.is_submitting or self.gen_generating or self.gen_exhausted != ""
+        return False
+
+    @rx.var
+    def create_reason(self) -> str:
+        """Why the primary is disabled, read beside the button (§5.8). Empty when valid."""
+        if not self.product_confirmed:
+            if self.product_tab == "stock":
+                return (
+                    "Elige al menos una imagen o video para continuar."
+                    if not self.stock_chosen
+                    else ""
+                )
+            return "Elige un producto para continuar." if not self.selected_product_id else ""
+        if self.generator_view == "result":
+            if self.gen_draft is not None and self.gen_draft.queue.cancelled:
+                return self.gen_draft.queue.note
+            return (
+                "Disponible cuando termine de crearse la publicación."
+                if not self.gen_is_done
+                else ""
+            )
+        return ""
+
     @rx.var
     def gen_sections(self) -> list[str]:
         """The sections the chosen kind shows (`generator_sections`)."""
@@ -1907,7 +2026,7 @@ class CreativeState(rx.State):
         if self.is_submitting:
             return True
         return (
-            self.generator_view == "result"
+            (self.generator_view == "result" or bool(self.gen_draft_id))
             and not self.gen_timed_out
             and (self.gen_draft is None or self.gen_draft.is_drafting)
         )
@@ -2801,6 +2920,11 @@ class CreativeState(rx.State):
         return KIND_LABELS.get(self.brief_kind, "")
 
     @rx.event
+    def toggle_create_options(self) -> None:
+        if not self.gen_generating:
+            self.create_options_open = not self.create_options_open
+
+    @rx.event
     def choose_category(self, category: str) -> _Events:
         """One option of the panel. Clip opens on its first type unless one of its types
         is already chosen. Another option starts on its first view, with a finished
@@ -2809,6 +2933,7 @@ class CreativeState(rx.State):
             return None
         if self._video_product_conflict(category):
             return None
+        self.create_options_open = False
         self.gen_mode = "create"
         if category == self.gen_category and (
             category != "video" or self.video_type in VIDEO_TYPES
@@ -2834,6 +2959,7 @@ class CreativeState(rx.State):
     @rx.event
     def open_discover(self) -> rx.event.EventSpec:
         """The panel's «Descubrir ideas de videos» (ex «Descubrir reels»)."""
+        self.create_options_open = False
         self.gen_mode = "discover"
         return _scroll_to_view()
 
@@ -2842,6 +2968,7 @@ class CreativeState(rx.State):
         """The panel's «Variaciones» (m-24803289): ten visual angles of one catalog
         product. Its own state (`VariationsState`) owns the flow; this only puts the
         centre in that mode."""
+        self.create_options_open = False
         self.gen_mode = "variations"
         return _scroll_to_view()
 
@@ -3465,43 +3592,55 @@ class CreativeState(rx.State):
         }
 
     @rx.event
-    def next_view(self) -> None:
+    def next_view(self) -> rx.event.EventSpec | None:
         """«Siguiente»: the next step. Nothing is checked here — only the summary says
         what is missing — so with the same kind and format as last time, writing the
-        topic and «Siguiente» reach «Crear» (CREAR-2)."""
+        topic and «Siguiente» reach «Crear» (CREAR-2). PASOS-5: writes ``?paso=N`` and
+        scrolls the panel to the top + focuses the title (N6b)."""
         self._flush_phrase_drafts()
+        old = self._view_index()
         self.gen_step = self._view_index() + 1
         self.gen_step = self._view_index()
+        self.gen_direction = DIR_NEXT if self._view_index() >= old else DIR_BACK
         self.create_error = ""
+        return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
 
     @rx.event
-    def prev_view(self) -> None:
-        """«Atrás»: the previous step; what was written stays in the state."""
+    def prev_view(self) -> rx.event.EventSpec:
+        """«Atrás»: the previous step; what was written stays in the state. PASOS-5:
+        writes ``?paso=N`` (back) and scrolls the panel to the top + focuses the title."""
         self._flush_phrase_drafts()
         self.gen_step = max(self._view_index() - 1, 0)
+        self.gen_direction = DIR_BACK
         self.create_error = ""
+        return go_to_step("/create", self.create_step_n, back=True)
 
     @rx.event
-    def go_to_view(self, index: str) -> None:
+    def go_to_view(self, index: str) -> rx.event.EventSpec | None:
         """A step of the step bar: any step, back or ahead — only the context is
-        required, and the summary says what is missing."""
+        required, and the summary says what is missing. PASOS-5: writes ``?paso=N``."""
         self._flush_phrase_drafts()
+        old = self._view_index()
         try:
             self.gen_step = int(index)
         except ValueError:
-            return
+            return None
         self.gen_step = self._view_index()
+        self.gen_direction = DIR_BACK if self._view_index() < old else DIR_NEXT
         self.create_error = ""
+        return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
 
     @rx.event
-    def edit_view(self, view: str) -> None:
+    def edit_view(self, view: str) -> rx.event.EventSpec | None:
         """A summary row's «Editar»: the step that holds `view`, with that step's «Más
         opciones» unfolded when the row lives behind it."""
         base, more, _ = view.partition(SHOW_MORE_SUFFIX)
         index = generator_step_of(self.gen_category, self.brief_kind, base)
         if index < 0:
-            return
+            return None
+        old = self._view_index()
         self.gen_step = index
+        self.gen_direction = DIR_BACK if index < old else DIR_NEXT
         if base == "rules":
             self.rules_open = True
         elif base == "campaign" or (base == "channel" and more):
@@ -3510,6 +3649,101 @@ class CreativeState(rx.State):
         elif more:
             self.show_more_open = True
         self.create_error = ""
+        return go_to_step(self._CREATE_ROUTE, self.create_step_n, back=index < old)
+
+    # -- PASOS-5 (m-24852244): the step frame's address and settle -----------------------
+
+    #: The create flow's route (the step frame writes ``/create?paso=N``).
+    _CREATE_ROUTE = "/create"
+
+    def _show_create_step(self, n: int) -> None:
+        """Show step ``n`` of the create flow (1 = product, 2-5 = creation steps).
+        A step past 1 without a product is refused (N6b: the guard). The result (step 5)
+        is shown only when a piece was generated; ``?paso=5`` opens the review step."""
+        m = self.create_step_m
+        n = min(max(n, 1), m)
+        if n == 1:
+            self.product_confirmed = False
+            self.generator_view = "form"
+            self.gen_direction = DIR_BACK
+            return
+        # A browser-forward from the product screen may restore the selected product.
+        # Unimported stock picks never count as a confirmed source.
+        if not self.selected_product_id:
+            self.generator_view = "form"
+            self.product_confirmed = False
+            return
+        self.product_confirmed = True
+        self.gen_step = n - 2  # paso 2 → gen_step 0 (show), paso 5 → gen_step 3 (review)
+        self.gen_step = self._view_index()  # clamp to the kind's real steps
+        # paso 5 with a generated piece shows the result; otherwise the review step.
+        if n >= m and self.generator_view == "result":
+            pass  # stay on the result
+        else:
+            self.generator_view = "form"
+
+    @rx.event
+    def enter_create_step(self) -> rx.event.EventSpec:
+        """The step frame's ``on_load`` (PASOS-5): reads ``?paso=N`` and shows that step,
+        guarding an owner without a product to step 1 (N6b). Idempotent — also the
+        ``on_pop`` handler (``step_frame(on_pop=...)``). The ``step_sync`` in the body
+        writes the address once this handler has decided the step (``create_entered``).
+        Returns ``settle_step`` (scroll the panel to the top + focus the title)."""
+        raw = self.router.url.query_parameters.get(STEP_PARAM, "")
+        m = self.create_step_m
+        requested = parse_step_param(raw, m) if raw else self.create_step_n
+        old = self.create_step_n
+        if self.gen_mode not in ("discover", "variations"):
+            self._show_create_step(requested)
+        if self.create_step_n != old:
+            self.gen_direction = DIR_BACK if self.create_step_n < old else DIR_NEXT
+        self.create_entered = True
+        self.create_resume_pending = False
+        return settle_step()
+
+    #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
+    pop_create_step = enter_create_step
+
+    @rx.event
+    def leave_create_frame(self) -> None:
+        """The frame unmounted: the next visit's first render must not write this
+        visit's step into the address before ``enter_create_step`` reads ``?paso=``."""
+        self.create_entered = False
+
+    @rx.event
+    def save_for_later(self) -> rx.event.EventSpec:
+        """«Seguir después» (N2, founder 2026-10-25): saves what the owner carries and
+        goes to Inicio, where a half-written piece appears with «Seguir»."""
+        self._flush_phrase_drafts()
+        self.create_resume_pending = bool(
+            self.selected_product_id or self.brief_topic.strip() or self.stock_picks
+        )
+        return rx.redirect("/")
+
+    @rx.event
+    def create_back(self) -> rx.event.EventSpec:
+        """One step back, including the product screen and the result's review."""
+        if self.generator_view == "result":
+            self.generator_view = "form"
+            self.gen_step = len(self._gen_steps()) - 1
+            self.gen_direction = DIR_BACK
+            return settle_step()
+        if self.gen_is_first_view:
+            return self.change_product()
+        return self.prev_view()
+
+    @rx.event
+    def create_continue(self) -> _Events:
+        """The fixed foot dispatches the current step's existing action."""
+        if self.create_primary_disabled:
+            return None
+        if not self.product_confirmed:
+            return self.confirm_product()
+        if self.generator_view == "result":
+            return self.review_in_drafts()
+        if self.gen_is_last_view:
+            return CreativeState.submit_generator_form
+        return self.next_view()
 
     # -- «Campaña» (m-24820838): the campaign the piece joins, optional ----------------
 
@@ -3755,16 +3989,24 @@ class CreativeState(rx.State):
     @rx.event
     def confirm_product(self) -> rx.event.EventSpec | None:
         """«Continuar» on the product screen: the side panel and the views appear. On
-        «Imagen de stock» the chosen image is imported first (`confirm_stock_product`)."""
+        «Imagen de stock» the chosen image is imported first (`confirm_stock_product`).
+        PASOS-5: writes ``?paso=2`` and scrolls the panel to the top + focuses the title."""
         if self.product_tab == "stock":
             return CreativeState.confirm_stock_product
+        if not self.can_continue_product:
+            return None
         self.product_confirmed = True
-        return None
+        self.gen_step = 0
+        self.gen_direction = DIR_NEXT
+        return go_to_step(self._CREATE_ROUTE, 2)
 
     @rx.event
-    def change_product(self) -> None:
-        """«Cambiar» beside the product: back to the product screen, inputs kept."""
+    def change_product(self) -> rx.event.EventSpec:
+        """«Cambiar» beside the product: back to the product screen, inputs kept.
+        PASOS-5: writes ``?paso=1`` (back) and settles."""
         self.product_confirmed = False
+        self.gen_direction = DIR_BACK
+        return go_to_step(self._CREATE_ROUTE, 1, back=True)
 
     @rx.event
     async def handle_reference_upload(self, files: list[rx.UploadFile]) -> None:
@@ -4508,9 +4750,11 @@ class CreativeState(rx.State):
     @rx.event
     def new_generation(self) -> rx.event.EventSpec:
         """«Crear otro»: the result goes away and the form, inputs kept, is back on top —
-        to try a variation."""
+        to try a variation. PASOS-5 (H8 sub): scrolls ``main.q-panel`` (never ``window``)
+        to the top + focuses the title, via the frame's ``settle_step``."""
         self._back_to_form()
-        return rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
+        self.gen_direction = DIR_BACK
+        return go_to_step(self._CREATE_ROUTE, self.create_step_n, back=True)
 
     def _back_to_form(self) -> None:
         self.generator_view = "form"
@@ -4525,8 +4769,8 @@ class CreativeState(rx.State):
     @rx.event(background=True)
     async def poll_generator(self) -> AsyncIterator[rx.event.EventSpec]:
         """The result view waits here: the draft is read until it leaves `drafting`
-        (an avatar video can take several minutes). Stops on its own when the operator
-        goes back to the form or starts another piece. When the piece lands it says so
+        (an avatar video can take several minutes). It keeps watching while the owner
+        reviews the form; starting another piece stops it. When the piece lands it says so
         (§ request 2026-10-09): a toast in the app, and the browser's own notification
         when the tab is not in front — generation goes on while the operator is away."""
         async with self:
@@ -4544,7 +4788,7 @@ class CreativeState(rx.State):
                 vm = None
             outcome = ""
             async with self:
-                if self.gen_draft_id != draft_id or self.generator_view != "result":
+                if self.gen_draft_id != draft_id:
                     return
                 if vm is not None:
                     self.gen_draft = vm
@@ -5569,10 +5813,7 @@ class CreativeState(rx.State):
             self.gen_slide = 0
             self.gen_timed_out = False
         yield CreativeState.poll_generator
-        yield rx.call_script(
-            "setTimeout(() => document.getElementById('gen-result')"
-            "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 150)"
-        )
+        yield settle_step()
 
     def _generator_form(self) -> dict[str, object]:
         """The generator's brief as `creative_provider.build_brief` takes it — what

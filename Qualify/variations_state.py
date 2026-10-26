@@ -139,6 +139,7 @@ class VariationsState(rx.State):
     #: Flat rows (`creative_provider.catalog_products`): id, name, photo_key, counts_label…
     products: list[dict[str, str]] = []
     products_loading: bool = False
+    products_loaded: bool = False
     product_id: str = ""
 
     # -- the chosen product, as the engine sees it ---------------------------------------
@@ -449,6 +450,7 @@ class VariationsState(rx.State):
             sets = ()
         async with self:
             self.products = [dict(row) for row in rows]
+            self.products_loaded = True
             self.sets = list(sets)
             self.products_loading = False
             if not self.products:

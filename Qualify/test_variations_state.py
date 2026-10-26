@@ -151,6 +151,7 @@ async def test_load_fills_the_catalog_picker(monkeypatch: pytest.MonkeyPatch) ->
     await VariationsState.load.fn(state)
     assert state.has_products and state.products[0]["name"] == "Shawarma mixto"
     assert state.error == "" and not state.products_loading
+    assert state.products_loaded
 
 
 async def test_an_empty_catalog_says_where_to_add_products(
@@ -160,7 +161,25 @@ async def test_an_empty_catalog_says_where_to_add_products(
     monkeypatch.setattr(module, "catalog_products", lambda *_: ())
     await VariationsState.load.fn(state)
     assert not state.has_products
+    assert state.products_loaded
     assert "Tus productos" in state.error
+
+
+async def test_loading_and_failed_reads_never_claim_the_catalog_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    assert not state.products_loaded
+
+    def fail_read(*_args):
+        assert state.products_loading
+        assert not state.products_loaded
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(module, "catalog_products", fail_read)
+    await VariationsState.load.fn(state)
+    assert not state.products_loading and not state.products_loaded
+    assert state.error == module._LOAD_FAILED
 
 
 # ---------------------------------------------------------------------------

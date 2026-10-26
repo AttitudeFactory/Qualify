@@ -69,7 +69,6 @@ import reflex as rx
 
 from .publish_hub_state import FLOW_POSTS, FLOW_STORIES, PublishHubState
 from .publish_wizard_vm import (
-    ASSISTANT_ID,
     REJECTED_FILE_HELP,
     REJECTED_FILE_TITLE,
     STEP_REVIEW,
@@ -87,7 +86,6 @@ from .trending_panel import trending_card
 from .ui import (
     app_shell,
     callout,
-    card,
     choice_card,
     choice_card_check,
     dropzone,
@@ -99,6 +97,7 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
+from .ui.steps import step_foot, step_frame, step_head, step_sync
 from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
 
 # Gallery redesign, part 2 (QUA-99 UX follow-up) — a stable DOM id `video_preview.py`
@@ -462,62 +461,16 @@ def _file_count() -> rx.Var[int]:
     return PublishState.pending_items.length()
 
 
-def _step_counter() -> rx.Component:
-    """«Paso N de 3» above the page title — same eyebrow treatment the Brand Kit
-    wizard passes to `page_header(kicker=…)`."""
-    return rx.text(
-        "Paso ",
-        PublishHubState.step,
-        f" de {TOTAL_STEPS}",
-        size="1",
-        weight="bold",
-        color=T.TEXT_MUTED,
-        letter_spacing="0.08em",
-        text_transform="uppercase",
-        aria_live="polite",
-    )
-
-
 def _step_panel(step: int, *children: rx.Component) -> rx.Component:
     """One step's content. Hidden — never unmounted — while another step shows, so
     going back finds every file, thumbnail and word where the owner left it (N6)."""
     return rx.vstack(
-        rx.heading(STEP_TITLES[step], size="4", as_="h2"),
         *children,
         spacing="4",
         width="100%",
         align_items="stretch",
         display=rx.cond(PublishHubState.step == step, "flex", "none"),
     )
-
-
-def _back_button() -> rx.Component:
-    return rx.button(
-        rx.icon("chevron-left", size=T.ICON_SM),
-        "Atrás",
-        on_click=PublishHubState.go_back,
-        disabled=_busy(),
-        variant="soft",
-        color_scheme="gray",
-        size="3",
-        min_height=_TARGET,
-    )
-
-
-def _next_button(enabled: rx.Var[bool]) -> rx.Component:
-    return rx.button(
-        "Siguiente",
-        rx.icon("chevron-right", size=T.ICON_SM),
-        on_click=PublishHubState.go_next,
-        disabled=~enabled,
-        size="3",
-        min_height=_TARGET,
-        flex_grow="1",
-    )
-
-
-def _step_footer(*buttons: rx.Component) -> rx.Component:
-    return rx.hstack(*buttons, spacing="3", width="100%", align="center")
 
 
 # -- ① ¿Qué vas a publicar? -------------------------------------------------
@@ -571,7 +524,6 @@ def _what_step() -> rx.Component:
             ),
             rx.fragment(),
         ),
-        _step_footer(_next_button(_file_count() > 0)),
     )
 
 
@@ -672,14 +624,10 @@ def _account_picker() -> rx.Component:
 
 
 def _where_step() -> rx.Component:
-    can_continue = (PublishState.selected_connection_id != "") & (
-        ~_is_stories() | (_file_count() == 1)
-    )
     return _step_panel(
         STEP_WHERE,
         _kind_choices(),
         _account_picker(),
-        _step_footer(_back_button(), _next_button(can_continue)),
     )
 
 
@@ -749,23 +697,6 @@ def _caption_field() -> rx.Component:
     )
 
 
-def _publish_button() -> rx.Component:
-    ready = rx.cond(
-        _is_stories(),
-        (_file_count() == 1) & (PublishState.selected_connection_id != ""),
-        PublishState.can_publish,
-    )
-    return rx.button(
-        rx.icon("send", size=18),
-        "Publicar",
-        on_click=PublishHubState.publish_now,
-        disabled=_busy() | ~ready,
-        size="4",
-        width="100%",
-        min_height=_TARGET,
-    )
-
-
 def _or_divider() -> rx.Component:
     """«o» between «Publicar» and the softer way out to Instagram."""
     return rx.hstack(
@@ -794,7 +725,6 @@ def _review_step() -> rx.Component:
             ),
             _caption_field(),
         ),
-        _publish_button(),
         rx.cond(_is_stories(), stories_status_block(), _status_block()),
         rx.cond(
             _is_stories(),
@@ -807,24 +737,67 @@ def _review_step() -> rx.Component:
             ),
             rx.fragment(),
         ),
-        _step_footer(_back_button()),
     )
 
 
-def _assistant_card() -> rx.Component:
-    return card(
-        rx.vstack(
-            _what_step(),
-            _where_step(),
-            _review_step(),
-            spacing="5",
-            width="100%",
-            align_items="stretch",
+def _assistant_frame() -> rx.Component:
+    can_continue = rx.cond(
+        PublishHubState.step == STEP_WHAT,
+        _file_count() > 0,
+        (PublishState.selected_connection_id != "")
+        & (_file_count() > 0)
+        & (~_is_stories() | (_file_count() == 1)),
+    )
+    ready = rx.cond(
+        _is_stories(),
+        (_file_count() == 1) & (PublishState.selected_connection_id != ""),
+        PublishState.can_publish,
+    )
+    reviewing = PublishHubState.step == STEP_REVIEW
+    reason = rx.cond(
+        _file_count() == 0,
+        "Elige al menos una foto o un video.",
+        rx.cond(
+            (PublishHubState.step == STEP_WHERE) & (PublishState.selected_connection_id == ""),
+            "Elige la cuenta donde vas a publicar.",
+            rx.cond(
+                (PublishHubState.step == STEP_WHERE) & _is_stories() & (_file_count() != 1),
+                STORY_NEEDS_ONE_FILE,
+                "",
+            ),
         ),
-        padding="1.5rem",
-        id=ASSISTANT_ID,
-        # Keep the step title clear of the sticky top bar when scrolled to.
-        scroll_margin_top="5rem",
+    )
+    return step_frame(
+        rx.cond(
+            PublishHubState.entered, step_sync(PublishHubState.step, PublishHubState.direction)
+        ),
+        _what_step(),
+        _where_step(),
+        _review_step(),
+        _ideas(),
+        head=step_head(
+            rx.match(PublishHubState.step, *STEP_TITLES.items(), STEP_TITLES[STEP_WHAT]),
+            step=PublishHubState.step,
+            total=TOTAL_STEPS,
+            back_label="Inicio",
+            on_exit=PublishHubState.leave,
+        ),
+        foot=step_foot(
+            rx.cond(reviewing, "Publicar", "Siguiente"),
+            step=PublishHubState.step,
+            on_primary=PublishHubState.continue_or_publish,
+            on_back=PublishHubState.go_back,
+            on_later=PublishHubState.leave,
+            primary_disabled=_busy() | rx.cond(reviewing, ~ready, ~can_continue),
+            primary_loading=_busy(),
+            reason=rx.cond(_busy() | reviewing, "", reason),
+        ),
+        # The gallery's native files and preview cache must stay mounted between
+        # steps. Its panels toggle visibility instead of using the frame's step key.
+        step=STEP_WHAT,
+        direction=PublishHubState.direction,
+        on_pop=PublishHubState.read_step,
+        on_leave=PublishHubState.leave_frame,
     )
 
 
@@ -895,17 +868,14 @@ def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar ahora",
         "Sube una foto o un video de tu teléfono y publícalo en tu Instagram.",
-        kicker=rx.cond(_is_done(), rx.fragment(), _step_counter()),
     )
 
 
 def publish_index() -> rx.Component:
-    main = rx.vstack(
-        rx.cond(_is_done(), _done_panel(), _assistant_card()),
-        _ideas(),
-        spacing="5",
-        width="100%",
-        max_width="40rem",
-        align_items="stretch",
+    return app_shell(
+        rx.cond(
+            _is_done(),
+            rx.fragment(publish_topbar(), page_body(_done_panel(), _ideas())),
+            _assistant_frame(),
+        )
     )
-    return app_shell(publish_topbar(), page_body(main))
