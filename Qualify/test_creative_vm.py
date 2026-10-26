@@ -767,7 +767,7 @@ def test_a_draft_video_is_badged_as_a_preview_without_money() -> None:
     assert expired.note == (
         "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva."
     )
-    assert video_draft_vm("final", None).badge == "Video final"
+    assert video_draft_vm("final", None).badge == "Video confirmado"
     assert video_draft_vm("", None) is NO_VIDEO_DRAFT
 
 
@@ -784,7 +784,7 @@ def test_draft_summary_shows_the_state_that_needs_the_operator_first() -> None:
     assert draft_summary([ready, old])[0] == "expired"
     assert draft_summary([{"resolution": "720p"}, None]) == ("", None, "")
     final = {"draft": {"status": "final", "created_at": now - 8 * 86400, "cost_usd": "0.5"}}
-    assert draft_summary([final])[0] == "final"  # a final never expires
+    assert draft_summary([final])[0] == "final_ready"  # legacy final needs human confirmation
 
 
 def test_a_final_left_rendering_by_a_dead_process_shows_as_retryable() -> None:
@@ -858,14 +858,22 @@ def test_every_screen_words_the_approval_notice_from_the_same_choice() -> None:
 
     failed = video_draft_vm("failed", None, "x", approved=True)
     kind, text, offer, offer_open = approval_notice(failed, elsewhere="Ábrela")
-    assert kind == "error" and text.endswith("Ábrela para reintentarlo.")
-    assert "programarlo" not in text and offer is False
+    assert (
+        kind == "error"
+        and text == "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+    )
+    assert "programarlo" not in text and offer is True
     assert offer_open is True  # m-24842981: «Ver publicación» goes with «Ábrela»
     kind, text, offer, offer_open = approval_notice(
         video_draft_vm("rendering", None), elsewhere="Ábrela en Por aprobar"
     )
-    assert kind == "info" and text.endswith("Ábrela en Por aprobar para ver cuándo está listo.")
-    assert offer is False and offer_open is True
+    assert (
+        kind == "info"
+        and text
+        == "Tu video final estará listo en unos minutos. "
+        "Te lo mostramos aquí para que lo confirmes."
+    )
+    assert offer is True and offer_open is True
     # on the publication's own page there is nowhere else to go
     assert approval_notice(video_draft_vm("rendering", None)).offer_open is False
     assert approval_notice(NO_VIDEO_DRAFT) == ("success", POST_APPROVED_TEXT, True, False)
@@ -903,7 +911,7 @@ def test_the_approval_notice_offers_a_day_and_time_only_when_nothing_holds_it_ba
     failed = video_draft_vm("failed", None, "x", approved=True)
     for video in (rendering, failed):
         notice = approval_notice(video, ready=True)
-        assert notice.offer_schedule is False and "Ahora elige" not in notice.text
+        assert notice.offer_schedule is True and "Ahora elige" not in notice.text
     assert final_pending_note(rendering) == FINAL_RENDERING_NOTE
     assert final_pending_note(failed) == FINAL_FAILED_NOTE
     assert final_pending_note(video_draft_vm("final", None)) == ""

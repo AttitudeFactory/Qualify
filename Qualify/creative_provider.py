@@ -40,6 +40,7 @@ from qualify_api.creative.draft_mode import (
     FINAL_STALE_SECONDS,
     draft_expires_at,
     draft_rendering,
+    draft_state,
     draft_summary,
 )
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
@@ -830,6 +831,16 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
                 retention.days_left(datetime.now(UTC)),
             ),
         )
+    if (
+        detail.revision > 1
+        and detail.status in {"drafting", "generated", "rejected"}
+        and any(draft_state(item.params) for item in detail.media)
+    ):
+        from .final_review_provider import pending_version_note
+
+        vm = dataclasses.replace(
+            vm, other_version_pending=pending_version_note(tenant_id, detail.id)
+        )
     return _with_download(tenant_id, detail, vm)
 
 
@@ -1134,6 +1145,19 @@ def _with_expiry(
     """A vista previa still waiting for approval says until when (founder, 2026-10-24):
     «Apruébala antes del jueves 30 de octubre para tener el video final.», in the
     business's zone. Nothing once approved, expired, or without a date."""
+    if video.state == "rendering" and any(
+        (param or {}).get("draft", {}).get("final_nightly") for param in params
+    ):
+        from .final_review_vm import FINAL_NIGHT_RUNNING_NOTE, FINAL_SCHEDULED_NOTE
+        from .inbox_provider import tenant_zone
+
+        local = datetime.now(UTC).astimezone(tenant_zone(tenant_id))
+        return dataclasses.replace(
+            video,
+            badge="Video final mañana",
+            tone="neutral",
+            note=(FINAL_NIGHT_RUNNING_NOTE if local.hour < 6 else FINAL_SCHEDULED_NOTE),
+        )
     if approved or video.state not in (VIDEO_DRAFT, VIDEO_FAILED):
         return video
     ends = draft_expires_at(params)

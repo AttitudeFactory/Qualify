@@ -289,9 +289,18 @@ class PlannerService:
         if output_port is not None:
             output = next(o for o in post.outputs if o.port == output_port)
             publishable, reason = output.is_publishable, output.unpublishable_reason
+            pending_final_ok = output.can_schedule_pending_final
         else:
             publishable, reason = post.is_publishable, post.unpublishable_reason
-        if not publishable:
+            pending_final_ok = post.can_schedule_pending_final
+        if not publishable and not (
+            pending_final_ok
+            and reason
+            in {
+                REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING],
+                REASON_TEXT[UnpublishableReason.MEDIA_FINAL_UNCONFIRMED],
+            }
+        ):
             raise PostNotSchedulable(f"{post.post_id} is not publishable: {reason}", reason=reason)
 
     @staticmethod

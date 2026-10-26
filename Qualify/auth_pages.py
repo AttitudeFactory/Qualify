@@ -189,6 +189,7 @@ def login_index() -> rx.Component:
         _error_banner(),
         rx.form(
             rx.vstack(
+                rx.el.input(type="hidden", name="next", value=AuthState.login_return),
                 email_field(default_value=AuthState.login_email_hint, auto_focus=True),
                 password_field(),
                 rx.link(

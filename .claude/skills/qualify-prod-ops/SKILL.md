@@ -84,3 +84,16 @@ Redis persistence is the existing Redis volume/snapshot: losing it may repeat al
 - **No beat >5 min:** inspect creative-worker status/logs, its queue-role credentials
   and the last deploy. The watchdog has a five-minute grace at first observation. Follow
   the normal deploy/restart authorization rules above; the alarm changes nothing itself.
+
+
+### Uncertain paid submissions (m-24852166)
+
+`creative.worker.submission_uncertain job_id=<internal id>` means the remote POST may
+have been accepted but its id could not be checkpointed. This is not a retryable vendor
+failure. The job stays queued with a future `not_before` and continues holding its slot
+until the provider's maximum 48-hour lifetime. `just creative-queue --json` exposes that
+occupied capacity, the queued count and expired slot leases; use the internal job id from
+worker logs to reconcile through its tenant session. No prompt, credential or raw vendor
+response is logged. Do not clear the eligibility fence or submit another paid task blindly.
+If the id was checkpointed, normal recovery polls that same id immediately. The client
+sees a review message with no retry action; the team must resolve the incident first.

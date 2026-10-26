@@ -25,6 +25,12 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
+from qualify_creative.queue_errors import (
+    UNCERTAIN_PUBLICATION_TEXT,
+    UNCERTAIN_REASON,
+    UNCERTAIN_VIDEO_TEXT,
+    uncertain_error,
+)
 from qualify_creative.schemas import CopyPayload, ImagePolicy
 
 from .ask_more_vm import balance_with_extras
@@ -95,6 +101,11 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     "credential_invalid": (
         "La clave del proveedor de IA no es válida o expiró.",
         "Renueva la clave de la plataforma",
+        "",
+    ),
+    UNCERTAIN_REASON: (
+        UNCERTAIN_PUBLICATION_TEXT,
+        "Escríbenos para revisarlo",
         "",
     ),
     "provider_error": (
@@ -984,6 +995,7 @@ class DraftVM:
     #: video), `draft`, `rendering`, `final`, `failed` or `expired` — and what the
     #: screen says about it.
     video_draft: VideoDraftVM = field(default_factory=lambda: NO_VIDEO_DRAFT)
+    other_version_pending: str = ""
 
 
 # -- Seedance 2.5 draft mode (m-24820142) --------------------------------------------------
@@ -992,6 +1004,8 @@ class DraftVM:
 #: that may import both keeps them equal: `test_creative_vm`).
 VIDEO_DRAFT = "draft"
 VIDEO_RENDERING = "rendering"
+VIDEO_FINAL_SCHEDULED = "final_scheduled"
+VIDEO_FINAL_READY = "final_ready"
 VIDEO_FINAL = "final"
 VIDEO_FAILED = "failed"
 VIDEO_EXPIRED = "expired"
@@ -1014,6 +1028,7 @@ class VideoDraftVM:
     #: A final is being made (this one, or another video of the piece while this
     #: state shows one that failed): the screen polls until none is left.
     rendering: bool = False
+    can_review_final: bool = False
     #: «Apruébala antes del jueves 30 de octubre para tener el video final.» — while
     #: the vista previa waits for approval (founder, 2026-10-24); "" otherwise.
     expiry_note: str = ""
@@ -1045,7 +1060,7 @@ def final_poll_step(video: VideoDraftVM) -> str:
     regenerated: back to a draft, or no draft video at all)."""
     if video.rendering:
         return FINAL_POLL_CONTINUE
-    if video.state == VIDEO_FINAL:
+    if video.state in {VIDEO_FINAL, VIDEO_FINAL_READY}:
         return FINAL_POLL_DONE
     if video.state in (VIDEO_FAILED, VIDEO_EXPIRED):
         return FINAL_POLL_FAILED
@@ -1097,22 +1112,26 @@ def approval_notice(
     Every screen that approves uses it — the piece's page, the gallery's quick approval,
     Variaciones. A screen that is not the piece's own page says where to open it
     (`elsewhere`: «Ábrela», «Ábrela en Por aprobar»)."""
+    if video.state == VIDEO_FINAL_SCHEDULED:
+        from .final_review_vm import FINAL_APPROVED_NOTE, FINAL_KEEP_NOTE
+
+        return ApprovalNotice(
+            "info", FINAL_KEEP_NOTE if elsewhere else FINAL_APPROVED_NOTE, ready, bool(elsewhere)
+        )
+    if video.state == VIDEO_FINAL_READY:
+        from .final_review_vm import FINAL_READY_NOTE
+
+        return ApprovalNotice("info", FINAL_READY_NOTE, ready, bool(elsewhere))
     if video.rendering:
-        tail = f" {elsewhere} para ver cuándo está listo." if elsewhere else ""
         return ApprovalNotice(
             "info",
-            f"Aprobada. Estamos preparando el video en alta calidad.{tail}",
-            False,
+            "Tu video final estará listo en unos minutos. "
+            "Te lo mostramos aquí para que lo confirmes.",
+            ready,
             bool(elsewhere),
         )
     if video.can_retry:
-        tail = f" {elsewhere} para reintentarlo." if elsewhere else " Puedes reintentarlo."
-        return ApprovalNotice(
-            "error",
-            f"Versión aprobada, pero no pudimos pedir el video final.{tail}",
-            False,
-            bool(elsewhere),
-        )
+        return ApprovalNotice("error", FINAL_FAILED_NOTE, ready, bool(elsewhere))
     if ready:
         return ApprovalNotice("success", approved, True)
     return ApprovalNotice("success", not_ready, False)
@@ -1126,16 +1145,14 @@ FINAL_PREPARING_LABEL = "Preparando el video final"
 #: The final's own note while it is not there yet, in the «Aprobada. Todavía no se
 #: publica.» card: why no day and time can be chosen yet.
 FINAL_RENDERING_NOTE = (
-    "Estamos preparando el video en alta calidad. Cuando esté listo podrás elegir cuándo sale."
+    "Tu video final estará listo en unos minutos. Te lo mostramos aquí para que lo confirmes."
 )
-FINAL_FAILED_NOTE = (
-    "No pudimos generar el video final. Reinténtalo y después podrás elegir cuándo sale."
-)
+FINAL_FAILED_NOTE = "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
 
 
 #: The toast when the final lands while the piece is on screen: it is still not out —
 #: choose when it goes out, or first see what is missing (m-24842978).
-FINAL_READY_TEXT = "Tu video ya está listo. Ahora elige cuándo sale."
+FINAL_READY_TEXT = "Tu video final está listo. Míralo y confírmalo para que salga."
 FINAL_READY_NOT_READY = "Tu video ya está listo. Revisa lo que falta antes de elegir cuándo sale."
 
 
@@ -1143,6 +1160,10 @@ def final_pending_note(video: VideoDraftVM) -> str:
     """Why an approved publication cannot be given a day and time because of its own
     video (m-24820142): its 1080p final is being made, or could not be ordered. Empty
     when its video does not hold it back."""
+    if video.state == VIDEO_FINAL_SCHEDULED:
+        return "Tu video final estará listo mañana temprano."
+    if video.state == VIDEO_FINAL_READY:
+        return "Tu video final está listo. Míralo y confírmalo para que salga."
     if video.rendering:
         return FINAL_RENDERING_NOTE
     if video.can_retry:
@@ -1184,14 +1205,30 @@ def video_draft_vm(
             "Es una vista previa en calidad baja, para que decidas rápido. Al aprobarla "
             "preparamos el mismo video en alta calidad.",
         )
-    if state == VIDEO_RENDERING:
+    if state == VIDEO_FINAL_SCHEDULED:
+        return VideoDraftVM(
+            state, "Video final mañana", "neutral", "Tu video final estará listo mañana temprano."
+        )
+    if state == VIDEO_FINAL_READY:
         return VideoDraftVM(
             state,
-            FINAL_PREPARING_LABEL,
-            "info",
-            "Estamos preparando el video en alta calidad. Tarda unos minutos; puedes salir "
-            "y lo verás aquí cuando esté listo.",
-            rendering=True,
+            "Revisa el video",
+            "warn",
+            "Tu video final está listo. Míralo y confírmalo para que salga.",
+            can_review_final=True,
+        )
+    if state == VIDEO_RENDERING:
+        return VideoDraftVM(
+            state, FINAL_PREPARING_LABEL, "info", FINAL_RENDERING_NOTE, rendering=True
+        )
+    if state == VIDEO_FAILED and uncertain_error(error):
+        return VideoDraftVM(
+            state,
+            "En revisión",
+            "warn",
+            UNCERTAIN_VIDEO_TEXT,
+            can_retry=False,
+            rendering=still_rendering,
         )
     if state == VIDEO_FAILED and not approved:
         return VideoDraftVM(
@@ -1218,7 +1255,7 @@ def video_draft_vm(
             "Las vistas previas duran 7 días. Crea la publicación otra vez para tener una nueva.",
             rendering=still_rendering,
         )
-    return VideoDraftVM(state, "Video final", "ok", "")
+    return VideoDraftVM(state, "Video confirmado", "ok", "Video confirmado.", can_review_final=True)
 
 
 # -- piece retention (m-24828907) ----------------------------------------------------------

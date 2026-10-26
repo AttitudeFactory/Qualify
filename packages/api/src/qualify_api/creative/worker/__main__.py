@@ -77,9 +77,43 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def production_executors() -> dict[str, JobExecutor]:
-    """The executors by pool. Empty until the generator enqueues (m-24852166): with none,
-    no job is claimed and the worker runs only the recoveries."""
-    return {}
+    """Real submit/poll/finish executors for the prepared jobs of each vendor pool."""
+    from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter
+    from qualify_creative.adapters.byteplus_omnihuman import OmniHumanVideoAdapter
+
+    from qualify_api.creative.composition import (
+        ARK_BASE_URL,
+        ARK_BASE_URL_ENV,
+        DEFAULT_OMNIHUMAN_REQ_KEY,
+        DEFAULT_SEEDANCE_MODEL,
+        OMNIHUMAN_REQ_KEY_ENV,
+        SEEDANCE_MODEL_ENV,
+        production_content_service,
+    )
+    from qualify_api.creative.pipeline import PipelineStore
+    from qualify_api.creative.worker.pipeline import PipelineExecutor
+
+    service = production_content_service()
+    store = PipelineStore()
+    return {
+        q.SEEDANCE_POOL: PipelineExecutor(
+            service,
+            store,
+            SeedanceVideoAdapter(
+                model=os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL,
+                base_url=os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL,
+            ),
+            "seedance",
+        ),
+        q.OMNIHUMAN_POOL: PipelineExecutor(
+            service,
+            store,
+            OmniHumanVideoAdapter(
+                req_key=os.environ.get(OMNIHUMAN_REQ_KEY_ENV) or DEFAULT_OMNIHUMAN_REQ_KEY,
+            ),
+            "omnihuman",
+        ),
+    }
 
 
 def main(
@@ -156,11 +190,38 @@ def main(
         ",".join(sorted(chosen)) or "none",
         gate.limit,
     )
+    preparation = None
+    if executors is None:
+        from qualify_api.creative.composition import production_content_service
+        from qualify_api.creative.pipeline import PipelineStore
+        from qualify_api.creative.worker.pipeline import PipelinePreparation
+
+        prepare_pipeline = PipelinePreparation(
+            production_content_service(), PipelineStore(), scope_ids
+        )
+        import time
+
+        from qualify_api.creative.final_review import nightly_maintenance
+
+        next_night_maintenance = 0.0
+
+        def preparation() -> None:
+            nonlocal next_night_maintenance
+            now = time.monotonic()
+            if now >= next_night_maintenance:
+                next_night_maintenance = now + 60
+                try:
+                    nightly_maintenance(scope_ids)
+                except Exception:
+                    logger.exception("creative.worker.nightly_maintenance_failed")
+            prepare_pipeline()
+
     code = run_loop(
         worker,
         once=args.once,
         interval=args.interval,
         sidecar=maintenance,
+        preparation=preparation,
         sidecar_every=RECOVERY_EVERY_SECONDS,
         on_round=monitor.beat if monitor is not None else None,
     )

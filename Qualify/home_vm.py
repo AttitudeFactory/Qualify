@@ -132,8 +132,39 @@ def first_steps_progress_label(done: int, total: int) -> str:
     return f"Llevas {done} de {total}"
 
 
+def videos_review_label(total: int, late: int = 0) -> str:
+    if late and total <= 1:
+        return "1 video no salió: falta tu confirmación"
+    if late:
+        verb = "ya debía salir" if late == 1 else "ya debían salir"
+        return f"{total} videos esperan tu confirmación; {late} {verb}"
+    return _plural(total, "1 video listo para revisar", "{n} videos listos para revisar")
+
+
 def _today(counts: HomeCounts) -> list[TodayCardVM]:
+    intersection = counts.videos_ready_late
+    if intersection is None:
+        intersection = min(counts.videos_to_confirm, counts.videos_late)
+    review_total = counts.videos_to_confirm + counts.videos_late - intersection
     cards = [
+        TodayCardVM(
+            "final-review",
+            review_total,
+            videos_review_label(review_total, counts.videos_late),
+            "/planner?revisar=videos",
+            "clapperboard",
+        ),
+        TodayCardVM(
+            "final-failed",
+            counts.finals_failed,
+            _plural(
+                counts.finals_failed,
+                "1 video final no se pudo preparar",
+                "{n} videos finales no se pudieron preparar",
+            ),
+            "/planner?revisar=videos&fallos=1",
+            "triangle-alert",
+        ),
         TodayCardVM(
             "people",
             counts.people_waiting,

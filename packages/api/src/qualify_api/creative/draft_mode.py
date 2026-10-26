@@ -18,12 +18,15 @@ from decimal import Decimal
 from typing import Any
 
 from qualify_creative.adapters.byteplus_ark import DRAFT_TTL_SECONDS
+from qualify_creative.queue_errors import uncertain_error
 
 #: `params["draft"]["status"]`: the 480p draft waiting for approval; the final being
 #: made; the final in place; the final failed (retried while the draft id lives).
 DRAFT_READY = "draft"
 DRAFT_RENDERING = "rendering"
 DRAFT_FINAL = "final"
+DRAFT_FINAL_SCHEDULED = "final_scheduled"
+DRAFT_FINAL_READY = "final_ready"
 DRAFT_FAILED = "failed"
 #: Client-facing: no vendor name (qualify-copy-es) — what the operator does next.
 DRAFT_EXPIRED_TEXT = (
@@ -43,7 +46,11 @@ def draft_state(params: Mapping[str, object] | None) -> Mapping[str, Any] | None
 def draft_pending(params: Mapping[str, object] | None) -> bool:
     """A video still at its 480p draft — not publishable until its final is in place."""
     block = draft_state(params)
-    return block is not None and block.get("status") != DRAFT_FINAL
+    if block is None:
+        return False
+    from qualify_api.creative.final_review import final_confirmed
+
+    return not final_confirmed(params, object_key=block.get("final_object_key"))
 
 
 def kept_raw_final(block: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -115,6 +122,8 @@ def final_retryable(
     the finals failed: still at its draft)."""
     if block is None:
         return False
+    if uncertain_error(block.get("failure_reason")) or uncertain_error(block.get("error")):
+        return False
     status = block.get("status") or DRAFT_READY
     if approved and status == DRAFT_READY:
         return True
@@ -135,7 +144,15 @@ def draft_rendering(params: list[Mapping[str, object] | None], now: float | None
 DRAFT_EXPIRED = "expired"
 #: Which state a piece with several draft videos (a carousel) shows: the one that
 #: needs the operator first.
-_SUMMARY_ORDER = (DRAFT_EXPIRED, DRAFT_FAILED, DRAFT_RENDERING, DRAFT_READY, DRAFT_FINAL)
+_SUMMARY_ORDER = (
+    DRAFT_EXPIRED,
+    DRAFT_FAILED,
+    DRAFT_RENDERING,
+    DRAFT_FINAL_READY,
+    DRAFT_FINAL_SCHEDULED,
+    DRAFT_READY,
+    DRAFT_FINAL,
+)
 
 
 def draft_summary(
@@ -155,6 +172,11 @@ def draft_summary(
     errors = []
     for block in blocks:
         status = str(block.get("status") or DRAFT_READY)
+        if status == DRAFT_FINAL:
+            from qualify_api.creative.final_review import final_confirmed
+
+            if not final_confirmed({"draft": block}, object_key=block.get("final_object_key")):
+                status = DRAFT_FINAL_READY
         if status not in _SUMMARY_ORDER:
             status = DRAFT_READY
         if final_stale(block, now):
@@ -169,9 +191,10 @@ def draft_summary(
         if status in (DRAFT_READY, DRAFT_FAILED) and draft_expired(block, now):
             status = DRAFT_EXPIRED
         states.append(status)
-    state = min(states, key=_SUMMARY_ORDER.index)
+    uncertain = next((error for error in errors if uncertain_error(error)), None)
+    state = DRAFT_FAILED if uncertain else min(states, key=_SUMMARY_ORDER.index)
     costs = [block.get("cost_usd") for block in blocks]
     cost = None
     if all(isinstance(c, str) and c for c in costs):
         cost = str(sum((Decimal(str(c)) for c in costs), Decimal(0)))
-    return state, cost, errors[-1] if errors else ""
+    return state, cost, uncertain or (errors[-1] if errors else "")

@@ -124,3 +124,41 @@ def test_mail_outage_does_not_stop_worker_recovery(monkeypatch):
         == 0
     )
     assert recovered == [True]
+
+
+def test_nightly_failure_does_not_stop_pipeline_preparation(monkeypatch):
+    from qualify_api.creative.worker import __main__ as cli
+
+    prepared = []
+    recovered = []
+
+    def broken_night(scope):
+        raise RuntimeError("night policy temporarily unavailable")
+
+    monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
+    monkeypatch.setattr(cli, "production_executors", lambda: {})
+    monkeypatch.setattr(
+        "qualify_api.creative.composition.production_content_service", lambda: object()
+    )
+    monkeypatch.setattr(
+        "qualify_api.creative.worker.pipeline.PipelinePreparation",
+        lambda *args: lambda: prepared.append(True),
+    )
+    monkeypatch.setattr("qualify_api.creative.final_review.nightly_maintenance", broken_night)
+
+    def loop(worker, **kwargs):
+        kwargs["preparation"]()
+        kwargs["sidecar"]()
+        return 0
+
+    monkeypatch.setattr(cli, "run_loop", loop)
+    assert (
+        cli.main(
+            ["--tenant", str(uuid4()), "--once"],
+            store=object(),
+            recovery=lambda: recovered.append(True),
+            install_signals=False,
+        )
+        == 0
+    )
+    assert prepared == [True] and recovered == [True]
