@@ -145,7 +145,7 @@ async def test_open_only_reads_manifest_and_confirm_uses_that_exact_manifest(mon
         return TENANT, USER
 
     monkeypatch.setattr(FinalReviewState, "_identity", ids)
-    expected = (FinalIdentity(PIECE, "t/tenant/video.mp4", "abc"),)
+    expected = (FinalIdentity(PIECE, "t/tenant/video.mp4", "abc", 1),)
     panel = FinalPanelVM(
         piece_id=str(PIECE),
         state="final_ready",

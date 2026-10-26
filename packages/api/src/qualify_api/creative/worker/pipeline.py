@@ -347,7 +347,7 @@ class PipelineExecutor:
 
     def _expire_final(self, job: JobContext, phase: str) -> None:
         """Fail only this revision's asset, without credentials or any vendor call."""
-        asset_id = UUID(phase.split(":", 1)[1])
+        asset_id = UUID(phase.split(":", 1)[1].split("@", 1)[0])
         with tenant_unit_of_work(job.tenant_id), tenant_session(job.tenant_id) as session:
             current = session.execute(
                 text("""
@@ -357,6 +357,7 @@ class PipelineExecutor:
                 WHERE j.id=:j AND j.claim_token=:token AND j.status='claimed'
                   AND j.vendor_task_id IS NULL AND d.revision=:r
                   AND a.id=:a AND a.position=:pos
+                  AND coalesce((a.params->'draft'->>'final_attempt')::int,0)=j.final_attempt
                 FOR UPDATE OF a,d,j
                 """),
                 {

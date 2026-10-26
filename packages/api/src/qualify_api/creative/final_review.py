@@ -99,6 +99,7 @@ class FinalIdentity:
     asset_id: UUID
     object_key: str
     sha256: str
+    revision: int
 
 
 class FinalReviewUnavailable(ValueError):
@@ -153,7 +154,7 @@ def review_manifest(
             digest = hashlib.sha256(read_object(key)).hexdigest()
         else:
             raise ValueError("review requires a storage digest reader")
-        identities.append(FinalIdentity(asset_id, key, digest))
+        identities.append(FinalIdentity(asset_id, key, digest, revision))
     with tenant_session(tenant_id) as session:
         draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
         if draft is None or draft.revision != revision or draft.status != "approved":
@@ -215,6 +216,7 @@ def confirm_final(
                 or row.object_key != item.object_key
                 or block.get("final_object_key") != item.object_key
                 or block.get("final_sha256") != item.sha256
+                or item.revision != draft.revision
                 or block.get("final_revision") != draft.revision
             ):
                 raise FinalReviewUnavailable("El video cambió. Ábrelo de nuevo para revisarlo.")

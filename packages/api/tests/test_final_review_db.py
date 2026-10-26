@@ -110,6 +110,20 @@ def test_stale_panel_cannot_confirm_replaced_object_or_new_revision() -> None:
         confirm_final(tenant_id=tenant, draft_id=draft, user_id=owner, expected=seen)
 
 
+def test_same_bytes_new_revision_review_cannot_upgrade_a_stale_manifest() -> None:
+    tenant, draft, owner = _fixture()
+    old = _manifest(tenant, draft, owner)
+    with tenant_session(tenant) as session:
+        session.get(orm.ContentDraft, draft).revision += 1
+    fresh = _manifest(tenant, draft, owner)
+    assert fresh[0].sha256 == old[0].sha256
+    assert fresh[0].object_key == old[0].object_key
+    assert fresh[0].revision == 2 and old[0].revision == 1
+    with pytest.raises(FinalReviewUnavailable):
+        confirm_final(tenant_id=tenant, draft_id=draft, user_id=owner, expected=old)
+    confirm_final(tenant_id=tenant, draft_id=draft, user_id=owner, expected=fresh)
+
+
 def test_viewer_and_other_tenant_cannot_confirm() -> None:
     tenant, draft, viewer = _fixture(role="viewer")
     with pytest.raises(PermissionError):
@@ -213,6 +227,7 @@ def test_home_late_confirmation_excludes_failed_and_unprepared_finals() -> None:
                 scheduled_at=now - timedelta(hours=1),
                 scheduled_tz="UTC",
                 status="scheduled",
+                created_by_user_id=owner,
             )
         )
     counts = read_home_counts(tenant, now=now)
@@ -226,3 +241,38 @@ def test_home_late_confirmation_excludes_failed_and_unprepared_finals() -> None:
         expected = int(status == "final_ready")
         assert counts.videos_to_confirm == counts.videos_late == expected
         assert counts.videos_ready_late == expected
+
+    # The central service fence also covers callers bypassing the final-review panel.
+    from qualify_api.creative.service import ContentService
+    from qualify_api.planner.repository import PostgresPlannerRepository
+
+    service = ContentService(
+        router=None, pricing=None, credentials=None, voice_service=None, brand_service=None
+    )
+    calendar = PostgresPlannerRepository()
+    with tenant_session(tenant) as session:
+        event = session.scalar(select(CalendarEvent).where(CalendarEvent.post_id == draft))
+        event_id, revision = event.id, event.revision
+    claimed = calendar.claim(
+        tenant_id=tenant, event_id=event_id, expected_revision=revision, now=now
+    )
+    assert claimed is not None
+    with pytest.raises(ValueError, match="publicación ya está en curso"):
+        service.reject(
+            tenant_id=tenant, draft_id=draft, user_id=owner, reason="otra", regenerate=True
+        )
+    with tenant_session(tenant) as session:
+        assert session.get(orm.ContentDraft, draft).revision == 1
+        session.get(CalendarEvent, event_id).status = "scheduled"
+    # Reverse order: regeneration invalidates the old final before a later claim.
+    service.reject(tenant_id=tenant, draft_id=draft, user_id=owner, reason="otra", regenerate=True)
+    assert (
+        calendar.claim(tenant_id=tenant, event_id=event_id, expected_revision=revision, now=now)
+        is not None
+    )
+    assert isinstance(
+        DraftPostReader().get_publishable(tenant_id=tenant, post_id=draft), NotPublishable
+    )
+    with tenant_session(tenant) as session:
+        assert session.get(orm.ContentDraft, draft).revision == 2
+        assert session.get(CalendarEvent, event_id).scheduled_at == now - timedelta(hours=1)

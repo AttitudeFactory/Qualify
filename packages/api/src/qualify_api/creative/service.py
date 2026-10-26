@@ -27,6 +27,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import wraps
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
@@ -69,7 +70,7 @@ from qualify_creative.schemas import (
     HardFailure,
 )
 from qualify_shared import observability
-from qualify_shared.db.session import tenant_session
+from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -1387,6 +1388,35 @@ def call_cost(pricing: PricingTable, usage: Usage, model_id: str) -> Decimal:
     per_out = pricing.unit_price(model_id=model_id, unit="per_mtok_out")
     billable_in = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
     return (Decimal(billable_in) * per_in + Decimal(usage.output_tokens) * per_out) / _MTOK
+
+
+def fenced_regeneration(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize another version with the calendar claim before invalidating its media."""
+
+    @wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if not kwargs.get("regenerate") or not isinstance(self._repo, PostgresContentRepository):
+            return method(self, *args, **kwargs)
+        from qualify_api.planner.models import CalendarEvent
+
+        with (
+            tenant_unit_of_work(kwargs["tenant_id"]),
+            tenant_session(kwargs["tenant_id"]) as session,
+        ):
+            events = session.scalars(
+                select(CalendarEvent)
+                .where(CalendarEvent.post_id == kwargs["draft_id"])
+                .order_by(CalendarEvent.id)
+                .with_for_update()
+            ).all()
+            session.get(orm.ContentDraft, kwargs["draft_id"], with_for_update=True)
+            if any(event.status == "publishing" for event in events):
+                raise ValueError(
+                    "La publicación ya está en curso. Espera a que termine para pedir otra versión."
+                )
+            return method(self, *args, **kwargs)
+
+    return call
 
 
 class ContentService:
@@ -3007,6 +3037,7 @@ class ContentService:
         except Exception:
             logger.exception("draft %s: final video refund failed", draft_id)
 
+    @fenced_regeneration
     @transactional_dispatch
     def reject(
         self,
