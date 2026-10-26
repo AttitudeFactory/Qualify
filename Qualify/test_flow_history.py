@@ -13,7 +13,7 @@ let observer;
 class MutationObserver {constructor(callback){observer=callback;} observe(){}}
 const entries=[{href:'/catalog?volver=%2Fcreate', state:{key:'router', idx:2}}];
 let pos=0, page=null, drawer=null;
-const window={requestAnimationFrame(fn){fn();}};
+const window={requestAnimationFrame(fn){fn();}, addEventListener(){}};
 function apply(){
  const url=new URL(entries[pos].href, 'https://qualify.test');
  window.location={href:url.href, pathname:url.pathname, search:url.search, hash:url.hash};
@@ -214,3 +214,23 @@ console.log(JSON.stringify({{href:entries[pos].href,pos}}));
 """
     )
     assert _node(script) == {"href": "/whatsapp?tab=plantillas", "pos": 0}
+
+
+def test_handler_and_marker_cannot_go_back_twice_before_the_pop_arrives() -> None:
+    from .ui.steps import step_address_script
+
+    back = step_address_script(json.dumps("/create?paso=3"), back=True)
+    script = (
+        """
+let calls=0, onPop;
+const window={location:{href:'https://qualify.test/create?paso=4',
+ pathname:'/create',search:'?paso=4',hash:''},
+ addEventListener(type, fn){onPop=fn;},
+ history:{state:{qPrevPaso:'3'},back(){calls++;}}
+};
+"""
+        + back
+        + back
+        + "console.log(JSON.stringify({calls}));"
+    )
+    assert _node(script) == {"calls": 1}

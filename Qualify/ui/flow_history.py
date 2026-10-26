@@ -55,7 +55,12 @@ _FLOW_INSTALL_SCRIPT = r"""
     const current = window.location.pathname + window.location.search + window.location.hash;
     if (target === current) return;
     if (same && Number(n) < Number(oldStep)) {
-      if (st.qFlowPrevStep === n) { window.history.back(); return; }
+      if (st.qFlowPrevStep === n) {
+       if (window.__qFlowBackTarget === target) return;
+       window.__qFlowBackTarget = target;
+       window.addEventListener('popstate', () => { window.__qFlowBackTarget = null; }, {once:true});
+       window.history.back(); return;
+      }
       window.history.replaceState(st, '', target); return;
     }
     window.history.pushState({ ...st, qPrevHref: current,

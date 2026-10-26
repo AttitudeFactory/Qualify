@@ -385,8 +385,10 @@ _STEP_GO_JS = (
     " const st = window.history.state || {}; const url = to.pathname + to.search + to.hash;"
     " if (window.location.pathname + window.location.search + window.location.hash === url) return;"
     " if (cur === null) { window.history.replaceState(st, '', url); return; }"
-    " if (back) { if (st.qPrevPaso === n) window.history.back();"
-    " else window.history.replaceState(st, '', url); return; }"
+    " if (back) { if (st.qPrevPaso === n) {"
+    " if (window.__qStepBackTarget === url) return; window.__qStepBackTarget = url;"
+    " window.addEventListener('popstate', () => { window.__qStepBackTarget = null; }, {once:true});"
+    " window.history.back(); } else window.history.replaceState(st, '', url); return; }"
     " window.history.pushState({ ...st, qPrevPaso: cur }, '', url); };"
 )
 
