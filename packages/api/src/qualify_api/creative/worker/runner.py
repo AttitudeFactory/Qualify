@@ -102,6 +102,7 @@ class CreativeWorker:
         downloads: DownloadGate,
         clock: Callable[[], datetime] = utcnow,
         stop: threading.Event | None = None,
+        on_vendor_busy: Callable[[VendorBusy], None] | None = None,
     ) -> None:
         self.store = store
         self.executors = dict(executors)
@@ -109,6 +110,7 @@ class CreativeWorker:
         self.downloads = downloads
         self.clock = clock
         self.stop = stop or threading.Event()
+        self.on_vendor_busy = on_vendor_busy
 
     # -- recovery and claims -------------------------------------------------------------
 
@@ -185,6 +187,8 @@ class CreativeWorker:
             try:
                 task_id = executor.submit(ctx)
             except VendorBusy as busy:
+                if self.on_vendor_busy is not None:
+                    _guarded(lambda busy=busy: self.on_vendor_busy(busy))
                 until = self.clock() + timedelta(seconds=max(1.0, busy.retry_after_seconds))
                 self.store.defer(claim, until=until, now=self.clock())
                 logger.info(
@@ -331,6 +335,7 @@ def run_loop(
     recover_every: float = RECOVER_EVERY_SECONDS,
     monotonic: Callable[[], float] = time.monotonic,
     max_rounds: int | None = None,
+    on_round: Callable[[], object] | None = None,
 ) -> int:
     """Rounds every `interval` seconds until `worker.stop` is set (SIGTERM / Ctrl+C), or
     one round with `once` (waits for its jobs and runs the sidecar once). Returns 0."""
@@ -360,6 +365,8 @@ def run_loop(
                     next_recover = started + recover_every
                 for claim in worker.claim_round(capacity - len(active)):
                     active.add(pool.submit(_guarded_process, worker, claim))
+                if on_round is not None:
+                    _guarded(on_round)
             except OperationalError:
                 # The queue door cannot connect (e.g. its password is not set yet): the
                 # recovery sidecar keeps running; say so once a minute, never crash-loop.
