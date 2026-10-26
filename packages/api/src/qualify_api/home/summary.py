@@ -70,6 +70,9 @@ class HomeCounts:
     has_publication: bool = False
     #: Last, so positional construction keeps its meaning (founder, 2026-10-24).
     videos_expiring_soon: int = 0
+    videos_to_confirm: int = 0
+    videos_late: int = 0
+    finals_failed: int = 0
 
     @property
     def messages_week(self) -> int:
@@ -104,8 +107,44 @@ HOME_COUNTS_SQL = text(
           AND (a.params->'draft'->>'created_at')::double precision + :draft_ttl
               <= extract(epoch FROM CAST(:now AS timestamptz)) + :expiring_soon
       ) AS videos_expiring_soon,
+      (SELECT count(DISTINCT d.id) FROM content_drafts d
+         JOIN image_assets a ON a.draft_id = d.id
+        WHERE d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
+          AND (a.params->'draft'->>'status' <> 'final'
+               OR a.params->'draft'->>'confirmed_sha256' IS NULL
+               OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM
+                  a.params->'draft'->>'final_sha256'
+               OR a.params->'draft'->>'confirmed_object_key' IS DISTINCT FROM a.object_key
+               OR a.params->'draft'->>'final_object_key' IS DISTINCT FROM a.object_key
+               OR a.params->'draft'->>'confirmed_revision' IS DISTINCT FROM d.revision::text
+               OR a.params->'draft'->>'confirmed_by' IS NULL
+               OR a.params->'draft'->>'confirmed_at' IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM image_assets pending
+               WHERE pending.draft_id=d.id AND pending.params ? 'draft'
+                 AND pending.params->'draft'->>'status' NOT IN ('final_ready','final'))
+      ) AS videos_to_confirm,
+      (SELECT count(DISTINCT d.id) FROM content_drafts d
+         JOIN image_assets a ON a.draft_id = d.id
+        WHERE d.status = 'approved' AND a.params ? 'draft'
+          AND (a.params->'draft'->>'status' <> 'final'
+               OR a.params->'draft'->>'confirmed_sha256' IS NULL
+               OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM
+                  a.params->'draft'->>'final_sha256'
+               OR a.params->'draft'->>'confirmed_object_key' IS DISTINCT FROM a.object_key
+               OR a.params->'draft'->>'final_object_key' IS DISTINCT FROM a.object_key
+               OR a.params->'draft'->>'confirmed_revision' IS DISTINCT FROM d.revision::text
+               OR a.params->'draft'->>'confirmed_by' IS NULL
+               OR a.params->'draft'->>'confirmed_at' IS NULL)
+          AND EXISTS (SELECT 1 FROM calendar_events e WHERE e.post_id = d.id
+              AND e.status = 'scheduled' AND e.scheduled_at <= CAST(:now AS timestamptz)
+              AND e.scheduled_at > CAST(:now AS timestamptz) - interval '24 hours')
+      ) AS videos_late,
+      (SELECT count(DISTINCT d.id) FROM content_drafts d
+         JOIN image_assets a ON a.draft_id = d.id
+        WHERE d.status = 'approved' AND a.params->'draft'->>'status' = 'failed'
+      ) AS finals_failed,
       (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id
-        WHERE t.channel = 'comment' AND m.direction = 'inbound' AND m.deleted_at IS NULL
+        WHERE t.channel = 'comment'  AND m.direction = 'inbound' AND m.deleted_at IS NULL
           AND COALESCE(m.posted_at, m.ingested_at) >= :since
           AND NOT EXISTS (
                 SELECT 1 FROM comment_reply_drafts r
@@ -120,7 +159,7 @@ HOME_COUNTS_SQL = text(
           AND COALESCE(m.posted_at, m.ingested_at) >= :since
       ) AS messages_week_whatsapp,
       (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id
-        WHERE t.channel = 'comment' AND m.direction = 'inbound' AND m.deleted_at IS NULL
+        WHERE t.channel = 'comment'  AND m.direction = 'inbound' AND m.deleted_at IS NULL
           AND COALESCE(m.posted_at, m.ingested_at) >= :since
       ) AS comments_week,
       (SELECT count(*) FROM mentions n
@@ -141,6 +180,9 @@ def counts_from_row(row: Any) -> HomeCounts:
     """The query's one row as `HomeCounts` (pure — a `None` count reads as 0)."""
     return HomeCounts(
         people_waiting=int(row.people_waiting or 0),
+        videos_to_confirm=int(getattr(row, "videos_to_confirm", 0) or 0),
+        videos_late=int(getattr(row, "videos_late", 0) or 0),
+        finals_failed=int(getattr(row, "finals_failed", 0) or 0),
         drafts_to_approve=int(row.drafts_to_approve or 0),
         videos_expiring_soon=int(row.videos_expiring_soon or 0),
         comments_unanswered=int(row.comments_unanswered or 0),

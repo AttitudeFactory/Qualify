@@ -60,6 +60,7 @@ class PostOutput:
     # reads to say where this output may go.
     media_types: tuple[str, ...] = ()
     image_size: tuple[int, int] | None = None
+    can_schedule_pending_final: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,7 @@ class PostSummary:
     # `publishable.destination_options` reads to say where it may be published.
     media_types: tuple[str, ...] = ()
     image_size: tuple[int, int] | None = None
+    can_schedule_pending_final: bool = False
     # m-24828907: the piece's retention (`creative.retention.RetentionState` value, "" when
     # it has no R2 files) and, when it has one, the deadline (ISO-8601) and the whole days
     # left — what the «Descarga esta pieza: se elimina el …» warning prints.
@@ -170,6 +172,7 @@ class UnpublishableReason(StrEnum):
     MEDIA_PURGED = "media_purged"
     # m-24820142: a video is still its 480p Seedance draft — its final is not in place.
     MEDIA_DRAFT_PENDING = "media_draft_pending"
+    MEDIA_FINAL_UNCONFIRMED = "media_final_unconfirmed"
 
 
 @dataclass(frozen=True)

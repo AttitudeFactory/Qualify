@@ -190,6 +190,20 @@ class World:
     executor: EventExecutor
 
 
+@pytest.mark.asyncio
+async def test_final_confirmation_lost_after_claim_stays_scheduled(world: World) -> None:
+    event = _due(world)
+    world.posts.set(
+        event.post_id,
+        _publishable(event.post_id),
+        NotPublishable(event.post_id, UnpublishableReason.MEDIA_FINAL_UNCONFIRMED),
+    )
+    result = await world.executor.try_execute(event)
+    assert result.outcome is ExecutionOutcome.NOT_READY
+    assert world.repo.get(tenant_id=TENANT, event_id=event.id).status == "scheduled"
+    assert world.publisher.meta_calls == 0
+
+
 @pytest.fixture
 def world() -> World:
     repo, posts, publisher, lock = (
@@ -326,7 +340,7 @@ async def test_a_lost_claim_starts_nothing(world: World) -> None:
 # --- after the claim ---------------------------------------------------------------
 
 
-async def test_a_post_that_stops_being_publishable_after_the_claim_fails_unstarted(
+async def test_a_new_revision_after_the_claim_waits_for_approval_without_failing(
     world: World,
 ) -> None:
     event = _due(world)
@@ -336,9 +350,9 @@ async def test_a_post_that_stops_being_publishable_after_the_claim_fails_unstart
         _not(event.post_id, UnpublishableReason.REVISION_NOT_APPROVED),
     )
     result = await world.executor.try_execute(event)
-    assert result.outcome is Outcome.FAILED_NOT_PUBLISHABLE
+    assert result.outcome is Outcome.NOT_READY
     assert result.reason == "revision_not_approved"
-    assert _status(world, event) == ("failed", None)
+    assert _status(world, event) == ("scheduled", None)
     assert not world.publisher.start_calls and not world.publisher.attempts
 
 

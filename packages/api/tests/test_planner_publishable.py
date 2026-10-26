@@ -271,7 +271,7 @@ def test_draft_pending_reads_the_videos_draft_block() -> None:
 
     assert draft_pending({"draft": {"status": "draft"}})
     assert draft_pending({"draft": {"status": "failed"}})
-    assert not draft_pending({"draft": {"status": "final"}})
+    assert draft_pending({"draft": {"status": "final"}})  # Legacy also needs confirmation
     assert not draft_pending({"resolution": "720p"}) and not draft_pending(None)
 
 

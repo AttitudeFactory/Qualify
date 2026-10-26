@@ -56,6 +56,7 @@ Every write carries its MIME type (`MediaWrite.content_type` → `image_assets.c
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import io
 import json
 import logging
@@ -152,7 +153,6 @@ from qualify_api.stock.keys import is_stock_key
 from . import trace
 from .draft_mode import (
     DRAFT_EXPIRED_TEXT,
-    DRAFT_FINAL,
     DRAFT_READY,
     draft_expired,
     draft_state,
@@ -579,6 +579,13 @@ class R2ReadingMediaStore:
             with self._r2().open_object(UUID(tenant), key) as stream:
                 return stream.read()
         return self._local.read(key)
+
+    def sha256(self, tenant_id: UUID, key: str) -> str:
+        if not owned_by(tenant_id, key):
+            raise ValueError("final key belongs to another tenant")
+        if key.startswith("t/"):
+            return self._r2().sha256(tenant_id, key)
+        return hashlib.sha256(self._local.read(key)).hexdigest()
 
     def write(self, key: str, data: bytes) -> None:
         self._local.write(key, data)
@@ -1185,6 +1192,15 @@ AVATAR_NO_PUBLIC_URL = (
 
 
 class MediaProducer:
+    def final_object_digest(self, tenant_id: UUID, key: str) -> str:
+        """Digest an already-paid final with bounded memory in the real R2 store."""
+        if not owned_by(tenant_id, key):
+            raise ValueError("final key belongs to another tenant")
+        digest = getattr(self._store, "sha256", None)
+        return (
+            digest(tenant_id, key) if digest else hashlib.sha256(self._store.read(key)).hexdigest()
+        )
+
     def __init__(
         self,
         *,
@@ -1598,7 +1614,15 @@ class MediaProducer:
             draft={
                 **block,
                 **({"raw_final": raw} if raw.get("key") else {}),
-                "status": DRAFT_FINAL,
+                "status": "final_ready",
+                "final_sha256": hashlib.sha256(fitted.data).hexdigest(),
+                "final_object_key": key,
+                "final_revision": revision,
+                "confirmed_by": None,
+                "confirmed_at": None,
+                "confirmed_sha256": None,
+                "confirmed_object_key": None,
+                "confirmed_revision": None,
                 "error": None,
                 # the draft's own file and spend stay on record (provenance)
                 "draft_object_key": asset.object_key,
