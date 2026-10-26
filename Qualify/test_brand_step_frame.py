@@ -440,7 +440,9 @@ async def test_a_first_deep_link_hydrates_phrase_and_progress_before_the_first_a
     monkeypatch.setattr(minimal, "_read_entry", read_entry)
     monkeypatch.setattr(minimal, "_read_account_country", lambda _tenant: "")
     monkeypatch.setattr(minimal, "step_param", lambda _state: "5")
-    assert [event async for event in BrandMinimalState.enter.fn(state)] == [None]
+    events = [event async for event in BrandMinimalState.enter.fn(state)]
+    assert len(events) == 1 and "__qStepEntry" in str(events[0])
+    assert state.steps_epoch >= 1
     assert state.phrase == "Ven a probarlo"
     assert state.step == vm.STEP_VOICE and state.synced
     assert states(wiz.BrandConnectState).started_without_socials
@@ -448,6 +450,8 @@ async def test_a_first_deep_link_hydrates_phrase_and_progress_before_the_first_a
     assert readiness == [False]
     state.phrase = "Una frase todavía sin guardar"
     monkeypatch.setattr(minimal, "step_param", lambda _state: "4")
-    assert [event async for event in BrandMinimalState.enter.fn(state)] == [None]
+    events = [event async for event in BrandMinimalState.enter.fn(state)]
+    assert len(events) == 1 and "__qStepEntry" in str(events[0])
+    assert state.steps_epoch >= 1
     assert state.phrase == "Una frase todavía sin guardar"
     assert state.step == vm.STEP_COLOURS

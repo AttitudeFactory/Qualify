@@ -91,6 +91,7 @@ from .ui import (
     step_sync,
 )
 from .ui import tokens as T
+from .ui.steps import step_entry_script
 from .ui.steps_vm import DIR_NEXT, NEXT_LABEL, guard_step, parse_step_param, step_direction
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,7 @@ class BrandMinimalState(rx.State):
     #: `enter` decided the step on THIS visit: only then may `step_sync` write the
     #: address (cleared when the frame unmounts, `leave_frame`).
     synced: bool = False
+    steps_epoch: int = 0
     _entry_hydrated: bool = False
     #: Why the owner is here when another page sent them (`?desde=`, N1): «Para usar
     #: Por responder, primero termina tu marca…». Cleared on the first step change.
@@ -312,8 +314,10 @@ class BrandMinimalState(rx.State):
                     active=False, answers=answers_vm.Answers(), hints={}, drafts={}, has_tags=False
                 )
             self.entered = True
+            self.steps_epoch += 1
             self.synced = True
-        yield None
+            canonical = step_entry_script("/brand", self.n, self.steps_epoch, raw)
+        yield rx.call_script(canonical)
 
     # -- moving ------------------------------------------------------------------
 
@@ -1030,6 +1034,7 @@ def _head(title: str | rx.Var[str]) -> rx.Component:
         total=vm.TOTAL_STEPS,
         back_label=exit_label(),
         on_exit=BrandMinimalState.leave,
+        show_progress=BrandMinimalState.synced & ~CreativeState.kit_loading,
     )
 
 
@@ -1105,7 +1110,11 @@ def _frame(loading: rx.Var[bool]) -> rx.Component:
             rx.fragment(
                 rx.cond(
                     BrandMinimalState.synced,
-                    step_sync(BrandMinimalState.n, BrandMinimalState.direction),
+                    step_sync(
+                        BrandMinimalState.n,
+                        BrandMinimalState.direction,
+                        epoch=BrandMinimalState.steps_epoch,
+                    ),
                 ),
                 rx.text(_heading_for(1), size="3", color=T.TEXT_MUTED, width="100%"),
                 rx.box(_step_card(), class_name="q-content-ready", width="100%"),

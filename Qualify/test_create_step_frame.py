@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+from reflex.istate.data import ReflexURL, RouterData
 
 from . import creative_state as module
 from .creative_state import CreativeState
@@ -161,3 +162,14 @@ def test_cancelled_generation_cannot_be_opened_from_the_sticky_review_action() -
     assert state.create_primary_disabled
     assert state.create_reason == "Cancelamos tu video. Te devolvimos la creación."
     assert state.create_continue() is None
+
+
+def test_invalid_cold_step_without_a_product_returns_guarded_entry_ack() -> None:
+    state = CreativeState()
+    state.router = RouterData(url=ReflexURL("http://localhost:3000/create?paso=99"))
+    event = state.enter_create_step()
+    assert state.create_step_n == 1
+    assert state.create_entry_epoch == 1
+    assert "__qStepEntry" in str(event)
+    assert "99" in str(event)
+    assert state.create_entered
