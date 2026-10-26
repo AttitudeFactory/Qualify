@@ -24,6 +24,7 @@ from types import FrameType
 from uuid import UUID
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.worker.background import BackgroundChore
 from qualify_api.creative.worker.downloads import DownloadGate, downloads_allowed
 from qualify_api.creative.worker.executor import JobExecutor
 from qualify_api.creative.worker.runner import (
@@ -77,9 +78,81 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def production_executors() -> dict[str, JobExecutor]:
-    """The executors by pool. Empty until the generator enqueues (m-24852166): with none,
-    no job is claimed and the worker runs only the recoveries."""
-    return {}
+    """Real submit/poll/finish executors for the prepared jobs of each vendor pool."""
+    from qualify_creative.adapters.byteplus_ark import SeedanceVideoAdapter
+    from qualify_creative.adapters.byteplus_omnihuman import OmniHumanVideoAdapter
+
+    from qualify_api.creative.composition import (
+        ARK_BASE_URL,
+        ARK_BASE_URL_ENV,
+        DEFAULT_OMNIHUMAN_REQ_KEY,
+        DEFAULT_SEEDANCE_MODEL,
+        OMNIHUMAN_REQ_KEY_ENV,
+        SEEDANCE_MODEL_ENV,
+        production_content_service,
+    )
+    from qualify_api.creative.pipeline import PipelineStore
+    from qualify_api.creative.worker.pipeline import PipelineExecutor
+
+    service = production_content_service()
+    store = PipelineStore()
+    return {
+        q.SEEDANCE_POOL: PipelineExecutor(
+            service,
+            store,
+            SeedanceVideoAdapter(
+                model=os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL,
+                base_url=os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL,
+            ),
+            "seedance",
+        ),
+        q.OMNIHUMAN_POOL: PipelineExecutor(
+            service,
+            store,
+            OmniHumanVideoAdapter(
+                req_key=os.environ.get(OMNIHUMAN_REQ_KEY_ENV) or DEFAULT_OMNIHUMAN_REQ_KEY,
+            ),
+            "omnihuman",
+        ),
+    }
+
+
+def _night_preparation(
+    prepare_pipeline: Callable[[], None], tenant_ids: Sequence[UUID] | None
+) -> Callable[[], None]:
+    import time
+
+    from qualify_api.creative.final_review import nightly_maintenance
+
+    next_night_maintenance = 0.0
+
+    def preparation() -> None:
+        nonlocal next_night_maintenance
+        now = time.monotonic()
+        if now >= next_night_maintenance:
+            try:
+                night_tenants = tenant_ids
+                if night_tenants is None:
+                    from qualify_shared.db.creative_worker import creative_worker_session
+                    from sqlalchemy import text
+
+                    with creative_worker_session() as session:
+                        night_tenants = tuple(
+                            session.scalars(
+                                text(
+                                    "SELECT DISTINCT tenant_id FROM creative_jobs "
+                                    "WHERE kind='final' AND status IN ('queued','failed')"
+                                )
+                            )
+                        )
+                nightly_maintenance(night_tenants)
+            except Exception:
+                logger.exception("creative.worker.nightly_maintenance_failed")
+            finally:
+                next_night_maintenance = now + 60
+        prepare_pipeline()
+
+    return preparation
 
 
 def main(
@@ -107,14 +180,58 @@ def main(
         from qualify_api.creative.vendor_recovery import recovery_chore  # noqa: PLC0415
 
         recovery = recovery_chore(scope_ids)
+    publish_load = None
+    if store is None and scope_ids is None:
+        from qualify_api.creative.worker.queue_load import production_load_chore  # noqa: PLC0415
+
+        publish_load = production_load_chore(pools=pools)
     chosen = dict(production_executors() if executors is None else executors)
+    # Monitor only the production store; injected stores never reach Redis/webhooks.
+    from qualify_api.creative.worker.operations import (  # noqa: PLC0415
+        production_monitor,
+        read_snapshot,
+    )
+
+    monitor = production_monitor(scope_ids) if store is None else None
+    original_recovery = recovery
+    from qualify_api.mail.final_summary import morning_chore
+
+    morning = morning_chore(scope_ids) if store is None and executors is None else None
+    mail_runner: BackgroundChore | None = None
+
+    def maintenance() -> None:
+        if mail_runner is not None:
+            mail_runner.schedule()
+        if original_recovery is not None:
+            try:
+                original_recovery()
+            except Exception:
+                logger.exception("creative.worker.legacy_recovery_failed")
+        if publish_load is not None:
+            try:
+                publish_load()
+            except Exception:
+                logger.exception("creative.worker.public_load_failed")
+        if monitor is not None:
+            try:
+                monitor.check(read_snapshot(now=monitor.clock(), tenant_ids=scope_ids))
+            except Exception:
+                logger.exception("creative.worker.queue_monitor_failed")
+
+    def vendor_busy(busy: object) -> None:
+        if monitor is not None and getattr(busy, "code", None) == "QuotaExceeded":
+            monitor.quota_exceeded()
+
     gate = DownloadGate(downloads_allowed())
     worker = CreativeWorker(
         store or PostgresQueueStore(),
         chosen,
         WorkerConfig(pools=pools, tenant_ids=scope_ids),
         downloads=gate,
+        on_vendor_busy=vendor_busy,
     )
+    if morning is not None:
+        mail_runner = BackgroundChore(morning, worker.stop)
     if install_signals:
         _stop_on_signals(worker.stop)
     logger.info(
@@ -125,12 +242,25 @@ def main(
         ",".join(sorted(chosen)) or "none",
         gate.limit,
     )
+    preparation = None
+    if executors is None:
+        from qualify_api.creative.composition import production_content_service
+        from qualify_api.creative.pipeline import PipelineStore
+        from qualify_api.creative.worker.pipeline import PipelinePreparation
+
+        prepare_pipeline = PipelinePreparation(
+            production_content_service(), PipelineStore(), scope_ids
+        )
+        preparation = _night_preparation(prepare_pipeline, scope_ids)
+
     code = run_loop(
         worker,
         once=args.once,
         interval=args.interval,
-        sidecar=recovery,
+        sidecar=maintenance,
+        preparation=preparation,
         sidecar_every=RECOVERY_EVERY_SECONDS,
+        on_round=monitor.beat if monitor is not None else None,
     )
     logger.info("creative.worker.stopped downloads_peak=%s", gate.peak)
     return code

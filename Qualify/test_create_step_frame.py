@@ -141,3 +141,23 @@ def test_mobile_kind_picker_opens_on_demand_and_closes_after_a_choice() -> None:
     state.toggle_create_options()
     state.open_variations()
     assert not state.create_options_open
+
+
+def test_cancelled_generation_cannot_be_opened_from_the_sticky_review_action() -> None:
+    from .creative_vm import queue_vm
+
+    state = _chosen()
+    state.confirm_product()
+    state.generator_view = "result"
+    state.gen_draft_id = "cancelled-draft"
+    state.gen_draft = DraftVM(
+        draft_id=state.gen_draft_id,
+        status="failed",
+        status_label="Cancelado",
+        status_tone="gray",
+        is_failed=True,
+        queue=queue_vm(cancelled=True),
+    )
+    assert state.create_primary_disabled
+    assert state.create_reason == "Cancelamos tu video. Te devolvimos la creación."
+    assert state.create_continue() is None

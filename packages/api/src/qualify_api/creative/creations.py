@@ -546,27 +546,47 @@ class PostgresCreationsLedger:
         asset_ids: Sequence[UUID],
     ) -> bool:
         with tenant_session(tenant_id) as session:
-            row = session.scalar(
-                select(CreationCharge)
-                .where(
-                    CreationCharge.draft_id == draft_id,
-                    CreationCharge.revision == revision,
-                    CreationCharge.status == CHARGED,
-                    CreationCharge.videos > 0,
-                )
-                .with_for_update()
+            return refund_final_in_session(
+                session,
+                draft_id=draft_id,
+                revision=revision,
+                reason=reason,
+                asset_ids=asset_ids,
+                now=self._clock(),
             )
-            if row is None:
-                return False
-            already = list(row.final_refunded_assets or ())
-            given = _given_back(already, asset_ids, row.videos)
-            if given is None:
-                return False
-            reverse_allocations(session, row.id, VIDEOS, units=len(given) - len(already))
-            row.final_refunded_assets = given
-            row.final_refunded_at = self._clock()
-            row.final_refund_reason = reason[:200]
-            return True
+
+
+def refund_final_in_session(
+    session: Session,
+    *,
+    draft_id: UUID,
+    revision: int,
+    reason: str,
+    asset_ids: Sequence[UUID],
+    now: datetime,
+) -> bool:
+    """The final's existing refund, inside a caller's atomic cancellation transaction."""
+    row = session.scalar(
+        select(CreationCharge)
+        .where(
+            CreationCharge.draft_id == draft_id,
+            CreationCharge.revision == revision,
+            CreationCharge.status == CHARGED,
+            CreationCharge.videos > 0,
+        )
+        .with_for_update()
+    )
+    if row is None:
+        return False
+    already = list(row.final_refunded_assets or ())
+    given = _given_back(already, asset_ids, row.videos)
+    if given is None:
+        return False
+    reverse_allocations(session, row.id, VIDEOS, units=len(given) - len(already))
+    row.final_refunded_assets = given
+    row.final_refunded_at = now
+    row.final_refund_reason = reason[:200]
+    return True
 
 
 @dataclass(frozen=True)

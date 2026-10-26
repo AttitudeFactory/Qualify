@@ -393,6 +393,7 @@ def test_a_draft_with_r2_only_media_opens(backend, monkeypatch) -> None:
     )
     detail = SimpleNamespace(
         id=uuid4(),
+        revision=1,
         status="approved",
         failure_reason=None,
         variants=(),

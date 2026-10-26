@@ -45,6 +45,57 @@ class SettingsState(rx.State):
     plan_text: str = ""
     plan_code: str = ""
     plan_error: str = ""
+    morning_mail_enabled: bool = True
+    morning_mail_saving: bool = False
+    morning_mail_error: str = ""
+
+    async def _mail_identity(self) -> tuple[UUID, UUID] | None:
+        async with self:
+            auth = await self.get_state(AuthState)
+            tenant = tenant_uuid(auth.session_tenant_id)
+            user = tenant_uuid(getattr(auth, "_session_user_id", ""))
+        return (tenant, user) if tenant is not None and user is not None else None
+
+    @rx.event(background=True)
+    async def load_morning_mail(self):
+        from qualify_api.mail.final_summary import preference
+
+        identity = await self._mail_identity()
+        if identity is None:
+            return
+        try:
+            enabled, _ = await asyncio.to_thread(preference, *identity)
+        except (SQLAlchemyError, LookupError):
+            async with self:
+                self.morning_mail_error = "No pudimos leer tu preferencia de correo."
+            return
+        async with self:
+            self.morning_mail_enabled = enabled
+            self.morning_mail_error = ""
+
+    @rx.event(background=True)
+    async def save_morning_mail(self, enabled: bool):
+        from qualify_api.mail.final_summary import preference
+
+        identity = await self._mail_identity()
+        if identity is None:
+            async with self:
+                self.morning_mail_error = "Tu sesión terminó. Vuelve a entrar para cambiarlo."
+            return
+        async with self:
+            self.morning_mail_saving = True
+        try:
+            value, _ = await asyncio.to_thread(preference, *identity, enabled=enabled)
+        except (SQLAlchemyError, LookupError):
+            async with self:
+                self.morning_mail_error = "No pudimos guardar tu preferencia. Inténtalo de nuevo."
+        else:
+            async with self:
+                self.morning_mail_enabled = value
+                self.morning_mail_error = ""
+        finally:
+            async with self:
+                self.morning_mail_saving = False
 
     @rx.var
     def currency_choices(self) -> list[dict[str, str]]:

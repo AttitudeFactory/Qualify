@@ -265,6 +265,47 @@ class OmniHumanVideoAdapter:
             media_expires_at_seconds=MEDIA_URL_TTL_SECONDS,
         )
 
+    def submit(self, request: GenerationRequest, *, api_key: str) -> str:
+        """Create a render without waiting; the durable worker persists the real id."""
+        if _resume_id(request.params):
+            raise ValueError("an existing task must be polled, never submitted again")
+        seconds = float(request.params.get("audio_seconds") or 0)
+        if seconds > self.max_audio_seconds:
+            raise ValueError("audio exceeds the model's duration limit")
+        submit, _ = self._paths()
+        with self._client(api_key) as client:
+            data = self._data(client.post(submit, json=self._submit_body(request.params)))
+        task_id = str(data.get("task_id") or "")
+        if not task_id:
+            raise OmniHumanError("OmniHuman returned no task id")
+        _tell(request.observer, "created", task_id)
+        return task_id
+
+    def result(self, request: GenerationRequest, data: Mapping[str, Any]) -> GenerationResult:
+        """Normalize one successful get_task answer, without another paid call."""
+        if data.get("status") != DONE:
+            raise ValueError("render has not succeeded")
+        url = _video_url(data.get("resp_data"))
+        if not url:
+            raise OmniHumanError("successful render has no video URL")
+        seconds = Decimal(str(request.params.get("audio_seconds") or 0))
+        resolution = self._resolution(request.params)
+        return GenerationResult(
+            payload={
+                "task_id": str(data.get("task_id") or ""),
+                "video_url": url,
+                "req_key": self.req_key,
+                "resolution": resolution,
+                "duration_seconds": str(seconds),
+            },
+            model_id=self.model_id,
+            provider=self.name,
+            usage=Usage(pieces=1, media_seconds=seconds),
+            model_revision=self.req_key,
+            media_url=url,
+            media_expires_at_seconds=MEDIA_URL_TTL_SECONDS,
+        )
+
     def get_task(self, task_id: str, *, api_key: str) -> Mapping[str, Any]:
         """One task's current `data` (`status`, `resp_data`…) — a read for the recovery
         pass (m-24852495): nothing is submitted or billed. Raises `OmniHumanError` when

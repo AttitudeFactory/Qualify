@@ -797,8 +797,27 @@ class PlannerState(rx.State):
         """m-24842987: the address bar follows the week and the view on screen, so a
         reload — or the browser's back from a ficha — lands on the same week. The
         router's own history entry is kept (only the URL changes)."""
+        import json
+        from urllib.parse import urlencode
+
+        from .review_links import review_destination
+
         href = week_href(self.monday_iso, self.view_mode)
-        return rx.call_script(f"window.history.replaceState(window.history.state, '', '{href}')")
+        review = review_destination(
+            "/planner?"
+            + urlencode(
+                {
+                    key: self._url_param(key)
+                    for key in ("revisar", "pieza", "evento", "fallos")
+                    if self._url_param(key)
+                }
+            )
+        )
+        if review:
+            href += ("&" if "?" in href else "?") + review.split("?", 1)[1]
+        return rx.call_script(
+            "window.history.replaceState(window.history.state, '', " + json.dumps(href) + ")"
+        )
 
     def _url_now(self) -> bool:
         """`/planner?post=<id>&cuando=ahora` (the «Publicar ahora» of the approved card,
@@ -1695,6 +1714,13 @@ class PlannerState(rx.State):
         async with self:
             self.detail = detail
             self.detail_loading = False
+            if detail.final_review and not confirm:
+                self.detail_open = False
+        if detail.final_review and not confirm:
+            from .final_review_state import FinalReviewState
+
+            review = await self.get_state(FinalReviewState)
+            await review._read(UUID(detail.post_id))
 
     @rx.event
     def set_detail_open(self, value: bool) -> None:

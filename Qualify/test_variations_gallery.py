@@ -490,9 +490,9 @@ async def test_an_approval_whose_final_is_rendering_says_so(
         lambda *_: _set_vm(_angle(status="approved", draft_status="approved")),
     )
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
-    assert len(yielded) == 1 and "preparando el video en alta calidad" in str(yielded[0])
+    assert len(yielded) == 1 and "Tu video final estará listo en unos minutos" in str(yielded[0])
     # UX review (PR #274): the words point where the button goes, not to «Por aprobar»
-    assert "Ábrela para ver cuándo está listo." in str(yielded[0])
+    assert "Te lo mostramos aquí para que lo confirmes." in str(yielded[0])
     assert "Por aprobar" not in str(yielded[0])
     # m-24842981 (finding 8): the toast offers the way to the publication's own page
     assert "Ver publicación" in str(yielded[0])
@@ -514,7 +514,7 @@ async def test_an_approval_whose_final_could_not_be_ordered_never_says_approved(
         lambda *_: _set_vm(_angle(status="approved", draft_status="approved")),
     )
     yielded = await _drain(VariationsState.approve_angle.fn(state, _ANGLE_ID))
-    assert len(yielded) == 1 and "reintentarlo" in str(yielded[0])
+    assert len(yielded) == 1 and "No pudimos preparar el video final" in str(yielded[0])
     assert "Pieza aprobada." not in str(yielded[0])
     assert "Ver publicación" in str(yielded[0])
 

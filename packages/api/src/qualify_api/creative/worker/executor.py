@@ -47,6 +47,7 @@ class JobContext:
     lane: str  # the worker lane (`lanes.NOW` …), aged
     vendor_priority: int  # BytePlus `priority` 0–9 for this lane
     deadline: datetime | None
+    claim_token: int = 0
 
 
 @dataclass(frozen=True)

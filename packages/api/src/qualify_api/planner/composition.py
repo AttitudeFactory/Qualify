@@ -50,14 +50,19 @@ def production_event_executor() -> EventExecutor:
     """QUA-111's executor over the real publisher. The publishing composition is imported
     here, not at module level: building it resolves Meta/R2 settings, which the
     Planificador's own screens never need."""
+    from qualify_shared.objects.config import R2Settings
+    from qualify_shared.objects.gate import ObjectGate
+    from qualify_shared.objects.s3 import R2ObjectStore
+
     from qualify_api.publishing.composition import production_publish_service  # noqa: PLC0415
     from qualify_api.publishing.repository import (  # noqa: PLC0415
         PostgresPublishAttemptRepository,
     )
 
+    gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
     return EventExecutor(
         repository=PostgresPlannerRepository(),
-        posts=production_post_reader(),
+        posts=DraftPostReader(verify_digest=gate.sha256),
         publisher=production_publish_service(),
         attempts=PostgresPublishAttemptRepository(),
         lock=PostgresAdvisoryLock(),

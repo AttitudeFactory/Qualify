@@ -86,6 +86,8 @@ from qualify_api.creative.dispatch import InlineDispatcher, record_progress
 from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
 from qualify_api.creative.observed import traced_providers
 from qualify_api.creative.pieces import DbPieceFiles
+from qualify_api.creative.pipeline import CheckpointRouter, PipelineStore
+from qualify_api.creative.queue_dispatch import QueueDispatcher, queue_enabled
 from qualify_api.creative.service import ContentService
 from qualify_api.creative.vendor_tasks import PostgresVendorTaskStore
 from qualify_api.creative.voice_access import BrandVoiceResolver
@@ -356,8 +358,9 @@ def production_content_service() -> ContentService:
         pricing=pricing,
         credentials=credentials,
     )
+    checkpoint_router = CheckpointRouter(router, PipelineStore(), store)
     service = ContentService(
-        router=router,
+        router=checkpoint_router,
         pricing=pricing,
         credentials=credentials,
         voice_service=DbVoiceProfileReader(),
@@ -378,7 +381,8 @@ def production_content_service() -> ContentService:
         vendor_tasks=PostgresVendorTaskStore(),
         media=MediaProducer(
             store=store,
-            router=router,
+            router=checkpoint_router,
+            download=checkpoint_router.download,
             credentials=credentials,
             pricing=pricing,
             # the talking presenter (§ 2026-10-16): a brand reads only in its own cloned
@@ -418,7 +422,11 @@ def production_content_service() -> ContentService:
             reference_links=PublicReferenceLinks(),
         ),
     )
-    service.dispatcher = InlineDispatcher(service.run_generation, service.run_finalize)
+    service.dispatcher = (
+        QueueDispatcher(service._repo, pricing_version=pricing.version)
+        if queue_enabled()
+        else InlineDispatcher(service.run_generation, service.run_finalize)
+    )
     return service
 
 

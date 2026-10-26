@@ -12,7 +12,7 @@ It never publishes: the planner service it calls has no publish path.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -284,6 +284,7 @@ def _post_option(
             build_output_chip(
                 port=output.port,
                 is_publishable=output.is_publishable,
+                can_schedule_pending_final=output.can_schedule_pending_final,
                 unpublishable_reason=output.unpublishable_reason,
                 event_status=event.status if event is not None else None,
                 when_label=when,
@@ -293,7 +294,7 @@ def _post_option(
                 preferred_destination=destination_for_product_type(output.media_product_type),
             )
         )
-    return build_post_option(
+    vm = build_post_option(
         post_id=str(post.post_id),
         title=post.title,
         caption_excerpt=post.caption_excerpt,
@@ -302,6 +303,7 @@ def _post_option(
         approval=post.approval.value,
         detail_href=post.detail_href,
         is_publishable=post.is_publishable,
+        can_schedule_pending_final=post.can_schedule_pending_final,
         unpublishable_reason=post.unpublishable_reason,
         outputs=chips,
         video_url=video_url,
@@ -323,6 +325,25 @@ def _post_option(
         recreate_note=recreate_note,
         expires_at=video.expires_at if video is not None else 0.0,
     )
+    if (
+        video is not None
+        and video.state in {"final_ready", "failed", "final_scheduled", "rendering"}
+        and post.lifecycle_status == "approved"
+    ):
+        from .review_links import review_href
+
+        ready = video.state == "final_ready"
+        vm = replace(
+            vm,
+            card_state="missing",
+            card_label=video.badge,
+            card_tone=video.tone,
+            card_action="review",
+            card_action_label="Revisar video" if ready else "Ver video",
+            detail_href=review_href(str(post.post_id)),
+            readiness_note=video.note,
+        )
+    return vm
 
 
 #: What the publishability gate says of a post whose video is still a preview (its final
@@ -331,9 +352,10 @@ _DRAFT_PENDING_TEXT = REASON_TEXT[UnpublishableReason.MEDIA_DRAFT_PENDING]
 
 
 def _draft_pending(post: PostSummary) -> bool:
-    if post.unpublishable_reason == _DRAFT_PENDING_TEXT:
+    pending = {_DRAFT_PENDING_TEXT, REASON_TEXT[UnpublishableReason.MEDIA_FINAL_UNCONFIRMED]}
+    if post.unpublishable_reason in pending:
         return True
-    return any(o.unpublishable_reason == _DRAFT_PENDING_TEXT for o in post.outputs)
+    return any(o.unpublishable_reason in pending for o in post.outputs)
 
 
 def _video_state(tenant_id: UUID, post: PostSummary) -> VideoDraftVM | None:
@@ -466,14 +488,25 @@ def _card_input(
     planned: PlannedEvent,
     video_urls: dict[str, str] | None = None,
     thumbnails: dict[str, str | None] | None = None,
+    video_states: dict[str, VideoDraftVM | None] | None = None,
 ) -> CardInput:
     event, post = planned.event, planned.post
+    video = (video_states or {}).get(str(event.post_id))
+    final_status = video.state if video is not None and video.state != "draft" else ""
+    if post is not None and post.lifecycle_status == "drafting":
+        final_status = "other_version"
     return CardInput(
         event_id=str(event.id),
         post_id=str(event.post_id),
         scheduled_at=event.scheduled_at,
         status=event.status,
-        overdue=planned.overdue_unapproved,
+        final_state=final_status,
+        overdue=planned.overdue_unapproved
+        or (
+            bool(final_status)
+            and final_status != "final"
+            and event.scheduled_at <= datetime.now(UTC)
+        ),
         expired=planned.expired,
         connection_id=str(event.connection_id),
         post_title=post.title if post is not None else None,
@@ -570,11 +603,12 @@ def load_week(
         for p in schedulable
         if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
     }
+    video_states = {pid: _video_state(tenant_id, post) for pid, post in posts.items()}
     grid = build_week(
         monday=monday,
         today=today,
         zone=zone,
-        items=[_card_input(p, video_urls, thumbnails) for p in planned],
+        items=[_card_input(p, video_urls, thumbnails, video_states) for p in planned],
         connections=index,
     )
     return WeekData(
@@ -594,6 +628,7 @@ def load_week(
                 connections=index,
                 thumbnails=thumbnails,
                 video_url=option_videos.get(str(p.post_id), ""),
+                video=video_states.get(str(p.post_id)),
             )
             for p in unscheduled
         ],
@@ -605,6 +640,7 @@ def load_week(
                 connections=index,
                 thumbnails=thumbnails,
                 video_url=option_videos.get(str(p.post_id), ""),
+                video=video_states.get(str(p.post_id)),
             )
             for p in schedulable
         ],
@@ -907,6 +943,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         lifecycle=post.lifecycle_status if post is not None else None,
     )
     return EventDetailVM(
+        final_review=post is not None and _draft_pending(post),
         event_id=str(event.id),
         post_id=str(event.post_id),
         title=post.title if post is not None else "Publicación no disponible",
