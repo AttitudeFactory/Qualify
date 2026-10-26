@@ -6157,8 +6157,7 @@ class CreativeState(rx.State):
         (m-24842978) and its own video does not hold it back — a 1080p final being made
         or that could not be ordered cannot be scheduled yet (m-24820142)."""
         draft = self.draft
-        held = draft is not None and bool(final_pending_note(draft.video_draft))
-        return self.approved_ready and not held
+        return self.approved_ready and draft is not None and draft.status == "approved"
 
     @rx.var
     def approved_hold_note(self) -> str:

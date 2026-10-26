@@ -68,6 +68,7 @@ from reflex.config import get_config
 from sqlalchemy.exc import SQLAlchemyError
 
 from .access_vm import ACCESS_DOWN, CODE_DEAD, CODE_EMPTY, invite_token_from_text
+from .review_links import review_destination
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +282,7 @@ class AuthState(rx.State):
 
     # Backend-only (never serialized to the client). Held so logout can revoke.
     _access_token: str = ""
+    _session_user_id: str = ""
     # The recovery link's token while /reset is open. Backend-only, like the above:
     # it can set the account's password, so it never goes back to the browser.
     _recovery_token: str = ""
@@ -304,6 +306,16 @@ class AuthState(rx.State):
         finished Brand Kit is sent to make it (/brand: the question, or the wizard it
         left halfway) — the Brand Kit's own pages use `require_brand_access`."""
         if not self.session_tenant_id:
+            from urllib.parse import urlencode
+
+            try:
+                destination = review_destination(
+                    self.router.url.path + "?" + urlencode(dict(self.router.url.query_parameters))
+                )
+            except Exception:
+                destination = ""
+            if destination:
+                return rx.redirect("/login?" + urlencode({"volver": destination}))
             return rx.redirect("/brand" if self.guest_tenant_id else BRAND_START_ROUTE)
         if not self.brand_kit_complete:
             return rx.redirect(brand_gate_url(self.router.url.path))
@@ -348,8 +360,16 @@ class AuthState(rx.State):
         self.reset_sent_to = ""
         self.signup_open = signup_open()
         if self.session_tenant_id:
-            return rx.redirect("/")
+            return rx.redirect(self.login_return or "/")
         return None
+
+    @rx.var
+    def login_return(self) -> str:
+        try:
+            raw = str(self.router.url.query_parameters.get("volver", ""))
+        except Exception:
+            return ""
+        return review_destination(raw)
 
     @rx.event
     async def enter_signup(self):
@@ -552,7 +572,7 @@ class AuthState(rx.State):
             return
         login_throttle.clear(key)
         # Only the in-app destinations below; never a URL from the form itself.
-        next_route = str(form_data.get("next", "/"))
+        next_route = str(form_data.get("next", self.login_return or "/"))
         yield rx.redirect(await self._open_session(result, next_route))
 
     async def _open_session(self, result: LoginResult, next_route: str) -> str:
@@ -572,6 +592,7 @@ class AuthState(rx.State):
             self.business_name = result.display_name
             self.user_email = result.email
             self._access_token = result.access_token
+            self._session_user_id = str(result.user_id)
             self.brand_kit_complete = kit_complete
             self.is_authenticating = False
             # A login supersedes the pre-login draft: after a signup that adopted it,
@@ -584,7 +605,9 @@ class AuthState(rx.State):
             self.guest_email = ""
             self.login_email_hint = ""
             self.show_password = False
-        return next_route if next_route in _POST_LOGIN_ROUTES else "/"
+        return review_destination(next_route) or (
+            next_route if next_route in _POST_LOGIN_ROUTES else "/"
+        )
 
     @rx.event(background=True)
     async def handle_signup(self, form_data: dict):
@@ -888,6 +911,7 @@ class AuthState(rx.State):
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
             from .discover_reels import DiscoverReelsState
+            from .final_review_state import FinalReviewState
             from .followups_state import FollowupsState
             from .gallery_state import GalleryState
             from .home_state import HomeState
@@ -949,6 +973,7 @@ class AuthState(rx.State):
                 # the trending panel: its Meta audio list belongs to a tenant account
                 TrendingState,
                 PlannerState,
+                FinalReviewState,
                 # the POST gallery (QUA-118): the tenant's POSTs and the filters
                 GalleryState,
                 # Inicio (m-24842962): the tenant's pending counts and week figures

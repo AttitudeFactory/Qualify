@@ -196,7 +196,16 @@ def test_gate_exposes_no_presign_method() -> None:
     # resolves an opaque token. Still no signed/public URL of any kind.
     # 2026-10-22 (m-24828907, ADR 39): `delete_prefix` added for the piece retention rule —
     # the only deletion, restricted to folders under `PURGEABLE_ROOTS` (tests below).
-    assert surface == {"put_media", "open_object", "object_size", "open_range", "delete_prefix"}
+    # ADR 41: sha256 reads the existing final to compare the confirmed binary;
+    # the same tenant-prefix gate applies, with no public/signed URL capability.
+    assert surface == {
+        "put_media",
+        "open_object",
+        "object_size",
+        "open_range",
+        "delete_prefix",
+        "sha256",
+    }
     assert not any("presign" in name or "sign" in name for name in surface)
 
 
@@ -308,3 +317,9 @@ def test_delete_prefix_refuses_anything_but_one_piece_folder(prefix: str) -> Non
     with pytest.raises(TenantPrefixViolation):
         ObjectGate(store).delete_prefix(_TENANT, prefix, execute=True)
     assert store.batches == []
+
+
+def test_final_digest_rejects_another_tenant_before_storage() -> None:
+    gate = ObjectGate(_NullStore())
+    with pytest.raises(TenantPrefixViolation):
+        gate.sha256(_TENANT, media_key(uuid4(), uuid4(), "video"))

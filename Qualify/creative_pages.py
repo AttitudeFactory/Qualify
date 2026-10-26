@@ -25,7 +25,6 @@ from .creative_vm import (
     RECREATE_LABEL,
     VIDEO_DRAFT,
     VIDEO_EXPIRED,
-    VIDEO_FINAL,
     CopyVariantVM,
     GapVM,
     MediaVM,
@@ -1500,7 +1499,7 @@ def _video_draft_notice() -> rx.Component:
         )
 
     return rx.cond(
-        (video.state != "") & (video.state != VIDEO_FINAL),
+        (video.state != ""),
         rx.vstack(
             rx.hstack(
                 rx.match(
@@ -1515,6 +1514,15 @@ def _video_draft_notice() -> rx.Component:
                         size="2",
                         min_height=_TAP_MIN_HEIGHT,
                         on_click=CreativeState.retry_final_render,
+                    ),
+                ),
+                rx.cond(
+                    video.can_review_final,
+                    rx.link(
+                        rx.button(
+                            "Revisar video", variant="soft", size="2", min_height=_TAP_MIN_HEIGHT
+                        ),
+                        href="/planner?revisar=videos&pieza=" + CreativeState.draft.draft_id,
                     ),
                 ),
                 # founder 2026-10-24: an expired vista previa is made again as a new piece
@@ -2703,6 +2711,10 @@ def draft_detail_index() -> rx.Component:
                         _campaign_field(),
                         _retention_notice(),
                         _video_draft_notice(),
+                        rx.cond(
+                            CreativeState.draft.other_version_pending != "",
+                            callout(CreativeState.draft.other_version_pending, "info"),
+                        ),
                         _history_line(),
                         rx.foreach(
                             CreativeState.draft.warnings,

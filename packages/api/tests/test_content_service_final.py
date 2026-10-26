@@ -661,3 +661,24 @@ def test_the_final_poll_reads_only_the_draft_row_and_its_draft_videos() -> None:
     (block,) = (draft_state(p) for p in params)
     assert block["status"] == DRAFT_RENDERING
     assert service.video_drafts_state(tenant_id=TENANT_ID, draft_id=uuid4()) is None
+
+
+def test_retry_refuses_an_uncertain_final_without_dispatching_another_paid_task() -> None:
+    from qualify_creative.queue_errors import UNCERTAIN_REASON, UNCERTAIN_VIDEO_TEXT
+
+    service, repo, dispatcher, draft_id, variant_id, _ = _setup()
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    dispatcher.finals.clear()
+    asset = repo.media[draft_id][0]
+    repo.set_video_draft(
+        tenant_id=TENANT_ID,
+        asset_id=asset.id,
+        changes={
+            "status": DRAFT_FAILED,
+            "error": UNCERTAIN_VIDEO_TEXT,
+            "failure_reason": UNCERTAIN_REASON,
+        },
+    )
+    with pytest.raises(InvalidTransition, match="equipo debe revisarlo"):
+        service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert dispatcher.finals == []

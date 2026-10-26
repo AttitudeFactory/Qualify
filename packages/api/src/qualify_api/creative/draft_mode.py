@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Any
 
 from qualify_creative.adapters.byteplus_ark import DRAFT_TTL_SECONDS
+from qualify_creative.queue_errors import uncertain_error
 
 #: `params["draft"]["status"]`: the 480p draft waiting for approval; the final being
 #: made; the final in place; the final failed (retried while the draft id lives).
@@ -121,6 +122,8 @@ def final_retryable(
     the finals failed: still at its draft)."""
     if block is None:
         return False
+    if uncertain_error(block.get("failure_reason")) or uncertain_error(block.get("error")):
+        return False
     status = block.get("status") or DRAFT_READY
     if approved and status == DRAFT_READY:
         return True
@@ -188,9 +191,10 @@ def draft_summary(
         if status in (DRAFT_READY, DRAFT_FAILED) and draft_expired(block, now):
             status = DRAFT_EXPIRED
         states.append(status)
-    state = min(states, key=_SUMMARY_ORDER.index)
+    uncertain = next((error for error in errors if uncertain_error(error)), None)
+    state = DRAFT_FAILED if uncertain else min(states, key=_SUMMARY_ORDER.index)
     costs = [block.get("cost_usd") for block in blocks]
     cost = None
     if all(isinstance(c, str) and c for c in costs):
         cost = str(sum((Decimal(str(c)) for c in costs), Decimal(0)))
-    return state, cost, errors[-1] if errors else ""
+    return state, cost, uncertain or (errors[-1] if errors else "")

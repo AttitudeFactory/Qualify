@@ -248,7 +248,8 @@ def record_submission(
             text(
                 """
                 UPDATE creative_jobs
-                SET vendor_task_id = :vendor_task_id, status = 'submitted', submitted_at = :now
+                SET vendor_task_id = :vendor_task_id, status = 'submitted', submitted_at = :now,
+                    not_before = :now
                 WHERE id = :id AND claim_token = :token AND status = 'claimed'
                   AND vendor_task_id IS NULL
                 RETURNING id
@@ -532,7 +533,8 @@ def recover_expired(
               )
               AND NOT EXISTS (
                     SELECT 1 FROM creative_jobs AS j
-                    WHERE j.id = s.holder_job_id AND j.vendor_task_id IS NOT NULL
+                    WHERE j.id = s.holder_job_id
+                      AND (j.vendor_task_id IS NOT NULL OR j.not_before > :now)
                       AND j.status NOT IN ('succeeded','failed','cancelled')
               )
               AND (
@@ -694,14 +696,14 @@ def hand_back(
                 claim_token = claim_token + 1,
                 attempts = CASE WHEN :count THEN attempts ELSE GREATEST(attempts - 1, 0) END
             WHERE id = :job AND claim_token = :token AND status IN ('claimed','submitted')
-            RETURNING vendor_task_id
+            RETURNING vendor_task_id, not_before
             """
         ),
-        {"job": job_id, "token": claim_token, "count": count_attempt},
+        {"job": job_id, "token": claim_token, "count": count_attempt, "now": now},
     ).one_or_none()
     if row is None:
         return False
-    if row.vendor_task_id is None:
+    if row.vendor_task_id is None and (not count_attempt or row.not_before <= now):
         session.execute(
             text(
                 "UPDATE vendor_slots SET holder_job_id = NULL, lease_until = NULL, "
