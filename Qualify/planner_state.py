@@ -671,6 +671,14 @@ class PlannerState(rx.State):
         return f"{pieces} · {events} · {span}"
 
     @rx.var
+    def form_step_total(self) -> int:
+        return len(ASSIGN_STEPS) - (1 if self.form_mode == MODE_RESCHEDULE else 0)
+
+    @rx.var
+    def form_step_name(self) -> str:
+        return ASSIGN_STEPS[min(max(self.form_step, STEP_POST), STEP_LAST)]
+
+    @rx.var
     def form_step_counter(self) -> str:
         """N6: «Paso 2 de 3» with the real count — a move has no «Contenido» to pick, so
         it walks «Paso 1 de 2»."""

@@ -48,6 +48,7 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
+from .ui.steps import step_progress
 from .whatsapp_chats_state import UNASSIGNED, WhatsAppChatsState
 from .whatsapp_chats_vm import (
     ASK_CONSENT_LABEL,
@@ -1055,6 +1056,16 @@ def _templates_drawer() -> rx.Component:
         open=S.tpl_open,
         on_open_change=S.set_templates_open,
         title=SEND_APPROVED_LABEL,
+        step=rx.vstack(
+            step_progress(rx.cond(S.tpl_reviewing, 2, 1), 2),
+            rx.text(
+                rx.cond(S.tpl_reviewing, "Revisa el mensaje", "Elige el mensaje"),
+                size="2",
+                weight="medium",
+            ),
+            spacing="1",
+            width="100%",
+        ),
         description=SEND_APPROVED_DESCRIPTION,
         footer=_templates_footer(),
         icon="message-square-text",
