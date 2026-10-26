@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -40,6 +41,7 @@ from qualify_api.creative.draft_mode import (
     FINAL_STALE_SECONDS,
     draft_expires_at,
     draft_rendering,
+    draft_state,
     draft_summary,
 )
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
@@ -51,6 +53,7 @@ from qualify_api.creative.piece_export import (
     piece_text,
     slug,
 )
+from qualify_api.creative.queue_visibility import cancel_queued, queue_status
 from qualify_api.creative.readiness import readiness
 from qualify_api.creative.retention import Retention, retention_of
 from qualify_api.creative.service import DraftDetail
@@ -87,6 +90,7 @@ from .creative_vm import (
     DraftVM,
     KitFormVM,
     MediaVM,
+    QueueVM,
     ReadinessVM,
     RecipeOptionVM,
     RouteOptionVM,
@@ -830,6 +834,16 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
                 retention.days_left(datetime.now(UTC)),
             ),
         )
+    if (
+        detail.revision > 1
+        and detail.status in {"drafting", "generated", "rejected"}
+        and any(draft_state(item.params) for item in detail.media)
+    ):
+        from .final_review_provider import pending_version_note
+
+        vm = dataclasses.replace(
+            vm, other_version_pending=pending_version_note(tenant_id, detail.id)
+        )
     return _with_download(tenant_id, detail, vm)
 
 
@@ -920,7 +934,31 @@ def draft_detail(tenant_id: UUID, draft_id: UUID) -> DraftVM | None:
     detail = production_content_service().get_draft(tenant_id=tenant_id, draft_id=draft_id)
     if detail is None:
         return None
-    return _detail_to_vm(tenant_id, detail)
+    vm = _detail_to_vm(tenant_id, detail)
+    queue = draft_queue(tenant_id, draft_id)
+    if queue.cancelled:
+        vm = dataclasses.replace(
+            vm, video_draft=dataclasses.replace(vm.video_draft, can_retry=False)
+        )
+    return dataclasses.replace(vm, queue=queue)
+
+
+def draft_queue(tenant_id: UUID, draft_id: UUID) -> QueueVM:
+    from .creative_vm import queue_vm  # noqa: PLC0415
+
+    if os.environ.get("QUALIFY_CREATIVE_DISPATCHER", "inline").strip().lower() != "queue":
+        return queue_vm()
+    status = queue_status(tenant_id=tenant_id, draft_id=draft_id)
+    return queue_vm(
+        queued=status.queued,
+        can_cancel=status.can_cancel,
+        cancelled=status.cancelled,
+        estimated_minutes=status.estimated_minutes,
+    )
+
+
+def cancel_draft_queue(tenant_id: UUID, draft_id: UUID) -> None:
+    cancel_queued(tenant_id=tenant_id, draft_id=draft_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1134,6 +1172,19 @@ def _with_expiry(
     """A vista previa still waiting for approval says until when (founder, 2026-10-24):
     «Apruébala antes del jueves 30 de octubre para tener el video final.», in the
     business's zone. Nothing once approved, expired, or without a date."""
+    if video.state == "rendering" and any(
+        (draft_state(param) or {}).get("final_nightly") for param in params
+    ):
+        from .final_review_vm import FINAL_NIGHT_RUNNING_NOTE, FINAL_SCHEDULED_NOTE
+        from .inbox_provider import tenant_zone
+
+        local = datetime.now(UTC).astimezone(tenant_zone(tenant_id))
+        return dataclasses.replace(
+            video,
+            badge="Video final mañana",
+            tone="neutral",
+            note=(FINAL_NIGHT_RUNNING_NOTE if local.hour < 6 else FINAL_SCHEDULED_NOTE),
+        )
     if approved or video.state not in (VIDEO_DRAFT, VIDEO_FAILED):
         return video
     ends = draft_expires_at(params)

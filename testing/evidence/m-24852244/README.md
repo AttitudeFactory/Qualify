@@ -13,3 +13,5 @@ Con `prefers-reduced-motion: reduce`, todos los hijos del cuerpo del marco devol
 **Límites:** no se generó una publicación, por lo que la pantalla de resultado y el subdetalle de un grupo de variaciones se revisaron mediante código y pruebas offline, sin captura de resultado real. Los avisos de marca de las capturas corresponden al fixture, que no tiene logo ni perfil de voz preparado. No se recorrieron en navegador todos los tipos de creación ni se midió una carga lenta de catálogo.
 
 **Sugerencias de experiencia:** se aplicó el resumen del selector móvil para que la lista de formatos no tape el contenido de cada paso. El contenido y las opciones disponibles se conservaron.
+
+Se detectó además que «Generar los ángulos» medía 40 px de alto. Se corrigió el mínimo a 44 px en el código; la captura de Variaciones es anterior a esa corrección y no representa una medición de los 44 px finales.

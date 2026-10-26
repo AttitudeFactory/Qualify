@@ -33,7 +33,8 @@ from sqlalchemy.orm import Session
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.creative import models as creative
-from qualify_api.creative.draft_mode import draft_pending
+from qualify_api.creative.draft_mode import draft_pending, draft_state
+from qualify_api.creative.final_review import final_confirmed
 from qualify_api.creative.retention import Retention, retention_of
 from qualify_api.planner.fsm import EventStatus
 from qualify_api.planner.models import CalendarEvent
@@ -137,6 +138,12 @@ def _candidate(
                 width=image.width,
                 height=image.height,
                 draft_pending=draft_pending(image.params),
+                final_unconfirmed=(
+                    (draft_state(image.params) or {}).get("status") in {"final_ready", "final"}
+                    and not final_confirmed(
+                        image.params, object_key=image.object_key, revision=draft.revision
+                    )
+                ),
             )
             for image in images
         ),
@@ -193,16 +200,29 @@ def _outputs(
         )
         verdict = evaluate(_candidate(session, tenant_id, draft, images, output_port=port))
         publishable = isinstance(verdict, PublishablePost)
+        schedulable = verdict
+        if not publishable and verdict.reason in {
+            UnpublishableReason.MEDIA_DRAFT_PENDING,
+            UnpublishableReason.MEDIA_FINAL_UNCONFIRMED,
+        }:
+            schedulable = evaluate(
+                _candidate(session, tenant_id, draft, images, output_port=port), for_scheduling=True
+            )
         types, size = media_shape([image for image in images if image.output_port == port])
         outputs.append(
             PostOutput(
                 port=port,
                 media_type=first.media_type,
-                media_product_type=verdict.media_product_type if publishable else None,
+                media_product_type=(
+                    schedulable.media_product_type
+                    if isinstance(schedulable, PublishablePost)
+                    else None
+                ),
                 is_publishable=publishable,
                 unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
                 media_types=types,
                 image_size=size,
+                can_schedule_pending_final=isinstance(schedulable, PublishablePost),
             )
         )
     return tuple(outputs)
@@ -320,8 +340,14 @@ class DraftPostReader:
     """`PostReader` backed by `content_drafts` + `content_briefs` + `copy_variants` +
     `image_assets`, all through `tenant_session` (RLS-scoped)."""
 
-    def __init__(self, *, clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        verify_digest: Callable[[UUID, str], str] | None = None,
+    ) -> None:
         self._clock = clock
+        self._verify_digest = verify_digest
 
     def get(self, *, tenant_id: UUID, post_id: UUID) -> PostSummary | None:
         return self.get_many(tenant_id=tenant_id, post_ids=[post_id]).get(post_id)
@@ -406,7 +432,29 @@ class DraftPostReader:
                     output_port=output_port,
                 )
             images = _images(session, draft.id)
-            return evaluate(_candidate(session, tenant_id, draft, images, output_port, destination))
+            verdict = evaluate(
+                _candidate(session, tenant_id, draft, images, output_port, destination)
+            )
+            digests = {
+                image.object_key: (draft_state(image.params) or {}).get("confirmed_sha256")
+                for image in images
+                if draft_state(image.params) is not None
+            }
+        if isinstance(verdict, PublishablePost) and self._verify_digest is not None:
+            for item in verdict.media:
+                expected = digests.get(item.object_key)
+                if expected is not None:
+                    try:
+                        current = self._verify_digest(tenant_id, item.object_key)
+                    except Exception:
+                        current = None  # Missing object or storage outage: never publish.
+                    if current != expected:
+                        return NotPublishable(
+                            post_id=post_id,
+                            reason=UnpublishableReason.MEDIA_FINAL_UNCONFIRMED,
+                            output_port=output_port,
+                        )
+        return verdict
 
     def _summarize(
         self,
@@ -450,7 +498,19 @@ class DraftPostReader:
         else:
             verdict = evaluate(_candidate(session, tenant_id, draft, images))
             publishable = isinstance(verdict, PublishablePost)
-            media_product_type = verdict.media_product_type if publishable else None
+            schedule_verdict = verdict
+            if not publishable and verdict.reason in {
+                UnpublishableReason.MEDIA_DRAFT_PENDING,
+                UnpublishableReason.MEDIA_FINAL_UNCONFIRMED,
+            }:
+                schedule_verdict = evaluate(
+                    _candidate(session, tenant_id, draft, images), for_scheduling=True
+                )
+            media_product_type = (
+                schedule_verdict.media_product_type
+                if isinstance(schedule_verdict, PublishablePost)
+                else None
+            )
             reason = "" if publishable else REASON_TEXT[verdict.reason]
         first = min(images, key=lambda image: image.position) if images else None
         video_object_key = (
@@ -481,6 +541,11 @@ class DraftPostReader:
             asset_count=len(images),
             asset_types=tuple("IMAGE" for _ in images),
             is_publishable=publishable,
+            can_schedule_pending_final=(
+                any(output.can_schedule_pending_final for output in outputs)
+                if outputs
+                else isinstance(schedule_verdict, PublishablePost)
+            ),
             unpublishable_reason=reason,
             detail_href=f"/drafts/{draft.id}",
             outputs=outputs,

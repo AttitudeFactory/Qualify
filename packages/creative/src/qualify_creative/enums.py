@@ -182,6 +182,7 @@ class FailureReason(StrEnum):
     BUDGET_EXCEEDED = "budget_exceeded"
     CREDENTIAL_INVALID = "credential_invalid"
     PROVIDER_ERROR = "provider_error"
+    SUBMISSION_UNCERTAIN = "submission_uncertain"
     FIDELITY_REJECTED = "fidelity_rejected"
     ROUTE_BLOCKED_BY_POLICY = "route_blocked_by_policy"
     REFUSAL = "refusal"

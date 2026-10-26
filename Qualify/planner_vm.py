@@ -1022,6 +1022,7 @@ def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class EventDetailVM:
+    final_review: bool = False
     event_id: str = ""
     post_id: str = ""
     title: str = ""
@@ -1115,6 +1116,7 @@ class CardInput:
     is_publishable: bool = False  # `PostSummary.is_publishable`
     unpublishable_reason: str = ""  # `PostSummary.unpublishable_reason`
     video_url: str = ""  # backend path of the POST's R2-only video (`r2_media`), or ""
+    final_state: str = ""
     expired: bool = False  # QUA-115: `PlannedEvent.expired` — past the execution window
     output_port: str | None = None  # MP-11: `EventRecord.output_port`
     destination: str | None = None  # QUA-118 v2: `EventRecord.destination`
@@ -1147,6 +1149,14 @@ def build_card(
         reason=item.unpublishable_reason,
     )
     pending = is_pending(item.status, approval)
+    if item.final_state and item.status == "scheduled":
+        from .final_review_vm import final_state
+
+        badge, tone, note = final_state(
+            item.final_state, overdue=item.overdue, expired=item.expired, hour=time_label_12h(local)
+        )
+        ready = Readiness(badge, badge, tone, note)
+        pending = False
     s_label, s_tone = status_label(item.status, pending=pending, expired=item.expired)
     return EventCardVM(
         event_id=item.event_id,
@@ -1166,7 +1176,7 @@ def build_card(
         status_tone=s_tone,
         # `overdue` is the card's "needs attention" flag (amber edge + warning icon): a
         # Pendiente or Vencido event will not publish as is.
-        overdue=pending or item.expired,
+        overdue=pending or item.expired or item.overdue,
         can_modify=event_actions(status=item.status, approval=approval, lifecycle=None).can_modify,
         muted=item.status == "cancelled",
         detail_href=item.detail_href,
@@ -1295,6 +1305,7 @@ def build_post_option(
     retention_state: str = "",
     purge_days_left: int | None = None,
     final_rendering: bool = False,
+    can_schedule_pending_final: bool = False,
     expiry_note: str = "",
     preview_expired: bool = False,
     recreate_note: str = "",
@@ -1331,7 +1342,7 @@ def build_post_option(
         has_outputs=bool(chips),
         next_port=next((chip.port for chip in chips if not chip.scheduled), ""),
         category=category or "",
-        schedulable=approval == "approved" and is_publishable,
+        schedulable=approval == "approved" and (is_publishable or can_schedule_pending_final),
         video_url=video_url,
         gallery_state=gallery_state,
         gallery_label=g_label,
@@ -1499,12 +1510,13 @@ def build_output_chip(
     media_types: tuple[str, ...] = (),
     image_size: tuple[int, int] | None = None,
     preferred_destination: str | None = None,
+    can_schedule_pending_final: bool = False,
 ) -> OutputChipVM:
     """One output's chip (MP-11). `event_status` is the live event's, or None when the
     output has none. A scheduled output reads «lun 12:00 · @bianki»; an unscheduled one
     that cannot be published yet reads «no publicable» with the reason as its note."""
     if event_status is None:
-        if is_publishable:
+        if is_publishable or can_schedule_pending_final:
             state, tone, note = OUTPUT_UNSCHEDULED, "neutral", ""
         else:
             state, tone, note = OUTPUT_NOT_PUBLISHABLE, "warn", unpublishable_reason

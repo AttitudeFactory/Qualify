@@ -6,6 +6,7 @@ exception.
 
 from __future__ import annotations
 
+import hashlib
 import io
 from collections.abc import Iterator, Sequence
 from typing import IO, Any
@@ -87,6 +88,21 @@ class R2ObjectStore:
             raise
         body: IO[bytes] = response["Body"]
         return io.BytesIO(body.read())
+
+    def sha256(self, key: str) -> str:
+        """Digest the current object with bounded memory before publishing a final."""
+        try:
+            response = self._client.get_object(Bucket=self._settings.bucket, Key=key)
+        except ClientError as exc:
+            _raise_not_found_or_reraise(exc, key)
+        body = response["Body"]
+        digest = hashlib.sha256()
+        try:
+            while chunk := body.read(1024 * 1024):
+                digest.update(chunk)
+        finally:
+            body.close()
+        return digest.hexdigest()
 
     # -- ranged reads (2026-09-30): the browser previewing a video --------------------------
     #

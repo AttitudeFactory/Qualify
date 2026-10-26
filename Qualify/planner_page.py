@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .final_review_panel import final_review_panel
+from .final_review_state import FinalReviewState
 from .planner_drawer import (
     assign_drawer,
     channel_mark,
@@ -1310,13 +1312,14 @@ def planner_index() -> rx.Component:
         ),
         assign_drawer(),
         event_panel(),
+        final_review_panel(),
         _filters_drawer(),
         # The page's clock: a quiet re-read of the week every REFRESH_SECONDS, so what
         # the worker published (or failed) shows without a manual reload. Client-side,
         # so it stops when the page is left.
         rx.moment(
             interval=REFRESH_SECONDS * 1000,
-            on_change=PlannerState.refresh_week,
+            on_change=[PlannerState.refresh_week, FinalReviewState.refresh],
             display="none",
         ),
     )

@@ -4920,7 +4920,14 @@ def _failed() -> rx.Component:
 
 
 def _result_view() -> rx.Component:
+    from .queue_notice import queue_notice  # noqa: PLC0415
+
     return rx.vstack(
+        rx.cond(
+            CreativeState.gen_draft,
+            queue_notice(CreativeState.gen_draft.queue, CreativeState.gen_draft.draft_id),
+        ),
+        rx.cond(CreativeState.action_error != "", callout(CreativeState.action_error, "warn")),
         # what the piece is — metadata, so `tag`s (§5.3), not state badges
         rx.hstack(
             rx.cond(CreativeState.gen_draft, tag(CreativeState.gen_kind_label, size="2")),
@@ -4937,7 +4944,11 @@ def _result_view() -> rx.Component:
                 ("carousel", _carousel_result()),
                 _video_result(),
             ),
-            rx.cond(CreativeState.gen_is_failed, _failed(), _waiting()),
+            rx.cond(
+                CreativeState.gen_is_failed,
+                rx.cond(CreativeState.gen_draft.queue.cancelled, rx.fragment(), _failed()),
+                _waiting(),
+            ),
         ),
         rx.button(
             rx.icon("plus", size=16),

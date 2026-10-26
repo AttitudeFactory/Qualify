@@ -156,6 +156,11 @@ class ObjectGate:
         """
         return self._store.open(require_tenant_prefix(tenant_id, object_key))
 
+    def sha256(self, tenant_id: UUID, object_key: str) -> str:
+        """Current object's digest; never cross the tenant prefix."""
+        key = require_tenant_prefix(tenant_id, object_key)
+        return self._store.sha256(key)  # type: ignore[attr-defined]
+
     # Ranged reads for the browser's video preview (`Qualify/r2_media.py`). Same prefix
     # check as `open_object`. Not part of the `ObjectStore` protocol: only a store that
     # can read ranges (`R2ObjectStore`) offers them, and nothing else needs to.

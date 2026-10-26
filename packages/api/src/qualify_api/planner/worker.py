@@ -306,6 +306,20 @@ def main(
         production = production or production_tick_runner
         heartbeat = heartbeat or production_heartbeat_store()
 
+    # Independent watchdog: continues observing if creative-worker itself stops.
+    if not args.once and args.all_tenants:
+        from qualify_api.creative.worker.operations import watchdog_chore  # noqa: PLC0415
+
+        watch_queue = watchdog_chore()
+        legacy_recovery = recovery
+
+        def recovery_and_watchdog() -> None:
+            watch_queue()
+            if legacy_recovery is not None:
+                legacy_recovery()
+
+        recovery = recovery_and_watchdog
+
     tenant_ids: list[UUID] = []
     if args.all_tenants:
         make_runner: Callable[[], _Runner] = production

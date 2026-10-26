@@ -536,7 +536,7 @@ async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
     events = [event async for event in CreativeState.approve_selected.fn(state)]
 
     toast = str(events[0])
-    assert "Estamos preparando el video en alta calidad" in toast
+    assert "Tu video final estará listo en unos minutos" in toast
     assert "Ahora elige" not in toast and "Revisa lo que falta" not in toast
     assert events[-1] is CreativeState.poll_final
     assert state._final_polling_id == str(_DRAFT_UUID)
@@ -579,9 +579,9 @@ async def test_approving_a_draft_whose_final_could_not_be_ordered_says_so(
     events = [event async for event in CreativeState.approve_selected.fn(state)]
     events = [e for e in events if e is not PendingState.refresh_now]  # m-24842963
 
-    assert len(events) == 1 and "Puedes reintentarlo" in str(events[0])
+    assert len(events) == 1 and "no usa otro video" in str(events[0])
     assert state.approved_ready is True  # the grid alone would offer the way …
-    assert state.approved_can_schedule is False  # … but the failed final holds it back
+    assert state.approved_can_schedule is True  # scheduling does not grant permission to publish
     assert state.approved_hold_note == FINAL_FAILED_NOTE
 
 
