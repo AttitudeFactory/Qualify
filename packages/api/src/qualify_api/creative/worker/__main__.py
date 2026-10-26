@@ -116,8 +116,16 @@ def main(
 
     monitor = production_monitor(scope_ids) if store is None else None
     original_recovery = recovery
+    from qualify_api.mail.final_summary import morning_chore
+
+    morning = morning_chore(scope_ids) if store is None else None
 
     def maintenance() -> None:
+        if morning is not None:
+            try:
+                morning()
+            except Exception:
+                logger.exception("creative.worker.morning_mail_failed")
         if original_recovery is not None:
             try:
                 original_recovery()
