@@ -14,7 +14,7 @@ dependencies = [
     "qualify-shared",
     "accelerate>=1.14.0",
     "huggingface-hub>=1.24.0",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
     "pydantic>=2.13.4",
     "torch>=2.14.1",
     "torchvision>=0.28.0",

@@ -13,7 +13,7 @@ requires-python = ">=3.12"
 # Pillow arrives with the composition module, not before it exists.
 dependencies = [
     "pydantic>=2.14.1",
-    "pillow>=11.0",
+    "pillow>=13.0.0",
     "pillow-heif>=0.18",
 ]
 # rembg stays OUT of dependencies on purpose: onnxruntime + model weights are the heavy
