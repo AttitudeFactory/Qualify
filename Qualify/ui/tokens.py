@@ -24,14 +24,15 @@ import reflex as rx
 PAGE_X = "var(--q-page-x)"
 """Horizontal gutter inside a page panel (2rem desktop, 1rem below 900px)."""
 
+SCROLL_MARGIN_TOP = "var(--q-sticky-header-height, 8rem)"
+"""Measured sticky header height of the nearest page or drawer; safe before JS loads."""
+
 GAP = "var(--q-gap)"
 """Air between the floating blocks — sidebar islands, main panel, page edge."""
 
 SIDEBAR_W = "var(--q-sidebar-w)"
 SIDEBAR_ZEN_W = "var(--q-sidebar-zen-w)"
 CONTENT_MAX = "var(--q-content-max)"
-SCROLL_MARGIN_TOP = "var(--q-sticky-header-height, 8rem)"
-"""The measured sticky header's height; safe fallback before its first measurement."""
 
 PAD_HEADER = f"1.5rem {PAGE_X} 1rem {PAGE_X}"
 """Page header block: title row + subtitle."""

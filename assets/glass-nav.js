@@ -340,3 +340,70 @@
     watch();
   }
 })();
+
+/* PASOS-10: anchor clearance follows the real sticky header in each scroll scope.
+   No new surface: the existing page/drawer headers remain the only measured sheets. */
+(function () {
+  if (window.__qStickyHeaders) return;
+  window.__qStickyHeaders = true;
+
+  var pending = false;
+  var watched = new Set();
+  var selector = '.q-page-header, .q-drawer-head';
+  var scopeSelector = 'main.q-panel, .q-drawer';
+  var resize = ('ResizeObserver' in window) ? new ResizeObserver(schedule) : null;
+
+  function measure() {
+    pending = false;
+    var active = new Set();
+    document.querySelectorAll(scopeSelector).forEach(function (scope) {
+      var height = 0;
+      scope.querySelectorAll(selector).forEach(function (head) {
+        if (head.closest(scopeSelector) !== scope) return;
+        active.add(head);
+        if (!watched.has(head)) {
+          watched.add(head);
+          if (resize) resize.observe(head);
+        }
+        if (head.getClientRects().length) height += head.getBoundingClientRect().height;
+      });
+      if (height > 0) scope.style.setProperty('--q-sticky-header-height', Math.ceil(height) + 'px');
+      else scope.style.removeProperty('--q-sticky-header-height');
+    });
+    watched.forEach(function (head) {
+      if (!active.has(head)) {
+        if (resize) resize.unobserve(head);
+        watched.delete(head);
+      }
+    });
+  }
+
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    window.requestAnimationFrame(measure);
+  }
+
+  function touchesHeader(node) {
+    return node && node.nodeType === 1 &&
+      (node.matches(selector + ', ' + scopeSelector) || node.querySelector(selector));
+  }
+
+  new MutationObserver(function (records) {
+    var relevant = records.some(function (record) {
+      if (record.target.nodeType === 1 && record.target.closest(selector)) return true;
+      if (record.type === 'attributes') return touchesHeader(record.target);
+      return Array.from(record.addedNodes).concat(Array.from(record.removedNodes)).some(touchesHeader);
+    });
+    if (relevant) schedule();
+  }).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true,
+    attributeFilter: ['class', 'hidden', 'data-state']
+  });
+  window.addEventListener('resize', schedule, { passive: true });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', schedule, { once: true });
+  } else {
+    schedule();
+  }
+})();

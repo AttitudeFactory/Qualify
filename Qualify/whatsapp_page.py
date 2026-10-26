@@ -40,13 +40,15 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.route_history import route_history
+from .whatsapp_chats_state import WhatsAppChatsState
 from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
+from .whatsapp_tab_chats import _back_button as chats_back_button
 from .whatsapp_tab_chats import chats_tab
 from .whatsapp_tab_contacts import contacts_tab
-from .whatsapp_tab_menu import menu_step_frame, menu_tab
+from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     DETAILS_TOGGLE,
@@ -157,6 +159,14 @@ def whatsapp_header() -> rx.Component:
         "WhatsApp",
         "Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones.",
         number_selector(),
+        kicker=rx.cond(
+            (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
+            chats_back_button(),
+            rx.cond(
+                (WhatsAppState.active_tab == TAB_MENU) & WhatsAppMenuState.advanced_open,
+                back_to_guided(),
+            ),
+        ),
     )
 
 
