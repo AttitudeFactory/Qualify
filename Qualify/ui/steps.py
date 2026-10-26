@@ -388,7 +388,9 @@ _STEP_GO_JS = (
     " const to = new URL(target, window.location.href);"
     " const n = to.searchParams.get('paso');"
     " const st = window.history.state || {}; const url = to.pathname + to.search + to.hash;"
-    " if (window.location.pathname + window.location.search + window.location.hash === url) return;"
+    " const here = new URL(window.location.href);"
+    " if (here.pathname.replace(/\\/$/, '') === to.pathname.replace(/\\/$/, '')"
+    " && here.search === to.search && here.hash === to.hash) return;"
     " if (cur === null) { window.history.replaceState(st, '', url); return; }"
     " if (back) { if (st.qPrevPaso === n) {"
     " if (window.__qStepBackTarget === url) return; window.__qStepBackTarget = url;"
@@ -436,6 +438,14 @@ _STEP_SYNC_DOM_JS = (
     if (!mark) return;
     const u = new URL(window.location.href);
     const n = String(Math.max(1, Number(mark.dataset.step) || 1));
+    const entry = window.__qStepEntry;
+    if (entry && u.pathname.replace(/\/$/, '') === entry.path) {
+     if (String(mark.dataset.entry) !== String(entry.epoch)) return;
+     u.searchParams.set('paso', String(entry.step));
+     window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+     window.__qStepBoot = true; delete window.__qStepBootTarget; delete window.__qStepEntry;
+    }
+
     if (!window.__qStepBoot) {
      window.__qStepBoot = true;
      // A cold document may briefly render the previous visit's server state.
@@ -466,6 +476,17 @@ _STEP_SYNC_DOM_JS = (
 })();
 """
 )
+
+
+def step_entry_script(path: str, step: int, epoch: int, requested: str | None) -> str:
+    """ACK a guarded entry only when its corresponding DOM epoch has painted."""
+    payload = json.dumps({"path": path.rstrip("/"), "step": step, "epoch": epoch})
+    return (
+        "(() => { const u=new URL(window.location.href);"
+        f" if (u.pathname.replace(/\\/$/, '') !== {json.dumps(path.rstrip('/'))}"
+        f" || u.searchParams.get('paso') !== {json.dumps(requested)}) return;"
+        f" window.__qStepEntry={payload}; window.__qStepSync?.(); }})();"
+    )
 
 
 def step_sync(
