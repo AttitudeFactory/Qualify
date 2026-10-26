@@ -467,6 +467,7 @@ app.add_page(
         AuthState.require_login,
         CreativeState.load_create,
         CreativeState.load_catalog_products,
+        CreativeState.enter_create_step,
         # m-24842973 (N4): back from «Agregar producto» in Variaciones with the product
         VariationsState.load_from_query,
     ],

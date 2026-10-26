@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .auth_state import AuthState
+from .creative_state import CreativeState
 from .home_state import HomeState
 from .home_vm import CONNECTIONS_URL, CREATE_URL, FirstStepVM, TodayCardVM, WeekStatVM
 from .ui import (
@@ -245,10 +247,31 @@ def _error() -> rx.Component:
     )
 
 
+def _unfinished_create() -> rx.Component:
+    """Resume the creation draft in this authenticated session, without a paid call."""
+    return rx.cond(
+        AuthState.is_authenticated & CreativeState.create_resume_pending,
+        section(
+            "Te quedó una publicación por crear",
+            card(
+                rx.vstack(
+                    rx.text(
+                        "Conservamos el producto y lo que escribiste en esta sesión.", size="2"
+                    ),
+                    _full_width_button("Seguir", "arrow-right", "/create"),
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+        ),
+    )
+
+
 def home_index() -> rx.Component:
     return app_shell(
         page_header("Inicio", SUBTITLE),
         page_body(
+            _unfinished_create(),
             rx.cond(
                 HomeState.loading,
                 _loading(),

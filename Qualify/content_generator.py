@@ -59,7 +59,6 @@ from .ui import (
     empty_state,
     loading_spinner,
     media_thumb,
-    page_body,
     page_header,
     progress_panel,
     removable_pill,
@@ -68,6 +67,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.steps import step_foot, step_frame, step_head, step_sync
 from .variations_state import VariationsState
 from .variations_view import variations_view
 
@@ -1725,15 +1725,6 @@ def _product_screen_nav() -> rx.Component:
                 radius=_CONTROL_RADIUS,
                 on_click=CreativeState.set_product_tab("stock"),
             ),
-        ),
-        rx.button(
-            "Continuar",
-            rx.icon("arrow-right", size=T.ICON_SM),
-            size="3",
-            radius=_CONTROL_RADIUS,
-            on_click=CreativeState.confirm_product,
-            disabled=~CreativeState.can_continue_product,
-            loading=CreativeState.stock_importing,
         ),
         width="100%",
         align="center",
@@ -4225,15 +4216,8 @@ def _view_step(step: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _view_steps() -> rx.Component:
-    """The four steps (CREAR-2) and «Paso N de M» (N6)."""
+    """The optional desktop index; the frame owns the one visible step count."""
     return rx.vstack(
-        rx.text(
-            CreativeState.gen_step_count,
-            size="1",
-            weight="medium",
-            color=T.TEXT_MUTED,
-            aria_live="polite",
-        ),
         rx.box(
             rx.foreach(CreativeState.gen_view_steps, _view_step),
             class_name="q-stepper",
@@ -4520,12 +4504,9 @@ def _view_nav() -> rx.Component:
 
 
 def _create_view() -> rx.Component:
-    """The chosen option in four short steps (CREAR-2 m-24848530): the step bar, the
-    step in front, and its navigation right under it — never sticky (§ 2026-10-14,
-    «siempre debajo del contenido»)."""
+    """The current step's fields; the frame owns the head and the fixed actions."""
     return card(
         rx.vstack(
-            _view_steps(),
             rx.box(
                 rx.match(
                     CreativeState.gen_step_key,
@@ -4540,7 +4521,6 @@ def _create_view() -> rx.Component:
                 class_name="q-settle",
                 key=CreativeState.gen_step_key,
             ),
-            _view_nav(),
             spacing="5",
             width="100%",
             flex="1",
@@ -4915,44 +4895,13 @@ def _result_view() -> rx.Component:
             ),
             rx.cond(CreativeState.gen_is_failed, _failed(), _waiting()),
         ),
-        rx.hstack(
-            rx.button(
-                rx.icon("plus", size=16),
-                "Crear otra",
-                variant="soft",
-                color_scheme="gray",
-                on_click=CreativeState.new_generation,
-                size="2",
-            ),
-            rx.spacer(),
-            rx.cond(
-                CreativeState.gen_draft_id != "",
-                # the result screen's one solid action (§5.5): where the piece goes next —
-                # held back, with no link at all, until the piece finished generating
-                # (§ request 2026-10-06)
-                rx.cond(
-                    CreativeState.gen_is_done,
-                    # § request 2026-10-08: going to review starts the generator over, so
-                    # «Crear pieza» opens on its first screen, not on this piece
-                    rx.button(
-                        "Revisar y aprobar",
-                        rx.icon("arrow-right", size=16),
-                        size="2",
-                        on_click=CreativeState.review_in_drafts,
-                    ),
-                    rx.tooltip(
-                        rx.button(
-                            "Revisar y aprobar",
-                            rx.icon("arrow-right", size=16),
-                            size="2",
-                            disabled=True,
-                        ),
-                        content="Disponible cuando termine de crearse la publicación.",
-                    ),
-                ),
-            ),
-            width="100%",
-            align="center",
+        rx.button(
+            rx.icon("plus", size=16),
+            "Crear otra",
+            variant="soft",
+            color_scheme="gray",
+            on_click=CreativeState.new_generation,
+            size="3",
         ),
         spacing="4",
         width="100%",
@@ -5029,44 +4978,93 @@ def _brand_flag() -> rx.Component:
     )
 
 
-def generator_page() -> rx.Component:
-    """/create: first the catalog product the piece is about (`_product_screen`), then
-    the options panel on the left, the full height of the screen, and the chosen option
-    in the centre, one view at a time (§ request 2026-10-14) — or «Descubrir reels», or
-    the piece once generated (`_result_view`)."""
-    readiness = CreativeState.readiness
-    return app_shell(
-        page_header(
-            "Crear publicación",
-            "Elige el producto, luego qué quieres crear, y avanza paso a paso.",
-            title_size="8",
-        ),
-        page_body(
-            rx.cond(
-                CreativeState.create_loading,
-                card(
-                    _loading_view("Cargando el generador"),
-                    padding="1.75rem",
-                    width="100%",
-                    display="flex",
-                    align_items="center",
-                    justify_content="center",
-                ),
-                rx.cond(
-                    CreativeState.product_confirmed,
-                    rx.box(
-                        _options_panel(),
-                        _workspace(readiness),
-                        class_name="q-cr-layout",
-                        width="100%",
-                        flex="1",
-                    ),
-                    _product_screen(),
-                ),
+def _generator_body() -> rx.Component:
+    """The product or workspace, shared by the step frame and the non-wizard modes."""
+    return rx.cond(
+        CreativeState.create_loading | ~CreativeState.create_entered,
+        card(_loading_view("Cargando el generador"), width="100%"),
+        rx.cond(
+            CreativeState.product_confirmed,
+            rx.box(
+                _options_panel(),
+                _workspace(CreativeState.readiness),
+                class_name="q-cr-layout",
+                width="100%",
+                flex="1",
             ),
-            _kind_conflict_dialog(),
+            _product_screen(),
         ),
     )
+
+
+def _generator_frame() -> rx.Component:
+    loading = CreativeState.create_loading | ~CreativeState.create_entered
+    active = CreativeState.create_uses_step_frame
+    frame = step_frame(
+        rx.cond(
+            active & CreativeState.create_entered & ~CreativeState.create_loading,
+            step_sync(CreativeState.create_step_n, CreativeState.gen_direction),
+        ),
+        _generator_body(),
+        _kind_conflict_dialog(),
+        head=rx.cond(
+            active,
+            step_head(
+                rx.cond(loading, "Crear publicación", CreativeState.create_step_title),
+                step=CreativeState.create_step_n,
+                total=CreativeState.create_step_m,
+                back_label="Inicio",
+                on_exit=CreativeState.save_for_later,
+                below=rx.cond(
+                    CreativeState.product_confirmed & (CreativeState.generator_view != "result"),
+                    _view_steps(),
+                ),
+            ),
+            page_header(
+                "Crear publicación",
+                "Elige el producto, luego qué quieres crear.",
+                kicker=rx.cond(
+                    (CreativeState.gen_mode == "variations") & VariationsState.has_set,
+                    rx.button(
+                        rx.icon("chevron-left", size=T.ICON_SM),
+                        "Tus grupos",
+                        variant="ghost",
+                        color_scheme="gray",
+                        size="3",
+                        min_height="44px",
+                        on_click=VariationsState.close_set,
+                        aria_label="Volver a tus grupos",
+                    ),
+                ),
+            ),
+        ),
+        foot=rx.cond(
+            active & ~loading,
+            step_foot(
+                CreativeState.create_primary_label,
+                step=CreativeState.create_step_n,
+                on_primary=CreativeState.create_continue,
+                on_back=CreativeState.create_back,
+                on_later=CreativeState.save_for_later,
+                primary_disabled=CreativeState.create_primary_disabled,
+                primary_loading=CreativeState.is_submitting | CreativeState.stock_importing,
+                reason=CreativeState.create_reason,
+            ),
+        ),
+        step=CreativeState.create_step_n,
+        direction=CreativeState.gen_direction,
+        on_pop=CreativeState.enter_create_step,
+        on_leave=CreativeState.leave_create_frame,
+    )
+    # Discovery and variations are forms, not numbered wizards. Keep one workspace
+    # mounted when changing mode, and restore the usual mobile navigation for them.
+    frame.class_name = rx.cond(active, "q-step-frame", "q-generator-form")
+    return frame
+
+
+def generator_page() -> rx.Component:
+    """Create's product and four real steps share one frame. Variations remains a form."""
+    return app_shell(_generator_frame())
 
 
 def _kind_conflict_dialog() -> rx.Component:
@@ -5121,12 +5119,7 @@ def _workspace(readiness: rx.Var) -> rx.Component:
     discovery, the piece once generated, or the chosen option's views."""
     result = card(
         rx.vstack(
-            rx.vstack(
-                rx.heading(_RESULT_HEADING[0], size="5", as_="h2"),
-                rx.text(_RESULT_HEADING[1], size="2", color=T.TEXT_MUTED),
-                spacing="1",
-                align_items="start",
-            ),
+            rx.text(_RESULT_HEADING[1], size="2", color=T.TEXT_MUTED),
             _result_view(),
             spacing="4",
             width="100%",
@@ -5138,7 +5131,11 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         scroll_margin_top="1rem",
     )
     return rx.vstack(
-        _kind_header(),
+        rx.cond(~CreativeState.create_uses_step_frame, _kind_header()),
+        rx.cond(
+            CreativeState.create_error != "",
+            callout(CreativeState.create_error, "error"),
+        ),
         # The BrandReadiness gate is lifted for now (§ request 2026-09-30):
         # the warning stays, but it never blocks Generar.
         rx.cond(

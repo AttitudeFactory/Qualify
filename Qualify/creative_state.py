@@ -178,9 +178,9 @@ from .stock_provider import import_video as import_stock_video
 from .stock_provider import search_from_kit as search_stock_from_kit
 from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
-from .upload_names import safe_upload_name
-from .ui.steps import go_to_step, settle_step, step_sync
+from .ui.steps import go_to_step, settle_step
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
+from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -1055,6 +1055,8 @@ class CreativeState(rx.State):
     gen_direction: str = "next"
     #: PASOS-5: `enter_create_step` has decided the step from `?paso=` (gates `step_sync`).
     create_entered: bool = False
+    #: Set only when leaving a draft intentionally; logout resets the whole state.
+    create_resume_pending: bool = False
     #: The catalog product screen comes first (§ request 2026-10-14: "antes de aparecer
     #: el lateral bar quiero poder seleccionar un producto del catálogo"): False until
     #: the operator continues with a product or without one.
@@ -1975,7 +1977,7 @@ class CreativeState(rx.State):
         if self.generator_view == "result":
             return self.gen_draft_id == "" or not self.gen_is_done
         if self.gen_is_last_view:
-            return self.gen_generating or self.gen_exhausted != ""
+            return self.is_submitting or self.gen_generating or self.gen_exhausted != ""
         return False
 
     @rx.var
@@ -1983,10 +1985,18 @@ class CreativeState(rx.State):
         """Why the primary is disabled, read beside the button (§5.8). Empty when valid."""
         if not self.product_confirmed:
             if self.product_tab == "stock":
-                return "Elige al menos una imagen o video para continuar." if not self.stock_chosen else ""
+                return (
+                    "Elige al menos una imagen o video para continuar."
+                    if not self.stock_chosen
+                    else ""
+                )
             return "Elige un producto para continuar." if not self.selected_product_id else ""
         if self.generator_view == "result":
-            return "Disponible cuando termine de crearse la publicación." if not self.gen_is_done else ""
+            return (
+                "Disponible cuando termine de crearse la publicación."
+                if not self.gen_is_done
+                else ""
+            )
         return ""
 
     @rx.var
@@ -2005,7 +2015,7 @@ class CreativeState(rx.State):
         if self.is_submitting:
             return True
         return (
-            self.generator_view == "result"
+            (self.generator_view == "result" or bool(self.gen_draft_id))
             and not self.gen_timed_out
             and (self.gen_draft is None or self.gen_draft.is_drafting)
         )
@@ -3602,14 +3612,16 @@ class CreativeState(rx.State):
         return go_to_step("/create", self.create_step_n, back=self._view_index() < old)
 
     @rx.event
-    def edit_view(self, view: str) -> None:
+    def edit_view(self, view: str) -> rx.event.EventSpec | None:
         """A summary row's «Editar»: the step that holds `view`, with that step's «Más
         opciones» unfolded when the row lives behind it."""
         base, more, _ = view.partition(SHOW_MORE_SUFFIX)
         index = generator_step_of(self.gen_category, self.brief_kind, base)
         if index < 0:
-            return
+            return None
+        old = self._view_index()
         self.gen_step = index
+        self.gen_direction = DIR_BACK if index < old else DIR_NEXT
         if base == "rules":
             self.rules_open = True
         elif base == "campaign" or (base == "channel" and more):
@@ -3618,6 +3630,7 @@ class CreativeState(rx.State):
         elif more:
             self.show_more_open = True
         self.create_error = ""
+        return go_to_step(self._CREATE_ROUTE, self.create_step_n, back=index < old)
 
     # -- PASOS-5 (m-24852244): the step frame's address and settle -----------------------
 
@@ -3635,13 +3648,13 @@ class CreativeState(rx.State):
             self.generator_view = "form"
             self.gen_direction = DIR_BACK
             return
-        # The guard: without a product, step 1 is the only step the owner may be on.
-        if not self.product_confirmed:
-            n = 1
-            self.product_confirmed = False
+        # A browser-forward from the product screen may restore the selected product.
+        # Unimported stock picks never count as a confirmed source.
+        if not self.selected_product_id:
             self.generator_view = "form"
-            self.gen_direction = DIR_BACK
+            self.product_confirmed = False
             return
+        self.product_confirmed = True
         self.gen_step = n - 2  # paso 2 → gen_step 0 (show), paso 5 → gen_step 3 (review)
         self.gen_step = self._view_index()  # clamp to the kind's real steps
         # paso 5 with a generated piece shows the result; otherwise the review step.
@@ -3659,14 +3672,14 @@ class CreativeState(rx.State):
         Returns ``settle_step`` (scroll the panel to the top + focus the title)."""
         raw = self.router.url.query_parameters.get(STEP_PARAM, "")
         m = self.create_step_m
-        requested = parse_step_param(raw, m)
+        requested = parse_step_param(raw, m) if raw else self.create_step_n
         old = self.create_step_n
-        self._show_create_step(requested)
+        if self.gen_mode not in ("discover", "variations"):
+            self._show_create_step(requested)
         if self.create_step_n != old:
-            self.gen_direction = (
-                DIR_BACK if self.create_step_n < old else DIR_NEXT
-            )
+            self.gen_direction = DIR_BACK if self.create_step_n < old else DIR_NEXT
         self.create_entered = True
+        self.create_resume_pending = False
         return settle_step()
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
@@ -3682,13 +3695,36 @@ class CreativeState(rx.State):
     def save_for_later(self) -> rx.event.EventSpec:
         """«Seguir después» (N2, founder 2026-10-25): saves what the owner carries and
         goes to Inicio, where a half-written piece appears with «Seguir»."""
+        self._flush_phrase_drafts()
+        self.create_resume_pending = bool(
+            self.selected_product_id or self.brief_topic.strip() or self.stock_picks
+        )
         return rx.redirect("/")
 
-    @property
-    def _create_step_sync(self) -> rx.Component:
-        """The ``step_sync`` trigger for the body: writes ``?paso=N`` and settles on
-        every step change (the belt-and-suspenders to ``go_to_step`` in the handlers)."""
-        return step_sync(self.create_step_n, self.gen_direction)
+    @rx.event
+    def create_back(self) -> rx.event.EventSpec:
+        """One step back, including the product screen and the result's review."""
+        if self.generator_view == "result":
+            self.generator_view = "form"
+            self.gen_step = len(self._gen_steps()) - 1
+            self.gen_direction = DIR_BACK
+            return settle_step()
+        if self.gen_is_first_view:
+            return self.change_product()
+        return self.prev_view()
+
+    @rx.event
+    def create_continue(self) -> _Events:
+        """The fixed foot dispatches the current step's existing action."""
+        if self.create_primary_disabled:
+            return None
+        if not self.product_confirmed:
+            return self.confirm_product()
+        if self.generator_view == "result":
+            return self.review_in_drafts()
+        if self.gen_is_last_view:
+            return CreativeState.submit_generator_form
+        return self.next_view()
 
     # -- «Campaña» (m-24820838): the campaign the piece joins, optional ----------------
 
@@ -3938,7 +3974,10 @@ class CreativeState(rx.State):
         PASOS-5: writes ``?paso=2`` and scrolls the panel to the top + focuses the title."""
         if self.product_tab == "stock":
             return CreativeState.confirm_stock_product
+        if not self.can_continue_product:
+            return None
         self.product_confirmed = True
+        self.gen_step = 0
         self.gen_direction = DIR_NEXT
         return go_to_step(self._CREATE_ROUTE, 2)
 
@@ -4696,7 +4735,7 @@ class CreativeState(rx.State):
         to the top + focuses the title, via the frame's ``settle_step``."""
         self._back_to_form()
         self.gen_direction = DIR_BACK
-        return settle_step()
+        return go_to_step(self._CREATE_ROUTE, self.create_step_n, back=True)
 
     def _back_to_form(self) -> None:
         self.generator_view = "form"
@@ -4711,8 +4750,8 @@ class CreativeState(rx.State):
     @rx.event(background=True)
     async def poll_generator(self) -> AsyncIterator[rx.event.EventSpec]:
         """The result view waits here: the draft is read until it leaves `drafting`
-        (an avatar video can take several minutes). Stops on its own when the operator
-        goes back to the form or starts another piece. When the piece lands it says so
+        (an avatar video can take several minutes). It keeps watching while the owner
+        reviews the form; starting another piece stops it. When the piece lands it says so
         (§ request 2026-10-09): a toast in the app, and the browser's own notification
         when the tab is not in front — generation goes on while the operator is away."""
         async with self:
@@ -4730,7 +4769,7 @@ class CreativeState(rx.State):
                 vm = None
             outcome = ""
             async with self:
-                if self.gen_draft_id != draft_id or self.generator_view != "result":
+                if self.gen_draft_id != draft_id:
                     return
                 if vm is not None:
                     self.gen_draft = vm
@@ -5751,10 +5790,7 @@ class CreativeState(rx.State):
             self.gen_slide = 0
             self.gen_timed_out = False
         yield CreativeState.poll_generator
-        yield rx.call_script(
-            "setTimeout(() => document.getElementById('gen-result')"
-            "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 150)"
-        )
+        yield settle_step()
 
     def _generator_form(self) -> dict[str, object]:
         """The generator's brief as `creative_provider.build_brief` takes it — what

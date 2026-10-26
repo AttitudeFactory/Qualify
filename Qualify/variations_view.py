@@ -35,6 +35,7 @@ from .ui import (
     empty_state,
     loading_spinner,
     media_thumb,
+    skeleton_card,
     tone_badge,
 )
 from .ui import tokens as T
@@ -143,9 +144,8 @@ def _product_tile(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _product_step() -> rx.Component:
+def _product_picker() -> rx.Component:
     return rx.vstack(
-        _step_heading("1", "Elige el producto", "Solo productos de tu catálogo."),
         rx.cond(
             VariationsState.has_products,
             rx.vstack(
@@ -177,6 +177,38 @@ def _product_step() -> rx.Component:
                 rx.link(
                     rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
                     href=new_product_href(VARIATIONS_RETURN_PATH),
+                ),
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _product_step() -> rx.Component:
+    """A confirmed empty catalog is different from one still loading or unavailable."""
+    return rx.vstack(
+        _step_heading("1", "Elige el producto", "Solo productos de tu catálogo."),
+        rx.cond(
+            VariationsState.products_loading
+            | (~VariationsState.products_loaded & (VariationsState.error == "")),
+            rx.grid(
+                skeleton_card(lines=2),
+                skeleton_card(lines=2),
+                columns="2",
+                spacing="3",
+                width="100%",
+                aria_label="Cargando tus productos",
+                aria_busy=True,
+            ),
+            rx.cond(
+                VariationsState.products_loaded,
+                _product_picker(),
+                rx.button(
+                    "Reintentar",
+                    on_click=VariationsState.load,
+                    variant="soft",
+                    size="3",
                 ),
             ),
         ),
@@ -297,14 +329,6 @@ def _plan_step() -> rx.Component:
                         align_items="start",
                     ),
                     rx.spacer(),
-                    rx.button(
-                        rx.icon("sparkles", size=15),
-                        "Generar los ángulos",
-                        size="3",
-                        disabled=~VariationsState.can_create,
-                        loading=VariationsState.creating,
-                        on_click=VariationsState.create_set,
-                    ),
                     spacing="3",
                     align="center",
                     wrap="wrap",
@@ -774,16 +798,6 @@ def _angles_review() -> rx.Component:
                             title="Elimina las propuestas que no estén aprobadas",
                         ),
                     ),
-                    # the header's actions share one shape: soft, size 1, icon + verb
-                    # back to the list of groups (request 2026-10-22), product kept
-                    rx.button(
-                        rx.icon("arrow-left", size=14),
-                        "Volver a los grupos",
-                        variant="soft",
-                        color_scheme="gray",
-                        size="1",
-                        on_click=VariationsState.close_set,
-                    ),
                     spacing="2",
                     align="center",
                     wrap="wrap",
@@ -1012,6 +1026,26 @@ def variations_view() -> rx.Component:
                 ),
                 spacing="4",
                 width="100%",
+            ),
+        ),
+        rx.cond(
+            ~VariationsState.has_set & VariationsState.product_chosen,
+            rx.hstack(
+                rx.text(VariationsState.plan_count_label, size="2", color=T.TEXT_MUTED),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("sparkles", size=T.ICON_SM),
+                    "Generar los ángulos",
+                    size="3",
+                    disabled=~VariationsState.can_create,
+                    loading=VariationsState.creating,
+                    on_click=VariationsState.create_set,
+                ),
+                class_name="q-rv-savebar q-rv-savebar--editing q-variations-actions",
+                align="center",
+                spacing="3",
+                width="100%",
+                flex_wrap="wrap",
             ),
         ),
         spacing="4",
