@@ -5058,7 +5058,11 @@ def _generator_frame() -> rx.Component:
     frame = step_frame(
         rx.cond(
             active & CreativeState.create_entered & ~CreativeState.create_loading,
-            step_sync(CreativeState.create_step_n, CreativeState.gen_direction),
+            step_sync(
+                CreativeState.create_step_n,
+                CreativeState.gen_direction,
+                epoch=CreativeState.create_entry_epoch,
+            ),
         ),
         _generator_body(),
         _kind_conflict_dialog(),

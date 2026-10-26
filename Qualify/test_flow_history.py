@@ -376,3 +376,81 @@ console.log(JSON.stringify({{waiting,final:entries[pos].href,pos}}));
         "final": path + "?paso=" + str(guarded),
         "pos": 0,
     }
+
+
+@pytest.mark.parametrize("paint_first", [False, True])
+def test_explicit_entry_ack_canonicalizes_only_matching_painted_epoch(paint_first) -> None:
+    from .ui.steps import _STEP_SYNC_DOM_JS, step_entry_script
+
+    ack = step_entry_script("/brand/manual", 2, 4, "6")
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/brand/manual?paso=6';apply();
+window.addEventListener=()=>{{}};window.setTimeout=fn=>fn();
+let mark={{dataset:{{step:'1',entry:'3',direction:'next'}},nodeType:1,
+ matches:s=>s==='.q-step-sync',querySelector:()=>null}};
+document.querySelector=s=>s==='main.q-panel .q-step-sync'?mark:null;
+{_STEP_SYNC_DOM_JS}
+const paint=()=>{{mark.dataset.step='2';mark.dataset.entry='4';
+ observer([{{type:'attributes',target:mark}}]);}};
+if ({str(paint_first).lower()}) paint();
+{ack}
+if (!{str(paint_first).lower()}) paint();
+console.log(JSON.stringify({{href:entries[pos].href,pos}}));
+"""
+    )
+    assert _node(script) == {"href": "/brand/manual?paso=2", "pos": 0}
+
+
+@pytest.mark.parametrize("first,second", [("/create/", "/create"), ("/create", "/create/")])
+def test_page_step_two_writers_with_slash_difference_make_one_entry(first, second) -> None:
+    from .ui.steps import step_address_script
+
+    script = (
+        _HARNESS
+        + """
+entries[0].href='/create/?paso=1';apply();
+"""
+        + step_address_script(json.dumps(first + "?paso=2"))
+        + step_address_script(json.dumps(second + "?paso=2"))
+        + step_address_script("'/create?paso=3'")
+        + step_address_script("'/create?paso=2'", back=True)
+        + """
+const count=entries.length;
+window.history.back();
+console.log(JSON.stringify({count,href:entries[pos].href}));
+"""
+    )
+    assert _node(script) == {"count": 3, "href": "/create/?paso=1"}
+
+
+@pytest.mark.parametrize(
+    "path,requested",
+    [
+        ("/brand", "5"),
+        ("/brand/manual", "6"),
+        ("/brand/connect", "7"),
+        ("/create", "99"),
+        ("/publish", "99"),
+    ],
+)
+def test_entry_ack_finishes_first_marker_already_at_guarded_step_without_another_mutation(
+    path, requested
+) -> None:
+    from .ui.steps import _STEP_SYNC_DOM_JS, step_entry_script
+
+    script = (
+        _HARNESS
+        + f"entries[0].href={json.dumps(path + '?paso=' + requested)};apply();"
+        + """
+window.addEventListener=()=>{};window.setTimeout=fn=>fn();
+const mark={dataset:{step:'1',entry:'4',direction:'next'},nodeType:1,
+ matches:s=>s==='.q-step-sync',querySelector:()=>null};
+document.querySelector=s=>s==='main.q-panel .q-step-sync'?mark:null;
+"""
+        + _STEP_SYNC_DOM_JS
+        + step_entry_script(path, 1, 4, requested)
+        + "console.log(JSON.stringify({href:entries[pos].href,pos}));"
+    )
+    assert _node(script) == {"href": path + "?paso=1", "pos": 0}

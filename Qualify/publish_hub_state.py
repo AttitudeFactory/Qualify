@@ -38,7 +38,7 @@ from .publish_wizard_vm import (
 from .publishing_state import PublishState
 from .stories_state import StoriesState
 from .trending_state import TrendingState
-from .ui.steps import go_to_step, settle_step
+from .ui.steps import go_to_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, guard_step, parse_step_param, step_direction
 
 __all__ = ["FLOW_POSTS", "FLOW_STORIES", "PublishHubState", "can_switch_flow", "resolve_flow"]
@@ -82,6 +82,7 @@ class PublishHubState(rx.State):
     step: int = STEP_WHAT
     direction: str = DIR_NEXT
     entered: bool = False
+    entry_epoch: int = 0
     resume_pending: bool = False
     #: «Ideas para tu próxima publicación» — the trending panel, outside the steps.
     show_ideas: bool = False
@@ -117,7 +118,7 @@ class PublishHubState(rx.State):
         self.entered = True
         self.resume_pending = False
         events.append(TrendingState.follow_connection(posts.selected_connection_id))
-        events.append(settle_step())
+        events.append(self._entry_event())
         return events
 
     @rx.event
@@ -244,7 +245,17 @@ class PublishHubState(rx.State):
         )
         self.direction = step_direction(self.step, target, self.direction)
         self.step = target
-        return settle_step()
+        return self._entry_event()
+
+    def _entry_event(self) -> rx.event.EventSpec:
+        self.entry_epoch += 1
+        raw = self._requested_step()
+        return rx.call_script(
+            step_entry_script(
+                "/publish", self.step, self.entry_epoch, str(raw) if raw is not None else None
+            )
+            + step_settle_script()
+        )
 
     @rx.event
     async def continue_or_publish(self) -> rx.event.EventSpec | None:
