@@ -11,7 +11,7 @@ def review_destination(raw: str) -> str:
     try:
         url = urlsplit(raw)
         values = parse_qs(url.query)
-        if url.scheme or url.netloc or url.fragment or url.path != "/planner":
+        if url.scheme or url.netloc or url.fragment or url.path not in {"/planner", "/planner/"}:
             return ""
         if values.get("revisar") != ["videos"]:
             return ""

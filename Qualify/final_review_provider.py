@@ -7,7 +7,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.creative.composition import production_content_service
-from qualify_api.creative.draft_mode import draft_state, draft_summary
+from qualify_api.creative.draft_mode import draft_state, draft_summary, final_retryable
 from qualify_api.creative.final_review import FinalIdentity, final_confirmed, review_candidates
 from qualify_api.creative.models import ContentDraft, ImageAsset
 from qualify_api.planner.composition import tenant_timezone
@@ -16,7 +16,7 @@ from qualify_api.tenancy.models import TenantMember
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
-from .creative_vm import renewal_day_label
+from .creative_vm import previews_short_text, renewal_day_label
 from .final_review_vm import (
     FinalPanelVM,
     FinalVideoVM,
@@ -106,7 +106,7 @@ def load_final_panel(
         manifest = service.review_final(tenant_id=tenant_id, draft_id=piece_id, user_id=user_id)
         keys = [item.object_key for item in manifest]
     videos = tuple(
-        FinalVideoVM(issue_view_path(tenant_id, key), f"Video {index + 1}")
+        FinalVideoVM(issue_view_path(tenant_id, key, "video", "video/mp4"), f"Video {index + 1}")
         for index, key in enumerate(keys)
         if key and state != "other_version"
     )
@@ -140,17 +140,22 @@ def load_final_panel(
         can_confirm=bool(manifest) and state == "final_ready" and not expired,
         can_retry=state == "failed"
         and approver
-        and not any(
-            (draft_state(param) or {}).get("error")
-            == "Cancelamos tu video. Te devolvimos la creación."
-            for param in params
+        and any(
+            final_retryable(draft_state(param), at.timestamp(), approved=True) for param in params
         ),
         can_another=can_another,
         another_note=(
             another_version_use(
                 left, quota=balance.video_quota, renews=renewal_day_label(balance.renews_on)
             )
-            if left is not None and balance is not None
+            if left is not None and balance is not None and (previews is None or previews > 0)
+            else previews_short_text(
+                1,
+                balance.previews_left,
+                balance.preview_quota,
+                renews=renewal_day_label(balance.renews_on),
+            )
+            if balance is not None and previews is not None and previews <= 0
             else ""
         ),
         confirm_label="Confirmar y publicar ahora" if overdue else "Confirmar video",
@@ -184,8 +189,23 @@ def request_another(tenant_id: UUID, piece_id: UUID, user_id: UUID) -> None:
             raise PermissionError("Solo los dueños y administradores pueden pedir otra versión.")
         brand_id = draft.brand_id
     balance = service.creations_balance(tenant_id=tenant_id, brand_id=brand_id)
-    if balance is not None and (balance.videos_left < 1 or balance.previews_left < 1):
-        raise ValueError(another_version_use(balance.videos_left))
+    if balance is not None and balance.previews_left < 1:
+        raise ValueError(
+            previews_short_text(
+                1,
+                balance.previews_left,
+                balance.preview_quota,
+                renews=renewal_day_label(balance.renews_on),
+            )
+        )
+    if balance is not None and balance.videos_left < 1:
+        raise ValueError(
+            another_version_use(
+                balance.videos_left,
+                quota=balance.video_quota,
+                renews=renewal_day_label(balance.renews_on),
+            )
+        )
     service.reject(
         tenant_id=tenant_id,
         draft_id=piece_id,

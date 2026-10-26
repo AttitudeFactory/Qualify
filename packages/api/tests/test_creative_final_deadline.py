@@ -112,3 +112,19 @@ def test_live_urgent_final_sends_vendor_priority_nine() -> None:
     worker = make_worker(store, vendor, clock)
     assert worker.process(one(worker)) == runner.SUCCEEDED_OUTCOME
     assert vendor.contexts[0].vendor_priority == 9
+
+
+def test_night_maintenance_failure_does_not_skip_pipeline_preparation(monkeypatch):
+    from qualify_api.creative.worker.__main__ import _night_preparation
+
+    calls = []
+
+    def fail(*args):
+        calls.append("night")
+        raise RuntimeError("synthetic maintenance failure")
+
+    monkeypatch.setattr("qualify_api.creative.final_review.nightly_maintenance", fail)
+    prepare = _night_preparation(lambda: calls.append("prepare"), ())
+    prepare()
+    prepare()
+    assert calls == ["night", "prepare", "prepare"]

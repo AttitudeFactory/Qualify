@@ -66,7 +66,6 @@ def final_review_panel() -> rx.Component:
         ),
         spacing="3",
         width="100%",
-        on_mount=S.remember_history,
     )
     footer = rx.vstack(
         rx.cond(
@@ -95,7 +94,7 @@ def final_review_panel() -> rx.Component:
         rx.cond(
             (p.piece_id != "") & (p.state != "other_version"),
             rx.button(
-                "Elegir otra hora",
+                rx.cond(p.event_id != "", "Elegir otra hora", "Elegir día y hora"),
                 variant="soft",
                 on_click=S.choose_time,
                 disabled=S.busy,
@@ -135,7 +134,7 @@ def final_review_panel() -> rx.Component:
         spacing="2",
         width="100%",
     )
-    return drawer(
+    panel = drawer(
         body,
         open=S.open,
         on_open_change=S.change_open,
@@ -145,3 +144,5 @@ def final_review_panel() -> rx.Component:
         footer=footer,
         width="36rem",
     )
+
+    return rx.fragment(panel, rx.cond(S.open, rx.box(on_mount=S.remember_history)))

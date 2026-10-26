@@ -116,6 +116,7 @@ def status_badge(status: rx.Var[str], label: rx.Var[str], tone: rx.Var[str]) -> 
         ("failed", rx.icon("triangle-alert", size=14)),
         rx.icon("circle-help", size=14),
     )
+    icon = rx.cond(label == "Cancelado", rx.icon("circle-x", size=14), icon)
     return rx.badge(icon, label, color_scheme=tone, variant="soft", size="2")
 
 
@@ -1343,7 +1344,15 @@ def _drafting_panel() -> rx.Component:
     return _card(
         rx.hstack(
             loading_spinner("md"),
-            rx.heading("Creando tu publicación…", size="4", as_="h2"),
+            rx.heading(
+                rx.cond(
+                    CreativeState.draft.queue.label != "",
+                    CreativeState.draft.queue.label,
+                    "Creando tu publicación…",
+                ),
+                size="4",
+                as_="h2",
+            ),
             rx.spacer(),
             rx.text(CreativeState.poll_elapsed_label, size="1", color=T.TEXT_MUTED),
             width="100%",
@@ -1362,12 +1371,32 @@ def _drafting_panel() -> rx.Component:
 
 
 def _failed_panel() -> rx.Component:
+    return rx.cond(
+        CreativeState.draft.queue.cancelled,
+        _card(
+            rx.heading("Video cancelado", size="4", as_="h2"),
+            rx.link(
+                rx.button("Crear otra publicación", variant="soft", min_height="44px"),
+                href="/create",
+            ),
+        ),
+        _generation_failed_panel(),
+    )
+
+
+def _generation_failed_panel() -> rx.Component:
     """FAILED: the reason translated + the concrete action (§6.5), never a bare code."""
     failure = CreativeState.draft.failure
     return _card(
         rx.hstack(
             rx.icon("triangle-alert", size=18, color=T.tone_color("error", 9)),
-            rx.heading("La generación falló", size="4", as_="h2"),
+            rx.heading(
+                rx.cond(
+                    CreativeState.draft.queue.cancelled, "Video cancelado", "La generación falló"
+                ),
+                size="4",
+                as_="h2",
+            ),
             width="100%",
             align="center",
         ),
@@ -1499,7 +1528,7 @@ def _video_draft_notice() -> rx.Component:
         )
 
     return rx.cond(
-        (video.state != ""),
+        (video.state != "") & ~CreativeState.draft.queue.cancelled,
         rx.vstack(
             rx.hstack(
                 rx.match(
@@ -2676,6 +2705,8 @@ def _history_line() -> rx.Component:
 
 
 def draft_detail_index() -> rx.Component:
+    from .queue_notice import queue_notice  # noqa: PLC0415
+
     return _screen(
         "Revisar publicación",
         "Tú decides qué sale con el nombre de tu marca.",
@@ -2692,7 +2723,11 @@ def draft_detail_index() -> rx.Component:
                         CreativeState.draft,
                         status_badge(
                             CreativeState.draft.status,
-                            CreativeState.draft.status_label,
+                            rx.cond(
+                                CreativeState.draft.queue.label != "",
+                                CreativeState.draft.queue.label,
+                                CreativeState.draft.status_label,
+                            ),
                             CreativeState.draft.status_tone,
                         ),
                     ),
@@ -2710,6 +2745,7 @@ def draft_detail_index() -> rx.Component:
                     rx.vstack(
                         _campaign_field(),
                         _retention_notice(),
+                        queue_notice(CreativeState.draft.queue, CreativeState.draft.draft_id),
                         _video_draft_notice(),
                         rx.cond(
                             CreativeState.draft.other_version_pending != "",

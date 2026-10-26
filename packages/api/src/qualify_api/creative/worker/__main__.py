@@ -116,6 +116,44 @@ def production_executors() -> dict[str, JobExecutor]:
     }
 
 
+def _night_preparation(
+    prepare_pipeline: Callable[[], None], tenant_ids: Sequence[UUID] | None
+) -> Callable[[], None]:
+    import time
+
+    from qualify_api.creative.final_review import nightly_maintenance
+
+    next_night_maintenance = 0.0
+
+    def preparation() -> None:
+        nonlocal next_night_maintenance
+        now = time.monotonic()
+        if now >= next_night_maintenance:
+            try:
+                night_tenants = tenant_ids
+                if night_tenants is None:
+                    from qualify_shared.db.creative_worker import creative_worker_session
+                    from sqlalchemy import text
+
+                    with creative_worker_session() as session:
+                        night_tenants = tuple(
+                            session.scalars(
+                                text(
+                                    "SELECT DISTINCT tenant_id FROM creative_jobs "
+                                    "WHERE kind='final' AND status IN ('queued','failed')"
+                                )
+                            )
+                        )
+                nightly_maintenance(night_tenants)
+            except Exception:
+                logger.exception("creative.worker.nightly_maintenance_failed")
+            finally:
+                next_night_maintenance = now + 60
+        prepare_pipeline()
+
+    return preparation
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -141,6 +179,11 @@ def main(
         from qualify_api.creative.vendor_recovery import recovery_chore  # noqa: PLC0415
 
         recovery = recovery_chore(scope_ids)
+    publish_load = None
+    if store is None and scope_ids is None:
+        from qualify_api.creative.worker.queue_load import production_load_chore  # noqa: PLC0415
+
+        publish_load = production_load_chore(pools=pools)
     chosen = dict(production_executors() if executors is None else executors)
     # Monitor only the production store; injected stores never reach Redis/webhooks.
     from qualify_api.creative.worker.operations import (  # noqa: PLC0415
@@ -157,6 +200,8 @@ def main(
                 original_recovery()
             except Exception:
                 logger.exception("creative.worker.legacy_recovery_failed")
+        if publish_load is not None:
+            publish_load()
         if monitor is not None:
             monitor.check(read_snapshot(now=monitor.clock(), tenant_ids=scope_ids))
 
@@ -191,19 +236,7 @@ def main(
         prepare_pipeline = PipelinePreparation(
             production_content_service(), PipelineStore(), scope_ids
         )
-        import time
-
-        from qualify_api.creative.final_review import nightly_maintenance
-
-        next_night_maintenance = 0.0
-
-        def preparation() -> None:
-            nonlocal next_night_maintenance
-            now = time.monotonic()
-            if now >= next_night_maintenance:
-                nightly_maintenance(scope_ids)
-                next_night_maintenance = now + 60
-            prepare_pipeline()
+        preparation = _night_preparation(prepare_pipeline, scope_ids)
 
     code = run_loop(
         worker,

@@ -276,3 +276,93 @@ def test_home_late_confirmation_excludes_failed_and_unprepared_finals() -> None:
     with tenant_session(tenant) as session:
         assert session.get(orm.ContentDraft, draft).revision == 2
         assert session.get(CalendarEvent, event_id).scheduled_at == now - timedelta(hours=1)
+
+
+def test_real_panel_provider_mints_video_url_for_exact_review_manifest(monkeypatch):
+    from types import SimpleNamespace
+
+    from Qualify import final_review_provider as provider
+
+    tenant, draft, owner = _fixture()
+    seen = _manifest(tenant, draft, owner)
+    monkeypatch.setattr(
+        provider,
+        "production_content_service",
+        lambda: SimpleNamespace(
+            review_final=lambda **kwargs: seen, creations_balance=lambda **kwargs: None
+        ),
+    )
+    panel, expected = provider.load_final_panel(tenant, draft, owner)
+    assert expected == seen and expected[0].revision == 1
+    assert panel.can_confirm and len(panel.videos) == 1
+    assert panel.videos[0].url.startswith("/r2media/")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["pending", "changed_before_claim", "changed_after_claim"])
+async def test_actual_asset_can_be_scheduled_but_never_published_without_current_confirmation(mode):
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from qualify_api.planner.executor import EventExecutor, ExecutionOutcome
+    from qualify_api.planner.locks import MemoryExecutionLock
+    from qualify_api.planner.repository import MemoryPlannerRepository
+    from qualify_api.planner.service import PlannerService
+
+    from .test_planner_executor import FakePublisher
+
+    tenant, draft, owner = _fixture()
+    seen = _manifest(tenant, draft, owner)
+    digest = [seen[0].sha256]
+    reader = DraftPostReader(verify_digest=lambda tid, key: digest[0])
+    with tenant_session(tenant) as session:
+        brand = session.get(orm.ContentDraft, draft).brand_id
+    now = datetime.now(UTC)
+
+    class Calendar(MemoryPlannerRepository):
+        def claim(self, **kwargs):
+            claimed = super().claim(**kwargs)
+            if mode == "changed_after_claim":
+                digest[0] = "mutated actual storage digest"
+            return claimed
+
+    calendar = Calendar()
+    service = PlannerService(
+        repository=calendar,
+        posts=reader,
+        connections=SimpleNamespace(
+            status=lambda **kw: "active", platform=lambda **kw: "instagram"
+        ),
+        clock=lambda: now,
+    )
+    event = service.schedule(
+        tenant_id=tenant,
+        brand_id=brand,
+        post_id=draft,
+        connection_id=uuid4(),
+        scheduled_at=now + timedelta(minutes=1),
+        scheduled_tz="UTC",
+        user_id=owner,
+    )
+    assert event.status == "scheduled"
+    if mode != "pending":
+        confirm_final(tenant_id=tenant, draft_id=draft, user_id=owner, expected=seen)
+    if mode == "changed_before_claim":
+        digest[0] = "mutated actual storage digest"
+    publisher = FakePublisher()
+    executor = EventExecutor(
+        repository=calendar,
+        posts=reader,
+        publisher=publisher,
+        attempts=publisher,
+        lock=MemoryExecutionLock(),
+        clock=lambda: now + timedelta(minutes=2),
+    )
+    result = await executor.try_execute(event)
+    assert result.outcome is ExecutionOutcome.NOT_READY
+    assert publisher.meta_calls == 0 and not publisher.start_calls
+    assert calendar.get(tenant_id=tenant, event_id=event.id).status == "scheduled"
+    executor._clock = lambda: now + timedelta(hours=25)
+    expired = await executor.try_execute(event)
+    assert expired.outcome is ExecutionOutcome.NOT_READY and expired.reason == "expired"
+    assert publisher.meta_calls == 0

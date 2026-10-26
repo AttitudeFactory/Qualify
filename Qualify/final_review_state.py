@@ -132,8 +132,13 @@ class FinalReviewState(rx.State):
                 window.__qFinalBack=()=>document.getElementById('q-final-review-close')?.click();
                 window.addEventListener('popstate',window.__qFinalBack);
             }
-            if(!history.state?.qFinalReview)
-                history.pushState({...history.state,qFinalReview:true},'',location.href);
+            if(!history.state?.qFinalReview){
+                const review=location.href;
+                const base=new URL(review);
+                ['revisar','pieza','evento','fallos'].forEach(k=>base.searchParams.delete(k));
+                history.replaceState(history.state,'',base.pathname+base.search);
+                history.pushState({...history.state,qFinalReview:true},'',review);
+            }
         })()""")
 
     @rx.event
@@ -142,6 +147,8 @@ class FinalReviewState(rx.State):
         self._manifest = ()
         self._load_token += 1
         return rx.call_script("""(()=>{
+            window.removeEventListener('popstate',window.__qFinalBack);
+            window.__qFinalBack=null;
             const clear=()=>{
                 const u=new URL(location.href);
                 ['revisar','pieza','evento','fallos'].forEach(k=>u.searchParams.delete(k));

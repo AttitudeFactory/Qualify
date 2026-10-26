@@ -41,6 +41,9 @@ def test_return_refuses_external_or_ambiguous_destinations(raw: str) -> None:
 
 def test_review_return_keeps_piece_event_and_failed_filter_only() -> None:
     assert review_destination(review_href(str(PIECE))) == review_href(str(PIECE))
+    assert review_destination("/planner/?revisar=videos&pieza=" + str(PIECE)) == review_href(
+        str(PIECE)
+    )
     value = review_destination(
         "/planner?revisar=videos&evento=" + str(PIECE) + "&fallos=1&confirm=true"
     )

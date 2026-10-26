@@ -26,6 +26,8 @@ from typing import NamedTuple
 
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
 from qualify_creative.queue_errors import (
+    CANCELLED_TEXT,
+    FINAL_EXPIRED_TEXT,
     UNCERTAIN_PUBLICATION_TEXT,
     UNCERTAIN_REASON,
     UNCERTAIN_VIDEO_TEXT,
@@ -732,8 +734,8 @@ def build_draft_summary_vm(
         draft_id=draft_id,
         topic=topic,
         status=status,
-        status_label=status_label(status),
-        status_tone=status_tone(status),
+        status_label="Cancelado" if failure_reason == "cancelled" else status_label(status),
+        status_tone="gray" if failure_reason == "cancelled" else status_tone(status),
         created_label=created_label,
         failure_label=failure.label if failure is not None else "",
     )
@@ -939,6 +941,31 @@ WAITING_VENDOR_TEXT = (
 
 
 @dataclass(frozen=True)
+class QueueVM:
+    queued: bool = False
+    can_cancel: bool = False
+    cancelled: bool = False
+    note: str = ""
+    label: str = ""
+
+
+def queue_vm(
+    *,
+    queued: bool = False,
+    can_cancel: bool = False,
+    cancelled: bool = False,
+    estimated_minutes: int | None = None,
+) -> QueueVM:
+    note = ""
+    if cancelled:
+        note = "Cancelamos tu video. Te devolvimos la creación."
+    elif queued and estimated_minutes is not None and estimated_minutes >= 1:
+        end = "1 minuto" if estimated_minutes == 1 else f"unos {estimated_minutes} minutos"
+        note = f"Tu video está en fila. Estará listo en {end}."
+    return QueueVM(queued, can_cancel, cancelled, note, "En fila" if queued and note else "")
+
+
+@dataclass(frozen=True)
 class DraftVM:
     """The §6.6 contract, plus the display facts the detail screen renders."""
 
@@ -996,6 +1023,7 @@ class DraftVM:
     #: screen says about it.
     video_draft: VideoDraftVM = field(default_factory=lambda: NO_VIDEO_DRAFT)
     other_version_pending: str = ""
+    queue: QueueVM = field(default_factory=QueueVM)
 
 
 # -- Seedance 2.5 draft mode (m-24820142) --------------------------------------------------
@@ -1221,6 +1249,16 @@ def video_draft_vm(
         return VideoDraftVM(
             state, FINAL_PREPARING_LABEL, "info", FINAL_RENDERING_NOTE, rendering=True
         )
+    if state in (VIDEO_FAILED, VIDEO_EXPIRED) and error == FINAL_EXPIRED_TEXT:
+        return VideoDraftVM(
+            VIDEO_EXPIRED,
+            "La vista previa venció",
+            "warn",
+            FINAL_EXPIRED_TEXT,
+            rendering=still_rendering,
+        )
+    if state == VIDEO_FAILED and error == CANCELLED_TEXT:
+        return VideoDraftVM(state, "Cancelado", "gray", CANCELLED_TEXT, can_retry=False)
     if state == VIDEO_FAILED and uncertain_error(error):
         return VideoDraftVM(
             state,
@@ -1352,8 +1390,8 @@ def build_draft_vm(
     return DraftVM(
         draft_id=draft_id,
         status=status,
-        status_label=status_label(status),
-        status_tone=status_tone(status),
+        status_label="Cancelado" if failure_reason == "cancelled" else status_label(status),
+        status_tone="gray" if failure_reason == "cancelled" else status_tone(status),
         variants=tuple(variants),
         image_url=image_url,
         fidelity_summary=fidelity_summary,
