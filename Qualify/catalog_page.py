@@ -77,6 +77,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.route_history import route_history
+from .ui.steps import step_progress
 
 #: N12: every control of the «Agregar producto» flow is at least this tall on a phone.
 _TOUCH_MIN = "44px"
@@ -529,12 +530,6 @@ def _new_product_drawer() -> rx.Component:
                 # bar would push the tap area below the fold.
                 display=rx.breakpoints(initial="none", sm="block"),
             ),
-            rx.vstack(
-                rx.text(CatalogState.new_step_counter, size="2", color=T.TEXT_MUTED),
-                rx.heading(CatalogState.new_step_title, size="5", as_="h3"),
-                spacing="1",
-                width="100%",
-            ),
             # m-24842973 (N4): saving takes the owner back to the publication they left
             rx.cond(
                 CatalogState.returning & (CatalogState.new_step != STEP_DONE),
@@ -553,6 +548,12 @@ def _new_product_drawer() -> rx.Component:
         open=CatalogState.form_open,
         on_open_change=CatalogState.set_form_open,
         title="Agregar producto",
+        step=rx.vstack(
+            step_progress(CatalogState.new_step + 1, len(NEW_PRODUCT_STEPS)),
+            rx.text(CatalogState.new_step_title, size="2", weight="medium"),
+            spacing="1",
+            width="100%",
+        ),
         description="La foto, el nombre y listo. Lo demás lo puedes completar después.",
         footer=_new_product_footer(),
         width="34rem",
