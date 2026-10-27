@@ -17,20 +17,23 @@ description: How a change reaches main in Qualify — Meegle ticket, ticket-link
    - These reviews do not replace the user's authorization to publish a PR or merge it.
 6. **Open the PR over REST** (`gh api repos/AttitudeFactory/Qualify/pulls …` — GraphQL is blocked in cloud sessions): title ends in `(m-<id>)`, description starts with `Resolves m-<id>`, says why, what and how to verify, and anything the founder must do before merging (secrets, server prep, auto-deploy off).
 7. **Move the ticket to RESOLVED by hand** (`get_transitable_states` → `transition_state`); Meegle's completion rules do not fire yet.
-8. **Merge through the gate (founder, 2026-10-23).** Agents may merge with `just merge <pr>` once CI is green, without asking — never with `gh pr merge` directly. (GitHub cannot approve one's own PR: `gh` runs as the founder, who authors the PRs, so "approve" means merging through the gate.) **Contingency only — never routine:** `just merge <pr> --admin` with red or missing checks is allowed when production is down or degraded and the PR is the fix, or when a red check is unrelated/flaky and blocks an urgent fix; state why in the PR (the recipe also posts a comment) and notify the founder right after. Deploying after the merge follows `qualify-prod-ops`.
-9. In a squad, only the lead opens the PR; teammates leave changes in the tree.
+8. **Update the ticket before closing a PR** (founder, 2026-10-27). Before either merging or closing without merge, update the linked Meegle ticket with the final scope, current workflow status, PR link, validation results, and remaining work or limitations. Read it back to verify the update. Record the actual outcome; never mark undelivered work as completed. If the update cannot be verified, report that limitation and leave the PR open.
+9. **Merge only with explicit user approval** (founder, 2026-10-27). Creating, pushing or reviewing a PR, green CI and running a merge gate do not authorize merging it or enabling auto-merge. After approval for that merge and the verified ticket update, use `just merge <pr>`, never `gh pr merge` directly. Any contingency bypass also requires explicit user authorization; the gate does not grant it. Deploying after an authorized merge follows `qualify-prod-ops`.
+10. In a squad, only the lead opens the PR; teammates leave changes in the tree.
 
 ## Reference (moved from CLAUDE.md on 2026-10-22)
 
 ### Merging to `main` — the rule and the gate
 
-**Founder's rule (2026-10-05): nothing merges to `main` with CI red.** Since 2026-10-23 agents
-hold merge authority through the gate, and the `--admin` bypass only under the contingency of
-step 8. GitHub cannot enforce it on this plan (private
+**User authorization is required for every merge** (founder, 2026-10-27), and the linked
+Meegle ticket must be updated and read back before closing the PR. Green CI never grants
+merge authority. **Founder's rule (2026-10-05): nothing merges to `main` with CI red.**
+GitHub cannot enforce it on this plan (private
 repo, organization on GitHub Free → branch protection and rulesets answer 403), so the
 gate is `just merge <pr>`: it refuses unless `test` is green, and — **only when they reported** —
 `docker-deploy`, `node-render` and `docker-render` too (they live in path-filtered workflows that
-start no runner on PRs that do not touch their inputs); `just merge <pr> --admin` forces it and leaves a comment on the PR.
+start no runner on PRs that do not touch their inputs); a separately authorized contingency
+using `just merge <pr> --admin` forces it and leaves a comment on the PR.
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 
