@@ -1701,8 +1701,12 @@ def _catalog_product_grid() -> rx.Component:
         ),
         rx.box(
             rx.cond(
-                CreativeState.catalog_loading,
-                skeleton_card(lines=4),
+                CreativeState.catalog_loading | ~CreativeState.catalog_loaded,
+                rx.cond(
+                    CreativeState.catalog_error == "",
+                    skeleton_card(lines=4),
+                    rx.button("Reintentar", on_click=CreativeState.load_catalog_products, size="3"),
+                ),
                 rx.cond(
                     CreativeState.catalog_items.length() > 0,
                     rx.grid(

@@ -959,6 +959,7 @@ class CreativeState(rx.State):
     # piece is about
     catalog_items: list[dict[str, str]] = []
     catalog_loading: bool = False
+    catalog_loaded: bool = False
     catalog_error: str = ""
     selected_product_id: str = ""
     selected_product_photo_key: str = ""
@@ -3967,6 +3968,7 @@ class CreativeState(rx.State):
         if ids is None:
             async with self:
                 self.catalog_loading = False
+                self.catalog_error = _NO_SESSION
             return
         tenant_id, brand_id, _ = ids
         try:
@@ -3978,6 +3980,7 @@ class CreativeState(rx.State):
                 self.catalog_error = _CATALOG_ERROR
             return
         async with self:
+            self.catalog_loaded = True
             self.catalog_items = [dict(item) for item in items]
             self.catalog_loading = False
             self._apply_product_from_query()
