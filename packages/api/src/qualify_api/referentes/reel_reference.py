@@ -87,8 +87,8 @@ def normalize_reference(data: bytes) -> FittedVideo:
         fitted = PyAvVideoFitter().fit(
             data, size=size, max_seconds=REFERENCE_SECONDS, keep_audio=False
         )
-        if fitted.duration_sec < 2:
-            raise ValueError("reference shorter than 2 s")
+        if fitted.duration_sec < 4:
+            raise ValueError("an edited reference must last at least 4 s")
         return fitted
     except Exception:
         raise ReelReferenceUnavailable(

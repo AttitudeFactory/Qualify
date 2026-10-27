@@ -37,8 +37,8 @@ from .ui.steps import go_to_step
 
 #: Always visible on phones too; opening the form never generates a paid piece.
 REPLICATE_HELP = (
-    "Abre un Clip con tu marca y los primeros 5 s del reel como referencia de movimiento, "
-    "sin su audio. Podrás revisarlo antes de generar."
+    "Usa los primeros 5 s del reel como base, conservando planos y acciones con tu "
+    "producto y marca, sin su audio. Podrás revisarlo antes de generar."
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,8 @@ class DiscoverReelsState(rx.State):
     @rx.event
     def set_window(self, value: str | list[str]) -> None:
         if isinstance(value, str) and value in dict(WINDOWS):
+            if value != self.window:
+                self.playing_key = ""
             self.window = value
 
     @rx.event
@@ -214,18 +216,25 @@ class DiscoverReelsState(rx.State):
         """Pick a platform; a referente of another one is let go. No read."""
         if not isinstance(value, str) or value not in dict(NETWORK_FILTERS):
             return
+        previous = (self.network, self.account)
         self.network = value
         if value != ALL and not self.account.startswith(f"{value}:"):
             self.account = ALL
+        if previous != (self.network, self.account):
+            self.playing_key = ""
 
     @rx.event
     def set_account(self, value: str) -> None:
         """Pick a referente (or `ALL`). No read."""
         if value == ALL or any(a["key"] == value for a in self.accounts):
+            if value != self.account:
+                self.playing_key = ""
             self.account = value
 
     @rx.event
     def clear_filters(self) -> None:
+        if self.network != ALL or self.account != ALL:
+            self.playing_key = ""
         self.network = ALL
         self.account = ALL
 
@@ -811,6 +820,8 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
         padding="0.6rem",
         width="100%",
         class_name="q-dr-card",
+        # Keep each card tied to its reel when filters change its rank.
+        key=reel["key"],
     )
 
 

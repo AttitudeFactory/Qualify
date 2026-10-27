@@ -5117,6 +5117,7 @@ def _generator_frame() -> rx.Component:
         step=CreativeState.create_step_n,
         direction=CreativeState.gen_direction,
         on_pop=CreativeState.enter_create_step,
+        on_enter=CreativeState.enter_create_step,
         on_leave=CreativeState.leave_create_frame,
     )
     # Discovery and variations are forms, not numbered wizards. Keep one workspace

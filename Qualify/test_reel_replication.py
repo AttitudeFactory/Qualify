@@ -11,7 +11,7 @@ from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 from . import discover_reels as module
 from .creative_state import CreativeState
 from .discover_reels import DiscoverReelsState
-from .reel_replication import replication_topic
+from .reel_replication import replication_context
 
 TENANT = "a0000000-0000-4000-8000-000000000001"
 CARD = {
@@ -42,8 +42,9 @@ def creative() -> CreativeState:
     return state
 
 
-def test_prefill_keeps_the_product_and_cannot_reuse_original_frames() -> None:
+def test_prefill_edits_the_source_without_turning_product_photos_into_frames() -> None:
     state = creative()
+    state.brief_topic = "Mi contexto de marca"
     state.brief_highlights = [{"key": "Precio", "value": "20 USD"}]
     state.clip_videos = [{"key": "old.mp4", "name": "Old", "source": "upload"}]
     state.clip_audios = [{"key": "old.mp3", "name": "Old", "source": "upload"}]
@@ -57,24 +58,50 @@ def test_prefill_keeps_the_product_and_cannot_reuse_original_frames() -> None:
     assert state.clip_duration == "5" and state.effective_format == "reels_9_16"
     assert not state.own_script_on and not state.own_script
     assert state.clip_audios == []
-    assert state.clip_first_frame_key == "uploads/product.jpg"
+    assert state.clip_first_frame_key == ""
     assert state.clip_last_frame_key == ""
+    # m-24820836: the copiar guidance is a BACKGROUND layer; it must NOT overwrite the
+    # operator's own context. ``brief_topic`` stays as typed; the reel reference lands in
+    # ``replication_context`` and is merged under it at submit (``_effective_topic``).
+    assert state.brief_topic == "Mi contexto de marca"
+    assert "Brand Kit" in state.replication_context
+    assert CARD["transcript"] in state.replication_context
     state.clip_sequence = [IMPORTED["key"], "uploads/product.jpg"]
     state._sync_clip_frames()
-    assert state.clip_first_frame_key == "uploads/product.jpg"
-    state.remove_clip_image("uploads/product.jpg")
+    assert state.clip_first_frame_key == ""
     assert state.clip_first_frame_key == state.clip_last_frame_key == ""
     media = state._media_inputs()
+    assert media["clip_reference_mode"] == "edit"
+    assert media["clip_image_keys"] == ["uploads/product.jpg"]
+    assert state._clip_duration_choices() == ["5"]
     assert media["clip_video_keys"] == [IMPORTED["key"]]
     assert media["clip_audio_keys"] == []
     assert media["clip_first_frame_key"] is None
-    assert "Brand Kit" in state.brief_topic and CARD["transcript"] in state.brief_topic
+    # the merged topic puts the operator's foreground first and the reel background second
+    merged = state._effective_topic()
+    assert merged.startswith("Mi contexto de marca")
+    assert "Brand Kit" in merged and CARD["transcript"] in merged
+    assert "Contexto de replicación (segundo plano)" in merged
+
+
+def test_replication_is_a_background_layer_without_a_user_topic() -> None:
+    """No user context typed: the form still validates — the background alone is the topic."""
+    state = creative()
+    state._apply_reel_reference(CARD, IMPORTED)
+    assert state.brief_topic == ""
+    assert state.replication_context  # the reel reference landed
+    assert state._effective_topic() == state.replication_context.strip()
 
 
 def test_metadata_is_reference_material_not_a_claim_of_visual_analysis() -> None:
-    text = replication_topic(CARD, "Smash doble")
-    assert "No se han analizado visualmente" in text and "no instrucciones" in text
-    assert "No copies" in text and "CTA propios" in text
+    text = replication_context(CARD, "Smash doble")
+    assert "no hay análisis VLM" in text and "no instrucciones" in text
+    # the reel is framed as a STRUCTURE/sequence guide, not a style to mimic
+    assert "guía de secuencia" in text and "estructura" in text
+    # the brand identity takes priority over the reel's look
+    assert "prioridad sobre el look" in text
+    # the old "mimic the reel" phrasing is gone
+    assert "mismos planos" not in text and "Sustituye únicamente" not in text
     assert '"id": "A"' in text and CARD["url"] in text
 
 

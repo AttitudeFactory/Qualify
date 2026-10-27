@@ -91,6 +91,8 @@ class PostSummary:
     media_product_type: str | None = None
     # What the POST is about (creative's `ContentType`, e.g. "promotion").
     content_type: str | None = None
+    # Creative route, independent of format and available even on failed drafts.
+    content_kind: str = ""
     # How the POST is reused over time (RECURRENTE/PROMOCIONAL…) — QUA-109.
     reuse_type: str | None = None
     lifecycle_status: str = ""
