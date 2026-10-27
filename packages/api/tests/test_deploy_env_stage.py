@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -138,6 +139,10 @@ def test_invalid_or_missing_keys_never_reach_ssh(stage, key):
     assert not calls.exists()
 
 
+@pytest.mark.skipif(
+    shutil.which("just") is None,
+    reason="Optional local recipe CLI: just is not installed in the CI runner",
+)
 def test_just_stage_recipe_forwards_named_keys_only():
     result = subprocess.run(
         ["just", "--dry-run", "env-stage", "synthetic-target", "--dry-run", KEY],
