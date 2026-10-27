@@ -805,9 +805,9 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         warnings=tuple(warning.detail for warning in detail.warnings),
         waiting_vendor=bool(getattr(detail, "waiting_vendor", False)),
     )
-    active_id = str(detail.active_version_id or "")
-    viewed_id = str(detail.viewed_version_id or detail.active_version_id or "")
-    preview = detail.is_version_preview
+    active_id = str(getattr(detail, "active_version_id", None) or "")
+    viewed_id = str(getattr(detail, "viewed_version_id", None) or active_id)
+    preview = bool(getattr(detail, "is_version_preview", False))
     vm = dataclasses.replace(
         vm,
         versions=tuple(
@@ -818,17 +818,17 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
                 available=version.status == "active",
                 current=str(version.id) == active_id,
             )
-            for version in detail.versions
+            for version in getattr(detail, "versions", ())
         ),
         active_version_id=active_id,
         viewed_version_id=viewed_id,
         viewing_previous_version=preview,
-        can_restore_version=detail.can_restore_version and not purged,
+        can_restore_version=bool(getattr(detail, "can_restore_version", False)) and not purged,
     )
     if preview:
         vm = dataclasses.replace(
             vm,
-            can_approve=vm.can_approve and detail.can_restore_version and not purged,
+            can_approve=vm.can_approve and vm.can_restore_version,
             can_reject=False,
             can_regenerate=False,
             can_edit=False,
