@@ -7,17 +7,25 @@ Provisioning through `admin_session`; everything under test through `tenant_sess
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
+from qualify_api.creative.models import (
+    ContentDraft,
+    ContentDraftPurgeWarning,
+    ContentDraftWarningBatch,
+    ImageAsset,
+)
 from qualify_api.creative.pieces import DbPieceFiles
 from qualify_api.creative.retention import (
     RETENTION,
@@ -29,10 +37,16 @@ from qualify_api.creative.retention import (
     tenants_with_expired_pieces,
 )
 from qualify_api.creative.retention_job import run_piece_purge
+from qualify_api.creative.retention_mail import (
+    retry_tenant_warnings,
+    send_tenant_warnings,
+    warning_review_ids,
+)
+from qualify_api.mail import FakeMailer, MailError, MailRejected, OutgoingMail, ResendMailer
 from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import NotPublishable, UnpublishableReason
-from qualify_api.tenancy.models import Brand, Tenant, User
+from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 
 pytestmark = pytest.mark.db
 
@@ -437,3 +451,494 @@ def test_the_purge_log_is_isolated_by_tenant_and_by_the_nullif() -> None:
                     expired_at=NOW,
                 )
             )
+
+
+def test_warning_once_per_deadline_grouped_and_isolated_with_retry() -> None:
+    tenant_a, tenant_b = uuid4(), uuid4()
+    brand, user, connection = _provision(tenant_a, "warning-A")
+    other_brand, _, _ = _provision(tenant_b, "warning-B")
+    foreign_piece = _piece(tenant_b, other_brand, generated_days_ago=80)
+    auth_id = uuid4()
+    with tenant_session(tenant_a) as session:
+        session.execute(update(User).where(User.id == user).values(auth_user_id=auth_id))
+        session.add(TenantMember(tenant_id=tenant_a, user_id=user, role="owner"))
+    first = _piece(tenant_a, brand, generated_days_ago=80)
+    second = _piece(tenant_a, brand, generated_days_ago=75)
+    held = _piece(tenant_a, brand, generated_days_ago=80)
+    _piece(tenant_a, brand, generated_days_ago=50)
+    _piece(tenant_a, brand, generated_days_ago=90)
+    with tenant_session(tenant_a) as session:
+        session.add(
+            CalendarEvent(
+                tenant_id=tenant_a,
+                brand_id=brand,
+                scheduled_tz="UTC",
+                post_id=held,
+                connection_id=connection,
+                scheduled_at=NOW - timedelta(days=1),
+                status="scheduled",
+                created_by_user_id=user,
+            )
+        )
+    mailer = FakeMailer()
+
+    def verify(uid, email):
+        return email if uid == auth_id else None
+
+    assert (
+        send_tenant_warnings(tenant_a, NOW, mailer=mailer, verify=verify, draft_ids=[foreign_piece])
+        == 0
+    )
+    assert mailer.sent == []
+    assert send_tenant_warnings(tenant_a, NOW, mailer=mailer, verify=verify) == 1
+    assert "Los archivos de estas 2 piezas" in mailer.sent[0].text
+    assert (
+        send_tenant_warnings(tenant_a, NOW + timedelta(days=1), mailer=mailer, verify=verify) == 0
+    )
+    with tenant_session(tenant_a) as session:
+        rows = session.scalars(
+            select(ContentDraftPurgeWarning).where(
+                ContentDraftPurgeWarning.draft_id.in_([first, second])
+            )
+        ).all()
+        assert len(rows) == 2
+        warning_id = rows[0].id
+    with tenant_session(tenant_b) as session:
+        assert session.get(ContentDraftPurgeWarning, warning_id) is None
+    with pytest.raises(DBAPIError), tenant_session(tenant_b) as session:
+        session.add(
+            ContentDraftPurgeWarning(
+                tenant_id=tenant_a,
+                draft_id=first,
+                recipient="forbidden@example.test",
+                stage="window_15d",
+                deadline=NOW,
+                notified_at=NOW,
+            )
+        )
+        session.flush()
+    # A second independent warning is sent only during the last 24 hours.
+    last_day = NOW + timedelta(days=9, hours=12)
+    assert send_tenant_warnings(tenant_a, last_day, mailer=mailer, verify=verify) == 1
+    assert "24 horas" in mailer.sent[-1].text
+    assert send_tenant_warnings(tenant_a, last_day, mailer=mailer, verify=verify) == 0
+    with tenant_session(tenant_a) as session:
+        stages = session.scalars(
+            select(ContentDraftPurgeWarning.stage).where(ContentDraftPurgeWarning.draft_id == first)
+        ).all()
+        assert set(stages) == {"window_15d", "last_day"}
+    # New generation extends the deadline; first daily pass sees it active, then warns again.
+    with tenant_session(tenant_a) as session:
+        session.execute(
+            update(ImageAsset).where(ImageAsset.draft_id == first).values(created_at=NOW)
+        )
+
+    class FailingMailer:
+        def send(self, mail):
+            raise MailError("offline failure")
+
+    later = NOW + timedelta(days=75)
+    assert send_tenant_warnings(tenant_a, later, mailer=FailingMailer(), verify=verify) == 0
+    assert send_tenant_warnings(tenant_a, later, mailer=mailer, verify=verify) == 1
+    assert send_tenant_warnings(tenant_a, later, mailer=mailer, verify=verify) == 0
+
+
+class _FailingWarningMailer:
+    def send(self, mail: OutgoingMail) -> str | None:
+        raise MailError("offline transport failure")
+
+
+def _warning_account() -> tuple[UUID, UUID, UUID, UUID, UUID]:
+    tenant = uuid4()
+    brand, user, connection = _provision(tenant, "frozen-warning")
+    auth_id = uuid4()
+    with tenant_session(tenant) as session:
+        session.execute(update(User).where(User.id == user).values(auth_user_id=auth_id))
+        session.add(TenantMember(tenant_id=tenant, user_id=user, role="owner"))
+    return tenant, brand, user, connection, auth_id
+
+
+def test_warning_retry_after_unknown_acceptance_keeps_frozen_http_body_and_key(monkeypatch) -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    first = _piece(tenant, brand, generated_days_ago=80)
+    with tenant_session(tenant) as session:
+        session.execute(
+            update(ContentDraft).where(ContentDraft.id == first).values(title="First piece")
+        )
+    requests = []
+    accepted = {}
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    def post(url: str, **kwargs):
+        key = kwargs["headers"]["Idempotency-Key"]
+        requests.append(deepcopy(kwargs))
+        # Another transaction can see the batch before the first HTTP request.
+        with tenant_session(tenant) as session:
+            staged = session.scalar(
+                select(ContentDraftWarningBatch).where(
+                    ContentDraftWarningBatch.idempotency_key == key
+                )
+            )
+            assert staged is not None and staged.sent_at is None
+            expected_first = NOW if len(requests) <= 2 else NOW + timedelta(days=1)
+            assert staged.first_attempt_at == expected_first
+            assert staged.payload["mail"]["html"] == kwargs["json"]["html"]
+        if len(requests) == 1:
+            accepted[key] = kwargs["json"]
+            raise httpx.ReadTimeout(
+                "provider accepted; response lost", request=httpx.Request("POST", url)
+            )
+        if key in accepted:
+            assert kwargs["json"] == accepted[key]
+        else:
+            accepted[key] = kwargs["json"]
+        return httpx.Response(200, json={"id": "provider-" + key})
+
+    monkeypatch.setattr("qualify_api.mail.httpx.post", post)
+    monkeypatch.setenv("QUALIFY_PUBLIC_URL", "https://original.example.test")
+    assert (
+        send_tenant_warnings(
+            tenant, NOW, mailer=ResendMailer("fake", "from@example.test"), verify=verify
+        )
+        == 0
+    )
+    second = _piece(tenant, brand, generated_days_ago=75)
+    with tenant_session(tenant) as session:
+        session.execute(
+            update(ContentDraft).where(ContentDraft.id == second).values(title="New piece B")
+        )
+        session.execute(
+            update(ContentDraft).where(ContentDraft.id == first).values(title="Changed title A")
+        )
+    monkeypatch.setenv("QUALIFY_PUBLIC_URL", "https://changed.example.test")
+    # Recreate the client, like a worker restart; only the database retains the retry.
+    assert (
+        send_tenant_warnings(
+            tenant, NOW, mailer=ResendMailer("fake", "from@example.test"), verify=verify
+        )
+        == 1
+    )
+    assert requests[0] == requests[1]
+    assert "First piece" in requests[1]["json"]["text"]
+    assert "New piece B" not in requests[1]["json"]["text"]
+    assert len(accepted) == 1
+    with tenant_session(tenant) as session:
+        ledger = session.scalars(select(ContentDraftPurgeWarning.draft_id)).all()
+        assert ledger == [first]
+        batch = session.scalar(select(ContentDraftWarningBatch))
+        assert batch.sent_at is not None
+    assert (
+        send_tenant_warnings(
+            tenant,
+            NOW + timedelta(days=1),
+            mailer=ResendMailer("fake", "from@example.test"),
+            verify=verify,
+        )
+        == 1
+    )
+    assert requests[2]["headers"]["Idempotency-Key"] != requests[1]["headers"]["Idempotency-Key"]
+    assert "New piece B" in requests[2]["json"]["text"]
+    assert "Changed title A" not in requests[2]["json"]["text"]
+    with tenant_session(tenant) as session:
+        ledger = session.scalars(select(ContentDraftPurgeWarning.draft_id)).all()
+        assert sorted(ledger) == sorted([first, second])
+
+
+@pytest.mark.parametrize("piece_count", [1, 8])
+def test_warning_thumbnail_and_ledger_queries_are_batched_after_dedup(
+    monkeypatch, piece_count: int
+) -> None:
+    from qualify_shared.db.session import _get_engine
+
+    from qualify_api.creative import retention_mail as module
+
+    tenant, brand, _, _, auth_id = _warning_account()
+    ids = {_piece(tenant, brand, generated_days_ago=80) for _ in range(piece_count)}
+    seen = []
+    thumbnail_ids = []
+    actual = module._thumbnail_urls
+
+    def thumbnails(session, draft_ids):
+        thumbnail_ids.append(set(draft_ids))
+        return actual(session, draft_ids)
+
+    monkeypatch.setattr(module, "_thumbnail_urls", thumbnails)
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    def count_thumbnail() -> int:
+        return sum(
+            sql.lstrip().upper().startswith("SELECT") and "image_assets.media_url" in sql
+            for sql in seen
+        )
+
+    def count_ledger() -> int:
+        return sum(
+            sql.lstrip().upper().startswith("SELECT") and "FROM content_draft_purge_warnings" in sql
+            for sql in seen
+        )
+
+    engine = _get_engine()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        assert send_tenant_warnings(tenant, NOW, mailer=FakeMailer(), verify=verify) == 1
+        assert count_thumbnail() == 1 and count_ledger() == 1
+        assert thumbnail_ids == [ids]
+        seen.clear()
+        thumbnail_ids.clear()
+        assert send_tenant_warnings(tenant, NOW, mailer=FakeMailer(), verify=verify) == 0
+        assert count_thumbnail() == 0 and count_ledger() == 1
+        assert thumbnail_ids == []
+        new = _piece(tenant, brand, generated_days_ago=80)
+        seen.clear()
+        assert send_tenant_warnings(tenant, NOW, mailer=FakeMailer(), verify=verify) == 1
+        assert count_thumbnail() == 1 and count_ledger() == 1
+        assert thumbnail_ids == [{new}]
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+
+@pytest.mark.parametrize("change", ["scheduled", "publishing", "renewed", "expired", "unconfirmed"])
+def test_warning_frozen_batch_revalidates_membership_deadline_and_protection(change: str) -> None:
+    tenant, brand, user, connection, auth_id = _warning_account()
+    piece = _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    assert send_tenant_warnings(tenant, NOW, mailer=_FailingWarningMailer(), verify=verify) == 0
+    moment = NOW
+    if change in ("scheduled", "publishing"):
+        _event(tenant, brand, user, connection, piece, status=change, days_from_now=1)
+    if change == "renewed":
+        with tenant_session(tenant) as session:
+            session.execute(
+                update(ImageAsset).where(ImageAsset.draft_id == piece).values(created_at=NOW)
+            )
+    if change == "expired":
+        moment += timedelta(days=10)
+    if change == "unconfirmed":
+
+        def verify(uid: UUID, email: str) -> str | None:
+            return None
+
+    recording = FakeMailer()
+    assert send_tenant_warnings(tenant, moment, mailer=recording, verify=verify) == 0
+    assert recording.sent == []
+    with tenant_session(tenant) as session:
+        old = session.scalar(select(ContentDraftWarningBatch))
+        assert old.needs_review_at is not None and old.sent_at is None
+        assert old.cancelled_at is None
+        assert session.scalars(select(ContentDraftPurgeWarning)).all() == []
+    if change == "renewed":
+        assert (
+            send_tenant_warnings(tenant, NOW + timedelta(days=75), mailer=recording, verify=verify)
+            == 1
+        )
+        with tenant_session(tenant) as session:
+            rows = session.scalars(select(ContentDraftWarningBatch)).all()
+            assert len(rows) == 2 and len({row.idempotency_key for row in rows}) == 2
+
+
+def test_warning_identity_provider_outage_does_not_cancel_the_frozen_retry() -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    assert send_tenant_warnings(tenant, NOW, mailer=_FailingWarningMailer(), verify=verify) == 0
+
+    def unavailable(uid: UUID, email: str) -> str | None:
+        raise RuntimeError("identity provider unavailable")
+
+    assert send_tenant_warnings(tenant, NOW, mailer=FakeMailer(), verify=unavailable) == 0
+    with tenant_session(tenant) as session:
+        row = session.scalar(select(ContentDraftWarningBatch))
+        assert row.sent_at is None and row.cancelled_at is None
+    assert send_tenant_warnings(tenant, NOW, mailer=FakeMailer(), verify=verify) == 1
+
+
+def test_warning_outbox_is_tenant_isolated_and_payload_is_not_editable() -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    other = uuid4()
+    _provision(other, "other-outbox")
+    _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    assert send_tenant_warnings(tenant, NOW, mailer=_FailingWarningMailer(), verify=verify) == 0
+    with tenant_session(tenant) as session:
+        row = session.scalar(select(ContentDraftWarningBatch))
+        batch_id = row.id
+    with tenant_session(other) as session:
+        assert session.get(ContentDraftWarningBatch, batch_id) is None
+    with pytest.raises(DBAPIError), tenant_session(other) as session:
+        session.add(
+            ContentDraftWarningBatch(
+                tenant_id=tenant,
+                brand_id=brand,
+                recipient="test@example.test",
+                stage="window_15d",
+                idempotency_key=str(uuid4()),
+                payload={"mail": {}, "pieces": []},
+            )
+        )
+        session.flush()
+    with pytest.raises(DBAPIError), tenant_session(tenant) as session:
+        session.execute(
+            update(ContentDraftWarningBatch)
+            .where(ContentDraftWarningBatch.id == batch_id)
+            .values(payload={})
+        )
+
+
+@pytest.mark.parametrize("hours", [22.99, 23.0, 24.0])
+def test_warning_unknown_acceptance_retry_stops_before_provider_window(hours: float) -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    first = _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    assert send_tenant_warnings(tenant, NOW, mailer=_FailingWarningMailer(), verify=verify) == 0
+    with tenant_session(tenant) as session:
+        old = session.scalar(select(ContentDraftWarningBatch))
+        batch_id, payload, key = old.id, deepcopy(old.payload), old.idempotency_key
+        assert old.first_attempt_at == NOW
+    recording = FakeMailer()
+    count = retry_tenant_warnings(
+        tenant, NOW + timedelta(hours=hours), mailer=recording, verify=verify
+    )
+    if hours < 23:
+        assert count == 1 and recording.sent[0].idempotency_key == key
+        assert warning_review_ids(tenant) == []
+        return
+    assert count == 0 and recording.sent == []
+    assert warning_review_ids(tenant) == [batch_id]
+    second = _piece(tenant, brand, generated_days_ago=75)
+    # Stopped A stays reserved while the next daily pass can send new B.
+    assert (
+        send_tenant_warnings(tenant, NOW + timedelta(hours=hours), mailer=recording, verify=verify)
+        == 1
+    )
+    assert str(second) in recording.sent[0].text and str(first) not in recording.sent[0].text
+    assert (
+        send_tenant_warnings(tenant, NOW + timedelta(days=2), mailer=recording, verify=verify) == 0
+    )
+    with tenant_session(tenant) as session:
+        old = session.get(ContentDraftWarningBatch, batch_id)
+        assert old.payload == payload and old.idempotency_key == key and old.sent_at is None
+        assert old.needs_review_at is not None
+        assert session.scalars(select(ContentDraftPurgeWarning.draft_id)).all() == [second]
+    # The final-day reminder is an independent stage, not reserved by the earlier one.
+    assert (
+        send_tenant_warnings(
+            tenant, NOW + timedelta(days=9, hours=12), mailer=recording, verify=verify
+        )
+        == 1
+    )
+    assert str(first) in recording.sent[-1].text and "24 horas" in recording.sent[-1].text
+
+
+def test_warning_definitive_rejection_can_retry_next_day_without_unknown_cutoff() -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    class Rejected:
+        def send(self, mail: OutgoingMail) -> str | None:
+            raise MailRejected("provider explicitly rejected this request")
+
+    assert send_tenant_warnings(tenant, NOW, mailer=Rejected(), verify=verify) == 0
+    with tenant_session(tenant) as session:
+        batch = session.scalar(select(ContentDraftWarningBatch))
+        key = batch.idempotency_key
+        assert batch.first_attempt_at is None
+    recording = FakeMailer()
+    assert (
+        retry_tenant_warnings(tenant, NOW + timedelta(days=1), mailer=recording, verify=verify) == 1
+    )
+    assert recording.sent[0].idempotency_key == key
+    assert warning_review_ids(tenant) == []
+
+
+def test_warning_minute_retry_does_not_discover_new_pieces() -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    assert send_tenant_warnings(tenant, NOW, mailer=_FailingWarningMailer(), verify=verify) == 0
+    new = _piece(tenant, brand, generated_days_ago=75)
+    recording = FakeMailer()
+    assert (
+        retry_tenant_warnings(tenant, NOW + timedelta(minutes=1), mailer=recording, verify=verify)
+        == 1
+    )
+    assert str(new) not in recording.sent[0].text
+    assert (
+        retry_tenant_warnings(tenant, NOW + timedelta(minutes=2), mailer=recording, verify=verify)
+        == 0
+    )
+    assert (
+        send_tenant_warnings(tenant, NOW + timedelta(days=1), mailer=recording, verify=verify) == 1
+    )
+    assert str(new) in recording.sent[-1].text
+
+
+def test_warning_uncertain_batch_protection_reserves_all_original_piece_identities() -> None:
+    tenant, brand, user, connection, auth_id = _warning_account()
+    first = _piece(tenant, brand, generated_days_ago=80)
+    second = _piece(tenant, brand, generated_days_ago=80)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    assert send_tenant_warnings(tenant, NOW, mailer=_FailingWarningMailer(), verify=verify) == 0
+    _event(tenant, brand, user, connection, first, status="scheduled", days_from_now=1)
+    new = _piece(tenant, brand, generated_days_ago=80)
+    recording = FakeMailer()
+    assert send_tenant_warnings(tenant, NOW, mailer=recording, verify=verify) == 1
+    assert str(new) in recording.sent[0].text
+    assert str(first) not in recording.sent[0].text and str(second) not in recording.sent[0].text
+    assert len(warning_review_ids(tenant)) == 1
+    assert send_tenant_warnings(tenant, NOW, mailer=recording, verify=verify) == 0
+
+
+def test_warning_safe_cancel_does_not_miss_a_new_piece_entering_its_final_day() -> None:
+    tenant, brand, _, _, auth_id = _warning_account()
+    first = _piece(tenant, brand, generated_days_ago=89.5)
+
+    def verify(uid: UUID, email: str) -> str | None:
+        return email if uid == auth_id else None
+
+    class Rejected:
+        def send(self, mail: OutgoingMail) -> str | None:
+            raise MailRejected("definitive rejection before acceptance")
+
+    assert send_tenant_warnings(tenant, NOW, mailer=Rejected(), verify=verify) == 0
+    with tenant_session(tenant) as session:
+        original = session.scalar(select(ContentDraftWarningBatch))
+        batch_id = original.id
+        assert original.first_attempt_at is None
+    second = _piece(tenant, brand, generated_days_ago=88.5)
+    recording = FakeMailer()
+    assert (
+        send_tenant_warnings(tenant, NOW + timedelta(days=1), mailer=recording, verify=verify) == 1
+    )
+    assert str(second) in recording.sent[0].text and str(first) not in recording.sent[0].text
+    with tenant_session(tenant) as session:
+        original = session.get(ContentDraftWarningBatch, batch_id)
+        assert original.cancelled_at is not None and original.needs_review_at is None
+        assert session.scalars(select(ContentDraftPurgeWarning.draft_id)).all() == [second]

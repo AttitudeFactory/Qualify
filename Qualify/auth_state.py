@@ -922,6 +922,7 @@ class AuthState(rx.State):
             from .planner_state import PlannerState
             from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
+            from .reconnect_state import ReconnectState
             from .replies_state import RepliesState
             from .responder_state import ResponderState
             from .results_state import ResultsState
@@ -941,6 +942,7 @@ class AuthState(rx.State):
 
             for state_cls in (
                 ConnectionsState,
+                ReconnectState,
                 LeadsState,
                 # m-24842990 «Por responder»: the open tab and the tenant's pending counts
                 ResponderState,

@@ -25,6 +25,7 @@ from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import (
     META_CALL_BUDGET_PER_HOUR,
     CommentsAuthExpired,
+    CommentsPermissionMissing,
     InboxService,
     MediaNotEligible,
 )
@@ -381,14 +382,25 @@ async def test_non_deletion_failures_are_labelled_and_never_unmonitor(
     _monitor(repo, "L", None)
     comments = FakeComments({"L": [_comment("c1")]})
 
-    summary = await _sync(_service(repo, comments=comments, media=FakeMedia(errors={"L": error})))
+    service = _service(repo, comments=comments, media=FakeMedia(errors={"L": error}))
+    permanent_permission = error.platform_code == 10 or (
+        error.platform_code is not None and 200 <= error.platform_code < 300
+    )
+    if permanent_permission:
+        with pytest.raises(CommentsPermissionMissing):
+            await _sync(service)
+    else:
+        summary = await _sync(service)
 
     row = _row(repo, "L")
     assert row.is_monitored
     assert row.metadata_error is label and row.metadata_attempted_at == NOW
     assert row.metadata_fetched_at is None
-    assert summary.metadata_failed == 1 and not summary.truncated
-    assert comments.calls == ["L"] and summary.new_comments == 1
+    if permanent_permission:
+        assert comments.calls == []
+    else:
+        assert summary.metadata_failed == 1 and not summary.truncated
+        assert comments.calls == ["L"] and summary.new_comments == 1
 
 
 @pytest.mark.parametrize(

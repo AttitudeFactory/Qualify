@@ -94,6 +94,7 @@ from .followups_state import FollowupsState
 from .ice_breakers_panel import ice_breakers_panel
 from .ice_breakers_panel import open_button as ice_breakers_button
 from .next_steps_vm import ALL_CLEAR_BODY, ALL_CLEAR_TITLE, CREATE_LABEL, CREATE_ROUTE
+from .reconnect_panel import reconnect_button, reconnect_result_panel
 from .ui import (
     app_shell,
     callout,
@@ -271,15 +272,10 @@ def conversations_header() -> rx.Component:
 
 
 def _reconnect_link() -> rx.Component:
-    return rx.link(
-        rx.button(
-            rx.icon("refresh-cw", size=T.ICON_SM),
-            "Reconectar",
-            variant="soft",
-            size="2",
-            **T.tone_scheme("warn"),
-        ),
-        href="/connections",
+    return reconnect_button(
+        S.selected_connection_id,
+        rx.cond(S.selected_account.can_manage_dms, "auth_expired", "permission_missing"),
+        "/conversations",
     )
 
 
@@ -2079,6 +2075,7 @@ def _guarded(content: rx.Component) -> rx.Component:
 
 def _body() -> rx.Component:
     return page_body(
+        reconnect_result_panel(),
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
         ice_breakers_panel(),
@@ -2092,6 +2089,7 @@ def messages_tab() -> rx.Component:
     account selector, the «Preguntas iniciales» door and the pending badge move from the
     page header into the tab."""
     return rx.vstack(
+        reconnect_result_panel(),
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
         ice_breakers_panel(),

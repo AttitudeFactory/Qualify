@@ -79,9 +79,11 @@ def _artifact_from_rows(
     brief = session.get(orm.ContentBrief, draft.brief_id)
     if brief is None:
         return None
+    from qualify_api.creative.versions import visible_version
+
     images = session.scalars(
         select(orm.ImageAsset)
-        .where(orm.ImageAsset.draft_id == draft.id)
+        .where(orm.ImageAsset.draft_id == draft.id, visible_version(orm.ImageAsset))
         .order_by(orm.ImageAsset.created_at)
     ).all()
     if any(draft_pending(asset.params) for asset in images):

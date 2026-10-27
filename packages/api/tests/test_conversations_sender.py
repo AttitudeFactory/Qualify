@@ -359,3 +359,32 @@ async def test_run_worker_once_returns_nonzero_when_discovery_fails() -> None:
     assert await run_worker(lambda: tick, once=True) == 1
     ok = ConversationsTick(tenants=ScopedTenants([uuid4()]), sender=NoSender())
     assert await run_worker(lambda: ok, once=True) == 0
+
+
+async def test_disconnected_account_keeps_approved_reply_pending_until_recovery(world) -> None:
+    clock, _repo, outbox, sender, service, thread, loop, _d = world
+    item_id = _queue(service, thread.id)
+    loop._connection_available = lambda **kwargs: False
+    report = await loop.run_once(TENANT)
+    assert report.sent == 0 and not sender.sent
+    assert outbox.rows[item_id].status == "pending"
+    assert outbox.rows[item_id].attempts == 0
+    clock.now += timedelta(seconds=61)
+    loop._connection_available = lambda **kwargs: True
+    assert (await loop.run_once(TENANT)).sent == 1
+    assert (await loop.run_once(TENANT)).sent == 0
+    assert len(sender.sent) == 1
+
+
+async def test_health_store_failure_does_not_retry_an_accepted_reply(world) -> None:
+    _clock, _repo, outbox, sender, service, thread, loop, _d = world
+    item_id = _queue(service, thread.id)
+
+    def health_failed(**kwargs):
+        raise RuntimeError("health DB unavailable")
+
+    loop._success = health_failed
+    assert (await loop.run_once(TENANT)).sent == 1
+    assert outbox.rows[item_id].status == "sent"
+    assert (await loop.run_once(TENANT)).sent == 0
+    assert len(sender.sent) == 1

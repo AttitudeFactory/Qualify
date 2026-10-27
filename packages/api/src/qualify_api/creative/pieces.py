@@ -20,6 +20,7 @@ from sqlalchemy import func, not_, or_, select
 
 from qualify_api.creative.draft_mode import DRAFT_FINAL
 from qualify_api.creative.models import ContentBrief, ContentDraft, CopyVariant, ImageAsset
+from qualify_api.creative.versions import visible_version
 
 #: How many files the picker offers — the most recent first.
 DEFAULT_PIECE_LIMIT = 60
@@ -98,6 +99,7 @@ class DbPieceFiles:
                     # m-24828907: a purged piece's files are gone from R2
                     ContentDraft.media_purged_at.is_(None),
                     _NOT_A_PENDING_DRAFT,
+                    visible_version(ImageAsset),
                 )
                 .limit(1)
             ).first()
@@ -119,6 +121,7 @@ class DbPieceFiles:
                     ImageAsset.media_type.in_(("image", "video")),
                     ContentDraft.media_purged_at.is_(None),  # m-24828907
                     _NOT_A_PENDING_DRAFT,
+                    visible_version(ImageAsset),
                 )
                 .order_by(ContentDraft.created_at.desc(), ImageAsset.position)
                 .limit(limit)
@@ -133,7 +136,7 @@ def _titles(session: Any, drafts: dict[UUID, UUID | None]) -> dict[UUID, str]:
         return {}
     variants = session.execute(
         select(CopyVariant.draft_id, CopyVariant.id, CopyVariant.copy, CopyVariant.edited_copy)
-        .where(CopyVariant.draft_id.in_(list(drafts)))
+        .where(CopyVariant.draft_id.in_(list(drafts)), visible_version(CopyVariant))
         .order_by(CopyVariant.draft_id, CopyVariant.ordinal)
     ).all()
     titles: dict[UUID, str] = {}

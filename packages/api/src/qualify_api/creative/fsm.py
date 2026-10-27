@@ -42,6 +42,7 @@ class DraftTrigger(StrEnum):
     """Trigger vocabulary — this module's own, so a real `StrEnum` (unlike the statuses
     above, which mirror a foreign enum this package cannot import yet)."""
 
+    RESTORE_VERSION = "restore_version"
     GENERATE_OK = "generate_ok"  # generation pipeline produced variants
     GENERATE_FAIL = "generate_fail"  # pipeline failed; requires a typed failure_reason
     APPROVE = "approve"  # human approved; requires selected_variant_id
@@ -95,6 +96,10 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     (GENERATED, DraftTrigger.EDIT): GENERATED,
     (APPROVED, DraftTrigger.EDIT): GENERATED,
     (REJECTED, DraftTrigger.EDIT): REJECTED,
+    (GENERATED, DraftTrigger.RESTORE_VERSION): GENERATED,
+    (REJECTED, DraftTrigger.RESTORE_VERSION): GENERATED,
+    (FAILED, DraftTrigger.RESTORE_VERSION): GENERATED,
+    (APPROVED, DraftTrigger.RESTORE_VERSION): GENERATED,
 }
 
 #: The statuses in which the copy may be edited — derived from the table, not restated.

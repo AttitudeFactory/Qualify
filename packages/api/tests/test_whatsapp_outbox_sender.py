@@ -515,3 +515,63 @@ def test_payload_text_reads_text_and_interactive_bodies_only() -> None:
     )
     assert payload_text(build_template_body(TO, "t", "es", None)) is None
     assert payload_text({"type": "text", "text": {}}) is None
+
+
+async def test_disconnected_account_does_not_resolve_credentials_and_can_resume() -> None:
+    rig = Rig()
+    item_id = rig.enqueue()
+    rig.sender._connection_available = lambda **kwargs: False
+    report = await rig.tick()
+    assert report.deferred == 1 and report.sent == 0
+    assert rig.factory_calls == [] and rig.client.payloads == []
+    assert rig.repo.rows[item_id].status == "pending"
+    assert rig.repo.rows[item_id].attempts == 0
+    rig.clock.advance(timedelta(seconds=61))
+    rig.sender._connection_available = lambda **kwargs: True
+    assert (await rig.tick()).sent == 1
+    assert (await rig.tick()).sent == 0
+    assert len(rig.client.payloads) == 1
+
+
+async def test_permission_refusal_marks_account_once_and_stops_same_batch() -> None:
+    rig = Rig(FakeClient(_api_error(403, 200)))
+    causes = []
+    rig.sender._unavailable = lambda **kwargs: causes.append(kwargs)
+    rig.enqueue()
+    rig.enqueue()
+    report = await rig.tick()
+    assert report.sent == 0 and len(rig.client.payloads) == 1
+    assert [item["cause"] for item in causes] == ["permission_missing"]
+
+
+async def test_bare_403_does_not_mark_permanent_permission_loss() -> None:
+    rig = Rig(FakeClient(_api_error(403)))
+    causes = []
+    rig.sender._unavailable = lambda **kwargs: causes.append(kwargs)
+    rig.enqueue()
+    assert (await rig.tick()).failed == 1
+    assert not causes
+
+
+async def test_reconnect_between_rows_rebuilds_cached_client() -> None:
+    rig = Rig()
+    version = [1]
+    factories = []
+
+    class OldClient:
+        async def send_payload(self, payload):
+            version[0] = 2
+            rig.clock.advance(timedelta(seconds=7))
+            return "wamid.before-reconnect"
+
+    async def factory(**kwargs):
+        factories.append(version[0])
+        return OldClient() if version[0] == 1 else FakeClient("wamid.after-reconnect")
+
+    rig.sender._clients = factory
+    rig.sender._connection_available = lambda **kwargs: True
+    rig.sender._connection_version = lambda **kwargs: version[0]
+    rig.enqueue()
+    rig.enqueue(payload=build_text_body("+573001234568", "hola", False))
+    report = await rig.tick()
+    assert report.sent == 2 and factories == [1, 2]

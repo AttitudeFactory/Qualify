@@ -260,10 +260,16 @@ class PostgresCanvaRepository:
                 session.delete(row)
 
     def draft_media(self, *, tenant_id: UUID, draft_id: UUID) -> list[MediaRef]:
+        from qualify_api.creative.versions import visible_version
+
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
                 select(ImageAsset)
-                .where(ImageAsset.draft_id == draft_id, ImageAsset.object_key.is_not(None))
+                .where(
+                    ImageAsset.draft_id == draft_id,
+                    ImageAsset.object_key.is_not(None),
+                    visible_version(ImageAsset),
+                )
                 .order_by(ImageAsset.position)
             ).all()
             return [

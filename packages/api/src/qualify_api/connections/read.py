@@ -57,6 +57,9 @@ class ConnectionSummary:
     # `page_subscription_error` is Meta's error code for a 'failed', else None.
     page_subscription: str | None = None
     page_subscription_error: str | None = None
+    reconnect_reason: str | None = None
+    temporary_failure_count: int = 0
+    recovery_refresh_pending: bool = False
 
 
 def _latest_subscription_events(session: Any, tenant_id: UUID) -> dict[UUID, tuple[str, Any]]:
@@ -108,6 +111,9 @@ def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
                 last_health_checked_at=row.last_health_checked_at,
                 page_subscription=subscription_state(subscriptions.get(row.id, (None,))[0]),
                 page_subscription_error=subscriptions.get(row.id, (None, None))[1],
+                reconnect_reason=row.reconnect_reason,
+                temporary_failure_count=row.temporary_failure_count,
+                recovery_refresh_pending=row.recovery_refresh_pending,
             )
             for row in rows
         )

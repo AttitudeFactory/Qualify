@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
 from uuid import UUID
 
@@ -147,6 +147,10 @@ class ConversationOutboxSender:
         registry: ChannelRegistry,
         connections: ConnectionReader,
         degrade: ConnectionDegrader | None = None,
+        connection_available: Callable[..., bool] | None = None,
+        unavailable: Callable[..., object] | None = None,
+        temporary_failure: Callable[..., object] | None = None,
+        success: Callable[..., object] | None = None,
         media_linker: MediaLinker | None = None,
         private_replies: bool = False,
         quick_replies: bool = False,
@@ -159,12 +163,33 @@ class ConversationOutboxSender:
         self._registry = registry
         self._connections = connections
         self._degrade = degrade
+        self._connection_available = connection_available
+        self._unavailable = unavailable
+        self._temporary_failure = temporary_failure
+        self._success = success
         self._media_linker = media_linker
         self._private_replies = private_replies
         self._quick_replies = quick_replies
         self._structured_templates = structured_templates
         self._worker_id = worker_id
         self._clock = clock
+        self._versions: dict[tuple[UUID, UUID], int] = {}
+
+    def _observe(
+        self, callback: Callable[..., object] | None, item: ClaimedOutboxItem, **extra: str
+    ) -> None:
+        if callback is None:
+            return
+        kwargs: dict[str, object] = dict(
+            tenant_id=item.tenant_id, connection_id=item.connection_id, **extra
+        )
+        version = self._versions.get((item.tenant_id, item.connection_id))
+        if version is not None:
+            kwargs["expected_credential_version"] = version
+        try:
+            callback(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - an accepted send must not be retried for health
+            logger.warning("conversations.sender.health_failed error=%s", type(exc).__name__)
 
     async def run_once(self, tenant_id: UUID, *, limit: int = DEFAULT_BATCH) -> SendReport:
         now = self._clock()
@@ -200,6 +225,19 @@ class ConversationOutboxSender:
         self, item: ClaimedOutboxItem, *, degraded: set[UUID], report: SendReport
     ) -> None:
         tenant_id = item.tenant_id
+        if self._connection_available is not None and not self._connection_available(
+            tenant_id=tenant_id, connection_id=item.connection_id
+        ):
+            # A race with a disconnect after claim: retain approval and attempt budget.
+            self._outbox.mark_retry(
+                tenant_id=tenant_id,
+                item_id=item.id,
+                attempts=item.attempts,
+                error_code="connection_unavailable",
+                next_attempt_at=self._clock() + timedelta(seconds=60),
+            )
+            report.retried += 1
+            return
         if item.connection_id in degraded:
             self._outbox.mark_dead(tenant_id=tenant_id, item_id=item.id, error_code=ERROR_AUTH)
             report.dead += 1
@@ -236,6 +274,8 @@ class ConversationOutboxSender:
         if connection is None:
             self._fail(item, ERROR_CONNECTION_MISSING, report)
             return
+        if connection.credential_version is not None:
+            self._versions[(tenant_id, item.connection_id)] = connection.credential_version
 
         payload: Mapping[str, Any] = item.payload
         if item.media is not None and item.media.needs_link:
@@ -271,6 +311,8 @@ class ConversationOutboxSender:
             recipient_external_id=recipient,
         )
         report.sent += 1
+        if self._success is not None:
+            self._observe(self._success, item)
 
     def _settle_error(
         self,
@@ -280,6 +322,22 @@ class ConversationOutboxSender:
         degraded: set[UUID],
         report: SendReport,
     ) -> None:
+        if self._unavailable is not None:
+            cause = None
+            if type(exc).__name__ == "CredentialNotFound":
+                cause = "missing_credential"
+            elif getattr(exc, "is_auth_error", False):
+                cause = "auth_expired"
+            elif getattr(exc, "is_permission_error", False):
+                cause = "permission_missing"
+            if cause is not None:
+                self._observe(self._unavailable, item, cause=cause)
+                if cause != "auth_expired":
+                    degraded.add(item.connection_id)
+                    self._fail(item, cause, report)
+                    return
+        if self._temporary_failure is not None and getattr(exc, "is_retryable", False):
+            self._observe(self._temporary_failure, item)
         code = error_code_of(exc)
         logger.warning(
             "conversations.sender.send_failed item_id=%s channel=%s code=%s",
@@ -289,7 +347,7 @@ class ConversationOutboxSender:
         )
         if getattr(exc, "is_auth_error", False):
             degraded.add(item.connection_id)
-            if self._degrade is not None:
+            if self._degrade is not None and self._unavailable is None:
                 try:
                     self._degrade(tenant_id=item.tenant_id, connection_id=item.connection_id)
                 except Exception:  # noqa: BLE001 — the degrade seam never raises by contract

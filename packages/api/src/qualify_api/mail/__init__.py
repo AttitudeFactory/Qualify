@@ -42,6 +42,10 @@ class MailError(RuntimeError):
     """The provider refused or could not be reached."""
 
 
+class MailRejected(MailError):
+    """The provider definitively rejected this request before accepting delivery."""
+
+
 @dataclass(frozen=True)
 class OutgoingMail:
     to: str
@@ -97,7 +101,12 @@ class ResendMailer:
             # The body names the cause (unverified domain, bad key, quota); it carries
             # no secret, and without it a 4xx is undebuggable.
             logger.error("resend answered %s: %s", response.status_code, response.text[:300])
-            raise MailError(f"mail provider answered {response.status_code}")
+            error = (
+                MailRejected
+                if response.status_code in (400, 401, 403, 404, 422, 429)
+                else MailError
+            )
+            raise error(f"mail provider answered {response.status_code}")
         try:
             email_id = response.json().get("id")
         except (ValueError, AttributeError):
@@ -150,6 +159,7 @@ __all__ = [
     "FakeMailer",
     "MailError",
     "MailNotConfigured",
+    "MailRejected",
     "Mailer",
     "OutgoingMail",
     "ResendMailer",

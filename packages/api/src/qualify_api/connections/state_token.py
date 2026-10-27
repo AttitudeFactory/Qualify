@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import re
 import time
 from dataclasses import dataclass
 from hashlib import sha256
@@ -43,6 +44,16 @@ class InvalidState(Exception):
     """
 
 
+def safe_return_path(raw: object) -> str:
+    """Keep only a short internal app path, never a URL or another connect loop."""
+    value = str(raw or "").strip()
+    if len(value) > 64 or "//" in value or not re.fullmatch(r"/[a-z0-9][a-z0-9/_-]*", value):
+        return ""
+    if value == "/connections" or value.startswith("/connections/"):
+        return ""
+    return value
+
+
 @dataclass(frozen=True)
 class StatePayload:
     """The signed contents of a `state`. `iat` is a unix timestamp (seconds)."""
@@ -52,6 +63,10 @@ class StatePayload:
     user_id: UUID
     jti: str
     iat: int
+    return_to: str = ""
+    connection_id: UUID | None = None
+    external_account_id: str = ""
+    cause: str = ""
 
     def to_dict(self) -> dict[str, str | int | None]:
         return {
@@ -60,6 +75,10 @@ class StatePayload:
             "user_id": str(self.user_id),
             "jti": self.jti,
             "iat": self.iat,
+            "return_to": self.return_to,
+            "connection_id": str(self.connection_id) if self.connection_id else None,
+            "external_account_id": self.external_account_id,
+            "cause": self.cause,
         }
 
     @classmethod
@@ -71,6 +90,10 @@ class StatePayload:
             user_id=UUID(str(raw["user_id"])),
             jti=str(raw["jti"]),
             iat=int(raw["iat"]),  # type: ignore[arg-type]
+            return_to=safe_return_path(raw.get("return_to", "")),
+            connection_id=UUID(str(raw["connection_id"])) if raw.get("connection_id") else None,
+            external_account_id=str(raw.get("external_account_id") or ""),
+            cause=str(raw.get("cause") or ""),
         )
 
 
@@ -97,7 +120,16 @@ def _signature(body: str, secret: str) -> str:
     return hmac.new(secret.encode("utf-8"), body.encode("ascii"), sha256).hexdigest()
 
 
-def new_payload(tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> StatePayload:
+def new_payload(
+    tenant_id: UUID,
+    brand_id: UUID | None,
+    user_id: UUID,
+    *,
+    return_to: str = "",
+    connection_id: UUID | None = None,
+    external_account_id: str = "",
+    cause: str = "",
+) -> StatePayload:
     """Mint a payload with a fresh jti and the current timestamp."""
     return StatePayload(
         tenant_id=tenant_id,
@@ -105,6 +137,10 @@ def new_payload(tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> StateP
         user_id=user_id,
         jti=uuid4().hex,
         iat=int(time.time()),
+        return_to=safe_return_path(return_to),
+        connection_id=connection_id,
+        external_account_id=external_account_id,
+        cause=cause,
     )
 
 
