@@ -1,0 +1,63 @@
+--- a/Qualify/creative_pages.py
++++ b/Qualify/creative_pages.py
+@@ -13,6 +13,8 @@
+ from __future__ import annotations
+ 
+ import reflex as rx
++
++from Qualify.pasos12_spike import spike_cards
+ 
+ from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
+ from .campaign_state import CampaignState
+@@ -1272,6 +1274,7 @@
+         "Por aprobar",
+         "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
+         _padded(
++            spike_cards(),
+             rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
+             _gallery_toolbar(),
+             rx.cond(
+--- a/Qualify/pasos12_spike.py
++++ b/Qualify/pasos12_spike.py
+@@ -0,0 +1,16 @@
++"""Synthetic PASOS12 export fixture; never merge this prototype."""
++import reflex as rx
++
++_source = rx.asset("pasos12_cards.jsx", shared=True)
++_features = rx.asset("pasos12_features.js", shared=True)
++_style = rx.asset("pasos12_style.css", shared=True)
++
++class MotionCardList(rx.NoSSRComponent):
++    library = f"$/public{_source}"
++    tag = "MotionCardList"
++    lib_dependencies = ["motion@14.6.0"]
++
++    def add_imports(self):
++        return {"": f"$/public{_style}"}
++
++spike_cards = MotionCardList.create
+--- a/Qualify/pasos12_cards.jsx
++++ b/Qualify/pasos12_cards.jsx
+@@ -0,0 +1,14 @@
++import React,{useState} from 'react';
++import {createRoot} from 'react-dom/client';
++import {flushSync} from 'react-dom';
++import {LazyMotion,AnimatePresence,useReducedMotion} from 'motion/react';
++import * as m from 'motion/react-m';
++const motionMode=true;
++const loadFeatures=()=>import('./pasos12_features.js').then(x=>{window.featuresReady=true;return x.default});
++const items=()=>Array.from({length:20},(_,i)=>({id:'synthetic-'+i,title:'Propuesta '+(i+1)}));
++function App(){const [cards,setCards]=useState(items),[exit,setExit]=useState('');const reduced=motionMode?useReducedMotion():matchMedia('(prefers-reduced-motion: reduce)').matches;
++window.bench={reset(){flushSync(()=>{setExit('');setCards(items())})},remove(){if(motionMode||reduced){flushSync(()=>setCards(c=>c.filter(x=>x.id!=='synthetic-1')))}else{flushSync(()=>setExit('synthetic-1'));setTimeout(()=>setCards(c=>c.filter(x=>x.id!=='synthetic-1')),240)}}};
++const card=x=><article className="card"><h2>{x.title}</h2><p>Texto sintético para revisar sin publicar.</p><button>Revisar</button></article>;
++return <><header><h1>Por aprobar · prueba aislada</h1></header><main>{motionMode?<LazyMotion strict features={loadFeatures}><AnimatePresence initial={false} mode="popLayout">{cards.map(x=><m.div key={x.id} data-id={x.id} layout={reduced?false:'position'} initial={false} exit={reduced?{opacity:1,x:0}:{opacity:0,x:-12}} transition={{duration:reduced?0:.24,ease:[.22,1,.36,1]}}>{card(x)}</m.div>)}</AnimatePresence></LazyMotion>:cards.map(x=><div data-id={x.id} key={x.id} className={'row '+(exit===x.id?'exit':'')}><div className="inner">{card(x)}</div></div>)}</main></>}
++
++export { App as MotionCardList };
+--- a/Qualify/pasos12_features.js
++++ b/Qualify/pasos12_features.js
+@@ -0,0 +1 @@
++import {domMax} from 'motion/react';export default domMax;
+--- a/Qualify/pasos12_style.css
++++ b/Qualify/pasos12_style.css
+@@ -0,0 +1 @@
++*{box-sizing:border-box}body{margin:0;background:#151b21;color:#edf1f5;font:14px system-ui}header{padding:16px}h1{font-size:20px}main{padding:0 16px}.card{height:136px;margin:0 0 12px;padding:16px;border:1px solid #46515c;border-radius:12px;background:#232b34}h2{font-size:16px;margin:0 0 8px}p{margin:0 0 12px}button{min-height:44px}.row{display:grid;grid-template-rows:1fr;opacity:1;transform:translateX(0);transition:grid-template-rows 240ms cubic-bezier(.22,1,.36,1),opacity 240ms cubic-bezier(.22,1,.36,1),transform 240ms cubic-bezier(.22,1,.36,1)}.inner{min-height:0;overflow:hidden}.row.exit{grid-template-rows:0fr;opacity:0;transform:translateX(-12px)}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}

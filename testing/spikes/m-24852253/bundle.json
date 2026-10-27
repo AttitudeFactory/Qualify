@@ -1,0 +1,38 @@
+{
+  "css": {
+    "files": [
+      {
+        "path": "dist/css/css.js",
+        "phase": "initial",
+        "bytes": 223852,
+        "gzip": 69386,
+        "brotli": 59766
+      }
+    ]
+  },
+  "motion": {
+    "files": [
+      {
+        "path": "dist/motion/motion.js",
+        "phase": "initial",
+        "bytes": 220862,
+        "gzip": 69060,
+        "brotli": 59734
+      },
+      {
+        "path": "dist/motion/features-I2DPUAIB.js",
+        "phase": "deferred",
+        "bytes": 70,
+        "gzip": 85,
+        "brotli": 74
+      },
+      {
+        "path": "dist/motion/chunk-ZLQGX3TR.js",
+        "phase": "initial",
+        "bytes": 145726,
+        "gzip": 49503,
+        "brotli": 44212
+      }
+    ]
+  }
+}

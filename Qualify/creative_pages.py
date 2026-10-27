@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from Qualify.pasos12_spike import spike_cards
+
 from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
 from .campaign_state import CampaignState
 from .content_generator import generator_page
@@ -1272,6 +1274,7 @@ def drafts_index() -> rx.Component:
         "Por aprobar",
         "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
         _padded(
+            spike_cards(),
             rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
             _gallery_toolbar(),
             rx.cond(
