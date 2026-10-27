@@ -69,6 +69,8 @@ from .post_card import (
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
+from .ui.steps import step_progress
 
 #: m-24842985 (N6): what is not the day and the hour waits behind this fold.
 MORE_OPTIONS = "Más opciones"
@@ -1037,7 +1039,7 @@ def _step_schedule() -> rx.Component:
         rx.flex(
             _section_title(
                 "calendar-clock",
-                PlannerState.form_step_counter + " · ¿Cuándo sale?",
+                "¿Cuándo sale?",
                 rx.cond(
                     PlannerState.form_is_reschedule,
                     "Elige el nuevo día y la hora.",
@@ -1472,15 +1474,32 @@ def assign_drawer() -> rx.Component:
     Programación → Confirmar. A step must be valid to leave it; a completed step is one
     click away to fix; «Confirmar» is where the service's answer lands."""
     return drawer(
+        flow_sync(
+            PlannerState.form_flow_name,
+            PlannerState.form_flow_step,
+            ready=PlannerState.flow_ready,
+            objeto=PlannerState.form_event_id,
+        ),
         rx.box(
-            stepper(
-                list(ASSIGN_STEPS),
-                current=PlannerState.form_step,
-                completed=PlannerState.form_steps_done,
-                on_select=PlannerState.go_to_step,
-                icons=list(ASSIGN_STEP_ICONS),
+            rx.cond(
+                PlannerState.form_is_reschedule,
+                stepper(
+                    list(ASSIGN_STEPS[1:]),
+                    current=PlannerState.form_step - 1,
+                    completed=PlannerState.form_steps_done[1:],
+                    on_select=lambda index: PlannerState.go_to_step(index + 1),
+                    icons=list(ASSIGN_STEP_ICONS[1:]),
+                ),
+                stepper(
+                    list(ASSIGN_STEPS),
+                    current=PlannerState.form_step,
+                    completed=PlannerState.form_steps_done,
+                    on_select=PlannerState.go_to_step,
+                    icons=list(ASSIGN_STEP_ICONS),
+                ),
             ),
             class_name="q-stepper-wrap",
+            display=rx.breakpoints(initial="none", sm="block"),
         ),
         rx.box(
             rx.match(
@@ -1496,6 +1515,12 @@ def assign_drawer() -> rx.Component:
         open=PlannerState.form_open,
         on_open_change=PlannerState.set_form_open,
         title=PlannerState.form_title,
+        step=rx.vstack(
+            step_progress(PlannerState.form_flow_step, PlannerState.form_step_total),
+            rx.text(PlannerState.form_step_name, size="2", weight="medium"),
+            spacing="1",
+            width="100%",
+        ),
         description=rx.cond(
             PlannerState.form_is_reschedule,
             "Mueve la publicación a otra fecha, hora o cuenta.",
@@ -1998,21 +2023,6 @@ def event_panel() -> rx.Component:
     out, its tags, and what can be done with it. Confirmations happen in the footer."""
     return drawer(
         rx.vstack(
-            # m-24842987 (N7): on a phone the panel is the whole screen; its way back
-            # names where it goes — the same week, in the same view. Outside the
-            # loading/error branches so it is always there; phone only, since on a
-            # wide screen the week shows behind and the panel's X already says it.
-            rx.el.div(
-                rx.button(
-                    rx.icon("chevron-left", size=T.ICON_MD),
-                    BACK_TO_WEEK,
-                    variant="ghost",
-                    size="3",
-                    min_height="44px",
-                    on_click=PlannerState.set_detail_open(False),
-                ),
-                class_name="q-narrow-only",
-            ),
             rx.cond(
                 PlannerState.detail_loading,
                 # content loading (the POST, its media, dates): a skeleton, never a spinner
@@ -2027,7 +2037,21 @@ def event_panel() -> rx.Component:
         ),
         open=PlannerState.detail_open,
         on_open_change=PlannerState.set_detail_open,
-        title="Publicación planificada",
+        title=rx.el.span(
+            rx.button(
+                rx.icon("chevron-left", size=T.ICON_MD),
+                BACK_TO_WEEK,
+                variant="ghost",
+                size="3",
+                min_height="44px",
+                on_click=PlannerState.set_detail_open(False),
+                class_name="q-narrow-only",
+            ),
+            rx.el.span("Publicación planificada"),
+            display="flex",
+            align_items="center",
+            gap="0.5rem",
+        ),
         icon="calendar-check",
         description="Qué sale, cuándo y dónde. Desde aquí la apruebas, la mueves o la cancelas.",
         footer=_detail_footer(),

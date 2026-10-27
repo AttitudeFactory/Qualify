@@ -44,6 +44,7 @@ Revísalo en Instagram.». The watcher only reads: nothing is re-sent (N13).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
@@ -80,9 +81,10 @@ from .followups_vm import (
     view_from_param,
     view_url,
 )
-from .nav_url import push_url_script
+from .nav_url import flow_param, push_url_script, uuid_param
 from .pending_state import PendingState
 from .tenant import tenant_uuid
+from .ui.steps_vm import DIR_NEXT, step_direction
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +139,25 @@ def _uuid(value: str) -> UUID | None:
         return None
 
 
+def query_settle_script(followup_id: str) -> str:
+    """Reveal the query below the actual header and focus its complete heading."""
+    key = json.dumps(followup_id)
+    return (
+        "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
+        f" const id={key}; const panel=document.querySelector('main.q-panel');"
+        " const card=document.getElementById('consulta-'+id); if (!panel || !card) return;"
+        " const header=panel.querySelector('.q-page-header');"
+        " if (header) panel.style.setProperty('--q-sticky-header-height',"
+        " header.offsetHeight+'px');"
+        " const edge=header ? header.getBoundingClientRect().bottom"
+        " : panel.getBoundingClientRect().top;"
+        " panel.scrollBy({top:card.getBoundingClientRect().top-edge-12});"
+        " document.getElementById('consulta-body-'+id)?.scrollTo({top:0});"
+        " document.getElementById('consulta-title-'+id)?.focus({preventScroll:true});"
+        "}));"
+    )
+
+
 class FollowupsState(rx.State):
     view: str = VIEW_MESSAGES
     cards: list[FollowupCardVM] = []
@@ -153,6 +174,9 @@ class FollowupsState(rx.State):
     highlight_id: str = ""
     # m-24842991: the step each card is on (1 «Qué preguntó» … 3 «Revisa y aprueba»).
     steps: dict[str, int] = {}
+    flow_card_id: str = ""
+    flow_direction: str = DIR_NEXT
+    _focused_query: str = ""
     # The confirmation after approving: who got the message, and what was queued.
     done_author: str = ""
     done_note: str = ""
@@ -167,6 +191,15 @@ class FollowupsState(rx.State):
     _delivery_notice: bool = False
     _zone_name: str = ""
     _user_id: str = ""
+
+    @rx.var
+    def active_query_id(self) -> str:
+        known = {card.followup_id for card in self.cards}
+        if self.flow_card_id in known:
+            return self.flow_card_id
+        if self.highlight_id in known:
+            return self.highlight_id
+        return self.cards[0].followup_id if self.cards else ""
 
     @rx.var
     def followups_count(self) -> int:
@@ -243,6 +276,8 @@ class FollowupsState(rx.State):
         """The route's `on_load`: `?vista=` picks the view (N5 — reloading or «atrás»
         lands on the view the address names); a `?consulta=<id>` opens this view on that
         card."""
+        self.flow_card_id = ""
+        self._focused_query = ""
         params = self.router.url.query_parameters
         self.view = view_from_param(str(params.get(VIEW_PARAM, "") or ""))
         wanted = str(params.get(QUERY_PARAM, "") or "")
@@ -259,6 +294,7 @@ class FollowupsState(rx.State):
         if not isinstance(view, str) or view not in VIEWS:
             return None
         self.view = view
+        self.flow_card_id = ""
         events = [rx.call_script(push_url_script(view_url(view)))]
         if view == VIEW_QUERIES:
             events.append(FollowupsState.load())
@@ -277,11 +313,49 @@ class FollowupsState(rx.State):
             return None
         if step not in STEP_TITLES:
             return None
+        old = self.steps.get(followup_id, STEP_ASKED)
+        self.flow_direction = step_direction(old, step, self.flow_direction)
+        self.flow_card_id = followup_id
+        self.highlight_id = followup_id
         if step == STEP_REVIEW and not self.edits.get(followup_id, "").strip():
             self.steps = {**self.steps, followup_id: STEP_REPLY}
             return rx.toast.warning(_EMPTY, duration=_TOAST_MS)
         self.steps = {**self.steps, followup_id: step}
-        return None
+        self._focused_query = f"{followup_id}:{step}"
+        return rx.call_script(query_settle_script(followup_id))
+
+    def _flow_params(self) -> dict:
+        try:
+            return self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router in offline tests
+            return {}
+
+    def _restore_flow_step(self) -> None:
+        params = self._flow_params()
+        requested = flow_param(params, "consulta", 3)
+        wanted = uuid_param(params, QUERY_PARAM)
+        if not requested:
+            if self.flow_card_id and not params.get("flujo"):
+                self.steps = {**self.steps, self.flow_card_id: STEP_ASKED}
+            self.flow_card_id = ""
+            return
+        if _uuid(wanted) is None or self._known(wanted) is None:
+            self.flow_card_id = ""
+            return
+        if requested == STEP_REVIEW and not self.edits.get(wanted, "").strip():
+            requested = STEP_REPLY
+        self.flow_direction = step_direction(
+            self.steps.get(wanted, STEP_ASKED), requested, self.flow_direction
+        )
+        self.steps = {**self.steps, wanted: requested}
+        self.flow_card_id = wanted
+        self.highlight_id = wanted
+        self.view = VIEW_QUERIES
+
+    @rx.event
+    def restore_flow(self) -> None:
+        """History restores a known card's step and leaves its draft and notice alone."""
+        self._restore_flow_step()
 
     def _clear_outcome(self) -> None:
         self.done_author, self.done_note = "", ""
@@ -325,7 +399,10 @@ class FollowupsState(rx.State):
         first = self.cards[0].followup_id
         self.highlight_id = first
         self.steps = {**self.steps, first: STEP_ASKED}
-        return rx.scroll_to("consulta-" + first)
+        self.flow_card_id = first
+        self.flow_direction = DIR_NEXT
+        self._focused_query = f"{first}:{STEP_ASKED}"
+        return rx.call_script(query_settle_script(first))
 
     @rx.event
     def set_notice_on(self, followup_id: str, on: bool) -> None:
@@ -340,7 +417,7 @@ class FollowupsState(rx.State):
             self.notice_edits = {**self.notice_edits, followup_id: text}
 
     @rx.event(background=True)
-    async def load(self) -> None:
+    async def load(self) -> rx.event.EventSpec | None:
         async with self:
             if self.loading:
                 return
@@ -376,6 +453,13 @@ class FollowupsState(rx.State):
                 for c in offered
             }
             self.loading, self.loaded, self.error = False, True, ""
+            self._restore_flow_step()
+            active = self.active_query_id
+            signature = f"{active}:{self.steps.get(active, STEP_ASKED)}"
+            focus = bool(active) and signature != self._focused_query
+            if focus:
+                self._focused_query = signature
+        return rx.call_script(query_settle_script(active)) if focus else None
 
     # -- actions ------------------------------------------------------------------------
 

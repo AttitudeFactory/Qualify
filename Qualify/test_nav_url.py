@@ -41,7 +41,8 @@ def test_with_query_drops_empty_values_and_encodes() -> None:
 
 def test_history_scripts_skip_a_repeated_address() -> None:
     push = push_url_script("/whatsapp?tab=qr")
-    assert "window.history.pushState(window.history.state, ''," in push
+    assert "window.history.pushState({ ...window.history.state," in push
+    assert "qPrevHref: window.location.pathname + window.location.search" in push
     assert '"/whatsapp?tab=qr"' in push
     assert "window.location.pathname + window.location.search !==" in push
     assert "replaceState" in replace_url_script("/inbox")
@@ -196,13 +197,19 @@ def test_routes_run_the_entry_handlers_on_load() -> None:
 
 
 def test_back_links_name_their_destination() -> None:
-    expectations = {
-        "conversations_page.py": '"Conversaciones",\n        on_click=S.close_conversation',
-        "whatsapp_tab_chats.py": '"Chats",\n        on_click=S.back_to_list',
-        "inbox_page.py": '"Comentarios",\n            on_click=InboxState.back_to_reel_list',
-    }
-    for name, snippet in expectations.items():
-        assert snippet in (_HERE / name).read_text(), name
+    from .conversations_page import _back_button as messages_back
+    from .inbox_page import _reel_detail_header
+    from .whatsapp_tab_chats import _back_button as chats_back
+
+    for component, label, handler in (
+        (messages_back(), "Mensajes", "close_conversation"),
+        (chats_back(), "Chats", "back_to_list"),
+        (_reel_detail_header(), "Comentarios", "back_to_reel_list"),
+    ):
+        rendered = str(component)
+        assert f'"{label}"' in rendered
+        assert handler in rendered
+        assert "44px" in rendered
 
 
 def test_no_bare_volver_in_the_scoped_screens() -> None:

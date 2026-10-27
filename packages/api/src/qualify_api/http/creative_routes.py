@@ -112,10 +112,12 @@ def read_draft_image(*, tenant_id: UUID, draft_id: UUID) -> DraftImage | None:
     choice as `PostgresContentRepository.image_for`; RLS on `image_assets` is what makes
     another tenant's draft indistinguishable from a missing one.
     """
+    from qualify_api.creative.versions import visible_version
+
     with tenant_session(tenant_id) as session:
         row = session.scalars(
             select(orm.ImageAsset)
-            .where(orm.ImageAsset.draft_id == draft_id)
+            .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
             .order_by(orm.ImageAsset.created_at)
         ).first()
         if row is None:

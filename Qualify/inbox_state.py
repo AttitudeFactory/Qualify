@@ -70,10 +70,16 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import UUID, uuid4
 
 import reflex as rx
+from httpx import TransportError
+from qualify_api.connections.runtime_health import (
+    consume_recovery_refresh,
+    get_connection_runtime_state,
+)
 from qualify_api.followups.service import OriginNotSupported, UnknownOrigin
 from qualify_api.inbox import (
     CommentsAuthExpired,
@@ -89,10 +95,12 @@ from qualify_api.sentiment import UnknownSentimentConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .inbox_access import InboxAccessVM, InboxConnectionVM, access_moment
 from .inbox_provider import (
     INTENT_FILTER_COMMERCIAL,
     analyze_comments_now,
     candidate_media,
+    connection_access,
     global_summary_vm,
     instagram_connections,
     reel_summaries_page,
@@ -100,6 +108,7 @@ from .inbox_provider import (
     seconds_since_last_sync,
     sync_now,
     sync_still_running,
+    tenant_zone,
     thread_comments_page,
     toggle_monitoring,
 )
@@ -119,7 +128,6 @@ from .inbox_vm import (
 from .inbox_vm import SESSION_EXPIRED as _SESSION_EXPIRED
 from .inbox_vm import UNKNOWN_CONNECTION as _UNKNOWN_CONNECTION
 from .nav_url import push_url_script, replace_url_script
-from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -167,7 +175,8 @@ _SYNC_FAILED = "No pudimos buscar comentarios nuevos. Intenta de nuevo."
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
-    "Esta cuenta está desconectada. Reconéctala en «Tus redes» para ver sus comentarios nuevos."
+    "Esta cuenta está desconectada. Pulsa «Volver a conectar» en "
+    "«Tus redes» para ver sus comentarios nuevos."
 )
 # A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
 _SYNC_META_FAILED = (
@@ -176,7 +185,8 @@ _SYNC_META_FAILED = (
 # cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
 # shown as if it were a normal zero-comments result.
 _COMMENTS_PERMISSION_MISSING = (
-    "Falta un permiso para leer comentarios en esta cuenta. Reconéctala para concederlo."
+    "Falta un permiso para leer comentarios en esta cuenta. "
+    "Pulsa «Volver a conectar» para concederlo."
 )
 _SYNC_BUDGET_EXHAUSTED = (
     "Buscamos comentarios muchas veces seguidas. Espera unos minutos e intenta de nuevo."
@@ -185,7 +195,8 @@ _SYNC_BUDGET_EXHAUSTED = (
 # the time this reaches the UI (Conexiones already shows "Reconectar"), so this message
 # points there instead of repeating the generic sync-failed copy.
 _CONNECTION_AUTH_EXPIRED = (
-    "Tu conexión con Instagram dejó de funcionar. Reconéctala en «Tus redes» e intenta de nuevo."
+    "Tu conexión con Instagram dejó de funcionar. Pulsa «Volver "
+    "a conectar» en «Tus redes» e intenta de nuevo."
 )
 _SYNC_ALREADY_RUNNING = "Ya estamos buscando comentarios nuevos. Te avisamos al terminar."
 _REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
@@ -231,7 +242,9 @@ class InboxState(rx.State):
     browse their comments'
     sentiment two levels deep (Reel summary list -> one Reel's comments)."""
 
-    connections: list[ConnectionOptionVM] = []
+    connections: list[InboxConnectionVM] = []
+    access: InboxAccessVM = InboxAccessVM()
+    last_review: str = ""
     selected_connection_id: str = ""
     is_loading_connections: bool = False
     connections_error: str = ""
@@ -307,12 +320,17 @@ class InboxState(rx.State):
 
     @rx.var
     def can_sync(self) -> bool:
-        return bool(self.selected_connection_id) and not self.is_syncing
+        return (
+            bool(self.selected_connection_id)
+            and not self.is_syncing
+            and not self.access.needs_reconnect
+        )
 
     @rx.var
     def show_empty_state(self) -> bool:
         return (
-            not self.is_loading_candidates
+            not self.access.needs_reconnect
+            and not self.is_loading_candidates
             and not self.load_error
             and bool(self.selected_connection_id)
             and len(self.candidates) == 0
@@ -339,6 +357,31 @@ class InboxState(rx.State):
             and len(self.thread_comments) == 0
         )
 
+    async def _refresh_access(self, tenant_id: UUID, connection_id: str) -> None:
+        """Refresh the diagnosis without clearing an existing banner between polls."""
+        resolved = _try_uuid(connection_id)
+        if resolved is None:
+            return
+        try:
+            access = await asyncio.to_thread(connection_access, tenant_id, resolved)
+            options = await asyncio.to_thread(instagram_connections, tenant_id)
+        except SQLAlchemyError as exc:
+            logger.error("inbox access load failed: %s", type(exc).__name__)
+            return
+        async with self:
+            auth = await self.get_state(AuthState)
+            if (
+                tenant_uuid(auth.session_tenant_id) == tenant_id
+                and self.selected_connection_id == connection_id
+            ):
+                if self.access != access:
+                    self.access = access
+                if self.connections != options:
+                    self.connections = options
+                if access.needs_reconnect:
+                    self.sync_error = ""
+                    self.load_error = ""
+
     async def _load_candidates(
         self, tenant_id: UUID, connection_id: str, *, show_loading: bool = True
     ) -> None:
@@ -355,6 +398,9 @@ class InboxState(rx.State):
         (`toggling_media_ids`) already exists to do on its own.
         """
         async with self:
+            if self.access.needs_reconnect:
+                self.is_loading_candidates = False
+                return
             if show_loading:
                 self.is_loading_candidates = True
             self.load_error = ""
@@ -377,9 +423,10 @@ class InboxState(rx.State):
             # Only the exception TYPE is logged — same posture as connections_state.py's
             # loader for infrastructure/Meta errors that may carry connection details.
             logger.error("candidate_media failed: %s", type(exc).__name__)
+            await self._refresh_access(tenant_id, connection_id)
             async with self:
                 self.is_loading_candidates = False
-                self.load_error = _LOAD_FAILED
+                self.load_error = "" if self.access.needs_reconnect else _LOAD_FAILED
             return
 
         async with self:
@@ -619,11 +666,15 @@ class InboxState(rx.State):
         async with self:
             self.connections = options
             self.is_loading_connections = False
-            if options and not self.selected_connection_id:
+            returned_connection = str(self.router.url.query_parameters.get("reconnect", ""))
+            if returned_connection in {option.id for option in options}:
+                self.selected_connection_id = returned_connection
+            if options and self.selected_connection_id not in {option.id for option in options}:
                 self.selected_connection_id = options[0].id
             connection_id = self.selected_connection_id
 
         if connection_id:
+            await self._refresh_access(tenant_id, connection_id)
             await self._load_candidates(tenant_id, connection_id)
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
             await self._load_global_summary(tenant_id, connection_id)
@@ -670,6 +721,9 @@ class InboxState(rx.State):
             if not any(option.id == connection_id for option in self.connections):
                 return
             self.selected_connection_id = connection_id
+            self.access = InboxAccessVM()
+            self.last_review = ""
+            self.sync_error = ""
             self.candidates = []
             self.action_error = ""
             # QUA-93: reset every comments-related section — same "don't show the
@@ -695,6 +749,7 @@ class InboxState(rx.State):
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
             return
+        await self._refresh_access(tenant_id, connection_id)
         await self._load_candidates(tenant_id, connection_id)
         await self._load_reel_summaries_first_page(tenant_id, connection_id)
         await self._load_global_summary(tenant_id, connection_id)
@@ -874,17 +929,49 @@ class InboxState(rx.State):
                 trigger, "no_session" if tenant_id is None else "no_connection"
             )
 
-        if trigger != "manual":
+        await self._refresh_access(tenant_id, connection_id)
+        try:
+            runtime = await asyncio.to_thread(
+                get_connection_runtime_state,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+            )
+            if runtime is None or not runtime.can_poll or self.access.needs_reconnect:
+                async with self:
+                    self._release_sync_claim(run_id)
+                return self._sync_skipped(trigger, "connection_unavailable")
+            recovered = await asyncio.to_thread(
+                consume_recovery_refresh,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+            )
+        except SQLAlchemyError as exc:
+            logger.error("inbox runtime check failed: %s", type(exc).__name__)
+            async with self:
+                self._release_sync_claim(run_id)
+            return self._sync_skipped(trigger, "connection_health_unavailable")
+
+        if trigger != "manual" and not recovered:
             since_last = await seconds_since_last_sync(
                 tenant_id=tenant_id, connection_id=resolved_connection
             )
+            if since_last is not None:
+                zone = await asyncio.to_thread(tenant_zone, tenant_id)
+                async with self:
+                    auth = await self.get_state(AuthState)
+                    if (
+                        tenant_uuid(auth.session_tenant_id) == tenant_id
+                        and self.selected_connection_id == connection_id
+                    ):
+                        self.last_review = access_moment(
+                            datetime.now(UTC) - timedelta(seconds=since_last), zone
+                        )
             if skip_for_cooldown(trigger, since_last):
                 async with self:
                     self._release_sync_claim(run_id)
                 return self._sync_skipped(trigger, "cooldown")
 
         async with self:
-            self.sync_error = ""
             self.sync_result = None
         logger.info(
             "inbox.sync.start run=%s trigger=%s tenant=%s connection=%s",
@@ -894,6 +981,7 @@ class InboxState(rx.State):
             resolved_connection,
         )
         started = time.monotonic()
+        review_finished = False
         try:
             result = await sync_now(
                 tenant_id=tenant_id, connection_id=resolved_connection, run_token=run_id
@@ -902,6 +990,7 @@ class InboxState(rx.State):
             # Another tab, user or process holds this connection's lease right now.
             return self._sync_skipped(trigger, "in_flight_elsewhere", run_id=run_id)
         except Exception as exc:
+            review_finished = isinstance(exc, CommentsAuthExpired) or _is_temporary_sync_error(exc)
             logger.info(
                 "inbox.sync.failed run=%s trigger=%s error=%s ms=%d",
                 run_id,
@@ -909,10 +998,26 @@ class InboxState(rx.State):
                 type(exc).__name__,
                 (time.monotonic() - started) * 1000,
             )
+            await self._refresh_access(tenant_id, connection_id)
             async with self:
-                self.sync_error = _sync_error_message(exc)
+                auth = await self.get_state(AuthState)
+                if (
+                    tenant_uuid(auth.session_tenant_id) == tenant_id
+                    and self.selected_connection_id == connection_id
+                ):
+                    if self.access.needs_reconnect:
+                        self.sync_error = ""
+                    elif _is_temporary_sync_error(exc):
+                        self.sync_error = (
+                            "Instagram no respondió. Intenta de nuevo en unos minutos."
+                            if trigger == "manual"
+                            else ""
+                        )
+                    else:
+                        self.sync_error = _sync_error_message(exc)
             return None
         else:
+            review_finished = True
             logger.info(
                 "inbox.sync.done run=%s trigger=%s media=%d new=%d deleted=%d "
                 "missing_media=%d expired=%d meta_ok=%d meta_failed=%d meta_deferred=%d "
@@ -931,10 +1036,26 @@ class InboxState(rx.State):
                 (time.monotonic() - started) * 1000,
             )
             async with self:
-                self.sync_result = result
+                auth = await self.get_state(AuthState)
+                if (
+                    tenant_uuid(auth.session_tenant_id) == tenant_id
+                    and self.selected_connection_id == connection_id
+                ):
+                    self.sync_result = result
+                    self.sync_error = ""
+            await self._refresh_access(tenant_id, connection_id)
         finally:
             async with self:
                 self._release_sync_claim(run_id)
+            if review_finished:
+                zone = await asyncio.to_thread(tenant_zone, tenant_id)
+                async with self:
+                    auth = await self.get_state(AuthState)
+                    if (
+                        tenant_uuid(auth.session_tenant_id) == tenant_id
+                        and self.selected_connection_id == connection_id
+                    ):
+                        self.last_review = access_moment(datetime.now(UTC), zone)
 
         # QUA-93: refresh — reached ONLY on a successful sync. Every failure branch
         # above `return`s before this point (the `finally` still ran either way,
@@ -1258,6 +1379,14 @@ def _try_uuid(value: str) -> UUID | None:
         return UUID(value)
     except ValueError:
         return None
+
+
+def _is_temporary_sync_error(exc: Exception) -> bool:
+    """Include transport failures and provider throttling/outages in temporary feedback."""
+    status = getattr(exc, "http_status", None)
+    return isinstance(exc, (CommentsReadError, TransportError)) or (
+        status is not None and (status == 429 or status >= 500)
+    )
 
 
 def _sync_error_message(exc: Exception) -> str:

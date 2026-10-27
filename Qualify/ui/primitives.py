@@ -777,26 +777,30 @@ def drawer(
     head = rx.vstack(
         rx.hstack(
             rx.dialog.title(
-                rx.hstack(
-                    rx.box(rx.icon(icon, size=18), class_name="q-drawer-glyph"),
-                    rx.text(title, class_name="q-drawer-title-text"),
+                rx.el.span(
+                    rx.el.span(rx.icon(icon, size=18), class_name="q-drawer-glyph"),
+                    rx.text(title, as_="span", class_name="q-drawer-title-text"),
                     class_name="q-drawer-title",
-                    spacing="0",
+                    display="flex",
+                    align_items="center",
                 )
                 if icon is not None
                 else title,
                 margin="0",
-                size="5",
-                as_child=icon is not None or not isinstance(title, (str, rx.Var)),
+                # This Reflex DialogTitle wrapper declares no Heading props: raw
+                # attributes reach Radix; size/as_child kwargs would become CSS.
+                custom_attrs={
+                    "as": "h2",
+                    "size": "5",
+                    **(
+                        {"tabIndex": -1, "aria-describedby": "q-step-count-drawer"}
+                        if step is not None
+                        else {}
+                    ),
+                },
                 **(
                     {
                         "class_name": "q-step-title",
-                        # Same id as `ui.steps.COUNT_ID_DRAWER` (no import: steps
-                        # imports nothing from here, keep it that way).
-                        "custom_attrs": {
-                            "tabIndex": -1,
-                            "aria-describedby": "q-step-count-drawer",
-                        },
                     }
                     if step is not None
                     else {}

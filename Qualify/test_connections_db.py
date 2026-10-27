@@ -14,7 +14,9 @@ Both this file and `test_connections.py` ARE collected by the root `uv run pytes
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from qualify_api.connections import ConnectionNotFound
@@ -30,6 +32,8 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from .connections_provider import acting_user_id, connections_for, disconnect
+from .inbox_access import InboxAccessVM
+from .inbox_provider import connection_access, instagram_connections
 
 pytestmark = pytest.mark.db
 
@@ -278,3 +282,43 @@ def test_acting_user_resolves_to_the_tenants_own_owner(
     assert acting_user_id(tenant_a) == owner_a
     assert acting_user_id(tenant_b) == owner_b
     assert owner_a != owner_b
+
+
+def test_comments_keep_disconnected_accounts_inside_their_own_tenant(
+    two_connected_tenants: tuple[UUID, UUID],
+) -> None:
+    tenant_a, tenant_b = two_connected_tenants
+    assert {row.id for row in instagram_connections(tenant_a)} == {str(CONNECTION_A)}
+    (disconnected,) = instagram_connections(tenant_b)
+    assert disconnected.id == str(CONNECTION_B)
+    assert disconnected.label == "@ui_tenant_b · Desconectada"
+    assert connection_access(tenant_a, CONNECTION_B) == InboxAccessVM()
+    own_access = connection_access(tenant_b, CONNECTION_B)
+    assert own_access.needs_reconnect
+    assert "@ui_tenant_b" in own_access.title
+
+
+def test_comments_read_the_outage_audit_in_the_business_timezone(
+    two_connected_tenants: tuple[UUID, UUID], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from . import inbox_provider
+
+    tenant_a, tenant_b = two_connected_tenants
+    with tenant_session(tenant_b) as session:
+        row = session.get(SocialConnection, CONNECTION_B)
+        row.reconnect_reason = "auth_expired"
+        session.add(
+            ConnectionEvent(
+                tenant_id=tenant_b,
+                connection_id=CONNECTION_B,
+                credential_version=row.current_credential_version,
+                event_type="auth_error",
+                actor="system",
+                occurred_at=datetime(2026, 10, 27, 20, 40, tzinfo=UTC),
+            )
+        )
+    monkeypatch.setattr(inbox_provider, "tenant_zone", lambda _: ZoneInfo("America/Bogota"))
+    assert connection_access(tenant_a, CONNECTION_B) == InboxAccessVM()
+    assert connection_access(tenant_b, CONNECTION_B).detail == (
+        "No llegan comentarios nuevos desde el martes 3:40 p. m. Los que ya tenías siguen aquí."
+    )

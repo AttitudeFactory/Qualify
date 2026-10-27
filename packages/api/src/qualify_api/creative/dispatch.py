@@ -40,7 +40,7 @@ from uuid import UUID
 from qualify_creative.adapters.byteplus_omnihuman import (
     DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_POLL_TIMEOUT_SECONDS,
 )
-from qualify_shared.db.session import tenant_session
+from qualify_shared.db.session import after_tenant_commit, tenant_session
 from sqlalchemy import and_, exists, select, text, update
 
 from qualify_api.creative.creations import refund_in_session
@@ -121,12 +121,16 @@ class InlineDispatcher:
         self._finalize = finalize
 
     def dispatch_generation(self, *, tenant_id: UUID, draft_id: UUID) -> None:
-        self._start(self._run, "creative-generation", tenant_id, draft_id)
+        after_tenant_commit(
+            tenant_id, lambda: self._start(self._run, "creative-generation", tenant_id, draft_id)
+        )
 
     def dispatch_finalize(self, *, tenant_id: UUID, draft_id: UUID) -> None:
         if self._finalize is None:
             raise RuntimeError("this dispatcher was wired without a finalize runner")
-        self._start(self._finalize, "creative-final", tenant_id, draft_id)
+        after_tenant_commit(
+            tenant_id, lambda: self._start(self._finalize, "creative-final", tenant_id, draft_id)
+        )
 
     @staticmethod
     def _start(target: GenerationRunner, name: str, tenant_id: UUID, draft_id: UUID) -> None:

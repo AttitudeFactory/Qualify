@@ -86,6 +86,7 @@ from .creative_provider import (
     acting_user_id,
     approval_videos,
     approve_draft,
+    approve_draft_version,
     approve_voice,
     brand_character,
     brand_media,
@@ -105,6 +106,7 @@ from .creative_provider import (
     load_kit_form,
     load_voice_screen,
     preview_brief_prompt,
+    preview_draft_version,
     propose_voice,
     recreate_draft,
     recreate_note,
@@ -181,7 +183,7 @@ from .stock_provider import import_video as import_stock_video
 from .stock_provider import search_from_kit as search_stock_from_kit
 from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
-from .ui.steps import go_to_step, settle_step
+from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
 
@@ -1060,6 +1062,7 @@ class CreativeState(rx.State):
     gen_direction: str = "next"
     #: PASOS-5: `enter_create_step` has decided the step from `?paso=` (gates `step_sync`).
     create_entered: bool = False
+    create_entry_epoch: int = 0
     #: Set only when leaving a draft intentionally; logout resets the whole state.
     create_resume_pending: bool = False
     #: The catalog product screen comes first (§ request 2026-10-14: "antes de aparecer
@@ -1390,8 +1393,26 @@ class CreativeState(rx.State):
             and variant.passed
             and not self.edit_blocking
             and not self.edit_mode
+            and not self.version_loading
             # founder 2026-10-24: approving counts the videos — not without enough left
             and not self.approve_videos_short
+        )
+
+    @rx.var
+    def selected_approval_label(self) -> str:
+        if self.draft is None or self.selected_variant is None:
+            return ""
+        version = next(
+            (
+                row.label
+                for row in self.draft.versions
+                if row.version_id == self.draft.viewed_version_id
+            ),
+            "",
+        )
+        choice = self.selected_variant.label
+        return (
+            f"Aprobar\u00e1s {version} \u00b7 {choice}" if version else f"Aprobar\u00e1s {choice}"
         )
 
     @rx.var
@@ -3697,9 +3718,15 @@ class CreativeState(rx.State):
             self._show_create_step(requested)
         if self.create_step_n != old:
             self.gen_direction = DIR_BACK if self.create_step_n < old else DIR_NEXT
+        self.create_entry_epoch += 1
         self.create_entered = True
         self.create_resume_pending = False
-        return settle_step()
+        return rx.call_script(
+            step_entry_script(
+                self._CREATE_ROUTE, self.create_step_n, self.create_entry_epoch, raw or None
+            )
+            + step_settle_script()
+        )
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
     pop_create_step = enter_create_step
@@ -5989,6 +6016,50 @@ class CreativeState(rx.State):
             self.selected_variant_id = vm.variants[0].variant_id if vm.variants else ""
         self._fill_edit_fields()
 
+    version_loading: bool = False
+
+    @rx.event(background=True)
+    async def view_version(self, requested_version_id: str) -> None:
+        async with self:
+            if self.version_loading or self.edit_saving or self.edit_mode:
+                return
+            draft_id = self._route_draft_id()
+            version_id = tenant_uuid(requested_version_id)
+            if draft_id is None or (requested_version_id and version_id is None):
+                return
+            self.version_loading = True
+            self.action_error = ""
+        try:
+            ids = await self._session_ids()
+            if ids is None:
+                return
+            vm = await asyncio.to_thread(
+                preview_draft_version if version_id else draft_detail,
+                ids[0],
+                draft_id,
+                *([version_id] if version_id else []),
+            )
+            if vm is None:
+                raise UnknownDraft(str(draft_id))
+            async with self:
+                if self._route_draft_id() == draft_id:
+                    self.edit_mode = False
+                    self.just_approved = False
+                    self.draft_slide = 0
+                    self._apply_detail(vm)
+            await self._load_approval_videos(
+                ids[0], draft_id, version_id if vm.viewing_previous_version else None
+            )
+        except UnknownDraft:
+            async with self:
+                self.action_error = _DRAFT_GONE
+        except (ValueError, SQLAlchemyError) as exc:
+            async with self:
+                self.action_error = str(exc) if isinstance(exc, ValueError) else _DB_ERROR
+        finally:
+            async with self:
+                self.version_loading = False
+
     queue_cancelling: bool = False
 
     @rx.event(background=True)
@@ -6176,7 +6247,7 @@ class CreativeState(rx.State):
                     if on_screen:
                         self.poll_elapsed_label = f"{int(time.monotonic() - started)} s"
                     if vm is not None:
-                        if on_screen:
+                        if on_screen and not (self.draft and self.draft.viewing_previous_version):
                             self._apply_detail(vm)
                         if not vm.is_drafting:
                             outcome = "failed" if vm.is_failed else "ready"
@@ -6199,6 +6270,8 @@ class CreativeState(rx.State):
 
     @rx.event
     def start_edit(self):
+        if self.draft is not None and self.draft.viewing_previous_version:
+            return None
         self.edit_mode = True
         return CreativeState.load_catalog_hashtags
 
@@ -6309,9 +6382,23 @@ class CreativeState(rx.State):
             return
         tenant_id, _, user_id = ids
         try:
-            vm = await asyncio.to_thread(
-                approve_draft, tenant_id, draft_uuid, UUID(variant.variant_id), user_id
-            )
+            if draft.viewing_previous_version:
+                vm = await asyncio.to_thread(
+                    approve_draft_version,
+                    tenant_id,
+                    draft_uuid,
+                    UUID(variant.variant_id),
+                    user_id,
+                    UUID(draft.viewed_version_id),
+                )
+            else:
+                vm = await asyncio.to_thread(
+                    approve_draft, tenant_id, draft_uuid, UUID(variant.variant_id), user_id
+                )
+        except ValueError as exc:
+            async with self:
+                self.action_error = str(exc)
+            return
         except (UnknownDraft, UnknownVariant):
             async with self:
                 self.action_error = _DRAFT_GONE
@@ -6364,9 +6451,13 @@ class CreativeState(rx.State):
     approve_videos_text: str = ""
     approve_videos_short: bool = False
 
-    async def _load_approval_videos(self, tenant_id: UUID, draft_id: UUID) -> None:
+    async def _load_approval_videos(
+        self, tenant_id: UUID, draft_id: UUID, version_id: UUID | None = None
+    ) -> None:
         try:
-            quote = await asyncio.to_thread(approval_videos, tenant_id, draft_id)
+            quote = await asyncio.to_thread(
+                approval_videos, tenant_id, draft_id, *([version_id] if version_id else [])
+            )
         except Exception as exc:  # noqa: BLE001 — the service still refuses what it cannot pay
             logger.warning("approval videos unreadable: %s", type(exc).__name__)
             quote = None

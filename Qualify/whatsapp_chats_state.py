@@ -63,6 +63,16 @@ from qualify_api.whatsapp.template_reply import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .nav_url import (
+    back_url_script,
+    close_flow_script,
+    conversation_href,
+    flow_param,
+    push_url_script,
+    replace_url_script,
+    thread_param,
+    uuid_param,
+)
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 from .whatsapp_chats_provider import NoOrder, gateway
@@ -200,6 +210,7 @@ class WhatsAppChatsState(rx.State):
 
     # -- approved message from an expired chat (m-24848535) -----------------------------
     tpl_open: bool = False
+    flow_ready: bool = False
     tpl_loading: bool = False
     tpl_error: str = ""
     tpl_choices: list[TemplateChoiceVM] = []
@@ -538,25 +549,53 @@ class WhatsAppChatsState(rx.State):
     # ==================================================================================
 
     @rx.event
-    def open_conversation(self, thread_id: str) -> rx.event.EventSpec | None:
+    async def restore_address(self) -> rx.event.EventSpec | None:
+        """Read only internal IDs; the provider enforces tenant + connection ownership."""
+        shell = await self.get_state(WhatsAppState)
+        connection = shell.selected_connection_id
+        if not connection:
+            return None
+        if connection != self._connection_id:
+            self._connection_id = connection
+            self.rows = []
+            self.list_loaded_for = ""
+            self._reset_conversation()
+        params = self.router.url.query_parameters
+        thread = thread_param(params, connection)
+        if thread == self.open_thread_id:
+            return None
+        self.open_thread_id = thread
+        self._reset_conversation()
+        return WhatsAppChatsState.load_conversation if thread else None
+
+    @rx.event
+    def open_conversation(
+        self, thread_id: str
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
         if not isinstance(thread_id, str) or thread_id == self.open_thread_id:
             return None
         if thread_id not in {r.thread_id for r in self.rows}:
             return None  # arrived over the wire; refuse an id the list does not hold
+        writer = replace_url_script if self.open_thread_id else push_url_script
         self.open_thread_id = thread_id
         self._reset_conversation()
         self.compose_mode = COMPOSE_TEXT
-        return WhatsAppChatsState.load_conversation
+        return [
+            rx.call_script(writer(conversation_href("whatsapp", self._connection_id, thread_id))),
+            WhatsAppChatsState.load_conversation,
+        ]
 
     @rx.event
-    def back_to_list(self) -> None:
+    def back_to_list(self) -> rx.event.EventSpec:
         """Mobile: leave the conversation pane."""
         self.open_thread_id = ""
         self._reset_conversation()
+        return rx.call_script(back_url_script(conversation_href("whatsapp", self._connection_id)))
 
     @rx.event(background=True)
-    async def load_conversation(self) -> None:
+    async def load_conversation(self) -> AsyncIterator[rx.event.EventSpec]:
         await self._read_conversation(silent=False)
+        yield WhatsAppChatsState.restore_flow
 
     async def _read_conversation(self, *, silent: bool) -> None:
         async with self:
@@ -879,6 +918,8 @@ class WhatsAppChatsState(rx.State):
             if clear_composer and self.open_thread_id == thread_id:
                 self._reset_composer()
             self._mark_paused(thread_id, True)
+        if flow_param(self.router.url.query_parameters, "mensaje-chat", 2):
+            yield rx.call_script(close_flow_script("mensaje-chat"))
         yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
         yield WhatsAppChatsState.refresh
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
@@ -887,6 +928,33 @@ class WhatsAppChatsState(rx.State):
     # Approved message from an expired chat (m-24848535)
     # ==================================================================================
 
+    def _apply_flow_step(self) -> None:
+        params = self.router.url.query_parameters
+        requested = flow_param(params, "mensaje-chat", 2)
+        if not requested:
+            return
+        chosen = uuid_param(params, "objeto")
+        if chosen and self._tpl_option(chosen) is not None:
+            self._choose(chosen)
+        self.tpl_reviewing = requested == 2 and bool(self.tpl_selected)
+        self.tpl_open = True
+        self.flow_ready = True
+
+    @rx.event
+    def restore_flow(self) -> rx.event.EventSpec | None:
+        requested = flow_param(self.router.url.query_parameters, "mensaje-chat", 2)
+        if not requested:
+            self.tpl_open = False
+            self.flow_ready = False
+            return None
+        if not self.open_thread_id:
+            return None
+        if not self._tpl_options:
+            self.tpl_open = True
+            return WhatsAppChatsState.load_templates
+        self._apply_flow_step()
+        return None
+
     @rx.event
     def open_templates(self) -> rx.event.EventSpec | None:
         """«Enviar un mensaje aprobado»: open the picker and (re)load what this person
@@ -894,12 +962,16 @@ class WhatsAppChatsState(rx.State):
         if not self.show_send_approved:
             return None
         self.tpl_open = True
+        self.flow_ready = True
         return WhatsAppChatsState.load_templates
 
     @rx.event
-    def set_templates_open(self, is_open: bool) -> None:
+    def set_templates_open(self, is_open: bool) -> rx.event.EventSpec | None:
         if not is_open:
             self.tpl_open = False
+            self.flow_ready = False
+            return rx.call_script(close_flow_script("mensaje-chat"))
+        return None
 
     @rx.event(background=True)
     async def load_templates(self) -> None:
@@ -941,6 +1013,7 @@ class WhatsAppChatsState(rx.State):
             if self.open_thread_id != thread_id:
                 return
             self._apply_template_options(options)
+            self._apply_flow_step()
 
     def _choose(self, template_id: str) -> None:
         """Pick one listed message (an id the list does not hold is ignored). A new pick
@@ -1053,6 +1126,7 @@ class WhatsAppChatsState(rx.State):
         async with self:
             self.tpl_sending = False
             self.tpl_open = False
+            self.flow_ready = False
             self._clear_template_choice()
             self._mark_paused(thread_id, True)
         yield rx.toast.success(_QUEUED, duration=_TOAST_MS)

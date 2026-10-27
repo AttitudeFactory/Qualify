@@ -38,6 +38,7 @@ from qualify_api.whatsapp.templates import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .nav_url import close_flow_script, flow_param
 from .tenant import tenant_uuid
 from .whatsapp_state import WhatsAppState
 from .whatsapp_templates_provider import (
@@ -127,6 +128,7 @@ class WhatsAppTemplatesState(rx.State):
 
     # -- «Crear un mensaje» (m-24842997: four steps, nothing technical to type) ------
     form_open: bool = False
+    flow_ready: bool = False
     step: int = STEP_KIND
     form_done: bool = False  # sent to Meta: the drawer shows the notice + next step (N3)
     form_category: str = CATEGORY_MARKETING
@@ -284,6 +286,8 @@ class WhatsAppTemplatesState(rx.State):
             self.templates = templates
             self.loaded_for = connection_id
             self.loading_for = ""
+            if flow_param(self.router.url.query_parameters, "mensaje-aprobado", len(STEPS)):
+                self.restore_flow()
 
     # ==================================================================================
     # Sync / delete
@@ -403,13 +407,31 @@ class WhatsAppTemplatesState(rx.State):
         )
 
     @rx.event
+    def restore_flow(self) -> None:
+        requested = flow_param(self.router.url.query_parameters, "mensaje-aprobado", len(STEPS))
+        if not requested:
+            self.form_open = False
+            self.flow_ready = False
+            return
+        target = requested - 1
+        for index in range(target):
+            if validate_step(self._form(), index):
+                target = index
+                break
+        self.step = target
+        self.form_open = True
+        self.flow_ready = True
+
+    @rx.event
     def open_form(self) -> None:
         """«Crear un mensaje»: resumes a saved draft on the step it was left, else a
         blank form."""
         if self.form_done or not self._has_draft():
             self._reset_form()
             self.form_open = True
+            self.flow_ready = True
             return
+        self.flow_ready = True
         self.form_resumed = True
         self.form_error = ""
         self.form_open = True
@@ -421,18 +443,20 @@ class WhatsAppTemplatesState(rx.State):
             return
         self._reset_form()
         self.form_open = True
+        self.flow_ready = True
 
     @rx.event
-    def set_form_open(self, is_open: bool) -> None:
+    def set_form_open(self, is_open: bool) -> rx.event.EventSpec | None:
         """The drawer's `on_open_change` (Esc, backdrop, ✕). Closing keeps the draft
         (N6: a stray tap outside on a phone must not erase it); once sent, it is done."""
         if is_open or self.submitting:
             return
         if self.form_done:
             self._reset_form()
-            return
         self.form_open = False
         self.form_resumed = False
+        self.flow_ready = False
+        return rx.call_script(close_flow_script("mensaje-aprobado"))
 
     @rx.event
     def set_category(self, category: str | list[str]) -> None:

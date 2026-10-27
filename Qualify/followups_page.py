@@ -40,17 +40,19 @@ from .followups_vm import (
     STEP_ASKED,
     STEP_REPLY,
     STEP_REVIEW,
+    STEP_TITLES,
     SUGGEST_ONE,
     VIEW_MESSAGES,
     VIEW_QUERIES,
     FollowupCardVM,
     FollowupIntentVM,
     UndeliveredVM,
-    step_label,
 )
 from .inbox_vm import UNSURE_INTENT_NOTE
 from .ui import callout, card, empty_state, loading_spinner, skeleton_rows, tone_badge
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
+from .ui.steps import step_progress
 
 F = FollowupsState
 
@@ -313,32 +315,54 @@ def _to_comments() -> rx.Component:
 
 
 def _step_asked(c: FollowupCardVM) -> rx.Component:
-    busy = F.busy_id == c.followup_id
     return rx.vstack(
         _origin(c),
         # UX review: say it on step 1, not after the whole message is written.
         rx.cond(c.route_available, rx.fragment(), _blocked(c)),
-        _row(
-            rx.button(
-                rx.icon("x", size=T.ICON_SM),
-                "Descartar",
-                variant="ghost",
-                color_scheme="gray",
-                size="2",
-                loading=busy & (F.busy_action == "discard"),
-                disabled=F.busy_id != "",
-                on_click=F.discard(c.followup_id),
-                **_TAP,
+        spacing="3",
+        width="100%",
+    )
+
+
+def _step_asked_actions(c: FollowupCardVM) -> rx.Component:
+    busy = F.busy_id == c.followup_id
+    return _row(
+        rx.button(
+            rx.icon("x", size=T.ICON_SM),
+            "Descartar",
+            variant="ghost",
+            color_scheme="gray",
+            size="2",
+            loading=busy & (F.busy_action == "discard"),
+            disabled=F.busy_id != "",
+            on_click=F.discard(c.followup_id),
+            **_TAP,
+        ),
+        rx.spacer(),
+        rx.cond(c.route_available, _forward(c, STEP_REPLY), _to_comments()),
+    )
+
+
+def _step_reply(c: FollowupCardVM) -> rx.Component:
+    empty = F.edits[c.followup_id].strip() == ""
+    return rx.vstack(
+        _asked_summary(c),
+        _draft(c),
+        rx.cond(
+            empty,
+            rx.text(
+                "Escribe tu respuesta o toca «" + SUGGEST_ONE + "» para seguir.",
+                size="1",
+                color=T.TEXT_MUTED,
             ),
-            rx.spacer(),
-            rx.cond(c.route_available, _forward(c, STEP_REPLY), _to_comments()),
+            rx.fragment(),
         ),
         spacing="3",
         width="100%",
     )
 
 
-def _step_reply(c: FollowupCardVM) -> rx.Component:
+def _step_reply_actions(c: FollowupCardVM) -> rx.Component:
     busy = F.busy_id == c.followup_id
     acting = F.busy_id != ""
     # go_step still refuses an empty message; this only says so before the tap.
@@ -366,31 +390,15 @@ def _step_reply(c: FollowupCardVM) -> rx.Component:
             **_TAP,
         ),
     )
-    return rx.vstack(
-        _asked_summary(c),
-        _draft(c),
-        _row(
-            _back(c, STEP_ASKED),
-            idea,
-            rx.spacer(),
-            _forward(c, STEP_REVIEW, blank=empty),
-        ),
-        rx.cond(
-            empty,
-            rx.text(
-                "Escribe tu respuesta o toca «" + SUGGEST_ONE + "» para seguir.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            rx.fragment(),
-        ),
-        spacing="3",
-        width="100%",
+    return _row(
+        _back(c, STEP_ASKED),
+        idea,
+        rx.spacer(),
+        _forward(c, STEP_REVIEW, blank=empty),
     )
 
 
 def _step_review(c: FollowupCardVM) -> rx.Component:
-    busy = F.busy_id == c.followup_id
     return rx.vstack(
         _asked_summary(c),
         _route(c),
@@ -416,52 +424,114 @@ def _step_review(c: FollowupCardVM) -> rx.Component:
             width="100%",
         ),
         _notice(c),
-        _row(
-            _back(c, STEP_REPLY),
-            rx.spacer(),
-            rx.button(
-                rx.icon("send", size=T.ICON_SM),
-                "Aprobar y enviar",
-                size="2",
-                loading=busy & (F.busy_action == "approve"),
-                disabled=(F.busy_id != "") | ~c.route_available,
-                on_click=F.approve(c.followup_id),
-                **_TAP,
-            ),
-        ),
         spacing="3",
         width="100%",
     )
 
 
+def _step_review_actions(c: FollowupCardVM) -> rx.Component:
+    busy = F.busy_id == c.followup_id
+    return _row(
+        _back(c, STEP_REPLY),
+        rx.spacer(),
+        rx.button(
+            rx.icon("send", size=T.ICON_SM),
+            "Aprobar y enviar",
+            size="2",
+            loading=busy & (F.busy_action == "approve"),
+            disabled=(F.busy_id != "") | ~c.route_available,
+            on_click=F.approve(c.followup_id),
+            **_TAP,
+        ),
+    )
+
+
+def _frame_props(active: bool | rx.Var[bool]) -> dict:
+    """The active card borrows the drawer's bounded head/body/foot anatomy."""
+    limit = (
+        "calc(100dvh - var(--q-sticky-header-height, 8rem) - var(--q-bottom-bar-h, 64px) - 2rem)"
+    )
+    height = (
+        (limit if active else "auto")
+        if isinstance(active, bool)
+        else rx.cond(active, limit, "auto")
+    )
+    return {
+        "display": "flex",
+        "flex_direction": "column",
+        "gap": "0.75rem",
+        "height": height,
+        "min_height": "0",
+        "padding": "1rem",
+        "box_sizing": "border-box",
+    }
+
+
 def _card(c: FollowupCardVM) -> rx.Component:
     step = F.steps[c.followup_id]
+    active = F.active_query_id == c.followup_id
+    count_id = "consulta-count-" + c.followup_id
     return card(
+        flow_sync(
+            "consulta",
+            step,
+            ready=F.loaded & (F.flow_card_id == c.followup_id),
+            consulta=c.followup_id,
+        ),
         rx.vstack(
-            rx.text(
+            step_progress(step, 3, count_id=count_id),
+            rx.heading(
                 rx.match(
                     step,
-                    (STEP_REPLY, step_label(STEP_REPLY)),
-                    (STEP_REVIEW, step_label(STEP_REVIEW)),
-                    step_label(STEP_ASKED),
+                    (STEP_REPLY, STEP_TITLES[STEP_REPLY]),
+                    (STEP_REVIEW, STEP_TITLES[STEP_REVIEW]),
+                    STEP_TITLES[STEP_ASKED],
                 ),
-                size="1",
-                weight="medium",
-                color=T.TEXT_MUTED,
+                as_="h2",
+                size="4",
+                id="consulta-title-" + c.followup_id,
+                tab_index=-1,
+                aria_describedby=count_id,
             ),
+            spacing="2",
+            width="100%",
+            flex_shrink="0",
+        ),
+        rx.box(
+            rx.match(
+                step, (STEP_REPLY, _step_reply(c)), (STEP_REVIEW, _step_review(c)), _step_asked(c)
+            ),
+            id="consulta-body-" + c.followup_id,
+            width="100%",
+            min_height="0",
+            flex="1 1 auto",
+            overflow_y=rx.cond(active, "auto", "visible"),
+            class_name=rx.cond(active, "q-step-body", "q-query-body"),
+            custom_attrs={"data-dir": rx.cond(active, F.flow_direction, "next")},
+            key=step,
+        ),
+        rx.box(
             rx.match(
                 step,
-                (STEP_REPLY, _step_reply(c)),
-                (STEP_REVIEW, _step_review(c)),
-                _step_asked(c),
+                (STEP_REPLY, _step_reply_actions(c)),
+                (STEP_REVIEW, _step_review_actions(c)),
+                _step_asked_actions(c),
             ),
-            spacing="3",
             width="100%",
+            flex_shrink="0",
+            padding_top="0.75rem",
+            border_top=T.BORDER,
+            class_name="q-query-actions",
         ),
         id="consulta-" + c.followup_id,
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
+        class_name=rx.cond(
+            active, "q-card q-query-card q-query-card--active", "q-card q-query-card"
+        ),
         border=rx.cond(
             F.highlight_id == c.followup_id, f"2px solid {T.tone_color('accent', 8)}", "none"
         ),
+        **_frame_props(active),
     )
 
 

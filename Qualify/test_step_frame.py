@@ -316,3 +316,19 @@ def test_sample_fields_have_visible_labels() -> None:
     ):
         rendered = str(page._frame_step(key).render())
         assert _has(rendered, label) and field_id in rendered and "htmlFor" in rendered
+
+
+def test_loading_head_keeps_the_exit_but_never_invents_a_progress_number() -> None:
+    head = str(
+        steps.step_head(
+            "Tu marca",
+            step=5,
+            total=5,
+            back_label="Inicio",
+            back_href="/",
+            show_progress=False,
+        )
+    )
+    assert "Inicio" in head and "Tu marca" in head
+    assert "progressbar" not in head
+    assert "Paso 5 de 5" not in head

@@ -94,6 +94,7 @@ from .followups_state import FollowupsState
 from .ice_breakers_panel import ice_breakers_panel
 from .ice_breakers_panel import open_button as ice_breakers_button
 from .next_steps_vm import ALL_CLEAR_BODY, ALL_CLEAR_TITLE, CREATE_LABEL, CREATE_ROUTE
+from .reconnect_panel import reconnect_button, reconnect_result_panel
 from .ui import (
     app_shell,
     callout,
@@ -262,6 +263,7 @@ def conversations_header() -> rx.Component:
         account_selector(),
         _ice_breakers_door(),
         badge=_pending_badge(),
+        kicker=rx.cond(S.has_open_thread, _back_button()),
     )
 
 
@@ -271,15 +273,10 @@ def conversations_header() -> rx.Component:
 
 
 def _reconnect_link() -> rx.Component:
-    return rx.link(
-        rx.button(
-            rx.icon("refresh-cw", size=T.ICON_SM),
-            "Reconectar",
-            variant="soft",
-            size="2",
-            **T.tone_scheme("warn"),
-        ),
-        href="/connections",
+    return reconnect_button(
+        S.selected_connection_id,
+        rx.cond(S.selected_account.can_manage_dms, "auth_expired", "permission_missing"),
+        "/conversations",
     )
 
 
@@ -607,10 +604,10 @@ def _list_pane() -> rx.Component:
 
 def _back_button() -> rx.Component:
     """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Conversaciones», never a bare arrow."""
+    button names where it goes — «‹ Mensajes», never a bare arrow."""
     return rx.button(
         rx.icon("chevron-left", size=T.ICON_MD),
-        "Conversaciones",
+        "Mensajes",
         on_click=S.close_conversation,
         variant="ghost",
         size="2",
@@ -635,7 +632,6 @@ def _close_button() -> rx.Component:
 def _conversation_header() -> rx.Component:
     thread = S.open_thread
     return rx.hstack(
-        _back_button(),
         _avatar(thread, size="lg"),
         rx.vstack(
             rx.hstack(
@@ -2079,6 +2075,7 @@ def _guarded(content: rx.Component) -> rx.Component:
 
 def _body() -> rx.Component:
     return page_body(
+        reconnect_result_panel(),
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
         ice_breakers_panel(),
@@ -2092,6 +2089,7 @@ def messages_tab() -> rx.Component:
     account selector, the «Preguntas iniciales» door and the pending badge move from the
     page header into the tab."""
     return rx.vstack(
+        reconnect_result_panel(),
         _heartbeat(),
         rx.script(src="/qualify-voice.js"),
         ice_breakers_panel(),

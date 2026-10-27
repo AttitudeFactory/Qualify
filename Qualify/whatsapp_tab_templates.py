@@ -25,6 +25,8 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
+from .ui.steps import step_progress
 from .whatsapp_marketing_ui import (
     card_line,
     confirm_action,
@@ -686,24 +688,20 @@ def _resume_notice() -> rx.Component:
 
 def template_form() -> rx.Component:
     return drawer(
+        flow_sync("mensaje-aprobado", S.step + 1, ready=S.flow_ready),
         rx.cond(
             S.form_done,
             _done(),
             rx.vstack(
                 rx.cond(S.form_resumed, _resume_notice(), rx.fragment()),
-                rx.text(
-                    "Paso ",
-                    S.step + 1,
-                    f" de {len(STEPS)}",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    class_name="q-nums",
-                ),
-                stepper(
-                    list(STEPS),
-                    current=S.step,
-                    completed=S.completed_steps,
-                    on_select=S.go_to_step,
+                rx.box(
+                    stepper(
+                        list(STEPS),
+                        current=S.step,
+                        completed=S.completed_steps,
+                        on_select=S.go_to_step,
+                    ),
+                    display=rx.breakpoints(initial="none", sm="block"),
                 ),
                 rx.match(
                     S.step,
@@ -721,6 +719,18 @@ def template_form() -> rx.Component:
         open=S.form_open,
         on_open_change=S.set_form_open,
         title=FORM_TITLE,
+        step=rx.vstack(
+            step_progress(S.step + 1, len(STEPS)),
+            rx.text(
+                rx.cond(
+                    S.form_done, "Listo", rx.match(S.step, *enumerate(STEP_TITLES), STEP_TITLES[0])
+                ),
+                size="2",
+                weight="medium",
+            ),
+            spacing="1",
+            width="100%",
+        ),
         description=(
             "Meta lo aprueba antes de que puedas enviarlo. Te guiamos para que salga a la primera."
         ),

@@ -288,6 +288,10 @@ deploy-logs target service="":
 mem-webhook-worker image="qualify-memtest:deps" *args:
     deploy/measure/webhook-worker-memory.sh {{image}} -- {{args}}
 
+# Measure the creative queue in an isolated no-egress test stack, with fake vendors.
+mem-creative-worker image="qualify-memtest:deps" *args:
+    deploy/measure/creative-worker-memory.sh {{image}} {{args}}
+
 # pg_dump now (the nightly cron runs the same script on the server).
 deploy-backup target:
     deploy/deploy.sh backup {{target}}
@@ -310,6 +314,12 @@ edge-install target *args:
 # Copy KEYs from your local .env into .env.prod; recreate only the services they change.
 env-push target *keys:
     deploy/deploy.sh env-push {{target}} {{keys}}
+
+# Stage named keys with backup + 0600, without restarting; deploy applies role passwords.
+#   just env-stage qualify-prod --dry-run QUALIFY_DB_CREATIVE_WORKER_PASSWORD
+#   just env-stage qualify-prod QUALIFY_DB_CREATIVE_WORKER_PASSWORD
+env-stage target *keys:
+    deploy/deploy.sh env-stage {{target}} {{keys}}
 
 # Claude Code on the server as `deploy`, for Remote Control (docs/despliegue-hetzner.md §13).
 # `target` must log in as ROOT (the `qualify-prod` alias). Login is by hand afterwards.

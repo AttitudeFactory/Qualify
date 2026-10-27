@@ -39,12 +39,16 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.route_history import route_history
+from .whatsapp_chats_state import WhatsAppChatsState
+from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
+from .whatsapp_tab_chats import _back_button as chats_back_button
 from .whatsapp_tab_chats import chats_tab
 from .whatsapp_tab_contacts import contacts_tab
-from .whatsapp_tab_menu import menu_tab
+from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     DETAILS_TOGGLE,
@@ -155,6 +159,14 @@ def whatsapp_header() -> rx.Component:
         "WhatsApp",
         "Atiende y vende por WhatsApp: tus chats, tu menú automático y tus promociones.",
         number_selector(),
+        kicker=rx.cond(
+            (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
+            chats_back_button(),
+            rx.cond(
+                (WhatsAppState.active_tab == TAB_MENU) & WhatsAppMenuState.advanced_open,
+                back_to_guided(),
+            ),
+        ),
     )
 
 
@@ -281,7 +293,8 @@ def tab_body() -> rx.Component:
             (TAB_CAMPAIGNS, campaigns_tab()),
             chats_tab(),
         ),
-        key=WhatsAppState.selected_connection_id,
+        key=f"{WhatsAppState.selected_connection_id}:{WhatsAppState.active_tab}",
+        class_name="q-settle q-content-ready",
         width="100%",
     )
 
@@ -342,7 +355,27 @@ def _whatsapp_body() -> rx.Component:
                 rx.cond(
                     WhatsAppState.show_empty_state,
                     _no_numbers_state(),
-                    rx.vstack(tab_strip(), sub_strip(), tab_body(), spacing="3", width="100%"),
+                    rx.vstack(
+                        rx.cond(
+                            WhatsAppState.number_needs_help
+                            & (WhatsAppState.active_tab != TAB_CONNECTION),
+                            rx.vstack(
+                                banner(
+                                    WhatsAppState.selected_number.health_label,
+                                    WhatsAppState.selected_number.health_tone,
+                                ),
+                                _review_request(),
+                                spacing="3",
+                                width="100%",
+                            ),
+                            rx.fragment(),
+                        ),
+                        tab_strip(),
+                        sub_strip(),
+                        tab_body(),
+                        spacing="3",
+                        width="100%",
+                    ),
                 ),
             ),
         ),
@@ -350,7 +383,21 @@ def _whatsapp_body() -> rx.Component:
 
 
 def whatsapp_index() -> rx.Component:
-    return app_shell(whatsapp_header(), _whatsapp_body())
+    return app_shell(
+        route_history(
+            WhatsAppState.enter_history,
+            ack=WhatsAppState.history_ack,
+            on_leave=WhatsAppState.leave_page_flows,
+        ),
+        rx.cond(
+            (WhatsAppState.active_tab == TAB_MENU)
+            & (WhatsAppMenuState.loaded_for == WhatsAppState.selected_connection_id)
+            & WhatsAppMenuState.has_menu
+            & ~WhatsAppMenuState.advanced_open,
+            menu_step_frame(),
+            rx.fragment(whatsapp_header(), _whatsapp_body()),
+        ),
+    )
 
 
 # ======================================================================================
@@ -400,13 +447,13 @@ def _details(number: rx.Var) -> rx.Component:
                 ),
                 rx.vstack(
                     _kv_pill(
-                        "Estado en Meta",
+                        "Estado en WhatsApp",
                         number.platform_status_label,
                         number.platform_status_tone,
                     ),
                     kv("Marca", number.brand),
                     kv("Última verificación", number.last_health_checked_at),
-                    kv("Datos de Meta al día", number.last_synced_at),
+                    kv("Datos de WhatsApp al día", number.last_synced_at),
                     kv("Último mensaje recibido", number.last_inbound_at),
                     spacing="3",
                     width="100%",
@@ -479,7 +526,7 @@ def connection_tab() -> rx.Component:
             padding=rx.breakpoints(initial="1rem", md="1.25rem 1.5rem"),
         ),
         rx.text(
-            "«Verificar ahora» le pregunta a Meta si tu número sigue bien conectado. Solo "
+            "«Verificar ahora» le pregunta a WhatsApp si tu número sigue bien conectado. Solo "
             "se hace cuando tú lo tocas.",
             size="1",
             color=T.TEXT_MUTED,
@@ -622,7 +669,7 @@ def profile_form() -> rx.Component:
             rx.hstack(
                 rx.button(
                     rx.icon("refresh-cw", size=T.ICON_SM),
-                    "Volver a leer de Meta",
+                    "Volver a leer de WhatsApp",
                     on_click=WhatsAppState.reload_profile,
                     variant="ghost",
                     size="2",
@@ -809,7 +856,7 @@ def _qr_card(qr: QrCodeVM) -> rx.Component:
                     has_image,
                     rx.fragment(),
                     rx.text(
-                        "Meta solo entrega la imagen al crear el código. Usa el enlace, o "
+                        "WhatsApp solo entrega la imagen al crear el código. Usa el enlace, o "
                         "crea el código de nuevo para descargarla.",
                         size="1",
                         color=T.TEXT_FAINT,

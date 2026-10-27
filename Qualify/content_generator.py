@@ -5058,7 +5058,11 @@ def _generator_frame() -> rx.Component:
     frame = step_frame(
         rx.cond(
             active & CreativeState.create_entered & ~CreativeState.create_loading,
-            step_sync(CreativeState.create_step_n, CreativeState.gen_direction),
+            step_sync(
+                CreativeState.create_step_n,
+                CreativeState.gen_direction,
+                epoch=CreativeState.create_entry_epoch,
+            ),
         ),
         _generator_body(),
         _kind_conflict_dialog(),
@@ -5183,7 +5187,7 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         padding="1.75rem",
         width="100%",
         id="gen-result",
-        scroll_margin_top="1rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
     return rx.vstack(
         rx.cond(~CreativeState.create_uses_step_frame, _kind_header()),
@@ -5224,7 +5228,7 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         min_height="100%",
         # CREAR-6: where choosing an option scrolls to on a phone (`_scroll_to_view`)
         id="q-cr-view",
-        scroll_margin_top="1rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
 
 

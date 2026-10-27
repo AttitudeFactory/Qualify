@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .conversations_page import _back_button as messages_back_button
 from .conversations_page import messages_tab
+from .conversations_state import ConversationsState
 from .followups_page import followups_panel
 from .inbox_page import comments_tab
 from .leads_page import leads_tab
@@ -58,6 +60,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.route_history import route_history
 
 R = ResponderState
 
@@ -261,6 +264,8 @@ def _tab_body() -> rx.Component:
             messages_tab(),
         ),
         width="100%",
+        key=R.active_tab,
+        class_name="q-settle q-content-ready",
     )
 
 
@@ -273,6 +278,10 @@ def responder_header() -> rx.Component:
     return page_header(
         "Por responder",
         "Las personas que te escribieron o comentaron y todavía esperan tu respuesta.",
+        kicker=rx.cond(
+            (R.active_tab == TAB_MESSAGES) & ConversationsState.has_open_thread,
+            messages_back_button(),
+        ),
     )
 
 
@@ -289,6 +298,11 @@ def _who_is_waiting() -> rx.Component:
 
 def responder_index() -> rx.Component:
     return app_shell(
+        route_history(
+            ResponderState.enter_history,
+            ack=ResponderState.history_ack,
+            on_leave=ResponderState.leave_page_flows,
+        ),
         responder_header(),
         page_body(
             _who_is_waiting(),

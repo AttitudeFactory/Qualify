@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
 
@@ -117,6 +118,7 @@ class StoredConnection:
     status: str
     credential_version: int
     last_verified_at: datetime | None = None
+    reconnect_reason: str | None = None
 
 
 @dataclass
@@ -164,10 +166,12 @@ class FakeRepository:
         verified_at: datetime | None,
         event_type: str,
         credential_version: int,
+        reconnect_reason: str | None = None,
     ) -> None:
         for stored in self.connections.values():
             if stored.connection_id == connection_id:
                 stored.status = status
+                stored.reconnect_reason = reconnect_reason
                 if verified_at is not None:
                     stored.last_verified_at = verified_at
         self.events.append((connection_id, event_type))
@@ -233,6 +237,185 @@ def build_harness(
 def start_and_extract_state(harness: Harness) -> str:
     harness.service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
     return harness.oauth.issued_states[-1]
+
+
+def start_targeted_reconnect(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> str:
+    target_id = harness.repo.only().connection_id
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: (
+            [
+                SimpleNamespace(
+                    connection_id=target_id,
+                    brand_id=BRAND,
+                    platform="instagram",
+                    external_account_id=IG_PAGE.instagram_account_id,
+                    reconnect_reason="permission_missing",
+                )
+            ]
+            if tenant == TENANT
+            else []
+        ),
+    )
+    harness.service.start_connect(
+        tenant_id=TENANT,
+        brand_id=None,
+        user_id=USER,
+        connection_id=target_id,
+        return_to="/inbox",
+        cause="permission_missing",
+    )
+    return harness.oauth.issued_states[-1]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_matches_target_instead_of_first_facebook_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness(scopes=("instagram_manage_comments",))
+    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    harness.repo.only().status = "degraded"
+    other = LinkedPage("other", "Other", "other-ig", "other-account", "other-token")
+    harness.oauth.pages = (other, IG_PAGE)
+    result = await harness.service.complete_connect(
+        code="reconnect", state=start_targeted_reconnect(harness, monkeypatch)
+    )
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert result.return_to == "/inbox"
+    assert harness.repo.only().credential_version == 2
+    assert harness.repo.only().status == "active"
+
+
+@pytest.mark.asyncio
+async def test_wrong_facebook_never_creates_or_rotates_an_unrelated_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness()
+    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    harness.repo.only().status = "degraded"
+    state = start_targeted_reconnect(harness, monkeypatch)
+    harness.oauth.pages = (LinkedPage("other", "Other", "other-ig", "other-account"),)
+    result = await harness.service.complete_connect(code="reconnect", state=state)
+    assert result.outcome is ConnectOutcome.ACCOUNT_ACCESS_REQUIRED
+    assert result.return_to == "/inbox"
+    assert harness.repo.only().credential_version == 1
+    assert harness.repo.only().status == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_partial_reconsent_does_not_claim_comments_are_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness()
+    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    harness.repo.only().status = "degraded"
+    result = await harness.service.complete_connect(
+        code="reconnect", state=start_targeted_reconnect(harness, monkeypatch)
+    )
+    assert result.outcome is ConnectOutcome.PERMISSION_MISSING
+    assert harness.repo.only().status == "degraded"
+    assert harness.repo.only().reconnect_reason == "permission_missing"
+
+
+@pytest.mark.asyncio
+async def test_targeted_reconnect_callback_returns_directly_to_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness(scopes=("instagram_manage_comments",))
+    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    state = start_targeted_reconnect(harness, monkeypatch)
+    response = _client_for(harness).get(
+        "/api/connections/callback", params={"code": "reconnect", "state": state}
+    )
+    page, query = _landing(response)
+    assert page == "https://qualify.test/inbox"
+    assert query == {"connect": "active", "reconnect": str(harness.repo.only().connection_id)}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconnect_returns_to_origin_and_spends_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness()
+    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    state = start_targeted_reconnect(harness, monkeypatch)
+    response = _client_for(harness).get(
+        "/api/connections/callback", params={"error": "access_denied", "state": state}
+    )
+    page, query = _landing(response)
+    assert page == "https://qualify.test/inbox"
+    assert query["connect"] == "denied"
+    with pytest.raises(InvalidState):
+        await harness.service.complete_connect(code="replay", state=state)
+
+
+@pytest.mark.asyncio
+async def test_failed_token_exchange_returns_to_origin_without_reusing_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.connections.meta_oauth import MetaOAuthError
+
+    harness = build_harness()
+    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    state = start_targeted_reconnect(harness, monkeypatch)
+
+    async def unavailable(code: str) -> TokenGrant:
+        raise MetaOAuthError("unavailable")
+
+    monkeypatch.setattr(harness.oauth, "exchange_code", unavailable)
+    page, query = _landing(
+        _client_for(harness).get(
+            "/api/connections/callback", params={"code": "reconnect", "state": state}
+        )
+    )
+    assert page == "https://qualify.test/inbox"
+    assert query["connect"] == "degraded"
+    with pytest.raises(InvalidState):
+        await harness.service.complete_connect(code="replay", state=state)
+
+
+def test_cannot_start_reconnect_for_another_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.connections.revoke import ConnectionNotFound
+
+    harness = build_harness()
+    monkeypatch.setattr("qualify_api.connections.service.list_connections", lambda tenant: [])
+    with pytest.raises(ConnectionNotFound):
+        harness.service.start_connect(
+            tenant_id=TENANT,
+            brand_id=None,
+            user_id=USER,
+            connection_id=uuid4(),
+            return_to="/inbox",
+        )
+    assert harness.oauth.issued_states == []
+
+
+def test_reconnect_uses_persisted_permission_cause_over_stale_ui_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness()
+    connection_id = uuid4()
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=connection_id,
+                brand_id=BRAND,
+                platform="instagram",
+                external_account_id="expected-ig",
+                reconnect_reason="permission_missing",
+            )
+        ],
+    )
+    url = harness.service.start_connect(
+        tenant_id=TENANT,
+        brand_id=None,
+        user_id=USER,
+        connection_id=connection_id,
+        cause="auth_expired",
+        return_to="/conversations",
+    )
+    assert "auth_type=rerequest" in url
 
 
 # --------------------------------------------------------------------------------------
@@ -840,6 +1023,8 @@ def test_callback_redirect_codes_are_exactly_the_ui_vocabulary() -> None:
         "page_access_required",
         "invalid_state",
         "denied",
+        "permission_missing",
+        "account_access_required",
     }
 
 

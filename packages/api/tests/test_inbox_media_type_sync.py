@@ -36,6 +36,7 @@ from qualify_api.inbox.service import (
     META_CALL_BUDGET_PER_HOUR,
     MONITORABLE_MEDIA_PRODUCT_TYPES,
     CommentsAuthExpired,
+    CommentsPermissionMissing,
     InboxService,
     MediaNotEligible,
     SyncBudgetExhausted,
@@ -570,13 +571,14 @@ async def test_a_permission_failure_on_the_dedicated_read_is_labelled_and_kept_m
     _monitor_complete(repo, "m")
     denied = MediaReadError("denied", http_status=400, platform_code=10)
 
-    summary = await _sync(_service(repo, media=FakeMedia(errors={"m": denied})))
+    with pytest.raises(CommentsPermissionMissing):
+        await _sync(_service(repo, media=FakeMedia(errors={"m": denied})))
 
     row = _row(repo, "m")
     assert row.is_monitored
     assert row.metadata_error is MetadataFetchError.PERMISSION
     assert row.media_type is None and row.caption == "stored caption"
-    assert summary.metadata_failed == 1
+    # A permanent refusal stops the entire account before any comments can be read.
 
 
 # --- budget ---------------------------------------------------------------------------

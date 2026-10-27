@@ -676,6 +676,9 @@ def test_opt_in_repository_import_and_worker_revoke(seeded) -> None:
 
 
 def test_campaign_end_to_end_through_the_real_outbox_and_worker(seeded) -> None:
+    # Schema fixtures start pending; a real sender claims only verified active accounts.
+    with tenant_session(TENANT) as session:
+        session.get(SocialConnection, seeded["connection"]).status = "active"
     optins = OptInService(PostgresOptInRepository())
     prefix = f"+5799{uuid4().int % 10**4:04d}"  # a prefix only this run's phones share
     phones = [f"{prefix}{i:05d}" for i in range(3)]

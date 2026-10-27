@@ -47,6 +47,8 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
+from .ui.steps import step_progress
 from .whatsapp_chats_state import UNASSIGNED, WhatsAppChatsState
 from .whatsapp_chats_vm import (
     ASK_CONSENT_LABEL,
@@ -70,8 +72,6 @@ from .whatsapp_chats_vm import (
     TEMPLATE_BACK_LABEL,
     TEMPLATE_FIELDS_LABEL,
     TEMPLATE_PREVIEW_LABEL,
-    TEMPLATE_STEP_PICK,
-    TEMPLATE_STEP_REVIEW,
     AgentVM,
     MessageVM,
     OrderFieldVM,
@@ -336,7 +336,6 @@ def _conversation_header() -> rx.Component:
     thread = S.open_thread
     return rx.vstack(
         rx.hstack(
-            _back_button(),
             # Name, then number + state pills on one wrapping line: at 375 px the pills
             # drop below the name instead of overlapping it.
             rx.vstack(
@@ -948,7 +947,6 @@ def _step_label(text: str) -> rx.Component:
 def _template_picked() -> rx.Component:
     """Step 2 of 2: the values and «Así le llega»; «Atrás» and «Enviar» are in the foot."""
     return rx.vstack(
-        _step_label(TEMPLATE_STEP_REVIEW),
         rx.vstack(
             rx.cond(
                 S.tpl_fields.length() > 0,
@@ -975,7 +973,6 @@ def _template_picked() -> rx.Component:
 def _template_list() -> rx.Component:
     """Step 1 of 2: the notices and the approved messages; picking one moves on."""
     return rx.vstack(
-        rx.cond(S.tpl_choices.length() > 0, _step_label(TEMPLATE_STEP_PICK)),
         rx.cond(S.tpl_no_permission, callout(NO_PERMISSION_NOTICE, "warn")),
         _promotions_notice(),
         _no_followups(),
@@ -1044,10 +1041,26 @@ def _templates_footer() -> rx.Component:
 
 def _templates_drawer() -> rx.Component:
     return drawer(
+        flow_sync(
+            "mensaje-chat",
+            rx.cond(S.tpl_reviewing, 2, 1),
+            ready=S.flow_ready & ~S.tpl_loading,
+            objeto=S.tpl_selected,
+        ),
         _templates_body(),
         open=S.tpl_open,
         on_open_change=S.set_templates_open,
         title=SEND_APPROVED_LABEL,
+        step=rx.vstack(
+            step_progress(rx.cond(S.tpl_reviewing, 2, 1), 2),
+            rx.text(
+                rx.cond(S.tpl_reviewing, "Revisa el mensaje", "Elige el mensaje"),
+                size="2",
+                weight="medium",
+            ),
+            spacing="1",
+            width="100%",
+        ),
         description=SEND_APPROVED_DESCRIPTION,
         footer=_templates_footer(),
         icon="message-square-text",

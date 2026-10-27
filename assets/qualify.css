@@ -627,6 +627,9 @@ body {
   }
   .q-sidebar.q-mobile-open {
     transform: translateX(0);
+    /* Existing opaque island material behind the glass: page text cannot bleed
+       through the phone's «Más» menu. Desktop islands keep their current material. */
+    background: var(--color-panel-solid);
   }
 }
 
@@ -1887,4 +1890,37 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+/* PASOS-11: content arrives in place, over the existing material. Keep a readable
+   first frame even when an animation is frozen; no opacity-zero entrance. */
+@keyframes q-content-in {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+.q-content-ready > *,
+.q-content-ready .q-card {
+  animation: q-content-in var(--q-dur) var(--q-ease) both;
+}
+.q-settle.q-content-ready > * {
+  animation: q-settle var(--q-dur-slow) var(--q-ease) both,
+             q-content-in var(--q-dur) var(--q-ease) both;
+}
+/* The solid skin's gradient must not make a disabled primary look available.
+   This selector also wins over the solid hover skin, including [data-disabled]. */
+.radix-themes :is(.rt-Button, .rt-IconButton).rt-variant-solid:is(:disabled, [data-disabled]) {
+  background: var(--gray-a3);
+  color: var(--gray-a8);
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-content-ready > *,
+  .q-content-ready .q-card,
+  .q-settle > *,
+  .q-step-body > * {
+    animation: none !important;
+    transform: none !important;
+  }
 }

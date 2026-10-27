@@ -107,6 +107,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.steps import step_entry_script
 from .ui.steps_vm import (
     DIR_BACK,
     DIR_NEXT,
@@ -335,6 +336,7 @@ class BrandWizardState(rx.State):
     #: has decided the step (until then the address is not written — `step_sync`).
     direction: str = DIR_NEXT
     steps_ready: bool = False
+    steps_epoch: int = 0
 
     # -- step 2/3 -------------------------------------------------------------
     has_logo: str = ""  # "si" | "no" | "" (unanswered)
@@ -483,7 +485,7 @@ class BrandWizardState(rx.State):
             yield event
 
     @rx.event
-    async def resume(self) -> None:
+    async def resume(self) -> rx.event.EventSpec:
         """Open the flow on the FIRST step still missing data, not wherever the cursor
         happened to be left. Runs on page load, after `CreativeState.load_brand` has
         filled the kit — so re-entering never parks you on step 6 while step 2 is empty.
@@ -495,6 +497,7 @@ class BrandWizardState(rx.State):
         """
         # m-24842965: entering the wizard opens the steps, never a card left from before
         # — unless the signup that adopted this draft sent the owner here for the card
+        self.steps_ready = False
         self.brand_ready = _asks_for_ready_card(self)
         creative = await self.get_state(CreativeState)
         # ¿Quién es la marca? carries the brief (§ request 2026-10-05): an empty or
@@ -518,7 +521,11 @@ class BrandWizardState(rx.State):
             target = guard_step(parse_step_param(raw, len(STEPS)), await self._completes())
             self.step = target - 1
         self.direction = DIR_NEXT
+        self.steps_epoch += 1
         self.steps_ready = True
+        return rx.call_script(
+            step_entry_script("/brand/manual", self.step_n, self.steps_epoch, raw)
+        )
 
     @rx.event
     def go_to(self, index: int) -> None:
@@ -3069,6 +3076,7 @@ def _frame_step(
             # a flex column, so the step's column centres in the card
             display="flex",
             flex_direction="column",
+            class_name="q-card q-content-ready",
         ),
     )
 
@@ -3089,18 +3097,29 @@ def brand_manual_index() -> rx.Component:
     §4.5): «‹ Inicio» on every step, «Paso N de 7» with its bar and the step's name as
     the h1 in the fixed head; the step in the body; Atrás · Seguir después · Siguiente
     in the fixed foot. While the kit loads, the head stays and the foot waits."""
-    loading = CreativeState.kit_loading
+    loading = CreativeState.kit_loading | ~BrandWizardState.steps_ready
     return _wizard_shell(
         _or_ready_frame(
             step_frame(
                 _kit_notices(),
                 rx.cond(
                     loading,
-                    _frame_loading(_loading_view("Cargando tu marca")),
+                    rx.vstack(
+                        skeleton_card(3),
+                        skeleton_card(2),
+                        spacing="4",
+                        width="100%",
+                        aria_label="Cargando tu marca",
+                        aria_busy=True,
+                    ),
                     rx.fragment(
                         rx.cond(
                             BrandWizardState.steps_ready,
-                            step_sync(BrandWizardState.step_n, BrandWizardState.direction),
+                            step_sync(
+                                BrandWizardState.step_n,
+                                BrandWizardState.direction,
+                                epoch=BrandWizardState.steps_epoch,
+                            ),
                         ),
                         _frame_step(
                             _window(),
@@ -3116,6 +3135,7 @@ def brand_manual_index() -> rx.Component:
                     total=len(STEPS),
                     back_label=exit_label(),
                     on_exit=BrandWizardState.leave,
+                    show_progress=~loading,
                 ),
                 foot=rx.cond(loading, rx.fragment(), _controls()),
                 step=BrandWizardState.step_n,
@@ -3838,6 +3858,7 @@ class BrandConnectState(rx.State):
     #: route's load has decided the step (until then the address is not written).
     direction: str = DIR_NEXT
     steps_ready: bool = False
+    steps_epoch: int = 0
     network: str = ""
     username: str = ""
     analyzing: bool = False
@@ -5291,7 +5312,7 @@ class BrandConnectState(rx.State):
             yield navigation
 
     @rx.event(background=True)
-    async def load_saved_details(self) -> None:
+    async def load_saved_details(self) -> rx.event.EventSpec | None:
         """The Brand Kit editor (§ request 2026-10-01): the connect flow's saved
         answers and the account as read, with its metrics, back into this state — only
         where the session holds nothing of its own. On /brand/connect it is also how a
@@ -5303,6 +5324,8 @@ class BrandConnectState(rx.State):
         async with self:
             (await self.get_state(BrandWizardState)).brand_ready = _asks_for_ready_card(self)
             on_route = self.router.url.path.rstrip("/") == CONNECT_ROUTE
+            if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
+                self.steps_ready = False
         ids = await session_ids(self)
         saved = None
         if ids is not None:
@@ -5313,9 +5336,9 @@ class BrandConnectState(rx.State):
         if saved is None:
             async with self:
                 self.details_loaded = True  # nothing to read: the editor must not wait on it
-                if on_route:
-                    await self._enter_steps()
-            return
+                if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
+                    return await self._enter_steps()
+            return None
         connect, profile = saved.details.connect, saved.details.profile
         raw_progress = (connect or {}).get(PROGRESS_KEY)
         progress = raw_progress if isinstance(raw_progress, dict) else {}
@@ -5376,14 +5399,19 @@ class BrandConnectState(rx.State):
                     self.metric_values = list(self.metric_targets)  # no count-up on entry
                 except (KeyError, TypeError, ValueError):
                     self._set_metrics([])
-            if on_route:
-                await self._enter_steps()
+            if on_route and self.router.url.path.rstrip("/") == CONNECT_ROUTE:
+                return await self._enter_steps()
+        return None
 
-    async def _enter_steps(self) -> None:
+    async def _enter_steps(self) -> rx.event.EventSpec:
         """PASOS-4: once the saved walk is back, `?paso=N` (guarded) decides the step,
         and the address may be written from now on (`step_sync`). Under the lock."""
         await self._apply_step_param()
+        self.steps_epoch += 1
         self.steps_ready = True
+        return rx.call_script(
+            step_entry_script(CONNECT_ROUTE, self.step_n, self.steps_epoch, step_param(self))
+        )
 
     @rx.event
     async def finish_to_signals(self) -> rx.event.EventSpec | None:
@@ -7894,6 +7922,7 @@ def brand_connect_index() -> rx.Component:
     the sort step (`waiting_for_referentes`)."""
     waiting = (
         CreativeState.kit_loading
+        | ~BrandConnectState.steps_ready
         | BrandConnectState.analyzing
         | BrandConnectState.waiting_for_referentes
     )
@@ -7902,8 +7931,15 @@ def brand_connect_index() -> rx.Component:
             step_frame(
                 _kit_notices(),
                 rx.cond(
-                    CreativeState.kit_loading,
-                    _frame_loading(_loading_view("Cargando tu marca")),
+                    CreativeState.kit_loading | ~BrandConnectState.steps_ready,
+                    rx.vstack(
+                        skeleton_card(3),
+                        skeleton_card(2),
+                        spacing="4",
+                        width="100%",
+                        aria_label="Cargando tu marca",
+                        aria_busy=True,
+                    ),
                     rx.cond(
                         BrandConnectState.analyzing,
                         _frame_loading(_connect_loading()),
@@ -7914,7 +7950,9 @@ def brand_connect_index() -> rx.Component:
                                 rx.cond(
                                     BrandConnectState.steps_ready,
                                     step_sync(
-                                        BrandConnectState.step_n, BrandConnectState.direction
+                                        BrandConnectState.step_n,
+                                        BrandConnectState.direction,
+                                        epoch=BrandConnectState.steps_epoch,
                                     ),
                                 ),
                                 _frame_step(
@@ -7939,11 +7977,16 @@ def brand_connect_index() -> rx.Component:
                     ),
                 ),
                 head=step_head(
-                    rx.cond(CreativeState.kit_loading, "Tu marca", _connect_heading_for(0)),
+                    rx.cond(
+                        CreativeState.kit_loading | ~BrandConnectState.steps_ready,
+                        "Tu marca",
+                        _connect_heading_for(0),
+                    ),
                     step=BrandConnectState.step_n,
                     total=BrandConnectState.step_m,
                     back_label=exit_label(),
                     on_exit=BrandConnectState.leave,
+                    show_progress=BrandConnectState.steps_ready & ~CreativeState.kit_loading,
                 ),
                 foot=rx.cond(waiting, rx.fragment(), _connect_controls()),
                 step=BrandConnectState.step_n,

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .inbox_access import InboxConnectionVM
 from .inbox_state import FILTER_ALL, FILTER_COMMERCIAL, InboxState
 from .inbox_vm import (
     MONITORING_ACTIVE,
@@ -78,7 +79,8 @@ from .next_steps_vm import (
     NEXT_PENDING_LABEL,
 )
 from .post_card import viewable_src
-from .publishing_vm import ConnectionOptionVM
+from .reconnect_panel import reconnect_button, reconnect_result_panel
+from .reconnect_state import ReconnectState
 from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
@@ -116,8 +118,8 @@ from .ui import (
 from .ui import tokens as T
 
 
-def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
-    return rx.select.item(conn.external_username, value=conn.id)
+def _connection_item(conn: InboxConnectionVM) -> rx.Component:
+    return rx.select.item(conn.label, value=conn.id)
 
 
 def _connection_selector() -> rx.Component:
@@ -274,9 +276,13 @@ def _no_connections_state() -> rx.Component:
         "Conecta tu Instagram para ver tus comentarios",
         "Conecta tu cuenta en «Tus redes» y dale permiso para leer comentarios: "
         "aquí verás lo que te comentan y la respuesta lista para aprobar.",
-        action=rx.link(
-            rx.button(rx.icon("link", size=16), "Ir a Tus redes", size="3"),
-            href="/connections",
+        action=rx.cond(
+            ReconnectState.has_target,
+            reconnect_button(ReconnectState.connection_id, ReconnectState.cause, "/inbox"),
+            rx.link(
+                rx.button(rx.icon("link", size=16), "Ir a Tus redes", size="3"),
+                href="/connections",
+            ),
         ),
     )
 
@@ -330,7 +336,8 @@ def _review_choice_section() -> rx.Component:
     return section(
         "Qué publicaciones revisar",
         rx.cond(InboxState.action_error != "", _action_error(), rx.fragment()),
-        rx.cond(InboxState.load_error != "", _load_error(), _candidates_body()),
+        rx.cond(InboxState.load_error != "", _load_error(), rx.fragment()),
+        _candidates_body(),
         description=(
             "Elige de qué publicaciones de las últimas 2 semanas quieres que busquemos comentarios."
         ),
@@ -355,12 +362,42 @@ def _more_options() -> rx.Component:
     )
 
 
+def _access_notice() -> rx.Component:
+    """The one persistent warning, above saved content, with its fix inside it."""
+    return rx.cond(
+        InboxState.access.needs_reconnect | InboxState.access.temporary_warning,
+        callout(
+            rx.vstack(
+                rx.cond(
+                    InboxState.access.title != "",
+                    rx.text(InboxState.access.title, weight="bold", overflow_wrap="anywhere"),
+                    rx.fragment(),
+                ),
+                rx.text(InboxState.access.detail, overflow_wrap="anywhere"),
+                rx.cond(
+                    InboxState.access.needs_reconnect,
+                    reconnect_button(
+                        InboxState.selected_connection_id, InboxState.access.cause, "/inbox"
+                    ),
+                    rx.fragment(),
+                ),
+                align="start",
+                spacing="2",
+                width="100%",
+            ),
+            "warn",
+        ),
+        rx.fragment(),
+    )
+
+
 def _connected_body() -> rx.Component:
     """m-24842989: the order follows the owner's job, not the setup — (1) the replies
     ready to approve, (2) the comments by publication, (3) the search strip and, folded,
     which publications to review. The sync strip stays mounted outside the accordion so
     its 5-minute heartbeat keeps running while «Más opciones» is closed."""
     return rx.vstack(
+        _access_notice(),
         _replies_section(),
         _comments_section(),
         _sync_section(),
@@ -382,11 +419,19 @@ def _body(wrapped: bool = True) -> rx.Component:
             InboxState.is_loading_connections,
             _card_skeleton(),
             rx.cond(
-                ~InboxState.has_connections,
-                _no_connections_state(),
+                InboxState.has_connections,
                 _connected_body(),
+                _no_connections_state(),
             ),
         ),
+    )
+    content = rx.vstack(
+        reconnect_result_panel(
+            hide_recovery_actions=InboxState.access.needs_reconnect,
+            connection_id=InboxState.selected_connection_id,
+        ),
+        content,
+        width="100%",
     )
     return page_body(content) if wrapped else content
 
@@ -1102,18 +1147,31 @@ def _sync_section() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.text(
-                    "Buscamos comentarios nuevos cada 5 minutos mientras tienes esta "
-                    "pantalla abierta.",
+                    rx.cond(
+                        InboxState.access.needs_reconnect,
+                        "Los comentarios guardados siguen disponibles.",
+                        "Buscamos comentarios nuevos cada 5 minutos mientras tienes esta "
+                        "pantalla abierta.",
+                    ),
                     size="2",
                     color=T.TEXT_MUTED,
                     flex="1 1 14rem",
                 ),
-                _sync_now_button(),
+                rx.cond(
+                    InboxState.access.needs_reconnect,
+                    rx.fragment(),
+                    _sync_now_button(),
+                ),
                 _polling_timer(),
                 spacing="2",
                 align="center",
                 width="100%",
                 wrap="wrap",
+            ),
+            rx.cond(
+                InboxState.last_review != "",
+                rx.text("Última revisión: ", InboxState.last_review, size="1", color=T.TEXT_MUTED),
+                rx.fragment(),
             ),
             _sync_error_block(),
             spacing="2",
