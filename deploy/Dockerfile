@@ -100,10 +100,7 @@ FROM deps AS frontend-build
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 # Reflex's frontend export needs a Node toolchain on PATH (>= 22.22.0); the base image
 # only ships Python, so bring Node in from its official image.
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=node /usr/local/bin/npx /usr/local/bin/npx
-COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node /usr/local /usr/local
 # The public origin is baked into the static bundle (env.json): it is where the browser
 # opens the `/_event` websocket and fetches `/_upload/*`. Caddy serves frontend and backend
 # on this same origin, so there is no CORS and no second hostname.
