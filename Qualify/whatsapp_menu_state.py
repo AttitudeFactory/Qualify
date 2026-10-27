@@ -55,8 +55,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from .auth_state import AuthState
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
-from .ui.steps import settle_step
-from .ui.steps_vm import guard_step
+from .ui.steps import step_settle_script
+from .ui.steps_vm import DIR_NEXT, guard_step, step_direction
 from .whatsapp_menu_provider import (
     MenuDetail,
     NumberScope,
@@ -257,6 +257,7 @@ class WhatsAppMenuState(rx.State):
 
     # -- the menu in four steps (m-24848536) --------------------------------------------
     guided_step: int = 1
+    guided_direction: str = DIR_NEXT
     resume_pending: bool = False
     publish_confirm_open: bool = False
     flow_ready: bool = False
@@ -889,6 +890,7 @@ class WhatsAppMenuState(rx.State):
             return {}
 
     def _restore_flow_step(self) -> None:
+        old = self.guided_step
         params = self._flow_params()
         wanted = uuid_param(params, "objeto")
         if wanted and wanted != self.menu.menu_id:
@@ -913,6 +915,7 @@ class WhatsAppMenuState(rx.State):
             self.advanced_open = False
         elif not params.get("flujo"):
             self.guided_step = 1
+        self.guided_direction = step_direction(old, self.guided_step, self.guided_direction)
         self.flow_ready = bool(requested) and self.has_menu
 
     @rx.event
@@ -926,8 +929,9 @@ class WhatsAppMenuState(rx.State):
                 return None
             if wanted != self.menu.menu_id:
                 return WhatsAppMenuState.open_menu(wanted)
+        old = self.guided_step
         self._restore_flow_step()
-        return None
+        return self._guided_settle() if self.guided_step != old else None
 
     @rx.var
     def resume_href(self) -> str:
@@ -945,10 +949,29 @@ class WhatsAppMenuState(rx.State):
         if self.saving or self.publishing:
             return None
         if isinstance(step, int) and 1 <= step <= GUIDED_STEPS:
+            self.guided_direction = step_direction(self.guided_step, step, self.guided_direction)
             self.guided_step = step
             self.flow_ready = True
-            return settle_step()
+            return self._guided_settle()
         return None
+
+    def _guided_settle(self) -> rx.event.EventSpec:
+        # Animate the existing panel, never key/remount the native editor or preview.
+        return rx.call_script(
+            step_settle_script()
+            + "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
+            "if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;"
+            "const panel=document.querySelector('.q-menu-guided-panel');if(!panel)return;"
+            "const style=getComputedStyle(panel);"
+            "const raw=style.getPropertyValue('--q-dur-slow').trim();"
+            "const duration=(parseFloat(raw)||380)*(raw.endsWith('ms')?1:raw.endsWith('s')?1000:1);"
+            "const x=panel.dataset.dir==='back'?-8:8;"
+            "panel.getAnimations().forEach(a=>a.cancel());"
+            "panel.animate([{transform:'translateX('+x+'px)'},{transform:'none'}],"
+            "{duration,"
+            "easing:style.getPropertyValue('--q-ease').trim()||'ease',fill:'both'});"
+            "}));"
+        )
 
     @rx.event
     def guided_next(self) -> rx.event.EventSpec | None:
