@@ -238,6 +238,12 @@ def test_instagram_connections_keeps_saved_access_without_a_live_permission() ->
         _connection_row(id="ok", status="active", platform="instagram"),
         _connection_row(id="not-active", status="degraded", platform="instagram"),
         _connection_row(id="revoked", status="revoked", platform="instagram"),
+        _connection_row(
+            id="permission-missing",
+            status="degraded",
+            platform="instagram",
+            reconnect_reason="permission_missing",
+        ),
         _connection_row(id="pending", status="pending", platform="instagram"),
         _connection_row(id="not-instagram", status="active", platform="facebook"),
         _connection_row(
@@ -249,9 +255,16 @@ def test_instagram_connections_keeps_saved_access_without_a_live_permission() ->
     ]
     with _patched(connections_for=lambda _tenant: rows):
         options = inbox_provider.instagram_connections(_TENANT)
-    assert [o.id for o in options] == ["ok", "not-active", "revoked", "no-capability"]
+    assert [o.id for o in options] == [
+        "ok",
+        "not-active",
+        "revoked",
+        "permission-missing",
+        "no-capability",
+    ]
     assert options[1].label.endswith(" · Desconectada")
-    assert options[2].label.endswith(" · Sin acceso")
+    assert options[2].label.endswith(" · Desconectada")
+    assert options[3].label.endswith(" · Sin acceso")
 
 
 def test_candidate_media_projects_null_fields_to_empty_strings() -> None:

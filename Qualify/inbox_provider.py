@@ -127,6 +127,7 @@ from qualify_api.sentiment.repository import (
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
 
+from .connection_copy import NO_ACCESS, connection_status_display
 from .connections_provider import connections_for
 from .conversations_provider import gateway as conversations_gateway
 from .inbox_access import InboxAccessVM, InboxConnectionVM, access_moment, access_notice
@@ -162,9 +163,13 @@ def instagram_connections(tenant_id: UUID) -> list[InboxConnectionVM]:
             platform=connection.platform,
             label="@"
             + connection.external_username.lstrip("@")
-            + {"active": "", "degraded": " · Desconectada", "revoked": " · Sin acceso"}[
-                connection.status
-            ],
+            + (
+                " · " + NO_ACCESS
+                if connection.reconnect_reason == "permission_missing"
+                else ""
+                if connection.status == "active"
+                else " · " + connection_status_display(connection.status)[0]
+            ),
             status=connection.status,
             reconnect_reason=connection.reconnect_reason,
         )

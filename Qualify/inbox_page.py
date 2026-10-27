@@ -425,7 +425,14 @@ def _body(wrapped: bool = True) -> rx.Component:
             ),
         ),
     )
-    content = rx.vstack(reconnect_result_panel(), content, width="100%")
+    content = rx.vstack(
+        reconnect_result_panel(
+            hide_recovery_actions=InboxState.access.needs_reconnect,
+            connection_id=InboxState.selected_connection_id,
+        ),
+        content,
+        width="100%",
+    )
     return page_body(content) if wrapped else content
 
 

@@ -70,11 +70,12 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import UUID, uuid4
 
 import reflex as rx
+from httpx import TransportError
 from qualify_api.connections.runtime_health import (
     consume_recovery_refresh,
     get_connection_runtime_state,
@@ -954,6 +955,17 @@ class InboxState(rx.State):
             since_last = await seconds_since_last_sync(
                 tenant_id=tenant_id, connection_id=resolved_connection
             )
+            if since_last is not None:
+                zone = await asyncio.to_thread(tenant_zone, tenant_id)
+                async with self:
+                    auth = await self.get_state(AuthState)
+                    if (
+                        tenant_uuid(auth.session_tenant_id) == tenant_id
+                        and self.selected_connection_id == connection_id
+                    ):
+                        self.last_review = access_moment(
+                            datetime.now(UTC) - timedelta(seconds=since_last), zone
+                        )
             if skip_for_cooldown(trigger, since_last):
                 async with self:
                     self._release_sync_claim(run_id)
@@ -969,6 +981,7 @@ class InboxState(rx.State):
             resolved_connection,
         )
         started = time.monotonic()
+        review_finished = False
         try:
             result = await sync_now(
                 tenant_id=tenant_id, connection_id=resolved_connection, run_token=run_id
@@ -977,6 +990,7 @@ class InboxState(rx.State):
             # Another tab, user or process holds this connection's lease right now.
             return self._sync_skipped(trigger, "in_flight_elsewhere", run_id=run_id)
         except Exception as exc:
+            review_finished = isinstance(exc, CommentsAuthExpired) or _is_temporary_sync_error(exc)
             logger.info(
                 "inbox.sync.failed run=%s trigger=%s error=%s ms=%d",
                 run_id,
@@ -993,7 +1007,7 @@ class InboxState(rx.State):
                 ):
                     if self.access.needs_reconnect:
                         self.sync_error = ""
-                    elif isinstance(exc, CommentsReadError):
+                    elif _is_temporary_sync_error(exc):
                         self.sync_error = (
                             "Instagram no respondió. Intenta de nuevo en unos minutos."
                             if trigger == "manual"
@@ -1003,6 +1017,7 @@ class InboxState(rx.State):
                         self.sync_error = _sync_error_message(exc)
             return None
         else:
+            review_finished = True
             logger.info(
                 "inbox.sync.done run=%s trigger=%s media=%d new=%d deleted=%d "
                 "missing_media=%d expired=%d meta_ok=%d meta_failed=%d meta_deferred=%d "
@@ -1030,15 +1045,17 @@ class InboxState(rx.State):
                     self.sync_error = ""
             await self._refresh_access(tenant_id, connection_id)
         finally:
-            zone = await asyncio.to_thread(tenant_zone, tenant_id)
             async with self:
-                auth = await self.get_state(AuthState)
-                if (
-                    tenant_uuid(auth.session_tenant_id) == tenant_id
-                    and self.selected_connection_id == connection_id
-                ):
-                    self.last_review = access_moment(datetime.now(UTC), zone)
                 self._release_sync_claim(run_id)
+            if review_finished:
+                zone = await asyncio.to_thread(tenant_zone, tenant_id)
+                async with self:
+                    auth = await self.get_state(AuthState)
+                    if (
+                        tenant_uuid(auth.session_tenant_id) == tenant_id
+                        and self.selected_connection_id == connection_id
+                    ):
+                        self.last_review = access_moment(datetime.now(UTC), zone)
 
         # QUA-93: refresh — reached ONLY on a successful sync. Every failure branch
         # above `return`s before this point (the `finally` still ran either way,
@@ -1362,6 +1379,14 @@ def _try_uuid(value: str) -> UUID | None:
         return UUID(value)
     except ValueError:
         return None
+
+
+def _is_temporary_sync_error(exc: Exception) -> bool:
+    """Include transport failures and provider throttling/outages in temporary feedback."""
+    status = getattr(exc, "http_status", None)
+    return isinstance(exc, (CommentsReadError, TransportError)) or (
+        status is not None and (status == 429 or status >= 500)
+    )
 
 
 def _sync_error_message(exc: Exception) -> str:

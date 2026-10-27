@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -11,13 +12,22 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import reflex as rx
+from httpx import ConnectError, ReadTimeout
 from qualify_api.connections.runtime_health import ConnectionRuntimeState
-from qualify_api.inbox import CommentsAuthExpired, CommentsReadError
+from qualify_api.inbox import (
+    CommentsAuthExpired,
+    CommentsReadError,
+    MediaReadError,
+    SyncAlreadyRunning,
+    SyncBudgetExhausted,
+)
 
-from . import inbox_page, inbox_provider, inbox_state
+from . import connections_page, inbox_page, inbox_provider, inbox_state, reconnect_panel
 from .inbox_access import InboxAccessVM, InboxConnectionVM, access_moment, access_notice
 from .inbox_state import InboxState
 from .inbox_vm import ReelSummaryVM, SyncSummaryVM
+from .reconnect_state import ReconnectState
+from .reconnect_vm import reconnect_notice
 
 TENANT = UUID("11111111-1111-4111-8111-111111111111")
 CONNECTION = UUID("22222222-2222-4222-8222-222222222222")
@@ -155,8 +165,18 @@ async def test_permanent_failure_shows_notice_immediately(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trigger", ["poll", "manual"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        CommentsReadError("temporary"),
+        ReadTimeout("timeout"),
+        ConnectError("offline"),
+        CommentsReadError("throttled", http_status=429),
+        MediaReadError("unavailable", http_status=503),
+    ],
+)
 async def test_transient_failure_then_success(
-    screen: InboxState, monkeypatch: pytest.MonkeyPatch, trigger: str
+    screen: InboxState, monkeypatch: pytest.MonkeyPatch, trigger: str, error: Exception
 ) -> None:
     failures = {"count": 0}
     monkeypatch.setattr(
@@ -174,7 +194,7 @@ async def test_transient_failure_then_success(
         if failures["count"] >= 3:
             assert screen.access.temporary_warning  # no blanking at start of the next poll
         failures["count"] += 1
-        raise CommentsReadError("temporary")
+        raise error
 
     monkeypatch.setattr(inbox_state, "sync_now", fail)
     for count in range(1, 5):
@@ -232,7 +252,7 @@ def test_view_only_invites_to_connect_when_never_connected(
         screen.access = notice(status=status)
     monkeypatch.setattr(rx, "cond", cond)
     monkeypatch.setattr(inbox_page, "InboxState", screen)
-    monkeypatch.setattr(inbox_page, "reconnect_result_panel", lambda: rx.fragment())
+    monkeypatch.setattr(inbox_page, "reconnect_result_panel", lambda **_: rx.fragment())
     monkeypatch.setattr(inbox_page, "_replies_section", lambda: rx.fragment())
     monkeypatch.setattr(inbox_page, "_comments_section", lambda: rx.text("Saved comments"))
     monkeypatch.setattr(inbox_page, "_more_options", lambda: rx.fragment())
@@ -246,8 +266,6 @@ def test_view_only_invites_to_connect_when_never_connected(
     assert "Buscar comentarios nuevos" not in rendered
     if status != "never":
         # JSON escapes accents in JSX; use the exact serialized text for the position.
-        import json
-
         detail = json.dumps(screen.access.detail, ensure_ascii=True)
         assert rendered.index(detail) < rendered.index("Saved comments")
         assert "Volver a conectar" in rendered
@@ -279,6 +297,105 @@ def test_candidate_read_failure_keeps_the_existing_list_above_saved_content(
 def test_warning_component_and_complete_page_build() -> None:
     assert inbox_page._access_notice()
     assert inbox_page.comments_tab()
+
+
+@pytest.mark.parametrize("code", ["denied", "permission_missing", "account_access_required"])
+@pytest.mark.parametrize("outage", [True, False])
+@pytest.mark.parametrize("same_account", [True, False])
+def test_failed_reconnect_keeps_the_result_drawer_and_a_single_recovery_action(
+    screen: InboxState, monkeypatch: pytest.MonkeyPatch, code: str, outage: bool, same_account: bool
+) -> None:
+    result = reconnect_notice(code, "@cafe")
+    screen.access = notice() if outage else InboxAccessVM()
+    callback = SimpleNamespace(
+        notice=result.message,
+        notice_tone=result.tone,
+        show_retry=result.retry,
+        show_help=result.help,
+        connection_id=str(CONNECTION) if same_account else "another-account",
+        cause="auth_expired",
+        origin="/inbox",
+        is_starting=False,
+        start_reconnect=ReconnectState.start_reconnect,
+        read_result=ReconnectState.read_result,
+    )
+    original_cond = rx.cond
+
+    def cond(condition: object, yes: object, no: object = None):
+        return (
+            (yes if condition else no)
+            if isinstance(condition, bool)
+            else original_cond(condition, yes, no)
+        )
+
+    monkeypatch.setattr(rx, "cond", cond)
+    monkeypatch.setattr(inbox_page, "InboxState", screen)
+    monkeypatch.setattr(reconnect_panel, "ReconnectState", callback)
+    monkeypatch.setattr(
+        connections_page, "support_drawer", lambda: rx.text("Shared support drawer")
+    )
+    for name in ("_replies_section", "_more_options", "_polling_timer"):
+        monkeypatch.setattr(inbox_page, name, lambda: rx.fragment())
+    monkeypatch.setattr(inbox_page, "_comments_section", lambda: rx.text("Saved comments"))
+    monkeypatch.setattr(
+        inbox_page, "_sync_now_button", lambda: rx.button("Buscar comentarios nuevos")
+    )
+    rendered = str(inbox_page._body(wrapped=False))
+    assert rendered.count('"Volver a conectar"') == (1 if same_account or outage else 0)
+    assert (json.dumps(result.message, ensure_ascii=True) in rendered) == same_account
+    assert "Shared support drawer" in rendered
+    assert "Saved comments" in rendered
+    assert ("Buscar comentarios nuevos" in rendered) == (not outage)
+    if outage:
+        assert rendered.count("Pide ayuda") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal", [SyncAlreadyRunning(), SyncBudgetExhausted(needed=1, remaining=0)]
+)
+async def test_busy_connection_does_not_claim_a_new_review(
+    screen: InboxState, monkeypatch: pytest.MonkeyPatch, refusal: Exception
+) -> None:
+    screen.last_review = "el lunes 3:40 p. m."
+    monkeypatch.setattr(inbox_state, "connection_access", lambda *args: InboxAccessVM())
+    monkeypatch.setattr(
+        inbox_state,
+        "get_connection_runtime_state",
+        lambda **_: ConnectionRuntimeState("active", None, 0, False, 1),
+    )
+    monkeypatch.setattr(inbox_state, "sync_now", AsyncMock(side_effect=refusal))
+    await InboxState.sync_comments.fn(screen, "manual")
+    assert screen.last_review == "el lunes 3:40 p. m."
+    assert not screen.is_syncing
+
+
+@pytest.mark.asyncio
+async def test_open_during_cooldown_restores_the_known_business_time(
+    screen: InboxState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    moment = datetime(2026, 10, 27, 20, 40, 30, tzinfo=UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+
+    monkeypatch.setattr(inbox_state, "datetime", Clock)
+    monkeypatch.setattr(inbox_state, "tenant_zone", lambda _: ZoneInfo("America/Bogota"))
+    monkeypatch.setattr(inbox_state, "connection_access", lambda *args: InboxAccessVM())
+    monkeypatch.setattr(
+        inbox_state,
+        "get_connection_runtime_state",
+        lambda **_: ConnectionRuntimeState("active", None, 2, False, 1),
+    )
+    monkeypatch.setattr(inbox_state, "seconds_since_last_sync", AsyncMock(return_value=40))
+    sync = AsyncMock()
+    monkeypatch.setattr(inbox_state, "sync_now", sync)
+    await InboxState.sync_comments.fn(screen, "open")
+    assert screen.last_review == "el martes 3:39 p. m."
+    assert not screen.is_syncing
+    sync.assert_not_awaited()
 
 
 @pytest.mark.asyncio
