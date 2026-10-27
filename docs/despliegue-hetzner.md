@@ -488,3 +488,46 @@ No verificado localmente: la emisión real del certificado (requiere DNS apuntan
 - Requisitos que la documentación de Remote Control impone y conviene no romper: no exportar `ANTHROPIC_API_KEY` en el entorno de `deploy` (bloquea Remote Control), ni `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Sólo usa HTTPS saliente: no hay que abrir puertos ni tocar `ufw`.
 - Memoria: el proceso de Claude Code ocupa unos cientos de MB; en un CX23 con el stack completo hay margen, con el perfil `render` activo, vigilar `free -h`.
 - **Sin verificar todavía contra un servidor real** (se escribió el 2026-10-12 desde el Mac): que `remote-control` aplique los *managed settings* a sus sesiones (es lo esperado, son procesos locales) y que la app de escritorio de Claude pueda engancharse a la sesión (la documentación sólo nombra claude.ai/code y la app móvil).
+
+### Medir la cola antes de activarla (m-24861079)
+
+`just mem-creative-worker` ejecuta la preparación real del worker y su
+`PipelineExecutor.finish` con las dependencias de la imagen de producción y las
+fuentes actuales montadas de solo lectura. Crea Postgres/Redis propios, migra y
+configura sus roles con contraseñas sintéticas. La red Docker es `--internal`, sin
+puertos publicados ni ruta hacia proveedores. No carga `.env`, credenciales del
+host ni datos de clientes. El S3 simulado corre en otro contenedor: su memoria y
+caché de disco no se atribuyen al worker medido.
+
+```bash
+# Construir dependencias si la imagen local todavía no existe.
+docker build -f deploy/Dockerfile --target deps -t qualify-memtest:deps .
+just mem-creative-worker
+# Comparación con videos habituales, sin sustituir la prueba del límite.
+just mem-creative-worker qualify-memtest:deps -- --download-mib 40
+```
+
+El escenario incluye servicio de producción en reposo, preparación de un carrusel
+de diez imágenes PNG de 2048 px y dos finalizaciones simultáneas de videos de
+**200 MiB cada uno**, con subida R2 y checkpoints Postgres reales. Solo se simulan
+las respuestas de proveedores. Los archivos temporales conservan el límite de
+200 MiB; HTTPS y cada redirección se validan. Una copia durable por revisión y
+trabajo permite recuperar un fallo posterior de Postgres sin volver a descargar
+el video ni enviar una generación pagada.
+
+Las líneas `MEASURE` muestran RSS, máximo RSS, memoria actual y pico del cgroup.
+`MEASURE-DONE` incluye porcentaje del límite y eventos OOM; `MEASURE-CONTAINER`
+confirma el límite y la salida de Docker. La ejecución falla con código 1 si el
+pico alcanza el 95 % de 512 MiB, o 137 si el kernel mata el proceso. El arnés
+elimina sus contenedores y red al terminar, también ante fallos. No habilitar la
+cola con una medición roja. El resultado no estima latencia ni calidad de los
+proveedores y no reemplaza el seguimiento de memoria después de activar.
+
+Medición local del 2026-10-27: antes del cambio, dos finalizaciones de 200 MiB
+provocaban OOM (salida 137). Con descarga y subida por archivo, liberando el caché
+del prefijo ya consumido, el mismo escenario alcanzó 201,6 MiB (39,38 % del
+límite), sin eventos `max`, `oom` ni `oom_kill`. El carrusel alcanzó 170,1 MiB.
+Evidencia reproducible: `testing/evidence/m-24861079/creative-worker-memory.json`.
+El consejo de caché se aplica al prefijo completo porque un rango pequeño de
+lectura no permite expulsar los folios grandes de Linux. No cambia el contenido
+del archivo ni la concurrencia de dos finalizaciones.

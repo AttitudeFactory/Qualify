@@ -330,16 +330,22 @@ class PipelineExecutor:
                     job.tenant_id, job.draft_id, job.revision, f"queue-{job.job_id}.bin"
                 )
                 # A crash after keeping bytes but before PG must not require a live vendor URL.
-                try:
-                    raw = media._store.read(raw_key)
-                except Exception:
-                    raw = _http_download(result.media_url)
-                    keep = getattr(media._store, "keep", None)
-                    if keep is not None:
-                        if not keep(job.tenant_id, raw_key, raw, "video/mp4"):
-                            raise RuntimeError("could not checkpoint the paid video")
-                    else:
-                        media._store.write(raw_key, raw)
+                checkpoint = getattr(media._store, "checkpoint_download", None)
+                if checkpoint is not None:
+                    checkpoint(job.tenant_id, raw_key, result.media_url)
+                else:
+                    # Small in-memory/local stores used by engine callers and tests.
+                    # Production's R2 store always streams through checkpoint_download.
+                    try:
+                        raw = media._store.read(raw_key)
+                    except Exception:
+                        raw = _http_download(result.media_url)
+                        keep = getattr(media._store, "keep", None)
+                        if keep is not None:
+                            if not keep(job.tenant_id, raw_key, raw, "video/mp4"):
+                                raise RuntimeError("could not checkpoint the paid video")
+                        else:
+                            media._store.write(raw_key, raw)
                 data["checkpoint_media"] = raw_key
             self.pipeline.complete_step(job.tenant_id, identity=identity, result=data)
         else:
