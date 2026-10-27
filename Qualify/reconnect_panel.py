@@ -30,13 +30,19 @@ def reconnect_button(connection_id: str | rx.Var, cause: str | rx.Var, origin: s
     )
 
 
-def reconnect_result_panel() -> rx.Component:
+def reconnect_result_panel(
+    *, hide_recovery_actions: bool | rx.Var = False, connection_id: str | rx.Var | None = None
+) -> rx.Component:
     """Mount with ReconnectState.read_result in the original screen's on-load chain."""
     from .connections_page import support_drawer
 
+    show_notice = ReconnectState.notice != ""
+    if connection_id is not None:
+        show_notice = show_notice & (ReconnectState.connection_id == connection_id)
+
     return rx.box(
         rx.cond(
-            ReconnectState.notice != "",
+            show_notice,
             rx.vstack(
                 rx.cond(
                     ReconnectState.notice_tone == "ok",
@@ -45,25 +51,33 @@ def reconnect_result_panel() -> rx.Component:
                 ),
                 rx.cond(
                     ReconnectState.show_retry,
-                    rx.button(
-                        "Volver a conectar",
-                        on_click=ReconnectState.start_reconnect(
-                            ReconnectState.connection_id,
-                            ReconnectState.cause,
-                            ReconnectState.origin,
+                    rx.cond(
+                        hide_recovery_actions,
+                        rx.fragment(),
+                        rx.button(
+                            "Volver a conectar",
+                            on_click=ReconnectState.start_reconnect(
+                                ReconnectState.connection_id,
+                                ReconnectState.cause,
+                                ReconnectState.origin,
+                            ),
+                            loading=ReconnectState.is_starting,
+                            min_height="44px",
                         ),
-                        loading=ReconnectState.is_starting,
-                        min_height="44px",
                     ),
                     rx.fragment(),
                 ),
                 rx.cond(
                     ReconnectState.show_help,
-                    rx.button(
-                        "Pide ayuda",
-                        on_click=ConnectionsState.open_support,
-                        variant="ghost",
-                        min_height="44px",
+                    rx.cond(
+                        hide_recovery_actions,
+                        rx.fragment(),
+                        rx.button(
+                            "Pide ayuda",
+                            on_click=ConnectionsState.open_support,
+                            variant="ghost",
+                            min_height="44px",
+                        ),
                     ),
                     rx.fragment(),
                 ),
