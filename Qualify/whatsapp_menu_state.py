@@ -53,7 +53,9 @@ from qualify_api.whatsapp.menus.schema import MAX_COMMANDS, MAX_ICE_BREAKERS, Me
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
+from .nav_url import flow_param, uuid_param
 from .tenant import tenant_uuid
+from .ui.steps_vm import guard_step
 from .whatsapp_menu_provider import (
     MenuDetail,
     NumberScope,
@@ -254,6 +256,7 @@ class WhatsAppMenuState(rx.State):
 
     # -- the menu in four steps (m-24848536) --------------------------------------------
     guided_step: int = 1
+    flow_ready: bool = False
     advanced_open: bool = False  # «Más opciones (avanzado)»: the full editor
     catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
 
@@ -497,6 +500,7 @@ class WhatsAppMenuState(rx.State):
         self.guided_step = 1
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
+        self._restore_flow_step()
 
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
         self.menu = detail.summary
@@ -517,6 +521,7 @@ class WhatsAppMenuState(rx.State):
             self._load_definition(detail.latest, label, newest)
 
     def _reset_number_scoped(self) -> None:
+        self.flow_ready = False
         self.menus = []
         self.menu = EMPTY_MENU
         self.versions = []
@@ -608,6 +613,12 @@ class WhatsAppMenuState(rx.State):
                     (m.menu_id for m in menus if m.is_published), menus[0].menu_id if menus else ""
                 )
             )
+            params = self._flow_params()
+            requested_menu = uuid_param(params, "objeto")
+            if flow_param(params, "menu", GUIDED_STEPS) and requested_menu in {
+                m.menu_id for m in menus
+            }:
+                target = requested_menu if requested_menu != self.menu.menu_id else ""
             if not keep:
                 self.menu = EMPTY_MENU
         if target:
@@ -866,18 +877,63 @@ class WhatsAppMenuState(rx.State):
     # The menu in four steps (m-24848536)
     # ==================================================================================
 
+    def _flow_params(self) -> dict:
+        try:
+            return self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router in offline tests
+            return {}
+
+    def _restore_flow_step(self) -> None:
+        params = self._flow_params()
+        wanted = uuid_param(params, "objeto")
+        if wanted and wanted != self.menu.menu_id:
+            return
+        requested = flow_param(params, "menu", GUIDED_STEPS)
+        if requested:
+            g = self.guided
+            self.guided_step = guard_step(
+                requested,
+                [
+                    bool(g.greeting.strip()) and not g.greeting_issue,
+                    not g.buttons_issue,
+                    not g.products_issue,
+                    True,
+                ],
+            )
+            self.advanced_open = False
+        elif not params.get("flujo"):
+            self.guided_step = 1
+        self.flow_ready = bool(requested) and self.has_menu
+
+    @rx.event
+    def restore_flow(self) -> rx.event.EventSpec | None:
+        """Restore only a loaded number's menu; never save or publish from history."""
+        params = self._flow_params()
+        wanted = uuid_param(params, "objeto")
+        if flow_param(params, "menu", GUIDED_STEPS) and wanted:
+            if wanted not in {menu.menu_id for menu in self.menus}:
+                self.flow_ready = False
+                return None
+            if wanted != self.menu.menu_id:
+                return WhatsAppMenuState.open_menu(wanted)
+        self._restore_flow_step()
+        return None
+
     @rx.event
     def guided_go(self, step: int) -> None:
         if isinstance(step, int) and 1 <= step <= GUIDED_STEPS:
             self.guided_step = step
+            self.flow_ready = True
 
     @rx.event
     def guided_next(self) -> None:
         self.guided_step = min(GUIDED_STEPS, self.guided_step + 1)
+        self.flow_ready = True
 
     @rx.event
     def guided_back(self) -> None:
         self.guided_step = max(1, self.guided_step - 1)
+        self.flow_ready = True
 
     @rx.event
     def set_advanced(self, value: bool) -> None:

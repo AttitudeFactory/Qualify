@@ -39,6 +39,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.route_history import route_history
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
@@ -370,7 +371,15 @@ def _whatsapp_body() -> rx.Component:
 
 
 def whatsapp_index() -> rx.Component:
-    return app_shell(whatsapp_header(), _whatsapp_body())
+    return app_shell(
+        route_history(
+            WhatsAppState.enter_history,
+            ack=WhatsAppState.history_ack,
+            on_leave=WhatsAppState.leave_page_flows,
+        ),
+        whatsapp_header(),
+        _whatsapp_body(),
+    )
 
 
 # ======================================================================================

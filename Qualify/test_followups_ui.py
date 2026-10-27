@@ -583,3 +583,48 @@ def test_the_ux_review_of_the_send_status_is_on_the_card() -> None:
     outcome = str(_outcome_line().render())
     assert outcome.count("aria-live") + outcome.count("ariaLive") == 1
     assert "queued_message" not in inspect.getsource(fs.FollowupsState.approve.fn)  # type: ignore[attr-defined]
+
+
+def test_query_history_restores_only_a_loaded_card_and_keeps_its_draft(monkeypatch) -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    fid = first.followup_id
+    state.edits = {fid: "Mi respuesta revisada"}
+    state.notice_edits = {fid: "Te escribimos"}
+    state.steps = {fid: STEP_ASKED}
+    params = {"flujo": "consulta", "paso": "3", "consulta": fid}
+    monkeypatch.setattr(FollowupsState, "_flow_params", lambda self: params)
+    state.restore_flow()
+    assert state.flow_card_id == fid
+    assert state.steps[fid] == STEP_REVIEW
+    params["paso"] = "2"
+    state.restore_flow()
+    assert state.steps[fid] == STEP_REPLY
+    assert state.edits[fid] == "Mi respuesta revisada"
+    assert state.notice_edits[fid] == "Te escribimos"
+    params.clear()
+    state.restore_flow()
+    assert not state.flow_card_id
+    assert state.steps[fid] == STEP_ASKED
+
+
+def test_query_history_refuses_other_tenant_or_malformed_ids(monkeypatch) -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    params = {"flujo": "consulta", "paso": "3", "consulta": str(uuid4())}
+    monkeypatch.setattr(FollowupsState, "_flow_params", lambda self: params)
+    state.restore_flow()
+    assert not state.flow_card_id
+    params["consulta"] = "not-an-internal-id"
+    state.restore_flow()
+    assert not state.flow_card_id
+
+
+def test_query_history_review_requires_a_message(monkeypatch) -> None:
+    first = build_card_vm(_card(), now=NOW, zone=ZONE)
+    state = _state_with(first)
+    state.edits = {first.followup_id: ""}
+    params = {"flujo": "consulta", "paso": "3", "consulta": first.followup_id}
+    monkeypatch.setattr(FollowupsState, "_flow_params", lambda self: params)
+    state.restore_flow()
+    assert state.steps[first.followup_id] == STEP_REPLY

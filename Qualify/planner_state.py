@@ -32,6 +32,14 @@ from .campaign_provider import (
     error_message as campaign_error_message,
 )
 from .creative_provider import acting_user_id
+from .nav_url import (
+    back_url_script,
+    close_flow_script,
+    flow_param,
+    push_url_script,
+    scalar_param,
+    uuid_param,
+)
 from .pending_state import PendingState
 from .planner_provider import (
     ALL_CONNECTIONS,
@@ -100,6 +108,7 @@ from .planner_vm import (
     week_return_query,
 )
 from .tenant import tenant_uuid
+from .ui.route_history import history_ack_value, route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +296,7 @@ async def schedule_plan_rows(
 
 
 class PlannerState(rx.State):
+    history_ack: str = ""
     # -- week -----------------------------------------------------------------
     loading: bool = True
     load_error: str = ""
@@ -326,6 +336,7 @@ class PlannerState(rx.State):
 
     # -- assign / reschedule drawer ---------------------------------------------
     form_open: bool = False
+    flow_ready: bool = False
     form_mode: str = MODE_ASSIGN
     form_event_id: str = ""
     form_tag_query: str = ""
@@ -783,6 +794,8 @@ class PlannerState(rx.State):
             async with self:
                 address = self._sync_address()
             yield address
+            if self._url_param("ficha") or self._url_param("flujo"):
+                yield PlannerState.restore_address
 
     def _url_param(self, name: str) -> str:
         try:
@@ -793,31 +806,100 @@ class PlannerState(rx.State):
     def _url_post(self) -> str:
         return self._url_param("post")
 
+    def _planner_address(self, *, ficha: str | None = None) -> str:
+        from urllib.parse import parse_qsl, urlencode
+
+        path, _, query = week_href(self.monday_iso, self.view_mode).partition("?")
+        values = dict(parse_qsl(query))
+        for key in (
+            "revisar",
+            "pieza",
+            "evento",
+            "fallos",
+            "post",
+            "cuando",
+            "flujo",
+            "paso",
+            "objeto",
+        ):
+            value = self._url_param(key)
+            if value:
+                values[key] = value
+        selected = self._url_param("ficha") if ficha is None else ficha
+        if selected:
+            selected = uuid_param({"ficha": selected}, "ficha")
+            if selected:
+                values["ficha"] = selected
+        return path + ("?" + urlencode(values) if values else "")
+
     def _sync_address(self) -> rx.event.EventSpec:
-        """m-24842987: the address bar follows the week and the view on screen, so a
-        reload — or the browser's back from a ficha — lands on the same week. The
-        router's own history entry is kept (only the URL changes)."""
-        import json
-        from urllib.parse import urlencode
+        """Update week/view while preserving an open detail or drawer's identity."""
+        from .nav_url import replace_url_script
 
-        from .review_links import review_destination
+        return rx.call_script(replace_url_script(self._planner_address()))
 
-        href = week_href(self.monday_iso, self.view_mode)
-        review = review_destination(
-            "/planner?"
-            + urlencode(
-                {
-                    key: self._url_param(key)
-                    for key in ("revisar", "pieza", "evento", "fallos")
-                    if self._url_param(key)
-                }
-            )
-        )
-        if review:
-            href += ("&" if "?" in href else "?") + review.split("?", 1)[1]
-        return rx.call_script(
-            "window.history.replaceState(window.history.state, '', " + json.dumps(href) + ")"
-        )
+    @rx.event
+    def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
+        self.flow_ready = False
+        event = self.restore_address()
+        events = [event] if event is not None else []
+        self.history_ack = history_ack_value(lease)
+        return [*events, route_history_ready("/planner", lease)]
+
+    @rx.event
+    def restore_address(self) -> rx.event.EventSpec | None:
+        """POP/initial entry: only a tenant-scoped provider can resolve an event ID."""
+        if self._url_param("flujo") in ("programar", "reprogramar"):
+            return PlannerState.restore_flow
+        self.form_open = False
+        self.flow_ready = False
+        wanted = uuid_param({"ficha": self._url_param("ficha")}, "ficha")
+        if not wanted:
+            self.detail_open = False
+            self.detail_confirm = ""
+            return None
+        if self.detail_open and self.detail.event_id == wanted:
+            return None
+        return PlannerState.open_detail(wanted)
+
+    @rx.var
+    def form_flow_name(self) -> str:
+        return "reprogramar" if self.form_mode == MODE_RESCHEDULE else "programar"
+
+    @rx.var
+    def form_flow_step(self) -> int:
+        return self.form_step if self.form_mode == MODE_RESCHEDULE else self.form_step + 1
+
+    @rx.event
+    def leave_flow(self) -> None:
+        self.flow_ready = False
+        self.form_open = False
+
+    @rx.event
+    def restore_flow(self) -> rx.event.EventSpec | None:
+        params = self.router.url.query_parameters
+        moving = scalar_param(params, "flujo") == "reprogramar"
+        name = "reprogramar" if moving else "programar"
+        requested = flow_param(params, name, 2 if moving else 3)
+        if not requested:
+            self.form_open = False
+            self.flow_ready = False
+            return None
+        target_id = uuid_param(params, "objeto")
+        if moving and (not target_id or target_id != self.form_event_id):
+            self.form_open = False
+            self.flow_ready = False
+            return PlannerState.open_reschedule(target_id) if target_id else None
+        self.form_mode = MODE_RESCHEDULE if moving else MODE_ASSIGN
+        target = requested if moving else requested - 1
+        if not self.plan_items:
+            target = STEP_WHEN if moving else STEP_POST
+        elif target >= STEP_LAST and any(row.error for row in self.plan_rows):
+            target = STEP_WHEN
+        self._go_to(target)
+        self.form_open = True
+        self.flow_ready = True
+        return None
 
     def _url_now(self) -> bool:
         """`/planner?post=<id>&cuando=ahora` (the «Publicar ahora» of the approved card,
@@ -1284,6 +1366,7 @@ class PlannerState(rx.State):
             # refusal waiting at the last step).
             self.form_default_time = f"{min(split_time(self.now_hhmm)[0] + 1, 23):02d}:00"
         self.form_open = True
+        self.flow_ready = True
         # A POST already chosen skips straight to its programming.
         if post_id and self._add_post(post_id):
             if now:
@@ -1335,15 +1418,19 @@ class PlannerState(rx.State):
         self._open_assign(post_id=post_id, day_iso=day_iso, hour=int(hour))
 
     @rx.event
-    def close_form(self) -> None:
+    def close_form(self) -> rx.event.EventSpec:
         self.form_open = False
         self.form_error = ""
+        self.flow_ready = False
+        return rx.call_script(close_flow_script(self.form_flow_name))
 
     @rx.event
-    def set_form_open(self, value: bool) -> None:
-        self.form_open = value
+    def set_form_open(self, value: bool) -> rx.event.EventSpec | None:
         if not value:
-            self.form_error = ""
+            return self.close_form()
+        self.form_open = True
+        self.flow_ready = True
+        return None
 
     # «Contenido»
 
@@ -1652,6 +1739,7 @@ class PlannerState(rx.State):
         async with self:
             self.saving = False
             self.form_open = False
+            self.flow_ready = False
             self.detail_open = False
             goals = [g.label for g in PLAN_GOALS if g.key in self.form_goals]
             # Jump to the week the first piece lands in, so the operator sees it appear.
@@ -1670,6 +1758,8 @@ class PlannerState(rx.State):
                 + join_es([g.lower() for g in goals])
                 + "."
             )
+        if self._url_param("flujo") in ("programar", "reprogramar"):
+            yield rx.call_script(close_flow_script(self.form_flow_name))
         yield rx.toast.success(message)
         yield PlannerState.load
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
@@ -1679,13 +1769,25 @@ class PlannerState(rx.State):
     @rx.event(background=True)
     async def open_detail(self, event_id: str):
         """Open the event's panel."""
-        await self._load_detail(event_id, "")
+        wanted = uuid_param({"ficha": event_id}, "ficha")
+        if not wanted:
+            return
+        async with self:
+            address = self._planner_address(ficha=wanted)
+        yield rx.call_script(push_url_script(address))
+        await self._load_detail(wanted, "")
 
     @rx.event(background=True)
     async def open_detail_asking(self, event_id: str, confirm: str):
         """Open the event's panel with an inline confirmation already armed («cancel»
         from a card's ⋯ menu) — the panel asks, no dialog on top of it."""
-        await self._load_detail(event_id, confirm)
+        wanted = uuid_param({"ficha": event_id}, "ficha")
+        if not wanted:
+            return
+        async with self:
+            address = self._planner_address(ficha=wanted)
+        yield rx.call_script(push_url_script(address))
+        await self._load_detail(wanted, confirm)
 
     async def _load_detail(self, event_id: str, confirm: str) -> None:
         async with self:
@@ -1723,10 +1825,12 @@ class PlannerState(rx.State):
             await review._read(UUID(detail.post_id))
 
     @rx.event
-    def set_detail_open(self, value: bool) -> None:
+    def set_detail_open(self, value: bool) -> rx.event.EventSpec | None:
         self.detail_open = value
         if not value:
             self.detail_confirm = ""
+            return rx.call_script(back_url_script(self._planner_address(ficha="")))
+        return None
 
     @rx.var
     def detail_post(self) -> PostOptionVM:
@@ -1766,7 +1870,10 @@ class PlannerState(rx.State):
         self.detail_open = False
         self.detail_confirm = ""
         self.form_open = True
+        self.flow_ready = True
         self._go_to(STEP_WHEN)  # the POST is fixed: a move starts at its programming
+        if self._url_param("flujo") == "reprogramar":
+            self.restore_flow()
 
     @rx.event(background=True)
     async def open_reschedule(self, event_id: str):

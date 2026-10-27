@@ -80,7 +80,7 @@ from .followups_vm import (
     view_from_param,
     view_url,
 )
-from .nav_url import push_url_script
+from .nav_url import flow_param, push_url_script, uuid_param
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 
@@ -153,6 +153,7 @@ class FollowupsState(rx.State):
     highlight_id: str = ""
     # m-24842991: the step each card is on (1 «Qué preguntó» … 3 «Revisa y aprueba»).
     steps: dict[str, int] = {}
+    flow_card_id: str = ""
     # The confirmation after approving: who got the message, and what was queued.
     done_author: str = ""
     done_note: str = ""
@@ -243,6 +244,7 @@ class FollowupsState(rx.State):
         """The route's `on_load`: `?vista=` picks the view (N5 — reloading or «atrás»
         lands on the view the address names); a `?consulta=<id>` opens this view on that
         card."""
+        self.flow_card_id = ""
         params = self.router.url.query_parameters
         self.view = view_from_param(str(params.get(VIEW_PARAM, "") or ""))
         wanted = str(params.get(QUERY_PARAM, "") or "")
@@ -259,6 +261,7 @@ class FollowupsState(rx.State):
         if not isinstance(view, str) or view not in VIEWS:
             return None
         self.view = view
+        self.flow_card_id = ""
         events = [rx.call_script(push_url_script(view_url(view)))]
         if view == VIEW_QUERIES:
             events.append(FollowupsState.load())
@@ -277,11 +280,42 @@ class FollowupsState(rx.State):
             return None
         if step not in STEP_TITLES:
             return None
+        self.flow_card_id = followup_id
         if step == STEP_REVIEW and not self.edits.get(followup_id, "").strip():
             self.steps = {**self.steps, followup_id: STEP_REPLY}
             return rx.toast.warning(_EMPTY, duration=_TOAST_MS)
         self.steps = {**self.steps, followup_id: step}
         return None
+
+    def _flow_params(self) -> dict:
+        try:
+            return self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router in offline tests
+            return {}
+
+    def _restore_flow_step(self) -> None:
+        params = self._flow_params()
+        requested = flow_param(params, "consulta", 3)
+        wanted = uuid_param(params, QUERY_PARAM)
+        if not requested:
+            if self.flow_card_id and not params.get("flujo"):
+                self.steps = {**self.steps, self.flow_card_id: STEP_ASKED}
+            self.flow_card_id = ""
+            return
+        if _uuid(wanted) is None or self._known(wanted) is None:
+            self.flow_card_id = ""
+            return
+        if requested == STEP_REVIEW and not self.edits.get(wanted, "").strip():
+            requested = STEP_REPLY
+        self.steps = {**self.steps, wanted: requested}
+        self.flow_card_id = wanted
+        self.highlight_id = wanted
+        self.view = VIEW_QUERIES
+
+    @rx.event
+    def restore_flow(self) -> None:
+        """History restores a known card's step and leaves its draft and notice alone."""
+        self._restore_flow_step()
 
     def _clear_outcome(self) -> None:
         self.done_author, self.done_note = "", ""
@@ -325,6 +359,7 @@ class FollowupsState(rx.State):
         first = self.cards[0].followup_id
         self.highlight_id = first
         self.steps = {**self.steps, first: STEP_ASKED}
+        self.flow_card_id = first
         return rx.scroll_to("consulta-" + first)
 
     @rx.event
@@ -376,6 +411,7 @@ class FollowupsState(rx.State):
                 for c in offered
             }
             self.loading, self.loaded, self.error = False, True, ""
+            self._restore_flow_step()
 
     # -- actions ------------------------------------------------------------------------
 

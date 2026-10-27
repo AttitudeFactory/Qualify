@@ -41,7 +41,8 @@ def test_with_query_drops_empty_values_and_encodes() -> None:
 
 def test_history_scripts_skip_a_repeated_address() -> None:
     push = push_url_script("/whatsapp?tab=qr")
-    assert "window.history.pushState(window.history.state, ''," in push
+    assert "window.history.pushState({ ...window.history.state," in push
+    assert "qPrevHref: window.location.pathname + window.location.search" in push
     assert '"/whatsapp?tab=qr"' in push
     assert "window.location.pathname + window.location.search !==" in push
     assert "replaceState" in replace_url_script("/inbox")

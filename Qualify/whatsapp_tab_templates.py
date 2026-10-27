@@ -25,6 +25,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .whatsapp_marketing_ui import (
     card_line,
     confirm_action,
@@ -686,6 +687,7 @@ def _resume_notice() -> rx.Component:
 
 def template_form() -> rx.Component:
     return drawer(
+        flow_sync("mensaje-aprobado", S.step + 1, ready=S.flow_ready),
         rx.cond(
             S.form_done,
             _done(),

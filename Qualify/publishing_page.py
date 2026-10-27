@@ -769,7 +769,12 @@ def _assistant_frame() -> rx.Component:
     )
     return step_frame(
         rx.cond(
-            PublishHubState.entered, step_sync(PublishHubState.step, PublishHubState.direction)
+            PublishHubState.entered,
+            step_sync(
+                PublishHubState.step,
+                PublishHubState.direction,
+                epoch=PublishHubState.entry_epoch,
+            ),
         ),
         _what_step(),
         _where_step(),

@@ -75,6 +75,8 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
+from .ui.route_history import route_history
 
 #: N12: every control of the «Agregar producto» flow is at least this tall on a phone.
 _TOUCH_MIN = "44px"
@@ -514,6 +516,7 @@ def _new_product_drawer() -> rx.Component:
     the owner is; «Atrás» and «Siguiente» are the targets (≥ 44 px, N12)."""
     return drawer(
         rx.vstack(
+            flow_sync("producto", CatalogState.new_step + 1, ready=CatalogState.flow_ready),
             rx.box(
                 stepper(
                     list(NEW_PRODUCT_STEPS),
@@ -1263,6 +1266,11 @@ def _loading() -> rx.Component:
 
 def catalog_index() -> rx.Component:
     return app_shell(
+        route_history(
+            CatalogState.enter_history,
+            ack=CatalogState.history_ack,
+            on_leave=CatalogState.leave_flow,
+        ),
         page_header(
             "Tus productos",
             "Sube la foto real de lo que vendes y úsala en tus publicaciones.",

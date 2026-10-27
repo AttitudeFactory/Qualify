@@ -403,3 +403,55 @@ def test_inicio_says_what_is_left_of_the_brand() -> None:
     )
     assert vm.brand_left_label([vm.STEP_LOGO]) == "Termina tu marca: te falta tu logo"
     assert vm.brand_left_label([]) == "Termina tu marca"
+
+
+async def test_a_first_deep_link_hydrates_phrase_and_progress_before_the_first_autosave(
+    states: _States,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth = states(AuthState)
+    auth.session_tenant_id = _TENANT
+    state = states(BrandMinimalState)
+    state.synced = True  # a cold client can still have the preceding server state
+    facts = vm.KitFacts(
+        socials_answered=True,
+        rubro="Comida",
+        positioning="Al momento",
+        audience="Vecinos",
+        has_logo_answer=True,
+        palette="#123456",
+        example="Ven a probarlo",
+    )
+    entry = minimal._Entry(
+        False,
+        vm.STEP_VOICE,
+        facts,
+        {
+            "started_without_socials": True,
+            "profile_pic_is_real": True,
+        },
+    )
+    readiness = []
+
+    def read_entry(_tenant):
+        readiness.append(state.synced)
+        return entry
+
+    monkeypatch.setattr(minimal, "_read_entry", read_entry)
+    monkeypatch.setattr(minimal, "_read_account_country", lambda _tenant: "")
+    monkeypatch.setattr(minimal, "step_param", lambda _state: "5")
+    events = [event async for event in BrandMinimalState.enter.fn(state)]
+    assert len(events) == 1 and "__qStepEntry" in str(events[0])
+    assert state.steps_epoch >= 1
+    assert state.phrase == "Ven a probarlo"
+    assert state.step == vm.STEP_VOICE and state.synced
+    assert states(wiz.BrandConnectState).started_without_socials
+    assert states(wiz.BrandConnectState).profile_pic_is_real
+    assert readiness == [False]
+    state.phrase = "Una frase todavía sin guardar"
+    monkeypatch.setattr(minimal, "step_param", lambda _state: "4")
+    events = [event async for event in BrandMinimalState.enter.fn(state)]
+    assert len(events) == 1 and "__qStepEntry" in str(events[0])
+    assert state.steps_epoch >= 1
+    assert state.phrase == "Una frase todavía sin guardar"
+    assert state.step == vm.STEP_COLOURS

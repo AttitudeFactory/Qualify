@@ -51,6 +51,7 @@ from .followups_vm import (
 from .inbox_vm import UNSURE_INTENT_NOTE
 from .ui import callout, card, empty_state, loading_spinner, skeleton_rows, tone_badge
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 
 F = FollowupsState
 
@@ -437,6 +438,12 @@ def _step_review(c: FollowupCardVM) -> rx.Component:
 def _card(c: FollowupCardVM) -> rx.Component:
     step = F.steps[c.followup_id]
     return card(
+        flow_sync(
+            "consulta",
+            step,
+            ready=F.loaded & (F.flow_card_id == c.followup_id),
+            consulta=c.followup_id,
+        ),
         rx.vstack(
             rx.text(
                 rx.match(

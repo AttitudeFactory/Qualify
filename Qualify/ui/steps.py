@@ -143,6 +143,7 @@ def step_head(
     back_href: str | rx.Var | None = None,
     on_exit: Any | None = None,
     below: rx.Component | None = None,
+    show_progress: bool | rx.Var[bool] = True,
 ) -> rx.Component:
     """The frame's fixed head, in place of `page_header`: «‹ ``back_label``» (to
     ``back_href``, or the ``on_exit`` event when leaving needs a handler — on every
@@ -153,6 +154,10 @@ def step_head(
     if (back_href is None) == (on_exit is None):
         raise ValueError("step_head needs exactly one of back_href or on_exit")
     count, bar = _progress_parts(step, total, COUNT_ID_PAGE)
+    if show_progress is False:
+        count, bar = rx.fragment(), rx.fragment()
+    elif show_progress is not True:
+        count, bar = rx.cond(show_progress, count), rx.cond(show_progress, bar)
     return rx.vstack(
         # «‹ destino» and «Paso N de M» share a row; the bar gets a line of its own, so
         # a long destination never squeezes it (§4.5 mockup).
@@ -381,11 +386,18 @@ _STEP_GO_JS = (
     "if (!window.__qStepGo) window.__qStepGo = (target, back) => {"
     " const cur = new URL(window.location.href).searchParams.get('paso');"
     " const to = new URL(target, window.location.href);"
-    " const n = to.searchParams.get('paso'); if (cur === n) return;"
+    " const n = to.searchParams.get('paso');"
     " const st = window.history.state || {}; const url = to.pathname + to.search + to.hash;"
+    " const here = new URL(window.location.href);"
+    " if (here.pathname.replace(/\\/$/, '') === to.pathname.replace(/\\/$/, '')"
+    " && here.search === to.search && here.hash === to.hash) return;"
     " if (cur === null) { window.history.replaceState(st, '', url); return; }"
-    " if (back) { if (st.qPrevPaso === n) window.history.back();"
-    " else window.history.replaceState(st, '', url); return; }"
+    " if (back) { if (st.qPrevPaso === n) {"
+    " const pendingTarget = to.pathname.replace(/\\/$/, '') + to.search + to.hash;"
+    " if (window.__qStepBackTarget === pendingTarget) return;"
+    " window.__qStepBackTarget = pendingTarget;"
+    " window.addEventListener('popstate', () => { window.__qStepBackTarget = null; }, {once:true});"
+    " window.history.back(); } else window.history.replaceState(st, '', url); return; }"
     " window.history.pushState({ ...st, qPrevPaso: cur }, '', url); };"
 )
 
@@ -413,18 +425,80 @@ def step_sync_script(step: rx.Var[int] | int, direction: rx.Var[str] | str = DIR
     return step_address_script(target, back) + step_settle_script("page")
 
 
-def step_sync(step: rx.Var[int], direction: rx.Var[str] | str = DIR_NEXT) -> rx.Component:
-    """The address and the settle of a flow whose step is changed by many handlers
-    (Tu marca: answering a question, a read profile, an upload all move it on) — the
-    alternative to returning `go_to_step` from each one. An invisible box keyed by
-    ``step``: every step change remounts it, and its mount runs `step_sync_script`.
-    Put it in the frame's body only once the route's ``on_load`` has decided the step,
-    and clear that flag with ``step_frame(on_leave=...)``: a state left from an earlier
-    visit would otherwise write its old step into the address before ``on_load``
-    reads it (PASOS-4 UX review: `/brand?paso=1` opened step 4)."""
+_STEP_SYNC_DOM_JS = (
+    _STEP_GO_JS
+    + r"""
+(() => {
+ if (!window.__qStepSync) {
+  let pending = false;
+  window.__qStepSync = () => {
+   if (pending) return;
+   pending = true;
+   window.requestAnimationFrame(() => {
+    pending = false;
+    const mark = document.querySelector('main.q-panel .q-step-sync');
+    if (!mark) return;
+    const u = new URL(window.location.href);
+    const n = String(Math.max(1, Number(mark.dataset.step) || 1));
+    const entry = window.__qStepEntry;
+    if (entry && u.pathname.replace(/\/$/, '') === entry.path) {
+     if (String(mark.dataset.entry) !== String(entry.epoch)) return;
+     u.searchParams.set('paso', String(entry.step));
+     window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+     window.__qStepBoot = true; delete window.__qStepBootTarget; delete window.__qStepEntry;
+    }
+
+    if (!window.__qStepBoot) {
+     window.__qStepBoot = true;
+     // A cold document may briefly render the previous visit's server state.
+     // Entry clears readiness, restores the requested step and remounts this marker.
+     const requested = u.searchParams.get('paso');
+     if (requested && requested !== n) { window.__qStepBootTarget = requested; return; }
+    }
+    u.searchParams.set('paso', n);
+    if (window.__qStepBootTarget) {
+     delete window.__qStepBootTarget;
+     window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+    } else window.__qStepGo(u.href, mark.dataset.direction === 'back');
+"""
+    + step_settle_script("page")
+    + r"""
+   });
+  };
+  const carries = node => node?.nodeType === 1 &&
+   (node.matches('.q-step-sync') || node.querySelector('.q-step-sync'));
+  new MutationObserver(records => {
+   if (records.some(record => record.type === 'attributes'
+      ? record.target.matches('.q-step-sync')
+      : [...record.addedNodes, ...record.removedNodes].some(carries))) window.__qStepSync();
+  }).observe(document.body, {subtree: true, childList: true, attributes: true,
+    attributeFilter: ['data-step', 'data-direction', 'data-entry']});
+ }
+ window.__qStepSync();
+})();
+"""
+)
+
+
+def step_entry_script(path: str, step: int, epoch: int, requested: str | None) -> str:
+    """ACK a guarded entry only when its corresponding DOM epoch has painted."""
+    payload = json.dumps({"path": path.rstrip("/"), "step": step, "epoch": epoch})
+    return (
+        "(() => { const u=new URL(window.location.href);"
+        f" if (u.pathname.replace(/\\/$/, '') !== {json.dumps(path.rstrip('/'))}"
+        f" || u.searchParams.get('paso') !== {json.dumps(requested)}) return;"
+        f" window.__qStepEntry={payload}; window.__qStepSync?.(); }})();"
+    )
+
+
+def step_sync(
+    step: rx.Var[int], direction: rx.Var[str] | str = DIR_NEXT, *, epoch: int | rx.Var[int] = 0
+) -> rx.Component:
+    """Observe marker data changes: Reflex can memoize the effect outside the DOM key."""
     return rx.box(
         key=step,
-        on_mount=rx.call_script(step_sync_script(step, direction)),
+        custom_attrs={"data-step": step, "data-direction": direction, "data-entry": epoch},
+        on_mount=rx.call_script(_STEP_SYNC_DOM_JS),
         display="none",
         class_name="q-step-sync",
     )
