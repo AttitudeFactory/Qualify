@@ -29,20 +29,31 @@ travels in the URL — the page re-reads the connection list from Postgres on lo
 (counts only: no Page id, no name, no token) — so the page can tell the operator "Meta nos
 mostró 2 Páginas, ninguna con tu Instagram" instead of a sentence they cannot act on. A
 successful outcome carries nothing but its code.
+
+For an account-specific reconnection (m-24854865), the signed state carries a safe
+internal origin and the intended account. The callback returns there with the closed
+`connect` code and a public `reconnect` UUID. The screen re-reads that UUID through its
+tenant-scoped provider for the account label; usernames and credentials stay out of URLs.
+Legacy /inbox and /conversations routes preserve those query values when forwarding to
+the corresponding /responder tab.
 """
 
 from __future__ import annotations
 
 import os
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
+from qualify_api.connections.meta_oauth import MetaOAuthError
+from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.connections.service import ConnectOutcome, ConnectService
-from qualify_api.connections.state_token import InvalidState
+from qualify_api.connections.state_token import InvalidState, safe_return_path
 from qualify_api.http.deps import Principal, current_principal
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
@@ -72,6 +83,9 @@ class StartConnectRequest(BaseModel):
     identity comes from the authenticated `Principal` (C1), never from the body."""
 
     brand_id: UUID | None = None
+    connection_id: UUID | None = None
+    return_to: str = ""
+    cause: str = ""
 
 
 class StartConnectResponse(BaseModel):
@@ -91,11 +105,23 @@ def get_connections_page_url() -> str:
 
 
 def _back_to_connections(
-    page_url: str, code: str, *, pages: int | None = None, linked: int | None = None
+    page_url: str,
+    code: str,
+    *,
+    pages: int | None = None,
+    linked: int | None = None,
+    return_to: str = "",
+    connection_id: UUID | None = None,
 ) -> RedirectResponse:
     # 303, not 302/307: the browser must follow with a GET and never replay the callback
     # (the `state` is single-use; a replay would only ever produce `invalid_state`).
     query: dict[str, str] = {"connect": code}
+    origin = safe_return_path(return_to)
+    if origin:
+        parsed = urlsplit(page_url)
+        page_url = urlunsplit((parsed.scheme, parsed.netloc, origin, "", ""))
+        if connection_id is not None:
+            query["reconnect"] = str(connection_id)
     if pages is not None and linked is not None:
         query["pages"] = str(pages)
         query["linked"] = str(linked)
@@ -113,11 +139,23 @@ def start_connect(
     principal: Principal = Depends(current_principal),
     service: ConnectService = Depends(get_connect_service),
 ) -> StartConnectResponse:
-    return StartConnectResponse(
-        authorization_url=service.start_connect(
-            tenant_id=principal.tenant_id, brand_id=body.brand_id, user_id=principal.user_id
+    kwargs = {}
+    if body.connection_id is not None:
+        kwargs = {
+            "connection_id": body.connection_id,
+            "return_to": body.return_to,
+            "cause": body.cause,
+        }
+    try:
+        authorization_url = service.start_connect(
+            tenant_id=principal.tenant_id,
+            brand_id=body.brand_id,
+            user_id=principal.user_id,
+            **kwargs,
         )
-    )
+    except ConnectionNotFound:
+        raise HTTPException(status_code=404, detail="connection_not_found") from None
+    return StartConnectResponse(authorization_url=authorization_url)
 
 
 @router.get("/callback", response_class=RedirectResponse, status_code=303)
@@ -129,6 +167,17 @@ async def oauth_callback(
     page_url: str = Depends(get_connections_page_url),
 ) -> RedirectResponse:
     if code is None:
+        if state is not None:
+            try:
+                payload = service.consume_callback_state(state)
+            except InvalidState:
+                return _back_to_connections(page_url, INVALID_STATE)
+            return _back_to_connections(
+                page_url,
+                DENIED if error else INVALID_STATE,
+                return_to=payload.return_to,
+                connection_id=payload.connection_id,
+            )
         # No code: either Meta reports the operator declined (`error=access_denied`), or the
         # request is not a real callback at all. Nothing is exchanged and no `state` is spent
         # — an unspent jti simply expires on its TTL.
@@ -136,9 +185,19 @@ async def oauth_callback(
     if state is None:
         return _back_to_connections(page_url, INVALID_STATE)
     try:
+        context = service.callback_context(state)
         result = await service.complete_connect(code=code, state=state)
     except InvalidState:
         return _back_to_connections(page_url, INVALID_STATE)
+    except (MetaOAuthError, httpx.HTTPError, SQLAlchemyError):
+        # complete_connect has already spent its jti. Retry means a new consent flow;
+        # keep only the authenticated original route, never a provider error or token.
+        return _back_to_connections(
+            page_url,
+            "degraded",
+            return_to=context.return_to,
+            connection_id=context.connection_id,
+        )
     if result.outcome in _GUIDED_OUTCOMES:
         return _back_to_connections(
             page_url,
@@ -146,4 +205,9 @@ async def oauth_callback(
             pages=result.page_count,
             linked=result.linked_page_count,
         )
-    return _back_to_connections(page_url, str(result.outcome))
+    return _back_to_connections(
+        page_url,
+        str(result.outcome),
+        return_to=result.return_to,
+        connection_id=result.connection_id,
+    )

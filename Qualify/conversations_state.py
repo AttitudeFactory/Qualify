@@ -780,6 +780,10 @@ class ConversationsState(rx.State):
             self.accounts_loading = False
             self.accounts_loaded = True
             ids = {a.connection_id for a in accounts}
+            returned_connection = str(self.router.url.query_parameters.get("reconnect", ""))
+            if returned_connection in ids and returned_connection != self.selected_connection_id:
+                self.selected_connection_id = returned_connection
+                self._reset_list()
             if self.selected_connection_id not in ids:
                 self.selected_connection_id = default_account(accounts)
                 self._reset_list()

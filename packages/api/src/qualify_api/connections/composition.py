@@ -32,10 +32,10 @@ from functools import cache
 from uuid import UUID
 
 from qualify_api.config import MetaOAuthSettings, redis_url
-from qualify_api.connections.auth_error import ConnectionStatus, degrade_on_auth_error
-from qualify_api.connections.credential_reader import DbCredentialReader
+from qualify_api.connections.credential_reader import CredentialNotFound, DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.events import EventPublisher, InMemoryEventPublisher
+from qualify_api.connections.fsm import ConnectionStatus
 from qualify_api.connections.meta_oauth import HttpMetaOAuthClient
 from qualify_api.connections.page_subscription import (
     GraphPageSubscriptionClient,
@@ -47,6 +47,11 @@ from qualify_api.connections.revoke import (
     PostgresRevocationRepository,
     RevokeResult,
     RevokeService,
+)
+from qualify_api.connections.runtime_health import (
+    ReconnectCause,
+    get_connection_runtime_state,
+    mark_connection_unavailable,
 )
 from qualify_api.connections.service import ConnectService
 from qualify_api.connections.state_token import JtiStore
@@ -115,7 +120,14 @@ def production_revoke_service() -> RevokeService:
 
 
 def start_connect(
-    *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+    *,
+    tenant_id: UUID,
+    brand_id: UUID | None,
+    user_id: UUID,
+    rerequest: bool = False,
+    connection_id: UUID | None = None,
+    return_to: str = "",
+    cause: str = "",
 ) -> str:
     """Register a one-shot `state` and return the Meta authorization URL to redirect to.
 
@@ -127,7 +139,13 @@ def start_connect(
     Postgres is untouched until the callback. Blocking — call it off the event loop.
     """
     return production_connect_service().start_connect(
-        tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, rerequest=rerequest
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        user_id=user_id,
+        rerequest=rerequest,
+        connection_id=connection_id,
+        return_to=return_to,
+        cause=cause,
     )
 
 
@@ -145,26 +163,27 @@ def revoke_connection(*, tenant_id: UUID, connection_id: UUID, actor: str = "use
 
 
 def degrade_connection_on_auth_error(
-    *, tenant_id: UUID, connection_id: UUID
+    *, tenant_id: UUID, connection_id: UUID, expected_credential_version: int | None = None
 ) -> ConnectionStatus | None:
     """QUA-90's published seam — the degrade analogue of `revoke_connection` above.
     Publishing and inbox call this by name (injected as their `connection_degrader`
     dependency, see `publishing/composition.py`/`inbox/composition.py`) when a call they
     were already making to Meta comes back 401/190.
 
-    Reuses the same repositories `production_connect_service`/`production_revoke_service`
-    build from, and the same shared `production_event_publisher()` — no separate publisher
-    instance, for the reason `production_event_publisher`'s own docstring already gives.
-    Never raises; see `degrade_on_auth_error`'s docstring. Blocking — call it off the
+    m-24854864 delegates to the shared runtime-health transaction with a persisted
+    auth_expired cause, row locking and post-commit publication on the same shared
+    `production_event_publisher()`. Never raises on storage/publication failure.
+    Blocking — call it off the
     event loop, same as `revoke_connection`.
     """
-    return degrade_on_auth_error(
+    changed = mark_connection_unavailable(
         tenant_id=tenant_id,
         connection_id=connection_id,
-        reader=PostgresRevocationRepository(),
-        writer=PostgresConnectionRepository(),
+        cause=ReconnectCause.AUTH_EXPIRED,
+        expected_credential_version=expected_credential_version,
         publisher=production_event_publisher(),
     )
+    return ConnectionStatus.DEGRADED if changed else None
 
 
 def check_connection_health(*, tenant_id: UUID, connection_id: UUID) -> bool:
@@ -185,10 +204,9 @@ def check_connection_health(*, tenant_id: UUID, connection_id: UUID) -> bool:
 
     Returns the report's `is_valid` — the one thing a caller needs to decide what to tell
     the operator. Raises `CredentialNotFound`/`TokenHealthError`/`httpx.HTTPError` on a
-    transport or credential-lookup failure; these are infrastructure problems, not a
-    verdict about the token, so unlike `degrade_on_auth_error` this function does NOT
-    swallow them — the Reflex caller surfaces them as an action error, same posture
-    `start_connect`/`revoke_connection` already have for their own infra exceptions.
+    transport or credential-lookup failure. A missing credential records the permanent
+    `missing_credential` diagnosis before re-raising the original error for the UI;
+    a diagnosis-storage failure must never hide that original error.
     Blocking (Postgres, plus a Meta call) — call it off the event loop.
     """
     settings = MetaOAuthSettings.from_env()
@@ -197,10 +215,28 @@ def check_connection_health(*, tenant_id: UUID, connection_id: UUID) -> bool:
         encryptor=DevEncryptor(),
         client=HttpMetaTokenHealthClient(settings),
     )
-    report = checker.check(connection_id)
+    try:
+        state = get_connection_runtime_state(tenant_id=tenant_id, connection_id=connection_id)
+    except Exception:  # noqa: BLE001 - a secondary lookup must not mask the check's own error
+        state = None
+    try:
+        report = checker.check(connection_id)
+    except CredentialNotFound:
+        if state is not None:
+            mark_connection_unavailable(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                cause=ReconnectCause.MISSING_CREDENTIAL,
+                expected_credential_version=state.credential_version,
+            )
+        raise
 
     if not report.is_valid:
-        degrade_connection_on_auth_error(tenant_id=tenant_id, connection_id=connection_id)
+        degrade_connection_on_auth_error(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            expected_credential_version=state.credential_version if state is not None else None,
+        )
         return False
 
     PostgresConnectionRepository().record_health_check(

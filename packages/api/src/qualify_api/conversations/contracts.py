@@ -79,6 +79,7 @@ class SourceConnection:
     connection_id: UUID
     external_account_id: str
     linked_page_id: str | None = None
+    credential_version: int | None = None
 
 
 @dataclass(frozen=True)

@@ -384,3 +384,23 @@ async def test_sender_timeout_after_the_request_went_out_is_ambiguous_not_retrya
         await sender.send(CONNECTION, {"recipient": {"id": "igsid"}, "message": {"text": "x"}})
     assert info.value.is_transport and info.value.is_ambiguous
     assert not info.value.is_retryable and not info.value.is_auth_error
+
+
+async def test_new_credential_version_rebuilds_the_authenticated_client() -> None:
+    from dataclasses import replace
+
+    graph = FakeGraph()
+    graph.routes[("GET", "/p1/conversations")] = (200, {"data": []})
+    factories = []
+
+    async def factory(tenant_id, connection_id):
+        factories.append(connection_id)
+        return graph
+
+    source = InstagramDirectSource(client_factory=factory, graph_url=GRAPH)
+    before = replace(CONNECTION, credential_version=1)
+    after = replace(CONNECTION, credential_version=2)
+    await source.check_access(before)
+    await source.check_access(before)
+    await source.check_access(after)
+    assert factories == [CONNECTION.connection_id, CONNECTION.connection_id]

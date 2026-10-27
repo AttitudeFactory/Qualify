@@ -60,6 +60,7 @@ http.inbox_routes.sync_inbox` (`POST /api/inbox/sync`, B2's acceptance-criterion
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -331,6 +332,8 @@ class InboxService:
         media_client: MediaClient,
         granted_scopes: frozenset[str] = frozenset(),
         connection_degrader: ConnectionDegrader | None = None,
+        connection_unavailable: Callable[..., object] | None = None,
+        credential_version: int | None = None,
         story_comments: bool = False,
         thumbnails: ThumbnailStore | None = None,
     ) -> None:
@@ -346,6 +349,8 @@ class InboxService:
         # opt-in rather than default.
         self._granted_scopes = granted_scopes
         self._degrade = connection_degrader or _no_op_degrader
+        self._unavailable = connection_unavailable
+        self.credential_version = credential_version
         # m-24789644: off unless the caller opts in — see "Story comments" above.
         self._story_comments = story_comments
         self._monitorable = (
@@ -358,9 +363,23 @@ class InboxService:
         self, *, tenant_id: UUID, connection_id: UUID, ig_user_id: str, now: datetime | None = None
     ) -> tuple[CandidateMedia, ...]:
         reference_now = now if now is not None else datetime.now(UTC)
-        recent = await self._media_client.list_recent_media(
-            ig_user_id=ig_user_id, since=reference_now - MONITORING_WINDOW
-        )
+        try:
+            recent = await self._media_client.list_recent_media(
+                ig_user_id=ig_user_id, since=reference_now - MONITORING_WINDOW
+            )
+        except MediaReadError as exc:
+            if _is_auth_error(exc):
+                self._degrade(tenant_id=tenant_id, connection_id=connection_id)
+                raise CommentsAuthExpired(connection_id=connection_id) from exc
+            if exc.platform_code in _PERMISSION_CODES:
+                if self._unavailable is not None:
+                    self._unavailable(
+                        tenant_id=tenant_id,
+                        connection_id=connection_id,
+                        cause="permission_missing",
+                    )
+                raise CommentsPermissionMissing(connection_id=connection_id) from exc
+            raise
         if self._story_comments:
             recent = _merge_by_id(recent, await self._recent_stories(ig_user_id))
         monitored_ids = self._repository.list_monitored_media_ids(
@@ -490,6 +509,10 @@ class InboxService:
         before. `SyncSummary.metadata_failed`/`metadata_deferred` make these rows visible.
         """
         if not set(COMMENTS_EDGE_PERMISSIONS) <= self._granted_scopes:
+            if self._unavailable is not None:
+                self._unavailable(
+                    tenant_id=tenant_id, connection_id=connection_id, cause="permission_missing"
+                )
             raise CommentsPermissionMissing(connection_id=connection_id)
 
         reference_now = now if now is not None else datetime.now(UTC)
@@ -582,6 +605,14 @@ class InboxService:
                         # not a race the UI has to paper over.
                         self._degrade(tenant_id=tenant_id, connection_id=connection_id)
                         raise CommentsAuthExpired(connection_id=connection_id) from exc
+                    if exc.platform_code in _PERMISSION_CODES:
+                        if self._unavailable is not None:
+                            self._unavailable(
+                                tenant_id=tenant_id,
+                                connection_id=connection_id,
+                                cause="permission_missing",
+                            )
+                        raise CommentsPermissionMissing(connection_id=connection_id) from exc
                     if _is_missing_media_error(exc):
                         # Bug fix (2026-09-01): a Reel deleted at the source must not
                         # abort the whole pass the way any OTHER `CommentsReadError`
@@ -682,6 +713,21 @@ class InboxService:
             if _is_auth_error(exc):
                 self._degrade(tenant_id=tenant_id, connection_id=connection_id)
                 raise CommentsAuthExpired(connection_id=connection_id) from exc
+            if exc.platform_code in _PERMISSION_CODES:
+                self._repository.record_media_metadata_failure(
+                    tenant_id=tenant_id,
+                    connection_id=connection_id,
+                    external_media_id=media_id,
+                    error=MetadataFetchError.PERMISSION,
+                    attempted_at=now,
+                )
+                if self._unavailable is not None:
+                    self._unavailable(
+                        tenant_id=tenant_id,
+                        connection_id=connection_id,
+                        cause="permission_missing",
+                    )
+                raise CommentsPermissionMissing(connection_id=connection_id) from exc
             if _is_missing_media_error(exc):
                 self._repository.set_media_monitored(
                     tenant_id=tenant_id,

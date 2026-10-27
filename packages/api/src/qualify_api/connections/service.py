@@ -50,6 +50,7 @@ from qualify_api.connections.events import (
 from qualify_api.connections.fsm import ConnectionStatus, Trigger, apply_transition
 from qualify_api.connections.meta_oauth import LinkedPage, MetaOAuthClient
 from qualify_api.connections.page_subscription import PageSubscriptions
+from qualify_api.connections.read import list_connections
 from qualify_api.connections.repository import (
     ConnectionRepository,
     GrantInput,
@@ -57,6 +58,7 @@ from qualify_api.connections.repository import (
 from qualify_api.connections.state_token import (
     InvalidState,
     JtiStore,
+    StatePayload,
     new_payload,
     sign_state,
     verify_state,
@@ -86,6 +88,8 @@ class ConnectOutcome(StrEnum):
     # task on it — telling such an operator to "link your Instagram" sends them to a setting
     # that is already correct.
     PAGE_ACCESS_REQUIRED = "page_access_required"
+    PERMISSION_MISSING = "permission_missing"
+    ACCOUNT_ACCESS_REQUIRED = "account_access_required"
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,7 @@ class ConnectResult:
     # PII, which is what makes them safe to log and to return.
     page_count: int = 0
     linked_page_count: int = 0
+    return_to: str = ""
 
 
 class ConnectionVerifier(Protocol):
@@ -164,7 +169,15 @@ class ConnectService:
         self._page_subscriptions = page_subscriptions
 
     def start_connect(
-        self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID | None,
+        user_id: UUID,
+        rerequest: bool = False,
+        connection_id: UUID | None = None,
+        return_to: str = "",
+        cause: str = "",
     ) -> str:
         """Register a one-shot `state` and return the authorization URL to redirect to.
 
@@ -172,19 +185,52 @@ class ConnectService:
         the dialog URL (`auth_type=rerequest`, see `HttpMetaOAuthClient.authorization_url`);
         the `state`, its jti and the callback are exactly the same flow.
         """
-        payload = new_payload(tenant_id, brand_id, user_id)
+        external_account_id = ""
+        if connection_id is not None:
+            target = next(
+                (row for row in list_connections(tenant_id) if row.connection_id == connection_id),
+                None,
+            )
+            if target is None or target.platform != _PLATFORM:
+                from qualify_api.connections.revoke import ConnectionNotFound
+
+                raise ConnectionNotFound()
+            brand_id = target.brand_id
+            external_account_id = target.external_account_id
+            cause = target.reconnect_reason or cause
+        payload = new_payload(
+            tenant_id,
+            brand_id,
+            user_id,
+            return_to=return_to if connection_id else "",
+            connection_id=connection_id,
+            external_account_id=external_account_id,
+            cause=cause,
+        )
         self._jti.issue(payload.jti)
         state = sign_state(payload, self._settings.state_secret)
-        return self._oauth.authorization_url(state=state, rerequest=rerequest)
+        return self._oauth.authorization_url(
+            state=state, rerequest=rerequest or cause == "permission_missing"
+        )
 
-    async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
-        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad/replayed `state`."""
+    def consume_callback_state(self, state: str) -> StatePayload:
+        """Validate and spend the signed context, including a cancelled consent dialog."""
         payload = verify_state(
             state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
         )
-        # Atomic GETDEL. A concurrent duplicate callback loses this race and gets nothing.
         if not self._jti.consume(payload.jti):
             raise InvalidState("state already consumed")
+        return payload
+
+    def callback_context(self, state: str) -> StatePayload:
+        """Authenticate routing context without consuming it before the exchange attempt."""
+        return verify_state(
+            state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
+        )
+
+    async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
+        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad/replayed `state`."""
+        payload = self.consume_callback_state(state)
 
         grant = await self._oauth.exchange_code(code)
 
@@ -192,7 +238,27 @@ class ConnectService:
         pages = await self._oauth.list_linked_pages(grant.access_token)
         page_count = len(pages)
         linked_page_count = sum(1 for candidate in pages if candidate.instagram_account_id)
-        page = _first_linked_page(pages)
+        page = (
+            next(
+                (
+                    item
+                    for item in pages
+                    if item.instagram_account_id == payload.external_account_id
+                ),
+                None,
+            )
+            if payload.connection_id is not None
+            else _first_linked_page(pages)
+        )
+        if payload.connection_id is not None and page is None:
+            # The owner entered a different Facebook or did not select this account.
+            # Never persist the first unrelated Instagram returned by that login.
+            return ConnectResult(
+                outcome=ConnectOutcome.ACCOUNT_ACCESS_REQUIRED,
+                connection_id=payload.connection_id,
+                external_username=None,
+                return_to=payload.return_to,
+            )
         if page is None or page.instagram_account_id is None:
             outcome = _no_connection_outcome(pages)
             # Counts only — never a page id, page name, username or token. This is the
@@ -212,6 +278,7 @@ class ConnectService:
                 external_username=None,
                 page_count=page_count,
                 linked_page_count=linked_page_count,
+                return_to=payload.return_to,
             )
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)
@@ -267,6 +334,17 @@ class ConnectService:
         verified = await self._verifier.verify(
             tenant_id=record.tenant_id, connection_id=record.connection_id
         )
+        # A targeted reconnection must restore the capability of its originating screen.
+        # This check is deliberately absent for a first connection: partial grants remain
+        # stored literally, and each feature keeps its own capability gate.
+        required_scope = {
+            "/inbox": "instagram_manage_comments",
+            "/conversations": "instagram_manage_messages",
+        }.get(payload.return_to)
+        permission_missing = bool(
+            payload.connection_id and required_scope and required_scope not in granted_scopes
+        )
+        verified = verified and not permission_missing
         status = self._apply_post_grant_status(
             previous_status=record.previous_status,
             verified=verified,
@@ -274,6 +352,7 @@ class ConnectService:
             tenant_id=record.tenant_id,
             credential_version=record.credential_version,
             now=now,
+            reconnect_reason="permission_missing" if permission_missing else None,
         )
         # m-24789549: install the app on the Page so Meta delivers the account's webhooks
         # and opens the DM window. After the status is settled, and never able to change
@@ -287,11 +366,16 @@ class ConnectService:
                 credential_version=record.credential_version,
             )
         return ConnectResult(
-            outcome=ConnectOutcome.ACTIVE
-            if status == ConnectionStatus.ACTIVE
-            else ConnectOutcome.DEGRADED,
+            outcome=(
+                ConnectOutcome.PERMISSION_MISSING
+                if permission_missing
+                else ConnectOutcome.ACTIVE
+                if status == ConnectionStatus.ACTIVE
+                else ConnectOutcome.DEGRADED
+            ),
             connection_id=record.connection_id,
             external_username=page.instagram_username,
+            return_to=payload.return_to,
         )
 
     def _apply_post_grant_status(
@@ -303,6 +387,7 @@ class ConnectService:
         tenant_id: UUID,
         credential_version: int,
         now: datetime,
+        reconnect_reason: str | None = None,
     ) -> ConnectionStatus:
         """Drive the C-03 FSM to the post-verification status.
 
@@ -332,6 +417,7 @@ class ConnectService:
                 now=now,
             )
 
+        kwargs = {"reconnect_reason": reconnect_reason} if reconnect_reason else {}
         self._repo.record_status(
             connection_id=connection_id,
             tenant_id=tenant_id,
@@ -339,6 +425,7 @@ class ConnectService:
             verified_at=now if verified else None,
             event_type=_audit_event_type(status, verified=verified),
             credential_version=credential_version,
+            **kwargs,
         )
         return status
 
