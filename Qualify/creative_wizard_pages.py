@@ -3076,6 +3076,7 @@ def _frame_step(
             # a flex column, so the step's column centres in the card
             display="flex",
             flex_direction="column",
+            class_name="q-card q-content-ready",
         ),
     )
 
@@ -3103,7 +3104,14 @@ def brand_manual_index() -> rx.Component:
                 _kit_notices(),
                 rx.cond(
                     loading,
-                    _frame_loading(_loading_view("Cargando tu marca")),
+                    rx.vstack(
+                        skeleton_card(3),
+                        skeleton_card(2),
+                        spacing="4",
+                        width="100%",
+                        aria_label="Cargando tu marca",
+                        aria_busy=True,
+                    ),
                     rx.fragment(
                         rx.cond(
                             BrandWizardState.steps_ready,
@@ -7924,7 +7932,14 @@ def brand_connect_index() -> rx.Component:
                 _kit_notices(),
                 rx.cond(
                     CreativeState.kit_loading | ~BrandConnectState.steps_ready,
-                    _frame_loading(_loading_view("Cargando tu marca")),
+                    rx.vstack(
+                        skeleton_card(3),
+                        skeleton_card(2),
+                        spacing="4",
+                        width="100%",
+                        aria_label="Cargando tu marca",
+                        aria_busy=True,
+                    ),
                     rx.cond(
                         BrandConnectState.analyzing,
                         _frame_loading(_connect_loading()),

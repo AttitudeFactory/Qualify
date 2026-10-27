@@ -151,6 +151,7 @@ def _product_picker() -> rx.Component:
             rx.vstack(
                 rx.grid(
                     rx.foreach(VariationsState.products, _product_tile),
+                    class_name="q-content-ready",
                     columns=rx.breakpoints(initial="2", sm="3", lg="4"),
                     spacing="3",
                     width="100%",
@@ -879,6 +880,7 @@ def _angles_review() -> rx.Component:
         ),
         rx.grid(
             rx.foreach(VariationsState.visible_angles, _angle_card),
+            class_name="q-content-ready",
             columns=rx.breakpoints(initial="1", lg="2"),
             spacing="3",
             width="100%",

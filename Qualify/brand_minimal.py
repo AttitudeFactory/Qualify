@@ -62,7 +62,6 @@ from .creative_wizard_pages import (  # the wizards' own controls, shared on pur
     _finish_navigation,
     _labeled_area,
     _labeled_input,
-    _loading_view,
     _logo_step_complete,
     _logo_versions,
     _profile_avatar,
@@ -85,6 +84,7 @@ from .ui import (
     dropzone,
     page_body,
     page_header,
+    skeleton_card,
     step_foot,
     step_frame,
     step_head,
@@ -1080,7 +1080,14 @@ def _step_card() -> rx.Component:
 
 def _loading_card() -> rx.Component:
     return card(
-        _loading_view("Cargando tu marca"),
+        rx.vstack(
+            skeleton_card(3),
+            skeleton_card(2),
+            spacing="4",
+            width="100%",
+            aria_label="Cargando tu marca",
+            aria_busy=True,
+        ),
         padding="1.75rem",
         width="100%",
         display="flex",
@@ -1110,7 +1117,7 @@ def _frame(loading: rx.Var[bool]) -> rx.Component:
                     ),
                 ),
                 rx.text(_heading_for(1), size="3", color=T.TEXT_MUTED, width="100%"),
-                _step_card(),
+                rx.box(_step_card(), class_name="q-content-ready", width="100%"),
             ),
         ),
         head=_head(rx.cond(loading, "Tu marca", _heading_for(0))),

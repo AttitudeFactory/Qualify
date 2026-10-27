@@ -293,7 +293,8 @@ def tab_body() -> rx.Component:
             (TAB_CAMPAIGNS, campaigns_tab()),
             chats_tab(),
         ),
-        key=WhatsAppState.selected_connection_id,
+        key=f"{WhatsAppState.selected_connection_id}:{WhatsAppState.active_tab}",
+        class_name="q-settle q-content-ready",
         width="100%",
     )
 

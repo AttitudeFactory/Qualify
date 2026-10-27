@@ -482,10 +482,17 @@ def test_history_restores_a_known_menu_without_losing_local_edits(
     state.set_guided_greeting("Saludo escrito sin publicar")
     params = {"flujo": "menu", "paso": step, "objeto": state.menu.menu_id}
     monkeypatch.setattr(WhatsAppMenuState, "_flow_params", lambda self: params)
-    assert state.restore_flow() is None
+    event = state.restore_flow()
+    assert "panel.animate" in str(event)
     assert state.guided_step == int(step)
+    assert state.guided_direction == "next"
     assert state.guided.greeting == "Saludo escrito sin publicar"
     assert state.flow_ready
+    params["paso"] = "1"
+    state.restore_flow()
+    assert state.guided_step == 1 and state.guided_direction == "back"
+    assert state.guided.greeting == "Saludo escrito sin publicar"
+    assert not state.publishing and not state.publish_confirm_open
 
 
 def test_history_back_to_menu_root_does_not_reinsert_the_flow(
