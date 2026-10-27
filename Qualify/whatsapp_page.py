@@ -40,12 +40,13 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.route_history import route_history
+from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
 from .whatsapp_tab_campaigns import campaigns_tab
 from .whatsapp_tab_chats import chats_tab
 from .whatsapp_tab_contacts import contacts_tab
-from .whatsapp_tab_menu import menu_tab
+from .whatsapp_tab_menu import menu_step_frame, menu_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     DETAILS_TOGGLE,
@@ -377,8 +378,14 @@ def whatsapp_index() -> rx.Component:
             ack=WhatsAppState.history_ack,
             on_leave=WhatsAppState.leave_page_flows,
         ),
-        whatsapp_header(),
-        _whatsapp_body(),
+        rx.cond(
+            (WhatsAppState.active_tab == TAB_MENU)
+            & (WhatsAppMenuState.loaded_for == WhatsAppState.selected_connection_id)
+            & WhatsAppMenuState.has_menu
+            & ~WhatsAppMenuState.advanced_open,
+            menu_step_frame(),
+            rx.fragment(whatsapp_header(), _whatsapp_body()),
+        ),
     )
 
 

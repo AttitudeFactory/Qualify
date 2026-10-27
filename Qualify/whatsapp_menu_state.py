@@ -53,8 +53,9 @@ from qualify_api.whatsapp.menus.schema import MAX_COMMANDS, MAX_ICE_BREAKERS, Me
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
-from .nav_url import flow_param, uuid_param
+from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
+from .ui.steps import settle_step
 from .ui.steps_vm import guard_step
 from .whatsapp_menu_provider import (
     MenuDetail,
@@ -256,6 +257,8 @@ class WhatsAppMenuState(rx.State):
 
     # -- the menu in four steps (m-24848536) --------------------------------------------
     guided_step: int = 1
+    resume_pending: bool = False
+    publish_confirm_open: bool = False
     flow_ready: bool = False
     advanced_open: bool = False  # «Más opciones (avanzado)»: the full editor
     catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
@@ -522,6 +525,8 @@ class WhatsAppMenuState(rx.State):
 
     def _reset_number_scoped(self) -> None:
         self.flow_ready = False
+        self.resume_pending = False
+        self.publish_confirm_open = False
         self.menus = []
         self.menu = EMPTY_MENU
         self.versions = []
@@ -891,15 +896,20 @@ class WhatsAppMenuState(rx.State):
         requested = flow_param(params, "menu", GUIDED_STEPS)
         if requested:
             g = self.guided
-            self.guided_step = guard_step(
-                requested,
-                [
-                    bool(g.greeting.strip()) and not g.greeting_issue,
-                    not g.buttons_issue,
-                    not g.products_issue,
-                    True,
-                ],
+            self.guided_step = (
+                requested
+                if self.resume_pending
+                else guard_step(
+                    requested,
+                    [
+                        bool(g.greeting.strip()) and not g.greeting_issue,
+                        not g.buttons_issue,
+                        not g.products_issue,
+                        True,
+                    ],
+                )
             )
+            self.resume_pending = False
             self.advanced_open = False
         elif not params.get("flujo"):
             self.guided_step = 1
@@ -919,21 +929,63 @@ class WhatsAppMenuState(rx.State):
         self._restore_flow_step()
         return None
 
+    @rx.var
+    def resume_href(self) -> str:
+        return with_query(
+            "/whatsapp",
+            tab="menu",
+            cuenta=self.loaded_for,
+            flujo="menu",
+            paso=str(self.guided_step),
+            objeto=self.menu.menu_id,
+        )
+
     @rx.event
-    def guided_go(self, step: int) -> None:
+    def guided_go(self, step: int) -> rx.event.EventSpec | None:
+        if self.saving or self.publishing:
+            return None
         if isinstance(step, int) and 1 <= step <= GUIDED_STEPS:
             self.guided_step = step
             self.flow_ready = True
+            return settle_step()
+        return None
 
     @rx.event
-    def guided_next(self) -> None:
-        self.guided_step = min(GUIDED_STEPS, self.guided_step + 1)
-        self.flow_ready = True
+    def guided_next(self) -> rx.event.EventSpec | None:
+        return self.guided_go(min(GUIDED_STEPS, self.guided_step + 1))
 
     @rx.event
-    def guided_back(self) -> None:
-        self.guided_step = max(1, self.guided_step - 1)
-        self.flow_ready = True
+    def guided_back(self) -> rx.event.EventSpec | None:
+        return self.guided_go(max(1, self.guided_step - 1))
+
+    @rx.event
+    def set_publish_confirm_open(self, value: bool) -> None:
+        self.publish_confirm_open = bool(value) and self.can_publish
+
+    @rx.event
+    def guided_primary(self) -> rx.event.EventSpec | None:
+        if self.guided_step < GUIDED_STEPS:
+            return self.guided_next()
+        self.set_publish_confirm_open(True)
+        return None
+
+    @rx.event
+    def save_for_later(self) -> rx.event.EventSpec | None:
+        """Keep the session draft, including incomplete answers, without publishing."""
+        if self.saving or self.publishing:
+            return None
+        self.resume_pending = True
+        self.flow_ready = False
+        self.publish_confirm_open = False
+        return rx.redirect("/")
+
+    @rx.event
+    def leave_guided(self) -> rx.event.EventSpec | None:
+        if self.saving or self.publishing:
+            return None
+        self.flow_ready = False
+        self.publish_confirm_open = False
+        return rx.redirect("/whatsapp?tab=chats")
 
     @rx.event
     def set_advanced(self, value: bool) -> None:

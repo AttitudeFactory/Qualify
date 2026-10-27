@@ -47,6 +47,7 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
+from .ui.steps import step_foot, step_frame, step_head
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ACTION_MORE,
@@ -77,7 +78,6 @@ from .whatsapp_menu_vm import (
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
     SAVE_NEEDS_FIX,
-    SAVE_NOTHING_NEW,
     SAVE_ONLY_BUTTON,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
@@ -379,6 +379,7 @@ def _publish_dialog() -> rx.Component:
             rx.button(
                 rx.icon("send", size=T.ICON_SM),
                 PUBLISH_BUTTON,
+                display=rx.cond(S.advanced_open, "inline-flex", "none"),
                 disabled=~S.can_publish,
                 loading=S.publishing,
                 size="3",
@@ -410,6 +411,8 @@ def _publish_dialog() -> rx.Component:
             ),
             max_width="28rem",
         ),
+        open=S.publish_confirm_open,
+        on_open_change=S.set_publish_confirm_open,
     )
 
 
@@ -2019,78 +2022,10 @@ def _guided_publish() -> rx.Component:
     )
 
 
-def _guided_nav() -> rx.Component:
-    nav = rx.flex(
-        rx.cond(
-            S.guided_step > 1,
-            rx.button(
-                rx.icon("arrow-left", size=T.ICON_SM),
-                "Atrás",
-                on_click=S.guided_back,
-                variant="soft",
-                size="3",
-                min_height=TARGET_MIN,
-                **T.tone_scheme("neutral"),
-            ),
-            rx.fragment(),
-        ),
-        rx.spacer(),
-        rx.cond(
-            S.guided_step < 4,
-            rx.flex(
-                rx.button(
-                    "Guardar y seguir después",
-                    on_click=S.save_current_version,
-                    disabled=~S.can_save | S.publishing,
-                    loading=S.saving & ~S.publishing,
-                    variant="ghost",
-                    size="3",
-                    min_height=TARGET_MIN,
-                    **T.tone_scheme("neutral"),
-                ),
-                rx.button(
-                    "Siguiente",
-                    rx.icon("arrow-right", size=T.ICON_SM),
-                    on_click=S.guided_next,
-                    size="3",
-                    min_height=TARGET_MIN,
-                ),
-                spacing="2",
-                wrap="wrap",
-                justify="end",
-            ),
-            rx.fragment(),
-        ),
-        spacing="2",
-        wrap="wrap",
-        align="center",
-        width="100%",
-    )
-    # Why «Guardar y seguir después» is off, so the owner between customers knows.
-    why_no_save = rx.cond(
-        S.guided_step < 4,
-        rx.cond(
-            S.error_count > 0,
-            _hint(SAVE_NEEDS_FIX),
-            rx.cond(S.has_menu & ~S.dirty, _hint(SAVE_NOTHING_NEW), rx.fragment()),
-        ),
-        rx.fragment(),
-    )
-    return rx.vstack(nav, why_no_save, spacing="2", width="100%", align_items="end")
-
-
 def _guided_card() -> rx.Component:
     """The default view: one decision per step (guide N6), the same form underneath."""
     return card(
         rx.vstack(
-            rx.text(
-                S.guided_step_text,
-                size="1",
-                weight="medium",
-                color=T.TEXT_MUTED,
-                class_name="q-nums",
-            ),
-            rx.heading(S.guided_title, size="4", as_="h2"),
             rx.text(S.guided_help, size="2", color=T.TEXT_MUTED),
             rx.match(
                 S.guided_step,
@@ -2099,7 +2034,6 @@ def _guided_card() -> rx.Component:
                 (3, _guided_products()),
                 _guided_publish(),
             ),
-            _guided_nav(),
             rx.divider(),
             rx.button(
                 rx.icon("settings-2", size=T.ICON_SM),
@@ -2211,4 +2145,31 @@ def menu_tab() -> rx.Component:
         width="100%",
         align_items="start",
         on_mount=S.ensure_loaded,
+    )
+
+
+def menu_step_frame() -> rx.Component:
+    """The guided menu replaces the module header while its four steps are open."""
+    return step_frame(
+        menu_tab(),
+        head=step_head(
+            S.guided_title,
+            step=S.guided_step,
+            total=4,
+            back_label="WhatsApp",
+            on_exit=S.leave_guided,
+        ),
+        foot=step_foot(
+            rx.cond(S.guided_step < 4, "Siguiente", PUBLISH_BUTTON),
+            step=S.guided_step,
+            on_primary=S.guided_primary,
+            on_back=S.guided_back,
+            on_later=S.save_for_later,
+            primary_disabled=S.saving | S.publishing | ((S.guided_step == 4) & ~S.can_publish),
+            primary_loading=S.saving | S.publishing,
+            reason=rx.cond((S.guided_step == 4) & (S.error_count > 0), SAVE_NEEDS_FIX, ""),
+        ),
+        # The editor and the preview own native inputs; history uses flow_sync and
+        # the route's existing POP listener, so changing steps need not remount them.
+        step=1,
     )
