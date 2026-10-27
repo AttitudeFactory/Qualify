@@ -12,14 +12,14 @@
     "render:cli": "node scripts/render-cli.mjs"
   },
   "dependencies": {
-    "@remotion/bundler": "4.0.535",
-    "@remotion/cli": "4.0.535",
-    "@remotion/google-fonts": "4.0.535",
-    "@remotion/renderer": "4.0.535",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "remotion": "4.0.535",
-    "zod": "4.6.6"
+    "@remotion/bundler": "4.0.536",
+    "@remotion/cli": "4.0.536",
+    "@remotion/google-fonts": "4.0.536",
+    "@remotion/renderer": "4.0.536",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.536",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
