@@ -6,7 +6,7 @@ They pin:
 2. The Meta enum → (label, tone) mapping uses design-system tones only, and an unknown
    enum value surfaces as itself instead of disappearing.
 3. The QR «canal» prefixes — a contract WA-17 measures, so a silent edit fails here.
-4. Graph errors show the Meta code only; an auth error shows `WHATSAPP_RECONNECT_HINT`.
+4. Graph errors hide internal codes; an auth error points to the Qualify team.
 5. The shell renders, the Chats/Menú placeholders exist behind the agreed hooks, the
    route is registered behind `require_login`, and the nav item sits after Conexiones.
 """
@@ -152,7 +152,7 @@ def test_number_label_composes_the_verified_name() -> None:
 
 @pytest.mark.parametrize(
     ("status", "tone"),
-    [("active", "ok"), ("degraded", "warn"), ("revoked", "error"), ("weird", "neutral")],
+    [("active", "ok"), ("degraded", "warn"), ("revoked", "warn"), ("weird", "neutral")],
 )
 def test_connection_status_tones(status: str, tone: str) -> None:
     assert _number(status=status).status_tone == tone
@@ -288,15 +288,15 @@ def test_qr_vm_without_image() -> None:
 def test_auth_error_shows_the_reconnect_hint() -> None:
     assert graph_error_notice(code=190, is_auth_error=True, is_transport=False) == (
         WHATSAPP_RECONNECT_HINT,
-        "error",
+        "warn",
     )
 
 
-def test_graph_error_shows_the_meta_code_only() -> None:
+def test_graph_error_hides_internal_codes_and_provider_jargon() -> None:
     message, tone = graph_error_notice(code=131009, is_auth_error=False, is_transport=False)
-    assert "131009" in message and tone == "warn"
+    assert "131009" not in message and "código" not in message and tone == "warn"
     message, tone = graph_error_notice(code=None, is_auth_error=False, is_transport=True)
-    assert tone == "warn" and "Meta" in message
+    assert tone == "warn" and "WhatsApp" in message and "Meta" not in message
 
 
 # --- 5. shell, placeholders, route, nav ------------------------------------------------
@@ -401,7 +401,7 @@ def test_sections_and_subs_of_a_panel() -> None:
         ("active", "GREEN", "BANNED", "error"),
         ("pending", None, None, "info"),
         ("degraded", "GREEN", "CONNECTED", "warn"),
-        ("revoked", "GREEN", "CONNECTED", "error"),
+        ("revoked", "GREEN", "CONNECTED", "warn"),
     ],
 )
 def test_the_number_in_one_line(
@@ -415,7 +415,10 @@ def test_the_number_in_one_line(
     if status in {"degraded", "revoked"} or platform == "BANNED":
         # UX review: the owner reads what happened and gets a button to ask for help,
         # never the administrative «vuelva a ejecutar la conexión» hint.
-        assert label != WHATSAPP_RECONNECT_HINT and "Pide que" in label
+        assert "Meta" not in label
+        if status in {"degraded", "revoked"}:
+            assert WHATSAPP_RECONNECT_HINT in label
+            assert "guardados siguen aquí" in label
         assert needs_help(label)
     else:
         assert not needs_help(label)
@@ -427,13 +430,13 @@ def test_a_failing_number_offers_the_review_request() -> None:
     assert not needs_help(_number().health_label)
     source = (_HERE / "whatsapp_page.py").read_text()
     assert "rx.cond(WhatsAppState.number_needs_help, _review_request()" in source
-    assert REVIEW_ACTION == "Pedir que revisen mi WhatsApp"
+    assert REVIEW_ACTION == "Avisar al equipo de Qualify"
 
 
 def test_number_vm_carries_its_line() -> None:
     vm = _number()
     assert (vm.health_label, vm.health_tone) == ("Tu WhatsApp funciona bien ✓", "ok")
-    assert _number(status="revoked").health_tone == "error"
+    assert _number(status="revoked").health_tone == "warn"
 
 
 def test_no_number_state_has_a_next_step() -> None:

@@ -16,6 +16,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
@@ -100,6 +101,14 @@ class SocialConnection(Base):
     # When a "Verificar ahora" click last ran /debug_token against this connection.
     # Manual-trigger-only (QUA-91) — never written by a scheduler; there isn't one.
     last_health_checked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # m-24854864: shared server-side diagnosis; never infer a cause from UI exceptions.
+    reconnect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    temporary_failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    recovery_refresh_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
 
 
 class OAuthCredential(Base):

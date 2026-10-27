@@ -142,6 +142,7 @@ from qualify_api.creative.vendor_tasks import (
     resumable,
     snapshot,
 )
+from qualify_api.creative.versions import visible_version
 
 logger = logging.getLogger(__name__)
 #: Every vendor call of a generation and its cost, one line each plus a total per
@@ -254,6 +255,23 @@ class DraftRecord:
     revision: int = 1
     approved_revision: int | None = None
     failure_detail: str | None = None
+    #: m-24828906: the version the screen shows. None = a draft that failed its first
+    #: generation has no version to show.
+    active_version_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class VersionSummary:
+    """One row of `piece_versions` as the version selector shows it (m-24828906):
+    revision, when it was made, whether it came out, and its provenance and cost."""
+
+    revision: int
+    created_at: datetime
+    status: str  # 'active' | 'failed'
+    model_id: str
+    model_revision: str | None
+    spent_usd: Decimal
+    id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +335,14 @@ class DraftDetail:
     #: m-24852154: still `drafting` because its video waits in the vendor's queue past
     #: the usual time — the screen says so (it will land in Por aprobar on its own).
     waiting_vendor: bool = False
+    #: m-24828906: every version of this draft, ordered by revision (the version
+    #: selector), and the one the screen shows (the rest can be reactivated without
+    #: paying another generation).
+    versions: tuple[VersionSummary, ...] = ()
+    active_version_id: UUID | None = None
+    viewed_version_id: UUID | None = None
+    is_version_preview: bool = False
+    can_restore_version: bool = False
 
     @property
     def warnings(self) -> tuple[DraftWarning, ...]:
@@ -469,6 +495,10 @@ class DraftBundle:
     image: ImageRecord | None
     media: tuple[ImageRecord, ...]
     kind: str | None
+    #: m-24828906: every version of this draft (ordered by revision) and the one the
+    #: screen shows. Empty for drafts created before 0098 backfill touched them.
+    versions: tuple[VersionSummary, ...] = ()
+    active_version_id: UUID | None = None
 
 
 class ContentRepository(Protocol):
@@ -644,6 +674,7 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
         revision=row.revision,
         approved_revision=row.approved_revision,
         failure_detail=row.failure_detail,
+        active_version_id=row.active_version_id,
     )
 
 
@@ -702,6 +733,9 @@ def _detail(bundle: DraftBundle) -> DraftDetail:
         revision=record.revision,
         approved_revision=record.approved_revision,
         failure_detail=record.failure_detail,
+        versions=bundle.versions,
+        active_version_id=record.active_version_id,
+        viewed_version_id=record.active_version_id,
     )
 
 
@@ -795,8 +829,31 @@ class PostgresContentRepository:
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
         with tenant_session(tenant_id) as session:
-            row = session.get(orm.ContentDraft, draft_id)
+            row = session.get(orm.ContentDraft, draft_id, with_for_update=True)
+            if row is not None and row.status == FAILED:
+                from qualify_api.creative.versions import snapshot_current
+
+                snapshot_current(session, row)
             return None if row is None else _draft_record(row)
+
+    def versions_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[VersionSummary, ...]:
+        with tenant_session(tenant_id) as session:
+            return tuple(
+                VersionSummary(
+                    id=row.id,
+                    revision=row.revision,
+                    created_at=row.created_at,
+                    status=row.status,
+                    model_id=row.model_id,
+                    model_revision=row.model_revision,
+                    spent_usd=row.spent_usd,
+                )
+                for row in session.scalars(
+                    select(orm.PieceVersion)
+                    .where(orm.PieceVersion.draft_id == draft_id)
+                    .order_by(orm.PieceVersion.revision.asc())
+                )
+            )
 
     def get_brief(self, *, tenant_id: UUID, brief_id: UUID) -> ContentBrief | None:
         with tenant_session(tenant_id) as session:
@@ -842,20 +899,42 @@ class PostgresContentRepository:
                 .outerjoin(orm.ContentBrief, orm.ContentBrief.id == orm.ContentDraft.brief_id)
                 .where(orm.ContentDraft.id.in_(ids))
             ).all()
+            for draft, _kind in drafts:
+                if draft.status == FAILED:
+                    from qualify_api.creative.versions import snapshot_current
+
+                    snapshot_current(session, draft)
             variants: dict[UUID, list[VariantRecord]] = {}
             for row in session.scalars(
                 select(orm.CopyVariant)
-                .where(orm.CopyVariant.draft_id.in_(ids))
+                .where(orm.CopyVariant.draft_id.in_(ids), visible_version(orm.CopyVariant))
                 .order_by(orm.CopyVariant.draft_id, orm.CopyVariant.ordinal)
             ):
                 variants.setdefault(row.draft_id, []).append(_variant_record(row))
             assets: dict[UUID, list[orm.ImageAsset]] = {}
             for row in session.scalars(
                 select(orm.ImageAsset)
-                .where(orm.ImageAsset.draft_id.in_(ids))
+                .where(orm.ImageAsset.draft_id.in_(ids), visible_version(orm.ImageAsset))
                 .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             ):
                 assets.setdefault(row.draft_id, []).append(row)
+            versions: dict[UUID, list[VersionSummary]] = {}
+            for row in session.scalars(
+                select(orm.PieceVersion)
+                .where(orm.PieceVersion.draft_id.in_(ids))
+                .order_by(orm.PieceVersion.revision)
+            ):
+                versions.setdefault(row.draft_id, []).append(
+                    VersionSummary(
+                        id=row.id,
+                        revision=row.revision,
+                        created_at=row.created_at,
+                        status=row.status,
+                        model_id=row.model_id,
+                        model_revision=row.model_revision,
+                        spent_usd=row.spent_usd,
+                    )
+                )
             bundles: dict[UUID, DraftBundle] = {}
             for draft, kind in drafts:
                 rows = assets.get(draft.id, [])
@@ -867,6 +946,7 @@ class PostgresContentRepository:
                     image=_image_record(first) if first is not None else None,
                     media=tuple(_image_record(a) for a in rows),
                     kind=kind,
+                    versions=tuple(versions.get(draft.id, ())),
                 )
             return bundles
 
@@ -915,6 +995,7 @@ class PostgresContentRepository:
         failure_detail: str | None = None,
         template_run: TemplateRunWrite | None = None,
         requires_ai_disclosure: bool | None = None,
+        expected_revision: int | None = None,
     ) -> None:
         """One transaction for the whole outcome. Usage rows and spend are written even
         if the draft lost a race with the reaper — the money was spent either way, and
@@ -923,26 +1004,72 @@ class PostgresContentRepository:
         ``requires_ai_disclosure`` (PR #100 review): the label as recomputed from the media
         this generation actually made; ``None`` leaves the draft's value as it is."""
         with tenant_session(tenant_id) as session:
-            draft = session.get(orm.ContentDraft, draft_id)
-            if variants:
-                # A regeneration replaces the draft's copy too (2026-10-09): the new
-                # variants carry the same ordinals as the old ones, and
-                # `uq_copy_variant_ordinal` refused them — after the money was spent.
-                # The old rows go, and so does a selection that pointed at one of them
-                # (the approval it backed was of the previous revision).
-                for old in session.scalars(
-                    select(orm.CopyVariant).where(orm.CopyVariant.draft_id == draft_id)
-                ):
-                    session.delete(old)
-                if draft is not None:
-                    draft.selected_variant_id = None
+            from qualify_api.creative.versions import snapshot_current
+
+            draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            if (
+                expected_revision is not None
+                and (draft.revision != expected_revision or draft.status != DRAFTING)
+            ) or (new_status == DRAFTING):
+                # Record paid work, but neither a pending checkpoint nor a stale worker
+                # is a completed version of the current publication.
+                _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd)
+                return
+            initial_partial = (
+                draft.status == DRAFTING and draft.revision == 1 and draft.active_version_id is None
+            )
+            if not initial_partial:
+                snapshot_current(session, draft)
+            kept = (failure_detail or "").startswith(KEPT_PREVIOUS_PREFIX)
+            succeeded = new_status == GENERATED and not kept
+            version = session.scalar(
+                select(orm.PieceVersion).where(
+                    orm.PieceVersion.draft_id == draft_id,
+                    orm.PieceVersion.revision == draft.revision,
+                )
+            )
+            if version is None:
+                first = media[0] if media else variants[0] if variants else None
+                version = orm.PieceVersion(
+                    id=uuid4(),
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    draft_id=draft_id,
+                    revision=draft.revision,
+                    status="active" if succeeded else "failed",
+                    model_id=getattr(first, "model_id", None)
+                    or (usage[-1].model_id if usage else ""),
+                    model_revision=(
+                        getattr(first, "model_revision", None)
+                        or (getattr(first, "params", None) or {}).get("model_revision")
+                    ),
+                    pipeline_version=draft.pipeline_version,
+                    requires_ai_disclosure=(
+                        requires_ai_disclosure
+                        if requires_ai_disclosure is not None
+                        else draft.requires_ai_disclosure
+                    ),
+                    spent_usd=spent_usd,
+                    failure_reason=failure_reason,
+                    failure_detail=failure_detail,
+                )
+                session.add(version)
                 session.flush()
+            else:
+                # A completed generation is immutable: retries cannot overwrite its history.
+                _add_usage(session, tenant_id, brand_id, draft_id, usage)
+                _add_spend(session, brand_id, spent_usd)
+                return
             for write in variants:
                 session.add(
                     orm.CopyVariant(
                         tenant_id=tenant_id,
                         draft_id=draft_id,
                         ordinal=write.ordinal,
+                        version_id=version.id,
                         copy=dict(write.copy),
                         fidelity=dict(write.fidelity),
                         model_id=write.model_id,
@@ -950,17 +1077,6 @@ class PostgresContentRepository:
                     )
                 )
             _add_usage(session, tenant_id, brand_id, draft_id, usage)
-            if media or variants:
-                # A regeneration replaces the draft's media: the old files stay on disk
-                # (provenance), the rows describe what the draft shows now. Also when the
-                # new media FAILED after new copy was written (PR #100 review): a draft
-                # with this revision's text and the previous revision's images would be
-                # lying — it shows no media until a generation makes some.
-                for old in session.scalars(
-                    select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
-                ):
-                    session.delete(old)
-                session.flush()
             if template_run is not None:
                 # The render job as Python saw it (0038) — written before the assets that
                 # reference it, and also when the run failed: the attempt is the evidence.
@@ -1002,6 +1118,7 @@ class PostgresContentRepository:
                     orm.ImageAsset(
                         tenant_id=tenant_id,
                         draft_id=draft_id,
+                        version_id=version.id,
                         media_url=item.media_url,
                         object_key=item.object_key,
                         width=item.width,
@@ -1017,10 +1134,28 @@ class PostgresContentRepository:
                         content_type=item.content_type,
                     )
                 )
+            if succeeded:
+                draft.active_version_id = version.id
+                draft.selected_variant_id = None
+                if initial_partial:
+                    # Initial pipeline checkpoints may already have saved copy or media.
+                    # Adopt those rows unless this completion supplied replacements.
+                    for model, writes in ((orm.CopyVariant, variants), (orm.ImageAsset, media)):
+                        for partial in session.scalars(
+                            select(model).where(
+                                model.draft_id == draft_id, model.version_id.is_(None)
+                            )
+                        ):
+                            if writes:
+                                session.delete(partial)
+                            else:
+                                partial.version_id = version.id
+            if template_run is not None:
+                version.template_run_id = template_run.id
             _add_spend(session, brand_id, spent_usd)
-            if draft is not None and (media or variants):
+            if draft is not None and succeeded and (media or variants):
                 draft.preview_key = preview_of(media)
-            if draft is not None and requires_ai_disclosure is not None:
+            if draft is not None and succeeded and requires_ai_disclosure is not None:
                 draft.requires_ai_disclosure = requires_ai_disclosure
             if draft is not None and draft.status == DRAFTING:
                 draft.status = new_status
@@ -1071,6 +1206,9 @@ class PostgresContentRepository:
             draft = session.get(orm.ContentDraft, draft_id)
             if draft is None:
                 raise UnknownDraft(str(draft_id))
+            from qualify_api.creative.versions import snapshot_current
+
+            snapshot_current(session, draft, revision=draft.revision)
             draft.revision += 1
             return draft.revision
 
@@ -1119,7 +1257,7 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
                 select(orm.CopyVariant)
-                .where(orm.CopyVariant.draft_id == draft_id)
+                .where(orm.CopyVariant.draft_id == draft_id, visible_version(orm.CopyVariant))
                 .order_by(orm.CopyVariant.ordinal)
             )
             return tuple(_variant_record(row) for row in rows)
@@ -1128,7 +1266,7 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             row = session.scalars(
                 select(orm.ImageAsset)
-                .where(orm.ImageAsset.draft_id == draft_id)
+                .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
                 .order_by(orm.ImageAsset.created_at)
             ).first()
             if row is None:
@@ -1139,7 +1277,7 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
                 select(orm.ImageAsset)
-                .where(orm.ImageAsset.draft_id == draft_id)
+                .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
                 .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             )
             return tuple(_image_record(row) for row in rows)
@@ -1151,6 +1289,7 @@ class PostgresContentRepository:
                 .where(
                     orm.ImageAsset.draft_id == draft_id,
                     orm.ImageAsset.params.has_key("draft"),
+                    visible_version(orm.ImageAsset),
                 )
                 .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             )
@@ -1158,7 +1297,11 @@ class PostgresContentRepository:
 
     def get_variant(self, *, tenant_id: UUID, variant_id: UUID) -> VariantRecord | None:
         with tenant_session(tenant_id) as session:
-            row = session.get(orm.CopyVariant, variant_id)
+            row = session.scalar(
+                select(orm.CopyVariant).where(
+                    orm.CopyVariant.id == variant_id, visible_version(orm.CopyVariant)
+                )
+            )
             return None if row is None else _variant_record(row)
 
     def set_edited_copy(
@@ -1287,7 +1430,9 @@ class PostgresContentRepository:
             if draft is not None:
                 rows = tuple(
                     session.scalars(
-                        select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
+                        select(orm.ImageAsset).where(
+                            orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset)
+                        )
                     )
                 )
                 draft.preview_key = preview_of(rows)  # type: ignore[arg-type]
@@ -1679,6 +1824,11 @@ class ContentService:
 
     # -- generation ---------------------------------------------------------
 
+    def _finish_generation(self, draft: DraftRecord, **kwargs: Any) -> None:
+        if isinstance(self._repo, PostgresContentRepository):
+            kwargs["expected_revision"] = draft.revision
+        self._repo.finish_generation(**kwargs)
+
     def run_generation(self, *, tenant_id: UUID, draft_id: UUID) -> None:
         """Generate the copy variants for a ``DRAFTING`` draft.
 
@@ -1700,13 +1850,19 @@ class ContentService:
         except CheckpointError:
             raise
         except CopyRefused:
-            self._fail(tenant_id=tenant_id, draft_id=draft_id, reason=FailureReason.REFUSAL.value)
+            self._fail(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                reason=FailureReason.REFUSAL.value,
+                expected_revision=draft.revision,
+            )
         except Exception:
             logger.exception("generation failed unexpectedly for draft %s", draft_id)
             self._fail(
                 tenant_id=tenant_id,
                 draft_id=draft_id,
                 reason=FailureReason.PROVIDER_ERROR.value,
+                expected_revision=draft.revision,
             )
         self._refund_if_not_delivered(
             tenant_id=tenant_id, draft_id=draft_id, revision=draft.revision
@@ -2070,7 +2226,8 @@ class ContentService:
             new_status = apply_transition(
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure
             )
-            self._repo.finish_generation(
+            self._finish_generation(
+                draft,
                 tenant_id=tenant_id,
                 draft_id=draft.id,
                 brand_id=draft.brand_id,
@@ -2161,7 +2318,8 @@ class ContentService:
                 # m-24852154: the video is still in BytePlus's hands. The draft stays
                 # `drafting` (no refund), what this run paid is recorded, and a later
                 # run resumes the task by id; the copy rides in the task's record.
-                self._repo.finish_generation(
+                self._finish_generation(
+                    draft,
                     tenant_id=tenant_id,
                     draft_id=draft.id,
                     brand_id=draft.brand_id,
@@ -2213,7 +2371,8 @@ class ContentService:
                 template_run=template_run,
             )
             return
-        self._repo.finish_generation(
+        self._finish_generation(
+            draft,
             tenant_id=tenant_id,
             draft_id=draft.id,
             brand_id=draft.brand_id,
@@ -2289,7 +2448,8 @@ class ContentService:
         draft is `generated` again with a note saying the new version did not come out."""
         reason = detail.rstrip(". ") if detail else "algo falló al generarla"
         note = f"{KEPT_PREVIOUS_PREFIX} {reason}. Se mantiene la versión anterior."
-        self._repo.finish_generation(
+        self._finish_generation(
+            draft,
             tenant_id=tenant_id,
             draft_id=draft.id,
             brand_id=draft.brand_id,
@@ -2382,11 +2542,26 @@ class ContentService:
         ``per_mtok_in``/``per_mtok_out``."""
         return call_cost(self._pricing, usage, model_id)
 
-    def _fail(self, *, tenant_id: UUID, draft_id: UUID, reason: str) -> None:
+    def _fail(
+        self, *, tenant_id: UUID, draft_id: UUID, reason: str, expected_revision: int | None = None
+    ) -> None:
         """Terminal-failure write, guarded by state so it never overwrites a draft some
         other path (reaper, concurrent run) already settled."""
         draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
-        if draft is None or draft.status != DRAFTING:
+        if (
+            draft is None
+            or draft.status != DRAFTING
+            or (expected_revision is not None and draft.revision != expected_revision)
+        ):
+            return
+        if isinstance(self._repo, PostgresContentRepository) and draft.active_version_id:
+            self._keep_previous_version(
+                tenant_id=tenant_id,
+                draft=draft,
+                usage=[],
+                spent=Decimal(0),
+                detail="No se pudo generar la nueva versi\u00f3n",
+            )
             return
         new_status = apply_transition(
             draft.status, DraftTrigger.GENERATE_FAIL, failure_reason=reason
@@ -2408,6 +2583,11 @@ class ContentService:
                 image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
                 media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
                 kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
+                versions=(
+                    self._repo.versions_for(tenant_id=tenant_id, draft_id=draft_id)
+                    if isinstance(self._repo, PostgresContentRepository)
+                    else ()
+                ),
             )
         )
         if detail.status != DRAFTING or self._vendor_tasks is None:
@@ -2415,6 +2595,73 @@ class ContentService:
         # m-24852154: the screen waiting on this piece is what resumes its vendor task
         self._sweep(tenant_id)
         return replace(detail, waiting_vendor=detail.id in self._waiting(tenant_id, [detail]))
+
+    def preview_version(self, *, tenant_id: UUID, draft_id: UUID, version_id: UUID) -> DraftDetail:
+        from qualify_api.creative.versions import version_row
+
+        detail = self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+        if version_id == detail.active_version_id and detail.status != FAILED:
+            return detail
+        with tenant_session(tenant_id) as session:
+            version = version_row(session, draft_id, version_id)
+            variants = tuple(
+                _variant_record(row)
+                for row in session.scalars(
+                    select(orm.CopyVariant)
+                    .where(
+                        orm.CopyVariant.draft_id == draft_id,
+                        orm.CopyVariant.version_id == version_id,
+                    )
+                    .order_by(orm.CopyVariant.ordinal)
+                )
+            )
+            media = tuple(
+                _image_record(row)
+                for row in session.scalars(
+                    select(orm.ImageAsset)
+                    .where(
+                        orm.ImageAsset.draft_id == draft_id, orm.ImageAsset.version_id == version_id
+                    )
+                    .order_by(orm.ImageAsset.position)
+                )
+            )
+            return replace(
+                detail,
+                status=GENERATED,
+                failure_reason=None,
+                failure_detail=None,
+                variants=variants,
+                media=media,
+                image=media[0] if media else None,
+                selected_variant_id=None,
+                viewed_version_id=version_id,
+                is_version_preview=True,
+                can_restore_version=detail.status in {GENERATED, REJECTED, FAILED, APPROVED},
+                requires_ai_disclosure=version.requires_ai_disclosure,
+            )
+
+    def restore_version(self, *, tenant_id: UUID, draft_id: UUID, version_id: UUID) -> DraftDetail:
+        from qualify_api.creative.versions import restore
+
+        with tenant_session(tenant_id) as session:
+            restore(session, draft_id, version_id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
+    def approve_version(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        version_id: UUID,
+        variant_id: UUID,
+        user_id: UUID,
+    ) -> DraftDetail:
+        """Approve the selected saved variant; a refused approval restores nothing."""
+        with tenant_unit_of_work(tenant_id):
+            self.restore_version(tenant_id=tenant_id, draft_id=draft_id, version_id=version_id)
+            return self.approve(
+                tenant_id=tenant_id, draft_id=draft_id, variant_id=variant_id, user_id=user_id
+            )
 
     def video_drafts_state(
         self, *, tenant_id: UUID, draft_id: UUID
@@ -2563,7 +2810,9 @@ class ContentService:
             # only what THIS approval charged is undone
             if charge_id is not None and self._creations is not None:
                 self._creations.uncharge_videos(
-                    tenant_id=tenant_id, draft_id=draft_id, revision=record.revision
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    revision=record.revision,
                 )
             raise
         # the operator's verdict, on the generation's Langfuse trace (plan §8)
@@ -2584,12 +2833,52 @@ class ContentService:
             logger.exception("draft %s approved, but its finals could not be ordered", draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
+    def _generation_revision(self, tenant_id: UUID, record: DraftRecord) -> int:
+        if isinstance(self._repo, PostgresContentRepository) and record.active_version_id:
+            with tenant_session(tenant_id) as session:
+                revision = session.scalar(
+                    select(orm.PieceVersion.revision).where(
+                        orm.PieceVersion.id == record.active_version_id,
+                        orm.PieceVersion.draft_id == record.id,
+                    )
+                )
+                if revision is not None:
+                    return revision
+        return record.revision
+
     def _videos_of(self, tenant_id: UUID, record: DraftRecord) -> int:
         """How many of the month's videos approving this generation uses: its Seedance
         videos (a clip 1, a carousel one per animated slide) — 0 for anything else, or
         without a quota."""
         if self._creations is None:
             return 0
+        if isinstance(self._repo, PostgresContentRepository) and record.active_version_id:
+            with tenant_session(tenant_id) as session:
+                charged = session.scalar(
+                    select(orm.CreationCharge.videos).where(
+                        orm.CreationCharge.draft_id == record.id,
+                        orm.CreationCharge.revision == self._generation_revision(tenant_id, record),
+                    )
+                )
+                if charged:
+                    return 0
+            with tenant_session(tenant_id) as session:
+                videos = tuple(
+                    _image_record(row)
+                    for row in session.scalars(
+                        select(orm.ImageAsset).where(
+                            orm.ImageAsset.draft_id == record.id,
+                            orm.ImageAsset.version_id == record.active_version_id,
+                            orm.ImageAsset.params.has_key("draft"),
+                        )
+                    )
+                )
+            if videos and all(
+                (draft_state(asset.params) or {}).get("status") not in (DRAFT_READY, DRAFT_FAILED)
+                for asset in videos
+            ):
+                # Rendering/finalized saved media does not order another paid final.
+                return 0
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
             return 0
@@ -2613,7 +2902,7 @@ class ContentService:
         )
 
     def approval_videos(
-        self, *, tenant_id: UUID, draft_id: UUID
+        self, *, tenant_id: UUID, draft_id: UUID, version_id: UUID | None = None
     ) -> tuple[int, CreationsBalance] | None:
         """What approving this piece uses of the month's videos, with the balance — for
         «Al aprobar usas 1 de tus 4 videos del mes» before the owner approves. None when
@@ -2621,7 +2910,15 @@ class ContentService:
         if self._creations is None:
             return None
         record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
-        if record is None or record.status != GENERATED:
+        if record is None:
+            return None
+        if version_id is not None:
+            from qualify_api.creative.versions import version_row
+
+            with tenant_session(tenant_id) as session:
+                version_row(session, draft_id, version_id)
+            record = replace(record, active_version_id=version_id)
+        elif record.status != GENERATED:
             return None
         videos = self._videos_of(tenant_id, record)
         if not videos:

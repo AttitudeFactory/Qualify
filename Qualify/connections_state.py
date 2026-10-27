@@ -74,11 +74,13 @@ _DISCONNECT_FAILED = "No pudimos desconectar la cuenta. Vuelve a intentarlo en u
 # "belongs to another tenant" (RLS makes them the same read), and answering "listo,
 # revocada" to an id the operator does not own is precisely the bug being fixed.
 _NOT_FOUND = "Esa conexión ya no existe. Actualizamos la lista con el estado real."
-_CONNECT_FAILED = "No se pudo iniciar la conexión con Meta. Vuelve a intentarlo en un momento."
+_CONNECT_FAILED = "No se pudo iniciar la conexión con Facebook. Vuelve a intentarlo en un momento."
 _NO_ACTING_USER = (
     "No encontramos a la persona dueña de esta cuenta. Pide ayuda al equipo de Qualify."
 )
-_HEALTH_CHECK_FAILED = "No pudimos comprobar tu cuenta con Meta. Vuelve a intentarlo en un momento."
+_HEALTH_CHECK_FAILED = (
+    "No pudimos comprobar tu cuenta con Facebook. Vuelve a intentarlo en un momento."
+)
 
 
 #: m-24842961: the query parameter another screen uses to land here with the

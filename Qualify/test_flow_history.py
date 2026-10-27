@@ -454,3 +454,24 @@ document.querySelector=s=>s==='main.q-panel .q-step-sync'?mark:null;
         + "console.log(JSON.stringify({href:entries[pos].href,pos}));"
     )
     assert _node(script) == {"href": path + "?paso=1", "pos": 0}
+
+
+@pytest.mark.parametrize("path", ["/create", "/publish"])
+@pytest.mark.parametrize("slash_first", [False, True])
+def test_two_back_writers_share_one_pending_target_across_trailing_slash(path, slash_first):
+    from .ui.steps import step_address_script
+
+    first = path + ("/" if slash_first else "") + "?paso=1"
+    second = path + ("" if slash_first else "/") + "?paso=1"
+    script = (
+        f"""
+let calls=0;
+const window={{location:{{href:'https://qualify.test{path}/?paso=2',
+ pathname:'{path}/',search:'?paso=2',hash:''}},addEventListener(){{}},
+ history:{{state:{{qPrevPaso:'1'}},back(){{calls++;}}}}}};
+"""
+        + step_address_script(json.dumps(first), back=True)
+        + step_address_script(json.dumps(second), back=True)
+        + "console.log(JSON.stringify({calls}));"
+    )
+    assert _node(script) == {"calls": 1}

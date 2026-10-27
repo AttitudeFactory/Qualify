@@ -64,7 +64,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Conversaciones",
         "Elige una conversación",
         "Responder",
-        "Reconectar",
+        "Volver a conectar",
         "por verificar",
         "Ir a Tus redes",
         "Aún no hay una cuenta de Instagram conectada",
@@ -110,6 +110,17 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         assert handler in rendered, handler
     # The old 1000-character counter is gone: a long text is split, not refused.
     assert "/1000" not in rendered
+
+
+def test_recovery_notice_keeps_the_direct_reconnect_action_and_help() -> None:
+    from .conversations_page import _reconnect_link
+
+    rendered = str(_reconnect_link().render())
+    assert "Volver a conectar" in rendered
+    assert "Pide ayuda" in rendered
+    assert "start_reconnect" in rendered
+    assert "open_support" in rendered
+    assert 'href="/connections"' not in rendered
 
 
 def test_no_except_clause_nests_the_db_error_tuple() -> None:

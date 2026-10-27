@@ -53,6 +53,7 @@ from typing import Any, Final, Protocol
 
 from qualify_api.conversations.choices import choice_label as tap_origin
 
+from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
 # ======================================================================================
@@ -195,7 +196,7 @@ _FAILURE_LABELS: dict[str, str] = {
     "window_closed": "No se envió: ya habían pasado las 24 h para responder.",
     "no_sender": "No se envió: este canal no tiene envío configurado.",
     "no_media_linker": "No se envió: el servidor no puede publicar adjuntos todavía.",
-    "auth_error": "No se envió: la conexión de la cuenta caducó. Reconéctala.",
+    "auth_error": "No se envió: la conexión de la cuenta caducó. Pulsa «Volver a conectar».",
     "thread_missing": "No se envió: la conversación ya no existe.",
     "connection_missing": "No se envió: la cuenta ya no está conectada.",
     "send_ambiguous": (
@@ -479,30 +480,29 @@ def _sync_label(state: SyncStateLike | None, now: datetime, zone: tzinfo) -> str
 def build_access_vm(
     state: SyncStateLike | None, *, account: AccountVM, now: datetime, zone: tzinfo
 ) -> AccessVM:
-    """Order matters: what the C-05 matrix and the connection FSM already know comes
-    before anything the sync recorded, and «unknown» stays provisional."""
+    """Known disconnection takes priority over a missing capability or sync verdict.
+
+    An active account with a missing scope shows no access; a degraded account stays
+    disconnected even when its last grant also lacks that scope.
+    """
     last_sync = _sync_label(state, now, zone)
-    if not account.can_manage_dms:
-        return AccessVM(
-            kind=ACCESS_PERMISSION_MISSING,
-            tone="warn",
-            title="Falta el permiso de mensajes",
-            message=(
-                (account.dm_reason + " ")
-                if account.dm_reason
-                else "Esta cuenta no concedió el permiso de mensajes directos. "
-            )
-            + "Reconecta la cuenta y concede el permiso para leer y responder mensajes.",
-            show_reconnect=True,
-            provisional=True,
-            last_sync_label=last_sync,
-        )
     if account.is_degraded:
         return AccessVM(
             kind=ACCESS_AUTH_EXPIRED,
             tone="warn",
-            title="La conexión dejó de responder",
-            message="Reconecta la cuenta para volver a leer y responder sus mensajes.",
+            title=DISCONNECTED,
+            message=DISCONNECTED_NOTICE,
+            show_reconnect=True,
+            provisional=True,
+            last_sync_label=last_sync,
+        )
+    if not account.can_manage_dms:
+        return AccessVM(
+            kind=ACCESS_PERMISSION_MISSING,
+            tone="warn",
+            title=NO_ACCESS,
+            message=((account.dm_reason + " ") if account.dm_reason else "")
+            + PERMISSION_MISSING_NOTICE,
             show_reconnect=True,
             provisional=True,
             last_sync_label=last_sync,
@@ -526,9 +526,8 @@ def build_access_vm(
         return AccessVM(
             kind=ACCESS_PERMISSION_MISSING,
             tone="warn",
-            title="Instagram rechazó la lectura de mensajes",
-            message="La cuenta no tiene el permiso de mensajes concedido. "
-            "Reconecta la cuenta y concede el permiso.",
+            title=NO_ACCESS,
+            message=PERMISSION_MISSING_NOTICE,
             show_reconnect=True,
             provisional=True,
             last_sync_label=last_sync,
@@ -537,9 +536,8 @@ def build_access_vm(
         return AccessVM(
             kind=ACCESS_AUTH_EXPIRED,
             tone="warn",
-            title="La conexión caducó",
-            message="Instagram ya no acepta la conexión de esta cuenta. "
-            "Reconéctala para volver a leer y responder mensajes.",
+            title=DISCONNECTED,
+            message=DISCONNECTED_NOTICE,
             show_reconnect=True,
             provisional=True,
             last_sync_label=last_sync,

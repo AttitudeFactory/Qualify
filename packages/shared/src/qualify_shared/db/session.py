@@ -25,7 +25,7 @@ guarantee away from where it is actually enforced.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from uuid import UUID
@@ -40,6 +40,9 @@ from qualify_shared.db.config import app_dsn
 # (tests that don't touch the DB, tooling, etc. import it freely).
 _engine: Engine | None = None
 _unit: ContextVar[tuple[UUID, Session] | None] = ContextVar("tenant_unit", default=None)
+_commit_callbacks: ContextVar[list[Callable[[], None]] | None] = ContextVar(
+    "tenant_commit_callbacks", default=None
+)
 
 
 @contextmanager
@@ -49,12 +52,41 @@ def tenant_unit_of_work(tenant_id: UUID) -> Iterator[Session]:
     Normal sessions remain independent. Only the owning request's context inherits
     this transaction; a different tenant is rejected before executing SQL.
     """
+    if _unit.get() is not None:
+        # Nested units share the outer transaction and its commit callbacks.
+        with tenant_session(tenant_id) as session:
+            yield session
+        return
+    callbacks: list[Callable[[], None]] = []
     with tenant_session(tenant_id) as session:
         token = _unit.set((tenant_id, session))
+        callback_token = _commit_callbacks.set(callbacks)
         try:
             yield session
         finally:
+            _commit_callbacks.reset(callback_token)
             _unit.reset(token)
+    # tenant_session commits on exit. A flush/commit failure skips this block, so no
+    # worker can observe rolled-back state or read the previous committed revision.
+    for callback in callbacks:
+        callback()
+
+
+def after_tenant_commit(tenant_id: UUID, callback: Callable[[], None]) -> None:
+    """Run after the owning unit commits, or immediately outside a unit of work.
+
+    Rollbacks discard the callback. Nested units defer to the outermost commit.
+    The callback runs with the request's transaction context already cleared.
+    """
+    active = _unit.get()
+    if active is None:
+        callback()
+        return
+    if active[0] != tenant_id:
+        raise ValueError("a tenant commit callback cannot change tenant")
+    callbacks = _commit_callbacks.get()
+    assert callbacks is not None
+    callbacks.append(callback)
 
 
 def _get_engine() -> Engine:
@@ -65,21 +97,27 @@ def _get_engine() -> Engine:
 
 
 @contextmanager
-def tenant_session(tenant_id: UUID) -> Iterator[Session]:
+def tenant_session(tenant_id: UUID, *, independent: bool = False) -> Iterator[Session]:
     """Yield a Session bound to a transaction with `app.tenant_id` set to `tenant_id`.
 
     Everything read or written inside is RLS-scoped to that tenant. The transaction
     commits on clean exit and rolls back on exception (via `Engine.begin`). Re-running
     the same work under the same tenant is safe; a write for another tenant is rejected
     by the policies' `WITH CHECK`.
+
+    `independent=True` is reserved for runtime connection-health reports: commit that
+    diagnosis even if the surrounding business operation rolls back, and publish its
+    event only after this transaction commits. It uses the same tenant role and RLS.
+    Call after releasing any outer row lock on that connection to avoid self-deadlock.
     """
     active = _unit.get()
     if active is not None:
         if active[0] != tenant_id:
             raise ValueError("a tenant unit of work cannot change tenant")
-        yield active[1]
-        active[1].flush()
-        return
+        if not independent:
+            yield active[1]
+            active[1].flush()
+            return
     with _get_engine().begin() as conn:
         conn.execute(
             text("SELECT set_config('app.tenant_id', :tid, true)"),

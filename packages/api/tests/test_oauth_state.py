@@ -115,3 +115,33 @@ def test_issuing_a_live_jti_twice_raises() -> None:
     store.issue("jti-1")
     with pytest.raises(InvalidState):
         store.issue("jti-1")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://evil.test",
+        "//evil.test",
+        "/inbox?next=https://evil.test",
+        "/connections",
+        "/\\evil",
+    ],
+)
+def test_reconnect_state_rejects_external_or_looping_return_paths(origin: str) -> None:
+    payload = new_payload(TENANT, BRAND, USER, return_to=origin)
+    restored = verify_state(sign_state(payload, SECRET), SECRET, ttl_seconds=600)
+    assert restored.return_to == ""
+
+
+def test_reconnect_target_and_origin_are_signed_and_preserved() -> None:
+    payload = new_payload(
+        TENANT,
+        BRAND,
+        USER,
+        return_to="/inbox",
+        connection_id=BRAND,
+        external_account_id="ig-1",
+        cause="permission_missing",
+    )
+    restored = verify_state(sign_state(payload, SECRET), SECRET, ttl_seconds=600)
+    assert restored == payload

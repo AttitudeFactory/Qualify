@@ -276,6 +276,14 @@ class EmbeddedCalendarWorker:
             return None
         return recovery_chore(None if self._config.all_tenants else self._config.tenant_ids)
 
+    def _retention_retries(self) -> Callable[[], object] | None:
+        if self._make_runner is not None:
+            return None  # injected runner is an offline test, not a production worker
+        from qualify_api.creative.retention_job import warning_retry_chore
+
+        scope = None if self._config.all_tenants else self._config.tenant_ids
+        return warning_retry_chore(scope)
+
     def _run(self) -> None:
         try:
             asyncio.run(
@@ -287,6 +295,7 @@ class EmbeddedCalendarWorker:
                     should_stop=self._stop.is_set,
                     sidecar=self._recovery(),
                     sidecar_every=RECOVERY_EVERY_SECONDS,
+                    retry_chore=self._retention_retries(),
                 )
             )
         except Exception:
