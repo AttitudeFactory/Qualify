@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from qualify_api.creative import job_queue as q
 from qualify_api.creative import models as orm
 from qualify_api.creative.draft_mode import draft_state
+from qualify_api.creative.versions import visible_version
 
 MAX_FINAL_ATTEMPTS = 3
 UNPREPARED = datetime(9999, 1, 1, tzinfo=UTC)
@@ -41,6 +42,7 @@ def record_final_vendor_failure(*, tenant_id: UUID, job_id: UUID, code: str | No
             select(orm.ImageAsset)
             .where(
                 orm.ImageAsset.draft_id == job["draft_id"],
+                visible_version(orm.ImageAsset),
                 orm.ImageAsset.position == job["position"],
             )
             .with_for_update()

@@ -966,6 +966,15 @@ def queue_vm(
 
 
 @dataclass(frozen=True)
+class PieceVersionVM:
+    version_id: str
+    label: str
+    created_label: str
+    available: bool
+    current: bool
+
+
+@dataclass(frozen=True)
 class DraftVM:
     """The §6.6 contract, plus the display facts the detail screen renders."""
 
@@ -1022,6 +1031,11 @@ class DraftVM:
     #: video), `draft`, `rendering`, `final`, `failed` or `expired` — and what the
     #: screen says about it.
     video_draft: VideoDraftVM = field(default_factory=lambda: NO_VIDEO_DRAFT)
+    versions: tuple[PieceVersionVM, ...] = ()
+    active_version_id: str = ""
+    viewed_version_id: str = ""
+    viewing_previous_version: bool = False
+    can_restore_version: bool = False
     other_version_pending: str = ""
     queue: QueueVM = field(default_factory=QueueVM)
 

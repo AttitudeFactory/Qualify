@@ -430,11 +430,75 @@ class ContentDraft(Base):
     # When the piece's R2 files were deleted by the retention rule (0076, m-24828907).
     # NULL = the files are there; set = «Contenido eliminado» (`creative/retention.py`).
     media_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # m-24828906: the version the screen shows (a regeneration creates a new
+    # `piece_versions` row and points this at it; a failed regeneration does NOT move it;
+    # reactivating a prior version points it at that version's row). NULL = a draft that
+    # failed its first generation has no version to show.
+    active_version_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("piece_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class PieceVersion(Base):
+    """One generated version of a draft (0098, m-24828906): its own copy, media and
+    provenance, kept when a regeneration produces a new one. `status='active'` is a
+    version that came out and may be shown; `status='failed'` is one that did not — the
+    previous active version stays shown. `active_version_id` on the draft picks which
+    version the screen shows, which approving and scheduling use.
+    """
+
+    __tablename__ = "piece_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "draft_id", "revision", name="uq_piece_versions_draft_revision"
+        ),
+        CheckConstraint("status IN ('active','failed')", name="ck_piece_versions_status"),
+        Index("ix_piece_versions_tenant", "tenant_id"),
+        Index("ix_piece_versions_draft", "draft_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("content_drafts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
+    model_id: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    model_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    requires_ai_disclosure: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    spent_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6), nullable=False, server_default=text("0")
+    )
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("template_runs.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
 
@@ -473,8 +537,10 @@ class CopyVariant(Base):
 
     __tablename__ = "copy_variants"
     __table_args__ = (
+        UniqueConstraint("version_id", "ordinal", name="uq_copy_variant_version_ordinal"),
         Index("ix_copy_variants_draft", "draft_id"),
         Index("ix_copy_variants_tenant", "tenant_id"),
+        Index("ix_copy_variants_version", "version_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -485,6 +551,14 @@ class CopyVariant(Base):
     )
     draft_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("content_drafts.id"), nullable=False
+    )
+    # m-24828906: which version's copy this is. NULL only for rows backfilled by 0098
+    # from drafts whose `piece_versions` row could not be linked (a draft with no
+    # readable brief/variant); the app always writes it.
+    version_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("piece_versions.id", ondelete="CASCADE"),
+        nullable=True,
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     copy: Mapped[dict] = mapped_column(JSONB, nullable=False)  # CopyPayload (§3.2)
@@ -509,6 +583,7 @@ class ImageAsset(Base):
         Index("ix_image_assets_draft", "draft_id"),
         Index("ix_image_assets_tenant", "tenant_id"),
         Index("ix_image_assets_template_run", "template_run_id"),
+        Index("ix_image_assets_version", "version_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -519,6 +594,13 @@ class ImageAsset(Base):
     )
     draft_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("content_drafts.id"), nullable=False
+    )
+    # m-24828906: which version's media this is. NULL only for rows backfilled by 0098
+    # that could not be linked; the app always writes it.
+    version_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("piece_versions.id", ondelete="CASCADE"),
+        nullable=True,
     )
     media_url: Mapped[str] = mapped_column(Text, nullable=False)
     media_expires_at: Mapped[datetime | None] = mapped_column(

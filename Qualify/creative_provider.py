@@ -90,6 +90,7 @@ from .creative_vm import (
     DraftVM,
     KitFormVM,
     MediaVM,
+    PieceVersionVM,
     QueueVM,
     ReadinessVM,
     RecipeOptionVM,
@@ -804,6 +805,36 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         warnings=tuple(warning.detail for warning in detail.warnings),
         waiting_vendor=bool(getattr(detail, "waiting_vendor", False)),
     )
+    active_id = str(getattr(detail, "active_version_id", None) or "")
+    viewed_id = str(getattr(detail, "viewed_version_id", None) or active_id)
+    preview = bool(getattr(detail, "is_version_preview", False))
+    vm = dataclasses.replace(
+        vm,
+        versions=tuple(
+            PieceVersionVM(
+                version_id=str(version.id),
+                label=f"Versi\u00f3n {version.revision}",
+                created_label=_format_dt(version.created_at),
+                available=version.status == "active",
+                current=str(version.id) == active_id,
+            )
+            for version in getattr(detail, "versions", ())
+        ),
+        active_version_id=active_id,
+        viewed_version_id=viewed_id,
+        viewing_previous_version=preview,
+        can_restore_version=bool(getattr(detail, "can_restore_version", False)) and not purged,
+    )
+    if preview:
+        vm = dataclasses.replace(
+            vm,
+            can_approve=vm.can_approve and vm.can_restore_version,
+            can_reject=False,
+            can_regenerate=False,
+            can_edit=False,
+            download_path="",
+            download_name="",
+        )
     # m-24820142: the Seedance 2.5 draft videos' state (badge, final, retry)
     video_params = [item.params for item in detail.media]
     approved = detail.status == "approved"
@@ -844,7 +875,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         vm = dataclasses.replace(
             vm, other_version_pending=pending_version_note(tenant_id, detail.id)
         )
-    return _with_download(tenant_id, detail, vm)
+    return vm if preview else _with_download(tenant_id, detail, vm)
 
 
 def _retention(tenant_id: UUID, draft_id: UUID) -> Retention | None:
@@ -926,6 +957,20 @@ def _with_r2_urls(tenant_id: UUID, media: tuple[MediaVM, ...]) -> tuple[MediaVM,
         )
         for item in media
     )
+
+
+def preview_draft_version(tenant_id: UUID, draft_id: UUID, version_id: UUID) -> DraftVM:
+    detail = production_content_service().preview_version(
+        tenant_id=tenant_id, draft_id=draft_id, version_id=version_id
+    )
+    return _detail_to_vm(tenant_id, detail)
+
+
+def restore_draft_version(tenant_id: UUID, draft_id: UUID, version_id: UUID) -> DraftVM:
+    detail = production_content_service().restore_version(
+        tenant_id=tenant_id, draft_id=draft_id, version_id=version_id
+    )
+    return _detail_to_vm(tenant_id, detail)
 
 
 def draft_detail(tenant_id: UUID, draft_id: UUID) -> DraftVM | None:
@@ -1036,6 +1081,20 @@ def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UU
     return _detail_to_vm(tenant_id, detail)
 
 
+def approve_draft_version(
+    tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID, version_id: UUID
+) -> DraftVM:
+    """Activate and approve exactly the selected historical variant, atomically."""
+    detail = production_content_service().approve_version(
+        tenant_id=tenant_id,
+        draft_id=draft_id,
+        version_id=version_id,
+        variant_id=variant_id,
+        user_id=user_id,
+    )
+    return _detail_to_vm(tenant_id, detail)
+
+
 def creations_balance(
     tenant_id: UUID, brand_id: UUID
 ) -> tuple[int, int, str, int, int, int, int, tuple[int, str, int, str, int, str]] | None:
@@ -1073,11 +1132,17 @@ def balance_extras(balance: CreationsBalance) -> tuple[int, str, int, str, int, 
     )
 
 
-def approval_videos(tenant_id: UUID, draft_id: UUID) -> tuple[int, int, int, str] | None:
+def approval_videos(
+    tenant_id: UUID, draft_id: UUID, version_id: UUID | None = None
+) -> tuple[int, int, int, str] | None:
     """What approving a piece uses of the month's videos (founder, 2026-10-24):
     (videos, videos_left, video_quota, renews), or None when it makes no video, is not
     waiting for approval, or no quota is wired."""
-    quote = production_content_service().approval_videos(tenant_id=tenant_id, draft_id=draft_id)
+    quote = production_content_service().approval_videos(
+        tenant_id=tenant_id,
+        draft_id=draft_id,
+        **({"version_id": version_id} if version_id is not None else {}),
+    )
     if quote is None:
         return None
     videos, balance = quote
