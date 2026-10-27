@@ -86,6 +86,7 @@ from .creative_provider import (
     acting_user_id,
     approval_videos,
     approve_draft,
+    approve_draft_version,
     approve_voice,
     brand_character,
     brand_media,
@@ -105,6 +106,7 @@ from .creative_provider import (
     load_kit_form,
     load_voice_screen,
     preview_brief_prompt,
+    preview_draft_version,
     propose_voice,
     recreate_draft,
     recreate_note,
@@ -1391,8 +1393,26 @@ class CreativeState(rx.State):
             and variant.passed
             and not self.edit_blocking
             and not self.edit_mode
+            and not self.version_loading
             # founder 2026-10-24: approving counts the videos — not without enough left
             and not self.approve_videos_short
+        )
+
+    @rx.var
+    def selected_approval_label(self) -> str:
+        if self.draft is None or self.selected_variant is None:
+            return ""
+        version = next(
+            (
+                row.label
+                for row in self.draft.versions
+                if row.version_id == self.draft.viewed_version_id
+            ),
+            "",
+        )
+        choice = self.selected_variant.label
+        return (
+            f"Aprobar\u00e1s {version} \u00b7 {choice}" if version else f"Aprobar\u00e1s {choice}"
         )
 
     @rx.var
@@ -5996,6 +6016,50 @@ class CreativeState(rx.State):
             self.selected_variant_id = vm.variants[0].variant_id if vm.variants else ""
         self._fill_edit_fields()
 
+    version_loading: bool = False
+
+    @rx.event(background=True)
+    async def view_version(self, requested_version_id: str) -> None:
+        async with self:
+            if self.version_loading or self.edit_saving or self.edit_mode:
+                return
+            draft_id = self._route_draft_id()
+            version_id = tenant_uuid(requested_version_id)
+            if draft_id is None or (requested_version_id and version_id is None):
+                return
+            self.version_loading = True
+            self.action_error = ""
+        try:
+            ids = await self._session_ids()
+            if ids is None:
+                return
+            vm = await asyncio.to_thread(
+                preview_draft_version if version_id else draft_detail,
+                ids[0],
+                draft_id,
+                *([version_id] if version_id else []),
+            )
+            if vm is None:
+                raise UnknownDraft(str(draft_id))
+            async with self:
+                if self._route_draft_id() == draft_id:
+                    self.edit_mode = False
+                    self.just_approved = False
+                    self.draft_slide = 0
+                    self._apply_detail(vm)
+            await self._load_approval_videos(
+                ids[0], draft_id, version_id if vm.viewing_previous_version else None
+            )
+        except UnknownDraft:
+            async with self:
+                self.action_error = _DRAFT_GONE
+        except (ValueError, SQLAlchemyError) as exc:
+            async with self:
+                self.action_error = str(exc) if isinstance(exc, ValueError) else _DB_ERROR
+        finally:
+            async with self:
+                self.version_loading = False
+
     queue_cancelling: bool = False
 
     @rx.event(background=True)
@@ -6183,7 +6247,7 @@ class CreativeState(rx.State):
                     if on_screen:
                         self.poll_elapsed_label = f"{int(time.monotonic() - started)} s"
                     if vm is not None:
-                        if on_screen:
+                        if on_screen and not (self.draft and self.draft.viewing_previous_version):
                             self._apply_detail(vm)
                         if not vm.is_drafting:
                             outcome = "failed" if vm.is_failed else "ready"
@@ -6206,6 +6270,8 @@ class CreativeState(rx.State):
 
     @rx.event
     def start_edit(self):
+        if self.draft is not None and self.draft.viewing_previous_version:
+            return None
         self.edit_mode = True
         return CreativeState.load_catalog_hashtags
 
@@ -6316,9 +6382,23 @@ class CreativeState(rx.State):
             return
         tenant_id, _, user_id = ids
         try:
-            vm = await asyncio.to_thread(
-                approve_draft, tenant_id, draft_uuid, UUID(variant.variant_id), user_id
-            )
+            if draft.viewing_previous_version:
+                vm = await asyncio.to_thread(
+                    approve_draft_version,
+                    tenant_id,
+                    draft_uuid,
+                    UUID(variant.variant_id),
+                    user_id,
+                    UUID(draft.viewed_version_id),
+                )
+            else:
+                vm = await asyncio.to_thread(
+                    approve_draft, tenant_id, draft_uuid, UUID(variant.variant_id), user_id
+                )
+        except ValueError as exc:
+            async with self:
+                self.action_error = str(exc)
+            return
         except (UnknownDraft, UnknownVariant):
             async with self:
                 self.action_error = _DRAFT_GONE
@@ -6371,9 +6451,13 @@ class CreativeState(rx.State):
     approve_videos_text: str = ""
     approve_videos_short: bool = False
 
-    async def _load_approval_videos(self, tenant_id: UUID, draft_id: UUID) -> None:
+    async def _load_approval_videos(
+        self, tenant_id: UUID, draft_id: UUID, version_id: UUID | None = None
+    ) -> None:
         try:
-            quote = await asyncio.to_thread(approval_videos, tenant_id, draft_id)
+            quote = await asyncio.to_thread(
+                approval_videos, tenant_id, draft_id, *([version_id] if version_id else [])
+            )
         except Exception as exc:  # noqa: BLE001 — the service still refuses what it cannot pay
             logger.warning("approval videos unreadable: %s", type(exc).__name__)
             quote = None

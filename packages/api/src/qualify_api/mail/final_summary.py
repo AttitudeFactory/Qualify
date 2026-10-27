@@ -85,6 +85,7 @@ def _new_videos(session: Any, cut: datetime) -> tuple[FinalVideo, ...]:
             (SELECT min(e.scheduled_at) FROM calendar_events e
              WHERE e.post_id=d.id AND e.status='scheduled') AS scheduled_at
         FROM content_drafts d JOIN image_assets a ON a.draft_id=d.id
+            AND (a.version_id IS NULL OR a.version_id=d.active_version_id)
         JOIN creative_jobs j ON j.draft_id=d.id AND j.revision=d.revision AND j.position=a.position
         WHERE d.status='approved' AND j.kind='final' AND j.status IN ('succeeded','failed')
           AND j.finished_at > :start AND j.finished_at <= :cut
@@ -92,6 +93,7 @@ def _new_videos(session: Any, cut: datetime) -> tuple[FinalVideo, ...]:
           AND a.params->'draft'->>'final_origin' = 'approval'
           AND a.params->'draft'->>'final_nightly' = 'true'
           AND NOT EXISTS (SELECT 1 FROM image_assets pending WHERE pending.draft_id=d.id
+              AND (pending.version_id IS NULL OR pending.version_id=d.active_version_id)
               AND pending.params ? 'draft'
               AND COALESCE(pending.params->'draft'->>'status','draft')
                   NOT IN ('final_ready','final','failed'))
@@ -312,10 +314,13 @@ def send_pending(tenant_id: UUID, *, now: datetime, mailer: Mailer) -> int:
                        ORDER BY j.final_attempt DESC,j.created_at DESC,j.id
                        LIMIT 1) AS source_job_id
                     FROM content_drafts d JOIN image_assets a ON a.draft_id=d.id
+            AND (a.version_id IS NULL OR a.version_id=d.active_version_id)
                     WHERE d.id=ANY(CAST(:ids AS uuid[])) AND d.status='approved'
                       AND a.params->'draft'->>'status' IN ('final_ready','failed')
                       AND NOT EXISTS (SELECT 1 FROM image_assets pending
                           WHERE pending.draft_id=d.id AND pending.params ? 'draft'
+                            AND (pending.version_id IS NULL
+                                 OR pending.version_id=d.active_version_id)
                             AND COALESCE(pending.params->'draft'->>'status','draft')
                                 NOT IN ('final_ready','final','failed'))
                     GROUP BY d.id,d.revision,d.title

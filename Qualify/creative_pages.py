@@ -1327,6 +1327,9 @@ def _variant_selector(variant: CopyVariantVM) -> rx.Component:
         variant=rx.cond(selected, "solid", "soft"),
         color_scheme=rx.cond(variant.passed, "gray", T.tone_scale("error")),
         on_click=CreativeState.select_variant(variant.variant_id),
+        disabled=CreativeState.version_loading | CreativeState.edit_mode,
+        aria_pressed=rx.cond(selected, "true", "false"),
+        min_height="44px",
         size="2",
     )
 
@@ -2053,7 +2056,13 @@ def _variant_editor() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             rx.hstack(
-                rx.foreach(CreativeState.draft.variants, _variant_selector),
+                rx.text("Variantes", size="2", weight="medium"),
+                rx.cond(CreativeState.draft.versions.length() > 0, _version_selector()),
+                rx.cond(
+                    (CreativeState.draft.versions.length() == 0)
+                    | (CreativeState.draft.variants.length() > 1),
+                    rx.foreach(CreativeState.draft.variants, _variant_selector),
+                ),
                 spacing="2",
                 wrap="wrap",
             ),
@@ -2480,8 +2489,8 @@ def _decision_bar_or_nothing() -> rx.Component:
                     tone="amber",
                     icon="refresh-cw",
                     title="Pedir otra versión",
-                    text="Si la idea sirve pero el resultado no: descarta este y crea "
-                    "variantes nuevas del mismo encargo.",
+                    text="Crea otra versi\u00f3n del mismo encargo. La actual queda guardada "
+                    "para que puedas volver a ella.",
                     button=rx.button(
                         rx.icon("refresh-cw", size=15),
                         "Regenerar",
@@ -2515,6 +2524,10 @@ def _decision_bar_or_nothing() -> rx.Component:
                                 callout(CreativeState.approve_videos_text, "warn"),
                                 callout(CreativeState.approve_videos_text, "info"),
                             ),
+                        ),
+                        rx.cond(
+                            CreativeState.selected_approval_label != "",
+                            rx.text(CreativeState.selected_approval_label, size="2"),
                         ),
                         rx.button(
                             rx.icon("circle-check", size=15),
@@ -2704,6 +2717,46 @@ def _history_line() -> rx.Component:
     )
 
 
+def _version_selector() -> rx.Component:
+    """One visible button per saved version, beside the copy variants."""
+    draft = CreativeState.draft
+    return rx.flex(
+        rx.foreach(
+            draft.versions,
+            lambda version: rx.button(
+                rx.cond(
+                    draft.viewed_version_id == version.version_id,
+                    rx.icon("check", size=14, aria_hidden="true"),
+                ),
+                rx.vstack(
+                    rx.text(version.label),
+                    rx.text(version.created_label, size="1"),
+                    rx.cond(~version.available, rx.text("No se pudo generar", size="1")),
+                    spacing="0",
+                    align_items="start",
+                ),
+                variant=rx.cond(draft.viewed_version_id == version.version_id, "solid", "soft"),
+                color_scheme="gray",
+                on_click=CreativeState.view_version(version.version_id),
+                disabled=~version.available
+                | CreativeState.version_loading
+                | CreativeState.edit_mode,
+                aria_pressed=rx.cond(
+                    draft.viewed_version_id == version.version_id, "true", "false"
+                ),
+                title=rx.cond(version.available, version.created_label, "No se pudo generar"),
+                size="2",
+                min_height="44px",
+                height="auto",
+                padding_y="0.5rem",
+            ),
+        ),
+        gap="0.5rem",
+        wrap="wrap",
+        width="100%",
+    )
+
+
 def draft_detail_index() -> rx.Component:
     from .queue_notice import queue_notice  # noqa: PLC0415
 
@@ -2761,7 +2814,14 @@ def draft_detail_index() -> rx.Component:
                             _drafting_panel(),
                             rx.cond(
                                 CreativeState.draft.is_failed,
-                                _failed_panel(),
+                                rx.vstack(
+                                    _failed_panel(),
+                                    rx.cond(
+                                        CreativeState.draft.versions.length() > 0, _review_panel()
+                                    ),
+                                    spacing="4",
+                                    width="100%",
+                                ),
                                 rx.vstack(
                                     # a regeneration that did not come out keeps the
                                     # previous version and says so (m-24828909)

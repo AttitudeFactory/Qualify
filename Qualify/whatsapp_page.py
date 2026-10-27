@@ -344,7 +344,27 @@ def _whatsapp_body() -> rx.Component:
                 rx.cond(
                     WhatsAppState.show_empty_state,
                     _no_numbers_state(),
-                    rx.vstack(tab_strip(), sub_strip(), tab_body(), spacing="3", width="100%"),
+                    rx.vstack(
+                        rx.cond(
+                            WhatsAppState.number_needs_help
+                            & (WhatsAppState.active_tab != TAB_CONNECTION),
+                            rx.vstack(
+                                banner(
+                                    WhatsAppState.selected_number.health_label,
+                                    WhatsAppState.selected_number.health_tone,
+                                ),
+                                _review_request(),
+                                spacing="3",
+                                width="100%",
+                            ),
+                            rx.fragment(),
+                        ),
+                        tab_strip(),
+                        sub_strip(),
+                        tab_body(),
+                        spacing="3",
+                        width="100%",
+                    ),
                 ),
             ),
         ),
@@ -416,13 +436,13 @@ def _details(number: rx.Var) -> rx.Component:
                 ),
                 rx.vstack(
                     _kv_pill(
-                        "Estado en Meta",
+                        "Estado en WhatsApp",
                         number.platform_status_label,
                         number.platform_status_tone,
                     ),
                     kv("Marca", number.brand),
                     kv("Última verificación", number.last_health_checked_at),
-                    kv("Datos de Meta al día", number.last_synced_at),
+                    kv("Datos de WhatsApp al día", number.last_synced_at),
                     kv("Último mensaje recibido", number.last_inbound_at),
                     spacing="3",
                     width="100%",
@@ -495,7 +515,7 @@ def connection_tab() -> rx.Component:
             padding=rx.breakpoints(initial="1rem", md="1.25rem 1.5rem"),
         ),
         rx.text(
-            "«Verificar ahora» le pregunta a Meta si tu número sigue bien conectado. Solo "
+            "«Verificar ahora» le pregunta a WhatsApp si tu número sigue bien conectado. Solo "
             "se hace cuando tú lo tocas.",
             size="1",
             color=T.TEXT_MUTED,
@@ -638,7 +658,7 @@ def profile_form() -> rx.Component:
             rx.hstack(
                 rx.button(
                     rx.icon("refresh-cw", size=T.ICON_SM),
-                    "Volver a leer de Meta",
+                    "Volver a leer de WhatsApp",
                     on_click=WhatsAppState.reload_profile,
                     variant="ghost",
                     size="2",
@@ -825,7 +845,7 @@ def _qr_card(qr: QrCodeVM) -> rx.Component:
                     has_image,
                     rx.fragment(),
                     rx.text(
-                        "Meta solo entrega la imagen al crear el código. Usa el enlace, o "
+                        "WhatsApp solo entrega la imagen al crear el código. Usa el enlace, o "
                         "crea el código de nuevo para descargarla.",
                         size="1",
                         color=T.TEXT_FAINT,

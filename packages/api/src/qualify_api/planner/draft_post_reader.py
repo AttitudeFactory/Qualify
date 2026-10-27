@@ -327,10 +327,12 @@ def _campaigns(
 def _images(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
     """In creation order (the card's thumbnail is the first); `evaluate` orders the
     publishable media by `position` itself."""
+    from qualify_api.creative.versions import visible_version
+
     return list(
         session.scalars(
             select(creative.ImageAsset)
-            .where(creative.ImageAsset.draft_id == draft_id)
+            .where(creative.ImageAsset.draft_id == draft_id, visible_version(creative.ImageAsset))
             .order_by(creative.ImageAsset.created_at)
         ).all()
     )
@@ -472,10 +474,14 @@ class DraftPostReader:
         if draft.selected_variant_id is not None:
             variant = session.get(creative.CopyVariant, draft.selected_variant_id)
         if variant is None:
-            # Not approved yet: show the first generated variant so the card has text.
+            from qualify_api.creative.versions import visible_version
+
+            # Not approved yet: show the first variant of the selected version.
             variant = session.scalars(
                 select(creative.CopyVariant)
-                .where(creative.CopyVariant.draft_id == draft.id)
+                .where(
+                    creative.CopyVariant.draft_id == draft.id, visible_version(creative.CopyVariant)
+                )
                 .order_by(creative.CopyVariant.ordinal)
             ).first()
         images = _images(session, draft.id)

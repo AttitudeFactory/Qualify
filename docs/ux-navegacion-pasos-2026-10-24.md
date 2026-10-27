@@ -108,16 +108,91 @@ brillo y respeto a `prefers-reduced-motion` en todos los bloques (`assets/qualif
 |---|---|---|---|
 | **A · Ampliar el CSS que ya existe** (recomendada) | El paso entra deslizándose según la dirección: ‹ si retrocede, › si avanza (`data-dir` + `key=paso`). Las tarjetas fantasma se convierten en tarjeta real con un fundido. Pestañas y listas entran con `q-settle`. La barra de avance se mueve sola. | 0 KB, sin dependencia nueva. ~1 historia S. | Bajo. No anima la **salida** (una tarjeta que se va al «Aprobar»). |
 | **B · View Transitions del navegador** (`document.startViewTransition`) | Transiciones entre pantallas y pasos, incluida la salida. | 0 KB; un script chico como `glass-nav.js`. | Medio. Reflex actualiza la pantalla cuando llega la respuesta del servidor y no hay un buen momento donde envolver el cambio. En navegadores viejos de Android no hay animación (no se rompe nada). |
-| **C · Motion (antes Framer Motion)**, envuelto como componente de Reflex | Salida animada (`AnimatePresence`): la tarjeta aprobada se va y las demás se acomodan (animación de *layout*). También gestos como deslizar para descartar. | Dependencia nueva de npm, que es la decisión del fundador (regla «sin vendor nuevo sin tabla de opciones»). Peso aproximado: el componente completo pesa decenas de KB; con `LazyMotion` baja mucho. **Medirlo en el spike, no confiar en este número.** Wrappers nuevos en `Qualify/ui/`. | Medio. Más JS en celulares de gama baja (*hipótesis*: el parque de equipos de los clientes en VE y CO no se conoce; validarlo con la pregunta 3 del §5). Pide `key` estable en cada tarjeta. |
+| **C · Motion (antes Framer Motion)**, envuelto como componente de Reflex | Salida animada (`AnimatePresence`): la tarjeta aprobada se va y las demás se acomodan (animación de *layout*). También gestos como deslizar para descartar. | Dependencia nueva de npm, que es la decisión del fundador (regla «sin vendor nuevo sin tabla de opciones»). Peso medido en PASOS-12: **+50,34 KiB gzip** del cliente completo; desglose inicial/diferido en §4.1. Requiere un wrapper local de Reflex. | Medio. Más JS en celulares de gama baja (*hipótesis*: el parque de equipos de los clientes en VE y CO no se conoce; validarlo con la pregunta 3 del §5). Pide `key` estable en cada tarjeta. |
 
 **Recomendación:** **A dentro de esta épica** (PASOS-11): da lo que el fundador pidió («un poco» de movimiento
 en pasos y carga de tarjetas) sin costo ni dependencia. **C solo como spike con tiempo acotado** (PASOS-12), y
 solo para lo que el CSS no hace bien: la **salida** de tarjetas en «Por aprobar», «Quieren comprar» y «Por
-responder», donde ver que la tarjeta se va confirma «listo» (N3). El spike mide peso y fluidez en un Android de
-gama baja y vuelve con un sí o un no. **B se descarta por ahora.**
+responder», donde ver que la tarjeta se va confirma «listo» (N3). La medición de PASOS-12 (§4.1) recomienda conservar CSS. Se usó CPU 6x en Chromium, como aprobó el fundador; **no se probó un Android físico**. **B se descarta por ahora.**
 
 Regla para cualquier opción: el movimiento **explica** (de dónde vino, a dónde se fue). Nunca decora, nunca dura
 más de 380 ms y se apaga con `prefers-reduced-motion`.
+
+### 4.1 Resultado de PASOS-12 — 2026-10-26
+
+**Recomendación técnica: conservar CSS. La decisión del fundador sobre incorporar Motion sigue
+pendiente; no se añade la dependencia a producción.** Se comparó la salida de una tarjeta sintética de
+«Por aprobar» y el acomodo de sus vecinas: 20 tarjetas con IDs estables, 240 ms y la curva existente
+`cubic-bezier(.22,1,.36,1)`. No se aprobaron publicaciones ni se llamó a servicios de negocio.
+
+| Medición | A · CSS | C · Motion 14.6.0 |
+|---|---:|---:|
+| JavaScript de **todo el cliente de la app**, gzip / Brotli | 1.901.819 / 1.584.991 B | 1.953.365 / 1.630.994 B |
+| «Por aprobar» hasta hidratar el fixture, gzip | 494.282 B | 510.319 B |
+| Features diferidas adicionales, gzip | 0 B | 32.031 B |
+| Intervalo rAF mediano / p95, CPU 6x | 8,30 / 9,20 ms | 8,30 / 9,30 ms |
+| Frames perdidos **estimados a partir de rAF** | 1 (0,10 %) | 30 (3,09 %) |
+| Nodos vecinos conservados; lista final de 19 tarjetas | 20/20 pruebas | 20/20 pruebas |
+| `prefers-reduced-motion: reduce` | Sin animaciones activas | Sin animaciones activas |
+
+El delta del cliente completo es **+51.546 B gzip (+50,34 KiB)** y **+46.003 B Brotli (+44,92 KiB)**.
+Se comprimió cada archivo JavaScript por separado (gzip nivel 9, Brotli calidad 11) y se sumaron sus tamaños;
+no es tráfico HTTP capturado. El cierre de imports estáticos de scripts/preloads de `drafts.html`, más el
+módulo local NoSSR al hidratar, determina la segunda fila. `LazyMotion` + `m` + import dinámico de `domMax`
+sí separaron las features en el export Vite: esos 32.031 B se cargan automáticamente después de montar el
+fixture. Ya están incluidos en el total; no sumarlos dos veces. Otros imports y hashes de chunks compartidos
+pueden cambiar la compresión del resto de rutas.
+
+| Opción | Mantenimiento | Riesgo / decisión recomendada |
+|---|---|---|
+| A · CSS | Clase de salida, colapso de altura y retirada diferida; mantener duración y cancelación coordinadas. | Recalcula layout durante el colapso. **Conservar para este alcance.** |
+| C · Motion | Salida y layout declarativos con `AnimatePresence`, keys por ID, proveedor `LazyMotion`, features y wrapper Reflex. | Dependencia y ciclo de presencia adicionales; validar foco, hidratación y actualizaciones servidor. **No incorporar sin decisión del fundador y un caso con ganancia medida.** |
+
+**Qué se midió.** El peso procede de tres exports de la **aplicación Reflex completa**, base `8496c66`:
+A0 sin prototipo, A con fixture CSS en «Por aprobar» y C con el mismo fixture mediante wrapper local NoSSR.
+Los tres terminaron frontend, SSR y prerender. Reflex 0.10.0 / bun 1.4.0 actualizaron dependencias durante la
+inicialización: el lock original decía React 19.2.6, pero los exports A y C usaron **React/ReactDOM 19.3.0,
+Vite 8.3.2 y React Router 8.4.0**. Sus `package.json` difieren únicamente en `motion: 14.6.0`; no se atribuye a
+Motion el cambio previo de dependencias.
+
+La fluidez procede de un **fixture React equivalente aislado**, con esas mismas versiones de React, no de
+una sesión autenticada completa de Reflex. Chromium 151.0.7922.34, Apple M1 Pro de 8 núcleos, macOS 26.3.1
+arm64, viewport 360×800, CPU 6x mediante CDP; tres calentamientos y **20 repeticiones por opción**, alternando
+el orden. Se registraron intervalos rAF durante 400 ms por salida. Sesenta intervalos inactivos calibraron el
+presupuesto en 8,30 ms (~120 Hz); perdidos = `Σ max(0, round(intervalo/presupuesto)-1)`. **No son FPS de
+producción ni frames físicos del compositor.** Una máquina y sin inferencia estadística: CPU 6x no reproduce
+GPU, memoria o red de un Android real. Tampoco mide websocket, foco o cancelación de una aprobación.
+
+Ambas opciones conservaron nodos con keys estables y terminaron sin errores JavaScript. Con movimiento
+reducido se comprobó cero animaciones activas y `transform: none` o matriz identidad. El prototipo Motion
+apaga también el fundido explícitamente: `MotionConfig reducedMotion="user"` conserva opacity por diseño.
+
+**Reproducir.** El [código, README y muestras crudas del spike](https://github.com/AttitudeFactory/Qualify/tree/spike/m-24852253-motion-cards/testing/spikes/m-24852253)
+quedan en una rama separada, junto al wrapper local; no se fusionan sus dependencias. Comandos principales:
+
+```sh
+# En el worktree aislado, exportar A0, A-CSS y C-Motion; guardar cada build/client.
+QUALIFY_AUTH_FAKE=1 QUALIFY_CALENDAR_WORKER=off uv run --no-sync reflex export --frontend-only --no-zip --env prod
+# En testing/spikes/m-24852253, con los exports guardados según README:
+npm ci --no-audit --no-fund
+node build.mjs
+PLAYWRIGHT_MODULE=/ruta/a/playwright node run.cjs
+node measure-app.mjs
+node route-phases.mjs
+```
+
+`app-bundle.json` conserva los tamaños por archivo; `results.json`, los intervalos crudos y controles. El
+benchmark esbuild del fixture se conserva por separado y **no se rotula como delta de la app**. Las rutas de
+export, variables de importación de Python y pasos completos están en el README del spike.
+
+Fuentes primarias: [LazyMotion](https://motion.dev/docs/react-lazy-motion),
+[features y tamaño de bundle](https://motion.dev/docs/react-reduce-bundle-size),
+[AnimatePresence](https://motion.dev/docs/react-animate-presence),
+[layout](https://motion.dev/docs/react-layout-animations),
+[movimiento reducido](https://motion.dev/docs/react-accessibility),
+[wrappers Reflex](https://reflex.dev/docs/wrapping-react/library-and-tags/) y
+[componentes locales](https://reflex.dev/docs/wrapping-react/local-packages/).
+Se verificó la versión instalada con npm y manifiestos; no se usaron KB publicitarios como medición.
 
 ## 5. Historias propuestas (para `product-owner`)
 
