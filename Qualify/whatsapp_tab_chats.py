@@ -336,7 +336,6 @@ def _conversation_header() -> rx.Component:
     thread = S.open_thread
     return rx.vstack(
         rx.hstack(
-            _back_button(),
             # Name, then number + state pills on one wrapping line: at 375 px the pills
             # drop below the name instead of overlapping it.
             rx.vstack(

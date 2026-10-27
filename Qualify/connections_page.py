@@ -831,7 +831,7 @@ def connect_requirements_card() -> rx.Component:
         padding="1.25rem 1.5rem",
         id=GUIDE_ELEMENT_ID,
         # Scrolled into view by «Ver el paso N»: keep its top clear of the app bar.
-        scroll_margin_top="5rem",
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
 
 

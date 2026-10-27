@@ -263,6 +263,7 @@ def conversations_header() -> rx.Component:
         account_selector(),
         _ice_breakers_door(),
         badge=_pending_badge(),
+        kicker=rx.cond(S.has_open_thread, _back_button()),
     )
 
 
@@ -603,10 +604,10 @@ def _list_pane() -> rx.Component:
 
 def _back_button() -> rx.Component:
     """Phone only (the list and the conversation share one pane there). N7: the
-    button names where it goes — «‹ Conversaciones», never a bare arrow."""
+    button names where it goes — «‹ Mensajes», never a bare arrow."""
     return rx.button(
         rx.icon("chevron-left", size=T.ICON_MD),
-        "Conversaciones",
+        "Mensajes",
         on_click=S.close_conversation,
         variant="ghost",
         size="2",
@@ -631,7 +632,6 @@ def _close_button() -> rx.Component:
 def _conversation_header() -> rx.Component:
     thread = S.open_thread
     return rx.hstack(
-        _back_button(),
         _avatar(thread, size="lg"),
         rx.vstack(
             rx.hstack(
