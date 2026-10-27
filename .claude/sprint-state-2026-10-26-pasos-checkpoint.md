@@ -3,6 +3,48 @@
 Read this before resuming after context compaction. Continue the existing work; do not
 restart research, reinstall skills, or reproduce already fixed bugs from stale builds.
 
+## Latest update — 2026-10-27 (supersedes older pending notes below)
+
+- **PASOS-3 is now shipped:** PR #386 merged as `b5781e7`, after CI green and resolving
+  the overlap with newer connection recovery/copy changes. Story3 verified Done in Meegle.
+  Source branch latest `ece24df`; includes the slash-normalized async pending-Back fix.
+  All five full-page entry guards, legacy routes, cold visits and browser/app Back passed.
+  Evidence is committed (`e85c807`); later source corrections have focused Node tests.
+- **PASOS-12 docs shipped:** PR #390 merged as `98d9453`. Spike prototype/evidence is
+  committed and pushed as `f38e2b8` on `spike/m-24852253-motion-cards`; dependency NOT merged.
+  Story12 remains RESOLVED pending founder's adoption decision. Recommendation: retain CSS.
+- Main known tip is `98d9453` (fetch again). PRs #383/#384/#386/#390 are already merged.
+- Full combined11: **9609 passed** after fixing an obsolete source-snippet navigation
+  label test. Later duration-unit and normalized-pending-Back fixes: 56/120 focused tests
+  pass. A further final-main compatibility/full run is owned by pasos_resume.
+- **FINAL UX7–11 is ready; no open suggestions in validated scope.** Evidence and honest
+  README live in each story worktree. Remaining work is delivery: make main an ancestor
+  of story7–10 branches, save evidence, open own PRs, CI green, gated merges; then11.
+- Last app3480 failed to start once because graceful SIGINT had not released the port.
+  Always verify no listener before starting. App last started in exec session79456 from
+  worktree11 (log is still named qualify-pasos7-server.log).
+- New main model expects `social_connections.reconnect_reason`, absent from the shared
+  local DB. Do NOT migrate the shared DB or touch founder3100. Feature flows7/8/9 were
+  verified in the integrated app before that unrelated schema change. Last menu duration
+  patch used generated REAL callback and actual CSS in isolated Chromium DOM: 380ms for
+  both seconds/ms variables, ±8px, reduced no new calls, same input/panel and files1.
+  Publish real-app Back preserved DOM/thumb; More opaque; headers/offsets all verified.
+  This limit is stated in README11/PR body. CI uses fresh migrated DB for current main.
+- **Cleanup complete and verified:** original Brand restored; synthetic product removed;
+  synthetic connections/phone disconnected, message threads closed/messages soft-deleted,
+  queries discarded with outbox None, unpublished menu/templates paused, event cancelled.
+  Tenant and p4 auth JSON preserved. Result `/private/tmp/qualify-pasos-cleanup-result.json`.
+  No more fixtures or browser tests needed unless a genuine new code regression appears.
+- Current agents: pasos_resume owns final Git integration7–11 + tests/limited merge commits;
+  pasos_audit finished12 and wrote `/private/tmp/pasos{7,8,9,10,11}-pr.md`; ux_review finished
+  all evidence and cleanup. Use followup_task for completed agents, not send_message.
+- Root still opens PRs and merges through `just merge`. Root should not race actor's Git
+  indexes7–11. Actor is authorized to save/push validated merge/evidence commits there.
+- Meegle latest: story3/5/6 Done;7/8/9/10/11 In Progress;12 RESOLVED; handoff In Progress.
+- Root checkpoint branch `docs/m-24861081-pasos-checkpoint` was committed/pushed5617c57;
+  save this update too before another compaction. It is not yet a PR; update epic status
+  docs and deliver the handoff documentation at the end.
+
 ## User authorization and current request
 
 - User requested resuming m-24861081, then explicitly authorized advancing the whole
