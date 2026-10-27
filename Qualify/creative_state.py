@@ -172,6 +172,7 @@ from .gallery_state import schedule_readiness
 from .pending_state import PendingState
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
+from .reel_replication import replication_topic
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -2993,6 +2994,29 @@ class CreativeState(rx.State):
         self.gen_mode = "variations"
         return _scroll_to_view()
 
+    def _apply_reel_reference(self, card: dict[str, str], imported: dict[str, str]) -> None:
+        """Open a fresh Clip while keeping the selected product and its key facts."""
+        self._back_to_form()
+        self.gen_category = "clip"
+        self.gen_mode = "create"
+        self.create_options_open = False
+        self.clip_images = []
+        self.clip_videos = [{"key": imported["key"], "name": imported["name"], "source": "reel"}]
+        self.clip_audios = []
+        self.clip_sequence = []
+        self.clip_first_frame_key = self.clip_first_frame_name = ""
+        self.clip_last_frame_key = self.clip_last_frame_name = ""
+        self._set_kind("clip")
+        self._sync_clip_frames()
+        self.brief_topic = replication_topic(card, self.brief_product_ref)
+        self.brief_format = "reels_9_16"
+        self.clip_duration = "5"
+        self.clip_audio = True
+        self.own_script_on = False
+        self.own_script = ""
+        self.gen_direction = DIR_NEXT
+        self._reset_gen_campaign()
+
     # -- a stock video as the product: where it fits (§ request 2026-10-16) -------------
 
     def _video_product_conflict(self, category: str) -> bool:
@@ -3515,8 +3539,11 @@ class CreativeState(rx.State):
             ordered = sorted(items, key=lambda item: keys.index(item["key"]))
             if [i["key"] for i in ordered] != [i["key"] for i in items]:
                 setattr(self, name, ordered)
-        first = strip[0] if strip else None
-        last = strip[-1] if len(strip) > 1 else None
+        # A discovered reel is motion only: its original frames must never become
+        # the product's opening/closing images, even after reordering or removal.
+        frames = [item for item in strip if item.get("source") != "reel"]
+        first = frames[0] if frames else None
+        last = frames[-1] if len(frames) > 1 else None
         self._set_clip_frame("first", *((first["key"], first["name"]) if first else ("", "")))
         self._set_clip_frame("last", *((last["key"], last["name"]) if last else ("", "")))
 

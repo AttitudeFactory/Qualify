@@ -738,11 +738,7 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   .q-cr-summary-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label edit" "value value"; align-items: center; }
 }
 
-/* «Replicar con mi marca», not built yet (m-24820845): the button is the soft grey
-   variant, flat — no hover lift — with «Pronto» on it and its help always visible
-   below (m-24842980). The wrapper carries the pointer's tooltip, an extra for the
-   mouse, since the disabled button itself takes no pointer events. */
-.q-dr-replicate-wrap { display: block; width: 100%; border-radius: var(--q-radius-control); cursor: not-allowed; }
+/* Replication: disabled only while preparing the reference or generating. */
 .radix-themes .rt-Button.q-dr-replicate:disabled,
 .radix-themes .rt-Button.q-dr-replicate[data-disabled],
 .radix-themes .rt-Button.q-dr-replicate:disabled:hover {
@@ -752,4 +748,3 @@ body[data-slide-dragging] { cursor: grabbing; -webkit-user-select: none; user-se
   box-shadow: inset 0 0 0 1px var(--gray-a6);
   color: var(--gray-10);
 }
-.q-dr-soon { padding: 0 0.45rem; border-radius: 999px; background: var(--gray-a4); color: var(--gray-11); font-size: 0.7rem; font-weight: 600; line-height: 1.15rem; }

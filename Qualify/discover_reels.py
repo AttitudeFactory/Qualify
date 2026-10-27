@@ -17,22 +17,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import reflex as rx
 from qualify_api.referentes import reels_ai
+from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 
 from . import reels_discovery
 from .auth_state import AuthState
 from .creative_provider import default_brand_id
+from .creative_state import CreativeState
 from .r2_media import BACKEND_BASE
+from .reel_replication import import_reference
 from .tenant import tenant_uuid
 from .ui import callout, card, empty_state, loading_spinner
 from .ui import tokens as T
+from .ui.steps import go_to_step
 
-#: Under «Replicar con mi marca», always visible (m-24842980, hallazgo 6): what the
-#: button will do once it is built.
-REPLICATE_HELP = "Pronto podrás hacer tu versión de este video con tu marca."
+#: Always visible on phones too; opening the form never generates a paid piece.
+REPLICATE_HELP = (
+    "Abre un Clip con tu marca y los primeros 5 s del reel como referencia de movimiento, "
+    "sin su audio. Podrás revisarlo antes de generar."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +83,10 @@ class DiscoverReelsState(rx.State):
     receives `reels`, the window's cut through the filters, at most `SHOWN_PER_WINDOW`
     — a read can hold some 70 checked cards per window, transcripts included. The 90-day
     read is loaded only on demand (`load_quarter`)."""
+
+    replicating: str = ""
+    replicate_error: str = ""
+    _cards_tenant_id: str = ""
 
     window: str = "week"
     #: The filters (`ALL` or a network / an `account_key`): they cut the read's cards.
@@ -226,6 +237,15 @@ class DiscoverReelsState(rx.State):
         if self.account != ALL and not any(a["key"] == self.account for a in self.accounts):
             self.account = ALL
 
+    def _claim_cards(self, tenant_id: str) -> None:
+        if self._cards_tenant_id != tenant_id:
+            self._cards = {}
+            self._reads = {}
+            self.accounts = []
+            self.playing_key = ""
+            self.failed_videos = []
+            self._cards_tenant_id = tenant_id
+
     def _store(self, depth: str, found: reels_discovery.DiscoveredReels) -> None:
         """Keep the read `found` (`"month"` or `"quarter"`) on the backend, for its windows."""
         windows = ("quarter",) if depth == "quarter" else ("week", "month")
@@ -280,6 +300,55 @@ class DiscoverReelsState(rx.State):
     def _card(self, key: str) -> dict[str, str] | None:
         cards = (c for window in self._cards.values() for c in window)
         return next((c for c in cards if c.get("key") == key), None)
+
+    @rx.event(background=True)
+    async def replicate(self, key: str) -> AsyncIterator[rx.event.EventSpec]:
+        """Only a server-held card of this session can open a Seedance Clip."""
+        async with self:
+            if self.replicating:
+                return
+            self.replicate_error = ""
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            creative = await self.get_state(CreativeState)
+            card = self._card(key)
+            if tenant_id is None or self._cards_tenant_id != str(tenant_id):
+                self.replicate_error = "Vuelve a abrir los reels de tu marca para continuar."
+                return
+            if card is None or card.get("affinity") not in reels_ai.FITS:
+                self.replicate_error = "Este reel ya no está en la selección. Elige otro."
+                return
+            if creative.gen_generating or creative.gen_mode != "discover":
+                return
+            product = (creative.selected_product_id, creative.product_source)
+            card = dict(card)
+            self.replicating = key
+        try:
+            imported = await asyncio.to_thread(import_reference, tenant_id, card)
+        except Exception as exc:
+            logger.warning("reel reference failed: %s", type(exc).__name__)
+            async with self:
+                self.replicating = ""
+                self.replicate_error = (
+                    str(exc)
+                    if isinstance(exc, ReelReferenceUnavailable)
+                    else "No pudimos preparar la referencia. Inténtalo de nuevo."
+                )
+            return
+        async with self:
+            self.replicating = ""
+            auth = await self.get_state(AuthState)
+            creative = await self.get_state(CreativeState)
+            if (
+                auth.session_tenant_id != str(tenant_id)
+                or creative.gen_mode != "discover"
+                or creative.gen_generating
+                or product != (creative.selected_product_id, creative.product_source)
+            ):
+                return
+            creative._apply_reel_reference(card, imported)
+            self.playing_key = ""
+        yield go_to_step("/create", 1)
 
     def _set_transcript(self, key: str, text: str) -> None:
         """Write the transcript into the card in every window — a reel can be in all."""
@@ -348,6 +417,11 @@ class DiscoverReelsState(rx.State):
                 )
             return
         async with self:
+            auth = await self.get_state(AuthState)
+            if auth.session_tenant_id != str(tenant_id):
+                self.quarter_loading = False
+                return
+            self._claim_cards(str(tenant_id))
             self._store("quarter", found)
             self.quarter_loading = False
 
@@ -385,6 +459,11 @@ class DiscoverReelsState(rx.State):
                 )
             return
         async with self:
+            auth = await self.get_state(AuthState)
+            if auth.session_tenant_id != str(tenant_id):
+                self.loading = False
+                return
+            self._claim_cards(str(tenant_id))
             self._store("month", found)
             if deep is not None and not self.quarter_loading:
                 self._store("quarter", deep)
@@ -695,29 +774,25 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 align_items="start",
             ),
             _details_panel(reel),
-            # Not built yet: it reads as unavailable (neutral, `.q-dr-replicate` in
-            # assets/qualify-creative.css) and says «Pronto» on the button itself, as the
-            # menu does (m-24820845, m-24842980 N10). What it will do is written under it,
-            # always visible — a tooltip never shows on a phone (N12); the tooltip stays
-            # only as an extra for the mouse. A disabled button fires no pointer events,
-            # so the tooltip hangs on a wrapper; it is no tab stop.
             rx.vstack(
-                rx.tooltip(
-                    rx.el.span(
-                        rx.button(
-                            rx.icon("copy", size=14),
-                            "Replicar con mi marca",
-                            rx.el.span("Pronto", class_name="q-dr-soon"),
-                            size="2",
-                            width="100%",
-                            variant="soft",
-                            color_scheme="gray",
-                            disabled=True,
-                            class_name="q-dr-replicate",
-                        ),
-                        class_name="q-dr-replicate-wrap",
+                rx.button(
+                    rx.cond(
+                        DiscoverReelsState.replicating == reel["key"],
+                        loading_spinner("sm"),
+                        rx.icon("copy", size=14),
                     ),
-                    content=REPLICATE_HELP,
+                    rx.cond(
+                        DiscoverReelsState.replicating == reel["key"],
+                        "Preparando referencia…",
+                        "Replicar con mi marca",
+                    ),
+                    size="2",
+                    width="100%",
+                    min_height="44px",
+                    variant="soft",
+                    on_click=DiscoverReelsState.replicate(reel["key"]),
+                    disabled=(DiscoverReelsState.replicating != "") | CreativeState.gen_generating,
+                    class_name="q-dr-replicate",
                 ),
                 rx.text(
                     REPLICATE_HELP,
@@ -858,6 +933,10 @@ def _filters() -> rx.Component:
 
 def _notices() -> rx.Component:
     return rx.vstack(
+        rx.cond(
+            DiscoverReelsState.replicate_error != "",
+            callout(DiscoverReelsState.replicate_error, "error"),
+        ),
         rx.cond(
             DiscoverReelsState.shown_error != "", callout(DiscoverReelsState.shown_error, "error")
         ),
