@@ -5,6 +5,16 @@ restart research, reinstall skills, or reproduce already fixed bugs from stale b
 
 ## Closing update — 2026-10-27 (supersedes pending notes below)
 
+- FINAL PENDING APPROVAL: docs PR398 head93e555b, CI40549982441 SUCCESS.
+  UX independent: no findings/no client impact. Independent code/doc review clean;
+  review-agent skill absent locally (limitation recorded in PR body).
+  NEW main qualify-pr rule now requires explicit approval PER MERGE, superseding
+  earlier skill's autonomous gate permission. Do NOT merge398 until user approves.
+  Main skill step9 quote: "Merge only with explicit user approval".
+  Meegle handoff RESOLVED, final scope/PR/validation/limits comment7701297877078773277
+  added and read back. Once approved: just merge398, transition handoff Done, verify,
+  fetch/merge origin/main into this checkpoint branch and push. PASOS12 remains pending.
+  Root workspace includes main6151a24 plus checkpoint (merge0994f14).
 - PASOS11 PR397 now MERGED `6151a242fe85200fbb9442a812f7d1d779d12c23`,
   CI40548729757 success. Meegle11 Done verified. All PASOS except12 are Done.
   Agent pasos_audit finalizing delivery doc commit/push based on6151a24, root
