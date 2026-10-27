@@ -160,6 +160,15 @@ async def test_list_candidate_media_propagates_unknown_connection(
         await composition.list_candidate_media(tenant_id=TENANT, connection_id=UNKNOWN_CONNECTION)
 
 
+@pytest.mark.parametrize("status", ["pending", "degraded", "revoked"])
+async def test_disconnected_media_picker_does_not_resolve_a_client(monkeypatch, status) -> None:
+    built = []
+    _wire(monkeypatch, status=status, built=built)
+    with pytest.raises(composition.InboxConnectionInactive):
+        await composition.list_candidate_media(tenant_id=TENANT, connection_id=CONNECTION)
+    assert built == []
+
+
 @pytest.mark.asyncio
 async def test_set_media_monitored_delegates_to_the_wired_service(
     monkeypatch: pytest.MonkeyPatch,

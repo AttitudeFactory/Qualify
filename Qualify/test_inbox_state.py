@@ -144,10 +144,10 @@ def test_sync_comments_releases_its_claim_in_a_finally_block() -> None:
 
 
 def test_every_early_exit_before_the_pass_releases_the_claim_too() -> None:
-    """The two exits that happen after claiming but before `sync_now` (no session/
-    connection, cooldown) release explicitly."""
+    """All exits after claiming but before `sync_now` release explicitly: no session,
+    unavailable connection, failed health read and cooldown."""
     source = inspect.getsource(InboxState.sync_comments.fn)
-    assert source.count("self._release_sync_claim(run_id)") == 3  # 2 early + finally
+    assert source.count("self._release_sync_claim(run_id)") == 5  # 4 early + finally
 
 
 def test_sync_comments_never_touches_the_candidate_list() -> None:

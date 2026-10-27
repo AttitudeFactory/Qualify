@@ -445,16 +445,21 @@ class _Clients:
     def __init__(self, factory: ClientFactory) -> None:
         self._factory = factory
         self._clients: dict[UUID, AuthenticatedClient] = {}
+        self._versions: dict[UUID, int | None] = {}
 
     async def get(self, connection: SourceConnection) -> AuthenticatedClient:
+        if self._versions.get(connection.connection_id) != connection.credential_version:
+            self.forget(connection.connection_id)
         client = self._clients.get(connection.connection_id)
         if client is None:
             client = await self._factory(connection.tenant_id, connection.connection_id)
             self._clients[connection.connection_id] = client
+            self._versions[connection.connection_id] = connection.credential_version
         return client
 
     def forget(self, connection_id: UUID) -> None:
         self._clients.pop(connection_id, None)
+        self._versions.pop(connection_id, None)
 
 
 def _page_node(connection: SourceConnection) -> str:
