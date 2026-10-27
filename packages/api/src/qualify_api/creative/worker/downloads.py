@@ -14,6 +14,8 @@ not. Both halves of the verdict are here:
 
 from __future__ import annotations
 
+import errno
+import io
 import os
 import tempfile
 import threading
@@ -27,12 +29,36 @@ DOWNLOADS_ENV = "QUALIFY_CREATIVE_WORKER_DOWNLOADS"
 DEFAULT_DOWNLOADS = 2
 MAX_DOWNLOADS = 3
 CHUNK_BYTES = 1024 * 1024
+CACHE_WINDOW_BYTES = 16 * CHUNK_BYTES
 #: Same ceiling as `creative/media.py` (a 15 s 1080p final is ~10–40 MB).
 MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 
 
 class DownloadTooLarge(Exception):
     """The vendor's body passed `MAX_DOWNLOAD_BYTES`; nothing is kept."""
+
+
+def _release_cache(fd: int, offset: int, length: int) -> None:
+    # Linux charges file page cache to the container too. This is advisory only;
+    # unsupported platforms retain the same byte-for-byte file behavior.
+    if hasattr(os, "posix_fadvise"):
+        try:
+            os.posix_fadvise(fd, offset, length, os.POSIX_FADV_DONTNEED)
+        except OSError as exc:
+            if exc.errno not in {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}:
+                raise
+
+
+class UncachedUploadFile(io.FileIO):
+    """Seekable upload body; discard already consumed clean pages after each read."""
+
+    def read(self, size: int = -1) -> bytes:
+        data = super().read(size)
+        if data:
+            # Advise the whole consumed prefix. Small per-read ranges cannot evict
+            # a large Linux file folio even after every byte in it has been read.
+            _release_cache(self.fileno(), 0, self.tell())
+        return data
 
 
 def downloads_allowed(env: Mapping[str, str] | None = None) -> int:
@@ -81,6 +107,7 @@ def stream_to_tempfile(
     max_bytes: int = MAX_DOWNLOAD_BYTES,
     chunk_bytes: int = CHUNK_BYTES,
     directory: str | None = None,
+    release_cache: bool = False,
 ) -> Iterator[Path]:
     """Download `url` in chunks into a temporary file and yield its path; the file is
     deleted when the block ends, whatever happens inside or during the download."""
@@ -90,11 +117,22 @@ def stream_to_tempfile(
         with os.fdopen(handle, "wb") as out, client.stream("GET", url) as response:
             response.raise_for_status()
             written = 0
+            cached = 0
             for chunk in response.iter_bytes(chunk_bytes):
                 written += len(chunk)
                 if written > max_bytes:
                     raise DownloadTooLarge(f"vendor body over {max_bytes} bytes")
                 out.write(chunk)
+                cached += len(chunk)
+                if release_cache and cached >= CACHE_WINDOW_BYTES:
+                    out.flush()
+                    os.fsync(out.fileno())
+                    _release_cache(out.fileno(), 0, 0)
+                    cached = 0
+            if release_cache:
+                out.flush()
+                os.fsync(out.fileno())
+                _release_cache(out.fileno(), 0, 0)
         yield path
     finally:
         path.unlink(missing_ok=True)

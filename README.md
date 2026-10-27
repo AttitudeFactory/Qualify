@@ -171,6 +171,7 @@ Por eso un commit solo tiene imágenes en GHCR si `deploy` lo construyó. Si alg
 | Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|webhook-worker\|whatsapp-worker\|conversations-worker\|calendar-worker\|postgres\|redis]` |
 | Respaldo de la base ahora | `just deploy-backup qualify-prod` |
 | Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
+| Preparar claves para el siguiente deploy, sin reiniciar | `just env-stage qualify-prod KEY` |
 | Instalar o actualizar el proxy de entrada (`deploy/edge/`) | `just edge-install qualify-prod` |
 | Desplegar compilando en el servidor, sin Actions | `just deploy qualify-prod [<sha\|rama>]` |
 
@@ -248,16 +249,39 @@ Se niega a propósito con estas claves, y dice qué hacer en su lugar:
 
 | Clave | Por qué | En su lugar |
 |---|---|---|
-| `QUALIFY_DB_*_PASSWORD` | la contraseña se aplica al rol con `migrate` (`ALTER ROLE`) | editar `.env.prod` y `just deploy` |
+| `QUALIFY_DB_*_PASSWORD` | la contraseña se aplica al rol con `migrate` (`ALTER ROLE`) | `just env-stage qualify-prod KEY`, luego `just deploy` |
 | `QUALIFY_PUBLIC_URL` | está horneada en el frontend estático | editar `.env.prod` y `just deploy` (reconstruye) |
 | `QUALIFY_DEV_FERNET_KEY` | rotarla deja indescifrables todas las credenciales OAuth guardadas | no se rota así |
 | `COMPOSE_*`, `QUALIFY_IMAGE_*` | cambian la forma del stack, no son un secreto | editar `.env.prod` y `just deploy` |
 
-**Deshacer un cambio:** volver a empujar el valor anterior desde el `.env` local, o restaurar el respaldo en el servidor:
+### Preparar claves sin reiniciar (`just env-stage`)
+
+Para preparar una clave que se activará con el siguiente despliegue:
 
 ```bash
-ssh qualify-prod 'cd /opt/qualify/current && cp -p /opt/qualify/.env.prod.bak-<UTC> /opt/qualify/.env.prod && docker compose --env-file /opt/qualify/.env.prod $(test -f deploy/release.env && echo --env-file deploy/release.env) -f deploy/docker-compose.prod.yml up -d --no-build'
+# Valor en el .env local; nunca se pasa por argumentos ni se edita el remoto a mano.
+just env-stage qualify-prod --dry-run QUALIFY_DB_CREATIVE_WORKER_PASSWORD
+just env-stage qualify-prod QUALIFY_DB_CREATIVE_WORKER_PASSWORD
+just deploy qualify-prod <ref-aprobada>
 ```
+
+`env-stage` lee el mismo archivo local que `env-push` (`QUALIFY_ENV_SOURCE` permite otro),
+transfiere solo las claves nombradas por stdin de SSH y muestra solo sus huellas. El modo
+`--dry-run` no escribe ni crea respaldos. Al aplicar deja un respaldo único, conserva los
+10 más recientes y escribe tanto el respaldo como `.env.prod` con permisos **0600**.
+No ejecuta Compose, migraciones, reinicios ni comprobaciones de salud: los contenedores
+siguen usando su entorno actual. El deploy posterior ejecuta `migrate` (incluido
+`ALTER ROLE` para las contraseñas de base) antes de activar los servicios con el nuevo entorno.
+
+Solo `env-stage` permite `QUALIFY_DB_*_PASSWORD`; `env-push` sigue rechazándolas. Ambos
+conservan el rechazo de `QUALIFY_DEV_FERNET_KEY`, `QUALIFY_PUBLIC_URL`, `COMPOSE_*` y
+`QUALIFY_IMAGE_*`. Preparar claves no sustituye la autorización de operaciones ni el deploy:
+no se edita `.env.prod` manualmente en el servidor.
+
+**Deshacer un cambio:** reponer el valor anterior en el archivo local y repetir la misma
+ruta: `env-push` para una clave normal, o `env-stage` seguido del deploy para una contraseña
+de rol preparada. El respaldo remoto queda disponible para el procedimiento de recuperación;
+no se reemplaza `.env.prod` ni se reinician servicios mediante comandos manuales de SSH.
 
 **Antes de empujar una llave de proveedor, verificar que sirve.** El 2026-10-07 se subió una llave de Scrape Creators con 0 créditos. Para Scrape Creators:
 

@@ -7,6 +7,8 @@
 #   deploy/deploy.sh backup <ssh-target>             pg_dump now (same script as the nightly cron)
 #   deploy/deploy.sh env-push <ssh-target> [--dry-run] KEY...
 #                                                    copy KEYs from your local .env into .env.prod
+#   deploy/deploy.sh env-stage <ssh-target> [--dry-run] KEY...
+#                                                    stage KEYs without restarting; then deploy
 #
 # <ssh-target> is e.g. `deploy@203.0.113.10`, or a Host alias from ~/.ssh/config.
 # [git-ref] defaults to `origin/main` (fetched first).
@@ -119,7 +121,7 @@ cmd_backup() {
 # Keys env-push refuses, with the command that does change them correctly.
 env_push_refusal() {
   case "$1" in
-    QUALIFY_DB_*_PASSWORD) echo "a role password is applied by \`migrate\` (ALTER ROLE): edit .env.prod and \`just deploy\`" ;;
+    QUALIFY_DB_*_PASSWORD) echo "a role password is applied by \`migrate\` (ALTER ROLE): use \`just env-stage\`, then \`just deploy\`" ;;
     QUALIFY_DEV_FERNET_KEY) echo "rotating the credential master key makes every stored OAuth credential undecryptable" ;;
     QUALIFY_PUBLIC_URL) echo "it is baked into the static frontend: edit .env.prod and \`just deploy\` (rebuild)" ;;
     COMPOSE_* | QUALIFY_IMAGE_*) echo "it changes the shape of the stack, not a secret: edit .env.prod and \`just deploy\`" ;;
@@ -131,7 +133,7 @@ env_push_refusal() {
 # shellcheck disable=SC2016  # expanded remotely
 ENV_PUSH_REMOTE='
 set -euo pipefail
-env_file=$1 dry=$2
+env_file=$1 dry=$2 stage=${3:-0}
 umask 077
 payload=$(mktemp) out=""
 trap '\''rm -f "$payload" ${out:+"$out"}'\'' EXIT
@@ -146,8 +148,15 @@ while IFS= read -r line; do
   printf "  %-34s %s\n" "$key" "$state"
 done <"$payload"
 [ "$dry" = 1 ] && { echo "==> Dry run: .env.prod untouched"; exit 0; }
-backup=$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ)
-cp -p "$env_file" "$backup"
+if [ "$stage" = 1 ]; then
+  backup=$(mktemp "$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+  cat "$env_file" >"$backup"
+  chmod 600 "$backup"
+  chown --reference="$env_file" "$backup"
+else
+  backup=$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ)
+  cp -p "$env_file" "$backup"
+fi
 out=$(mktemp "$env_file.XXXXXX")
 awk -F= '\''
   NR == FNR { i = index($0, "="); val[substr($0, 1, i - 1)] = substr($0, i + 1); next }
@@ -155,7 +164,8 @@ awk -F= '\''
   { print }
   END { for (k in val) if (!(k in done)) print k "=" val[k] }
 '\'' "$payload" "$env_file" >"$out"
-chmod --reference="$env_file" "$out"
+if [ "$stage" = 1 ]; then chmod 600 "$out"
+else chmod --reference="$env_file" "$out"; fi
 chown --reference="$env_file" "$out"
 mv "$out" "$env_file"
 out=""
@@ -163,13 +173,16 @@ ls -1t "$env_file".bak-* | tail -n +11 | xargs -r rm -f
 echo "==> .env.prod written (backup: $backup)"
 '
 
-cmd_env_push() {
-  local dry=0
+cmd_env_update() {
+  local mode=$1
+  shift
+  local dry=0 stage=0
+  [[ $mode != env-stage ]] || stage=1
   if [[ "${1:-}" == --dry-run ]]; then
     dry=1
     shift
   fi
-  [[ $# -ge 1 ]] || die "usage: env-push <ssh-target> [--dry-run] KEY..."
+  [[ $# -ge 1 ]] || die "usage: $mode <ssh-target> [--dry-run] KEY..."
 
   # Your local .env: the checkout's own, else the main checkout's (worktrees have none).
   local src=${QUALIFY_ENV_SOURCE:-}
@@ -183,6 +196,9 @@ cmd_env_push() {
   for key in "$@"; do
     [[ $key =~ ^[A-Z_][A-Z0-9_]*$ ]] || die "not an env var name: $key"
     why=$(env_push_refusal "$key")
+    if [[ $stage == 1 && $key == QUALIFY_DB_*_PASSWORD ]]; then
+      why=""
+    fi
     [[ -z $why ]] || die "refusing $key — $why"
     # Last occurrence wins, as in python-dotenv. Surrounding quotes and a CR are stripped.
     value=$( (grep -E "^${key}=" "$src" || true) | tail -n 1 | cut -d= -f2- | tr -d '\r')
@@ -194,8 +210,12 @@ cmd_env_push() {
   echo "==> $([[ $dry == 1 ]] && echo "Dry run: ")$# key(s) from $src -> $TARGET:$ENV_FILE"
   # The script itself is not secret; base64 keeps it one shell word whatever the login shell.
   printf %s "$payload" |
-    remote "bash -c \"\$(echo $(printf %s "$ENV_PUSH_REMOTE" | base64 | tr -d '\n') | base64 -d)\" env-push $ENV_FILE $dry"
+    remote "bash -c \"\$(echo $(printf %s "$ENV_PUSH_REMOTE" | base64 | tr -d '\n') | base64 -d)\" env-update $ENV_FILE $dry $stage"
   [[ $dry == 1 ]] && return
+  if [[ $stage == 1 ]]; then
+    echo "==> Staged only: no services restarted; deploy to apply (migrate applies role passwords)"
+    return
+  fi
 
   # Compose hashes the env_file into each service's config: `up` recreates exactly the
   # services that read .env.prod and nothing else (postgres/redis/caddy stay up). No build,
@@ -210,7 +230,7 @@ action=$1
 shift
 case "$action" in
   -h | --help | help) usage 0 ;;
-  deploy | status | logs | backup | env-push) ;;
+  deploy | status | logs | backup | env-push | env-stage) ;;
   *) usage ;;
 esac
 [[ $# -ge 1 ]] || die "missing <ssh-target> (e.g. deploy@203.0.113.10)"
@@ -222,5 +242,5 @@ case "$action" in
   status) cmd_status ;;
   logs) cmd_logs "$@" ;;
   backup) cmd_backup ;;
-  env-push) cmd_env_push "$@" ;;
+  env-push | env-stage) cmd_env_update "$action" "$@" ;;
 esac

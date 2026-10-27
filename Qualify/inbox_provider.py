@@ -4,9 +4,9 @@
 Same split `publishing_provider.py` documents:
 
 - **Reads this module reuses.** `instagram_connections` reuses `connections_provider.
-  connections_for` exactly as it is, filtered to `platform == "instagram"`, `status ==
-  "active"` and the `READ_COMMENTS` capability (C-05) being enabled — this module adds
-  zero new database access for that list.
+  connections_for` filtered to previously connected Instagram accounts. Lost access
+  never hides saved comments (m-24854867). `connection_access` reads the persisted
+  diagnosis and the current grant's outage audit time through `tenant_session`.
 - **In-process writes/reads.** `candidate_media`/`toggle_monitoring`/`sync_now` are thin
   async projections over `qualify_api.inbox.composition`'s published seam
   (`list_candidate_media`/`set_media_monitored`/`sync_comments`, re-exported from
@@ -90,6 +90,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.comment_analysis import analyze_after_sync
+from qualify_api.connections.models import ConnectionEvent, SocialConnection
 from qualify_api.inbox import (
     list_candidate_media,
     set_media_monitored,
@@ -123,10 +124,13 @@ from qualify_api.sentiment.repository import (
     ReelListCursor,
     ReelSummary,
 )
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import func, select
 
-from .capabilities import Capability
+from .connection_copy import NO_ACCESS, connection_status_display
 from .connections_provider import connections_for
 from .conversations_provider import gateway as conversations_gateway
+from .inbox_access import InboxAccessVM, InboxConnectionVM, access_moment, access_notice
 from .inbox_vm import (
     MONITORING_ACTIVE,
     MONITORING_EXPIRED,
@@ -145,34 +149,78 @@ from .inbox_vm import (
     short_day_label,
 )
 from .planner_vm import time_label_12h
-from .publishing_vm import ConnectionOptionVM
 from .r2_media import issue_view_path
 
 logger = logging.getLogger(__name__)
 
 
-def instagram_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
-    """Active Instagram connections that can actually list/monitor comments right now —
-    same 'active status' filter `publishing_provider.active_connections` uses, narrowed
-    further to `platform == "instagram"` and `READ_COMMENTS` (C-05) enabled.
-
-    Blocking DB call (via `connections_for`) — callers on the event loop must run it
-    off-thread, same as `connections_for` itself.
-    """
+def instagram_connections(tenant_id: UUID) -> list[InboxConnectionVM]:
+    """Previously connected accounts stay visible without live access or permissions."""
     return [
-        ConnectionOptionVM(
+        InboxConnectionVM(
             id=connection.id,
-            external_username=connection.external_username,
+            external_username="@" + connection.external_username.lstrip("@"),
             platform=connection.platform,
+            label="@"
+            + connection.external_username.lstrip("@")
+            + (
+                " · " + NO_ACCESS
+                if connection.reconnect_reason == "permission_missing"
+                else ""
+                if connection.status == "active"
+                else " · " + connection_status_display(connection.status)[0]
+            ),
+            status=connection.status,
+            reconnect_reason=connection.reconnect_reason,
         )
         for connection in connections_for(tenant_id)
-        if connection.status == "active"
+        if connection.status in ("active", "degraded", "revoked")
         and connection.platform == "instagram"
-        and any(
-            cap.key == Capability.READ_COMMENTS.value and cap.enabled
-            for cap in connection.enabled_capabilities
-        )
     ]
+
+
+def connection_access(tenant_id: UUID, connection_id: UUID) -> InboxAccessVM:
+    """Tenant-scoped diagnosis and current grant's persisted outage time; no Meta calls."""
+    with tenant_session(tenant_id) as session:
+        row = session.scalar(
+            select(SocialConnection).where(
+                SocialConnection.tenant_id == tenant_id,
+                SocialConnection.id == connection_id,
+                SocialConnection.platform == "instagram",
+            )
+        )
+        if row is None:
+            return InboxAccessVM()
+        status, cause, failures = (
+            row.status,
+            row.reconnect_reason or "",
+            row.temporary_failure_count,
+        )
+        outage = (
+            session.scalar(
+                select(func.max(ConnectionEvent.occurred_at)).where(
+                    ConnectionEvent.tenant_id == tenant_id,
+                    ConnectionEvent.connection_id == connection_id,
+                    ConnectionEvent.credential_version == row.current_credential_version,
+                    ConnectionEvent.event_type.in_(
+                        (
+                            "auth_error",
+                            "missing_credential",
+                            "permission_missing",
+                            "degraded",
+                            "revoked",
+                        )
+                    ),
+                )
+            )
+            if status == "degraded"
+            else None
+        )
+        account = "@" + (row.external_username or row.external_account_id).lstrip("@")
+    since = access_moment(outage, tenant_zone(tenant_id)) if outage else "la última conexión"
+    return access_notice(
+        status=status, cause=cause, account=account, since=since, failures=failures
+    )
 
 
 _UTC = ZoneInfo("UTC")
