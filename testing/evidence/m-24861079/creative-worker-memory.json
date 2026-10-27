@@ -1,0 +1,64 @@
+{
+  "phases": [
+    {
+      "phase": "0-interpreter",
+      "rss_mib": 22.3,
+      "peak_rss_mib": 22.3,
+      "cgroup_current_mib": 14.6,
+      "cgroup_peak_mib": 14.6,
+      "limit_mib": 512.0,
+      "note": "production dependency image, current source mounted read-only"
+    },
+    {
+      "phase": "a-idle",
+      "rss_mib": 84.9,
+      "peak_rss_mib": 84.9,
+      "cgroup_current_mib": 65.5,
+      "cgroup_peak_mib": 65.5,
+      "limit_mib": 512.0,
+      "note": "production service wired; real preparation over empty tenant"
+    },
+    {
+      "phase": "b-carousel",
+      "rss_mib": 149.3,
+      "peak_rss_mib": 184.7,
+      "cgroup_current_mib": 133.8,
+      "cgroup_peak_mib": 170.1,
+      "limit_mib": 512.0,
+      "note": "real preparation, 10 generated 2048px PNG slides; assets=10; vendor_calls={'anthropic': 1, 'seedream': 10}"
+    },
+    {
+      "phase": "c-downloads",
+      "rss_mib": 184.9,
+      "peak_rss_mib": 201.7,
+      "cgroup_current_mib": 163.9,
+      "cgroup_peak_mib": 201.6,
+      "limit_mib": 512.0,
+      "note": "two concurrent real PipelineExecutor.finish including guarded download/R2/checkpoint; 200 MiB each; gate_peak=2"
+    }
+  ],
+  "peak_percent": 39.38,
+  "events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+  "date": "2026-10-27",
+  "command": "just mem-creative-worker",
+  "before": {
+    "same_scenario_download_mib": 200,
+    "parallel_finishes": 2,
+    "exit": 137,
+    "oom": true
+  },
+  "lock_sha256": "7855d60885171760bcfc5e8524ab01d088492ea8a39411e56a7e78956bc7e49e",
+  "image": "sha256:6af468728f1f7c22b27c482e35c8a0cb580027869ac668e377e38914351fc39a 2026-10-25T12:58:57.70725684Z",
+  "container": {
+    "oom_killed": false,
+    "exit": 0,
+    "memory": 536870912
+  },
+  "source_sha256": {
+    "packages/api/src/qualify_api/creative/media.py": "7b4335c828a762e8e5eb712139cd08f21e1ce603824f6f8971bf65ced91f1725",
+    "packages/api/src/qualify_api/creative/worker/pipeline.py": "919f080e803caae4d5019ba8fb7bc8b9e4102f1d1fe95876e8a2a021ad32e795",
+    "packages/api/src/qualify_api/creative/worker/downloads.py": "33d31c8ddd6270c324a0ae15da80e1d5d28487716ef9f1daf192f0d7929cea69",
+    "deploy/measure/creative_worker_memory.py": "52543ff799153cd7bf59b3eebdf3505a48ec8a9c5e04a98043ff3d870a721b89",
+    "deploy/measure/creative-worker-memory.sh": "7249cb86c3f0feeee65eb0aa200b19ccb6778416b3d721456babaaffaa9dead0"
+  }
+}

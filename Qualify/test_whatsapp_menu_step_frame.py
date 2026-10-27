@@ -38,8 +38,10 @@ def test_next_and_back_settle_the_panel_without_publishing(monkeypatch: pytest.M
     state.set_guided_greeting("Mi saludo sin publicar")
     forward = state.guided_next()
     assert state.guided_step == 2
+    assert state.guided_direction == "next"
     backward = state.guided_back()
     assert state.guided_step == 1
+    assert state.guided_direction == "back"
     assert state.guided.greeting == "Mi saludo sin publicar"
     assert "main.q-panel" in str(forward)
     assert "main.q-panel" in str(backward)
@@ -97,3 +99,40 @@ def test_navigation_and_leaving_do_not_interrupt_an_in_flight_publish(
     assert state.save_for_later() is None
     assert state.leave_guided() is None
     assert state.guided_step == 4
+
+
+def test_menu_motion_animates_existing_panel_and_keeps_editor_key_constant() -> None:
+    import inspect
+
+    script = str(WhatsAppMenuState()._guided_settle())
+    assert "prefers-reduced-motion" in script
+    assert "panel.animate" in script
+    assert "--q-dur-slow" in script and "--q-ease" in script
+    assert "data-dir" in str(_guided_card())
+    source = inspect.getsource(menu_step_frame)
+    assert "step=1" in source
+    assert "direction=S.guided_direction" in source
+
+
+@pytest.mark.parametrize("reduced", [False, True])
+@pytest.mark.parametrize("duration", ["380ms", "0.38s"])
+def test_menu_animation_uses_direction_and_honors_reduced_motion(reduced, duration) -> None:
+    from .test_route_history import _node
+
+    event = WhatsAppMenuState()._guided_settle()
+    script = event.args[0][1]._var_value
+    harness = """
+let seen=[];
+const panel={dataset:{dir:'back'},getAnimations:()=>[],
+ animate:(frames,options)=>seen.push({frames,options})};
+const document={querySelector:s=>s==='.q-menu-guided-panel'?panel:null};
+const window={requestAnimationFrame:fn=>fn(),addEventListener:()=>{},
+ matchMedia:()=>({matches:REDUCED})};
+const getComputedStyle=()=>({getPropertyValue:name=>name==='--q-dur-slow'?'DURATION':'ease'});
+""".replace("REDUCED", str(reduced).lower()).replace("DURATION", duration)
+    result = _node(harness + script + "console.log(JSON.stringify(seen));")
+    if reduced:
+        assert result == []
+    else:
+        assert result[0]["frames"] == [{"transform": "translateX(-8px)"}, {"transform": "none"}]
+        assert result[0]["options"]["duration"] == 380

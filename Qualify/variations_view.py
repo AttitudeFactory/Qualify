@@ -147,44 +147,37 @@ def _product_tile(row: rx.Var[dict[str, str]]) -> rx.Component:
 def _product_picker() -> rx.Component:
     return rx.vstack(
         rx.cond(
-            VariationsState.products_loading | ~VariationsState.products_loaded,
-            rx.cond(
-                VariationsState.error == "",
-                rx.box(skeleton_card(lines=4), role="status", aria_label="Cargando productos"),
-                rx.button("Reintentar", on_click=VariationsState.load, size="3"),
-            ),
-            rx.cond(
-                VariationsState.has_products,
-                rx.vstack(
-                    rx.grid(
-                        rx.foreach(VariationsState.products, _product_tile),
-                        columns=rx.breakpoints(initial="2", sm="3", lg="4"),
-                        spacing="3",
-                        width="100%",
-                    ),
-                    # m-24842973 (N4): the one that is missing, added and back here chosen
-                    rx.link(
-                        rx.button(
-                            rx.icon("plus", size=T.ICON_SM),
-                            ADD_PRODUCT_LABEL,
-                            variant="soft",
-                            size="3",
-                        ),
-                        href=new_product_href(VARIATIONS_RETURN_PATH),
-                    ),
+            VariationsState.has_products,
+            rx.vstack(
+                rx.grid(
+                    rx.foreach(VariationsState.products, _product_tile),
+                    class_name="q-content-ready",
+                    columns=rx.breakpoints(initial="2", sm="3", lg="4"),
                     spacing="3",
                     width="100%",
                 ),
-                empty_state(
-                    "package",
-                    "Aún no tienes productos",
-                    "Variaciones parte de un producto real de tu catálogo: agrégalo con sus "
-                    "fotos y vuelves aquí con él ya elegido.",
-                    # m-24842973 (N4): saving the product comes back to Variaciones with it
-                    rx.link(
-                        rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
-                        href=new_product_href(VARIATIONS_RETURN_PATH),
+                # m-24842973 (N4): the one that is missing, added and back here chosen
+                rx.link(
+                    rx.button(
+                        rx.icon("plus", size=T.ICON_SM),
+                        ADD_PRODUCT_LABEL,
+                        variant="soft",
+                        size="3",
                     ),
+                    href=new_product_href(VARIATIONS_RETURN_PATH),
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            empty_state(
+                "package",
+                "Aún no tienes productos",
+                "Variaciones parte de un producto real de tu catálogo: agrégalo con sus "
+                "fotos y vuelves aquí con él ya elegido.",
+                # m-24842973 (N4): saving the product comes back to Variaciones with it
+                rx.link(
+                    rx.button(rx.icon("plus", size=T.ICON_SM), ADD_PRODUCT_LABEL, size="3"),
+                    href=new_product_href(VARIATIONS_RETURN_PATH),
                 ),
             ),
         ),
@@ -887,6 +880,7 @@ def _angles_review() -> rx.Component:
         ),
         rx.grid(
             rx.foreach(VariationsState.visible_angles, _angle_card),
+            class_name="q-content-ready",
             columns=rx.breakpoints(initial="1", lg="2"),
             spacing="3",
             width="100%",

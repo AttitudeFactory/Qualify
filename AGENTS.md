@@ -1,67 +1,48 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+Qualify is a multi-tenant marketing CRM (Reflex UI + FastAPI-backed modular monolith) built as a Python 3.12+ uv workspace. **`CLAUDE.md` is the primary instruction file** and points at the `qualify-*` skills under `.claude/skills/` (dev-env traps, PR flow, migrations, prod ops); read the relevant skill before nontrivial work. Docs in `docs/` are Spanish prose and describe intent — trust the filesystem and config over docs.
 
-Qualify is a production multi-tenant app (Reflex frontend + modular-monolith backend) on a Python 3.12+ `uv` workspace. The root `pyproject.toml` is virtual (`package = false`) and only owns the shared lock, venv, and dev tooling.
+## Structure
 
-- `Qualify/` — Reflex app (client screens); design system in `Qualify/ui/` (rules: `docs/design-system.md`).
-- `packages/<name>/src/qualify_<name>/` — `api` (backend features: connections, publishing, planner, inbox, conversations, whatsapp, creative, auth…), `shared` (the ONLY sanctioned DB doors — `tenant_session`, `admin_session`, `credential_session`, `webhook_session`, `webhook_worker_session` — plus R2 storage), `creative`, `scraper`, `models`.
-- `packages/render/` — Node.js/Remotion render service; excluded from the uv workspace (no pyproject.toml).
-- `migrations/postgres/` — Alembic, the whole schema with RLS (run as `qualify_owner`, see `migrations/postgres/env.py`).
-- `deploy/`, `infra/`, `.github/` — Hetzner production deploy, Langfuse stack, CI/CD.
-- `docs/` — Spanish product/architecture docs; start at `docs/index.md`; ADRs in `docs/arquitectura.md` §6 + `docs/adr-*.md`.
-- `graphify-out/` — knowledge graph; prefer `graphify query "<question>"` over wide greps for architecture questions.
+- `Qualify/` — the Reflex app (client-facing screens); colocated UI tests are collected by root pytest.
+- `packages/<name>/src/qualify_<name>/` — `api` (backend monolith + workers), `shared` (the **only** sanctioned DB doors: `tenant_session`, `admin_session`, `credential_session`, `webhook_session`, … + R2), `scraper`, `creative`, `models` (ML), `docs-harvester`.
+- `packages/render/` — Node 22+/TypeScript Remotion service. **Excluded from the uv workspace** (no pyproject.toml); manage it with npm inside that directory only.
+- `migrations/postgres/` — Alembic: whole schema, RLS policies and DB roles (roles are created by migrations, not compose).
+- `tests/e2e/` — Playwright; never part of CI (`just e2e`, needs `just up` + installed Chromium).
 
-Deeper context lives in `CLAUDE.md` and the `qualify-*` skills (`.claude/skills/`): `qualify-context` (product), `qualify-dev-env` (commands/traps), `qualify-pr`, `qualify-migration`, `qualify-copy-es` (client-facing Spanish), `qualify-ux`.
+## Commands
 
-## Build, Test, and Development Commands
+- `just dev` — docker compose up (Postgres 16, Redis 7, render) + `alembic upgrade head` + seed. `just down` **always drops the pgdata volume** (`down -v`).
+- `uv sync` — default groups are backend + crm + dev; **torch/`ml` is deliberately excluded**. Use `uv sync --group ml` only for `packages/models` work, and run its tests with `uv run --no-sync pytest packages/models/tests`.
+- `uv run reflex run` — launch the CRM. Reflex loads `.env` only because `rxconfig.py` sets `env_file=".env"`; production overrides config via `REFLEX_<FIELD>` env vars.
+- `just ci-lint` then `just ci-test` — CI mirrors of the lint and offline-test steps; run both before pushing. `just lint` / `just fmt` modify files.
+- `just test` — unit + db, offline; the db tests need the compose stack (`just up`). `just test-db` — only `db`-marked tests. `just test-fresh` — reset `qualify_test` first. Single test: `uv run pytest path/to/test_file.py::test_name`.
+- `just merge <pr>` — the merge gate (GitHub Free has no branch protection): refuses unless required checks are green. `--admin` is a logged contingency only.
+- Renderer: in `packages/render/`, `npm install`, `npm run typecheck`, `npm run bundle`; or `just render-dev` (Remotion Studio), `just render-smoke`.
+- Always `uv`, never `pip`/`conda`. Many justfile recipes use `uv run --no-sync` on purpose — a stray `uv sync` with different groups can disrupt the shared `.venv`.
 
-Use `uv` (never pip/conda). The `justfile` requires Bash; on Windows, use a Bash-capable environment (Git Bash).
+## Testing quirks
 
-- `uv sync`: backend + crm + dev groups. The `ml` group (torch) is deliberately excluded — use `uv sync --group ml` only for `packages/models` work, and beware: alternating plain and `--group ml` syncs on the shared `.venv` is a known corruption source.
-- `just dev`: docker compose up (`--wait`) → `alembic upgrade head` → seed. `just down -v` tears down including the pgdata volume.
-- `uv run reflex run`: run the Reflex app locally.
-- `just ci-lint` / `just fmt`: ruff check + format --check (as CI) / apply formatting.
-- `just test`: unit + db tests, `-m "not integration"` — mirrors CI. Root `addopts` already excludes `integration` and `slow` from every pytest run.
-- `just ci-test`: offline tests with per-package coverage, as CI. `integration` never runs in CI.
-- `just test-db` / `just test-db-reset` / `just test-fresh`: db-marked tests / destructive reset of `qualify_test` only / reset + full pass.
-- Single test: `uv run pytest packages/api/tests/test_x.py::test_y` (offline tests need no services; `db`-marked ones need `just up` first).
-- `just merge <pr>`: the merge gate (GitHub Free has no branch protection — this script is the rule). Refuses unless required checks are green; `--admin` forces deliberately.
-- `just render-dev` / `just render-build` / `just render-smoke`: Remotion Studio / render Docker image / e2e smoke against the running service.
-- `just e2e`: Playwright tests in `tests/e2e` — never part of CI; needs compose Postgres and Chromium.
+- Root `conftest.py` **aborts any pytest run** whose DSN doesn't point at a `*_test` database or whose Redis URL is db 0. Tests default to `qualify_test` + Redis 15, never the dev `qualify` database. Data left behind is kept for inspection; reset explicitly (`just test-db-reset` or `--reset-test-db`).
+- Markers: `db` (needs compose Postgres/Redis), `integration` (external network/paid vendors — never in CI), `slow` (opt-in benchmarks). Default `addopts` excludes `integration` and `slow`.
+- `testpaths` in `pyproject.toml` is an **audited allow-list**: `packages/shared/tests/test_gate_coverage.py` fails if any `packages/*/tests` dir is neither listed there nor in the justified deny-list (`[[tool.qualify.test-gate.excluded]]`). Adding a package means deciding its gate status explicitly.
+- CI order in the `test` job: ruff check → ruff format --check → gitleaks (PR commits) → offline pytest with coverage → **migration reversibility gate** (`alembic upgrade head` → `downgrade base` → `upgrade head` must land clean) → `pytest -m db`. Any new migration must be fully reversible.
+- An autouse fixture strips Langfuse keys — tests never export traces; a test needing tracing configures its own client.
 
-## Workers & Money-Spending Commands (gotcha)
+## Danger: workers act for real
 
-- Worker recipes (`calendar-tick/worker`, `whatsapp-tick/worker`, `conversations-*`, `creative-tick/worker`, `webhook-*`) **publish or send for real**. Locally always scope with `--tenant <uuid>`; `--all-tenants` is production-only.
-- Purge/backfill recipes are dry runs unless `--execute`.
-- `just refresh-referentes`, `just classify-hashtags`, and every `just eval-*` recipe **spend real credits/money** (ScrapeCreators, Anthropic, BytePlus) — check `--dry-run` first; evals also need `just langfuse-up`.
+`just calendar-tick`, `whatsapp-tick`, `creative-tick`, `conversations-tick`, `webhook-tick` and their `*-worker` variants **publish, send and spend real money** (Meta posts, WhatsApp messages, BytePlus billed renders). Scope is mandatory: locally always `--tenant <uuid>`, never `--all-tenants`. Purge/backfill recipes are dry-run unless `--execute`. `just eval-*` experiments spend real Claude/BytePlus credits and are never part of CI.
 
-## Coding Style & Naming Conventions
+## Conventions
 
-Four-space indentation, type hints on every signature, ruff line-length 100, rules `E`/`F`/`I`/`UP`. Ruff excludes `.claude/`, `.agents/`, and `docs/` (agent infra and Spanish prose with illustrative Python — linting them caused a week of false-red CI). `snake_case` modules/functions, `PascalCase` classes. Language split: code, commits, `CLAUDE.md`/`AGENTS.md` and skills in English; `docs/`, `README.md`, and all client-facing strings in Spanish (per `qualify-copy-es`). Keep heavy ML deps opt-in (`uv sync --group ml`).
+- Ruff: line-length 100, rules `E`, `F`, `I`, `UP`; `extend-exclude` covers `.claude`, `.agents`, `docs` (agent infra and Spanish prose — don't lint-fix them). Pre-commit runs ruff through uv.
+- Type hints on every signature; UI files follow `*_state.py`, `*_provider.py`, `*_vm.py`.
+- Language: `docs/` and `README.md` in Spanish; code, commits and skills in English; client-facing strings in Spanish per the `qualify-copy-es` skill.
+- Commits/PRs: Conventional Commits with the Meegle ticket, e.g. `feat(creative): add queue recovery (m-24852160)`; branch names, PR titles and `Resolves m-<number>` include the `m-<id>`.
+- Hard rules (see CLAUDE.md): every table has `tenant_id` + RLS; DB access only through `qualify_shared.db` doors; provenance on derived rows; idempotency on every outbox/webhook/worker; one Postgres for everything (no new datastores/vendors without a founder decision).
 
-## Testing Guidelines
+## Environment & deploy
 
-pytest + pytest-asyncio (`asyncio_mode = "auto"`); files `test_*.py`, functions `test_*`. Tests live in package `tests/` dirs and alongside Reflex code in `Qualify/`. Markers: `integration` (external network/paid vendors — never CI), `db` (needs compose Postgres/Redis), `slow` (opt-in benchmarks).
-
-- Every run is force-isolated to `qualify_test` + Redis db 15; the root `conftest.py` **aborts** if any DSN points at the dev `qualify` database. Data a run leaves behind is kept for inspection — reset explicitly with `--reset-test-db` / `just test-db-reset`.
-- `testpaths` in `pyproject.toml` is an AUDITED allow-list: `packages/shared/tests/test_gate_coverage.py` fails if any `packages/*/tests` dir is neither listed there nor in the `[[tool.qualify.test-gate.excluded]]` deny-list. New package test dirs must be added to one or the other.
-- `packages/models/tests` is excluded from the gate (needs the `ml` group); run it explicitly: `uv run --no-sync pytest packages/models/tests`.
-- importlib import mode + no `__init__.py` under tests dirs — same-named test modules across packages are expected.
-- CI publishes coverage reports; no numeric minimum is configured.
-
-## Commit & Pull Request Guidelines
-
-Before creating or publishing any pull request, always run the project's `ux-designer` agent and the `review-agent` skill on the final merge diff. Resolve confirmed code defects, rerun the affected checks, and record UX suggestions and any remaining limitations in the PR description. For changes without a client-facing impact, the UX agent must explicitly report that scope and whether it has any suggestions. Do not replace either review with a self-review or CI; report unavailable review capabilities explicitly.
-
-Do not create or publish a pull request without the user's explicit authorization. Prepare changes locally and wait for authorization before pushing a branch for a PR or opening the PR. Preserve existing PRs unless the user explicitly asks to close or delete them.
-
-Do not merge a pull request or enable auto-merge without the user's explicit authorization for that merge. Authorization to prepare, push, or open a PR does not authorize merging it, even when all checks pass. After authorization, use the repository's merge gate (`just merge <pr>`).
-
-Before closing a pull request, whether by merging or closing without merge, update its linked Meegle ticket with the final scope, current workflow status, PR link, validation results, and remaining work or limitations. Read the ticket back to verify the update before closing the PR. Never mark undelivered work as completed; record the actual outcome. This requirement does not authorize closing or merging a PR without the user's explicit approval.
-
-Follow Conventional Commits in English, such as `feat(creative): add queue monitoring (m-24852167)`. Link the Meegle ticket in each PR, describe behavior changes and validation, and include screenshots for UI changes. Require green applicable CI checks before merging; use `just merge <pr>`.
-
-## Security & Configuration
-
-Use `.env.example` as the configuration reference; never commit secrets (`.env` is local; `just env-push` copies keys to production without exposing values). Access databases ONLY through the `qualify_shared.db` session doors — every table has `tenant_id` + RLS with the `NULLIF(current_setting('app.tenant_id', true), '')::uuid` policy, and the doors set that GUC. Hard rules (from `CLAUDE.md`): one Postgres for transactional + analytical data (no new datastore/vendor without an options table and the founder's decision); provenance on every derived row; idempotency on every outbox/webhook/worker; assisted, never autonomous publishing.
+- `.env.example` is the config reference (copy to `.env`, gitignored). Without DSN vars, code defaults to localhost `qualify`. `QUALIFY_AUTH_FAKE=1` / `QUALIFY_SIGNUP_OPEN=1` are dev/test only.
+- Production is a Hetzner VPS behind a shared edge Caddy: `just deploy <ssh-target> [ref]`, `just deploy-status`, `just deploy-logs`, `just env-push <target> KEY...` (copies secrets from local `.env` without printing them). Details: `docs/despliegue-hetzner.md` and the `qualify-prod-ops` skill.
+- `graphify-out/` holds a knowledge graph of the repo; `graphify query "<question>"` answers codebase questions, `graphify update .` refreshes it after changes.

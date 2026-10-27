@@ -1,0 +1,80 @@
+{
+  "scope": "Generated real callback + project CSS in isolated Chromium DOM, no database/session",
+  "motion": {
+    "calls": [
+      {
+        "frames": [
+          {
+            "transform": "translateX(8px)"
+          },
+          {
+            "transform": "none"
+          }
+        ],
+        "options": {
+          "duration": 380,
+          "easing": "cubic-bezier(.22,1,.36,1)",
+          "fill": "both"
+        },
+        "dir": "next"
+      },
+      {
+        "frames": [
+          {
+            "transform": "translateX(-8px)"
+          },
+          {
+            "transform": "none"
+          }
+        ],
+        "options": {
+          "duration": 380,
+          "easing": "cubic-bezier(.22,1,.36,1)",
+          "fill": "both"
+        },
+        "dir": "back"
+      },
+      {
+        "frames": [
+          {
+            "transform": "translateX(8px)"
+          },
+          {
+            "transform": "none"
+          }
+        ],
+        "options": {
+          "duration": 380,
+          "easing": "cubic-bezier(.22,1,.36,1)",
+          "fill": "both"
+        },
+        "dir": "next"
+      }
+    ],
+    "sameInput": true,
+    "samePanel": true,
+    "files": 1,
+    "actual": [
+      {
+        "duration": 380,
+        "frames": [
+          "translateX(8px)",
+          "none"
+        ]
+      }
+    ]
+  },
+  "fade": [
+    {
+      "duration": 240,
+      "opacity": [
+        "0.55",
+        "1"
+      ]
+    }
+  ],
+  "reduce": {
+    "calls": 3,
+    "fade": "none"
+  }
+}

@@ -2049,6 +2049,8 @@ def _guided_card() -> rx.Component:
             align_items="start",
         ),
         padding="1.25rem 1.5rem",
+        class_name="q-card q-menu-guided-panel",
+        custom_attrs={"data-dir": S.guided_direction},
     )
 
 
@@ -2176,4 +2178,5 @@ def menu_step_frame() -> rx.Component:
         # The editor and the preview own native inputs; history uses flow_sync and
         # the route's existing POP listener, so changing steps need not remount them.
         step=1,
+        direction=S.guided_direction,
     )
