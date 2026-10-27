@@ -257,6 +257,7 @@ def test_the_matrix_verdict_comes_before_anything_the_sync_recorded() -> None:
         zone=ZONE,
     )
     assert vm.kind == ACCESS_PERMISSION_MISSING
+    assert vm.title == "Sin acceso"
     assert vm.show_reconnect and vm.provisional and vm.tone == "warn"
     assert vm.message.startswith("Falta.")
 
@@ -264,6 +265,33 @@ def test_the_matrix_verdict_comes_before_anything_the_sync_recorded() -> None:
 def test_a_degraded_connection_asks_to_reconnect() -> None:
     vm = build_access_vm(_sync(), account=_account(status="degraded"), now=NOW, zone=ZONE)
     assert vm.kind == ACCESS_AUTH_EXPIRED and vm.show_reconnect
+    assert vm.title == "Desconectada"
+    assert "guardado sigue aquí" in vm.message
+
+
+@pytest.mark.parametrize(
+    ("status", "can_manage_dms", "kind", "title"),
+    [
+        ("degraded", False, ACCESS_AUTH_EXPIRED, "Desconectada"),
+        ("degraded", True, ACCESS_AUTH_EXPIRED, "Desconectada"),
+        ("active", False, ACCESS_PERMISSION_MISSING, "Sin acceso"),
+    ],
+)
+def test_connection_health_precedes_missing_scope_and_stale_sync(
+    status: str, can_manage_dms: bool, kind: str, title: str
+) -> None:
+    vm = build_access_vm(
+        _sync(access="ok"),
+        account=_account(status=status, can_manage_dms=can_manage_dms, dm_reason="Falta."),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert (vm.kind, vm.title, vm.tone, vm.show_reconnect) == (kind, title, "warn", True)
+    assert "guardado sigue aquí" in vm.message
+    if status == "degraded":
+        assert not vm.message.startswith("Falta.")
+    else:
+        assert vm.message.startswith("Falta.")
 
 
 def test_never_synced_is_provisional_not_empty() -> None:

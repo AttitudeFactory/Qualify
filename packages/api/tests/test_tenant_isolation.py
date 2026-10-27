@@ -48,7 +48,9 @@ def test_guc_does_not_bleed_across_pooled_transactions(
             scoped = conn.execute(text("SELECT count(*) FROM brands")).scalar_one()
         with conn.begin():
             leaked = conn.execute(text("SELECT count(*) FROM brands")).scalar_one()
-    assert scoped == 1  # saw tenant A's brand while scoped
+    # Other DB tests can add brands to this shared tenant. The scoped transaction
+    # must see its brands; the next transaction must see none of them.
+    assert scoped > 0
     assert leaked == 0  # GUC gone on reuse → fail-closed, no bleed
 
 

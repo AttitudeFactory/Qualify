@@ -150,6 +150,8 @@ async def run_worker(
     chore_every: float = 24 * 60 * 60,
     sidecar: Callable[[], object] | None = None,
     sidecar_every: float = 60.0,
+    retry_chore: Callable[[], object] | None = None,
+    retry_every: float = 60.0,
 ) -> int:
     """Tick, then wait until `interval` seconds after that tick STARTED, then tick again.
     The runner is built once, after `.env` is loaded. `max_ticks` exists for tests;
@@ -167,11 +169,16 @@ async def run_worker(
     the first tick start `sidecar_every` seconds after the previous one started and
     after it ended. In `--once` mode it runs once, after the tick. A failing pass is
     logged and the next one runs."""
+    # Retention retries are a separate minute task: a slow vendor sidecar cannot
+    # push an unknown email acceptance outside the provider's idempotency window.
+    # The injected retry callback drains existing frozen rows only, never new pieces.
     runner = make_runner()
     ticks = 0
     next_chore = clock()
     next_sidecar = clock()
+    next_retry = clock()
     in_flight: asyncio.Task[object] | None = None
+    retry_in_flight: asyncio.Task[object] | None = None
     try:
         while not should_stop():
             started = clock()
@@ -180,6 +187,11 @@ async def run_worker(
                     in_flight = asyncio.create_task(asyncio.to_thread(_guarded, sidecar))
                     next_sidecar = started + sidecar_every
                     await asyncio.sleep(0)  # let the thread start before the tick
+            if retry_chore is not None and not once and started >= next_retry:
+                if retry_in_flight is None or retry_in_flight.done():
+                    retry_in_flight = asyncio.create_task(asyncio.to_thread(_guarded, retry_chore))
+                    next_retry = started + retry_every
+                    await asyncio.sleep(0)
             code = await _tick(runner, once, chore, next_chore, started, on_tick)
             if chore is not None and not once and started >= next_chore:
                 next_chore = started + chore_every
@@ -193,8 +205,9 @@ async def run_worker(
             await sleep(max(0.0, interval - (clock() - started)))
         return 0
     finally:
-        if in_flight is not None and not in_flight.done():
-            await in_flight
+        for pending in (in_flight, retry_in_flight):
+            if pending is not None and not pending.done():
+                await pending
 
 
 def _guarded(job: Callable[[], object]) -> object:
@@ -345,6 +358,11 @@ def main(
             error="tick_failed" if report is None else report.error,
         )
 
+    retry = None
+    if not args.once:
+        from qualify_api.creative.retention_job import warning_retry_chore
+
+        retry = warning_retry_chore(scope_ids)
     try:
         return asyncio.run(
             run_worker(
@@ -355,6 +373,7 @@ def main(
                 chore=chore,
                 sidecar=recovery,
                 sidecar_every=RECOVERY_EVERY_SECONDS,
+                retry_chore=retry,
             )
         )
     except KeyboardInterrupt:

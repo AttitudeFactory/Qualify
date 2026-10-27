@@ -100,16 +100,16 @@ def _data_access_warning(
         return "", ""
     remaining = data_access_expires_at - now
     if remaining.total_seconds() <= 0:
-        return "warning_overdue", "Meta pide que confirmes tu cuenta: vuelve a conectarla"
+        return "warning_overdue", "Facebook pide que confirmes tu cuenta: vuelve a conectarla"
     if remaining > DATA_ACCESS_WARNING_THRESHOLD:
         return "", ""
     days_left = int(remaining.total_seconds() // 86400)
     if days_left <= 0:
-        message = "Meta te pedirá confirmar tu cuenta hoy"
+        message = "Facebook te pedirá confirmar tu cuenta hoy"
     elif days_left == 1:
-        message = "Meta te pedirá confirmar tu cuenta mañana"
+        message = "Facebook te pedirá confirmar tu cuenta mañana"
     else:
-        message = f"Meta te pedirá confirmar tu cuenta en {days_left} días"
+        message = f"Facebook te pedirá confirmar tu cuenta en {days_left} días"
     return "warning_soon", message
 
 
@@ -132,7 +132,7 @@ def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[Sco
     # shown; genuinely unknown literals collapse into one owner-facing chip. The raw
     # names stay in the logs only.
     if any(literal not in KNOWN_INFRASTRUCTURE_SCOPES for literal in unrecognized):
-        labels.append("Otro permiso de Meta")
+        labels.append("Otro permiso de Facebook")
     return labels, resolved
 
 
@@ -156,6 +156,7 @@ def _to_vm(
         brand=brand_name or _NO_BRAND_LABEL,
         external_username=label,
         status=row.status,
+        reconnect_reason=row.reconnect_reason or "",
         last_verified_at=_format_verified_at(row.last_verified_at),
         granted_scope_labels=scope_labels,
         verdicts=assess_capabilities(resolved, platform=row.platform),
@@ -247,6 +248,21 @@ def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> str:
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
     return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id, rerequest=rerequest)
+
+
+def begin_reconnect(tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str) -> str:
+    """Start an account-specific consent round trip from any screen in the same tenant."""
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
+    return start_connect(
+        tenant_id=tenant_id,
+        brand_id=None,
+        user_id=user_id,
+        connection_id=connection_id,
+        return_to=origin,
+        cause=cause,
+    )
 
 
 def request_support(
