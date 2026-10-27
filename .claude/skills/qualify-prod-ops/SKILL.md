@@ -14,12 +14,12 @@ relevant part before acting; this skill holds the rules around it.
    through the documented paths (`deploy.yml` / `gh workflow run deploy`, `just deploy`), and
    must verify with `just deploy-status qualify-prod` right after; a failed deploy is reported to
    the founder. **Still ask the founder first:** `just down` (drops the volume), restoring a
-   backup, a rollback, `env-push` of a new key, `edge-install` (cuts Pedidos 1-2 s), and any
+   backup, a rollback, `env-push` or `env-stage` of a new key, `edge-install` (cuts Pedidos 1-2 s), and any
    restart outside a deploy. Read-only is always fine: `just deploy-status qualify-prod`,
    `just deploy-logs qualify-prod [service]`, `gh run list --workflow deploy`.
 2. **Only the documented paths:** `deploy.yml` (auto per `QUALIFY_AUTO_DEPLOY`: `merge` until
    2026-11-12, then `daily`), `gh workflow run deploy -f ref=<40-char sha>`, `just deploy`,
-   `just env-push`, `just edge-install`, and the remote session's rollback. Never `docker compose`
+   `just env-push`, `just env-stage` followed by a deploy, `just edge-install`, and the remote session's rollback. Never `docker compose`
    or edit `.env.prod` by hand on the server.
 3. **A change that needs the server first** (new env var, edge proxy, volume): announce it to
    the founder and say so in the PR; auto-deploy goes off, the server is prepared, the deploy is
@@ -30,6 +30,10 @@ relevant part before acting; this skill holds the rules around it.
 5. **Secrets:** never in git, arguments or the terminal. `just env-push qualify-prod --dry-run KEY`
    first; some keys are refused on purpose (README table). Check a vendor key works before
    pushing it (e.g. ScrapeCreators credit balance).
+   Role passwords use `just env-stage qualify-prod --dry-run KEY`, then `env-stage` and
+   a documented deploy: staging writes only named keys with a backup and no restart;
+   `migrate` applies `ALTER ROLE` before services take the new environment. Staging does
+   not remove the approval requirement for a new key. Never edit `.env.prod` manually.
 6. **The edge proxy is shared with Pedidos:** changes cut both for 1-2 s and ship with
    `just edge-install` from an up-to-date `main`.
 7. **Actions minutes are a budget** (GitHub Free from 2026-11: 2,000 min/month, each job rounded
@@ -45,6 +49,9 @@ relevant part before acting; this skill holds the rules around it.
    Postgres on a network with no route out (fake vendors, never Meegle): idle, a webhook
    batch, one Alta prefill; `-- --sentiment` adds robertuito (~900 MiB: it does not fit any
    worker cap). Copy its shape for other workers.
+   `just mem-creative-worker` measures current-source preparation and two real finalization
+   paths with 200 MiB downloads under 512 MiB, isolated Postgres and fake R2 outside the
+   measured cgroup. No-egress networking and synthetic vendors prevent paid calls.
 10. **Health review every 4 h:** read-only (`deploy-status`, `deploy-logs`, the last deploy runs);
    anything wrong is alerted to the founder. No remediation without asking.
 

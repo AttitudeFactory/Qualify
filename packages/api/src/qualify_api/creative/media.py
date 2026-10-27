@@ -596,6 +596,43 @@ class R2ReadingMediaStore:
     def write(self, key: str, data: bytes) -> None:
         self._local.write(key, data)
 
+    def checkpoint_download(self, tenant_id: UUID, key: str, url: str) -> None:
+        """Keep a paid video without materializing its body in the worker heap.
+
+        A successful PUT is atomic. The deterministic revision/job key lets a retry
+        after a lost database checkpoint use that same object without another GET.
+        Unknown storage failures propagate: they must never trigger a paid resubmit.
+        """
+        import httpx
+        from qualify_shared.objects.gate import ObjectNotFound
+
+        from qualify_api.creative.worker.downloads import UncachedUploadFile, stream_to_tempfile
+
+        gate = self._r2()
+        try:
+            gate.object_size(tenant_id, key)
+            return
+        except ObjectNotFound:
+            pass
+
+        def https_only(request: httpx.Request) -> None:
+            if request.url.scheme != "https":
+                raise DownloadRefused(f"vendor media URL is not https: {request.url.scheme}")
+
+        if httpx.URL(url).scheme != "https":
+            raise DownloadRefused("vendor media URL is not https")
+        with httpx.Client(
+            timeout=120.0,
+            follow_redirects=True,
+            max_redirects=MAX_DOWNLOAD_REDIRECTS,
+            event_hooks={"request": [https_only]},
+        ) as client:
+            with stream_to_tempfile(
+                url, client=client, max_bytes=MAX_DOWNLOAD_BYTES, release_cache=True
+            ) as path:
+                with UncachedUploadFile(path, "r") as source:
+                    gate.put_media(tenant_id, key, source, "video/mp4")
+
     def keep(self, tenant_id: UUID, key: str, data: bytes, content_type: str) -> bool:
         """Put a generated file in R2 (`ObjectGate.put_media`: the tenant prefix is
         checked, the type is stored with the object). A passing R2 error is retried
