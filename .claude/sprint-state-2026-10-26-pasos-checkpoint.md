@@ -3,7 +3,30 @@
 Read this before resuming after context compaction. Continue the existing work; do not
 restart research, reinstall skills, or reproduce already fixed bugs from stale builds.
 
-## Latest update — 2026-10-27 (supersedes older pending notes below)
+## Closing update — 2026-10-27 (supersedes pending notes below)
+
+- PASOS7/8/9/10 merged through green CI gate: PR391 `32468a8`,
+  PR392 `566b6e0`, PR393 `2f3c73b`, PR394 `2d82f50`. All four verified
+  Meegle Done using profile qualify, project `6ad251e7ce655b7ed3a0e9b4`.
+- PASOS11 PR397 opened, head `b965f0376f5a6c666f60e1de15d08acf1c3b7c23`.
+  Branch in `/private/tmp/qualify-pasos11` integrated main `d0191fa` cleanly;
+  208 focal tests, lint and render passed. Prior integrated full: 9767 passed,
+  one skipped, coverage84%. CI run40548729757 currently running. Gate before merge.
+  Meegle11 moved to RESOLVED. PR body `/private/tmp/pasos11-pr.md`.
+- PASOS12 docs PR390 merged; prototype stays isolated on pushed branch
+  `spike/m-24852253-motion-cards` at `f38e2b8`. Founder adoption decision pending;
+  no Motion dependency added. Keep ticket12 RESOLVED, not Done.
+- Delivery doc worktree `/private/tmp/qualify-pasos-delivery`, branch
+  `docs/m-24861081-pasos-delivery`: agent pasos_audit prepares final doc/body
+  `/private/tmp/pasos-delivery-pr.md`. After397 merged update table11, commit/push,
+  docs PR with Resolves m-24861081, CI gate then handoff Done.
+- Synthetic data restored/deactivated (manifest `/private/tmp/qualify-pasos-cleanup-result.json`).
+  Own servers3450/3460/3480 stopped, ports verified free; founder3100 untouched.
+  Do not restart QA or migrate shared local DB. Evidence scope/limits documented.
+- User asked status, then explicitly said continua. Finish delivery; no further approval
+  needed for routine PR gates or tracker updates. Keep concise progress updates.
+
+## Previous update — 2026-10-27
 
 - **PASOS-3 is now shipped:** PR #386 merged as `b5781e7`, after CI green and resolving
   the overlap with newer connection recovery/copy changes. Story3 verified Done in Meegle.
