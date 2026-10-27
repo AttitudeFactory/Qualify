@@ -830,7 +830,7 @@ class PostgresContentRepository:
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentDraft, draft_id, with_for_update=True)
-            if row is not None:
+            if row is not None and row.status == FAILED:
                 from qualify_api.creative.versions import snapshot_current
 
                 snapshot_current(session, row)
@@ -899,6 +899,11 @@ class PostgresContentRepository:
                 .outerjoin(orm.ContentBrief, orm.ContentBrief.id == orm.ContentDraft.brief_id)
                 .where(orm.ContentDraft.id.in_(ids))
             ).all()
+            for draft, _kind in drafts:
+                if draft.status == FAILED:
+                    from qualify_api.creative.versions import snapshot_current
+
+                    snapshot_current(session, draft)
             variants: dict[UUID, list[VariantRecord]] = {}
             for row in session.scalars(
                 select(orm.CopyVariant)
@@ -913,6 +918,23 @@ class PostgresContentRepository:
                 .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             ):
                 assets.setdefault(row.draft_id, []).append(row)
+            versions: dict[UUID, list[VersionSummary]] = {}
+            for row in session.scalars(
+                select(orm.PieceVersion)
+                .where(orm.PieceVersion.draft_id.in_(ids))
+                .order_by(orm.PieceVersion.revision)
+            ):
+                versions.setdefault(row.draft_id, []).append(
+                    VersionSummary(
+                        id=row.id,
+                        revision=row.revision,
+                        created_at=row.created_at,
+                        status=row.status,
+                        model_id=row.model_id,
+                        model_revision=row.model_revision,
+                        spent_usd=row.spent_usd,
+                    )
+                )
             bundles: dict[UUID, DraftBundle] = {}
             for draft, kind in drafts:
                 rows = assets.get(draft.id, [])
@@ -924,6 +946,7 @@ class PostgresContentRepository:
                     image=_image_record(first) if first is not None else None,
                     media=tuple(_image_record(a) for a in rows),
                     kind=kind,
+                    versions=tuple(versions.get(draft.id, ())),
                 )
             return bundles
 
@@ -995,7 +1018,11 @@ class PostgresContentRepository:
                 _add_usage(session, tenant_id, brand_id, draft_id, usage)
                 _add_spend(session, brand_id, spent_usd)
                 return
-            snapshot_current(session, draft)
+            initial_partial = (
+                draft.status == DRAFTING and draft.revision == 1 and draft.active_version_id is None
+            )
+            if not initial_partial:
+                snapshot_current(session, draft)
             kept = (failure_detail or "").startswith(KEPT_PREVIOUS_PREFIX)
             succeeded = new_status == GENERATED and not kept
             version = session.scalar(
@@ -1110,6 +1137,19 @@ class PostgresContentRepository:
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None
+                if initial_partial:
+                    # Initial pipeline checkpoints may already have saved copy or media.
+                    # Adopt those rows unless this completion supplied replacements.
+                    for model, writes in ((orm.CopyVariant, variants), (orm.ImageAsset, media)):
+                        for partial in session.scalars(
+                            select(model).where(
+                                model.draft_id == draft_id, model.version_id.is_(None)
+                            )
+                        ):
+                            if writes:
+                                session.delete(partial)
+                            else:
+                                partial.version_id = version.id
             if template_run is not None:
                 version.template_run_id = template_run.id
             _add_spend(session, brand_id, spent_usd)

@@ -245,6 +245,7 @@ def test_version_preview_is_read_only_and_restore_reuses_existing_content() -> N
     service = _version_service()
     current = service.get_draft(tenant_id=TENANT_R, draft_id=draft)
     assert [version.revision for version in current.versions] == [1, 2]
+    assert service.get_drafts(tenant_id=TENANT_R, draft_ids=[draft])[draft] == current
     assert current.variants[0].copy["hook"] == "second"
     preview = service.preview_version(tenant_id=TENANT_R, draft_id=draft, version_id=first_id)
     assert preview.variants[0].copy["hook"] == "first"
