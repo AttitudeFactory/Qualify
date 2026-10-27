@@ -5,6 +5,11 @@ restart research, reinstall skills, or reproduce already fixed bugs from stale b
 
 ## Closing update — 2026-10-27 (supersedes pending notes below)
 
+- COMPLETE: user explicitly approved final merge. PR398 merged through gate as
+  `ca7bb400731a423069464eb720b1793da719a886`; handoff m-24861081 Done verified.
+  PASOS1–11 and13 Done; PASOS12 RESOLVED pending founder Motion adoption decision.
+  Root workspace now includes main ca7bb40 plus this checkpoint. No delivery work remains
+  in this handoff. Earlier pending instructions below are historical and superseded.
 - FINAL PENDING APPROVAL: docs PR398 head93e555b, CI40549982441 SUCCESS.
   UX independent: no findings/no client impact. Independent code/doc review clean;
   review-agent skill absent locally (limitation recorded in PR body).
