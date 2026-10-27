@@ -9,6 +9,14 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .connection_copy import (
+    ACCESS_HELP,
+    DISCONNECTED_NOTICE,
+    NO_ACCESS,
+    PERMISSION_MISSING_NOTICE,
+    RECONNECT_ACTION,
+    WHATSAPP_SUPPORT_ACTION,
+)
 from .connections_state import GUIDE_ELEMENT_ID, ConnectionsState
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
@@ -41,7 +49,7 @@ _TAP = "44px"
 
 
 def status_badge(status: rx.Var[str]) -> rx.Component:
-    """Funciona | Hay que volver a conectarla | Desconectada — icon + words, never colour
+    """Conectada | Desconectada — icon + words, never colour
     alone, and never the FSM's own words (m-24842969)."""
     return rx.match(
         status,
@@ -49,7 +57,7 @@ def status_badge(status: rx.Var[str]) -> rx.Component:
             (key, tone_badge(label, tone, icon=icon, size="2"))
             for key, (label, tone, icon) in STATUS_LABELS.items()
         ],
-        tone_badge(status, "neutral", size="2"),
+        tone_badge("Sin verificar", "neutral", size="2"),
     )
 
 
@@ -115,11 +123,24 @@ def _disabled_capability(cap: CapabilityVM) -> rx.Component:
     )
 
 
-def _whatsapp_reconnect_hint(tone: str) -> rx.Component:
-    """WA-05: the banner body for a WhatsApp card. No button — the Instagram
-    «Reconectar» starts the OAuth flow, which is the wrong door for a number connected
-    by an administrator with a system-user token (QUA-203 is the self-service story)."""
-    return callout(rx.text(WHATSAPP_RECONNECT_HINT, size="2"), tone)
+def _whatsapp_reconnect_hint() -> rx.Component:
+    """WA-05: ask the team through support; never start Facebook OAuth for WhatsApp."""
+    return callout(
+        rx.vstack(
+            rx.text(WHATSAPP_RECONNECT_HINT, size="2"),
+            rx.button(
+                WHATSAPP_SUPPORT_ACTION,
+                on_click=ConnectionsState.open_support,
+                variant="soft",
+                size="3",
+                min_height=_TAP,
+                **T.tone_scheme("warn"),
+            ),
+            spacing="3",
+            align_items="start",
+        ),
+        "warn",
+    )
 
 
 def degraded_banner(conn: ConnectionVM) -> rx.Component:
@@ -132,7 +153,7 @@ def degraded_banner(conn: ConnectionVM) -> rx.Component:
     """
     return rx.cond(
         conn.platform == "whatsapp",
-        _whatsapp_reconnect_hint("warn"),
+        _whatsapp_reconnect_hint(),
         _instagram_degraded_banner(),
     )
 
@@ -144,14 +165,20 @@ def _instagram_degraded_banner() -> rx.Component:
     return callout(
         rx.hstack(
             rx.text(
-                "Instagram dejó de responderle a Qualify. Vuelve a conectarla para seguir "
-                "publicando y viendo tus comentarios desde aquí.",
+                DISCONNECTED_NOTICE,
                 size="2",
+            ),
+            rx.button(
+                ACCESS_HELP,
+                on_click=ConnectionsState.open_support,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
             ),
             rx.spacer(),
             rx.button(
                 rx.icon("refresh-cw", size=15),
-                "Volver a conectar",
+                RECONNECT_ACTION,
                 on_click=ConnectionsState.start_connect_flow,
                 variant="soft",
                 size="3",
@@ -170,7 +197,7 @@ def _instagram_degraded_banner() -> rx.Component:
 def revoked_banner(conn: ConnectionVM) -> rx.Component:
     return rx.cond(
         conn.platform == "whatsapp",
-        _whatsapp_reconnect_hint("error"),
+        _whatsapp_reconnect_hint(),
         _instagram_revoked_banner(),
     )
 
@@ -179,26 +206,32 @@ def _instagram_revoked_banner() -> rx.Component:
     return callout(
         rx.hstack(
             rx.text(
-                "Esta cuenta está desconectada. Conéctala de nuevo para publicar y ver "
-                "tus comentarios desde aquí.",
+                DISCONNECTED_NOTICE,
                 size="2",
+            ),
+            rx.button(
+                ACCESS_HELP,
+                on_click=ConnectionsState.open_support,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
             ),
             rx.spacer(),
             rx.button(
                 rx.icon("plug", size=15),
-                "Conectar de nuevo",
+                RECONNECT_ACTION,
                 on_click=ConnectionsState.start_connect_flow,
                 variant="soft",
                 size="3",
                 min_height=_TAP,
-                **T.tone_scheme("error"),
+                **T.tone_scheme("warn"),
             ),
             width="100%",
             align="center",
             wrap="wrap",
             spacing="3",
         ),
-        "error",
+        "warn",
         icon="circle-x",
     )
 
@@ -232,6 +265,7 @@ def _hints_callout(conn: ConnectionVM) -> rx.Component:
     `rerequest` so what was unticked comes back. `soft`, never the page's solid."""
     return callout(
         rx.vstack(
+            rx.text(PERMISSION_MISSING_NOTICE, size="2"),
             rx.foreach(conn.hints, _hint_row),
             rx.button(
                 rx.icon("refresh-cw", size=15),
@@ -241,6 +275,13 @@ def _hints_callout(conn: ConnectionVM) -> rx.Component:
                 size="3",
                 min_height=_TAP,
                 **T.tone_scheme("warn"),
+            ),
+            rx.button(
+                ACCESS_HELP,
+                on_click=ConnectionsState.open_support,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
             ),
             spacing="3",
             align_items="start",
@@ -451,7 +492,11 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
                     align="center",
                     min_width="0",
                 ),
-                status_badge(conn.status),
+                rx.cond(
+                    (conn.status == "active") & (conn.hints.length() > 0),
+                    tone_badge(NO_ACCESS, "warn", icon="lock-keyhole", size="2"),
+                    status_badge(conn.status),
+                ),
                 justify="between",
                 align="center",
                 wrap="wrap",

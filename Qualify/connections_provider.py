@@ -100,16 +100,16 @@ def _data_access_warning(
         return "", ""
     remaining = data_access_expires_at - now
     if remaining.total_seconds() <= 0:
-        return "warning_overdue", "Meta pide que confirmes tu cuenta: vuelve a conectarla"
+        return "warning_overdue", "Facebook pide que confirmes tu cuenta: vuelve a conectarla"
     if remaining > DATA_ACCESS_WARNING_THRESHOLD:
         return "", ""
     days_left = int(remaining.total_seconds() // 86400)
     if days_left <= 0:
-        message = "Meta te pedirá confirmar tu cuenta hoy"
+        message = "Facebook te pedirá confirmar tu cuenta hoy"
     elif days_left == 1:
-        message = "Meta te pedirá confirmar tu cuenta mañana"
+        message = "Facebook te pedirá confirmar tu cuenta mañana"
     else:
-        message = f"Meta te pedirá confirmar tu cuenta en {days_left} días"
+        message = f"Facebook te pedirá confirmar tu cuenta en {days_left} días"
     return "warning_soon", message
 
 
@@ -132,7 +132,7 @@ def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[Sco
     # shown; genuinely unknown literals collapse into one owner-facing chip. The raw
     # names stay in the logs only.
     if any(literal not in KNOWN_INFRASTRUCTURE_SCOPES for literal in unrecognized):
-        labels.append("Otro permiso de Meta")
+        labels.append("Otro permiso de Facebook")
     return labels, resolved
 
 

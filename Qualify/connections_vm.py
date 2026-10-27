@@ -22,6 +22,8 @@ from .capabilities import (
     Capability,
     CapabilityVerdict,
 )
+from .connection_copy import STATUS_LABELS as STATUS_LABELS
+from .connection_copy import WHATSAPP_RECONNECT_HINT as WHATSAPP_RECONNECT_HINT
 
 # Connection health states — the FSM surface of C-03.3 that the UI renders.
 # "pending" exists in the FSM but is transient (mid-OAuth) and not listed here as a
@@ -30,11 +32,7 @@ ConnectionStatus = str  # "active" | "degraded" | "revoked"
 
 # m-24842969 (MARCA-6): the card's state in the owner's words — (label, tone, icon). Text
 # always, never colour alone; the FSM words («Degradada», «Revocada») never reach a screen.
-STATUS_LABELS: dict[str, tuple[str, str, str]] = {
-    "active": ("Funciona", "ok", "circle-check"),
-    "degraded": ("Hay que volver a conectarla", "warn", "triangle-alert"),
-    "revoked": ("Desconectada", "error", "circle-x"),
-}
+
 
 # m-24842969: what the owner can DO with the account, as short verbs for the «Puedes:» /
 # «Todavía no puedes:» lines. `None` = not a thing the owner does (the basic permission
@@ -139,10 +137,6 @@ class ConnectionVM:
 # (`qualify_api.whatsapp.connect`), not through Meta's consent screen — so its degraded/
 # revoked banners carry this hint instead of the Instagram «Reconectar» button, which
 # would start the wrong flow. Self-service connect is QUA-203, deliberately out of scope.
-WHATSAPP_RECONNECT_HINT = (
-    "Los números de WhatsApp se conectan desde la administración de Qualify, no desde "
-    "esta pantalla. Pide al equipo de Qualify que vuelva a ejecutar la conexión del número."
-)
 
 
 def whatsapp_label(display_phone_number: str, verified_name: str | None) -> str:
@@ -270,26 +264,26 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
     # the text stays as the fallback a notice-only consumer would show.
     "active": ("Instagram conectado.", "ok"),
     "degraded": (
-        "La cuenta se conectó, pero Meta todavía no confirma el acceso. "
-        "Si en unos minutos su tarjeta sigue diciendo «Hay que volver a conectarla», "
+        "La cuenta se conectó, pero Facebook todavía no confirma el acceso. "
+        "Si en unos minutos su tarjeta sigue diciendo «Desconectada», "
         "toca «Volver a conectar».",
         "warn",
     ),
     "link_required": (
-        "Meta no devolvió ninguna Página con una cuenta de Instagram vinculada. "
+        "Facebook no devolvió ninguna Página con una cuenta de Instagram vinculada. "
         "Vincula tu cuenta profesional de Instagram a tu Página de Facebook y vuelve a "
         "conectar.",
         "warn",
     ),
     "page_access_required": (
-        "Meta no compartió ninguna Página con Qualify. Al conectar, selecciona la Página "
+        "Facebook no compartió ninguna Página con Qualify. Al conectar, selecciona la Página "
         "de Facebook vinculada a tu Instagram y vuelve a intentarlo.",
         "warn",
     ),
-    "denied": ("Cancelaste la conexión con Meta. No se guardó nada.", "info"),
+    "denied": ("Cancelaste la conexión con Facebook. No se guardó nada.", "info"),
     "permission_missing": (
         "La cuenta se conectó, pero falta una casilla. "
-        "Vuelve a conectarla y déjalas todas marcadas.",
+        "Pulsa «Volver a conectar» y déjalas todas marcadas.",
         "warn",
     ),
     "account_access_required": (
@@ -403,12 +397,13 @@ CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
         key="permissions",
         title="Conecta y acepta todos los permisos",
         summary=(
-            "Meta te muestra una lista de permisos. Si desmarcas alguno, la función que "
+            "Facebook te muestra una lista de permisos. Si desmarcas alguno, la función que "
             "depende de él no estará disponible."
         ),
         steps=[
             "Pulsa «Conectar cuenta» en esta pantalla.",
-            "Cuando Meta te pregunte qué compartir, marca la Página y el Instagram de tu negocio.",
+            "Cuando Facebook te pregunte qué compartir, marca la Página "
+            "y el Instagram de tu negocio.",
             "Deja todos los permisos marcados y continúa hasta el final.",
         ],
     ),
@@ -416,12 +411,12 @@ CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
         key="reconnect",
         title="¿Ya estaba conectada? Vuelve a conectarla",
         summary=(
-            "Cuando Qualify suma una función nueva, Meta pide un permiso nuevo. Volver a "
+            "Cuando Qualify suma una función nueva, Facebook pide un permiso nuevo. Volver a "
             "conectar lo agrega sin borrar nada."
         ),
         steps=[
             "En la tarjeta de tu cuenta, pulsa «Volver a conectar».",
-            "Acepta los permisos nuevos que te pida Meta.",
+            "Acepta los permisos nuevos que te pida Facebook.",
             "Revisa que la función aparezca en «Puedes:» en la tarjeta.",
         ],
     ),
@@ -440,11 +435,10 @@ REQUIREMENT_NUMBERS: dict[str, int] = {
 
 # The Facebook-Login scopes production asks for (`QUALIFY_META_SCOPES`, docs/
 # conversaciones-limitaciones-meta.md §7) that a card can check. The capability matrix
-# covers the Instagram ones by family (any spelling); the two Page scopes below are
-# not capability gates there, so they are checked as literals — and ONLY on a
+# covers the Instagram ones by family (any spelling); the Page metadata scope is
+# not a capability gate there, so it is checked as a literal — and ONLY on a
 # connection that came through a Facebook Page (`linked_page_id`), the only path on
 # which Meta can grant them.
-PAGE_MESSAGING_SCOPE = "pages_messaging"
 PAGE_METADATA_SCOPE = "pages_manage_metadata"
 
 
@@ -502,9 +496,10 @@ def connection_hints(
             )
         )
 
-    messages_missing = "manage_messages" not in resolved_keys or (
-        has_linked_page and PAGE_MESSAGING_SCOPE not in granted_literals
-    )
+    # Use the same scope family as the capability matrix and the Direct adapter.
+    # Instagram DMs use instagram_manage_messages; pages_messaging belongs to other
+    # surfaces and cannot establish that this account has no Instagram DM access.
+    messages_missing = "manage_messages" not in resolved_keys
     if messages_missing:
         hints.append(
             _hint(
@@ -565,9 +560,10 @@ def connect_result_guidance(code: str, pages: str = "", linked: str = "") -> Con
     count = _count(pages)
     if code == "link_required":
         shown = (
-            f"Meta nos mostró {_pages_phrase(count)}, pero ninguna tiene tu Instagram vinculado."
+            f"Facebook nos mostró {_pages_phrase(count)}, pero ninguna "
+            "tiene tu Instagram vinculado."
             if count
-            else "Meta no encontró ninguna Página de Facebook con tu Instagram vinculado."
+            else "Facebook no encontró ninguna Página de Facebook con tu Instagram vinculado."
         )
         return ConnectGuidance(
             code=code,
@@ -584,13 +580,13 @@ def connect_result_guidance(code: str, pages: str = "", linked: str = "") -> Con
     if code == "page_access_required":
         return ConnectGuidance(
             code=code,
-            title="Meta no compartió ninguna Página con Qualify",
+            title="Facebook no compartió ninguna Página con Qualify",
             summary=(
-                "En la ventana de Meta no quedó marcada ninguna Página de Facebook. "
+                "En la ventana de Facebook no quedó marcada ninguna Página de Facebook. "
                 "Sin ella, Qualify no puede trabajar con tu Instagram."
             ),
             steps=[
-                "Pulsa «Volver a conectar»: Meta volverá a preguntarte qué compartir.",
+                "Pulsa «Volver a conectar»: Facebook volverá a preguntarte qué compartir.",
                 "Cuando pregunte por las Páginas, marca la Página de tu negocio y continúa.",
                 f"¿No tienes Página? Créala desde {_IG_PAGE_PATH} → «Conectar o crear».",
             ],

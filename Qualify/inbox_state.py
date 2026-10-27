@@ -171,7 +171,8 @@ _SYNC_FAILED = "No pudimos buscar comentarios nuevos. Intenta de nuevo."
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
-    "Esta cuenta está desconectada. Reconéctala en «Tus redes» para ver sus comentarios nuevos."
+    "Esta cuenta está desconectada. Pulsa «Volver a conectar» en "
+    "«Tus redes» para ver sus comentarios nuevos."
 )
 # A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
 _SYNC_META_FAILED = (
@@ -180,7 +181,8 @@ _SYNC_META_FAILED = (
 # cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
 # shown as if it were a normal zero-comments result.
 _COMMENTS_PERMISSION_MISSING = (
-    "Falta un permiso para leer comentarios en esta cuenta. Reconéctala para concederlo."
+    "Falta un permiso para leer comentarios en esta cuenta. "
+    "Pulsa «Volver a conectar» para concederlo."
 )
 _SYNC_BUDGET_EXHAUSTED = (
     "Buscamos comentarios muchas veces seguidas. Espera unos minutos e intenta de nuevo."
@@ -189,7 +191,8 @@ _SYNC_BUDGET_EXHAUSTED = (
 # the time this reaches the UI (Conexiones already shows "Reconectar"), so this message
 # points there instead of repeating the generic sync-failed copy.
 _CONNECTION_AUTH_EXPIRED = (
-    "Tu conexión con Instagram dejó de funcionar. Reconéctala en «Tus redes» e intenta de nuevo."
+    "Tu conexión con Instagram dejó de funcionar. Pulsa «Volver "
+    "a conectar» en «Tus redes» e intenta de nuevo."
 )
 _SYNC_ALREADY_RUNNING = "Ya estamos buscando comentarios nuevos. Te avisamos al terminar."
 _REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
