@@ -117,10 +117,34 @@ def _newer(current: datetime | None, candidate: datetime | None) -> datetime | N
 
 class ConversationSyncService:
     def __init__(
-        self, *, repository: ConversationRepository, clock: Callable[[], datetime] = _utcnow
+        self,
+        *,
+        repository: ConversationRepository,
+        clock: Callable[[], datetime] = _utcnow,
+        unavailable: Callable[..., object] | None = None,
+        temporary_failure: Callable[..., object] | None = None,
+        success: Callable[..., object] | None = None,
     ) -> None:
         self._repo = repository
         self._clock = clock
+        self._unavailable = unavailable
+        self._temporary_failure = temporary_failure
+        self._success = success
+
+    def _observe(
+        self, callback: Callable[..., object] | None, connection: SourceConnection, **extra: str
+    ) -> None:
+        if callback is None:
+            return
+        kwargs: dict[str, object] = dict(
+            tenant_id=connection.tenant_id, connection_id=connection.connection_id, **extra
+        )
+        if connection.credential_version is not None:
+            kwargs["expected_credential_version"] = connection.credential_version
+        try:
+            callback(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - health must not hide the original outcome
+            logger.warning("conversations.sync.health_failed error=%s", type(exc).__name__)
 
     async def sync_connection(
         self,
@@ -144,6 +168,16 @@ class ConversationSyncService:
         )
         report = SyncReport(channel=channel, access=verdict)
         if verdict.status in _BLOCKING_ACCESS:
+            cause = {
+                AccessStatus.PERMISSION_MISSING: "permission_missing",
+                AccessStatus.AUTH_EXPIRED: "auth_expired",
+            }.get(verdict.status)
+            if verdict.detail == "CredentialNotFound":
+                cause = "missing_credential"
+            if cause is not None and self._unavailable is not None:
+                self._observe(self._unavailable, connection, cause=cause)
+            elif verdict.status == AccessStatus.ERROR and self._temporary_failure is not None:
+                self._observe(self._temporary_failure, connection)
             report.status, report.error = SYNC_FAILED, verdict.status.value
             self._finish(connection, channel, report, cursor=None)
             return report
@@ -164,6 +198,18 @@ class ConversationSyncService:
                     break
                 cursor = page.next_cursor
         except Exception as exc:
+            if self._unavailable is not None and (
+                getattr(exc, "is_auth_error", False) or getattr(exc, "is_permission_error", False)
+            ):
+                self._observe(
+                    self._unavailable,
+                    connection,
+                    cause="auth_expired"
+                    if getattr(exc, "is_auth_error", False)
+                    else "permission_missing",
+                )
+            elif self._temporary_failure is not None and getattr(exc, "is_retryable", False):
+                self._observe(self._temporary_failure, connection)
             report.status, report.error = SYNC_FAILED, type(exc).__name__
             self._finish(connection, channel, report, cursor=cursor)
             logger.warning(
@@ -174,6 +220,8 @@ class ConversationSyncService:
             )
             raise
         self._finish(connection, channel, report, cursor=None)
+        if self._success is not None:
+            self._observe(self._success, connection)
         return report
 
     async def _sync_conversation(

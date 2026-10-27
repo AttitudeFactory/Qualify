@@ -411,3 +411,25 @@ def test_template_reply_check_refuses_a_row_without_its_key(seeded) -> None:
             )
         )
         session.flush()
+
+
+def test_disconnected_account_pending_reply_is_not_claimed_until_reconnect(seeded) -> None:
+    repo = PostgresOutboxRepository()
+    item_id = _enqueue(repo, seeded, "pending approved reply")
+    with tenant_session(TENANT) as session:
+        connection = session.get(SocialConnection, seeded["connection"])
+        connection.status = "degraded"
+    now = datetime.now(UTC)
+    assert item_id not in {
+        item.id for item in repo.claim(tenant_id=TENANT, worker_id="paused", now=now, limit=LIMIT)
+    }
+    with tenant_session(TENANT) as session:
+        row = session.get(WhatsAppOutboxItem, item_id)
+        assert row.status == "pending" and row.attempts == 0
+        connection = session.get(SocialConnection, seeded["connection"])
+        connection.status = "active"
+    claimed = repo.claim(tenant_id=TENANT, worker_id="resumed", now=now, limit=LIMIT)
+    assert len([item for item in claimed if item.id == item_id]) == 1
+    assert item_id not in {
+        item.id for item in repo.claim(tenant_id=TENANT, worker_id="again", now=now, limit=LIMIT)
+    }

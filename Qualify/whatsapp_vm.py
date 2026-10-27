@@ -24,7 +24,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from .connections_vm import WHATSAPP_RECONNECT_HINT, whatsapp_label
+from .connection_copy import (
+    WHATSAPP_RECONNECT_HINT,
+    WHATSAPP_SUPPORT_ACTION,
+)
+from .connection_copy import (
+    connection_status_display as connection_status_display,
+)
+from .connections_vm import whatsapp_label
 from .nav_url import with_query
 
 # --------------------------------------------------------------------------------------
@@ -173,12 +180,7 @@ def format_timestamp(value: datetime | None, fallback: str) -> str:
 # --------------------------------------------------------------------------------------
 
 # The connection FSM (C-03) — same words as the `/connections` card.
-_CONNECTION_STATUS: dict[str, tuple[str, str]] = {
-    "active": ("Activa", "ok"),
-    "degraded": ("Degradada", "warn"),
-    "revoked": ("Revocada", "error"),
-    "pending": ("Pendiente", "info"),
-}
+
 
 # `quality_rating`: GREEN/YELLOW/RED, UNKNOWN for a number without enough traffic.
 _QUALITY: dict[str, tuple[str, str]] = {
@@ -214,7 +216,7 @@ _PLATFORM_STATUS: dict[str, tuple[str, str]] = {
     "CONNECTED": ("Conectado", "ok"),
     "PENDING": ("Pendiente", "info"),
     "MIGRATED": ("Migrado", "info"),
-    "FLAGGED": ("Marcado por Meta", "warn"),
+    "FLAGGED": ("Marcado por WhatsApp", "warn"),
     "RATE_LIMITED": ("Con límite temporal", "warn"),
     "RESTRICTED": ("Restringido", "error"),
     "BANNED": ("Bloqueado", "error"),
@@ -230,11 +232,6 @@ def _lookup(table: dict[str, tuple[str, str]], value: str | None) -> tuple[str, 
     if not value:
         return _UNKNOWN, "neutral"
     return table.get(value.upper(), (value, "neutral"))
-
-
-def connection_status_display(status: str) -> tuple[str, str]:
-    """`social_connections.status` → (label, tone)."""
-    return _CONNECTION_STATUS.get(status, (status or _UNKNOWN, "neutral"))
 
 
 def quality_display(rating: str | None) -> tuple[str, str]:
@@ -263,15 +260,18 @@ def platform_status_display(status: str | None) -> tuple[str, str]:
 HEALTH_OK = "Tu WhatsApp funciona bien ✓"
 HEALTH_PENDING = "Tu WhatsApp todavía se está conectando. Vuelve a mirar en un rato."
 HEALTH_REVOKED = (
-    "Tu WhatsApp se desconectó y no está recibiendo mensajes. Pide que lo vuelvan a "
-    "conectar y el equipo de Qualify lo hace contigo."
+    "Tu WhatsApp está desconectado. Tus mensajes guardados siguen aquí. "
+    + WHATSAPP_RECONNECT_HINT
+    + "."
 )
 HEALTH_DEGRADED = (
-    "Tu WhatsApp tiene un problema de conexión y algunos mensajes pueden no llegar. "
-    "Pide que lo revisen."
+    "Tu WhatsApp está desconectado. Tus mensajes guardados siguen aquí. "
+    + WHATSAPP_RECONNECT_HINT
+    + "."
 )
 HEALTH_BLOCKED = (
-    "Meta pausó tu número y por ahora no puede enviar mensajes. Pide que lo revisen y te ayudamos."
+    "WhatsApp pausó tu número y por ahora no puede enviar "
+    "mensajes. Pide que lo revisen y te ayudamos."
 )
 HEALTH_LOW_QUALITY = (
     "Varios clientes marcaron tus mensajes como no deseados. Envía menos promociones "
@@ -285,7 +285,7 @@ def health_display(
 ) -> tuple[str, str]:
     """(line, tone) for the number: the worst problem first, else «funciona bien»."""
     if status == "revoked":
-        return HEALTH_REVOKED, "error"
+        return HEALTH_REVOKED, "warn"
     if status == "degraded":
         return HEALTH_DEGRADED, "warn"
     if status == "pending":
@@ -300,7 +300,7 @@ def health_display(
 # The three lines the owner cannot fix alone: each one offers «Pedir que revisen mi
 # WhatsApp» (N8), the same support request as the no-number state.
 _HELP_LINES = frozenset({HEALTH_REVOKED, HEALTH_DEGRADED, HEALTH_BLOCKED})
-REVIEW_ACTION = "Pedir que revisen mi WhatsApp"
+REVIEW_ACTION = WHATSAPP_SUPPORT_ACTION
 CONNECT_REVIEW_MESSAGE = "Mi WhatsApp tiene un problema en Qualify. Por favor revísenlo."
 
 
@@ -638,10 +638,11 @@ def build_qr_vm(
 # --------------------------------------------------------------------------------------
 
 GRAPH_TRANSPORT_ERROR = (
-    "No pudimos comunicarnos con Meta. Revisa tu conexión y vuelve a intentarlo en un momento."
+    "No pudimos comunicarnos con WhatsApp. Revisa tu conexión y vuelve a intentarlo en un momento."
 )
 GRAPH_UNAVAILABLE = (
-    "No pudimos preparar la conexión con Meta para este número. Vuelve a intentarlo en un momento."
+    "No pudimos preparar la conexión con WhatsApp para este "
+    "número. Vuelve a intentarlo en un momento."
 )
 
 
@@ -650,10 +651,12 @@ def graph_error_notice(
 ) -> tuple[str, str]:
     """(message, tone) for a failed Graph call. An auth error (401 / code 190) means the
     stored token no longer works: the number is degraded and only an administrator can
-    re-run the connection, so the banner is `WHATSAPP_RECONNECT_HINT` in `error`."""
+    re-run the connection, so the banner is `WHATSAPP_RECONNECT_HINT` in `warn`."""
     if is_auth_error:
-        return WHATSAPP_RECONNECT_HINT, "error"
+        return WHATSAPP_RECONNECT_HINT, "warn"
     if is_transport:
         return GRAPH_TRANSPORT_ERROR, "warn"
-    suffix = f" (código {code})" if code is not None else ""
-    return f"Meta rechazó la operación{suffix}. Revisa los datos y vuelve a intentarlo.", "warn"
+    return (
+        "WhatsApp no pudo completar la operación. Revisa los datos y vuelve a intentarlo.",
+        "warn",
+    )

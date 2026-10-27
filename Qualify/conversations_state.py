@@ -635,8 +635,8 @@ class ConversationsState(rx.State):
         if not self.open_thread_id or self.account_can_reply:
             return ""
         if self.selected_account.is_degraded:
-            return "La conexión de esta cuenta caducó: reconéctala para responder."
-        return "Esta cuenta no tiene el permiso de mensajes: reconéctala concediéndolo."
+            return "Esta cuenta está desconectada. Pulsa «Volver a conectar» para responder."
+        return "Falta el permiso de mensajes. Pulsa «Volver a conectar» y acepta el permiso."
 
     # ==================================================================================
     # Plumbing
@@ -788,7 +788,12 @@ class ConversationsState(rx.State):
             self.accounts_loading = False
             self.accounts_loaded = True
             ids = {a.connection_id for a in accounts}
-            requested = uuid_param(self.router.url.query_parameters, "cuenta")
+            returned_connection = uuid_param(self.router.url.query_parameters, "reconnect")
+            requested = (
+                returned_connection
+                if returned_connection in ids
+                else uuid_param(self.router.url.query_parameters, "cuenta")
+            )
             if requested in ids and requested != self.selected_connection_id:
                 self.selected_connection_id = requested
                 self._reset_list()

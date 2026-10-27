@@ -396,3 +396,52 @@ def test_main_passes_the_recovery_pass_to_the_loop() -> None:
         == 0
     )
     assert runs == [1]
+
+
+async def test_retention_pending_retries_run_each_minute_without_daily_discovery() -> None:
+    import asyncio
+
+    runner, clock = FakeRunner(), FakeClock()
+    daily, retries = [], []
+
+    async def sleep(seconds):
+        await clock.sleep(seconds)
+        await asyncio.sleep(0.05)
+
+    assert (
+        await worker.run_worker(
+            lambda: runner,
+            once=False,
+            interval=60,
+            sleep=sleep,
+            clock=clock,
+            max_ticks=4,
+            chore=lambda: daily.append(1),
+            retry_chore=lambda: retries.append(1),
+            retry_every=60,
+        )
+        == 0
+    )
+    assert daily == [1] and len(retries) == 4
+
+
+def test_embedded_retention_retry_uses_same_explicit_tenant_scope(monkeypatch) -> None:
+    from qualify_api.creative import retention_job
+    from qualify_api.planner.embedded import (
+        EmbeddedCalendarWorker,
+        EmbeddedWorkerConfig,
+        WorkerMode,
+    )
+
+    scopes = []
+
+    def build(scope):
+        scopes.append(scope)
+        return lambda: None
+
+    monkeypatch.setattr(retention_job, "warning_retry_chore", build)
+    instance = EmbeddedCalendarWorker(
+        EmbeddedWorkerConfig(WorkerMode.EMBEDDED, tenant_ids=(TENANT,))
+    )
+    assert instance._retention_retries() is not None
+    assert scopes == [(TENANT,)]

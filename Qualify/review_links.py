@@ -1,4 +1,4 @@
-"""Allowlisted return links for the final-review panel (m-24852169)."""
+"""Allowlisted return links for review and piece-retention emails."""
 
 from __future__ import annotations
 
@@ -7,11 +7,18 @@ from uuid import UUID
 
 
 def review_destination(raw: str) -> str:
-    """Only an internal Tu semana review route; no arbitrary redirects or actions."""
+    """Only internal review/piece routes; no arbitrary redirects or actions."""
     try:
         url = urlsplit(raw)
         values = parse_qs(url.query)
-        if url.scheme or url.netloc or url.fragment or url.path not in {"/planner", "/planner/"}:
+        if url.scheme or url.netloc or url.fragment:
+            return ""
+        if url.path.startswith("/drafts/"):
+            # An email opens a single piece after login. UUID parsing rejects other
+            # paths/actions; query parameters are never forwarded to the detail page.
+            piece_id = UUID(url.path.removeprefix("/drafts/").removesuffix("/"))
+            return f"/drafts/{piece_id}"
+        if url.path not in {"/planner", "/planner/"}:
             return ""
         if values.get("revisar") != ["videos"]:
             return ""
