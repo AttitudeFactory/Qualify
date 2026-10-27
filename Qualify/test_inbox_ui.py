@@ -13,8 +13,8 @@ Pins:
    `ConnectionVM`/`PublishAttemptVM`).
 2. `inbox_provider` calls the REAL seam (`list_candidate_media`/`set_media_monitored`),
    not a reimplementation of it.
-3. `instagram_connections` filters to `platform == "instagram"`, `status == "active"`
-   AND the `READ_COMMENTS` capability enabled — not any one of the three alone.
+3. `instagram_connections` keeps previously connected Instagram accounts, including
+   disconnected/revoked ones and accounts without comment permissions (m-24854867).
 4. `candidate_media`/`toggle_monitoring` propagate `UnknownInboxConnection`/
    `MediaNotEligible` rather than swallowing them — same posture
    `connections_provider.disconnect` already has for `ConnectionNotFound`.
@@ -233,10 +233,18 @@ def test_sync_and_analysis_have_no_dev_bridge_left() -> None:
     assert "analyze_after_sync" in inspect.getsource(inbox_provider.analyze_comments_now)
 
 
-def test_instagram_connections_requires_active_instagram_and_read_comments() -> None:
+def test_instagram_connections_keeps_saved_access_without_a_live_permission() -> None:
     rows = [
         _connection_row(id="ok", status="active", platform="instagram"),
         _connection_row(id="not-active", status="degraded", platform="instagram"),
+        _connection_row(id="revoked", status="revoked", platform="instagram"),
+        _connection_row(
+            id="permission-missing",
+            status="degraded",
+            platform="instagram",
+            reconnect_reason="permission_missing",
+        ),
+        _connection_row(id="pending", status="pending", platform="instagram"),
         _connection_row(id="not-instagram", status="active", platform="facebook"),
         _connection_row(
             id="no-capability",
@@ -247,7 +255,16 @@ def test_instagram_connections_requires_active_instagram_and_read_comments() -> 
     ]
     with _patched(connections_for=lambda _tenant: rows):
         options = inbox_provider.instagram_connections(_TENANT)
-    assert [o.id for o in options] == ["ok"]
+    assert [o.id for o in options] == [
+        "ok",
+        "not-active",
+        "revoked",
+        "permission-missing",
+        "no-capability",
+    ]
+    assert options[1].label.endswith(" · Desconectada")
+    assert options[2].label.endswith(" · Desconectada")
+    assert options[3].label.endswith(" · Sin acceso")
 
 
 def test_candidate_media_projects_null_fields_to_empty_strings() -> None:

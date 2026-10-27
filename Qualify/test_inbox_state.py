@@ -607,8 +607,8 @@ def test_polling_timer_only_mounts_inside_the_gated_inbox_tree() -> None:
     # accordion (a closed accordion unmounts its content, which would stop the timer).
     assert "_sync_section()" in connected_source
     assert "_sync_section()" not in more_source
-    # `_connected_body()` is the else-branch of the `~InboxState.has_connections` gate.
-    gate = body_source.index("~InboxState.has_connections")
+    # The timer is mounted only in the connected branch; lost access keeps this branch.
+    gate = body_source.index("InboxState.has_connections")
     assert gate < body_source.index("_connected_body()")
     assert "_body()" in index_source
 
