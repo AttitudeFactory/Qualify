@@ -606,7 +606,7 @@ La distinción `load_error` (tomato, reemplaza) vs `action_error` (amber, encima
 Botón `soft` gris con icono → `rx.alert_dialog` con título en infinitivo ("Desconectar cuenta"), descripción con la entidad en negrita y la consecuencia, `Cancelar` (soft) + verbo (solid tomato). El verbo del botón, del título del diálogo y del toast posterior es **el mismo** (§7.3).
 
 ### 6.3 Estado degradado accionable
-Un estado que el usuario puede arreglar lleva **el botón que lo arregla dentro del mismo callout** (`degraded_banner`: "Reconectar"). Un icono de alerta sin acción es decoración.
+Un estado que el usuario puede arreglar lleva **el botón que lo arregla dentro del mismo callout** (`degraded_banner`: "Volver a conectar"). Un icono de alerta sin acción es decoración.
 
 ### 6.4 Provisionalidad honesta
 Lo que depende de una fuente no verificada se marca (`tone_badge("por verificar", "warn", icon="circle-help")` + tooltip con el motivo). Lo temporal se enmarca en `demo_notice`. Nunca se hace pasar por definitivo.
@@ -640,7 +640,31 @@ Si el tenant no configuró (Clarity sin proyecto), la configuración sube arriba
 | Fecha de verificación | "Verificada: …" | "Last verified" |
 
 ### 7.3 Consistencia verbo → resultado
-El botón dice "Publicar" → el estado dice "Publicando…" (con `loading_spinner("sm")`) → el toast dice "Publicado". El botón dice "Desconectar" → el diálogo se titula "Desconectar cuenta" → el estado queda "Revocada" (nombre del estado, no del verbo — está bien que difieran ahí, porque describe la fila, no la acción).
+El botón dice "Publicar" → el estado dice "Publicando…" (con `loading_spinner("sm")`) → el toast dice "Publicado". El botón dice "Desconectar" → el diálogo se titula "Desconectar cuenta" → el estado queda "Desconectada".
+
+#### Cuentas de redes y WhatsApp (m-24854866)
+
+| Situación comprobada | Estado visible | Acción |
+|---|---|---|
+| Cuenta activa | Conectada | Sin acción de recuperación |
+| Cuenta que necesita reconexión o fue desconectada | Desconectada | Volver a conectar |
+| Falta un permiso necesario para una función | Sin acceso | Volver a conectar y aceptar el permiso |
+
+Estos son estados de presentación. `active` se muestra como «Conectada»;
+`degraded` y `revoked`, como «Desconectada». `revoked` también puede resultar de
+una desconexión voluntaria: no basta para afirmar que se quitó un permiso.
+«Sin acceso» exige evidencia de permiso faltante, como `permission_missing` o
+la evaluación de capacidades. No se inventa un motivo a partir de un error de red.
+Durante la conexión se permite «Conectando…»; ante un valor desconocido,
+«Sin verificar», sin mostrar el valor interno.
+
+- Un solo verbo de recuperación: **Volver a conectar**.
+- Aviso `warn` dentro de la pantalla, encima de lo guardado; conservar el contenido.
+- Explicar el permiso faltante con un texto propio. Ayuda: «¿No tienes acceso a ese Facebook? Pide ayuda».
+- WhatsApp: «Este arreglo lo hace el equipo de Qualify» y «Avisar al equipo de Qualify».
+- En estos mensajes no se muestran «Meta», «token», estados técnicos ni códigos de error.
+- Al confirmar la reconexión: «Listo: {cuenta} está conectada otra vez.». Solo se
+  muestra tras confirmar el resultado; iniciar o cancelar el flujo no es éxito.
 
 ### 7.4 Empty states
 Título = el hecho, en presente ("Aún no conectas ninguna cuenta", "Todavía no tienes clientes interesados"). Cuerpo = por qué importa + qué hacer, ≤ 2 frases. Si hay una acción que lo resuelve, es **el** botón `solid` de la página.

@@ -208,7 +208,7 @@ def test_unrecognized_scope_is_surfaced_not_swallowed() -> None:
     labels, resolved = _scope_labels(["instagram_business_basic", "instagram_future_scope"])
     assert "Básico" in labels
     # m-24842969: shown as one owner-facing chip, never as Meta's raw name.
-    assert "Otro permiso de Meta" in labels, "an unknown Meta scope must be shown, not dropped"
+    assert "Otro permiso de Facebook" in labels, "an unknown Meta scope must be shown, not dropped"
     assert not any("instagram_future_scope" in label for label in labels)
     assert resolved == frozenset({ScopeKey.BASIC})
 
@@ -232,7 +232,7 @@ def test_known_infrastructure_and_genuinely_unknown_scopes_coexist() -> None:
     # A known-infra literal and a truly unknown one in the same grant must not bleed
     # into each other's classification.
     labels, _resolved = _scope_labels(["business_management", "instagram_future_scope"])
-    assert labels == ["Otro permiso de Meta"]
+    assert labels == ["Otro permiso de Facebook"]
 
 
 def test_vm_shows_a_spanish_reason_only_when_disabled() -> None:
@@ -333,24 +333,24 @@ def test_data_access_warning_soon_within_threshold() -> None:
     delta = DATA_ACCESS_WARNING_THRESHOLD - timedelta(days=4)
     state, message = _data_access_warning(_NOW + delta, now=_NOW)
     assert state == "warning_soon"
-    assert message == f"Meta te pedirá confirmar tu cuenta en {delta.days} días"
+    assert message == f"Facebook te pedirá confirmar tu cuenta en {delta.days} días"
 
 
 def test_data_access_warning_today_and_tomorrow_read_naturally() -> None:
     assert _data_access_warning(_NOW + timedelta(hours=2), now=_NOW) == (
         "warning_soon",
-        "Meta te pedirá confirmar tu cuenta hoy",
+        "Facebook te pedirá confirmar tu cuenta hoy",
     )
     assert _data_access_warning(_NOW + timedelta(days=1, hours=2), now=_NOW) == (
         "warning_soon",
-        "Meta te pedirá confirmar tu cuenta mañana",
+        "Facebook te pedirá confirmar tu cuenta mañana",
     )
 
 
 def test_data_access_warning_overdue_when_passed() -> None:
     state, message = _data_access_warning(_NOW - timedelta(days=1), now=_NOW)
     assert state == "warning_overdue"
-    assert message == "Meta pide que confirmes tu cuenta: vuelve a conectarla"
+    assert message == "Facebook pide que confirmes tu cuenta: vuelve a conectarla"
 
 
 def test_data_access_warning_never_implies_the_connection_is_broken() -> None:
@@ -377,7 +377,7 @@ def test_vm_wires_the_data_access_warning_from_the_row() -> None:
     )
     assert vm_overdue.data_access_state == "warning_overdue"
     assert vm_overdue.data_access_message == (
-        "Meta pide que confirmes tu cuenta: vuelve a conectarla"
+        "Facebook pide que confirmes tu cuenta: vuelve a conectarla"
     )
     # The warning never touches status — that is the whole point of keeping it separate.
     assert vm_overdue.status == "active"
@@ -744,11 +744,17 @@ def test_missing_messages_permission_points_to_the_messages_step() -> None:
     assert "mensajes directos" in hint.title
 
 
-def test_missing_page_messaging_alone_still_flags_messages() -> None:
-    """Fase C sends through the Page: `instagram_manage_messages` without
-    `pages_messaging` still leaves Direct, private replies and story replies dead."""
+def test_instagram_messages_do_not_require_the_facebook_messenger_scope() -> None:
+    """Instagram's DM permission must agree with the capability matrix and adapter.
+
+    Regression: a real reconnect granted instagram_manage_messages and the access
+    probe passed, but a Page-messaging hint still marked the account Sin acceso.
+    Other products (e.g. private replies) must check their own requirements.
+    """
     without = [s for s in _FB_LOGIN_SCOPES if s != "pages_messaging"]
-    assert _hint_keys(granted_scopes=without, linked_page_id="1029") == ["messages"]
+    vm = _to_vm(_row(granted_scopes=without, linked_page_id="1029"), "Polet")
+    assert "ver mensajes" in vm.can_do
+    assert vm.hints == []
 
 
 def test_missing_page_metadata_asks_for_a_reconnect() -> None:
@@ -912,4 +918,4 @@ def test_whatsapp_reconnect_hint_has_no_jargon_and_no_button_wording() -> None:
     lowered = WHATSAPP_RECONNECT_HINT.lower()
     for jargon in ("oauth", "token", "scope", "cli", "comando"):
         assert jargon not in lowered, jargon
-    assert "whatsapp" in lowered
+    assert "equipo de qualify" in lowered

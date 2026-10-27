@@ -89,12 +89,12 @@ logger = logging.getLogger(__name__)
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudieron cargar tus números de WhatsApp. Vuelve a intentarlo en un momento."
 _NOT_FOUND = "Ese número ya no está conectado. Actualizamos la lista con el estado real."
-_VERIFY_OK = "Verificado con Meta. Los datos del número están al día."
+_VERIFY_OK = "Verificado con WhatsApp. Los datos del número están al día."
 _VERIFY_DEGRADED = (
-    "Meta ya no acepta el acceso de este número. Quedó marcado como degradado; "
-    "pide al equipo de Qualify que vuelva a conectarlo."
+    "Tu WhatsApp está desconectado. Tus mensajes guardados siguen aquí. "
+    "Este arreglo lo hace el equipo de Qualify."
 )
-_VERIFY_FAILED = "No se pudo verificar el número con Meta. Vuelve a intentarlo en un momento."
+_VERIFY_FAILED = "No se pudo verificar el número con WhatsApp. Vuelve a intentarlo en un momento."
 _PROFILE_SAVED = "Perfil guardado en WhatsApp."
 _PHOTO_SAVED = "Foto de perfil actualizada en WhatsApp."
 _PHOTO_INVALID = "Sube una foto JPG o PNG de hasta 5 MB."
@@ -454,7 +454,7 @@ class WhatsAppState(rx.State):
             if healthy:
                 self.connection_banner, self.connection_banner_tone = _VERIFY_OK, "ok"
             else:
-                self.connection_banner, self.connection_banner_tone = _VERIFY_DEGRADED, "error"
+                self.connection_banner, self.connection_banner_tone = _VERIFY_DEGRADED, "warn"
         yield WhatsAppState.load_numbers
 
     # ==================================================================================
@@ -563,7 +563,7 @@ class WhatsAppState(rx.State):
             async with self:
                 self.profile_saving = False
                 self.profile_banner = (
-                    "Revisa los datos del perfil: alguno supera lo que Meta admite."
+                    "Revisa los datos del perfil: alguno supera lo que WhatsApp admite."
                 )
                 self.profile_banner_tone = "warn"
             return

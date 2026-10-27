@@ -112,6 +112,17 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
     assert "/1000" not in rendered
 
 
+def test_recovery_notice_keeps_the_direct_reconnect_action_and_help() -> None:
+    from .conversations_page import _reconnect_link
+
+    rendered = str(_reconnect_link().render())
+    assert "Volver a conectar" in rendered
+    assert "Pide ayuda" in rendered
+    assert "start_reconnect" in rendered
+    assert "open_support" in rendered
+    assert 'href="/connections"' not in rendered
+
+
 def test_no_except_clause_nests_the_db_error_tuple() -> None:
     """`except (A, _DB_ERRORS)` is a TypeError at catch time (a tuple inside a tuple),
     which left «Sugerir respuesta» spinning forever on 2026-10-16. The tuple must be

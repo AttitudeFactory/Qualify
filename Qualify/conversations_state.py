@@ -627,8 +627,8 @@ class ConversationsState(rx.State):
         if not self.open_thread_id or self.account_can_reply:
             return ""
         if self.selected_account.is_degraded:
-            return "La conexión de esta cuenta caducó: reconéctala para responder."
-        return "Esta cuenta no tiene el permiso de mensajes: reconéctala concediéndolo."
+            return "Esta cuenta está desconectada. Pulsa «Volver a conectar» para responder."
+        return "Falta el permiso de mensajes. Pulsa «Volver a conectar» y acepta el permiso."
 
     # ==================================================================================
     # Plumbing
