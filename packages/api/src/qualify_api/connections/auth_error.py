@@ -83,12 +83,17 @@ def degrade_on_auth_error(
         if target is None or ConnectionStatus(target.status) is not ConnectionStatus.ACTIVE:
             return None
         moment = now if now is not None else datetime.now(UTC)
+        # Capture the FSM event locally until the status write succeeds. Consumers must
+        # not observe an outage that was never persisted.
+        from qualify_api.connections.events import InMemoryEventPublisher
+
+        staged = InMemoryEventPublisher()
         new_status = apply_transition(
             ConnectionStatus.ACTIVE,
             Trigger.AUTH_ERROR,
             connection_id=connection_id,
             tenant_id=tenant_id,
-            publisher=publisher,
+            publisher=staged,
             now=moment,
         )
         writer.record_status(
@@ -99,6 +104,8 @@ def degrade_on_auth_error(
             event_type=_AUTH_ERROR_EVENT_TYPE,
             credential_version=target.credential_version,
         )
+        for event in staged.events:
+            publisher.publish(event)
         return new_status
     except Exception as exc:  # noqa: BLE001 - see docstring: this must never raise
         logger.error("degrade_on_auth_error failed: %s", type(exc).__name__)

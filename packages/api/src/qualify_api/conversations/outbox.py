@@ -297,8 +297,13 @@ CLAIM_SQL = text(
     """
     WITH due AS MATERIALIZED (
         SELECT id FROM conversation_outbox
-         WHERE (status = 'pending' AND next_attempt_at <= :now)
-            OR (status = 'sending' AND locked_at < :stale)
+         WHERE ((status = 'pending' AND next_attempt_at <= :now)
+            OR (status = 'sending' AND locked_at < :stale))
+           AND EXISTS (
+               SELECT 1 FROM social_connections AS connection
+                WHERE connection.id = conversation_outbox.connection_id
+                  AND connection.tenant_id = conversation_outbox.tenant_id
+                  AND connection.status = 'active')
          ORDER BY created_at, id
          LIMIT :limit
          FOR UPDATE SKIP LOCKED)

@@ -101,6 +101,7 @@ def source_connection_for(tenant_id: UUID, connection_id: UUID) -> SourceConnect
                 SocialConnection.id,
                 SocialConnection.external_account_id,
                 SocialConnection.linked_page_id,
+                SocialConnection.current_credential_version,
             ).where(
                 SocialConnection.id == connection_id,
                 SocialConnection.platform == PLATFORM_INSTAGRAM,
@@ -114,6 +115,7 @@ def source_connection_for(tenant_id: UUID, connection_id: UUID) -> SourceConnect
         connection_id=row.id,
         external_account_id=row.external_account_id,
         linked_page_id=row.linked_page_id,
+        credential_version=row.current_credential_version,
     )
 
 
@@ -125,6 +127,7 @@ def instagram_connections_for(tenant_id: UUID) -> list[SourceConnection]:
                 SocialConnection.id,
                 SocialConnection.external_account_id,
                 SocialConnection.linked_page_id,
+                SocialConnection.current_credential_version,
             )
             .where(
                 SocialConnection.platform == PLATFORM_INSTAGRAM,
@@ -138,6 +141,7 @@ def instagram_connections_for(tenant_id: UUID) -> list[SourceConnection]:
             connection_id=r.id,
             external_account_id=r.external_account_id,
             linked_page_id=r.linked_page_id,
+            credential_version=r.current_credential_version,
         )
         for r in rows
     ]
@@ -156,13 +160,30 @@ async def _authenticated_client(tenant_id: UUID, connection_id: UUID) -> Authent
     """`CredentialResolver.client_for` for THIS connection: the token is injected into
     the HTTP client it returns and never reaches this module (R3)."""
     from qualify_api.config import MetaOAuthSettings  # noqa: PLC0415
-    from qualify_api.connections.credential_reader import DbCredentialReader  # noqa: PLC0415
+    from qualify_api.connections.credential_reader import (
+        CredentialNotFound,  # noqa: PLC0415
+        DbCredentialReader,  # noqa: PLC0415
+    )
     from qualify_api.connections.crypto import DevEncryptor  # noqa: PLC0415
     from qualify_api.connections.resolver import InjectingCredentialResolver  # noqa: PLC0415
+    from qualify_api.connections.runtime_health import (  # noqa: PLC0415
+        get_connection_runtime_state,
+        mark_connection_unavailable,
+    )
 
     settings = MetaOAuthSettings.from_env()
     resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), DevEncryptor())
-    return await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
+    state = get_connection_runtime_state(tenant_id=tenant_id, connection_id=connection_id)
+    try:
+        return await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
+    except CredentialNotFound:
+        mark_connection_unavailable(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            cause="missing_credential",
+            expected_credential_version=state.credential_version if state is not None else None,
+        )
+        raise
 
 
 def _story_replies_enabled() -> bool:
@@ -234,7 +255,18 @@ def production_conversation_service() -> ConversationService:
 
 
 def production_sync_service() -> ConversationSyncService:
-    return ConversationSyncService(repository=production_repository())
+    from qualify_api.connections.runtime_health import (  # noqa: PLC0415
+        mark_connection_unavailable,
+        record_connection_success,
+        record_connection_temporary_failure,
+    )
+
+    return ConversationSyncService(
+        repository=production_repository(),
+        unavailable=mark_connection_unavailable,
+        temporary_failure=record_connection_temporary_failure,
+        success=record_connection_success,
+    )
 
 
 # --- E4: assisted replies ----------------------------------------------------------------
@@ -356,10 +388,20 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
     from qualify_api.connections.composition import (  # noqa: PLC0415
         degrade_connection_on_auth_error,
     )
+    from qualify_api.connections.runtime_health import (  # noqa: PLC0415
+        get_connection_runtime_state,
+        mark_connection_unavailable,
+        record_connection_success,
+        record_connection_temporary_failure,
+    )
     from qualify_api.followups.capabilities import (  # noqa: PLC0415
         Capabilities,
         Capability,
     )
+
+    def available(*, tenant_id: UUID, connection_id: UUID) -> bool:
+        state = get_connection_runtime_state(tenant_id=tenant_id, connection_id=connection_id)
+        return state is not None and state.can_poll
 
     capabilities = Capabilities.from_env()
     return ConversationOutboxSender(
@@ -368,6 +410,10 @@ def production_sender(*, worker_id: str) -> ConversationOutboxSender:
         registry=production_registry(),
         connections=source_connection_for,
         degrade=degrade_connection_on_auth_error,
+        connection_available=available,
+        unavailable=mark_connection_unavailable,
+        temporary_failure=record_connection_temporary_failure,
+        success=record_connection_success,
         media_linker=_LazyMediaLinker(),
         # m-24789646: a queued private reply leaves only while its capability is on.
         private_replies=capabilities.enabled(Capability.COMMENT_PRIVATE_REPLY),

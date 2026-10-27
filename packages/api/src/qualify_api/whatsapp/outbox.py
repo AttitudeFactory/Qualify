@@ -316,8 +316,13 @@ CLAIM_SQL = text(
     """
     WITH due AS MATERIALIZED (
         SELECT id FROM whatsapp_outbox
-         WHERE (status = 'pending' AND next_attempt_at <= :now)
-            OR (status = 'sending' AND locked_at < :stale)
+         WHERE ((status = 'pending' AND next_attempt_at <= :now)
+            OR (status = 'sending' AND locked_at < :stale))
+           AND EXISTS (
+               SELECT 1 FROM social_connections AS connection
+                WHERE connection.id = whatsapp_outbox.connection_id
+                  AND connection.tenant_id = whatsapp_outbox.tenant_id
+                  AND connection.status = 'active')
          ORDER BY created_at, id
          LIMIT :limit
          FOR UPDATE SKIP LOCKED)
@@ -827,6 +832,11 @@ class OutboxSender:
         worker_id: str,
         opt_ins: OptInChecker,
         clock: Callable[[], datetime] = _utcnow,
+        connection_available: Callable[..., bool] | None = None,
+        connection_version: Callable[..., int | None] | None = None,
+        unavailable: Callable[..., object] | None = None,
+        temporary_failure: Callable[..., object] | None = None,
+        success: Callable[..., object] | None = None,
     ) -> None:
         self._repo = repository
         self._clients = client_factory
@@ -834,6 +844,22 @@ class OutboxSender:
         self._worker_id = worker_id
         self._opt_ins = opt_ins
         self._clock = clock
+        self._connection_available = connection_available
+        self._connection_version = connection_version
+        self._client_versions: dict[UUID, int | None] = {}
+        self._unavailable = unavailable
+        self._temporary_failure = temporary_failure
+        self._success = success
+
+    def _observe(
+        self, callback: Callable[..., object] | None, item: ClaimedOutboxItem, **extra: str
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(tenant_id=item.tenant_id, connection_id=item.connection_id, **extra)
+        except Exception as exc:  # noqa: BLE001 - retain the original send outcome
+            logger.warning("whatsapp.outbox.health_failed error=%s", type(exc).__name__)
 
     async def run_once(self, tenant_id: UUID, *, limit: int = DEFAULT_BATCH) -> SendReport:
         now = self._clock()
@@ -876,6 +902,18 @@ class OutboxSender:
         report: SendReport,
     ) -> None:
         tenant_id = item.tenant_id
+        if self._connection_available is not None and not self._connection_available(
+            tenant_id=tenant_id, connection_id=item.connection_id
+        ):
+            self._repo.mark_retry(
+                tenant_id=tenant_id,
+                item_id=item.id,
+                attempts=item.attempts,
+                error_code="connection_unavailable",
+                next_attempt_at=self._clock() + timedelta(seconds=60),
+            )
+            report.deferred += 1
+            return
         if item.connection_id in degraded:
             # An earlier row of this batch already proved the credential dead.
             self._repo.mark_dead(tenant_id=tenant_id, item_id=item.id, error_code=ERROR_AUTH)
@@ -929,8 +967,27 @@ class OutboxSender:
             return
 
         client = clients.get(item.connection_id)
+        if self._connection_version is not None:
+            version = self._connection_version(
+                tenant_id=tenant_id, connection_id=item.connection_id
+            )
+            if self._client_versions.get(item.connection_id) != version:
+                client = None
+            self._client_versions[item.connection_id] = version
         if client is None:
-            client = await self._clients(tenant_id=tenant_id, connection_id=item.connection_id)
+            from qualify_api.connections.credential_reader import CredentialNotFound  # noqa: PLC0415
+
+            try:
+                client = await self._clients(tenant_id=tenant_id, connection_id=item.connection_id)
+            except CredentialNotFound:
+                if self._unavailable is not None:
+                    self._observe(self._unavailable, item, cause="missing_credential")
+                degraded.add(item.connection_id)
+                self._repo.mark_dead(
+                    tenant_id=tenant_id, item_id=item.id, error_code="missing_credential"
+                )
+                report.dead += 1
+                return
             clients[item.connection_id] = client
         try:
             wamid = await client.send_payload(item.payload)
@@ -939,6 +996,8 @@ class OutboxSender:
             return
         self._repo.mark_sent(tenant_id=tenant_id, item_id=item.id, wamid=wamid, now=self._clock())
         report.sent += 1
+        if self._success is not None:
+            self._observe(self._success, item)
 
     def _settle_api_error(
         self,
@@ -960,7 +1019,10 @@ class OutboxSender:
         if exc.is_auth_error:
             degraded.add(item.connection_id)
             try:
-                self._degrade(tenant_id=item.tenant_id, connection_id=item.connection_id)
+                if self._unavailable is not None:
+                    self._observe(self._unavailable, item, cause="auth_expired")
+                else:
+                    self._degrade(tenant_id=item.tenant_id, connection_id=item.connection_id)
             except Exception:  # noqa: BLE001 — the row must still settle
                 logger.exception(
                     "whatsapp.outbox.degrade_failed connection_id=%s", item.connection_id
@@ -972,6 +1034,16 @@ class OutboxSender:
                 attempts=item.attempts + 1,
             )
             report.dead += 1
+        elif exc.code == 10 or (exc.code is not None and 200 <= exc.code < 300):
+            # Graph permission family, matching inbox/InstagramDirectError. A bare
+            # HTTP 403 can be policy/rate limiting and does not prove lost permission.
+            if self._unavailable is not None:
+                self._observe(self._unavailable, item, cause="permission_missing")
+            degraded.add(item.connection_id)
+            self._repo.mark_failed(
+                tenant_id=item.tenant_id, item_id=item.id, error_code="permission_missing"
+            )
+            report.failed += 1
         elif exc.is_transport:
             self._retry(item, ERROR_TRANSPORT, report)
         elif exc.code in WINDOW_CLOSED_ERROR_CODES:
@@ -984,6 +1056,8 @@ class OutboxSender:
             report.failed += 1
 
     def _retry(self, item: ClaimedOutboxItem, code: str, report: SendReport) -> None:
+        if self._temporary_failure is not None:
+            self._observe(self._temporary_failure, item)
         attempts = item.attempts + 1
         if attempts >= MAX_ATTEMPTS:
             self._repo.mark_dead(
@@ -1064,10 +1138,49 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         degrade_connection_on_auth_error,
     )
     from qualify_api.connections.crypto import DevEncryptor  # noqa: PLC0415
+    from qualify_api.connections.runtime_health import (  # noqa: PLC0415
+        get_connection_runtime_state,
+        mark_connection_unavailable,
+        record_connection_success,
+        record_connection_temporary_failure,
+    )
     from qualify_api.whatsapp.optins import (  # noqa: PLC0415
         OptInService,
         PostgresOptInRepository,
     )
+
+    versions: dict[tuple[UUID, UUID], int] = {}
+
+    def available(*, tenant_id: UUID, connection_id: UUID) -> bool:
+        state = get_connection_runtime_state(tenant_id=tenant_id, connection_id=connection_id)
+        if state is not None:
+            versions[(tenant_id, connection_id)] = state.credential_version
+        return state is not None and state.can_poll
+
+    def unavailable(*, tenant_id: UUID, connection_id: UUID, cause: str) -> bool:
+        return mark_connection_unavailable(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            cause=cause,
+            expected_credential_version=versions.get((tenant_id, connection_id)),
+        )
+
+    def connection_version(*, tenant_id: UUID, connection_id: UUID) -> int | None:
+        return versions.get((tenant_id, connection_id))
+
+    def temporary_failure(*, tenant_id: UUID, connection_id: UUID) -> int:
+        return record_connection_temporary_failure(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            expected_credential_version=versions.get((tenant_id, connection_id)),
+        )
+
+    def success(*, tenant_id: UUID, connection_id: UUID) -> None:
+        record_connection_success(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            expected_credential_version=versions.get((tenant_id, connection_id)),
+        )
 
     return OutboxSender(
         PostgresOutboxRepository(),
@@ -1075,4 +1188,9 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         degrade_connection_on_auth_error,
         worker_id=worker_id,
         opt_ins=OptInService(PostgresOptInRepository()),
+        connection_available=available,
+        connection_version=connection_version,
+        unavailable=unavailable,
+        temporary_failure=temporary_failure,
+        success=success,
     )

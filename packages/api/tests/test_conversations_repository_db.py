@@ -655,3 +655,32 @@ def test_hide_message_is_per_tenant_and_idempotent(seeded) -> None:
     assert repo.hide_message(tenant_id=TENANT, thread_id=tid, message_id=mid, now=T0) is True
     assert repo.list_messages(tenant_id=TENANT, thread_id=tid) == []
     assert repo.hide_message(tenant_id=TENANT, thread_id=tid, message_id=mid, now=T0) is False
+
+
+def test_disconnected_connection_preserves_approved_pending_reply_until_reconnect(seeded) -> None:
+    repo = PostgresConversationRepository()
+    outbox = PostgresConversationOutboxRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    item_id = outbox.enqueue(
+        tenant_id=TENANT,
+        connection_id=seeded["connection"],
+        thread_id=tid,
+        channel=CHANNEL_DM,
+        payload=_payload("approved before disconnect"),
+        approval=HumanApproval(user_id=seeded["user"], approved_at=T0),
+    )
+    with tenant_session(TENANT) as session:
+        session.get(SocialConnection, seeded["connection"]).status = "degraded"
+    now = _claim_now()
+    assert item_id not in {
+        item.id for item in outbox.claim(tenant_id=TENANT, worker_id="paused", now=now, limit=LIMIT)
+    }
+    [row] = outbox.list_for_thread(tenant_id=TENANT, thread_id=tid)
+    assert row.status == "pending" and row.approved_by_user_id == seeded["user"]
+    with tenant_session(TENANT) as session:
+        session.get(SocialConnection, seeded["connection"]).status = "active"
+    claimed = outbox.claim(tenant_id=TENANT, worker_id="resumed", now=now, limit=LIMIT)
+    assert len([item for item in claimed if item.id == item_id]) == 1
+    assert item_id not in {
+        item.id for item in outbox.claim(tenant_id=TENANT, worker_id="again", now=now, limit=LIMIT)
+    }

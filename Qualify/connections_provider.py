@@ -156,6 +156,7 @@ def _to_vm(
         brand=brand_name or _NO_BRAND_LABEL,
         external_username=label,
         status=row.status,
+        reconnect_reason=row.reconnect_reason or "",
         last_verified_at=_format_verified_at(row.last_verified_at),
         granted_scope_labels=scope_labels,
         verdicts=assess_capabilities(resolved, platform=row.platform),
@@ -247,6 +248,21 @@ def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> str:
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
     return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id, rerequest=rerequest)
+
+
+def begin_reconnect(tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str) -> str:
+    """Start an account-specific consent round trip from any screen in the same tenant."""
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
+    return start_connect(
+        tenant_id=tenant_id,
+        brand_id=None,
+        user_id=user_id,
+        connection_id=connection_id,
+        return_to=origin,
+        cause=cause,
+    )
 
 
 def request_support(

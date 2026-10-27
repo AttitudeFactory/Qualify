@@ -587,6 +587,71 @@ async def test_sync_comments_still_walks_to_completion_when_a_page_is_fully_know
     assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c2")
 
 
+@pytest.mark.parametrize("code", [10, 200, 230])
+async def test_permission_removed_marks_account_and_stops_before_next_media(code) -> None:
+    repository = MemoryInboxRepository()
+    for media_id in ("A", "B"):
+        repository.set_media_monitored(
+            tenant_id=TENANT_ID,
+            connection_id=CONNECTION_ID,
+            external_media_id=media_id,
+            monitored=True,
+            metadata=FRESH,
+        )
+    observed = []
+    client = FakeCommentsClient(
+        {},
+        error_by_media={"A": CommentsReadError("permission", platform_code=code, http_status=403)},
+    )
+    service = InboxService(
+        repository=repository,
+        comments_client=client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+        connection_unavailable=lambda **kwargs: observed.append(kwargs),
+    )
+    with pytest.raises(CommentsPermissionMissing):
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    assert client.calls == ["A"]
+    assert observed == [
+        dict(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, cause="permission_missing")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "expected"),
+    [
+        (401, None, CommentsAuthExpired),
+        (400, 190, CommentsAuthExpired),
+        (403, 10, CommentsPermissionMissing),
+        (403, 230, CommentsPermissionMissing),
+    ],
+)
+async def test_media_picker_classifies_permanent_account_failures(status, code, expected) -> None:
+    class RefusedMedia(FakeMediaClient):
+        async def list_recent_media(self, **kwargs):
+            raise MediaReadError("denied", http_status=status, platform_code=code)
+
+    causes = []
+    auth = []
+    service = InboxService(
+        repository=MemoryInboxRepository(),
+        comments_client=FakeCommentsClient({}),
+        media_client=RefusedMedia({}),
+        granted_scopes=GRANTED,
+        connection_degrader=lambda **kwargs: auth.append(kwargs),
+        connection_unavailable=lambda **kwargs: causes.append(kwargs),
+    )
+    with pytest.raises(expected):
+        await service.list_candidate_media(
+            tenant_id=TENANT_ID, connection_id=CONNECTION_ID, ig_user_id=IG_USER_ID
+        )
+    assert bool(auth) is (expected is CommentsAuthExpired)
+    assert [cause["cause"] for cause in causes] == (
+        ["permission_missing"] if expected is CommentsPermissionMissing else []
+    )
+
+
 # --------------------------------------------------------------------------------------
 # set_media_monitored — the 2-week re-validation, live against Meta, every time
 # --------------------------------------------------------------------------------------

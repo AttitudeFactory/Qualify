@@ -29,9 +29,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import UUID, uuid4
 
+import httpx
 import redis.asyncio as aioredis
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.config import R2Settings
@@ -41,18 +42,25 @@ from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings, redis_url
-from qualify_api.connections.composition import degrade_connection_on_auth_error
-from qualify_api.connections.credential_reader import DbCredentialReader
+from qualify_api.connections.credential_reader import CredentialNotFound, DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.fsm import ConnectionStatus
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.read import connection_scopes
 from qualify_api.connections.resolver import InjectingCredentialResolver
+from qualify_api.connections.runtime_health import (
+    get_connection_runtime_state,
+    mark_connection_unavailable,
+    record_connection_success,
+    record_connection_temporary_failure,
+)
 from qualify_api.inbox.client import HttpCommentsClient
 from qualify_api.inbox.media_client import HttpMediaClient
 from qualify_api.inbox.repository import PostgresInboxRepository
 from qualify_api.inbox.service import (
     CandidateMedia,
+    CommentsAuthExpired,
+    CommentsPermissionMissing,
     InboxService,
     SyncSummary,
     ThumbnailBackfill,
@@ -171,14 +179,34 @@ async def production_inbox_service_for(*, tenant_id: UUID, connection_id: UUID) 
     settings = MetaOAuthSettings.from_env()
     encryptor = DevEncryptor()
     resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), encryptor)
-    graph_client = await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
+    state = get_connection_runtime_state(tenant_id=tenant_id, connection_id=connection_id)
+    version = state.credential_version if state is not None else None
+
+    def unavailable(*, tenant_id: UUID, connection_id: UUID, cause: str) -> object:
+        return mark_connection_unavailable(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            cause=cause,
+            expected_credential_version=version,
+        )
+
+    def auth_expired(*, tenant_id: UUID, connection_id: UUID) -> object:
+        return unavailable(tenant_id=tenant_id, connection_id=connection_id, cause="auth_expired")
+
+    try:
+        graph_client = await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
+    except CredentialNotFound:
+        unavailable(tenant_id=tenant_id, connection_id=connection_id, cause="missing_credential")
+        raise
     scopes = connection_scopes(tenant_id=tenant_id, connection_id=connection_id)
     return InboxService(
         repository=PostgresInboxRepository(),
         comments_client=HttpCommentsClient(graph_client=graph_client, graph_url=settings.graph_url),
         media_client=HttpMediaClient(graph_client=graph_client, graph_url=settings.graph_url),
         granted_scopes=frozenset(scopes or ()),
-        connection_degrader=degrade_connection_on_auth_error,
+        connection_degrader=auth_expired,
+        connection_unavailable=unavailable,
+        credential_version=version,
         story_comments=story_comments_enabled(),
         thumbnails=R2ThumbnailStore(gate_factory=_object_gate),
     )
@@ -200,6 +228,9 @@ async def list_candidate_media(
     Raises `UnknownInboxConnection` when the connection id is not visible to this tenant.
     """
     ig_user_id = production_ig_user_id_for(tenant_id=tenant_id, connection_id=connection_id)
+    status = production_connection_status_for(tenant_id=tenant_id, connection_id=connection_id)
+    if status != ConnectionStatus.ACTIVE:
+        raise InboxConnectionInactive(status)
     service = await production_inbox_service_for(tenant_id=tenant_id, connection_id=connection_id)
     return await service.list_candidate_media(
         tenant_id=tenant_id, connection_id=connection_id, ig_user_id=ig_user_id
@@ -270,7 +301,38 @@ async def sync_comments(
             service = await production_inbox_service_for(
                 tenant_id=tenant_id, connection_id=connection_id
             )
-            summary = await service.sync_comments(tenant_id=tenant_id, connection_id=connection_id)
+
+            def observe(callback: Callable[..., object]) -> None:
+                try:
+                    callback(
+                        tenant_id=tenant_id,
+                        connection_id=connection_id,
+                        expected_credential_version=service.credential_version,
+                    )
+                except Exception as exc:  # noqa: BLE001 - health must not replace sync results
+                    _LOGGER.warning("inbox.sync.health_failed error=%s", type(exc).__name__)
+
+            try:
+                summary = await service.sync_comments(
+                    tenant_id=tenant_id, connection_id=connection_id
+                )
+            except (CommentsAuthExpired, CommentsPermissionMissing, CredentialNotFound):
+                raise
+            except Exception as exc:
+                if isinstance(exc, httpx.TransportError) or (
+                    getattr(exc, "http_status", 0) is not None
+                    and (
+                        getattr(exc, "http_status", 0) >= 500
+                        or getattr(exc, "http_status", 0) == 429
+                    )
+                ):
+                    observe(record_connection_temporary_failure)
+                raise
+            else:
+                if not summary.truncated and not summary.metadata_failed:
+                    observe(record_connection_success)
+                elif summary.metadata_failed:
+                    observe(record_connection_temporary_failure)
         finally:
             if lease is not None:
                 await _best_effort(lease.release(), "release")

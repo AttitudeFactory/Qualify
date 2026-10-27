@@ -65,21 +65,27 @@ def _get_engine() -> Engine:
 
 
 @contextmanager
-def tenant_session(tenant_id: UUID) -> Iterator[Session]:
+def tenant_session(tenant_id: UUID, *, independent: bool = False) -> Iterator[Session]:
     """Yield a Session bound to a transaction with `app.tenant_id` set to `tenant_id`.
 
     Everything read or written inside is RLS-scoped to that tenant. The transaction
     commits on clean exit and rolls back on exception (via `Engine.begin`). Re-running
     the same work under the same tenant is safe; a write for another tenant is rejected
     by the policies' `WITH CHECK`.
+
+    `independent=True` is reserved for runtime connection-health reports: commit that
+    diagnosis even if the surrounding business operation rolls back, and publish its
+    event only after this transaction commits. It uses the same tenant role and RLS.
+    Call after releasing any outer row lock on that connection to avoid self-deadlock.
     """
     active = _unit.get()
     if active is not None:
         if active[0] != tenant_id:
             raise ValueError("a tenant unit of work cannot change tenant")
-        yield active[1]
-        active[1].flush()
-        return
+        if not independent:
+            yield active[1]
+            active[1].flush()
+            return
     with _get_engine().begin() as conn:
         conn.execute(
             text("SELECT set_config('app.tenant_id', :tid, true)"),

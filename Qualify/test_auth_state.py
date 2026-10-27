@@ -359,6 +359,7 @@ def test_logout_resets_every_business_state() -> None:
     source = inspect.getsource(AuthState.logout.fn)
     for state_name in (
         "ConnectionsState",
+        "ReconnectState",
         "LeadsState",
         "ClarityState",
         "InboxState",

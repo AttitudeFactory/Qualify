@@ -132,6 +132,7 @@ class ConnectionVM:
     # The guide step «Cómo activarlo» opens (a `CONNECT_REQUIREMENTS` key); "" when the
     # fix is not in the owner's hands (WhatsApp: the Qualify team connects the number).
     cannot_step_key: str = ""
+    reconnect_reason: str = ""
 
 
 # WA-05: a WhatsApp number is connected by an administrator with a system-user token
@@ -219,6 +220,7 @@ def build_connection_vm(
     data_access_state: str = "",
     data_access_message: str = "",
     hints: list[ConnectionHintVM] | None = None,
+    reconnect_reason: str = "",
 ) -> ConnectionVM:
     """Assemble a whitelisted VM, partitioning capabilities enabled/disabled here.
 
@@ -243,6 +245,7 @@ def build_connection_vm(
         brand=brand,
         external_username=external_username,
         status=status,
+        reconnect_reason=reconnect_reason,
         last_verified_at=last_verified_at,
         granted_scopes=granted_scope_labels,
         enabled_capabilities=enabled,
@@ -284,6 +287,16 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
         "warn",
     ),
     "denied": ("Cancelaste la conexión con Meta. No se guardó nada.", "info"),
+    "permission_missing": (
+        "La cuenta se conectó, pero falta una casilla. "
+        "Vuelve a conectarla y déjalas todas marcadas.",
+        "warn",
+    ),
+    "account_access_required": (
+        "Esa cuenta de Facebook no administra tu Instagram. "
+        "Entra con la que lo administra o pide ayuda.",
+        "warn",
+    ),
     "invalid_state": (
         "El enlace de conexión expiró o ya se usó. Pulsa «Conectar cuenta» de nuevo.",
         "warn",
