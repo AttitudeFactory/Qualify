@@ -70,6 +70,7 @@ from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
+from .ui.steps import step_progress
 
 #: m-24842985 (N6): what is not the day and the hour waits behind this fold.
 MORE_OPTIONS = "Más opciones"
@@ -1038,7 +1039,7 @@ def _step_schedule() -> rx.Component:
         rx.flex(
             _section_title(
                 "calendar-clock",
-                PlannerState.form_step_counter + " · ¿Cuándo sale?",
+                "¿Cuándo sale?",
                 rx.cond(
                     PlannerState.form_is_reschedule,
                     "Elige el nuevo día y la hora.",
@@ -1480,14 +1481,25 @@ def assign_drawer() -> rx.Component:
             objeto=PlannerState.form_event_id,
         ),
         rx.box(
-            stepper(
-                list(ASSIGN_STEPS),
-                current=PlannerState.form_step,
-                completed=PlannerState.form_steps_done,
-                on_select=PlannerState.go_to_step,
-                icons=list(ASSIGN_STEP_ICONS),
+            rx.cond(
+                PlannerState.form_is_reschedule,
+                stepper(
+                    list(ASSIGN_STEPS[1:]),
+                    current=PlannerState.form_step - 1,
+                    completed=PlannerState.form_steps_done[1:],
+                    on_select=lambda index: PlannerState.go_to_step(index + 1),
+                    icons=list(ASSIGN_STEP_ICONS[1:]),
+                ),
+                stepper(
+                    list(ASSIGN_STEPS),
+                    current=PlannerState.form_step,
+                    completed=PlannerState.form_steps_done,
+                    on_select=PlannerState.go_to_step,
+                    icons=list(ASSIGN_STEP_ICONS),
+                ),
             ),
             class_name="q-stepper-wrap",
+            display=rx.breakpoints(initial="none", sm="block"),
         ),
         rx.box(
             rx.match(
@@ -1503,6 +1515,12 @@ def assign_drawer() -> rx.Component:
         open=PlannerState.form_open,
         on_open_change=PlannerState.set_form_open,
         title=PlannerState.form_title,
+        step=rx.vstack(
+            step_progress(PlannerState.form_flow_step, PlannerState.form_step_total),
+            rx.text(PlannerState.form_step_name, size="2", weight="medium"),
+            spacing="1",
+            width="100%",
+        ),
         description=rx.cond(
             PlannerState.form_is_reschedule,
             "Mueve la publicación a otra fecha, hora o cuenta.",
