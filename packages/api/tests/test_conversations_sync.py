@@ -234,3 +234,23 @@ async def test_another_tenant_sees_nothing(setup) -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "cause"),
+    [
+        (AccessStatus.PERMISSION_MISSING, "scope_not_granted", "permission_missing"),
+        (AccessStatus.AUTH_EXPIRED, "http_401_code_190", "auth_expired"),
+        (AccessStatus.ERROR, "CredentialNotFound", "missing_credential"),
+    ],
+)
+async def test_permanent_access_verdict_marks_connection_unavailable(
+    setup, status, detail, cause
+) -> None:
+    repo, source, _service = setup
+    source.access = AccessVerdict(status, detail)
+    observed = []
+    service = ConversationSyncService(repository=repo, unavailable=lambda **kw: observed.append(kw))
+    report = await service.sync_connection(CONNECTION, source)
+    assert report.status == "failed" and report.conversations_seen == 0
+    assert observed == [dict(tenant_id=TENANT, connection_id=CONNECTION.connection_id, cause=cause)]

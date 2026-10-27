@@ -79,6 +79,8 @@ from .next_steps_vm import (
 )
 from .post_card import viewable_src
 from .publishing_vm import ConnectionOptionVM
+from .reconnect_panel import reconnect_button, reconnect_result_panel
+from .reconnect_state import ReconnectState
 from .replies_state import REPLIES_SENT_ID, RepliesState
 from .replies_vm import (
     COMMERCIAL_BADGE,
@@ -274,9 +276,13 @@ def _no_connections_state() -> rx.Component:
         "Conecta tu Instagram para ver tus comentarios",
         "Conecta tu cuenta en «Tus redes» y dale permiso para leer comentarios: "
         "aquí verás lo que te comentan y la respuesta lista para aprobar.",
-        action=rx.link(
-            rx.button(rx.icon("link", size=16), "Ir a Tus redes", size="3"),
-            href="/connections",
+        action=rx.cond(
+            ReconnectState.has_target,
+            reconnect_button(ReconnectState.connection_id, ReconnectState.cause, "/inbox"),
+            rx.link(
+                rx.button(rx.icon("link", size=16), "Ir a Tus redes", size="3"),
+                href="/connections",
+            ),
         ),
     )
 
@@ -388,6 +394,7 @@ def _body(wrapped: bool = True) -> rx.Component:
             ),
         ),
     )
+    content = rx.vstack(reconnect_result_panel(), content, width="100%")
     return page_body(content) if wrapped else content
 
 

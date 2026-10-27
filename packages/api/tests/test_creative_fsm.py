@@ -29,6 +29,10 @@ VARIANT = UUID("44444444-4444-4444-4444-444444444444")
 # Every declared edge, with the guard data it needs to pass. This list IS the spec: a new
 # edge in `_TRANSITIONS` without a row here should fail the exhaustiveness test below.
 DECLARED_EDGES: list[tuple[str, DraftTrigger, str, dict]] = [
+    (GENERATED, DraftTrigger.RESTORE_VERSION, GENERATED, {}),
+    (REJECTED, DraftTrigger.RESTORE_VERSION, GENERATED, {}),
+    (FAILED, DraftTrigger.RESTORE_VERSION, GENERATED, {}),
+    (APPROVED, DraftTrigger.RESTORE_VERSION, GENERATED, {}),
     (DRAFTING, DraftTrigger.GENERATE_OK, GENERATED, {}),
     (DRAFTING, DraftTrigger.GENERATE_FAIL, FAILED, {"failure_reason": "provider_error"}),
     (DRAFTING, DraftTrigger.REAP, FAILED, {}),

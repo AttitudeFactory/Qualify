@@ -101,6 +101,7 @@ class ConnectionRepository(Protocol):
         verified_at: datetime | None,
         event_type: str,
         credential_version: int,
+        reconnect_reason: str | None = None,
     ) -> None: ...
 
     def record_health_check(
@@ -185,6 +186,12 @@ class PostgresConnectionRepository:
             # Same transaction as the INSERT above — the pointer and the row it selects
             # must never be observable apart.
             connection.current_credential_version = version
+            # A fresh grant starts a new diagnosis, even when its verification later
+            # fails. Never carry auth_expired from an older credential into a new
+            # permission_missing result (m-24854864/m-24854865).
+            connection.reconnect_reason = None
+            connection.temporary_failure_count = 0
+            connection.recovery_refresh_pending = False
             session.add(
                 ConnectionEvent(
                     connection_id=connection.id,
@@ -211,12 +218,35 @@ class PostgresConnectionRepository:
         verified_at: datetime | None,
         event_type: str,
         credential_version: int,
+        reconnect_reason: str | None = None,
     ) -> None:
+        if reconnect_reason is not None:
+            from qualify_api.connections.runtime_health import ReconnectCause
+
+            reconnect_reason = str(ReconnectCause(reconnect_reason))
         with tenant_session(tenant_id) as session:
-            connection = session.get(SocialConnection, connection_id)
+            connection = session.scalar(
+                select(SocialConnection)
+                .where(
+                    SocialConnection.id == connection_id, SocialConnection.tenant_id == tenant_id
+                )
+                .with_for_update()
+            )
             if connection is None:  # RLS-filtered or gone; nothing to record
                 return
+            if connection.current_credential_version != credential_version:
+                return  # a late verifier for an older grant cannot overwrite a newer grant
+            previous_status = connection.status
             connection.status = status
+            if status == "active":
+                connection.reconnect_reason = None
+                connection.temporary_failure_count = 0
+                if previous_status in ("degraded", "revoked"):
+                    connection.recovery_refresh_pending = True
+            elif status == "degraded":
+                connection.recovery_refresh_pending = False
+                if reconnect_reason is not None:
+                    connection.reconnect_reason = reconnect_reason
             if verified_at is not None:
                 connection.last_verified_at = verified_at
             session.add(

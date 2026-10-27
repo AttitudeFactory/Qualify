@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from qualify_api.creative import models as orm
 from qualify_api.creative.draft_mode import draft_state
+from qualify_api.creative.versions import visible_version
 from qualify_api.tenancy.models import TenantMember
 
 FINAL_SCHEDULED = "final_scheduled"
@@ -132,7 +133,9 @@ def review_manifest(
             raise FinalReviewUnavailable("El video todavía no está listo para revisar.")
         revision = draft.revision
         rows = session.scalars(
-            select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
+            select(orm.ImageAsset).where(
+                orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset)
+            )
         ).all()
         snapshot = [
             (row.id, row.object_key, dict(draft_state(row.params) or {}))
@@ -195,7 +198,7 @@ def confirm_final(
         rows = list(
             session.scalars(
                 select(orm.ImageAsset)
-                .where(orm.ImageAsset.draft_id == draft_id)
+                .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
                 .order_by(orm.ImageAsset.id)
                 .with_for_update()
             )
@@ -273,7 +276,11 @@ def nightly_maintenance(tenant_ids: Sequence[UUID], *, now: datetime | None = No
                 draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
                 asset = session.scalar(
                     select(orm.ImageAsset)
-                    .where(orm.ImageAsset.draft_id == draft_id, orm.ImageAsset.position == position)
+                    .where(
+                        orm.ImageAsset.draft_id == draft_id,
+                        visible_version(orm.ImageAsset),
+                        orm.ImageAsset.position == position,
+                    )
                     .with_for_update()
                 )
                 if draft is None or asset is None:
@@ -335,7 +342,7 @@ def promote_scheduled_final(
     )
     assets = session.scalars(
         select(orm.ImageAsset)
-        .where(orm.ImageAsset.draft_id == draft_id)
+        .where(orm.ImageAsset.draft_id == draft_id, visible_version(orm.ImageAsset))
         .order_by(orm.ImageAsset.id)
         .with_for_update()
     ).all()

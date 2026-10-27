@@ -74,6 +74,10 @@ from typing import Final
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.connections.runtime_health import (
+    consume_recovery_refresh,
+    get_connection_runtime_state,
+)
 from qualify_api.followups.service import OriginNotSupported, UnknownOrigin
 from qualify_api.inbox import (
     CommentsAuthExpired,
@@ -167,7 +171,8 @@ _SYNC_FAILED = "No pudimos buscar comentarios nuevos. Intenta de nuevo."
 # The connection is the tenant's but no longer `active` (disconnected or degraded) —
 # never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
 _CONNECTION_INACTIVE = (
-    "Esta cuenta está desconectada. Reconéctala en «Tus redes» para ver sus comentarios nuevos."
+    "Esta cuenta está desconectada. Pulsa «Volver a conectar» en "
+    "«Tus redes» para ver sus comentarios nuevos."
 )
 # A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
 _SYNC_META_FAILED = (
@@ -176,7 +181,8 @@ _SYNC_META_FAILED = (
 # cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
 # shown as if it were a normal zero-comments result.
 _COMMENTS_PERMISSION_MISSING = (
-    "Falta un permiso para leer comentarios en esta cuenta. Reconéctala para concederlo."
+    "Falta un permiso para leer comentarios en esta cuenta. "
+    "Pulsa «Volver a conectar» para concederlo."
 )
 _SYNC_BUDGET_EXHAUSTED = (
     "Buscamos comentarios muchas veces seguidas. Espera unos minutos e intenta de nuevo."
@@ -185,7 +191,8 @@ _SYNC_BUDGET_EXHAUSTED = (
 # the time this reaches the UI (Conexiones already shows "Reconectar"), so this message
 # points there instead of repeating the generic sync-failed copy.
 _CONNECTION_AUTH_EXPIRED = (
-    "Tu conexión con Instagram dejó de funcionar. Reconéctala en «Tus redes» e intenta de nuevo."
+    "Tu conexión con Instagram dejó de funcionar. Pulsa «Volver "
+    "a conectar» en «Tus redes» e intenta de nuevo."
 )
 _SYNC_ALREADY_RUNNING = "Ya estamos buscando comentarios nuevos. Te avisamos al terminar."
 _REPLY_BY_DM_GONE = "Ese comentario ya no está disponible."
@@ -619,6 +626,9 @@ class InboxState(rx.State):
         async with self:
             self.connections = options
             self.is_loading_connections = False
+            returned_connection = str(self.router.url.query_parameters.get("reconnect", ""))
+            if returned_connection in {option.id for option in options}:
+                self.selected_connection_id = returned_connection
             if options and not self.selected_connection_id:
                 self.selected_connection_id = options[0].id
             connection_id = self.selected_connection_id
@@ -874,7 +884,28 @@ class InboxState(rx.State):
                 trigger, "no_session" if tenant_id is None else "no_connection"
             )
 
-        if trigger != "manual":
+        try:
+            runtime = await asyncio.to_thread(
+                get_connection_runtime_state,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+            )
+            if runtime is None or not runtime.can_poll:
+                async with self:
+                    self._release_sync_claim(run_id)
+                return self._sync_skipped(trigger, "connection_unavailable")
+            recovered = await asyncio.to_thread(
+                consume_recovery_refresh,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+            )
+        except SQLAlchemyError as exc:
+            logger.error("inbox runtime check failed: %s", type(exc).__name__)
+            async with self:
+                self._release_sync_claim(run_id)
+            return self._sync_skipped(trigger, "connection_health_unavailable")
+
+        if trigger != "manual" and not recovered:
             since_last = await seconds_since_last_sync(
                 tenant_id=tenant_id, connection_id=resolved_connection
             )

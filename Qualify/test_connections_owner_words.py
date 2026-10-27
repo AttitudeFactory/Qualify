@@ -32,8 +32,15 @@ from .connections_vm import (
 )
 
 _HERE = Path(__file__).parent
-_SCREEN_FILES = ("connections_page.py", "connections_vm.py", "connections_state.py")
+_SCREEN_FILES = (
+    "connection_copy.py",
+    "connections_page.py",
+    "connections_vm.py",
+    "connections_state.py",
+)
 _BANNED = (
+    "Meta",
+    "Conectar de nuevo",
     "Degradada",
     "Revocada",
     "Verificada:",
@@ -91,11 +98,11 @@ def test_the_same_thing_has_one_name_on_the_card() -> None:
 
 def test_the_three_states_are_words_with_a_tone() -> None:
     assert {key: label for key, (label, _t, _i) in STATUS_LABELS.items()} == {
-        "active": "Funciona",
-        "degraded": "Hay que volver a conectarla",
+        "active": "Conectada",
+        "degraded": "Desconectada",
         "revoked": "Desconectada",
     }
-    assert {tone for _l, tone, _i in STATUS_LABELS.values()} == {"ok", "warn", "error"}
+    assert {tone for _l, tone, _i in STATUS_LABELS.values()} == {"ok", "warn"}
 
 
 def test_every_capability_has_an_owner_word_entry() -> None:
