@@ -36,6 +36,7 @@ from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
     EmailAlreadyRegistered,
+    InvalidCredentials,
 )
 from qualify_api.tenancy.models import Brand, BrandKitDraft, Tenant, TenantMember, User
 
@@ -93,21 +94,44 @@ def _validate_signup(business_name: str, email: str, password: str) -> None:
 
 
 def _resolve_identity_for_signup(
-    provider: AuthProvider, email: str, password: str, new_tenant_id: UUID
+    provider: AuthProvider,
+    email: str,
+    password: str,
+    new_tenant_id: UUID,
+    *,
+    is_add_business: bool = False,
 ) -> tuple[UUID, UUID]:
     """Create the identity user, or — on a retry — recover the existing one.
 
     Returns `(auth_user_id, tenant_id)`. On the retry path the tenant id comes from
     the EXISTING stamp, so a re-run completes the original registration rather than
-    minting a second tenant for the same credential.
+    minting a second tenant for the same credential. When `is_add_business` is True,
+    sign in with the existing credential to get auth_user_id and use the new tenant_id.
     """
     try:
         return provider.admin_create_user(email, password, new_tenant_id), new_tenant_id
     except EmailAlreadyRegistered:
-        raise RegistrationInvalid(
-            "Ese email ya tiene cuenta en Qualify. Para agregarle otro negocio, "
-            "la invitación debe ser de tipo 'Inicio de sesión existente'."
-        ) from None
+        if is_add_business:
+            try:
+                auth_session = provider.sign_in(email, password)
+            except InvalidCredentials:
+                raise RegistrationInvalid(
+                    "Esa contraseña no coincide. Inténtalo otra vez."
+                ) from None
+            return auth_session.auth_user_id, new_tenant_id
+        try:
+            session = provider.sign_in(email, password)
+        except InvalidCredentials:
+            raise RegistrationInvalid(
+                "Ese email ya está registrado. Inicia sesión, o si el registro quedó a "
+                "medias, reintenta con la misma contraseña."
+            ) from None
+        if session.tenant_id is None:
+            raise RegistrationInvalid(
+                "Ese email ya existe en el proveedor de identidad sin negocio asociado. "
+                "Contacta al administrador."
+            ) from None
+        return session.auth_user_id, session.tenant_id
 
 
 def _upsert_local_half(
@@ -284,7 +308,11 @@ def register_business(
             draft = adoptable_draft(session, email, meegle_work_item_id=meegle_work_item_id)
             draft_tenant_id = draft.tenant_id if draft is not None else None
             auth_user_id, tenant_id = _resolve_identity_for_signup(
-                provider, email, password, draft_tenant_id or uuid4()
+                provider,
+                email,
+                password,
+                draft_tenant_id or uuid4(),
+                is_add_business=invite.is_add_business,
             )
             _persist_business(
                 session,
