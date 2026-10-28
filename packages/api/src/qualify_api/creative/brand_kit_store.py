@@ -14,6 +14,7 @@ the brandboard's files and the wizards' own answers.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.keys import require_tenant_prefix
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.creative.models import BrandKit as BrandKitRow
 from qualify_api.creative.models import BrandKitAsset as AssetRow
@@ -57,9 +59,10 @@ AVATAR_KEY = "brand_avatar"
 #: wizard's save of its own answers must not erase it.
 PREFILL_DOCUMENT = "connect"
 PREFILL_KEY = "prefill"
+CONTACT_KEY = "contact"
 RESERVED_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
     AVATAR_DOCUMENT: (AVATAR_KEY,),
-    PREFILL_DOCUMENT: (PREFILL_KEY,),
+    PREFILL_DOCUMENT: (PREFILL_KEY, CONTACT_KEY),
 }
 
 
@@ -72,7 +75,28 @@ def carry_reserved(
     for key in RESERVED_DETAIL_KEYS.get(name, ()):
         if key not in out and stored and key in stored:
             out[key] = stored[key]
+    if name == PREFILL_DOCUMENT and stored and isinstance(stored.get(CONTACT_KEY), Mapping):
+        # Public details omit the private WhatsApp value. Saving those details must
+        # neither erase it nor replace unrelated fields written since the read.
+        incoming = out.get(CONTACT_KEY)
+        out[CONTACT_KEY] = {
+            **stored[CONTACT_KEY],
+            **(incoming if isinstance(incoming, Mapping) else {}),
+        }
     return out
+
+
+def visible_connect(document: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Details may reach a screen: the full contact number stays only in Postgres."""
+    out = dict(document or {})
+    contact = out.get(CONTACT_KEY)
+    if isinstance(contact, Mapping):
+        out[CONTACT_KEY] = {key: value for key, value in contact.items() if key != "whatsapp"}
+    return out
+
+
+def valid_whatsapp_contact(number: object) -> bool:
+    return isinstance(number, str) and re.fullmatch(r"[1-9][0-9]{7,14}", number) is not None
 
 
 @dataclass(frozen=True)
@@ -180,9 +204,41 @@ class BrandKitStore:
                 return BrandKitDetails()
             return BrandKitDetails(
                 logo_brief=dict(row.logo_brief or {}),
-                connect=dict(row.connect or {}),
+                connect=visible_connect(row.connect),
                 profile=dict(row.profile or {}),
             )
+
+    def capture_whatsapp_contact(self, *, tenant_id: UUID, brand_id: UUID, number: str) -> bool:
+        """Fill a previously absent private contact, never overwrite an owner's edit.
+
+        No value is returned or logged. Insert-if-missing followed by a row lock also
+        serializes two first reads for a brand with no details row yet.
+        """
+        if not valid_whatsapp_contact(number):
+            raise ValueError("invalid WhatsApp contact")
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                insert(DetailsRow)
+                .values(
+                    brand_id=brand_id, tenant_id=tenant_id, logo_brief={}, connect={}, profile={}
+                )
+                .on_conflict_do_nothing(index_elements=["brand_id"])
+            )
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
+            if row is None:
+                return False
+            connect = dict(row.connect or {})
+            contact = connect.get(CONTACT_KEY)
+            if contact is not None and not isinstance(contact, Mapping):
+                return False  # an existing owner's value is never silently replaced
+            contact = dict(contact or {})
+            if "whatsapp" in contact:
+                return False  # empty is an explicit owner choice too
+            contact["whatsapp"] = number
+            row.connect = {**connect, CONTACT_KEY: contact}
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+            return True
 
     def save_details(
         self,
