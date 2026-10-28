@@ -198,6 +198,8 @@ def test_gate_exposes_no_presign_method() -> None:
     # the only deletion, restricted to folders under `PURGEABLE_ROOTS` (tests below).
     # ADR 41: sha256 reads the existing final to compare the confirmed binary;
     # the same tenant-prefix gate applies, with no public/signed URL capability.
+    # m-24789547: connection-scoped object lifecycle methods remain behind the same
+    # tenant + connection-prefix checks; they do not add signed/public URL capability.
     assert surface == {
         "put_media",
         "open_object",
@@ -205,6 +207,9 @@ def test_gate_exposes_no_presign_method() -> None:
         "open_range",
         "delete_prefix",
         "sha256",
+        "put_connection_media",
+        "list_connection_objects",
+        "delete_connection_objects",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 

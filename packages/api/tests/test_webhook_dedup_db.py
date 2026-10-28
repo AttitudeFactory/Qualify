@@ -1,4 +1,7 @@
-"""`record_delivery` against real Postgres (QUA-147): two-level dedup and the trace from
+"""Generic queue custody against real Postgres: two-level dedup and delivery traces.
+
+Uses WhatsApp's unchanged byte-exact intake path. IG/FB admission deliberately filters
+raw and requires consent; test_webhook_privacy_db covers that separate contract.
 each change back to its delivery — run as the real INSERT-only `qualify_webhook` role.
 
 Reads go through an OWNER engine built here (test code may build engines; the static
@@ -42,7 +45,7 @@ def _change(entry_id: str, media_id: str) -> dict:
 def _body(entries: list[tuple[str, list[str]]], *, time: int = 1) -> bytes:
     """entries = [(entry_id, [media_id, ...]), ...] -> a mentions delivery."""
     payload = {
-        "object": "instagram",
+        "object": "whatsapp_business_account",
         "entry": [
             {"id": entry_id, "time": time, "changes": [_change(entry_id, m) for m in medias]}
             for entry_id, medias in entries
@@ -151,7 +154,7 @@ def test_a_delivery_carrying_two_accounts_records_both_entry_ids(owner) -> None:
 
 
 def test_an_unparseable_body_is_recorded_with_no_changes(owner) -> None:
-    body = f'{{"object": "instagram", "entry": "not-a-list-{uuid4()}"}}'.encode()
+    body = f'{{"object": "whatsapp_business_account", "entry": "not-a-list-{uuid4()}"}}'.encode()
 
     result = record_delivery(body=body, signature_header="s")
 
@@ -213,7 +216,7 @@ def test_unstorable_text_never_loses_the_batch(owner) -> None:
     U+FFFD, and the raw body keeps the exact original bytes."""
     entry = f"acct-{uuid4()}"
     body = (
-        '{"object":"instagram","entry":[{"id":"' + entry + '","changes":['
+        '{"object":"whatsapp_business_account","entry":[{"id":"' + entry + '","changes":['
         '{"field":"comments","value":{"id":"c-' + entry + '","text":"hola \\ud83d y\\u0000z"}},'
         '{"field":"mentions","value":{"media_id":"m-' + entry + '"}}]}]}'
     ).encode()

@@ -16,13 +16,16 @@ audit row, no domain event — so a double-clicked button cannot fail the screen
 retried worker cannot append a second revocation. `changed` reports which happened, for
 callers that care to distinguish.
 
-**It never touches credential material.** The write is confined to `social_connections` and
-`connection_events`; `oauth_credentials` is neither read nor written. That is not just
+**It never touches credential material.** The revocation write changes `social_connections`,
+`connection_events` and, for an explicit user disconnect of IG/FB, a durable deletion
+request; `oauth_credentials` is neither read nor written. That is not just
 convention: the `qualify_app` role these sessions run as holds no `SELECT` on
 `ciphertext`/`key_id` at all (migration 0002, R3), so reading them here would be a
-permission error, not a leak. Credentials are append-only and outlive the revocation on
-purpose — the audit trail of which version was live when the connection went away is the
-provenance a later "why did this client go dark" question is answered with.
+permission error, not a leak. Credentials survive the 29-day reconnect grace period;
+the dedicated, tenant-scoped deletion worker erases them before the 30-day deadline.
+The completed purge retains only its scrubbed operational audit. Runtime/system
+revocations do not enqueue deletion. The composition seam also repairs missing
+explicit intent when a user retries an already-revoked connection.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
+from sqlalchemy import select
 
 from qualify_api.connections.events import EventPublisher
 from qualify_api.connections.fsm import ConnectionStatus, Trigger, apply_transition
@@ -95,7 +99,11 @@ class PostgresRevocationRepository:
 
     def load(self, *, tenant_id: UUID, connection_id: UUID) -> RevocationTarget | None:
         with tenant_session(tenant_id) as session:
-            connection = session.get(SocialConnection, connection_id)
+            connection = session.scalar(
+                select(SocialConnection)
+                .where(SocialConnection.id == connection_id)
+                .with_for_update()
+            )
             if connection is None:  # gone, or RLS-filtered as another tenant's
                 return None
             return RevocationTarget(
@@ -115,7 +123,11 @@ class PostgresRevocationRepository:
         actor: str,
     ) -> None:
         with tenant_session(tenant_id) as session:
-            connection = session.get(SocialConnection, connection_id)
+            connection = session.scalar(
+                select(SocialConnection)
+                .where(SocialConnection.id == connection_id)
+                .with_for_update()
+            )
             if connection is None:  # vanished between load and write; nothing to revoke
                 return
             connection.status = status
@@ -130,6 +142,10 @@ class PostgresRevocationRepository:
                 )
             )
             session.flush()
+            if actor == "user" and connection.platform in {"instagram", "facebook"}:
+                from qualify_api.connections.purge import _enqueue
+
+                _enqueue(session, connection, "disconnect", revoked_at)
 
 
 class RevokeService:

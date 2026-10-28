@@ -92,6 +92,8 @@ class SocialConnection(Base):
     connected_at: Mapped[datetime] = mapped_column(nullable=False, server_default=text("now()"))
     last_verified_at: Mapped[datetime | None] = mapped_column(nullable=True)
     disconnected_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    purge_started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(nullable=True)
     # QUA-91: Meta's data-access window (~90 days), independent of the token's own
     # `expires_at` (which lives on `oauth_credentials` and is set once at grant time).
     # Lives here, not on `oauth_credentials`, because `qualify_app` holds only INSERT on

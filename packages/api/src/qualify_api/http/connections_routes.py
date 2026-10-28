@@ -51,6 +51,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.connections.meta_oauth import MetaOAuthError
+from qualify_api.connections.purge import ConnectionPurgeInProgress
 from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.connections.service import ConnectOutcome, ConnectService
 from qualify_api.connections.state_token import InvalidState, safe_return_path
@@ -189,7 +190,7 @@ async def oauth_callback(
         result = await service.complete_connect(code=code, state=state)
     except InvalidState:
         return _back_to_connections(page_url, INVALID_STATE)
-    except (MetaOAuthError, httpx.HTTPError, SQLAlchemyError):
+    except (MetaOAuthError, httpx.HTTPError, SQLAlchemyError, ConnectionPurgeInProgress):
         # complete_connect has already spent its jti. Retry means a new consent flow;
         # keep only the authenticated original route, never a provider error or token.
         return _back_to_connections(

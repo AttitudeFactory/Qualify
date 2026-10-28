@@ -156,6 +156,68 @@ class ObjectGate:
         """
         return self._store.open(require_tenant_prefix(tenant_id, object_key))
 
+    def delete_connection_objects(
+        self, tenant_id: UUID, connection_id: UUID, platform: str, object_keys: list[str]
+    ) -> None:
+        """Delete an explicit manifest, validating ALL keys before touching the store.
+
+        Only connection purge's durable, reference-checked manifest should call this.
+        Missing keys are successful retries; store failures propagate to its worker.
+        This deliberately grants no new prefix deletion roots.
+        """
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            require_connection_object(tenant_id, connection_id, platform, key)
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
+    def list_connection_objects(
+        self, tenant_id: UUID, connection_id: UUID, platform: str
+    ) -> list[str]:
+        """Inventory one connection's exact folders, including unreferenced uploads."""
+        root = tenant_prefix(tenant_id)
+        prefixes = (
+            f"{root}media/{connection_id}/",
+            f"{root}inbox/thumbs/{connection_id}/",
+            f"{root}fp/{platform}/{connection_id}/",
+        )
+        found: list[str] = []
+        for prefix in prefixes:
+            require_connection_object(tenant_id, connection_id, platform, prefix + "probe")
+            for item in self._store.list_prefix(prefix):  # type: ignore[attr-defined]
+                found.append(
+                    require_connection_object(tenant_id, connection_id, platform, item.key)
+                )
+        return found
+
+    def put_connection_media(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        object_key: str,
+        fileobj: IO[bytes],
+        content_type: str,
+    ) -> None:
+        """Serialize a connection upload against consent deletion's manifest snapshot.
+
+        The lock covers only the bounded store PUT, not media fetching. It prevents a
+        stale fetch from uploading after the purge has inventoried the folder.
+        """
+        from sqlalchemy import text
+
+        from qualify_shared.db.session import tenant_session
+
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text("""SELECT platform, purge_started_at FROM social_connections
+                WHERE id=:cid FOR SHARE"""),
+                {"cid": connection_id},
+            ).first()
+            if row is None or row.purge_started_at is not None:
+                raise ValueError("connection_deletion_in_progress")
+            require_connection_object(tenant_id, connection_id, row.platform, object_key)
+            self.put_media(tenant_id, object_key, fileobj, content_type)
+
     def sha256(self, tenant_id: UUID, object_key: str) -> str:
         """Current object's digest; never cross the tenant prefix."""
         key = require_tenant_prefix(tenant_id, object_key)
@@ -205,4 +267,22 @@ def _purgeable_prefix(tenant_id: UUID, prefix: str) -> str:
     root = next((r for r in PURGEABLE_ROOTS if rest.startswith(r)), None)
     if root is None or len(rest) <= len(root) or "//" in rest:
         raise TenantPrefixViolation("this prefix is not a purgeable folder")
+    return key
+
+
+def require_connection_object(
+    tenant_id: UUID, connection_id: UUID, platform: str, object_key: str
+) -> str:
+    """Permit only one connection's media, synchronized thumbnails and raw payloads."""
+    key = require_tenant_prefix(tenant_id, object_key)
+    if platform not in {"instagram", "facebook", "whatsapp"}:
+        raise TenantPrefixViolation("unknown connection platform")
+    root = tenant_prefix(tenant_id)
+    prefixes = (
+        f"{root}media/{connection_id}/",
+        f"{root}inbox/thumbs/{connection_id}/",
+        f"{root}fp/{platform}/{connection_id}/",
+    )
+    if not any(key.startswith(prefix) and len(key) > len(prefix) for prefix in prefixes):
+        raise TenantPrefixViolation("object does not belong to this connection")
     return key

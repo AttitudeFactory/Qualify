@@ -49,6 +49,9 @@ them.
 
 ## Skills
 
+- `review-agent` — owns this procedure: the independent read-only review of the final merge
+  diff, mandatory before every PR (`qualify-pr` §5). Run it, or delegate it to a subagent
+  independent of the author; maintain the checklist when a new hard rule or ADR lands.
 - `develop-adr` (adapt to Spanish and the §6 style), `architecture-patterns`,
   `engineering:system-design`, `engineering:architecture`, `engineering:tech-debt`.
 - `security-review` — for auth, tenancy and webhook designs.

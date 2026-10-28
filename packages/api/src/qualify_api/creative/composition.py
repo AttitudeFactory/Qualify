@@ -166,6 +166,24 @@ def public_media_ready() -> bool:
     return True
 
 
+def _check_reference_url(url: str, *, content_type: str, size: int) -> None:
+    """A configured but stopped local tunnel must fail before a paid vendor submission."""
+    import httpx
+
+    try:
+        response = httpx.head(url, timeout=15, follow_redirects=False)
+    except httpx.HTTPError:
+        raise ValueError("The public media server is unreachable") from None
+    actual_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+    if (
+        response.status_code != 200
+        or actual_type != content_type
+        or response.headers.get("content-length") != str(size)
+    ):
+        # Never include the bearer token URL in the exception or the logs.
+        raise ValueError("The public media server did not serve the reference file")
+
+
 class PublicReferenceLinks:
     """A clip's reference video/audio, or the presenter's photo and voice, as a URL the
     vendor can fetch (neither ModelArk nor OmniHuman takes Base64 for them): the bytes go
@@ -218,7 +236,9 @@ class PublicReferenceLinks:
             redis.Redis.from_url(redis_url(), decode_responses=True), ttl_seconds=self._ttl
         )
         token = tokens.issue(tenant_id=tenant_id, object_key=object_key, content_type=content_type)
-        return settings.public_media_url(token)
+        url = settings.public_media_url(token)
+        _check_reference_url(url, content_type=content_type, size=len(data))
+        return url
 
 
 DEFAULT_SEEDANCE_RESOLUTION = "720p"

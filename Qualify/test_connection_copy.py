@@ -1,8 +1,10 @@
 """Regression checks for the shared connection vocabulary (m-24854866)."""
 
+from types import SimpleNamespace
+
 import pytest
 
-from .connection_copy import STATUS_LABELS, connection_status_display
+from .connection_copy import DISCONNECTED_NOTICE, STATUS_LABELS, connection_status_display
 from .whatsapp_vm import graph_error_notice
 
 
@@ -61,3 +63,40 @@ def test_permission_callback_uses_the_shared_recovery_action() -> None:
     assert "Volver a conectar" in message
     assert "marcadas" in message and tone == "warn"
     assert "Meta" not in message
+
+
+def test_instagram_and_facebook_disconnect_explain_the_scheduled_data_removal() -> None:
+    from .connections_page import _disconnect_description
+
+    for platform in ("instagram", "facebook"):
+        rendered = str(
+            _disconnect_description(
+                SimpleNamespace(platform=platform, external_username="@bianki")
+            ).render()
+        )
+        assert "'cond_state': 'false'" in rendered
+        assert "comentarios o mensajes nuevos de" in rendered
+        assert "En un m" in rendered and "30 d" in rendered and "u00edas" in rendered
+        assert "desde que desconectes la cuenta" in rendered
+        assert "mensajes guardados" in rendered
+        assert "antes de que empiece la eliminaci" in rendered
+        assert "se cancela este borrado programado" in rendered
+        assert "publicaciones que creaste en Qualify" in rendered
+        assert "archivos de tu marca" in rendered
+
+
+def test_whatsapp_disconnect_copy_does_not_claim_the_connection_purge() -> None:
+    from .connections_page import _disconnect_description
+
+    rendered = str(
+        _disconnect_description(
+            SimpleNamespace(platform="whatsapp", external_username="+58 412 555 0101")
+        ).render()
+    )
+    assert "'cond_state': 'true'" in rendered
+    assert "Puedes conectarla de nuevo cuando quieras" in rendered
+
+
+def test_generic_disconnected_notice_makes_no_data_retention_promise() -> None:
+    assert "lo que ya tenías guardado sigue aquí" not in DISCONNECTED_NOTICE.lower()
+    assert "Volver a conectar" in DISCONNECTED_NOTICE

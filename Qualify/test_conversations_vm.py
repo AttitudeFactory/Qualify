@@ -266,7 +266,8 @@ def test_a_degraded_connection_asks_to_reconnect() -> None:
     vm = build_access_vm(_sync(), account=_account(status="degraded"), now=NOW, zone=ZONE)
     assert vm.kind == ACCESS_AUTH_EXPIRED and vm.show_reconnect
     assert vm.title == "Desconectada"
-    assert "guardado sigue aquí" in vm.message
+    assert "comentarios y mensajes nuevos" in vm.message
+    assert "Volver a conectar" in vm.message
 
 
 @pytest.mark.parametrize(
@@ -287,8 +288,9 @@ def test_connection_health_precedes_missing_scope_and_stale_sync(
         zone=ZONE,
     )
     assert (vm.kind, vm.title, vm.tone, vm.show_reconnect) == (kind, title, "warn", True)
-    assert "guardado sigue aquí" in vm.message
     if status == "degraded":
+        assert "comentarios y mensajes nuevos" in vm.message
+        assert "Volver a conectar" in vm.message
         assert not vm.message.startswith("Falta.")
     else:
         assert vm.message.startswith("Falta.")

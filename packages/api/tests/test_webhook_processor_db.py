@@ -199,14 +199,14 @@ async def test_replaying_a_processed_change_never_duplicates_the_mention(owner, 
     assert len(_mentions(owner, connection_id, media_id)) == 1
 
 
-async def test_an_unknown_account_is_orphan_and_writes_no_mention(owner, fake_meta) -> None:
+async def test_an_unknown_account_is_not_retained_and_writes_no_mention(owner, fake_meta) -> None:
     account = f"ig-unknown-{uuid4()}"
     media_id = f"media-{uuid4()}"
     record_delivery(body=_body(account, "mentions", {"media_id": media_id}), signature_header="s")
 
     await _processor().run_once(limit=1000)
 
-    assert _event_status(owner, account, "mentions") == [("orphan", None)]
+    assert _event_status(owner, account, "mentions") == []
     with owner.connect() as conn:
         assert (
             conn.execute(

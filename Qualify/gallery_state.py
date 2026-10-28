@@ -134,6 +134,7 @@ class GalleryState(rx.State):
     categories: list[CategoryOptionVM] = []
     state_filter: str = GALLERY_FILTER_ALL
     category_filter: str = GALLERY_FILTER_ALL
+    content_kind_filter: str = GALLERY_FILTER_ALL
     # Quick review from a card: the POST being approved/rejected (its buttons spin), and
     # the one whose rejection is being confirmed — a mis-click never discards a draft.
     busy_post_id: str = ""
@@ -145,7 +146,12 @@ class GalleryState(rx.State):
     @rx.var
     def visible(self) -> list[PostOptionVM]:
         return sort_for_gallery(
-            filter_posts(self.posts, state=self.state_filter, category=self.category_filter),
+            filter_posts(
+                self.posts,
+                state=self.state_filter,
+                category=self.category_filter,
+                content_kind=self.content_kind_filter,
+            ),
             by_expiry=self.sort_by_expiry,
         )
 
@@ -161,14 +167,33 @@ class GalleryState(rx.State):
     def state_counts(self) -> dict[str, int]:
         """How many POSTs each state filter would show — the number on each chip."""
         counts = {value: 0 for value, _label in GALLERY_STATE_FILTERS}
-        counts[GALLERY_FILTER_ALL] = len(self.posts)
-        for post in self.posts:  # by the card's state (m-24842981), as the filters
+        posts = filter_posts(
+            self.posts,
+            state=GALLERY_FILTER_ALL,
+            category=self.category_filter,
+            content_kind=self.content_kind_filter,
+        )
+        counts[GALLERY_FILTER_ALL] = len(posts)
+        for post in posts:  # by the card's state (m-24842981), as the filters
             counts[post.card_state] = counts.get(post.card_state, 0) + 1
         return counts
 
     @rx.var
     def is_filtered(self) -> bool:
-        return self.state_filter != GALLERY_FILTER_ALL or self.category_filter != GALLERY_FILTER_ALL
+        return any(
+            value != GALLERY_FILTER_ALL
+            for value in (self.state_filter, self.category_filter, self.content_kind_filter)
+        )
+
+    @rx.var
+    def content_kind_options(self) -> list[CategoryOptionVM]:
+        kinds = {p.content_kind: p.content_kind_label for p in self.posts if p.content_kind_label}
+        return [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
+
+    @rx.event
+    def set_content_kind_filter(self, value: str) -> None:
+        known = {p.content_kind for p in self.posts}
+        self.content_kind_filter = value if value in known else GALLERY_FILTER_ALL
 
     @rx.event
     def set_state_filter(self, value: str) -> None:
@@ -183,6 +208,7 @@ class GalleryState(rx.State):
     def clear_filters(self) -> None:
         self.state_filter = GALLERY_FILTER_ALL
         self.category_filter = GALLERY_FILTER_ALL
+        self.content_kind_filter = GALLERY_FILTER_ALL
 
     @rx.event
     def assign(self, post_id: str):

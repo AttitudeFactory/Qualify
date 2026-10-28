@@ -1070,6 +1070,10 @@ def _gallery_card(post) -> rx.Component:
         ),
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
+            rx.cond(
+                post.content_kind_label != "",
+                rx.badge(post.content_kind_label, color_scheme="gray", variant="surface"),
+            ),
             campaign_badge(post.campaign_name, post.campaign_color),  # QUA-143
             # m-24828907: «Se elimina en N días» / «Contenido eliminado»
             rx.cond(
@@ -1213,6 +1217,19 @@ def _state_chip(value: str, label: str) -> rx.Component:
 
 def _gallery_toolbar() -> rx.Component:
     return rx.flex(
+        rx.select.root(
+            rx.select.trigger(placeholder="Tipo de creación", aria_label="Tipo de creación"),
+            rx.select.content(
+                rx.select.item("Todos los tipos", value=GALLERY_FILTER_ALL),
+                rx.foreach(
+                    GalleryState.content_kind_options,
+                    lambda option: rx.select.item(option.label, value=option.value),
+                ),
+            ),
+            value=GalleryState.content_kind_filter,
+            on_change=GalleryState.set_content_kind_filter,
+            size="2",
+        ),
         rx.flex(
             _state_chip(GALLERY_FILTER_ALL, "Todas"),
             # A state with nothing in it is noise on a phone: shown only when it has
@@ -2206,16 +2223,6 @@ def _review_panel() -> rx.Component:
     draft = CreativeState.draft
     return _card(
         rx.hstack(
-            rx.cond(
-                draft.kind_label != "",
-                rx.badge(
-                    rx.icon("sparkles", size=12),
-                    draft.kind_label,
-                    color_scheme="gray",
-                    variant="surface",
-                    size="2",
-                ),
-            ),
             rx.spacer(),
             # Three facts in the operator's words; what each means is its hover
             # (request 2026-10-22: «reglas duras», «Perfil v1 · claude-…» read as noise).
@@ -2768,6 +2775,18 @@ def draft_detail_index() -> rx.Component:
         ),
         _padded(
             rx.hstack(
+                rx.cond(
+                    ~CreativeState.detail_loading,
+                    rx.cond(
+                        CreativeState.draft,
+                        rx.badge(
+                            CreativeState.draft.kind_label,
+                            color_scheme="gray",
+                            variant="surface",
+                            size="2",
+                        ),
+                    ),
+                ),
                 rx.spacer(),
                 rx.cond(
                     CreativeState.detail_loading,

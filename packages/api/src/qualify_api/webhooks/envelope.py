@@ -23,10 +23,9 @@ item as its `value`, after the entry's `changes` (so an entry carrying both keep
 order). The processor then routes it by `instagram:messages`, exactly like a `changes`
 entry would be. Nothing else about the item is interpreted here.
 
-A body that is not this shape (not JSON, no `entry` list, an entry without a string `id`,
-a change without a string `field`) is `EnvelopeError` as a whole: the receiver still
-stores the delivery (raw body included) as `unparseable`, with no changes, rather than
-guessing which parts of a malformed body to trust.
+A body that is not this shape raises `EnvelopeError` as a whole. The receiver discards
+unclassifiable Meta raw; identifiable WA and explicit other-service parsers retain
+their existing `unparseable` custody. This parser itself makes no storage decisions.
 
 **Text that cannot be stored is replaced, never fatal.** JSON may carry `\\uD83D` (a lone
 UTF-16 surrogate — e.g. a comment truncated mid-emoji) or `\\u0000`. Neither survives the
@@ -35,7 +34,8 @@ alone, either one made the whole delivery raise (500), so Meta retried it for 36
 dropped it — taking every valid change batched with it. Right after `json.loads`, every
 string in the payload (keys included) has its surrogates and NULs replaced by U+FFFD.
 Valid surrogate PAIRS never reach this point as surrogates: `json.loads` already joined them
-into one code point, so real emoji are untouched. `raw_body` still keeps the exact bytes.
+into one code point, so real emoji are untouched. IG/FB storage reconstructs safe raw;
+WA and other-service custody keep the original bytes.
 """
 
 from __future__ import annotations

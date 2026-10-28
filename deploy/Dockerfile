@@ -31,9 +31,11 @@ ARG CADDY_IMAGE=caddy:2.11-alpine
 # found on PATH instead of downloading its own — same pattern as Reflex's official
 # docker-example/production-compose.
 ARG BUN_IMAGE=oven/bun:1.4
+ARG NODE_IMAGE=node:22.22-bookworm-slim
 
 FROM ${UV_IMAGE} AS uv
 FROM ${BUN_IMAGE} AS bun
+FROM ${NODE_IMAGE} AS node
 
 # --------------------------------------------------------------------------------------
 # deps: the locked virtualenv (backend + crm groups), workspace members installed editable
@@ -96,6 +98,9 @@ FROM deps AS frontend-build
 # bun comes from its official image (no curl/unzip, no download from Reflex's install
 # script on every build); the cache mount keeps bun's package cache across builds.
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+# Reflex's frontend export needs a Node toolchain on PATH (>= 22.22.0); the base image
+# only ships Python, so bring Node in from its official image.
+COPY --from=node /usr/local /usr/local
 # The public origin is baked into the static bundle (env.json): it is where the browser
 # opens the `/_event` websocket and fetches `/_upload/*`. Caddy serves frontend and backend
 # on this same origin, so there is no CORS and no second hostname.

@@ -51,6 +51,28 @@ def _post(post_id: str, *, state: str = "schedulable", category: str = "galeria"
     return build_post_option(**params)  # type: ignore[arg-type]
 
 
+def test_gallery_distinguishes_video_creation_types_even_when_a_video_failed() -> None:
+    state = GalleryState()
+    state.posts = [
+        _post("human", content_kind="avatar_video"),
+        _post("animated", content_kind="animated_avatar_video"),
+        _post("clip", content_kind="clip", state="needs_action", lifecycle_status="failed"),
+    ]
+    assert [p.content_kind_label for p in state.posts] == [
+        "Video con avatar humano",
+        "Video con avatar animado",
+        "Clip",
+    ]
+    state.set_content_kind_filter("clip")
+    assert [p.post_id for p in state.visible] == ["clip"]
+    assert state.state_counts["all"] == 1 and state.state_counts["ready"] == 0
+    assert state.is_filtered
+    state.set_state_filter("ready")
+    assert state.visible == []  # type and review state both apply
+    state.clear_filters()
+    assert len(state.visible) == 3 and not state.is_filtered
+
+
 # --- the card's derived state and history --------------------------------------------
 
 

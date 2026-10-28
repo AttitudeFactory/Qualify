@@ -25,7 +25,8 @@ through `tenant_session` (`PostgresConversationsStore`):
   tenant's **IANA zone**.
 
 **Media.** An attachment the person adds is staged in R2 FIRST (`stage_attachment`,
-through `ObjectGate.put_media` under the tenant's own prefix) and only its object key
+through `ObjectGate.put_connection_media` under the tenant's own prefix) and only its
+object key
 travels to the outbox (`reply_media`); the sender mints the public URL Meta fetches at
 send time. What the screen renders comes from `media_sources`: an inbound attachment by
 the channel's CDN URL the message row carries, an outbound one by the `/r2media/<token>`
@@ -216,8 +217,13 @@ class PostgresConversationsStore:
 
 
 class MediaSink(Protocol):
-    def put_media(
-        self, tenant_id: UUID, object_key: str, fileobj: Any, content_type: str
+    def put_connection_media(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        object_key: str,
+        fileobj: Any,
+        content_type: str,
     ) -> None: ...
 
 
@@ -521,7 +527,9 @@ class ConversationsGateway:
         account it will be sent from). Nothing is queued yet: the person still has to
         press «Responder»."""
         key = media_key(tenant_id, connection_id, f"dm-{uuid4().hex}")
-        self.sink.put_media(tenant_id, key, io.BytesIO(data), content_type)
+        self.sink.put_connection_media(
+            tenant_id, connection_id, key, io.BytesIO(data), content_type
+        )
         return AttachmentVM(
             object_key=key,
             media_type=media_type,

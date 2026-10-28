@@ -138,12 +138,12 @@ def test_choosing_an_option_brings_the_view_into_sight_on_a_phone() -> None:
     assert "q-cr-view" in str(state.choose_category("image"))
 
 
-def test_replicate_says_soon_with_its_help_always_visible() -> None:
-    """m-24842980 hallazgo 6: «Pronto» like the menu, and the help written under the
-    button — not only in a tooltip, which a phone never shows."""
+def test_replicate_explains_the_reference_with_help_always_visible() -> None:
+    """m-24820836: the active action explains the reference on a phone too."""
     from .discover_reels import REPLICATE_HELP, discover_view
 
     rendered = str(discover_view().render())
     assert _has(rendered, "Replicar con mi marca") and "Muy pronto" not in rendered
-    assert REPLICATE_HELP == "Pronto podrás hacer tu versión de este video con tu marca."
-    assert "q-dr-replicate-help" in rendered and "Pronto podr" in rendered
+    assert "primeros 5 s" in REPLICATE_HELP and "sin su audio" in REPLICATE_HELP
+    assert "q-dr-replicate-help" in rendered and "replicate" in rendered
+    assert "44px" in rendered and "q-dr-soon" not in rendered

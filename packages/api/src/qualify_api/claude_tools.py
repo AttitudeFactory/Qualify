@@ -25,6 +25,7 @@ The caller's function is the trace (`observability.traced`); each turn nests in 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -158,6 +159,42 @@ def cost_breakdown(
         "cache_creation": cache_creation_tokens * price_in * CACHE_WRITE_MULTIPLIER / 1_000_000,
         "output": output_tokens * price_out / 1_000_000,
     }
+
+
+def _record_anthropic_consumption(
+    model_id: str,
+    usage: dict[str, int],
+    cost: dict[str, float],
+) -> None:
+    """Record one `messages.create` into the consumption ledger (m-24823681).
+
+    Guarded so it never raises into the caller: tracing the generation is the
+    load-bearing side effect of `messages_create`, the ledger is not. A DB or
+    ledger failure is logged once and swallowed — the next call records again.
+    The ledger is keyed by the active `consumption_scope` when one is active
+    (the request/worker path), and is a no-op when no scope and no `tenant_id`
+    is set (e.g. an offline eval), so this is safe to call from anywhere the
+    client is used.
+    """
+    if not usage:
+        return
+    try:
+        from qualify_api.consumption import record_consumption  # noqa: PLC0415
+
+        record_consumption(
+            provider="anthropic",
+            model_id=model_id,
+            input_tokens=usage.get("input", 0),
+            output_tokens=usage.get("output", 0),
+            cache_read_tokens=usage.get("cache_read", 0),
+            cache_creation_tokens=usage.get("cache_creation", 0),
+            cost_usd=sum(cost.values()) if cost else 0.0,
+            operation="claude_tools",
+        )
+    except Exception:  # noqa: BLE001 — the ledger is not load-bearing here
+        logging.getLogger(__name__).warning(
+            "consumption ledger record failed for model=%s", model_id, exc_info=True
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -484,6 +521,11 @@ def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
             usage, cost = _usage_and_cost(response, config.model_id)
         except Exception:  # noqa: BLE001 — an odd usage object is still traced
             usage, cost = {}, {}
+        # Record the consumption into the ledger (m-24823681). Outside the
+        # usage try above so a ledger/DB failure never wipes the observation's
+        # cost, and guarded so it never raises into the caller: tracing the
+        # generation is the load-bearing side effect here, the ledger is not.
+        _record_anthropic_consumption(config.model_id, usage, cost)
         observation.finish(
             output=_traceable(_response_blocks(response)),
             model=model,

@@ -297,6 +297,7 @@ def step_frame(
     step: rx.Var[int] | int,
     direction: rx.Var[str] | str = DIR_NEXT,
     on_pop: Any | None = None,
+    on_enter: Any | None = None,
     on_leave: Any | None = None,
     spacing: str = "4",
 ) -> rx.Component:
@@ -313,8 +314,10 @@ def step_frame(
     tab, a `popstate` listener that presses it. The handler must be idempotent: when the
     router does notice the change, ``on_load`` runs too.
 
-    ``on_leave`` runs when the frame unmounts (the owner left the route): the place to
-    clear a `step_sync` readiness flag."""
+    ``on_enter`` runs when the frame mounts. Pair it with ``on_leave`` when clearing
+    readiness on unmount: route ``on_load`` alone cannot restore readiness after an
+    effect replay or a remount within the same route. Both handlers must be idempotent.
+    ``on_leave`` runs when the frame unmounts: the place to clear readiness."""
     body = rx.vstack(
         *children,
         width="100%",
@@ -352,6 +355,7 @@ def step_frame(
         flex="1 0 auto",
         display="flex",
         flex_direction="column",
+        **({"on_mount": on_enter} if on_enter is not None else {}),
         **({"on_unmount": on_leave} if on_leave is not None else {}),
     )
 

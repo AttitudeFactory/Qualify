@@ -152,6 +152,8 @@ class MeegleNames:
     node_registered: str = "Registrada"
     # m-24852131: completed (again) on a registered Alta to apply «Plan» / «Paquete»
     node_plan: str = "Plan ampliado"
+    # m-24823681: Brand Kit saved — Qualify posts the consumption summary on it
+    node_brand_kit_ready: str = "Kit de marca listo"
 
     @classmethod
     def from_env(cls) -> MeegleNames:

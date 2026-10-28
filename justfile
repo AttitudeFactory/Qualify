@@ -86,6 +86,17 @@ calendar-worker *args:
 piece-purge *args:
     uv run --no-sync python -m qualify_api.planner.worker --purge-pieces {{args}}
 
+# m-24823681: consumption ledger daily-sync to Meegle (no --tenant scope: it reads every
+# «Alta de cliente» with ledger rows cross-tenant via admin_session). The node-completion
+# path is the primary trigger; this is the catch-up. Meegle accepts a repeated comment.
+#   just consumption-tick                # one pass, then exit
+#   just consumption-worker              # a pass every 24 h until Ctrl+C
+consumption-tick *args:
+    uv run --no-sync python -m qualify_api.consumption.worker --once {{args}}
+
+consumption-worker *args:
+    uv run --no-sync python -m qualify_api.consumption.worker {{args}}
+
 # m-24852145: plans Básico / Plus / Pro, assigned to the business's SUBSCRIPTION (ADR 43).
 # Team only (admin_session). Upgrade applies now, downgrade from the next month:
 #   just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@attitudefactory.co
@@ -556,3 +567,9 @@ e2e *ARGS:
 # m-24852167: team-only, read-only queue/slots/waits report; no generation or messages.
 creative-queue *args:
     uv run --no-sync python -m qualify_api.creative.worker.queue_cli {{args}}
+
+# m-24789547: scoped IG/FB deletion; dry run unless --execute. Always --tenant UUID.
+# Manual support request: --tenant UUID --connection UUID --request --execute.
+# Due-job scheduler: run every 15 minutes per tenant with --tenant UUID --execute.
+connection-purge *args:
+    uv run --no-sync python -m qualify_api.connections.purge_cli {{args}}

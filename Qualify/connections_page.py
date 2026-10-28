@@ -307,13 +307,7 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
         ),
         rx.alert_dialog.content(
             rx.alert_dialog.title("¿Desconectar esta cuenta?"),
-            rx.alert_dialog.description(
-                rx.text(
-                    "Ya no podrás publicar ni ver los comentarios de ",
-                    rx.text.strong(conn.external_username),
-                    " desde Qualify. Puedes conectarla de nuevo cuando quieras.",
-                ),
-            ),
+            rx.alert_dialog.description(_disconnect_description(conn)),
             rx.flex(
                 rx.alert_dialog.cancel(
                     rx.button(
@@ -340,6 +334,27 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
                 justify="end",
                 wrap="wrap",
             ),
+        ),
+    )
+
+
+def _disconnect_description(conn: ConnectionVM) -> rx.Component:
+    """Explain the scheduled deletion only for platforms that support this purge."""
+    return rx.cond(
+        conn.platform == "whatsapp",
+        rx.text(
+            "Ya no podrás publicar ni ver los comentarios de ",
+            rx.text.strong(conn.external_username),
+            " desde Qualify. Puedes conectarla de nuevo cuando quieras.",
+        ),
+        rx.text(
+            "Al desconectar, ya no podrás publicar ni ver comentarios o mensajes nuevos de ",
+            rx.text.strong(conn.external_username),
+            " desde Qualify. En un máximo de 30 días desde que desconectes la cuenta, "
+            "eliminaremos los comentarios y mensajes guardados de esta cuenta. Si la vuelves "
+            "a conectar antes de que empiece "
+            "la eliminación, se cancela este borrado programado. Se conservarán las "
+            "publicaciones que creaste en Qualify y los archivos de tu marca.",
         ),
     )
 
