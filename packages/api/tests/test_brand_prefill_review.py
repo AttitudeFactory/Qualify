@@ -625,3 +625,191 @@ def test_the_owners_answers_in_postgres_supersede_the_proposal(fresh_brands: Any
     saved = store.load_details(tenant_id=tenant, brand_id=brand)
     assert saved.connect["rubro_text"] == "Lo que escribí" and saved.profile == {}
     assert saved.connect[PREFILL_KEY]["state"] == "superseded"
+
+
+def test_correction_is_locked_allowlisted_and_does_not_approve() -> None:
+    world = World()
+    result = brand_prefill_review.edit_prefill_field(
+        TENANT, BRAND, "city", "Mérida", session_factory=world.session
+    )
+    assert result.done and result.proposal["connect"]["city"] == "Mérida"
+    assert result.proposal["corrected_fields"] == ["city"]
+    review = review_of(world.row.connect, has_kit=False)
+    assert review.proposal["corrected_fields"] == ["city"]
+    assert world.row.connect[PREFILL_KEY]["state"] == "proposed"
+    assert "city" not in world.row.connect and world.row.profile == {}
+    assert world.locked == [True]
+    with pytest.raises(ValueError):
+        brand_prefill_review.edit_prefill_field(
+            TENANT, BRAND, "username", "otro", session_factory=world.session
+        )
+    assert approve_prefill(TENANT, BRAND, USER, session_factory=world.session).done
+    assert not brand_prefill_review.edit_prefill_field(
+        TENANT, BRAND, "city", "Cali", session_factory=world.session
+    ).done
+
+
+@pytest.mark.parametrize("state", ["approved", "discarded", "proposed"])
+def test_prefill_media_cleanup_respects_tenant_and_preserves_approved_logo(state: str) -> None:
+    from datetime import timedelta
+
+    from qualify_shared.objects.gate import ObjectGate
+    from qualify_shared.objects.keys import TenantPrefixViolation
+
+    from qualify_api.creative.brand_prefill_media import cleanup_brand, manifest
+
+    profile = kept_pictures.kept_key(TENANT, BRAND, "profile", b"profile", ".png")
+    thumb = kept_pictures.kept_key(TENANT, BRAND, "post", b"thumb", ".png")
+    proposal = _proposal()
+    proposal["profile"]["pic_key"] = profile
+    proposal["observed"]["recent_media"] = [{"id": "1", "thumb_r2_key": thumb}]
+    document = _document(state=state, proposal=proposal)
+    document["created_at"] = (NOW - timedelta(days=31)).isoformat()
+    world = World({PREFILL_KEY: document})
+    if state == "approved":
+        world.row.profile = {"pic_key": profile}
+    deleted = []
+
+    class Store:
+        def delete_keys(self, keys: list[str]) -> None:
+            deleted.extend(keys)
+
+    gate = ObjectGate(Store())
+    expected = {thumb} if state == "approved" else {thumb, profile}
+    assert cleanup_brand(TENANT, BRAND, gate=gate, now=NOW, session_factory=world.session) == len(
+        expected
+    )
+    assert set(deleted) == expected
+    assert manifest(TENANT, BRAND, proposal, keep=profile) == [thumb]
+    with pytest.raises(TenantPrefixViolation):
+        gate.delete_brand_prefill_objects(TENANT, UUID(int=4), [thumb])
+    assert set(deleted) == expected
+
+
+def test_failed_prefill_deletion_retains_manifest_for_retry() -> None:
+    from qualify_api.creative.brand_prefill_media import cleanup_brand
+
+    thumb = kept_pictures.kept_key(TENANT, BRAND, "post", b"thumb", ".png")
+    world = World({PREFILL_KEY: {**_document(), "cleanup_keys": [thumb]}})
+
+    class BrokenGate:
+        def delete_brand_prefill_objects(self, *_: Any) -> None:
+            raise OSError("offline")
+
+    assert cleanup_brand(TENANT, BRAND, gate=BrokenGate(), session_factory=world.session) == 0
+    assert world.row.connect[PREFILL_KEY]["cleanup_keys"] == [thumb]
+
+
+@pytest.mark.db
+def test_prefill_cleanup_db_isolation_approval_and_expiry(
+    fresh_brands: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import timedelta
+
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative import brand_prefill_media
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.creative.brand_prefill_media import cleanup_brand
+    from qualify_api.creative.models import BrandKitDetails as DetailsRow
+
+    (tenant_a, brand_a), (tenant_b, brand_b) = fresh_brands
+    store = BrandKitStore()
+    keys = {}
+    for tenant, brand in ((tenant_a, brand_a), (tenant_b, brand_b)):
+        profile = kept_pictures.kept_key(tenant, brand, "profile", b"profile", ".png")
+        thumb = kept_pictures.kept_key(tenant, brand, "post", b"thumbnail", ".jpg")
+        proposal = _proposal()
+        proposal["profile"]["pic_key"] = profile
+        proposal["observed"]["recent_media"] = [{"id": "post", "thumb_r2_key": thumb}]
+        document = _document(proposal=proposal)
+        document["created_at"] = (NOW - timedelta(days=31)).isoformat()
+        store.set_document_key(
+            tenant_id=tenant, brand_id=brand, document="connect", key=PREFILL_KEY, value=document
+        )
+        keys[tenant] = (profile, thumb)
+    deleted = []
+
+    class Gate:
+        def delete_brand_prefill_objects(
+            self, tenant: UUID, brand: UUID, objects: list[str]
+        ) -> None:
+            assert all(kept_pictures.is_kept_key(tenant, brand, key) for key in objects)
+            deleted.extend(objects)
+
+    monkeypatch.setattr(brand_prefill_media.kept_pictures, "_default_gate", lambda: Gate())
+    assert cleanup_brand(tenant_b, brand_a, gate=Gate(), now=NOW) == 0
+    assert deleted == []
+    assert approve_prefill(tenant_a, brand_a, None).done
+    assert deleted == [keys[tenant_a][1]]
+    with tenant_session(tenant_a) as session:
+        row = session.get(DetailsRow, brand_a)
+        assert row.profile["pic_key"] == keys[tenant_a][0]
+        assert row.connect[PREFILL_KEY]["cleanup_keys"] == []
+    assert cleanup_brand(tenant_b, brand_b, gate=Gate(), now=NOW) == 2
+    assert set(deleted) == {keys[tenant_a][1], *keys[tenant_b]}
+    # Expiry/cleanup is idempotent and cannot delete the approved profile copy.
+    assert cleanup_brand(tenant_a, brand_a, gate=Gate(), now=NOW) == 0
+    assert keys[tenant_a][0] not in deleted
+
+
+@pytest.mark.db
+def test_failed_proposal_image_ledger_is_durable_and_expires(fresh_brands: Any) -> None:
+    from datetime import timedelta
+
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.creative.brand_prefill_media import cleanup_brand
+    from qualify_api.creative.models import BrandKitDetails as DetailsRow
+
+    (tenant, brand), _ = fresh_brands
+    key = kept_pictures.kept_key(tenant, brand, "post", b"orphan-safe", ".jpg")
+    store = BrandKitStore()
+    store.register_prefill_media(tenant_id=tenant, brand_id=brand, key=key)
+    with tenant_session(tenant) as session:
+        row = session.get(DetailsRow, brand)
+        assert key in row.connect["prefill_media"]
+        row.connect = {"prefill_media": {key: (NOW - timedelta(days=31)).isoformat()}}
+    deleted = []
+
+    class Gate:
+        def delete_brand_prefill_objects(self, *_args: Any) -> None:
+            deleted.extend(_args[-1])
+
+    assert cleanup_brand(tenant, brand, gate=Gate(), now=NOW) == 1
+    assert deleted == [key]
+    assert cleanup_brand(tenant, brand, gate=Gate(), now=NOW) == 0
+
+
+def test_immediate_cleanup_keeps_fresh_registration_lease_for_racing_put() -> None:
+    from datetime import timedelta
+
+    from qualify_api.creative.brand_prefill_media import cleanup_brand
+
+    key = kept_pictures.kept_key(TENANT, BRAND, "post", b"racing", ".jpg")
+    world = World(
+        {
+            PREFILL_KEY: {**_document(state="approved"), "cleanup_keys": [key]},
+            "prefill_media": {key: NOW.isoformat()},
+        }
+    )
+    deleted = []
+
+    class Gate:
+        def delete_brand_prefill_objects(self, *_args: Any) -> None:
+            deleted.extend(_args[-1])
+
+    # A registered before PUT; B approves and deletes the old same-hash object.
+    assert cleanup_brand(TENANT, BRAND, gate=Gate(), now=NOW, session_factory=world.session) == 1
+    assert key in world.row.connect["prefill_media"]
+    # A can PUT after B's deletion then lose the proposal-write race. Its lease is
+    # still present, so the next expired-ledger pass deletes that late upload too.
+    assert (
+        cleanup_brand(
+            TENANT, BRAND, gate=Gate(), now=NOW + timedelta(days=31), session_factory=world.session
+        )
+        == 1
+    )
+    assert deleted == [key, key]
+    assert world.row.connect["prefill_media"] == {}

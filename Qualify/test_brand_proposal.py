@@ -12,7 +12,12 @@ import pytest
 import reflex as rx
 from qualify_api.creative import brand_prefill_review
 from qualify_api.creative.brand_kit_store import PREFILL_KEY
-from qualify_api.creative.brand_prefill_review import Notice, PrefillDecision, review_of
+from qualify_api.creative.brand_prefill_review import (
+    Notice,
+    PrefillDecision,
+    PrefillReview,
+    review_of,
+)
 
 from . import brand_minimal, brand_proposal
 from . import brand_minimal_vm as minimal_vm
@@ -96,6 +101,25 @@ def test_the_copy_is_the_approved_text() -> None:
         "identidad de marca en unos pasos."
     )
     assert vm.notice_text(Notice.NONE, "x") == "" and vm.notice_text("otro", "x") == ""
+
+
+@pytest.mark.parametrize("notice", [Notice.PROPOSAL, Notice.PRIVATE, Notice.UNREADABLE])
+def test_tiktok_and_unknown_accounts_never_receive_instagram_notices(notice: Notice) -> None:
+    assert "TikTok" in vm.notice_text(notice, "cuenta", "tiktok")
+    assert "Instagram" not in vm.notice_text(notice, "cuenta", "tiktok")
+    assert "Instagram" not in vm.notice_text(notice, "cuenta", "")
+
+
+def test_failed_read_retains_the_selected_network_in_the_notice() -> None:
+    connect = _connect("private_account")
+    connect[PREFILL_KEY]["network"] = "tiktok"
+    state = BrandProposalState()
+    state.show(review_of(connect, has_kit=False))
+    assert state.network == "tiktok" and "TikTok" in state.notice_message
+    proposal = _observed_proposal()
+    proposal["connect"]["network"] = "tiktok"
+    state.show(PrefillReview(Notice.PROPOSAL, "cuenta", proposal))
+    assert state.review_title == "Esto es lo que vimos en tu TikTok"
 
 
 def test_no_client_word_is_english_or_technical() -> None:
@@ -391,7 +415,7 @@ def test_an_owner_who_already_started_sees_no_proposal(monkeypatch: pytest.Monke
 
 def test_the_page_swaps_the_steps_for_the_review_while_pending() -> None:
     page = str(brand_minimal.brand_minimal_index())
-    assert "Tu identidad de marca" in page and "Empezar de cero" in page
+    assert "review_title" in page and "Empezar de cero" in page
     assert isinstance(brand_minimal.brand_minimal_index(), rx.Component)
 
 
@@ -506,3 +530,196 @@ def test_the_wizard_shows_the_kept_copy_before_the_proxy(
 
     connect.forget_kept_picture()
     assert connect.profile_avatar_src == proxy
+
+
+def _observed_proposal() -> dict[str, Any]:
+    from qualify_api.creative import kept_pictures
+
+    proposal = _proposal()
+    own = kept_pictures.kept_key(IDS[0], IDS[1], kept_pictures.KIND_POST, b"post", ".jpg")
+    proposal["observed"] = {
+        "posts_count": 12,
+        "category_es": "Heladería",
+        "posted_last_30d": True,
+        "posts_per_week": 2.5,
+        "top_media_ids": ["p1"],
+        "top_hashtags": ["helados"],
+        "links": [{"kind": "whatsapp", "url": "https://wa.me/573001234567"}],
+        "recent_media": [
+            {
+                "id": "p1",
+                "is_owner": True,
+                "likes": 12,
+                "caption": "Pide al +57 300 123 4567",
+                "thumb_r2_key": own,
+                "thumb_content_type": "image/jpeg",
+            }
+        ],
+    }
+    proposal["profile"]["bio"] = "Helados. Pide al +57 300 123 4567"
+    return proposal
+
+
+def test_observed_vm_masks_contacts_before_the_browser_and_hides_unknown_numbers() -> None:
+    proposal = _observed_proposal()
+    view = vm.proposal_view(proposal, country_names={"CO": "Colombia"})
+    assert view.category == "Heladería" and view.posts == "12"
+    assert view.frequency == "Publicas unas 2.5 veces por semana."
+    assert view.media[0]["top"] == "La que más gustó"
+    assert view.links[0]["href"] == ""
+    assert "3001234567" not in str(view) and "300 123 4567" not in str(view)
+    proposal["profile"]["followers_count"] = 0
+    proposal["observed"] |= {"posts_count": 0, "posted_last_30d": False}
+    view = vm.proposal_view(proposal, country_names={})
+    assert view.posts == view.followers == view.frequency == ""
+    assert view.no_posts
+    assert view.media == []
+
+
+def test_untranslated_categories_and_unsafe_links_are_hidden() -> None:
+    proposal = _observed_proposal()
+    proposal["observed"]["category_es"] = None
+    proposal["observed"]["links"] = [
+        {"url": "javascript:alert(1)"},
+        {"url": "https://example.com/contact/573001234567"},
+        {"url": "https://example.com/menu", "title": "Menú"},
+    ]
+    view = vm.proposal_view(proposal, country_names={})
+    assert view.category == ""
+    assert view.links == [{"title": "Menú", "text": "", "href": "https://example.com/menu"}]
+
+
+def test_only_own_thumbnail_keys_receive_views_and_public_state_is_masked(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.creative import kept_pictures
+
+    proposal = _observed_proposal()
+    foreign = kept_pictures.kept_key(UUID(int=44), IDS[1], kept_pictures.KIND_POST, b"f", ".jpg")
+    proposal["observed"]["recent_media"].append({"id": "foreign", "thumb_r2_key": foreign})
+    issued = []
+    monkeypatch.setattr(
+        brand_proposal, "issue_view_path", lambda *args: issued.append(args) or "/r2media/thumb"
+    )
+    state = states(BrandProposalState)
+    state.show(PrefillReview(Notice.PROPOSAL, "heladeria.polar", proposal), owner=IDS[:2])
+    assert len(state.media) == len(issued) == 1
+    assert state.media[0]["src"] == "/r2media/thumb"
+    assert isinstance(state.media[0]["src"], str)
+    assert state.review_title == vm.OBSERVED_TITLE
+    public = str(state.dict())
+    assert "3001234567" not in public and "300 123 4567" not in public
+    assert "thumb_r2_key" not in public
+
+
+def test_corrected_sources_and_rejected_logo_are_shown_as_owner_choices() -> None:
+    proposal = _observed_proposal()
+    proposal["corrected_fields"] = ["city", "rubro_text", "country_code"]
+    proposal["profile"]["use_profile_logo"] = False
+    proposal["palette"] = {"logo_colors": ["#112233"], "logo_source": "owner"}
+    view = vm.proposal_view(proposal, country_names={"CO": "Colombia"})
+    assert view.rubro_source == view.place_source == view.country_source == vm.OWNER_SOURCE
+    assert view.colours_source == vm.OWNER_SOURCE
+    assert not view.logo
+    state = BrandProposalState()
+    state.show(PrefillReview(Notice.PROPOSAL, "heladeria.polar", proposal))
+    assert state.logo_label == vm.LOGO_UNSET_LABEL
+
+
+async def test_a_correction_changes_only_the_pending_proposal(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _pending(states)
+    state.open_correction("rubro_text")
+    assert state.edit_open and state.edit_value == "Heladería de yogur"
+    state.set_edit_value("Helados artesanales")
+    calls = []
+
+    def edit(tenant: UUID, brand: UUID, field: str, value: Any, **kwargs: Any) -> PrefillDecision:
+        calls.append((tenant, brand, field, value, kwargs))
+        proposal = _proposal()
+        proposal["connect"]["rubro_text"] = value
+        return PrefillDecision(True, proposal)
+
+    monkeypatch.setattr(brand_prefill_review, "edit_prefill_field", edit)
+    _ = [event async for event in BrandProposalState.save_correction.fn(state)]
+    assert calls == [(IDS[0], IDS[1], "rubro_text", "Helados artesanales", {"user_id": IDS[2]})]
+    assert state.pending and not state.approved and not state.edit_open
+    assert state.rubro == "Helados artesanales"
+    assert states(wiz.BrandConnectState).rubro_text == ""
+
+
+def test_cancelling_or_unknown_correction_never_changes_the_proposal(states: _States) -> None:
+    state = _pending(states)
+    state.open_correction("rubro_text")
+    state.set_edit_value("No guardar")
+    state.close_correction(False)
+    assert state.rubro == "Heladería de yogur" and not state.edit_open
+    state.open_correction("prefill")
+    assert not state.edit_open
+
+
+async def test_invalid_correction_keeps_the_drawer_and_user_input(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _pending(states)
+    state.open_correction("colors")
+    state.set_edit_value("not a color")
+
+    def invalid(*_args: Any, **_kwargs: Any) -> PrefillDecision:
+        raise ValueError("invalid")
+
+    monkeypatch.setattr(brand_prefill_review, "edit_prefill_field", invalid)
+    _ = [event async for event in BrandProposalState.save_correction.fn(state)]
+    assert state.edit_open and state.edit_error == vm.EDIT_INVALID
+    assert state.edit_value == "not a color" and not state.busy
+
+
+async def test_rejecting_profile_logo_never_reattaches_its_deleted_key_after_approval(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal = _kept_connect()[PREFILL_KEY]["proposal"]
+    proposal["profile"]["use_profile_logo"] = False
+    proposal["palette"] = {"logo_colors": ["#112233"], "logo_source": "owner"}
+    state = states(BrandProposalState)
+    state.show(PrefillReview(Notice.PROPOSAL, "heladeria.polar", proposal))
+    monkeypatch.setattr(
+        brand_prefill_review, "approve_prefill", lambda *_ids: PrefillDecision(True, proposal)
+    )
+    _ = [e async for e in BrandProposalState.approve.fn(state)]
+    connect = states(wiz.BrandConnectState)
+    wizard = states(wiz.BrandWizardState)
+    assert connect.profile_pic_key == connect.profile_pic_view == connect.profile_pic == ""
+    assert not connect.logo_from_profile and not connect.profile_pic_is_real
+    assert wizard.has_logo == wizard.logo_source == "" and wizard.logo_colors == []
+    assert states(CreativeState).kit_palette == "#112233"
+
+
+async def test_owner_palette_does_not_become_colours_contributed_by_the_profile_logo(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal = _proposal()
+    proposal["palette"] = {"logo_colors": ["#112233"], "logo_source": "owner"}
+    state = _pending(states)
+    monkeypatch.setattr(
+        brand_prefill_review, "approve_prefill", lambda *_ids: PrefillDecision(True, proposal)
+    )
+    _ = [e async for e in BrandProposalState.approve.fn(state)]
+    wizard = states(wiz.BrandWizardState)
+    assert wizard.has_logo == wiz.HAS_LOGO_PROFILE
+    assert wizard.logo_colors == [] and wizard.logo_source == ""
+    assert states(CreativeState).kit_palette == "#112233"
+
+
+async def test_approval_masks_legacy_profile_text_before_wizard_state(
+    states: _States, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal = _observed_proposal()
+    state = _pending(states)
+    monkeypatch.setattr(
+        brand_prefill_review, "approve_prefill", lambda *_ids: PrefillDecision(True, proposal)
+    )
+    _ = [e async for e in BrandProposalState.approve.fn(state)]
+    connect = states(wiz.BrandConnectState)
+    assert "300 123 4567" not in connect.profile_bio
+    assert "••" in connect.profile_bio

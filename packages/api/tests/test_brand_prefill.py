@@ -146,6 +146,11 @@ class Store:
         row = self.rows.get((tenant_id, brand_id), BrandKitDetails())
         return BrandKitDetails(row.logo_brief, visible_connect(row.connect), row.profile)
 
+    def register_prefill_media(self, *, tenant_id: UUID, brand_id: UUID, key: str) -> None:
+        if not kept_pictures.is_kept_key(tenant_id, brand_id, key):
+            raise ValueError("bad image key")
+        self.media_ledger = getattr(self, "media_ledger", set()) | {key}
+
     def capture_whatsapp_contact(self, *, tenant_id: UUID, brand_id: UUID, number: str) -> bool:
         self.tenants.append(tenant_id)
         row = self.rows.get((tenant_id, brand_id), BrandKitDetails())
@@ -206,8 +211,9 @@ class Pictures:
         if self.fail:
             raise kept_pictures.PictureNotKept("object store write failed: OSError")
         self.kept.append((tenant_id, brand_id, kind, data))
-        key = kept_pictures.kept_key(tenant_id, brand_id, kind, data, ".png")
-        return kept_pictures.KeptPicture(key, "image/png", "ab" * 32, len(data))
+        content_type, extension = kept_pictures.sniff_image(data)
+        key = kept_pictures.kept_key(tenant_id, brand_id, kind, data, extension)
+        return kept_pictures.KeptPicture(key, content_type, "ab" * 32, len(data))
 
 
 class Claude:
@@ -394,7 +400,7 @@ def test_observed_evidence_is_not_sent_to_claude_and_stays_in_its_tenant(world: 
     other = world.store.load_details(tenant_id=uuid4(), brand_id=BRAND)
     assert other.connect == {}
     assert set(world.store.tenants[:-1]) == {TENANT}
-    assert world.prefill()["version"] == 3
+    assert world.prefill()["version"] == brand_prefill.PREFILL_VERSION
 
 
 # --------------------------------------------------------------------------------------
@@ -1220,3 +1226,100 @@ def test_a_rerun_in_postgres_keeps_the_decision(seeded_ab: tuple[UUID, UUID]) ->
         store.set_document_key(
             tenant_id=tenant_a, brand_id=brand, document="connect", key="prefill", value={}
         )
+
+
+def test_alta_drafts_only_read_owned_posts_after_opt_in(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUALIFY_ALTA_PREFILL_DRAFTS_ENABLED", "1")
+    snapshot = {
+        "username": "heladeria.demo",
+        "bio": "Helados",
+        "recentMedia": [
+            {"postId": str(i), "caption": f"Texto propio {i}", "isOwner": True} for i in range(3)
+        ]
+        + [{"postId": "collab", "caption": "Ajeno no va", "isOwner": False}],
+        "recentCaptions": ["Ajeno no va"],
+    }
+    ports = world.ports(read_profile=lambda *_: snapshot)
+    world.run(ports=ports, source={"kind": "alta", "meegle_work_item_id": 123})
+    assert world.claude.calls[0].drafts
+    assert len(world.claude.calls[0].captions) == 3
+    assert "Ajeno" not in repr(world.claude.calls[0].captions)
+    other = World()
+    other.run(ports=other.ports(read_profile=lambda *_: snapshot), source={"kind": "web"})
+    assert not other.claude.calls[0].drafts
+
+
+def test_thumbnails_are_bounded_idempotent_and_optional(world: World) -> None:
+    snapshot = {
+        "username": "heladeria.demo",
+        "bio": "Helados",
+        "recentMedia": [
+            {
+                "postId": str(i),
+                "caption": "Helados",
+                "isOwner": True,
+                "thumbnailUrl": f"https://scontent.cdninstagram.com/{i}.jpg",
+            }
+            for i in range(9)
+        ],
+    }
+    ports = world.ports(read_profile=lambda *_: snapshot)
+    first = world.run(ports=ports)
+    media = first.proposal["observed"]["recent_media"]
+    assert sum("thumb_r2_key" in m for m in media) == 6
+    assert not any("cdninstagram" in repr(m) for m in media)
+    keys = {m["thumb_r2_key"] for m in media if "thumb_r2_key" in m}
+    again = world.run(ports=ports)
+    assert keys == {
+        m["thumb_r2_key"] for m in again.proposal["observed"]["recent_media"] if "thumb_r2_key" in m
+    }
+    assert first.usage.scrapecreators_requests == 0  # injected snapshot, CDN is not a paid call
+    broken = World()
+    failed = broken.run(
+        ports=broken.ports(read_profile=lambda *_: snapshot, fetch_picture=lambda *_: None)
+    )
+    assert failed.outcome == PrefillOutcome.OK
+    assert not any("thumb_r2_key" in m for m in failed.proposal["observed"]["recent_media"])
+
+
+def test_thumbnail_dimension_bomb_is_rejected_before_decoding(world: World) -> None:
+    image = Image.new("RGB", (8, 8), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG")
+    data = bytearray(buffer.getvalue())
+    offset = data.index(b"\xff\xc0")
+    data[offset + 5 : offset + 9] = b"\x1f\x40\x1f\x40"  # 8000x8000 in SOF header only
+    snapshot = {
+        "username": "heladeria.demo",
+        "bio": "Helados",
+        "recentMedia": [{"postId": "bomb", "isOwner": True, "thumbnailUrl": PICTURE}],
+    }
+    result = world.run(
+        ports=world.ports(read_profile=lambda *_: snapshot, fetch_picture=lambda *_: bytes(data))
+    )
+    assert result.outcome == PrefillOutcome.OK
+    assert "thumb_r2_key" not in result.proposal["observed"]["recent_media"][0]
+    assert world.pictures.kept == []
+
+
+def test_failed_proposal_write_leaves_preupload_image_ledger(world: World) -> None:
+    snapshot = {
+        "username": "heladeria.demo",
+        "bio": "Helados",
+        "recentMedia": [{"postId": "kept", "isOwner": True, "thumbnailUrl": PICTURE}],
+    }
+    world.store.before_write = lambda: world.store.rows.update(
+        {
+            (TENANT, BRAND): BrandKitDetails(
+                connect={brand_prefill.PREFILL_KEY: {"state": "approved"}}
+            )
+        }
+    )
+    result = world.run(ports=world.ports(read_profile=lambda *_: snapshot))
+    assert not result.written
+    assert world.pictures.kept
+    assert (
+        result.proposal["observed"]["recent_media"][0]["thumb_r2_key"] in world.store.media_ledger
+    )

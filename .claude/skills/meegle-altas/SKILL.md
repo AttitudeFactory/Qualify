@@ -22,7 +22,7 @@ through the CLI/MCP. Do not confuse its write formats with the Open API the engi
 | Web host for links | `https://project.larksuite.com/5h2wsx/…` (Issues `/issue/detail/<id>`, Features `/story/detail/<id>`, Altas `/alta_cliente/detail/<id>`) |
 | Type «Alta de cliente» | `6ad27a818d034c2af89a26d1` (api name `alta_cliente`), node flow |
 | Nodes | Start → **Datos** → **Invitada** → **Registrada** → Kit de marca listo → Primera publicación (last two are completed by hand today) |
-| Fields a person fills | Correo `field_29cd26` · Nombre de la persona `field_c8031e` · Nota personal `field_3282f4` (name = the business) · **Cuenta de Instagram** `field_dbfee5` (single-line text, optional, in the detail and creation layouts; m-24852194). Legacy «Instagram / TikTok» `field_7ec111` also exists — **unused, never read by Qualify** |
+| Fields a person fills | Correo `field_29cd26` · Nombre de la persona `field_c8031e` · Nota personal `field_3282f4` (name = the business) · **Canal** `field_926885` (select: Instagram `__1xmw_a1`, TikTok `1vacrknc8`) · **Cuenta de Instagram** `field_dbfee5` (identifier retained under its original name during rollout; m-24882931). Legacy «Instagram / TikTok» `field_7ec111` also exists — **unused, never read by Qualify** |
 | Fields Qualify writes | Estado Qualify `field_4c0e3a` · Enlace `field_030caa` · Vence `field_e41757` · Registrada el `field_2428e7` · Tenant `field_79b2e5` · Qualify ref `field_bad786` (= `signup_invites.id`) |
 | Estado Qualify options | pendiente `nn3fbfvn_` · invitada `wfs1n6zlv` · entregada `02oruntuu` · abierta `0ogw11wex` · rebotó `6kw6hd1cl` · registrada `g8fvke61g` · vencida `7rpgqmjod` · error `sl5hpvl2l` |
 | Acting user (`X-User-Key`) | Herwin `7697105028321938981` (until the «Qualify bot» member of D1 exists) |
@@ -33,15 +33,27 @@ The engine resolves fields/nodes **by display name** (`SchemaResolver`), so rena
 Meegle breaks it (the event retries, then dies with the name in `last_error`). Rename only together with
 `QUALIFY_MEEGLE_FIELD_*` / `QUALIFY_MEEGLE_NODE_*`.
 
-**Cuenta de Instagram is the one optional field** (`MeegleNames.instagram`, override
-`QUALIFY_MEEGLE_FIELD_INSTAGRAM`): if the type lacks it, or it is empty or not an account, the
-invitation goes out exactly as before and nothing is retried. `OnboardingEngine.start_invitation`
-returns it normalized in `InvitationResult.instagram_handle` (`qualify_api.meegle.instagram.
-normalize_instagram_handle`: `@Usuario`, `usuario`, `https://www.instagram.com/usuario/`,
-`instagram.com/usuario?igsh=…` → `usuario`; anything else → `None`). The Brand Kit prefill (§2bis)
-acts on it after a sent invitation. The field was created in the UI on
-2026-10-24 (Space Configuration → «Alta de cliente» → Fields, plus the detail and creation
-layouts, §3). Do not read the legacy «Instagram / TikTok» field: it is unused.
+**Canal + Cuenta (m-24882931, founder 2026-10-28).** A founder-created Alta must
+supply «Canal» (select `Instagram` / `TikTok`) and «Cuenta» (identifier or profile URL).
+Overrides: `QUALIFY_MEEGLE_FIELD_CHANNEL`, `QUALIFY_MEEGLE_FIELD_ACCOUNT`.
+The engine resolves select option ids against metadata and normalizes the identifier for
+that explicit network. Missing/unknown channel NEVER implies Instagram. An invalid or
+missing channel/account does not block the invitation; an enabled prefill records the
+reason in one idempotent comment without scraping. During the field rollout the existing
+«Cuenta de Instagram» (`field_dbfee5`, override `QUALIFY_MEEGLE_FIELD_INSTAGRAM`) may
+supply the identifier ONLY if «Cuenta» does not exist; it never supplies the channel.
+TikTok short URLs are rejected offline; use `@usuario` or the full profile URL instead.
+Remote schema verified 2026-10-28: «Canal» `field_926885` exists with Instagram
+`__1xmw_a1` and TikTok `1vacrknc8`. The identifier remains «Cuenta de Instagram»
+`field_dbfee5` so the currently deployed version can still read it. New code accepts it
+for either selected channel through the explicit legacy-field fallback; rename to «Cuenta»
+only after the new code is deployed and layouts are checked. Display name is cosmetic
+for the identifier, never a source for inferring network.
+
+**Only a human completion of «Datos» triggers Alta prefill.** Writes from the application
+arrive with `source=openapi` and are ignored before dispatch; field changes and item creation
+also never schedule a prefill. Future direct signup will create/update an Alta for customer
+administration but its channel/handle sync MUST NEVER cause another scrape or Alta prefill.
 
 **Plan / Paquete / Motivo and the «Plan ampliado» node (m-24852131)** are optional too
 (`MeegleNames.plan|pack|plan_reason|node_plan`, overrides `QUALIFY_MEEGLE_FIELD_PLAN`,
@@ -57,7 +69,9 @@ altas behave exactly as before.
 ## 2. Operating an alta (what to tell the founder)
 
 1. Meegle → «Alta de cliente» → **New**. The dialog only asks the **name**: put the business name.
-2. Open the item and fill **Correo**, **Nombre de la persona**, **Nota personal**. If those fields are not
+2. Open the item and fill **Correo**, **Nombre de la persona**, **Nota personal**, **Canal**
+   and the account identifier (currently labeled **Cuenta de Instagram** for both channels).
+   Both channel and identifier are required for the priority Alta prefill flow. If those fields are not
    visible, they are missing from the detail-page layout (§3), not from the type.
 3. **Complete «Datos»**. Within ~1 min (worker tick 30 s): Estado = invitada, Enlace, Vence, Qualify ref,
    and a comment «Invitación enviada a …». When Resend confirms delivery: Estado = entregada and
@@ -75,15 +89,19 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
 - **Switches** (both required; no value lives in code or in the env examples):
   `QUALIFY_ALTA_PREFILL_ENABLED` (`1`/`true`/`yes`/`on`) and `QUALIFY_ALTA_PREFILL_MAX_USD` (USD
   per Alta, positive decimal). Off, unset, invalid or below the minimum run → nothing happens at
-  all: no draft, no job, no comment; the Alta works exactly as before. **Do not turn it on in
-  production until the founder sets the cap with PB-6's numbers (m-24852200).** Pushing them is
-  an `env-push` (founder's go each time).
+  all: no draft, no job, no comment; the Alta works exactly as before.
+  **Founder update 2026-10-28:** production prefill is ON with `MAX_USD=5` as an operational
+  execution safeguard, independently from measured cost. US$0.15 is an informational
+  experimental reference, NOT an approved business cap; that decision remains open.
+  Pushing a new value uses `env-push` with the founder's go. Future direct signup is
+  documented in m-24887988; syncing channel/handle to its Alta must NEVER enqueue prefill
+  or scrape again.
 - **Flow.** «Datos» completed → `start_invitation` sends the email → only then
-  `AltaPrefillScheduler.schedule`: with a «Cuenta de Instagram», `start_alta_brand_kit_draft`
+  `AltaPrefillScheduler.schedule`: with an explicit valid «Canal» and account, `start_alta_brand_kit_draft`
   (reserved draft, PB-0) + one row in `alta_prefill_jobs` keyed by item + network + username;
-  without one, the same draft + a row with `handle = ''` and outcome `no_handle` that only
-  carries the comment «No se precargó la identidad de marca: no hay cuenta de Instagram en el
-  Alta.» (once per item, written by the runner). The handler itself never calls Meegle or a
+  without valid channel/account, the same draft + a comment-only row with `handle = ''`
+  and the reason `no_channel`, `invalid_channel`, `no_handle` or `invalid_handle`. The runner
+  comments once per item/key without calling any scraping or AI provider. The handler itself never calls Meegle or a
   vendor. The event is settled `processed` with `prefill=<label>` in `last_error`
   (`enqueued`, `duplicate`, `no_handle`, `email_has_account`, `error`…); with the prefill off it
   settles exactly as before (no label). Anything the scheduler raises is swallowed — a retried

@@ -173,6 +173,8 @@ def engine(meegle: FakeMeegle, invites: Invites) -> OnboardingEngine:
 
 
 def _with_instagram(meegle: FakeMeegle, value: Any) -> None:
+    meegle.keys["Canal"] = "f_channel"
+    meegle.items[ITEM].fields["f_channel"] = "Instagram"
     meegle.keys["Cuenta de Instagram"] = "f_instagram"
     meegle.items[ITEM].fields["f_instagram"] = value
 
@@ -437,3 +439,46 @@ def test_existing_account_can_receive_add_business_invitation(
     assert engine.start_invitation(ITEM).ok
     assert invites.created[0]["is_add_business"] is True
     assert len(invites.sent) == 1 and meegle.operations == []
+
+
+@pytest.mark.parametrize("channel", [None, "", "Facebook"])
+def test_missing_or_unknown_channel_never_defaults_to_instagram(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, channel: str | None
+) -> None:
+    _with_instagram(meegle, "@negocio")
+    meegle.items[ITEM].fields["f_channel"] = channel
+    result = engine.start_invitation(ITEM)
+    assert result.ok and result.network is None and result.handle is None
+    assert result.account_reason in {"no_channel", "invalid_channel"}
+    assert len(invites.sent) == 1
+
+
+def test_tiktok_channel_select_and_generic_account(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Canal"] = "f_channel"
+    meegle.keys["Cuenta"] = "f_account"
+    meegle.items[ITEM].fields.update(
+        f_channel={"label": "TikTok", "value": "tiktok"},
+        f_account="https://www.tiktok.com/@Mi.Negocio",
+    )
+    result = engine.start_invitation(ITEM)
+    assert result.ok and result.network == "tiktok" and result.handle == "mi.negocio"
+    assert result.instagram_handle is None
+
+
+def test_channel_select_resolves_opaque_option_id(
+    engine: OnboardingEngine, meegle: FakeMeegle
+) -> None:
+    from dataclasses import replace
+
+    _with_instagram(meegle, "@negocio")
+    original = meegle.fields_meta
+    meegle.fields_meta = lambda: [
+        replace(meta, options=(("Instagram", "opaque-instagram"), ("TikTok", "opaque-tiktok")))
+        if meta.name == "Canal"
+        else meta
+        for meta in original()
+    ]
+    meegle.items[ITEM].fields["f_channel"] = {"value": "opaque-tiktok"}
+    assert engine.social_account(meegle.items[ITEM]) == ("tiktok", "negocio", "")

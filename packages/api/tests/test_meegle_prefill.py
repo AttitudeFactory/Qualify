@@ -241,22 +241,28 @@ def _result(
 
 def test_off_the_scheduler_does_nothing_at_all() -> None:
     world = World(OFF)
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle="bianki.ve") == ""
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle=None) == ""
+    assert (
+        world.scheduler().schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.ve") == ""
+    )
+    assert world.scheduler().schedule(ITEM, email=EMAIL, network="instagram", handle=None) == ""
     assert (world.draft_calls, world.jobs.rows, world.comments) == ([], {}, [])
 
 
 def test_misconfigured_is_the_same_as_off() -> None:
     world = World(AltaPrefillSettings.from_env({ENABLED_ENV: "1"}))  # no cap
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle="bianki.ve") == ""
+    assert (
+        world.scheduler().schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.ve") == ""
+    )
     assert (world.draft_calls, world.jobs.rows, world.comments) == ([], {}, [])
 
 
 def test_no_handle_comments_once_per_item_even_when_replayed() -> None:
     world = World(_on())
     scheduler = world.scheduler()
-    assert scheduler.schedule(ITEM, email=EMAIL, handle=None) == "no_handle"
-    assert scheduler.schedule(ITEM, email=EMAIL, handle=None) == "duplicate"  # a replay
+    assert scheduler.schedule(ITEM, email=EMAIL, network="instagram", handle=None) == "no_handle"
+    assert (
+        scheduler.schedule(ITEM, email=EMAIL, network="instagram", handle=None) == "duplicate"
+    )  # a replay
     assert world.comments == []  # the runner writes it, outside the event
     (row,) = world.jobs.rows.values()
     assert (row.job.handle, row.job.outcome, row.status) == ("", "no_handle", "commenting")
@@ -266,12 +272,17 @@ def test_no_handle_comments_once_per_item_even_when_replayed() -> None:
     assert world.comments == [(ITEM, COMMENT_NO_HANDLE)]
     assert world.prefill_calls == [] and row.status == STATUS_DONE
     # the account added later is a new key: that one does run
-    assert scheduler.schedule(ITEM, email=EMAIL, handle="bianki.ve") == "enqueued"
+    assert (
+        scheduler.schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.ve") == "enqueued"
+    )
 
 
 def test_a_handle_prepares_the_draft_and_enqueues_one_job() -> None:
     world = World(_on("0.5"))
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle="bianki.ve") == "enqueued"
+    assert (
+        world.scheduler().schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.ve")
+        == "enqueued"
+    )
     assert world.draft_calls == [(EMAIL, ITEM)]
     (row,) = world.jobs.rows.values()
     tenant = world.drafts[ITEM]
@@ -282,17 +293,25 @@ def test_a_handle_prepares_the_draft_and_enqueues_one_job() -> None:
         "bianki.ve",
     )
     assert row.job.max_usd == Decimal("0.5") and row.status == STATUS_PENDING
-    assert row.pipeline_version.startswith("alta_prefill:2+brand_prefill:")
+    assert row.pipeline_version.startswith("alta_prefill:3+brand_prefill:")
     assert world.comments == []  # the comment comes when the job is done
 
 
 def test_datos_twice_is_one_job_and_a_new_username_is_a_new_one() -> None:
     world = World(_on())
     scheduler = world.scheduler()
-    assert scheduler.schedule(ITEM, email=EMAIL, handle="bianki.ve") == "enqueued"
-    assert scheduler.schedule(ITEM, email=EMAIL, handle="bianki.ve") == "duplicate"
+    assert (
+        scheduler.schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.ve") == "enqueued"
+    )
+    assert (
+        scheduler.schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.ve")
+        == "duplicate"
+    )
     assert len(world.jobs.rows) == 1
-    assert scheduler.schedule(ITEM, email=EMAIL, handle="bianki.oficial") == "enqueued"
+    assert (
+        scheduler.schedule(ITEM, email=EMAIL, network="instagram", handle="bianki.oficial")
+        == "enqueued"
+    )
     assert sorted(r.job.handle for r in world.jobs.rows.values()) == [
         "bianki.oficial",
         "bianki.ve",
@@ -302,9 +321,9 @@ def test_datos_twice_is_one_job_and_a_new_username_is_a_new_one() -> None:
 def test_an_email_with_an_account_gets_no_job() -> None:
     world = World(_on())
     world.draft_raises = EmailHasAccount()
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle="bianki.ve") == (
-        "email_has_account"
-    )
+    assert world.scheduler().schedule(
+        ITEM, email=EMAIL, network="instagram", handle="bianki.ve"
+    ) == ("email_has_account")
     assert world.jobs.rows == {} and world.comments == []
 
 
@@ -314,7 +333,10 @@ def test_an_email_with_an_account_gets_no_job() -> None:
 
 
 def _enqueued(world: World, handle: str = "bianki.ve") -> None:
-    assert world.scheduler().schedule(ITEM, email=EMAIL, handle=handle) == "enqueued"
+    assert (
+        world.scheduler().schedule(ITEM, email=EMAIL, network="instagram", handle=handle)
+        == "enqueued"
+    )
 
 
 def _status(world: World) -> str:
@@ -566,9 +588,9 @@ def test_a_crash_after_the_retry_was_scheduled_keeps_the_one_retry() -> None:
 def test_a_live_run_is_never_taken_for_a_dead_one() -> None:
     assert mod.MAX_RUN_SECONDS < STALE_AFTER.total_seconds() * 0.8
     # 5 Claude turns (2 rubro attempts + 3 catalog turns) x 90 s + 2 credits x 20 s + the
-    # picture's 4 hops x 8 s: ~8.7 min against a 30 min window (was 5 x 90 + 120 + 32)
+    # profile and six thumbnails at 4 hops x 8 s: ~11.9 min against a 30 min window.
     assert mod.CLAUDE_MAX_TURNS == 5
-    assert mod.MAX_RUN_SECONDS == 5 * 90 + 2 * 20 + 32 == 522
+    assert mod.MAX_RUN_SECONDS == 5 * 90 + 2 * 20 + 7 * 32 == 714
 
 
 def test_the_real_prefill_runs_claude_through_the_bounded_client() -> None:
@@ -625,7 +647,12 @@ class _Engine:
     def start_invitation(self, work_item_id: int, **_: str) -> InvitationResult:
         self.started += 1
         return InvitationResult(
-            ok=True, invite_id=uuid4(), instagram_handle=self.handle, email=EMAIL
+            ok=True,
+            invite_id=uuid4(),
+            instagram_handle=self.handle,
+            email=EMAIL,
+            network="instagram",
+            handle=self.handle,
         )
 
 
@@ -692,3 +719,49 @@ async def test_a_prefill_that_raises_never_retries_the_invitation(meegle_events:
     queue = await _process(engine, world.scheduler(), _datos(meegle_events))
     assert queue.settled == [("processed", "prefill=error")]
     assert queue.failed == [] and engine.started == 1
+
+
+def test_explicit_tiktok_channel_is_kept_in_the_job_and_runner() -> None:
+    world = World(_on())
+    world.results = [_result(PrefillOutcome.OK)]
+    assert (
+        world.scheduler().schedule(ITEM, email=EMAIL, network="tiktok", handle="@mi.negocio")
+        == "enqueued"
+    )
+    world.runner().run_once()
+    assert world.prefill_calls[0]["network"] == "tiktok"
+    assert world.prefill_calls[0]["handle"] == "mi.negocio"
+
+
+@pytest.mark.parametrize("network", [None, "facebook"])
+def test_no_valid_channel_never_runs_a_prefill(network: str | None) -> None:
+    world = World(_on())
+    assert (
+        world.scheduler().schedule(ITEM, email=EMAIL, network=network, handle="negocio")
+        == "no_channel"
+    )
+    world.runner().run_once()
+    assert world.prefill_calls == []
+    assert "canal" in world.comments[0][1]
+
+
+@pytest.mark.parametrize("event_type", [1009, 2001])
+async def test_sync_writes_never_send_invites_enqueue_or_scrape(
+    meegle_events: Any, event_type: int
+) -> None:
+    world = World(_on())
+    engine = _Engine("negocio")
+    event = _datos(meegle_events)
+    from dataclasses import replace
+
+    event = replace(
+        event,
+        field=str(event_type),
+        value=meegle_events.value(
+            source="openapi", event_type=event_type, nodes=["started"], work_item_id=ITEM
+        ),
+    )
+    await _process(engine, world.scheduler(), event, event)
+    world.runner().run_once()
+    assert engine.started == 0
+    assert world.draft_calls == [] and world.jobs.rows == {} and world.prefill_calls == []

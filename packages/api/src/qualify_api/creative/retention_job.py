@@ -126,6 +126,12 @@ def daily_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
                 run_piece_warnings(scope, datetime.now(UTC))
             except Exception:
                 logger.exception("pieces.warning failed; purge continues")
+        try:
+            from qualify_api.creative.brand_prefill_media import run_cleanup
+
+            run_cleanup(scope, execute=execute_from_env())
+        except Exception:
+            logger.exception("prefill media cleanup failed; piece purge continues")
         return run_piece_purge(scope, execute=execute_from_env())
 
     return run

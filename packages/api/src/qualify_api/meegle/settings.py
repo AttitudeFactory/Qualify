@@ -133,7 +133,9 @@ class MeegleNames:
     person_name: str = "Nombre de la persona"
     note: str = "Nota personal"
     # optional: absent from the type, or empty, the invitation goes out as before (PB-1)
-    instagram: str = "Cuenta de Instagram"
+    instagram: str = "Cuenta de Instagram"  # legacy identifier field; never implies network
+    channel: str = "Canal"
+    account: str = "Cuenta"
     # optional (m-24852131): the plan and fixed pack the team gives the business; absent
     # from the type, or empty, the business stays on the default plan (Básico)
     plan: str = "Plan"

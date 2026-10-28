@@ -117,3 +117,109 @@ def test_the_answer_also_names_the_rubro() -> None:
     schema = requests[0]["tools"][0]["input_schema"]
     assert "rubro" in schema["properties"] and "rubro" in schema["required"]
     assert from_posts(["smashburger"], max_tags=3).rubro == ""
+
+
+def test_alta_drafts_are_sourced_and_validate_each_field_independently() -> None:
+    from qualify_api.hashtags.from_profile import clean_drafts
+
+    captions = ["Nuestro yogur se hace cada mañana.", "Para quienes disfrutan fruta fresca."]
+    answer = {
+        "distinto": {
+            "texto": "Yogur preparado cada mañana.",
+            "fuente": "yogur se hace cada mañana",
+        },
+        "quien_compra": {"texto": "Familias felices", "fuente": "una fuente inventada"},
+        "frase_ejemplo": {"texto": "Ven por $5 a calle 3", "fuente": "fruta fresca"},
+        "tono": {
+            "formal_casual": 70,
+            "sober_enthusiastic": 60,
+            "technical_plain": 80,
+            "brief_elaborate": 30,
+            "fuente": "fruta fresca",
+        },
+    }
+    drafts = clean_drafts(answer, captions)
+    assert set(drafts) == {"distinto", "tono"}
+    assert clean_drafts({"distinto": "inventado"}, captions) == {}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Escríbenos +573001234567",
+        "Ven a la avenida Libertador",
+        "Cuesta 5 USD",
+        "Ven a Av. Libertador",
+        "Ven a Cra. Primera",
+    ],
+)
+def test_alta_drafts_reject_contacts_addresses_and_prices(text: str) -> None:
+    from qualify_api.hashtags.from_profile import clean_drafts
+
+    assert (
+        clean_drafts({"distinto": {"texto": text, "fuente": "cada mañana"}}, ["Hecho cada mañana"])
+        == {}
+    )
+
+
+def test_drafts_use_one_existing_turn_and_web_tool_is_unchanged() -> None:
+    from dataclasses import replace
+
+    from qualify_api.hashtags.from_profile import _tool
+
+    captions = ("Hecho cada mañana", "Ingredientes de la región", "Fruta fresca para disfrutar")
+    block = SimpleNamespace(
+        type="tool_use",
+        name=TOOL,
+        input={
+            "rubro": "heladería",
+            "hashtags": [],
+            "borradores": {"distinto": {"texto": "Hecho cada mañana", "fuente": "cada mañana"}},
+        },
+    )
+    client, requests = _client(_response([block]))
+    result = generate(
+        replace(ACCOUNT, captions=captions, drafts=True),
+        api_key="k",
+        max_tags=5,
+        client_factory=lambda _k: client,
+    )
+    assert len(requests) == 1 and result.borradores["distinto"]["texto"] == "Hecho cada mañana"
+    assert "borradores" in requests[0]["tools"][0]["input_schema"]["properties"]
+    client, requests = _client(_response([block]))
+    result = generate(ACCOUNT, api_key="k", max_tags=5, client_factory=lambda _k: client)
+    assert requests[0]["tools"] == [_tool(5)] and result.borradores == {}
+
+
+def test_drafts_with_too_few_posts_send_original_tool() -> None:
+    from dataclasses import replace
+
+    from qualify_api.hashtags.from_profile import _tool
+
+    block = SimpleNamespace(
+        type="tool_use", name=TOOL, input={"rubro": "heladería", "hashtags": []}
+    )
+    client, requests = _client(_response([block]))
+    result = generate(
+        replace(ACCOUNT, drafts=True), api_key="k", max_tags=5, client_factory=lambda _k: client
+    )
+    assert requests[0]["tools"] == [_tool(5)] and result.borradores == {}
+
+
+def test_truncated_drafts_retry_original_tool_and_keep_both_turn_costs() -> None:
+    from dataclasses import replace
+
+    from qualify_api.hashtags.from_profile import _tool
+
+    block = SimpleNamespace(
+        type="tool_use", name=TOOL, input={"rubro": "heladería", "hashtags": []}
+    )
+    client, requests = _client(_response([], "max_tokens"), _response([block]))
+    result = generate(
+        replace(ACCOUNT, captions=("uno propio", "dos propios", "tres propios"), drafts=True),
+        api_key="k",
+        max_tags=5,
+        client_factory=lambda _k: client,
+    )
+    assert len(requests) == 2 and result.stats.turns == 2
+    assert requests[1]["tools"] == [_tool(5)] and result.borradores == {}

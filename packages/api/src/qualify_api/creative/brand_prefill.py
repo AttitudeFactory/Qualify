@@ -64,6 +64,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -107,7 +108,7 @@ from qualify_api.referentes.profile_cache import (
 logger = logging.getLogger(__name__)
 
 #: The pipeline's own version, bumped when what a run proposes changes shape or meaning.
-PREFILL_VERSION = 3  # 3: review-only observed evidence (m-24854325)
+PREFILL_VERSION = 4  # 4: sourced drafts and persistent review thumbnails
 #: The proposal's review state. PB-5 writes the others ("approved", "discarded").
 STATE_PROPOSED = "proposed"
 #: The pills Tu rubro holds — the referentes search's own cap.
@@ -571,11 +572,11 @@ def _fingerprint(*parts: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
-def rubro_prompt_version(max_tags: int = CHOSEN_HASHTAGS) -> str:
+def rubro_prompt_version(max_tags: int = CHOSEN_HASHTAGS, *, drafts: bool = False) -> str:
     """`from_profile.generate`'s prompt (Tu rubro + created hashtags)."""
     return "from_profile:" + _fingerprint(
-        from_profile.SYSTEM,
-        from_profile._tool(max_tags),  # noqa: SLF001 - the prompt IS the provenance
+        from_profile.SYSTEM + from_profile.DRAFT_SYSTEM if drafts else from_profile.SYSTEM,
+        from_profile._draft_tool(max_tags) if drafts else from_profile._tool(max_tags),  # noqa: SLF001 - the prompt IS the provenance
         from_profile.MODEL,
         from_profile.EFFORT,
     )
@@ -668,7 +669,7 @@ def generate_from_account(
             else:
                 budget.claude_tokens_complete = False  # a run was made; its tokens are lost
         if trail is not None and stats is not None and stats.turns:
-            trail.add(step, rubro_prompt_version(), stats)
+            trail.add(step, rubro_prompt_version(drafts=account.drafts), stats)
         return None
     except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
         logger.warning("hashtags: creation failed: %s", exc)
@@ -689,7 +690,9 @@ def generate_from_account(
     elif budget is not None:
         budget.claude_tokens_complete = False
     if trail is not None:
-        trail.add(step, rubro_prompt_version(), proposal.stats, model=proposal.model)
+        trail.add(
+            step, rubro_prompt_version(drafts=account.drafts), proposal.stats, model=proposal.model
+        )
     return proposal
 
 
@@ -1118,6 +1121,10 @@ def _run(
             trail,
             ports,
             create_hashtags,
+            drafts=(source or {}).get("kind") == "alta"
+            and network == "instagram"
+            and os.environ.get("QUALIFY_ALTA_PREFILL_DRAFTS_ENABLED", "").lower()
+            in {"1", "true", "yes", "on"},
         )
     except ClaudeCapReached as exc:
         result = done(PrefillOutcome.CAP_REACHED, str(exc), **read)
@@ -1143,17 +1150,30 @@ def _propose(
     trail: _Trail,
     ports: PrefillPorts,
     create_hashtags: bool = True,
+    *,
+    drafts: bool = False,
 ) -> dict[str, Any]:
     """What the wizard's rubro step and ¿Tienes logo? «Mi foto de perfil es mi logo»
     would fill for an account whose operator has typed nothing yet."""
     sector = seed.niches[0] if seed.niches else ""
     country_code, city = seed.country_code, seed.city
     sector_label = discovery_seed.NICHE_LABELS.get(sector, "")
+    owner_captions = tuple(
+        str(item.get("caption") or "")
+        for item in profile.get("recentMedia", [])
+        if isinstance(item, Mapping)
+        and item.get("isOwner") is True
+        and str(item.get("caption") or "").strip()
+    )
+    drafts = drafts and len(owner_captions) >= 3
     account = from_profile.AccountText(
         handle=str(profile.get("username", "")),
         bio=str(profile.get("bio") or ""),
         category=str(profile.get("category") or ""),
-        captions=tuple(str(c) for c in profile.get("recentCaptions") or ()),
+        captions=owner_captions
+        if drafts
+        else tuple(str(c) for c in profile.get("recentCaptions") or ()),
+        drafts=drafts,
         used_hashtags=tuple(str(t) for t in profile.get("topHashtags") or ()),
         rubro=sector_label,
         city=city,
@@ -1201,8 +1221,53 @@ def _propose(
         "profile": account_doc,
         "palette": palette,
         "picture": picture,
-        "observed": observed_from(profile, network=network),
+        "observed": _keep_thumbnails(tenant_id, brand_id, profile, network, ports),
+        "borradores": created.borradores if created is not None else {},
     }
+
+
+def _keep_thumbnails(
+    tenant_id: UUID, brand_id: UUID, profile: Mapping[str, Any], network: str, ports: PrefillPorts
+) -> dict[str, Any]:
+    """Keep six review thumbnails. CDN failures never fail a proposal or cost credits."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    observed = observed_from(profile, network=network)
+    originals = {
+        str(item.get("postId")): item
+        for item in profile.get("recentMedia", [])
+        if isinstance(item, Mapping)
+    }
+    with httpx.Client(transport=ports.transport) as client:
+        for item in observed["recent_media"][:6]:
+            url = str(originals.get(item["id"], {}).get("thumbnailUrl") or "")
+            if not url:
+                continue
+            try:
+                data = ports.fetch_picture(url, client)
+                if not data:
+                    continue
+                with Image.open(io.BytesIO(data)) as image:
+                    # Check headers before decoding/EXIF conversion: a tiny compressed
+                    # image can otherwise exhaust the worker's memory cap.
+                    if image.width * image.height > 4_000_000:
+                        continue
+                    image.draft("RGB", (480, 480))
+                    image = ImageOps.exif_transpose(image).convert("RGB")
+                    image.thumbnail((480, 480))
+                    buffer = io.BytesIO()
+                    image.save(buffer, "JPEG", quality=80)
+                payload = buffer.getvalue()
+                _register_picture(tenant_id, brand_id, kept_pictures.KIND_POST, payload, ports)
+                kept = ports.pictures.keep(tenant_id, brand_id, kept_pictures.KIND_POST, payload)
+                if kept_pictures.is_kept_key(tenant_id, brand_id, kept.key):
+                    item["thumb_r2_key"] = kept.key
+                    item["thumb_content_type"] = kept.content_type
+            except Exception as exc:  # noqa: BLE001 — optional image, no signed URL in logs
+                logger.info("prefill thumbnail unavailable: %s", type(exc).__name__)
+    return observed
 
 
 def _picture(profile: Mapping[str, Any], ports: PrefillPorts) -> bytes | None:
@@ -1241,6 +1306,16 @@ PICTURE_MISSING = "missing"
 PICTURE_NONE = "none"
 
 
+def _register_picture(
+    tenant_id: UUID, brand_id: UUID, kind: str, data: bytes, ports: PrefillPorts
+) -> None:
+    sniffed = kept_pictures.sniff_image(data)
+    if sniffed is None:
+        raise kept_pictures.PictureNotKept("unrecognized image")
+    key = kept_pictures.kept_key(tenant_id, brand_id, kind, data, sniffed[1])
+    ports.store.register_prefill_media(tenant_id=tenant_id, brand_id=brand_id, key=key)
+
+
 def _keep_picture(
     tenant_id: UUID,
     brand_id: UUID,
@@ -1254,6 +1329,7 @@ def _keep_picture(
     if not data:
         return {"status": PICTURE_NONE}
     try:
+        _register_picture(tenant_id, brand_id, kept_pictures.KIND_PROFILE, data, ports)
         kept = ports.pictures.keep(tenant_id, brand_id, kept_pictures.KIND_PROFILE, data)
     except Exception as exc:  # noqa: BLE001 - the picture is optional, the run is not
         logger.warning("brand prefill: profile picture not kept: %s", type(exc).__name__)

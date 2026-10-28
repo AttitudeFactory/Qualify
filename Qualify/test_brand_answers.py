@@ -25,6 +25,26 @@ from .creative_state import CreativeState
 TENANT = UUID("c0000000-0000-4000-8000-0000000000e1")
 BRAND = UUID("b0000000-0000-4000-8000-0000000000e1")
 
+
+def test_tone_drafts_require_approval_and_all_four_sourced_axes() -> None:
+    tone = {
+        "formal_casual": 70,
+        "sober_enthusiastic": 65,
+        "technical_plain": 80,
+        "brief_elaborate": 20,
+        "fuente": "Ven a probarlo",
+    }
+    connect = {"prefill": {"state": STATE_APPROVED, "proposal": {"borradores": {"tono": tone}}}}
+    assert vm.tone_draft_from(connect) == {
+        key: value for key, value in tone.items() if key != "fuente"
+    }
+    connect["prefill"]["state"] = "proposed"
+    assert vm.tone_draft_from(connect) == {}
+    connect["prefill"]["state"] = STATE_APPROVED
+    tone["formal_casual"] = 101
+    assert vm.tone_draft_from(connect) == {}
+
+
 # --------------------------------------------------------------------------------------
 # copy — literal, as approved (epic §7.10, T16–T28)
 # --------------------------------------------------------------------------------------
@@ -228,6 +248,30 @@ def _on_path(states: _States, *, drafts: dict[str, str] | None = None) -> BrandA
         has_tags=True,
     )
     return state
+
+
+async def test_a_tone_draft_is_not_promoted_until_its_own_confirmation(states: _States) -> None:
+    state = _on_path(states)
+    tone = {
+        "formal_casual": 70,
+        "sober_enthusiastic": 65,
+        "technical_plain": 80,
+        "brief_elaborate": 20,
+    }
+    state.tone_draft = tone
+    state.step = vm.Q_PHRASE
+    creative = states(CreativeState)
+    original = creative.tone_formal_casual
+    # Reading or confirming the phrase must not silently accept an unseen tone.
+    state.drafts = {vm.Q_PHRASE: "Ven a probarlo"}
+    await BrandAnswersState.confirm_draft.fn(state)
+    assert creative.tone_formal_casual == original and not state.tone_decided
+    await BrandAnswersState.confirm_tone.fn(state)
+    assert creative.tone_formal_casual == 70 and creative.tone_brief_elaborate == 20
+    assert state.tone_decided and state.show_tone
+    assert state.has_tone_draft
+    state.tone_draft = {}
+    assert not state.has_tone_draft
 
 
 async def test_the_example_is_help_text_never_the_saved_answer(states: _States) -> None:

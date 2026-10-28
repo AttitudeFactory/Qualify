@@ -60,13 +60,16 @@ Revisar nuevamente cualquier corrección material antes de considerar el PR list
 - Pruebas focalizadas de backend: 100 en verde.
 - Pruebas focalizadas de interfaz y acceso: 105 en verde.
 - Pruebas DB focalizadas: 18 en verde, incluidas 10 nuevas de S7.
-- Suite DB completa: 1.228 en verde, con `uv run --no-sync pytest -m db`.
-- `just ci-test`: 9.877 pruebas en verde y una omitida; cobertura total del 84,1 %.
+- Suite DB completa tras integrar main: 1.257 en verde, con `uv run --no-sync pytest -m db`
+  sobre una base temporal vacía.
+- `just ci-test` tras integrar main: 10.076 pruebas en verde y una omitida; cobertura total
+  del 84,1 %.
 - `just ci-lint`, compilación de Reflex y `git diff --check`: en verde.
 - La revisión independiente de aceptación y transacciones no encontró otros defectos
   confirmados después de corregir la carrera entre invitaciones distintas.
-- La skill `review-agent` no estaba disponible; se realizó una revisión independiente
-  equivalente, con agentes distintos de los autores del código revisado.
+- La revisión inicial se realizó con agentes independientes porque `review-agent` no estaba
+  disponible. La reparación posterior de migraciones y su integración con Altas se revisaron
+  de forma independiente con esa skill, ya disponible.
 - El grafo local se actualizó; se excluyeron del diff los cambios de caché generados.
 
 ## Sugerencias de UX
@@ -85,13 +88,13 @@ tanto a 360 px como a 1.280 px. El correo largo ya no produce desbordamiento hor
 
 ## Integración de migraciones con main
 
-La comprobación de CI detectó que main ya tenía las revisiones `0106_connection_purge`
-y `0107_webhook_consent_privacy`. La revisión `0106` de este PR colisionaba con esa cadena.
-Se integró main en la rama del PR y se renumeró únicamente la migración de este trabajo a
-`0108_signup_invites_is_add_business`, con predecesora `0107`. Las revisiones publicadas
-permanecen intactas.
+La comprobación de CI detectó que la revisión `0106` de este PR colisionaba con la cadena
+de main. Se integró main en la rama del PR, incluidas `0106_connection_purge`,
+`0107_webhook_consent_privacy` y `0108_connection_purge_scheduler`. Se renumeró únicamente
+la migración de este trabajo a `0109_signup_invites_is_add_business`, con predecesora `0108`.
+Las revisiones publicadas permanecen intactas.
 
-La validación en un Postgres 16 temporal reprodujo el fallo anterior y comprobó una sola
-cabecera `0108`, el ciclo `upgrade head → downgrade base → upgrade head` y la columna
-booleana no nula con valor predeterminado falso. No se modificó la base local de pruebas
-existente.
+La validación final en un Postgres 16 temporal comprobó una sola cabecera `0109`, el ciclo
+`upgrade head → downgrade base → upgrade head` y la columna booleana no nula con valor
+predeterminado falso. También pasaron 119 pruebas focalizadas de autenticación y Altas.
+La base local de pruebas existente se conservó intacta.

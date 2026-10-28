@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from qualify_shared.db.connection_purge import connection_purge_session
+from qualify_shared.db.connection_purge import connection_purge_lock, connection_purge_session
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectGate, require_connection_object
 from sqlalchemy import select, text
@@ -40,6 +40,10 @@ class ConnectionPurgeInProgress(ValueError):
 
 class PurgeBlocked(RuntimeError):
     """Recoverable deletion failure; its code never carries personal data."""
+
+
+class ConnectionPurgeBusy(RuntimeError):
+    """Another executor owns this connection; retry on the next pass."""
 
 
 @dataclass(frozen=True)
@@ -388,6 +392,22 @@ def purge_connection(
     objects: ObjectGate | None = None,
     now: datetime | None = None,
 ) -> PurgeRequest:
+    """Resume one due request with a process-wide erasure lock, including object deletion."""
+    with connection_purge_lock(tenant_id, connection_id) as acquired:
+        if not acquired:
+            raise ConnectionPurgeBusy("connection_purge_busy")
+        return _purge_connection(
+            tenant_id=tenant_id, connection_id=connection_id, objects=objects, now=now
+        )
+
+
+def _purge_connection(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    objects: ObjectGate | None,
+    now: datetime | None,
+) -> PurgeRequest:
     """Execute a due explicit request; a crash/failure leaves a retryable running job.
 
     Every object key is committed BEFORE any source row is deleted. Object-store
@@ -445,9 +465,12 @@ def purge_connection(
                 {"cid": connection_id, "code": code},
             )
         raise
-    result = connection_purge_status(tenant_id=tenant_id, connection_id=connection_id)
-    assert result is not None
-    return result
+    with connection_purge_session(tenant_id) as session:
+        result = session.execute(
+            text("SELECT * FROM connection_purge_requests WHERE connection_id=:cid"),
+            {"cid": connection_id},
+        ).one()
+        return _request(result)
 
 
 def _purge_webhooks(tenant_id: UUID, connection_id: UUID, now: datetime) -> None:

@@ -47,6 +47,7 @@ so RLS scopes every read and write to the caller's tenant.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -67,6 +68,8 @@ from qualify_api.creative.models import BrandKit as BrandKitRow
 from qualify_api.creative.models import BrandKitAsset as AssetRow
 from qualify_api.creative.models import BrandKitDetails as DetailsRow
 from qualify_api.privacy import mask_phones_in
+
+logger = logging.getLogger(__name__)
 
 #: The proposal's review states (`brand_prefill.STATE_PROPOSED` is the first one).
 STATE_PROPOSED = "proposed"
@@ -138,6 +141,7 @@ class PrefillReview:
     username: str = ""
     #: `{"connect": …, "profile": …, "palette": …|None}` — only with `PROPOSAL`.
     proposal: dict[str, Any] = field(default_factory=dict)
+    network: str = ""
 
     @property
     def pending(self) -> bool:
@@ -180,10 +184,19 @@ def _proposal(document: Mapping[str, Any]) -> dict[str, Any] | None:
     if not isinstance(connect, Mapping) or not isinstance(profile, Mapping):
         return None
     palette = raw.get("palette")
+    corrected = raw.get("corrected_fields")
     return {
         "connect": dict(connect),
         "profile": dict(profile),
         "palette": dict(palette) if isinstance(palette, Mapping) else None,
+        "corrected_fields": [
+            field for field in corrected if isinstance(field, str) and field in EDITABLE_FIELDS
+        ]
+        if isinstance(corrected, list)
+        else [],
+        "borradores": mask_phones_in(dict(raw["borradores"]))
+        if isinstance(raw.get("borradores"), Mapping)
+        else {},
         # Evidence is available to the review screen, never promoted by `_decide`.
         "observed": mask_phones_in(dict(raw["observed"]))
         if isinstance(raw.get("observed"), Mapping)
@@ -248,19 +261,22 @@ def review_of(
     if document is None or kit_finished(has_kit, _progress(connect)):
         return PrefillReview()
     username = str(document.get("username") or "").lstrip("@")
+    network = str(document.get("network") or "")
+    network = network if network in {"instagram", "tiktok"} else ""
     proposal = _waiting_proposal(connect, has_kit=has_kit)
     if proposal is not None and started:
         return PrefillReview()
     if proposal is not None:
         username = str(proposal["connect"].get("username") or username).lstrip("@")
-        return PrefillReview(Notice.PROPOSAL, username, proposal)
+        network = str(proposal["connect"].get("network") or network)
+        return PrefillReview(Notice.PROPOSAL, username, proposal, network=network)
     if document.get("state"):  # a proposal already decided
         return PrefillReview()
     status = document.get("status")
     if status == _STATUS_PRIVATE:
-        return PrefillReview(Notice.PRIVATE, username)
+        return PrefillReview(Notice.PRIVATE, username, network=network)
     if status in _STATUS_UNREADABLE:
-        return PrefillReview(Notice.UNREADABLE, username)
+        return PrefillReview(Notice.UNREADABLE, username, network=network)
     return PrefillReview()
 
 
@@ -302,7 +318,10 @@ def approved_connect(
     progress = _progress(connect) or {}
     progress.setdefault("flow", RESUME_FLOW)
     progress["completed"] = False
-    if palette_colours(proposal):
+    if (
+        palette_colours(proposal)
+        and proposal.get("profile", {}).get("use_profile_logo") is not False
+    ):
         # the picture's colours are the palette: the picture is the logo, as
         # «Usar mi foto de perfil» does in the wizard
         progress["logo_from_profile"] = True
@@ -321,6 +340,11 @@ def approved_profile(tenant_id: UUID, brand_id: UUID, profile: Mapping[str, Any]
     masking must not carry a full phone number into what generation reads."""
     out = mask_phones_in(dict(profile))
     key = out.get("pic_key")
+    if out.get("use_profile_logo") is False:
+        out.pop("pic_key", None)
+        out.pop("pic_content_type", None)
+        out["pic"] = ""
+        return out
     if not key:
         out.pop("pic_key", None)
         out.pop("pic_content_type", None)
@@ -455,8 +479,98 @@ def _decide(
             }
         row.updated_by = user_id
         row.updated_at = now
+        cleanup_keys = []
+        if state in {STATE_APPROVED, STATE_DISCARDED, STATE_SUPERSEDED}:
+            from qualify_api.creative.brand_prefill_media import manifest
+
+            keep = (row.profile or {}).get("pic_key", "") if state == STATE_APPROVED else ""
+            cleanup_keys = manifest(tenant_id, brand_id, proposal, keep=keep)
+            if cleanup_keys:
+                current = dict(row.connect[PREFILL_KEY])
+                current["cleanup_keys"] = cleanup_keys
+                row.connect = {**row.connect, PREFILL_KEY: current}
         session.flush()
-        return PrefillDecision(not started, proposal)
+        decision = PrefillDecision(not started, proposal)
+    if cleanup_keys:
+        from qualify_api.creative.brand_prefill_media import cleanup_brand
+
+        try:
+            cleanup_brand(tenant_id, brand_id, session_factory=session_factory)
+        except Exception as exc:
+            logger.warning("prefill media cleanup deferred: %s", type(exc).__name__)
+    return decision
+
+
+EDITABLE_FIELDS = frozenset({"rubro_text", "city", "country_code", "logo", "colors"})
+
+
+def edit_prefill_field(
+    tenant_id: UUID,
+    brand_id: UUID,
+    field: str,
+    value: Any,
+    *,
+    user_id: UUID | None = None,
+    session_factory: SessionFactory = tenant_session,
+) -> PrefillDecision:
+    """Correct one allowlisted proposal field under the approval lock. Never approve."""
+    import re
+
+    if field not in EDITABLE_FIELDS:
+        raise ValueError("field is not editable")
+    if field in {"rubro_text", "city", "country_code"}:
+        if not isinstance(value, str) or not value.strip() or len(value) > 100:
+            raise ValueError("expected short nonempty text")
+        value = value.strip()
+        if field == "country_code" and not re.fullmatch(r"[A-Z]{2}", value):
+            raise ValueError("expected ISO country code")
+        if mask_phones_in(value) != value:
+            raise ValueError("phone numbers are not proposal answers")
+    elif field == "logo" and type(value) is not bool:
+        raise ValueError("expected whether to use the profile picture")
+    elif field == "colors":
+        if (
+            not isinstance(value, list)
+            or not 1 <= len(value) <= 6
+            or any(not isinstance(c, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", c) for c in value)
+        ):
+            raise ValueError("expected one to six hex colours")
+    with session_factory(tenant_id) as session:
+        row = session.get(DetailsRow, brand_id, with_for_update=True)
+        if row is None:
+            return PrefillDecision(False)
+        connect = dict(row.connect or {})
+        proposal = _waiting_proposal(connect, has_kit=_kit_row(session, brand_id) is not None)
+        if proposal is None or owner_started(
+            connect,
+            row.profile,
+            row.logo_brief,
+            kit_answers=_kit_answers(_kit_row(session, brand_id)),
+            has_files=_has_files(session, brand_id),
+        ):
+            return PrefillDecision(False)
+        if field in {"rubro_text", "city", "country_code"}:
+            proposal["connect"][field] = value
+        elif field == "logo":
+            # Store the original key so a later correction can undo this choice.
+            proposal["profile"]["use_profile_logo"] = value
+        else:
+            proposal["palette"] = {
+                "palette": ",".join(value),
+                "logo_colors": value,
+                "logo_source": "owner",
+            }
+        proposal["corrected_fields"] = sorted(set(proposal.get("corrected_fields") or []) | {field})
+        document = {
+            **connect[PREFILL_KEY],
+            "proposal": proposal,
+            "corrected_at": datetime.now(UTC).isoformat(),
+        }
+        row.connect = {**connect, PREFILL_KEY: document}
+        row.updated_by = user_id
+        row.updated_at = datetime.now(UTC)
+        session.flush()
+        return PrefillDecision(True, proposal)
 
 
 def approve_prefill(

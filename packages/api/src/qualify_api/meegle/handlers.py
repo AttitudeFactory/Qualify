@@ -125,7 +125,15 @@ TypedHandler = Callable[[MeegleEvent, int], Awaitable[Outcome]]
 class PrefillScheduler(Protocol):
     """`prefill.AltaPrefillScheduler`, or a fake: a short label, "" when off."""
 
-    def schedule(self, work_item_id: int, *, email: str, handle: str | None) -> str: ...
+    def schedule(
+        self,
+        work_item_id: int,
+        *,
+        email: str,
+        network: str | None,
+        handle: str | None,
+        account_reason: str = "",
+    ) -> str: ...
 
 
 PREFILL_ERROR = "error"
@@ -136,7 +144,13 @@ def _schedule_quietly(
 ) -> str:
     """The prefill never touches the invitation: anything it raises is logged here."""
     try:
-        return prefill.schedule(work_item_id, email=result.email, handle=result.instagram_handle)
+        return prefill.schedule(
+            work_item_id,
+            email=result.email,
+            network=result.network,
+            handle=result.handle,
+            account_reason=result.account_reason,
+        )
     except Exception:  # noqa: BLE001 — a retry of the event would email the invite again
         logger.exception("meegle onboarding: work_item=%s prefill not scheduled", work_item_id)
         return PREFILL_ERROR

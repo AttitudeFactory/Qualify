@@ -189,8 +189,13 @@ def test_the_proposal_survives_the_signup_that_adopts_the_draft() -> None:
     scheduler = AltaPrefillScheduler(
         jobs, lambda i, t: comments.append((i, t)), settings=lambda: settings
     )
-    assert scheduler.schedule(item, email=email, handle="bianki.ve") == "enqueued"
-    assert scheduler.schedule(item, email=email, handle="bianki.ve") == "duplicate"
+    assert (
+        scheduler.schedule(item, email=email, network="instagram", handle="bianki.ve") == "enqueued"
+    )
+    assert (
+        scheduler.schedule(item, email=email, network="instagram", handle="bianki.ve")
+        == "duplicate"
+    )
 
     calls: list[dict[str, Any]] = []
 

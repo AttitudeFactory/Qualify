@@ -210,6 +210,7 @@ def test_gate_exposes_no_presign_method() -> None:
         "put_connection_media",
         "list_connection_objects",
         "delete_connection_objects",
+        "delete_brand_prefill_objects",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 

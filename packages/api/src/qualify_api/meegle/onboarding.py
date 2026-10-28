@@ -65,6 +65,7 @@ from qualify_api.auth.invites import (
 )
 from qualify_api.mail import Mailer, MailError, MailNotConfigured, default_mailer, mail_reply_to
 from qualify_api.meegle.client import MeegleApiError, MeegleClient, WorkItem
+from qualify_api.meegle.handles import normalize_channel, normalize_handle
 from qualify_api.meegle.instagram import normalize_instagram_handle
 from qualify_api.meegle.plan_request import (
     InvalidPlanRequest,
@@ -105,6 +106,9 @@ class InvitationResult:
     instagram_handle: str | None = None
     # The address the invitation went to (the Alta draft is prepared for it, PB-4).
     email: str = ""
+    network: str | None = None
+    handle: str | None = None
+    account_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,33 @@ class OnboardingEngine:
             )
         return handle
 
+    def social_account(self, item: WorkItem) -> tuple[str | None, str | None, str]:
+        """Resolve the select against metadata; never guess Instagram for missing data."""
+        try:
+            meta = self._resolver.field(self._names.channel)
+        except MeegleSchemaError:
+            return None, None, "no_channel"
+        raw = item.fields.get(meta.key)
+        # The Open API select may carry an opaque option id, or a value/label object.
+        value = text_value(raw)
+        labels = {option_value: label for label, option_value in meta.options}
+        network = normalize_channel(labels.get(value, value))
+        if network is None:
+            return None, None, "no_channel" if not value else "invalid_channel"
+        try:
+            account_key = self._resolver.field_key(self._names.account)
+        except MeegleSchemaError:
+            account_key = None
+        # The original field may remain during the UI rollout; it supplies ONLY the
+        # identifier. A present but empty generic field never falls back to stale data.
+        account = (
+            text_value(item.fields.get(account_key))
+            if account_key
+            else self._optional_field_text(item, self._names.instagram)
+        )
+        handle = normalize_handle(network, account)
+        return network, handle, "" if handle else ("invalid_handle" if account else "no_handle")
+
     def _status_pair(self, label: str) -> tuple[str, str | dict[str, str]]:
         names = self._names
         return self._resolver.field_key(names.status), self._resolver.select_field_value(
@@ -230,7 +261,8 @@ class OnboardingEngine:
         person = self._field_text(item, names.person_name)
         note = self._field_text(item, names.note)
         business = item.name.strip()
-        instagram = self.instagram_handle(item)
+        network, handle, account_reason = self.social_account(item)
+        instagram = handle if network == "instagram" else None
         existing_login_raw = self._optional_field_text(item, names.existing_login)
         is_add_business = existing_login_raw.lower() in (
             "sí",
@@ -297,7 +329,13 @@ class OnboardingEngine:
         self._client.comment(work_item_id, sent)
         logger.info("meegle onboarding: work_item=%s invite=%s sent", work_item_id, invite.id)
         return InvitationResult(
-            ok=True, invite_id=invite.id, instagram_handle=instagram, email=invite.email
+            ok=True,
+            invite_id=invite.id,
+            instagram_handle=instagram,
+            email=invite.email,
+            network=network,
+            handle=handle,
+            account_reason=account_reason,
         )
 
     def _fail(

@@ -20,7 +20,9 @@
 # (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct),
 # calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
 # in the Planificador) and creative-worker (ADR 41, m-24852163: the generation queue; sends
-# to BytePlus only what an owner's request enqueued). `migrate` is a one-shot (below).
+# to BytePlus only what an owner's request enqueued), and connection-purge-worker
+# (m-24789547: due explicit erasure, inactive until its role password is set).
+# `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
 #   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load;
@@ -424,22 +426,7 @@ services:
       redis:
         condition: service_healthy
 
-  # ADR 41 / m-24852163 generation queue worker. Drains `creative_jobs` with a cap of
-  # QUALIFY_VENDOR_POOLS tasks at once per BytePlus pool (Seedance 10, OmniHuman 1 by
-  # default), lanes now > final > standard > scheduled, 3 slots reserved for now/final,
-  # at most 2 per business, aging after 15 min. It only sends what an owner's request
-  # enqueued (never on its own initiative) and every final still waits for the owner's
-  # confirmation before it can be published (ADR 41 §3). It also runs the recovery of
-  # billed BytePlus videos (m-24852492, moved from calendar-worker) every 60 s.
-  # Always on, like the other workers (a profile is how calendar-worker stayed off for
-  # weeks, m-24828928). Until QUALIFY_DB_CREATIVE_WORKER_PASSWORD is set in .env.prod the
-  # role is NOLOGIN: the queue loop logs `creative.worker.queue_door_unavailable` once a
-  # minute and the recovery keeps running — no crash loop. Several instances are safe
-  # (advisory lock per pool + SKIP LOCKED + claim token), one is enough.
-  # mem_limit 512m (platform-engineer verdict, 2026-10-24): at most
-  # QUALIFY_CREATIVE_WORKER_DOWNLOADS (2, max 3) vendor videos download at once, streamed
-  # to a temporary file, apart from the 10 vendor slots.
-  # Explicit operator command only: never part of a bare `up`, no automatic execution.
+  # Explicit support command: dry-run unless --execute, always tenant scoped.
   # dc run --rm -T connection-purge --tenant UUID [--connection UUID] [--request] --execute
   connection-purge:
     <<: [*app-image, *app-env-file, *logging]
@@ -456,6 +443,52 @@ services:
       postgres:
         condition: service_healthy
 
+  # m-24789547: always present so explicit disconnect/manual requests are not stranded.
+  # Only the dedicated NOBYPASSRLS purge door is available; 0108 discovers due tenant
+  # IDs without giving this process an admin role or cross-tenant table access.
+  # Missing optional password => one inactive warning and a fresh inactive heartbeat,
+  # no login attempts/restart flood. Stage the role password and deploy to activate.
+  connection-purge-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    stop_grace_period: 5m
+    mem_limit: 256m
+    memswap_limit: 256m
+    environment:
+      <<: *app-env
+      QUALIFY_APP_DSN: ""
+      QUALIFY_ADMIN_DSN: ""
+      QUALIFY_CREDENTIAL_DSN: ""
+      QUALIFY_WEBHOOK_DSN: ""
+      QUALIFY_WEBHOOK_WORKER_DSN: ""
+      QUALIFY_CREATIVE_WORKER_DSN: ""
+      QUALIFY_CONNECTION_PURGE_DSN: postgresql+psycopg://qualify_connection_purge:${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}@postgres:5432/qualify
+    command: ["python", "-m", "qualify_api.connections.purge_worker", "--all-tenants", "--execute"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "qualify_api.connections.purge_worker", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 1
+      start_period: 30s
+
+  # ADR 41 / m-24852163 generation queue worker. Drains `creative_jobs` with a cap of
+  # QUALIFY_VENDOR_POOLS tasks at once per BytePlus pool (Seedance 10, OmniHuman 1 by
+  # default), lanes now > final > standard > scheduled, 3 slots reserved for now/final,
+  # at most 2 per business, aging after 15 min. It only sends what an owner's request
+  # enqueued (never on its own initiative) and every final still waits for the owner's
+  # confirmation before it can be published (ADR 41 §3). It also runs the recovery of
+  # billed BytePlus videos (m-24852492, moved from calendar-worker) every 60 s.
+  # Always on, like the other workers (a profile is how calendar-worker stayed off for
+  # weeks, m-24828928). Until QUALIFY_DB_CREATIVE_WORKER_PASSWORD is set in .env.prod the
+  # role is NOLOGIN: the queue loop logs `creative.worker.queue_door_unavailable` once a
+  # minute and the recovery keeps running — no crash loop. Several instances are safe
+  # (advisory lock per pool + SKIP LOCKED + claim token), one is enough.
+  # mem_limit 512m (platform-engineer verdict, 2026-10-24): at most
+  # QUALIFY_CREATIVE_WORKER_DOWNLOADS (2, max 3) vendor videos download at once, streamed
+  # to a temporary file, apart from the 10 vendor slots.
   creative-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
