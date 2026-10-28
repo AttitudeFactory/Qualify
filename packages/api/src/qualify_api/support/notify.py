@@ -16,8 +16,9 @@ from typing import Any, Protocol
 
 import httpx
 
+from qualify_api.support.webhook import TextWebhook
+
 _LOGGER = logging.getLogger(__name__)
-_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -70,35 +71,20 @@ class NullSupportNotifier:
 
 
 class WebhookSupportNotifier:
-    def __init__(self, url: str, *, transport: httpx.BaseTransport | None = None) -> None:
-        self._url = url
-        self._transport = transport
+    def __init__(
+        self,
+        url: str,
+        *,
+        secret: str = "",
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._webhook = TextWebhook(url, secret=secret, transport=transport)
 
     def notify(self, notification: SupportNotification) -> bool:
-        text = notification.as_text()
-        payload = {"text": text, "msg_type": "text", "content": {"text": text}}
-        try:
-            with httpx.Client(transport=self._transport, timeout=_TIMEOUT_SECONDS) as client:
-                response = client.post(self._url, json=payload)
-        except httpx.HTTPError as exc:
-            # Type only: a transport error's text can carry the webhook URL, which is a
-            # secret on most chat platforms.
-            _LOGGER.error(
-                "support request #%s: channel unreachable (%s)",
-                notification.reference,
-                type(exc).__name__,
-            )
-            return False
-        if response.status_code >= 400:
-            _LOGGER.error(
-                "support request #%s: channel answered HTTP %d",
-                notification.reference,
-                response.status_code,
-            )
-            return False
-        return True
+        return self._webhook.send(notification.as_text())
 
 
 def production_support_notifier() -> SupportNotifier:
     url = os.environ.get("QUALIFY_SUPPORT_WEBHOOK_URL", "").strip()
-    return WebhookSupportNotifier(url) if url else NullSupportNotifier()
+    secret = os.environ.get("QUALIFY_SUPPORT_WEBHOOK_SECRET", "").strip()
+    return WebhookSupportNotifier(url, secret=secret) if url else NullSupportNotifier()

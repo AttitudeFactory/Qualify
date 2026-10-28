@@ -109,6 +109,27 @@ def test_failed_delivery_does_not_silence_incident() -> None:
     assert len(notifier.messages) == 1
 
 
+def test_lark_rejection_is_retried_before_the_incident_is_latched() -> None:
+    attempts: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request)
+        return httpx.Response(200, json={"code": 19021 if len(attempts) == 1 else 0})
+
+    notifier = WebhookSupportNotifier(
+        "https://open.larksuite.com/open-apis/bot/v2/hook/fixture",
+        transport=httpx.MockTransport(handler),
+    )
+    store = Redis()
+    first = QueueMonitor(store, notifier)
+    restarted = QueueMonitor(store, notifier)
+    alert = QueueAlert("wait", "Espera 301 s")
+    first.publish("wait", alert)
+    restarted.publish("wait", alert)
+    first.publish("wait", alert)
+    assert len(attempts) == 2
+
+
 def test_delivery_lease_prevents_concurrent_notifiers() -> None:
     redis, notifier = Redis(), Notifier()
     monitor = QueueMonitor(redis, notifier)
