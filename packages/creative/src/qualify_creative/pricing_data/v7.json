@@ -1,10 +1,14 @@
 {
   "version": "v7",
   "sources": {
-    "claude-sonnet-5-5": "skill claude-api 2026-10-06: $2 in / $10 out. A copy-model candidate in the Langfuse experiments (2026-10-13).",
-    "claude-opus-5-5": "skill claude-api 2026-10-06 (per-MTok list prices): $4 in / $20 out. Replaces claude-opus-5 as the generator's copy model (2026-10-13).",
+    "claude-haiku-5-5": "platform.claude.com/docs/en/about-claude/pricing (read 2026-10-25, m-24852539): $0.10 in / $0.50 out, $0.01 cache-read. Added for the consumption ledger (m-24823681).",
+    "claude-haiku-4-5": "Same pricing page (read 2026-10-25): $1 in / $5 out, $0.10 cache-read. Added for the consumption ledger (m-24823681).",
+    "claude-sonnet-5-5": "skill claude-api 2026-10-06: $2 in / $10 out. A copy-model candidate in the Langfuse experiments (2026-10-13). Cache-read $0.10 read on the live pricing page 2026-10-25 (the cached skill said $0.20; the page wins).",
+    "claude-sonnet-5": "Same live pricing page (read 2026-10-25): $2 in / $10 out, $0.20 cache-read. Added for the consumption ledger (m-24823681).",
+    "claude-opus-5-5": "skill claude-api 2026-10-06 (per-MTok list prices): $4 in / $20 out. Replaces claude-opus-5 as the generator's copy model (2026-10-13). Cache-read $0.20 read on the live pricing page 2026-10-25.",
     "claude-opus-4-8": "skill claude-api 2026-10-06: $5 in / $25 out. Listed because the copy call opts into server-side fallbacks (`fallbacks: \"default\"`): a policy decline on claude-opus-5-5 is re-run on claude-opus-5 or claude-opus-4-8, and the served model is what gets priced.",
-    "claude-opus-5": "skill claude-api 2026-08 (per-MTok list prices)",
+    "claude-opus-5": "skill claude-api 2026-08 (per-MTok list prices). Cache-read $0.50 read on the live pricing page 2026-10-25.",
+    "scrapecreators": "scrapecreators.com/pricing (read 2026-10-27): the free plan credits the monthly credits at $0.0019 each (the Starter bundle: 5,000 credits for $9.50). One credit per profile/post-list page. Added for the consumption ledger (m-24823681).",
     "flux2_pro": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
     "seedream_v4": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
     "ideogram_v3_default": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
@@ -30,21 +34,47 @@
     "dola-seedream-5-0-flash-260915": "Same pricing page (read 2026-10-23): Seedream 5.0 flash USD 0.018 per generated image at every size, input images free. Layer decomposition is offered by the API but left unpriced here on purpose (not read on the sheet): a quote for it must fail."
   },
   "entries": {
+    "claude-haiku-5-5": {
+      "per_mtok_in": "0.10",
+      "per_mtok_out": "0.50",
+      "per_mtok_cache_read": "0.01",
+      "per_mtok_cache_write": "0.125"
+    },
+    "claude-haiku-4-5": {
+      "per_mtok_in": "1.00",
+      "per_mtok_out": "5.00",
+      "per_mtok_cache_read": "0.10",
+      "per_mtok_cache_write": "1.25"
+    },
     "claude-sonnet-5-5": {
       "per_mtok_in": "2.00",
-      "per_mtok_out": "10.00"
+      "per_mtok_out": "10.00",
+      "per_mtok_cache_read": "0.10",
+      "per_mtok_cache_write": "2.50"
+    },
+    "claude-sonnet-5": {
+      "per_mtok_in": "2.00",
+      "per_mtok_out": "10.00",
+      "per_mtok_cache_read": "0.20",
+      "per_mtok_cache_write": "2.50"
     },
     "claude-opus-5-5": {
       "per_mtok_in": "4.00",
-      "per_mtok_out": "20.00"
+      "per_mtok_out": "20.00",
+      "per_mtok_cache_read": "0.20",
+      "per_mtok_cache_write": "5.00"
     },
     "claude-opus-4-8": {
       "per_mtok_in": "5.00",
-      "per_mtok_out": "25.00"
+      "per_mtok_out": "25.00",
+      "per_mtok_cache_read": "0.50",
+      "per_mtok_cache_write": "6.25"
     },
     "claude-opus-5": {
       "per_mtok_in": "5.00",
-      "per_mtok_out": "25.00"
+      "per_mtok_out": "25.00",
+      "per_mtok_cache_read": "0.50",
+      "per_mtok_cache_write": "6.25"
     },
     "flux2_pro": {
       "per_piece": "0.03"
@@ -138,6 +168,9 @@
     "dola-seedream-5-0-flash-260915": {
       "per_piece": "0.018",
       "per_extra_reference_image": "0"
+    },
+    "scrapecreators": {
+      "per_credit": "0.0019"
     }
   }
 }
