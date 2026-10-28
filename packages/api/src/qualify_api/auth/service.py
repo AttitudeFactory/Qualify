@@ -406,6 +406,50 @@ def link_login_to_tenant(
     )
 
 
+@dataclass(frozen=True)
+class UserMembership:
+    tenant_id: UUID
+    tenant_name: str
+    name: str
+    role: str
+    user_id: UUID
+    email: str
+    display_name: str
+
+
+def memberships_for(auth_user_id: UUID) -> list[UserMembership]:
+    """Return all tenant memberships for a given Supabase auth user id,
+    queried via admin_session across tenants (ADR 43 §2.1).
+    """
+    with admin_session() as session:
+        stmt = (
+            select(
+                Tenant.id,
+                Tenant.name,
+                TenantMember.role,
+                User.id,
+                User.email,
+                User.display_name,
+            )
+            .join(User, User.tenant_id == Tenant.id)
+            .join(TenantMember, TenantMember.user_id == User.id)
+            .where(User.auth_user_id == auth_user_id)
+        )
+        rows = session.execute(stmt).all()
+        return [
+            UserMembership(
+                tenant_id=tenant_id,
+                tenant_name=tenant_name,
+                name=tenant_name,
+                role=role,
+                user_id=user_id,
+                email=email,
+                display_name=display_name,
+            )
+            for tenant_id, tenant_name, role, user_id, email, display_name in rows
+        ]
+
+
 def resolve_login(provider: AuthProvider, email: str, password: str) -> LoginResult:
     """Sign in and resolve the session to a verified local user. Raises
     `InvalidCredentials` (generic, on purpose) or `IncompleteRegistration`."""
