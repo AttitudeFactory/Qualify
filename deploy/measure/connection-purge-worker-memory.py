@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import argparse
 import gc
-import html
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -163,14 +161,22 @@ def fake_r2() -> tuple[ThreadingHTTPServer, dict[str, object]]:
             self.wfile.write(body)
 
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self.send_error(400)
+                return
+            if not 0 <= length <= 64 * 1024:
+                self.send_error(413)
+                return
             # Only consume boto3's controlled synthetic DeleteObjects shape. Avoid a general
             # XML parser on request bytes received by this local HTTP fixture.
             request_body = self.rfile.read(length)
-            keys = [
-                html.unescape(key.decode("utf-8"))
-                for key in re.findall(rb"<Key>(.*?)</Key>", request_body)
-            ]
+            keys = []
+            for field in request_body.split(b"<Key>")[1:]:
+                value, closing_tag, _ = field.partition(b"</Key>")
+                if closing_tag:
+                    keys.append(value.decode("utf-8"))
             state["delete_attempts"] = int(state["delete_attempts"]) + 1
             if not state["failed_once"]:
                 state["failed_once"] = True
@@ -190,6 +196,7 @@ def fake_r2() -> tuple[ThreadingHTTPServer, dict[str, object]]:
             for key in keys:
                 stored_keys = state["keys"]
                 assert isinstance(stored_keys, set)
+                # Discard can affect only the single synthetic object preloaded in this set.
                 stored_keys.discard(key)
             body = b'<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>'
             self.send_response(200)
