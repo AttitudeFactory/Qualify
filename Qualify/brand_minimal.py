@@ -33,7 +33,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import brand_answers_vm as answers_vm
 from . import brand_documents
 from . import brand_minimal_vm as vm
-from . import brand_proposal_vm as proposal_vm
 from .auth_state import AuthState, brand_tenant_id
 from .brand_answers import BrandAnswersState, answers_body, answers_header
 from .brand_proposal import BrandProposalState, approved_notice, proposal_review, read_notice
@@ -256,7 +255,10 @@ class BrandMinimalState(rx.State):
         async with self:
             # m-24852199: a proposal from the Alta, or why there is none
             (await self.get_state(BrandProposalState)).show(
-                entry.review if entry is not None else PrefillReview()
+                entry.review if entry is not None else PrefillReview(),
+                owner=(tenant_id, entry.brand_id)
+                if tenant_id is not None and entry is not None and entry.brand_id is not None
+                else None,
             )
             self.account_country = vm.account_country("", account_country, _KNOWN_COUNTRIES)
             self.more_logo_versions = False
@@ -308,6 +310,7 @@ class BrandMinimalState(rx.State):
                     hints=entry.hints,
                     drafts=entry.drafts,
                     has_tags=entry.has_tags,
+                    tone_draft=entry.tone_draft,
                 )
             else:
                 answers.open(
@@ -499,6 +502,8 @@ class _Entry:
         hints: dict[str, str] | None = None,
         drafts: dict[str, str] | None = None,
         has_tags: bool = False,
+        brand_id: UUID | None = None,
+        tone_draft: dict[str, int] | None = None,
     ) -> None:
         self.finished = finished
         self.saved_step = saved_step
@@ -512,6 +517,8 @@ class _Entry:
         self.hints = hints or {}
         self.drafts = drafts or {}
         self.has_tags = has_tags
+        self.brand_id = brand_id
+        self.tone_draft = tone_draft or {}
 
 
 def _read_account_country(tenant_id: UUID) -> str:
@@ -611,6 +618,8 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
         else {},
         drafts=answers_vm.drafts_from(connect) if answers_path else {},
         has_tags=bool(connect.get("hashtags")),
+        brand_id=brand_id,
+        tone_draft=answers_vm.tone_draft_from(connect) if answers_path else {},
     )
 
 
@@ -1151,7 +1160,7 @@ def brand_minimal_index() -> rx.Component:
                 rx.cond(
                     reviewing,
                     rx.fragment(
-                        page_header(proposal_vm.REVIEW_TITLE, title_size="8"),
+                        page_header(BrandProposalState.review_title, title_size="8"),
                         page_body(
                             rx.vstack(_notices(), proposal_review(), spacing="4", width="100%")
                         ),

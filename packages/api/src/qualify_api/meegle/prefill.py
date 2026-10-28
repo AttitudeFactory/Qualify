@@ -104,10 +104,10 @@ ENABLED_ENV = "QUALIFY_ALTA_PREFILL_ENABLED"
 MAX_USD_ENV = "QUALIFY_ALTA_PREFILL_MAX_USD"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-NETWORK = "instagram"
+
 #: This queue's version; the prefill's own rides with it (provenance of every job).
-#: 2: the dollar meter and the Alta's own Claude limits (m-24854322).
-QUEUE_VERSION = 2
+#: 3: explicit channel/identifier normalization; no inferred network (m-24882931).
+QUEUE_VERSION = 3
 PIPELINE_VERSION = f"alta_prefill:{QUEUE_VERSION}+brand_prefill:{PREFILL_VERSION}"
 
 #: ScrapeCreators, plan Freelance: US$47 for 25,000 credits = US$0.00188, rounded up
@@ -168,8 +168,8 @@ CLAUDE_TIMEOUT_SECONDS = 90.0
 CLAUDE_MAX_TURNS = ALTA_RUBRO_ATTEMPTS + ALTA_CATALOG_MAX_TURNS
 #: ScrapeCreators: the Alta's credits x the client's 20 s; the picture: 4 hops x 8 s.
 _SCRAPECREATORS_SECONDS = ALTA_SCRAPECREATORS_CREDITS * 20.0
-_PICTURE_SECONDS = 4 * 8.0
-#: The slowest a run can be (~8.7 min) — `prefill_jobs.STALE_AFTER` stays above it.
+_PICTURE_SECONDS = 7 * 4 * 8.0  # profile photo + up to six observed thumbnails
+#: The slowest a run can be (~11.9 min) — `prefill_jobs.STALE_AFTER` stays above it.
 MAX_RUN_SECONDS = (
     CLAUDE_MAX_TURNS * CLAUDE_TIMEOUT_SECONDS + _SCRAPECREATORS_SECONDS + _PICTURE_SECONDS
 )
@@ -182,7 +182,12 @@ MAX_COMMENT_ATTEMPTS = 3
 COMMENT_BACKOFF = (timedelta(minutes=1), timedelta(minutes=10))
 
 COMMENT_OK = "Identidad de marca propuesta."
-COMMENT_NO_HANDLE = "No se precargó la identidad de marca: no hay cuenta de Instagram en el Alta."
+COMMENT_NO_HANDLE = "No se precargó la identidad de marca: no hay cuenta en el Alta."
+COMMENT_NO_CHANNEL = "No se precargó la identidad de marca: falta elegir el canal en el Alta."
+COMMENT_INVALID_CHANNEL = "No se precargó la identidad de marca: el canal del Alta no es válido."
+COMMENT_INVALID_HANDLE = (
+    "No se precargó la identidad de marca: la cuenta no es válida para el canal."
+)
 COMMENT_PRIVATE = "No se precargó la identidad de marca: la cuenta de Instagram es privada."
 COMMENT_UNREADABLE = "No se precargó la identidad de marca: no se pudo leer la cuenta de Instagram."
 
@@ -361,17 +366,25 @@ class AltaPrefillSettings:
         return cls(enabled=True, max_usd=max_usd, limits=limits)
 
 
-def comment_for(outcome: str) -> str | None:
+def comment_for(outcome: str, network: str = "instagram") -> str | None:
     """The comment a finished job writes on the Alta; None = no comment."""
     if outcome == PrefillOutcome.OK.value:
         return COMMENT_OK
     if outcome == PrefillOutcome.PRIVATE_ACCOUNT.value:
-        return COMMENT_PRIVATE
+        return COMMENT_PRIVATE.replace(
+            "Instagram", "TikTok" if network == "tiktok" else "Instagram"
+        )
     if outcome == OUTCOME_NO_HANDLE:
         return COMMENT_NO_HANDLE
+    if outcome in {"no_channel", "invalid_channel", "invalid_handle"}:
+        return {
+            "no_channel": COMMENT_NO_CHANNEL,
+            "invalid_channel": COMMENT_INVALID_CHANNEL,
+            "invalid_handle": COMMENT_INVALID_HANDLE,
+        }[outcome]
     if outcome == OUTCOME_DISABLED:
         return None
-    return COMMENT_UNREADABLE
+    return COMMENT_UNREADABLE.replace("Instagram", "TikTok" if network == "tiktok" else "Instagram")
 
 
 # --------------------------------------------------------------------------------------
@@ -537,7 +550,15 @@ class AltaPrefillScheduler:
         self._start_draft = start_draft
         self._draft_brand = draft_brand
 
-    def schedule(self, work_item_id: int, *, email: str, handle: str | None) -> str:
+    def schedule(
+        self,
+        work_item_id: int,
+        *,
+        email: str,
+        network: str | None,
+        handle: str | None,
+        account_reason: str = "",
+    ) -> str:
         """Prepare the draft and enqueue the job; returns a short log-safe label. Called
         only after the invitation went out. Never calls Meegle or a vendor itself (the
         runner does). May raise (database): the caller swallows it. Without an account
@@ -555,6 +576,19 @@ class AltaPrefillScheduler:
                 )
             return SKIP_OFF
         assert settings.max_usd is not None  # active implies a cap
+        from qualify_api.meegle.handles import normalize_channel, normalize_handle
+
+        network = normalize_channel(network)
+        if network is None:
+            account_reason = (
+                "invalid_channel" if account_reason == "invalid_channel" else "no_channel"
+            )
+            handle = None
+        else:
+            normalized = normalize_handle(network, handle)
+            if handle and not normalized:
+                account_reason = "invalid_handle"
+            handle = normalized
         try:
             draft = self._start_draft(email, work_item_id)
         except EmailHasAccount:
@@ -573,12 +607,12 @@ class AltaPrefillScheduler:
                 tenant_id=draft.tenant_id,
                 brand_id=brand_id,
                 meegle_work_item_id=work_item_id,
-                network=NETWORK,
+                network=network or "",
                 handle=handle or "",
                 max_usd=settings.max_usd,
                 pipeline_version=PIPELINE_VERSION,
                 # no account: nothing to read, only the comment — still once per item
-                outcome=None if handle else OUTCOME_NO_HANDLE,
+                outcome=None if handle else (account_reason or OUTCOME_NO_HANDLE),
             )
         )
         logger.info(
@@ -589,7 +623,7 @@ class AltaPrefillScheduler:
         )
         if not inserted:
             return DUPLICATE
-        return ENQUEUED if handle else SKIP_NO_HANDLE
+        return ENQUEUED if handle else (account_reason or SKIP_NO_HANDLE)
 
 
 # --------------------------------------------------------------------------------------
@@ -715,7 +749,7 @@ class AltaPrefillRunner:
 
     def _post_comment(self, job: PrefillJob) -> str:
         now = self._clock()
-        text = comment_for(job.outcome or "")
+        text = comment_for(job.outcome or "", job.network)
         if text is None:  # nothing to say: settle quietly
             self._jobs.comment_posted(job, worker_id=self._worker, now=now)
             return "done"

@@ -62,7 +62,7 @@ PREFILL_KEY = "prefill"
 CONTACT_KEY = "contact"
 RESERVED_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
     AVATAR_DOCUMENT: (AVATAR_KEY,),
-    PREFILL_DOCUMENT: (PREFILL_KEY, CONTACT_KEY),
+    PREFILL_DOCUMENT: (PREFILL_KEY, CONTACT_KEY, "prefill_media"),
 }
 
 
@@ -89,6 +89,7 @@ def carry_reserved(
 def visible_connect(document: Mapping[str, Any] | None) -> dict[str, Any]:
     """Details may reach a screen: the full contact number stays only in Postgres."""
     out = dict(document or {})
+    out.pop("prefill_media", None)
     contact = out.get(CONTACT_KEY)
     if isinstance(contact, Mapping):
         out[CONTACT_KEY] = {key: value for key, value in contact.items() if key != "whatsapp"}
@@ -270,6 +271,31 @@ class BrandKitStore:
                 setattr(row, name, carry_reserved(name, getattr(row, name), document))
             row.updated_by = user_id
             row.updated_at = datetime.now(UTC)
+            session.flush()
+
+    def register_prefill_media(self, *, tenant_id: UUID, brand_id: UUID, key: str) -> None:
+        """Commit an expiring image ledger BEFORE PUT, so a failed proposal has no orphan.
+
+        Refresh the key's lease under the same lock as cleanup. A crashed or rejected
+        proposal's unreferenced image is then discoverable after 30 days.
+        """
+        from qualify_api.creative.kept_pictures import is_kept_key
+
+        if not is_kept_key(tenant_id, brand_id, key):
+            raise ValueError("invalid prefill image key")
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                insert(DetailsRow)
+                .values(
+                    brand_id=brand_id, tenant_id=tenant_id, logo_brief={}, connect={}, profile={}
+                )
+                .on_conflict_do_nothing(index_elements=[DetailsRow.brand_id])
+            )
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
+            connect = dict(row.connect or {})
+            ledger = dict(connect.get("prefill_media") or {})
+            ledger[key] = datetime.now(UTC).isoformat()
+            row.connect = {**connect, "prefill_media": ledger}
             session.flush()
 
     def set_document_key(

@@ -156,6 +156,28 @@ class ObjectGate:
         """
         return self._store.open(require_tenant_prefix(tenant_id, object_key))
 
+    def delete_brand_prefill_objects(
+        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
+    ) -> None:
+        """Delete only an explicit kept-image manifest for this tenant and brand.
+
+        This is not a broad Brand Kit prefix permission. The caller excludes the
+        approved logo and records a retryable manifest before invoking this method.
+        Validate every key before issuing any deletion.
+        """
+        import re
+
+        prefix = f"{tenant_prefix(tenant_id)}brand/{brand_id}/kept/"
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            require_tenant_prefix(tenant_id, key)
+            if not key.startswith(prefix) or not re.fullmatch(
+                r"(?:profile|post)/[0-9a-f]{32}\.[a-z]+", key[len(prefix) :]
+            ):
+                raise TenantPrefixViolation("object is outside this brand's kept-image root")
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
     def delete_connection_objects(
         self, tenant_id: UUID, connection_id: UUID, platform: str, object_keys: list[str]
     ) -> None:
