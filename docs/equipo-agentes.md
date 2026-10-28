@@ -49,6 +49,7 @@ Todos precargan además `durable-findings`. `product-owner` es dueño de los tic
 | `qualify-lark-admin` | Ítems y configuración de Meegle, administración de Lark: MCP, CLIs oficiales (`meegle`, `lark-cli` y sus skills) o Chrome para las consolas | Hilo principal, platform |
 | `qualify-history` | Visión original, pipeline de earned media, mapa de fases, decisiones pasadas | architect |
 | `qualify-team-dev` / `qualify-team-po` / `qualify-team-research` | Squads que dispara el fundador (`/qualify-team-…`) | Hilo principal |
+| `review-agent` | Revisión de código independiente y de solo lectura sobre el diff final contra el merge base, obligatoria antes de cada PR junto con `ux-designer` (`qualify-pr` §5); checklist de reglas duras, hallazgos con file:line y veredicto | Revisor independiente del autor (subagente); dueño: `principal-architect` |
 
 También del proyecto: `meegle-ticket`, `meegle-altas`, `durable-findings`, `compass-skill-synthesis`, `sage-skill-evolution`, y skills genéricas (`develop-adr`, `eval-driven-dev`, `competitor-profiling`, …). Las skills de ClickHouse se desenlazaron de `.claude/skills/` (siguen en `.agents/skills/` para cuando se cruce el umbral de ADR 31).
 

@@ -527,6 +527,24 @@ def _volatile_suffix(
         # § 2026-10-06: the operator describes the whole piece in their own words, not
         # just a topic or a product name
         f"What the operator wants (their own words, the piece's general context): {brief.topic}",
+        *(
+            (
+                "This piece is a reel replica of the reference video. The operator's context"
+                " above may also carry scene or visual production instructions (adding,"
+                " removing or changing shots, scene elements, background or lighting). Those"
+                " are handled by the VIDEO prompt, NOT by the copy: the caption, the"
+                " description, the on-screen text and the post copy must not include or"
+                " describe any scene-production instruction. The copy carries only what a"
+                " post actually says — the hook, the CTA, the brand voice, and the"
+                " operator's explicit facts about the offer or product — never instructions"
+                " about the scene. The only exception is when the operator's words textually"
+                ' and explicitly ask for something to appear in the copy ("en el texto",'
+                ' "en la caption", "en la descripcion" or equivalent): honor that, and'
+                " never infer the exception from a scene instruction.",
+            )
+            if brief.media.clip_reference_mode == "edit"
+            else ()
+        ),
         f"Product reference: {brief.product_ref or _NONE}",
         f"Platform: {brief.platform.value}",
         f"Format: {brief.format.value} ({width}x{height})",

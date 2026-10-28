@@ -539,6 +539,64 @@ def test_the_reel_plays_inside_its_card_one_at_a_time() -> None:
     assert state.expanded == ["tiktok:7"]  # opens and closes per card, several at once
 
 
+def test_changing_period_stops_the_reel_even_when_it_remains_visible() -> None:
+    """Switching periods returns the playing reel to its cover, even if it is shared."""
+    import reflex as rx
+
+    from .discover_reels import DiscoverReelsState, _reel_tile
+
+    state = DiscoverReelsState()
+    current = {"key": "instagram:A", "affinity": "producto"}
+    older = {"key": "instagram:B", "affinity": "producto"}
+    state._cards = {"week": [current], "month": [older, current]}
+    state.play(current["key"])
+    assert state.reels.index(current) == 0
+    state.set_window("month")
+    assert state.reels.index(current) == 1
+    assert state.playing_key == ""
+    state.set_window("week")
+    assert state.playing_key == ""  # returning to the old period must not autoplay
+
+    # Check the identity emitted for React, not just the backend's playing selection.
+    rendered = rx.foreach(DiscoverReelsState.reels, _reel_tile).render()
+    card_props = rendered["children"][0]["props"]
+    assert f'key:{rendered["arg_name"]}?.["key"]' in card_props
+
+
+@pytest.mark.parametrize("change", ["network", "account", "clear"])
+def test_changing_reel_filters_stops_playback(change: str) -> None:
+    from .discover_reels import ALL, DiscoverReelsState
+
+    state = DiscoverReelsState()
+    state.accounts = [{"key": "instagram:foodie", "network": "instagram"}]
+    if change == "clear":
+        state.set_account("instagram:foodie")
+    state.play("instagram:A")
+    if change == "network":
+        state.set_network("instagram")
+    elif change == "account":
+        state.set_account("instagram:foodie")
+    else:
+        state.clear_filters()
+        assert state.network == state.account == ALL
+    assert state.playing_key == ""
+
+
+def test_invalid_or_unchanged_reel_filters_do_not_interrupt_playback() -> None:
+    from .discover_reels import ALL, DiscoverReelsState
+
+    state = DiscoverReelsState()
+    state.play("instagram:A")
+    state.set_window("week")
+    state.set_window("invalid")
+    state.set_network(ALL)
+    state.set_network("invalid")
+    state.set_account(ALL)
+    state.set_account("instagram:unknown")
+    state.clear_filters()
+    assert state.playing_key == "instagram:A"
+
+
 def test_the_toolbar_says_only_when_the_read_was_made() -> None:
     """§ founder 2026-10-20: «Actualizado hace 2 minutos», no counts of referentes, reels
     or dropped ones; the 90-day tab says it only once its own read exists."""

@@ -492,6 +492,50 @@ def test_the_brand_typeface_is_part_of_the_visual_identity() -> None:
     assert "Typeface: (none)\n" in render().stable_prefix
 
 
+def test_a_reel_replica_copy_prompt_blocks_scene_instructions() -> None:
+    """§ 2026-10-27: in a reel replica («Copiar» reel), the operator's context merges scene
+    production instructions (e.g. «añade humo a la escena») with the brand guidance. The
+    VIDEO prompt consumes those as production instructions (media.py::reel_edit_prompt);
+    the COPY prompt must not, or the scene instructions leak into the caption / description
+    / on-screen text. The copy carries only the hook, the CTA, the brand voice and the
+    operator's explicit offer facts — unless the operator textually asks for it in the copy.
+    """
+    from qualify_creative.enums import ContentFormat, ContentKind
+
+    media = MediaInputs(
+        clip_image_keys=("uploads/t/p.jpg",),
+        clip_video_keys=("uploads/t/ref.mp4",),
+        clip_reference_mode="edit",
+        duration_seconds=5,
+    )
+    edited = render(
+        brief=make_brief(
+            kind=ContentKind.CLIP,
+            format=ContentFormat.REELS_9_16,
+            media=media,
+            topic=(
+                "Añade humo a la escena y cambia la luz a tonos cálidos. "
+                "El producto son las alitas BBQ a $18.900."
+            ),
+        )
+    ).volatile_suffix
+    assert "reel replica of the reference video" in edited
+    assert "handled by the VIDEO prompt, NOT by the copy" in edited
+    assert "must not include or describe any scene-production instruction" in edited
+    assert "never infer the exception from a scene instruction" in edited
+    # the guard is gated on the edit mode: a plain (motion) clip carries nothing of it
+    plain_media = MediaInputs(duration_seconds=5)
+    plain = render(
+        brief=make_brief(
+            kind=ContentKind.CLIP,
+            format=ContentFormat.REELS_9_16,
+            media=plain_media,
+        )
+    ).volatile_suffix
+    assert "reel replica of the reference video" not in plain
+    assert "scene-production instruction" not in plain
+
+
 def test_a_clip_copy_writes_its_story_in_three_shots() -> None:
     """§ request 2026-10-14: the clip tells a story — the copy writes it, on its own
     hook: three shots (hook, development, payoff) the video prompt then follows."""

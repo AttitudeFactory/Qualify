@@ -539,6 +539,7 @@ class DraftPostReader:
             category=draft.category,
             media_product_type=media_product_type,
             content_type=brief.content_type if brief is not None else None,
+            content_kind=brief.kind if brief is not None else "",
             reuse_type=draft.reuse_type,  # `ReuseType` (0027, QUA-109); None until set
             lifecycle_status=draft.status,
             thumbnail_url=thumbnail,
