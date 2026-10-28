@@ -125,6 +125,32 @@ El compose **se niega a arrancar** si falta alguno de: contraseñas de BD, `QUAL
 
 `QUALIFY_PUBLIC_MEDIA_BASE_URL` lo arma el compose como **el origen pelado** (`https://qualify.attitudefactory.co`): el código ya agrega `/public/media/<token>` (`qualify_api.config.PublicMediaSettings.public_media_url`). Ponerle `/public/media` al final —como sugiere [`plan-cicd-staging.md`](plan-cicd-staging.md) §5.7 punto 4— duplicaría la ruta y Meta recibiría URLs 404 al publicar.
 
+### Canal de ayuda y alertas internas (m-24852167)
+
+`QUALIFY_SUPPORT_WEBHOOK_URL` recibe las solicitudes «Pedir ayuda 1:1», avisos de
+planes/paquetes y alertas de la cola. El grupo puede ver correo y teléfono de quien
+pide ayuda; su acceso corresponde al equipo de soporte. No configura Resend ni el
+correo al cliente. Sin URL, las solicitudes quedan guardadas y los avisos no se envían.
+
+En Lark/Feishu se exige HTTP 2xx y una confirmación JSON con `code: 0` (o el campo
+legado `StatusCode: 0`). Un rechazo con HTTP 200 no cuenta como entrega: la cola lo
+reintenta en la siguiente revisión. Las respuestas inválidas tampoco confirman entrega.
+Slack/Cliq conservan la aceptación por HTTP 2xx.
+
+Si el bot exige firma, configurar también `QUALIFY_SUPPORT_WEBHOOK_SECRET` con el
+secreto de ese mismo bot. La firma se calcula para cada solicitud siguiendo la
+[guía oficial de bots personalizados de Lark](https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/bot-v3/use-custom-bots-in-a-group).
+Si usa palabras clave o restricciones de IP, comprobar que permitan los mensajes
+reales; el bot de deploy puede exigir «Deploy», que estos avisos no incluyen.
+Los secretos `DEVOPS_WEBHOOK_URL`/`DEVOPS_WEBHOOK_SECRET` de GitHub Actions no se
+heredan por los procesos de la aplicación ni se pueden recuperar con la API.
+
+Preparar las claves en el `.env` local sin mostrarlas. Antes de instalarlas, ejecutar
+`just env-push qualify-prod --dry-run QUALIFY_SUPPORT_WEBHOOK_URL` (añadir
+`QUALIFY_SUPPORT_WEBHOOK_SECRET` si corresponde). La instalación de claves nuevas
+requiere aprobación del fundador. Una comprobación de entrega real también debe
+estar autorizada: no provocar incidentes ni enviar solicitudes ficticias de clientes.
+
 ## 5. DNS (zona en Vercel)
 
 ```bash
