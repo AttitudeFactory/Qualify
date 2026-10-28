@@ -63,9 +63,10 @@ SUPPORTED_NETWORKS = ("instagram", "tiktok")
 #: `totalLikes` (2026-10-01); 5 = `bioLinks` and `recentMedia` (the 12 posts the
 #: Instagram profile read already carries), and Instagram's post list read only when
 #: those 12 do not cover the window (2026-10-25, m-24854324). Both caches
-#: (`creator_cache_provider`, `brand_prefill.RepositoryProfileCache`) read a schema-4
-#: snapshot as a miss, so every cached account is read again once.
-SNAPSHOT_SCHEMA = 5
+#: (`creator_cache_provider`, `brand_prefill.RepositoryProfileCache`) read any older
+#: schema as a miss, so each cached account is read again once after a version bump.
+#: 6 = stable account id and professional-account flag for review evidence (OL2-1b).
+SNAPSHOT_SCHEMA = 6
 
 
 class ScrapeCreatorsError(Exception):
@@ -180,6 +181,8 @@ def _normalize_instagram(payload: dict[str, Any]) -> dict[str, Any]:
     posts = user.get("edge_owner_to_timeline_media", {})
     return {
         "username": str(user.get("username", "")),
+        "stable_id": str(user.get("id") or ""),
+        "isProfessionalAccount": user.get("is_professional_account") is True,
         "fullName": str(user.get("full_name", "")),
         "bio": str(user.get("biography", "")),
         "category": _clean_category(

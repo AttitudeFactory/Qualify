@@ -252,6 +252,43 @@ def world() -> World:
     return World()
 
 
+def test_observed_evidence_is_not_sent_to_claude_and_stays_in_its_tenant(world: World) -> None:
+    snapshot = {
+        "username": "heladeria.demo",
+        "stable_id": "573001234548",
+        "isProfessionalAccount": True,
+        "bio": "Helados en Cúcuta",
+        "category": "Ice Cream Shop",
+        "fetchedAt": time.time(),
+        "postsCount": 1,
+        "recentMedia": [
+            {
+                "postId": "evidence-only",
+                "kind": "image",
+                "takenAt": time.time(),
+                "caption": "evidence-only-caption",
+                "likes": 987654321,
+                "comments": 3,
+                "isOwner": True,
+            }
+        ],
+        "bioLinks": [{"url": "https://wa.me/573001234548", "kind": "whatsapp"}],
+    }
+    result = world.run(ports=world.ports(read_profile=lambda *_a: snapshot))
+    assert result.outcome == PrefillOutcome.OK
+    observed = world.prefill()["proposal"]["observed"]
+    assert observed["stable_id"] == "573001234548"
+    assert observed["recent_media"][0]["id"] == "evidence-only"
+    assert "573001234548" not in observed["links"][0]["url"]
+    assert "evidence-only" not in repr(world.claude.calls)
+    assert "987654321" not in repr(world.claude.calls)
+    assert "observed" not in world.store.rows[(TENANT, BRAND)].profile
+    other = world.store.load_details(tenant_id=uuid4(), brand_id=BRAND)
+    assert other.connect == {}
+    assert set(world.store.tenants[:-1]) == {TENANT}
+    assert world.prefill()["version"] == 3
+
+
 # --------------------------------------------------------------------------------------
 # ok: what is proposed, and where
 # --------------------------------------------------------------------------------------
@@ -322,7 +359,7 @@ def test_the_provenance_and_the_usage_ride_with_the_proposal(world: World) -> No
     read = provenance["read"]
     assert read["provider"] == "scrapecreators"
     assert read["client"] == "qualify_api.referentes.scrapecreators_client"
-    assert read["snapshot_schema"] == 5 and read["from_cache"] is False
+    assert read["snapshot_schema"] == 6 and read["from_cache"] is False
     assert read["endpoints"] == ["/v1/instagram/profile", "/v2/instagram/user/posts"]
     assert isinstance(read["fetched_at"], float)
     [rubro] = provenance["claude"]

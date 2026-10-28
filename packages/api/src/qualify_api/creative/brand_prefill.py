@@ -86,6 +86,7 @@ from qualify_api.claude_tools import (
 )
 from qualify_api.creative import account_claims, kept_pictures, logo_palette
 from qualify_api.creative.brand_kit_store import PREFILL_DOCUMENT, PREFILL_KEY, BrandKitStore
+from qualify_api.creative.brand_observed import observed_from
 from qualify_api.creative.brand_prefill_review import is_decided
 from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
@@ -101,7 +102,7 @@ from qualify_api.referentes.profile_cache import (
 logger = logging.getLogger(__name__)
 
 #: The pipeline's own version, bumped when what a run proposes changes shape or meaning.
-PREFILL_VERSION = 2  # 2: the profile picture kept in R2 (m-24852537)
+PREFILL_VERSION = 3  # 3: review-only observed evidence (m-24854325)
 #: The proposal's review state. PB-5 writes the others ("approved", "discarded").
 STATE_PROPOSED = "proposed"
 #: The pills Tu rubro holds — the referentes search's own cap.
@@ -1153,6 +1154,7 @@ def _propose(
         "profile": account_doc,
         "palette": palette,
         "picture": picture,
+        "observed": observed_from(profile, network=network),
     }
 
 
