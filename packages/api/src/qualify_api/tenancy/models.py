@@ -54,7 +54,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
-        UniqueConstraint("auth_user_id", name="uq_users_auth_user_id"),
+        UniqueConstraint("tenant_id", "auth_user_id", name="uq_users_tenant_auth_user_id"),
         Index("ix_users_tenant", "tenant_id"),
     )
 
@@ -66,9 +66,9 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String, nullable=False)
     display_name: Mapped[str] = mapped_column(String, nullable=False)
-    # Supabase Auth user uuid (migration 0008). Globally UNIQUE (not per-tenant): one
-    # credential = one local user = one tenant — QUA-66's `1 login = 1 tenant` as a
-    # constraint. Nullable: seeded/pre-auth seats have no login yet.
+    # Supabase Auth user uuid (migration 0008, updated in 0104). Unique per tenant: one
+    # credential can map to multiple local users across different tenants (ADR 43).
+    # Nullable: seeded/pre-auth seats have no login yet.
     auth_user_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
