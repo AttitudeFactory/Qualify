@@ -442,6 +442,24 @@ PRODUCT_SOURCE_STOCK = "stock"
 PRODUCT_SOURCES = (PRODUCT_SOURCE_CATALOG, PRODUCT_SOURCE_STOCK)
 
 
+class SourceReelProvenance(BaseModel):
+    """m-24820837: the reel a «copiar» replica was made from, as the brief keeps it. The
+    discovery card lives only in the browser session and the original reel can be forgotten
+    from one week's list to the next; stored with the brief, the piece still names its
+    origin later. `platform` is the network value of the card (`instagram`, `tiktok`,
+    `facebook`), `post_id` the network's own id, `handle` the account's with its `@`,
+    `analysis_version` the replication pipeline that read the reel (raised when the
+    pipeline changes, so a piece records the analysis that made it)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    platform: str = Field(max_length=20)
+    post_id: str = Field(max_length=120)
+    url: str = Field(default="", max_length=500)
+    handle: str = Field(default="", max_length=120)
+    analysis_version: int = Field(default=1, ge=1)
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -530,6 +548,10 @@ class MediaInputs(BaseModel):
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
     #: Ordinary clips borrow motion; a reel replica edits one original video in place.
     clip_reference_mode: Literal["motion", "edit"] = "motion"
+    #: m-24820837: the reel a replica was made from — kept on the brief (in
+    #: `content_briefs.media`, no migration) so the piece shows its origin even after the
+    #: original reel is gone. Only a replica has it: an ordinary clip never carries one.
+    source_reel: SourceReelProvenance | None = None
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
     #: Clip (§ request 2026-10-23): the sound Seedance makes with the video. On by
     #: default — what every clip had before the switch; a model without audio (1.0)
@@ -608,6 +630,9 @@ class ContentBrief(BaseModel):
         )
         if clip_inputs and self.kind is not ContentKind.CLIP:
             raise ValueError("frames and references are for a clip")
+        if media.source_reel is not None:
+            if self.kind is not ContentKind.CLIP or media.clip_reference_mode != "edit":
+                raise ValueError("a source reel belongs to a reel replica")
         if self.kind is ContentKind.CLIP:
             if media.clip_reference_mode == "edit":
                 if len(media.clip_video_keys) != 1 or not media.clip_image_keys:

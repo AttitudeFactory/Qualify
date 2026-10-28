@@ -7,6 +7,21 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.referentes.reel_reference import prepare_reference
+from qualify_api.referentes.reels_ai import REPLICATION_ANALYSIS_VERSION
+
+
+def source_reel_provenance(card: dict[str, str]) -> dict[str, str]:
+    """m-24820837: the structured origin of the reel behind a replica — the same fields
+    `MediaInputs.source_reel` stores, as strings, ready for the generator's media payload.
+    The card lives only in this session; the stored brief is what lets the piece name its
+    origin later, after the reel has left discovery."""
+    return {
+        "platform": card.get("network", ""),
+        "post_id": card.get("id", ""),
+        "url": card.get("url", ""),
+        "handle": card.get("handle", ""),
+        "analysis_version": str(REPLICATION_ANALYSIS_VERSION),
+    }
 
 
 def import_reference(tenant_id: UUID, card: dict[str, str]) -> dict[str, str]:

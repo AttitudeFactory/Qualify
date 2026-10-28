@@ -49,6 +49,13 @@ from .ai import BrandBrief, _brand_block, _clip
 REVIEW_MODEL = "claude-sonnet-5"
 REVIEW_EFFORT: str | None = "low"
 
+#: m-24820837: the version of the replication analysis a replica records on its brief
+#: (`MediaInputs.source_reel.analysis_version`). Raised whenever the pipeline that reads
+#: the reel changes — the copy guidance, the reference fit, the edit mode — so a piece
+#: always names the analysis that made it, the same way a model-written artifact names
+#: its model.
+REPLICATION_ANALYSIS_VERSION = 1
+
 REVIEW_TOOL = "revisar_reels"
 
 #: Reels per call — a month of ten referentes goes out as a few parallel calls.

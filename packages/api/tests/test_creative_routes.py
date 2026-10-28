@@ -72,7 +72,20 @@ def _artifact(draft_id: UUID = DRAFT) -> ApprovedCreative:
         image_width=1080,
         image_height=1350,
         aspect_ratio="4:5",
-        provenance=MappingProxyType({"pipeline_version": "creative-v1", "copy_model_id": "m-1"}),
+        provenance=MappingProxyType(
+            {
+                "pipeline_version": "creative-v1",
+                "copy_model_id": "m-1",
+                # m-24820837: a replica's provenance names the reel it was made from
+                "source_reel": {
+                    "platform": "instagram",
+                    "post_id": "C8x",
+                    "url": "https://www.instagram.com/reel/C8x/",
+                    "handle": "@panaderia",
+                    "analysis_version": 1,
+                },
+            }
+        ),
     )
 
 
@@ -184,6 +197,9 @@ async def test_read_draft_returns_approved_creative() -> None:
     assert body["requires_ai_disclosure"] is False
     assert body["image_media_url"] == "https://v3.fal.media/files/some-image.png"
     assert body["provenance"]["pipeline_version"] == "creative-v1"
+    # m-24820837: a replica names the reel it was made from
+    assert body["provenance"]["source_reel"]["post_id"] == "C8x"
+    assert body["provenance"]["source_reel"]["url"] == "https://www.instagram.com/reel/C8x/"
 
 
 async def test_read_draft_404_when_not_an_artifact() -> None:

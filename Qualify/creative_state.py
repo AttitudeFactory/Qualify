@@ -172,7 +172,7 @@ from .gallery_state import schedule_readiness
 from .pending_state import PendingState
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
-from .reel_replication import replication_context
+from .reel_replication import replication_context, source_reel_provenance
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -861,6 +861,12 @@ class CreativeState(rx.State):
     #: and merged into ``_effective_topic`` at submit; the foreground ``brief_topic`` is
     #: never overwritten by it.
     replication_context: str = ""
+    #: m-24820837: the reel being copied, as structured origin — `{platform, post_id, url,
+    #: handle, analysis_version}` from the discovery card. It rides on the clip's media
+    #: payload to the brief (only while the reel video is still in it), so the finished
+    #: piece can name its source even after the reel leaves discovery. Set by
+    #: ``_apply_reel_reference``; cleared wherever the reference and its context reset.
+    source_reel: dict[str, str] = {}
     brief_product_ref: str = ""
     brief_intent: str = "organic"
     brief_must_mention: str = ""
@@ -3019,6 +3025,8 @@ class CreativeState(rx.State):
         # ``brief_topic`` is left untouched so the operator's Brand Kit context
         # (colours, typography, texts) stays as the foreground.
         self.replication_context = replication_context(card, self.brief_product_ref)
+        # m-24820837: the structured origin, kept alongside the text guidance.
+        self.source_reel = source_reel_provenance(card)
         self.brief_format = "reels_9_16"
         self.clip_duration = "5"
         self.clip_audio = True
@@ -3610,7 +3618,14 @@ class CreativeState(rx.State):
 
     @rx.event
     def remove_clip_video(self, key: str) -> None:
+        was_reel = any(
+            item["key"] == key and item.get("source") == "reel" for item in self.clip_videos
+        )
         self.clip_videos = [item for item in self.clip_videos if item["key"] != key]
+        if was_reel:
+            # m-24820837: without the original video the piece is no longer a replica:
+            # its source goes with it, so a later clip never drags a foreign reel.
+            self.source_reel = {}
         self._sync_clip_frames()
 
     @rx.event
@@ -3633,6 +3648,7 @@ class CreativeState(rx.State):
 
     def _clip_media(self) -> dict[str, object]:
         """A clip's brief media: its frames and references, nothing else."""
+        is_reel_edit = any(item.get("source") == "reel" for item in self.clip_videos)
         return {
             "duration_seconds": int(self.clip_duration),
             "clip_audio": self.clip_audio,
@@ -3648,11 +3664,10 @@ class CreativeState(rx.State):
             # a video is a motion reference even when it also lends the opening or
             # closing frame; without Seedance 2.x the producer falls back to the frames
             "clip_video_keys": [item["key"] for item in self.clip_videos],
-            "clip_reference_mode": (
-                "edit"
-                if any(item.get("source") == "reel" for item in self.clip_videos)
-                else "motion"
-            ),
+            "clip_reference_mode": "edit" if is_reel_edit else "motion",
+            # m-24820837: the reel this piece is a replica of — only while its original
+            # video is still in the clip (a normal clip never drags a foreign reel)
+            "source_reel": dict(self.source_reel) if is_reel_edit and self.source_reel else None,
             "clip_audio_keys": [item["key"] for item in self.clip_audios],
             "product_source": self.product_source,
             # § request 2026-10-20: the logo laid over every frame (no other element: a
@@ -5799,6 +5814,7 @@ class CreativeState(rx.State):
         self.brand_character_error = ""
         self.reference_video_key = ""
         self.reference_video_name = ""
+        self.source_reel = {}
         self.clip_first_frame_key = ""
         self.clip_first_frame_name = ""
         self.clip_last_frame_key = ""
@@ -5876,6 +5892,7 @@ class CreativeState(rx.State):
             async with self:
                 self.brief_topic = ""
                 self.replication_context = ""
+                self.source_reel = {}
                 self.staged_media_key = ""
                 self.staged_media_name = ""
             yield rx.redirect(f"/drafts/{draft_id}")

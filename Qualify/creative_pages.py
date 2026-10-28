@@ -23,6 +23,7 @@ from .creative_vm import (
     HARD_RULES_HINT,
     PURGED_TEXT,
     RECREATE_LABEL,
+    SOURCE_REEL_HINT,
     VIDEO_DRAFT,
     VIDEO_EXPIRED,
     CopyVariantVM,
@@ -2219,6 +2220,24 @@ def _variant_editor() -> rx.Component:
     )
 
 
+def _source_reel_pill(draft: rx.Component) -> rx.Component:
+    """m-24820837: the pill naming the reel a replica was made from. The brief kept the
+    original's URL, so the line opens it in the browser; without a URL it stays plain
+    text. Same look as the other review pills."""
+    pill = rx.box(
+        rx.icon("film", size=14),
+        rx.text(draft.source_reel_note, as_="span"),
+        class_name="q-rv-pill",
+        title=SOURCE_REEL_HINT,
+        cursor="help",
+    )
+    return rx.cond(
+        draft.source_reel_url != "",
+        rx.link(pill, href=draft.source_reel_url, is_external=True),
+        pill,
+    )
+
+
 def _review_panel() -> rx.Component:
     draft = CreativeState.draft
     return _card(
@@ -2245,6 +2264,13 @@ def _review_panel() -> rx.Component:
                     title=AI_LABEL_HINT,
                     cursor="help",
                 ),
+            ),
+            # m-24820837: a replicated piece names the reel it was made from; the line
+            # opens the original when the brief kept its URL (read from the brief, not
+            # from the discovery card, so it stays after the reel is gone).
+            rx.cond(
+                draft.source_reel_note != "",
+                _source_reel_pill(draft),
             ),
             # CREAR-5 (decision 8): the owner never reads money here — what a new version
             # uses is said in creations where it is asked for; the team reads the dollars
