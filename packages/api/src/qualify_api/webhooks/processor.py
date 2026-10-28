@@ -65,6 +65,7 @@ from qualify_api.mentions.resolve import (
     ResolutionOutcome,
     TenantResolution,
 )
+from qualify_api.webhooks.ownership import event_owners
 from qualify_api.webhooks.repository import (
     COMMENT_USERNAME_UNKNOWN,
     STATUS_AMBIGUOUS,
@@ -371,6 +372,7 @@ class Processor:
             if handler is None:
                 status = self._settle(event, Outcome(STATUS_UNSUPPORTED))
             else:
+                ownership_token = event_owners.set(event.owners)
                 try:
                     outcome = await handler(event)
                 except Exception as exc:  # noqa: BLE001 — any failure is a retry, logged
@@ -392,6 +394,8 @@ class Processor:
                     )
                 else:
                     status = self._settle(event, outcome)
+                finally:
+                    event_owners.reset(ownership_token)
             if status is None:
                 report.lost += 1
             else:
@@ -427,7 +431,9 @@ def production_processor(*, worker_id: str) -> Processor:
         connection_username,
         ingest_mention,
     )
-    from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
+    from qualify_api.webhooks.ownership import (  # noqa: PLC0415
+        resolve_owned_external_account as resolve_external_account,
+    )
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
     from qualify_api.whatsapp.campaigns import PostgresCampaignReceiptRepository  # noqa: PLC0415
     from qualify_api.whatsapp.catalog import load_catalog_for_phone  # noqa: PLC0415

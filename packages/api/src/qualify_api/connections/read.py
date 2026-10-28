@@ -91,7 +91,7 @@ def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
     with tenant_session(tenant_id) as session:
         rows = session.scalars(
             select(SocialConnection)
-            .where(SocialConnection.tenant_id == tenant_id)
+            .where(SocialConnection.tenant_id == tenant_id, SocialConnection.purged_at.is_(None))
             .order_by(SocialConnection.connected_at.desc())
         ).all()
         subscriptions = _latest_subscription_events(session, tenant_id)

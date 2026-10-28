@@ -91,7 +91,9 @@ def test_receiver_can_insert_with_a_targetless_on_conflict(engines) -> None:
         "DELETE FROM meta_webhook_events",
         "DELETE FROM meta_webhook_deliveries",
         _INSERT_DELIVERY + " RETURNING id",
-        _INSERT_DELIVERY.replace("ON CONFLICT DO NOTHING", "ON CONFLICT (body_sha256) DO NOTHING"),
+        _INSERT_DELIVERY.replace(
+            "ON CONFLICT DO NOTHING", "ON CONFLICT (body_sha256,consent_epoch) DO NOTHING"
+        ),
         "SELECT 1 FROM social_connections LIMIT 1",
         "SELECT 1 FROM mentions LIMIT 1",
         "SELECT 1 FROM tenants LIMIT 1",
@@ -380,12 +382,16 @@ def test_the_intake_tables_have_no_rls_policy_and_no_tenant_id(engines) -> None:
     'fixes' it with a policy that would silently filter the processor to zero rows."""
     with engines["owner"].connect() as conn:
         policies = conn.execute(
-            text("SELECT count(*) FROM pg_policies WHERE tablename LIKE 'meta_webhook_%'")
+            text(
+                "SELECT count(*) FROM pg_policies WHERE tablename IN "
+                "('meta_webhook_deliveries','meta_webhook_events')"
+            )
         ).scalar()
         tenant_cols = conn.execute(
             text(
                 "SELECT count(*) FROM information_schema.columns "
-                "WHERE table_name LIKE 'meta_webhook_%' AND column_name = 'tenant_id'"
+                "WHERE table_name IN ('meta_webhook_deliveries','meta_webhook_events') "
+                "AND column_name = 'tenant_id'"
             )
         ).scalar()
     assert (policies, tenant_cols) == (0, 0)

@@ -105,8 +105,20 @@ class FakeStore:
 class FakeSink:
     def __init__(self) -> None:
         self.objects: dict[str, tuple[UUID, bytes, str]] = {}
+        self.connection_checks: list[tuple[UUID, UUID, str, str]] = []
+        self.reject_connection_upload = False
 
-    def put_media(self, tenant_id: UUID, object_key: str, fileobj, content_type: str) -> None:
+    def put_connection_media(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        object_key: str,
+        fileobj,
+        content_type: str,
+    ) -> None:
+        self.connection_checks.append((tenant_id, connection_id, object_key, content_type))
+        if self.reject_connection_upload:
+            raise ValueError("connection_deletion_in_progress")
         self.objects[object_key] = (tenant_id, fileobj.read(), content_type)
 
 
@@ -384,6 +396,7 @@ def test_an_attachment_is_staged_under_the_tenant_prefix_and_queued_without_a_ur
     )
     assert staged.object_key.startswith(f"t/{TENANT}/media/{CONNECTION}/dm-")
     assert world.sink.objects[staged.object_key] == (TENANT, b"\xff\xd8", "image/jpeg")
+    assert world.sink.connection_checks == [(TENANT, CONNECTION, staged.object_key, "image/jpeg")]
     assert staged.preview_src.startswith("/r2media/image/")
     assert staged.name == "foto.jpg"
 
@@ -398,6 +411,26 @@ def test_an_attachment_is_staged_under_the_tenant_prefix_and_queued_without_a_ur
     unsent = world.gateway.conversation(TENANT, CONNECTION, thread).unsent
     assert [(u.media_type, u.text) for u in unsent] == [("image", "")]
     assert unsent[0].media_src.startswith("/r2media/image/")
+
+
+def test_attachment_upload_refusal_during_connection_purge_writes_nothing(world: World) -> None:
+    world.sink.reject_connection_upload = True
+
+    with pytest.raises(ValueError, match="connection_deletion_in_progress"):
+        world.gateway.stage_attachment(
+            TENANT,
+            CONNECTION,
+            name="foto.jpg",
+            content_type="image/jpeg",
+            media_type="image",
+            data=b"\xff\xd8",
+        )
+
+    checked_tenant, checked_connection, checked_key, checked_type = world.sink.connection_checks[0]
+    assert (checked_tenant, checked_connection) == (TENANT, CONNECTION)
+    assert checked_key.startswith(f"t/{TENANT}/media/{CONNECTION}/dm-")
+    assert checked_type == "image/jpeg"
+    assert world.sink.objects == {}
 
 
 def test_an_outbound_echo_renders_from_the_channels_cdn_url(world: World) -> None:
