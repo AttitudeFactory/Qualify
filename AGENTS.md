@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-Qualify is a multi-tenant marketing CRM (Reflex UI + FastAPI-backed modular monolith) built as a Python 3.12+ uv workspace. **`CLAUDE.md` is the primary instruction file** and points at the `qualify-*` skills under `.claude/skills/` (dev-env traps, PR flow, migrations, prod ops); read the relevant skill before nontrivial work. Docs in `docs/` are Spanish prose and describe intent — trust the filesystem and config over docs.
+Qualify is a multi-tenant marketing CRM (Reflex UI + FastAPI-backed modular monolith) built as a Python 3.12+ uv workspace. Cross-client roles and skills live in `.agents/skills/`; load `qualify-context` and the relevant workflow skill before nontrivial work. Claude Code retains its original `CLAUDE.md`, `.claude/agents/` and `.claude/skills/` unchanged. Docs in `docs/` are Spanish prose and describe intent — trust the filesystem and config over docs.
 
 ## Structure
 
@@ -46,3 +46,36 @@ Qualify is a multi-tenant marketing CRM (Reflex UI + FastAPI-backed modular mono
 - `.env.example` is the config reference (copy to `.env`, gitignored). Without DSN vars, code defaults to localhost `qualify`. `QUALIFY_AUTH_FAKE=1` / `QUALIFY_SIGNUP_OPEN=1` are dev/test only.
 - Production is a Hetzner VPS behind a shared edge Caddy: `just deploy <ssh-target> [ref]`, `just deploy-status`, `just deploy-logs`, `just env-push <target> KEY...` (copies secrets from local `.env` without printing them). Details: `docs/despliegue-hetzner.md` and the `qualify-prod-ops` skill.
 - `graphify-out/` holds a knowledge graph of the repo; `graphify query "<question>"` answers codebase questions, `graphify update .` refreshes it after changes.
+
+## Client capabilities
+
+- Use a named native subagent when supported. Otherwise give a generic subagent the role's
+  `SKILL.md` path and a self-contained brief. If delegation is unavailable, apply the role
+  in the current thread and state that limitation; do not claim a separate review occurred.
+- Inherit the active session's model, provider, tools and permissions. Claude model aliases
+  apply only to Claude adapters. Tool names and plugin skills depend on the client; use
+  available equivalents and disclose capabilities that prevent completing a task.
+- Before changing Reflex code, load `reflex-docs`, `setup-python-env` and
+  `reflex-process-management`. If missing, install with `npx skills add reflex-dev/agent-skills`
+  or follow the Reflex installation instructions in `CLAUDE.md` before editing.
+
+## How to work here
+
+- **Delegate code generation and log-heavy work to a subagent when supported** (founder, 2026-10-22):
+  writing code → the Qualify area role with the active session model; test runs, CI logs,
+  builds, wide searches → a
+  subagent that returns only the verdict. The main thread routes, decides and summarizes. Routing
+  table and briefs: **`qualify-lead`** skill.
+- **Roles** (cross-client instructions: `.agents/skills/<role>/SKILL.md`; Codex adapters in
+  `.codex/agents/`; existing Claude definitions remain in `.claude/agents/`): `backend-engineer`,
+  `creative-engineer`, `reflex-ui-engineer`, `platform-engineer`, `data-scientist-fde`,
+  `principal-architect`, `market-analyst`, `product-owner`, `ux-designer` (UX only: client profile,
+  research, mockups, and the mandatory local suggestions-only review before opening any PR that
+  touches client-facing paths). Ownership map: `docs/equipo-agentes.md`.
+- **Squads** are skills the founder triggers: `/qualify-team-dev`, `/qualify-team-po`,
+  `/qualify-team-research`. Agent teams (experimental) are off.
+- **Every change ships as a PR with its Meegle ticket; agents may merge it with `just merge <pr>`
+  once CI is green** (`--admin` only as a production contingency) and deploy through the
+  documented paths (founder, 2026-10-23) — full procedure, CI table and Actions budget:
+  **`qualify-pr`**; what still needs the founder: **`qualify-prod-ops`**.
+  Tickets: `meegle-ticket`. Client onboarding: `meegle-altas`.

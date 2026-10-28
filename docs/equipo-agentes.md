@@ -1,30 +1,75 @@
 # Organización de agentes y skills de Qualify
 
-Mapa de los subagentes de Claude Code (`.claude/agents/`) y de las skills propias de Qualify (`.claude/skills/qualify-*`). Documento vivo de organización interna, no de producto.
+Mapa de los nueve roles de Qualify y sus skills compartidas en `.agents/skills/`.
+Los adaptadores nuevos de Codex viven en `.codex/agents/`; Claude conserva sus agentes
+y skills originales en `.claude/`.
+Documento vivo de organización interna, no de producto.
 
-**Actualizado 2026-10-22** (PR #214, m-24840372).
+**Actualizado 2026-10-28**: incorporación de instrucciones transversales entre proveedores.
+
+## Usarlos desde Codex, Claude u otro cliente
+
+`AGENTS.md` contiene las reglas para los clientes que lo cargan. Cada rol transversal tiene su definición completa en
+`.agents/skills/<rol>/SKILL.md`: responsabilidades, límites, entregables y enlaces a las skills
+que debe leer. Se mantienen los nueve nombres de la tabla siguiente.
+
+| Cliente | Cómo usarlo |
+|---|---|
+| Codex | Abrir el repositorio y pedir «Delega en `platform-engineer` la revisión del despliegue» o «Usa `principal-architect` para revisar esta propuesta». Los adaptadores TOML de `.codex/agents/` apuntan a las instrucciones compartidas. |
+| Codex como skill | Invocar `$platform-engineer` o `$principal-architect` en el prompt. Esto aplica el rol; para un contexto separado, pedir explícitamente un subagente. |
+| Claude Code | Seguir usando sus agentes por nombre, su `CLAUDE.md` y sus skills originales. La configuración de Claude se conserva completa. |
+| Otro cliente con Agent Skills | Configurar su descubrimiento para `.agents/skills/` y cargar `AGENTS.md`. Invocar el rol con la sintaxis de ese cliente. |
+| Cliente sin descubrimiento de skills | Pedir «Lee `AGENTS.md` y `.agents/skills/principal-architect/SKILL.md`, carga sus dependencias y revisa…». Si admite subagentes genéricos, incluir esas rutas en el encargo. |
+
+Codex hereda el modelo, proveedor y permisos de la sesión; no recibe alias `opus`/`sonnet`.
+Los metadatos `claude-*` documentan la configuración de origen; el generador no modifica Claude. Las
+herramientas de navegador, comunicación entre agentes y plugins externos dependen del cliente:
+usar los equivalentes disponibles y declarar cualquier capacidad que falte. Si no hay
+subagentes, aplicar el rol en el hilo actual y señalar que no hubo revisión independiente.
+Las skills externas `design:*`, `engineering:*`, `meegle`, etc. no se distribuyen aquí; los roles
+incluyen las instrucciones locales y distinguen las dependencias externas opcionales.
+
+Para modificar un rol transversal, editar su `SKILL.md` y regenerar los adaptadores de Codex:
+
+```bash
+python3 infra/agents/sync.py
+python3 infra/agents/sync.py --check
+```
+
+El generador usa solo la biblioteca estándar de Python. El frontmatter de los nueve roles
+usa valores JSON en una línea por campo (subconjunto válido de YAML). `metadata.required-skills`
+enumera dependencias locales y `metadata.optional-skills` las externas. Las skills de apoyo
+se editan directamente en `.agents/skills/`; scripts, referencias y recursos viajan juntos.
+Las copias originales de `.claude/skills/` permanecen en sus rutas históricas. El generador
+solo escribe `.codex/agents/` y no crea enlaces ni modifica archivos de Claude. Las skills de
+ClickHouse siguen fuera de Claude conforme a ADR 31. Las tres skills de squads conservan
+invocación explícita. Si el cliente no refleja los cambios, iniciar una sesión nueva.
+
+Referencias: [skills de Codex](https://learn.chatgpt.com/docs/build-skills),
+[subagentes personalizados](https://learn.chatgpt.com/docs/agent-configuration/subagents) y
+[AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 ## El modelo: skills primero, pocos subagentes
 
 Siguiendo la guía actual de Anthropic (revisada el 2026-10-22):
 
 - **Las skills son la unidad principal.** Empaquetan procedimientos y conocimiento y cargan solo cuando aplican; los antiguos comandos de `.claude/commands/` ya son skills. Todo lo propio de Qualify vive en skills `qualify-*`.
-- **Los subagentes existen para aislar contexto y elegir modelo**, no como personajes. Sirven cuando el trabajo llenaría la conversación principal de código, logs o archivos: el subagente lo hace en su propia ventana y devuelve un resumen. Cada subagente **precarga** sus skills (`skills:` en su frontmatter).
+- **Los subagentes existen para aislar contexto**, no como personajes. Sirven cuando el trabajo llenaría la conversación principal de código, logs o archivos: el subagente lo hace en su propia ventana y devuelve un resumen. Cada rol **lee explícitamente** sus dependencias; Claude también las precarga con `skills:`.
 - **`CLAUDE.md` se queda corto** (se carga entero en cada sesión; Anthropic recomienda menos de 200 líneas). Lo largo se mudó a `qualify-pr`, `qualify-dev-env` y `qualify-history`.
 - **Los equipos de agentes experimentales están apagados** (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` fuera de `.claude/settings.json`): cuestan bastante más tokens que una sesión normal, no aplican las skills de los agentes y los squads no se usaban desde agosto. Los squads ahora son skills que coordinan subagentes normales.
 
-**Regla del fundador (2026-10-22): el código y las tareas con muchos logs SIEMPRE van a un subagente**, en Opus 5.5 para escribir código o en el modelo que mejor encaje para leer logs o buscar. El hilo principal coordina, decide y resume (`qualify-lead`).
+**Regla del fundador (2026-10-22): el código y las tareas con muchos logs van a un subagente** cuando el cliente lo admite. La selección de modelo corresponde al cliente y a las preferencias de la sesión. El hilo principal coordina, decide y resume (`qualify-lead`).
 
 ## Subagentes (9)
 
-| Agente | Modelo | Dueño de (rutas) | Skills precargadas |
+| Agente | Modelo en Claude | Dueño de (rutas) | Skills requeridas (abreviadas) |
 |---|---|---|---|
 | `backend-engineer` | opus | `packages/api/` (salvo creative/catalog/stock/canva), `packages/shared/`, `packages/scraper/`, `migrations/postgres/` (todas) | context, pr, dev-env, migration |
 | `creative-engineer` | opus | `packages/creative/`, `packages/render/`, `qualify_api.{creative,catalog,stock,canva}` | context, pr, dev-env, copy-es, measure |
 | `reflex-ui-engineer` | opus | `Qualify/`, `assets/`, `rxconfig.py`, E2E | context, pr, dev-env, copy-es |
 | `platform-engineer` | opus | `deploy/`, `.github/`, `infra/`, `docker-compose*.yml`, `justfile` | context, pr, dev-env, prod-ops |
 | `data-scientist-fde` | opus | `packages/models/`, `packages/api/evals/`, `docs/modelos-generativos/` | context, pr, dev-env, measure, business-decisions |
-| `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `CLAUDE.md` | context, pr, migration, history, business-decisions |
+| `principal-architect` | opus | `docs/arquitectura.md`, `docs/adr-*.md`, `AGENTS.md` | context, pr, migration, history, business-decisions |
 | `market-analyst` | sonnet | Oferta: `docs/*research*`, `*alternativas*`, `ingenieria-inversa-*`, `dolores-*`, `apis-*`, `costos-*`, `comparativa-*` · Vector: `docs/oportunidades-mercado-*.md` · Demanda: `docs/demanda-ventas-*.md` | context |
 | `product-owner` | opus | `docs/backlog-*.md`, `docs/epica-*.md`, tickets de Meegle (Features, Issues, Altas) | context, backlog, business-decisions, copy-es, meegle-ticket, meegle, meegle-altas, lark-admin |
 | `ux-designer` | opus | `docs/perfil-cliente-pyme.md`, `docs/ux-*.md`, skill `qualify-ux`; revisión de experiencia local antes de abrir cada PR que toca lo que ve el cliente; sus sugerencias van a la sección «Sugerencias de UX» del PR (solo sugiere, no escribe código de la app) | context, ux, copy-es, design:user-research, design:design-critique, design:ux-copy, design:accessibility-review |
@@ -49,9 +94,8 @@ Todos precargan además `durable-findings`. `product-owner` es dueño de los tic
 | `qualify-lark-admin` | Ítems y configuración de Meegle, administración de Lark: MCP, CLIs oficiales (`meegle`, `lark-cli` y sus skills) o Chrome para las consolas | Hilo principal, platform |
 | `qualify-history` | Visión original, pipeline de earned media, mapa de fases, decisiones pasadas | architect |
 | `qualify-team-dev` / `qualify-team-po` / `qualify-team-research` | Squads que dispara el fundador (`/qualify-team-…`) | Hilo principal |
-| `review-agent` | Revisión de código independiente y de solo lectura sobre el diff final contra el merge base, obligatoria antes de cada PR junto con `ux-designer` (`qualify-pr` §5); checklist de reglas duras, hallazgos con file:line y veredicto | Revisor independiente del autor (subagente); dueño: `principal-architect` |
 
-También del proyecto: `meegle-ticket`, `meegle-altas`, `durable-findings`, `compass-skill-synthesis`, `sage-skill-evolution`, y skills genéricas (`develop-adr`, `eval-driven-dev`, `competitor-profiling`, …). Las skills de ClickHouse se desenlazaron de `.claude/skills/` (siguen en `.agents/skills/` para cuando se cruce el umbral de ADR 31).
+También del proyecto: `meegle-ticket`, `meegle-altas`, `durable-findings`, `compass-skill-synthesis`, `sage-skill-evolution`, y skills genéricas (`develop-adr`, `eval-driven-dev`, `competitor-profiling`, …). Se agregan copias transversales en `.agents/skills/` y se conservan los originales de Claude. Las skills de ClickHouse siguen fuera de `.claude/skills/` para cuando se cruce el umbral de ADR 31.
 
 ## Qué cambió el 2026-10-22
 
@@ -76,7 +120,7 @@ La organización de agentes no es estática — evoluciona con evidencia, median
 - **COMPASS** (`.claude/skills/compass-skill-synthesis/`) — *síntesis cooperativa de skills*, adaptado del paper de Li, Zhao & Pajarinen (arXiv:2502.10148): cuando un agente o squad detecta un hueco de capacidad (ningún skill/specialist lo cubre, o el mismo procedimiento se improvisa ≥2 veces según el ledger), se sintetiza un skill nuevo (`SKILL.md` + Python ejecutable cuando el procedimiento es determinista) y se asigna al agente mejor calificado por dominio — no al que descubrió el hueco. Ciclo closed-loop del paper: el asignado lo prueba en la tarea que originó el hueco y escribe una **auto-reflexión** (qué acertó, qué estaba ambiguo) que el sintetizador incorpora al skill antes de cerrarlo. También soporta **bootstrapping**: destilar skills desde procedimientos ya improvisados con éxito en sesiones pasadas (nuestras "demostraciones expertas"), sin esperar la repetición. Skills que codifican decisiones de arquitectura requieren visto bueno de `principal-architect`.
 - **SAGE** (`.claude/skills/sage-skill-evolution/`) — *auto-mejora dirigida por resultados*, adaptado del paper de Peng et al. (arXiv:2603.15255): cada lead registra los outcomes de las tareas de su squad (`success`/`partial`/`failure`/`improvised`) en `.claude/compass-sage/ledger.md`. Ante fallos repetidos (≥2 del mismo agente en el mismo tipo de subtarea → **rebalancear** la carga a otro agente; ≥2 entre agentes distintos con el mismo skill → **reescribir** ese `SKILL.md`), el sistema ajusta routing, skills o charters de agentes — una variable a la vez, siempre citando las entradas del ledger que lo motivan. No es RL literal (no hay GRPO a nivel harness); es el mismo objetivo — maximizar el ratio de éxito por subtarea — optimizado sobre los artefactos editables: instrucciones de skills, charters y enrutamiento.
 
-**Invariantes protegidos** (nunca se "evolucionan"): las reglas duras de `CLAUDE.md` y de la skill `qualify-context` §3 (aislamiento por tenant con RLS, provenance, buy-vs-build, idempotencia, respuestas asistidas y nunca autónomas), los límites de file ownership de cada squad, y la regla de entrega (todo cambio por PR; merge solo con `just merge` y CI en verde, `--admin` solo como contingencia de producción). Si un patrón de fallos parece exigir cambiar uno de estos, es una decisión del usuario, no un rewrite de SAGE.
+**Invariantes protegidos** (nunca se "evolucionan"): las reglas duras de `AGENTS.md` y de la skill `qualify-context` §3 (aislamiento por tenant con RLS, provenance, buy-vs-build, idempotencia, respuestas asistidas y nunca autónomas), los límites de file ownership de cada squad, y la regla de entrega (todo cambio por PR; merge solo con `just merge` y CI en verde, `--admin` solo como contingencia de producción). Si un patrón de fallos parece exigir cambiar uno de estos, es una decisión del usuario, no un rewrite de SAGE.
 
 ### Procedencia de los conceptos (papers de origen)
 
