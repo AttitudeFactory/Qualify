@@ -56,6 +56,7 @@ from qualify_api.auth.invites import (
     CreatedInvite,
     SignupNotAllowed,
     create_invite,
+    email_exists,
     expire_invites_for_work_item,
     registered_tenant_for_work_item,
     send_invite_email,
@@ -158,6 +159,7 @@ class OnboardingEngine:
         base_url: str | None = None,
         signer: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        account_exists: Callable[[str], bool] = email_exists,
     ) -> None:
         self._client = client
         self._resolver = resolver
@@ -166,6 +168,7 @@ class OnboardingEngine:
         self._base_url = base_url
         self._signer = signer
         self._clock = clock
+        self._account_exists = account_exists
 
     # -- helpers ---------------------------------------------------------------------
 
@@ -260,11 +263,30 @@ class OnboardingEngine:
         business = item.name.strip()
         network, handle, account_reason = self.social_account(item)
         instagram = handle if network == "instagram" else None
+        existing_login_raw = self._optional_field_text(item, names.existing_login)
+        is_add_business = existing_login_raw.lower() in (
+            "sí",
+            "si",
+            "true",
+            "1",
+            "yes",
+            "verdadero",
+        )
+        if not is_add_business and self._account_exists(email):
+            return self._fail(
+                work_item_id,
+                "existing_login_required",
+                "Ese correo ya tiene cuenta en Qualify. Marca «Inicio de sesión existente» "
+                "para agregarle este negocio y completa «Datos» otra vez.",
+                None,
+                instagram,
+            )
         try:
             choice = self.plan_choice(item, event_key=event_key, actor=actor)
         except InvalidPlanRequest as exc:
             return self._fail(work_item_id, "invalid_plan", exc.message, None, instagram)
         extra: dict[str, Any] = {} if choice.empty else {"alta_plan": choice}
+        extra["is_add_business"] = is_add_business
 
         invite: CreatedInvite | None = None
         try:
@@ -337,7 +359,9 @@ class OnboardingEngine:
             )
         lines.append(f"Corrige los datos y vuelve a completar «{names.node_data}».")
         self._client.update_fields(work_item_id, pairs)
-        self._client.comment(work_item_id, "\n".join(lines))
+        self._client.comment(
+            work_item_id, detail if reason == "existing_login_required" else "\n".join(lines)
+        )
         self._rollback_data_node(work_item_id, detail)
         logger.warning(
             "meegle onboarding: work_item=%s invitation failed (%s)", work_item_id, reason

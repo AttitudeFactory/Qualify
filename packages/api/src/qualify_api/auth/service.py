@@ -27,7 +27,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.drafts import adoptable_draft, claim_draft
@@ -79,7 +79,9 @@ class LoginResult:
     access_token: str
 
 
-def _validate_signup(business_name: str, email: str, password: str) -> None:
+def _validate_signup(
+    business_name: str, email: str, password: str, *, new_password: bool = True
+) -> None:
     if not business_name.strip():
         raise RegistrationInvalid("El nombre del negocio no puede estar vacío.")
     # Literal email handling (criterion 6): no lowercasing, no stripping of `+…` —
@@ -87,21 +89,33 @@ def _validate_signup(business_name: str, email: str, password: str) -> None:
     # and rather than silently trimming we refuse it.
     if email != email.strip() or "@" not in email or email.count("@") != 1:
         raise RegistrationInvalid("El email no es válido.")
-    if len(password) < _MIN_PASSWORD_LENGTH:
+    if new_password and len(password) < _MIN_PASSWORD_LENGTH:
         raise RegistrationInvalid(
             f"La contraseña debe tener al menos {_MIN_PASSWORD_LENGTH} caracteres."
         )
 
 
 def _resolve_identity_for_signup(
-    provider: AuthProvider, email: str, password: str, new_tenant_id: UUID
+    provider: AuthProvider,
+    email: str,
+    password: str,
+    new_tenant_id: UUID,
+    *,
+    is_add_business: bool = False,
 ) -> tuple[UUID, UUID]:
     """Create the identity user, or — on a retry — recover the existing one.
 
     Returns `(auth_user_id, tenant_id)`. On the retry path the tenant id comes from
     the EXISTING stamp, so a re-run completes the original registration rather than
-    minting a second tenant for the same credential.
+    minting a second tenant for the same credential. When `is_add_business` is True,
+    sign in with the existing credential to get auth_user_id and use the new tenant_id.
     """
+    if is_add_business:
+        try:
+            auth_session = provider.sign_in(email, password)
+        except InvalidCredentials:
+            raise RegistrationInvalid("Esa contraseña no coincide. Inténtalo otra vez.") from None
+        return auth_session.auth_user_id, new_tenant_id
     try:
         return provider.admin_create_user(email, password, new_tenant_id), new_tenant_id
     except EmailAlreadyRegistered:
@@ -113,9 +127,6 @@ def _resolve_identity_for_signup(
                 "medias, reintenta con la misma contraseña."
             ) from None
         if session.tenant_id is None:
-            # An identity user created outside this flow (e.g. by hand in the
-            # dashboard) has no stamp; adopting it silently would let an unstamped
-            # credential mint a tenant on login. Refuse loudly instead.
             raise RegistrationInvalid(
                 "Ese email ya existe en el proveedor de identidad sin negocio asociado. "
                 "Contacta al administrador."
@@ -186,6 +197,19 @@ def _open_draft_tenant_id(email: str) -> UUID | None:
     with admin_session() as session:
         draft = adoptable_draft(session, email, meegle_work_item_id=None)
         return draft.tenant_id if draft is not None else None
+
+
+def _lock_signup_email(session: Session, email: str) -> None:
+    """Serialize registrations across distinct invites for the same identity.
+
+    The lock spans the provider call and local commit. Otherwise another invite
+    could see an existing identity before its local account has committed and
+    mistake that in-flight registration for an incomplete signup to recover.
+    """
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"qualify:signup:{email.strip().casefold()}"},
+    )
 
 
 def _persist_business(
@@ -262,10 +286,13 @@ def register_business(
     created, and spent only once the business exists. Order matters: the identity
     provider is outside our transaction, so a signup that lost the race on the invite
     must learn it before it creates a user there (an orphan identity would block that
-    email). The lock is held across one provider call, on one row that only the racing
-    tabs of one link contend for. Without an invite (dev/tests, `QUALIFY_SIGNUP_OPEN=1`)
+    email). A transaction advisory lock on the normalized email also serializes
+    different invitations for the same identity, through the provider call and local
+    commit, so a concurrent signup cannot masquerade as an incomplete registration.
+    Without an invite (dev/tests, `QUALIFY_SIGNUP_OPEN=1`)
     nothing is locked and every refusal still fires before the database is touched."""
-    _validate_signup(business_name, email, password)
+    if invite_id is None:
+        _validate_signup(business_name, email, password)
     local = dict(
         email=email,
         business_name=business_name.strip(),
@@ -289,7 +316,32 @@ def register_business(
             )
     else:
         with admin_session() as session:
+            _lock_signup_email(session, email)
             invite = lock_invite(session, invite_id, email)
+            if invite.is_add_business:
+                email = invite.email
+                business_name = invite.business_name or business_name
+                local.update(
+                    email=email,
+                    business_name=business_name.strip(),
+                    display_name=display_name or business_name.strip(),
+                )
+            _validate_signup(
+                business_name, email, password, new_password=not invite.is_add_business
+            )
+            if (
+                not invite.is_add_business
+                and session.scalar(
+                    select(User.id)
+                    .where(func.lower(User.email) == email.lower(), User.auth_user_id.is_not(None))
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise RegistrationInvalid(
+                    "Ese correo ya tiene cuenta en Qualify. "
+                    "Pide una invitación para agregar el negocio a tu cuenta."
+                )
             meegle_work_item_id = invite.meegle_work_item_id
             alta_plan = alta_plan_of(invite)
             # Chosen only now, with the invite locked and re-checked: its Meegle item is
@@ -297,8 +349,26 @@ def register_business(
             draft = adoptable_draft(session, email, meegle_work_item_id=meegle_work_item_id)
             draft_tenant_id = draft.tenant_id if draft is not None else None
             auth_user_id, tenant_id = _resolve_identity_for_signup(
-                provider, email, password, draft_tenant_id or uuid4()
+                provider,
+                email,
+                password,
+                draft_tenant_id or uuid4(),
+                is_add_business=invite.is_add_business,
             )
+            # A normal invite may recover an identity-only incomplete signup, but
+            # must never attach another Alta's business to a completed account.
+            existing_user = session.scalar(
+                select(User.id).where(User.auth_user_id == auth_user_id).limit(1)
+            )
+            if not invite.is_add_business and existing_user is not None:
+                raise RegistrationInvalid(
+                    "Ese correo ya tiene cuenta en Qualify. "
+                    "Pide una invitación para agregar el negocio a tu cuenta."
+                )
+            if invite.is_add_business and existing_user is None:
+                raise RegistrationInvalid(
+                    "Ese correo no tiene una cuenta en Qualify. Pide una nueva invitación."
+                )
             _persist_business(
                 session,
                 draft_tenant_id=draft_tenant_id,

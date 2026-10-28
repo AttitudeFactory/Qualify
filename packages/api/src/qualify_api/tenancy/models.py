@@ -19,6 +19,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -184,6 +185,9 @@ class SignupInvite(Base):
     alta_event_key: Mapped[str | None] = mapped_column(String, nullable=True)
     registered_tenant_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True
+    )
+    is_add_business: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
     )
 
 

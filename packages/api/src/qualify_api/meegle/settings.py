@@ -141,6 +141,7 @@ class MeegleNames:
     plan: str = "Plan"
     pack: str = "Paquete"
     plan_reason: str = "Motivo"
+    existing_login: str = "Inicio de sesión existente"
     # fields Qualify writes
     status: str = "Estado Qualify"
     invite_link: str = "Enlace de invitación"

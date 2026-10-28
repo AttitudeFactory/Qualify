@@ -155,6 +155,8 @@ def _first_name(full: str) -> str:
 def subject_for(invite: CreatedInvite, signer: str) -> str:
     """Name first, like a message from someone you know (founder, 2026-10-21: "que se
     sienta como hablar con un vecino")."""
+    if invite.is_add_business:
+        return "Agrega otro negocio a tu cuenta"
     first = _first_name(signer)
     name = _first_name(invite.recipient_name)
     if name and first:
@@ -175,8 +177,14 @@ def _greeting(invite: CreatedInvite) -> str:
 
 def _lead_text(invite: CreatedInvite, signer: str) -> tuple[str, str, str]:
     """(before, bold, after) of the opening sentence, unescaped."""
-    who = f"{signer} te invitó" if signer else "Te invitamos"
     business = invite.business_name or "tu negocio"
+    if invite.is_add_business:
+        return (
+            "Te invitaron a manejar ",
+            business,
+            " con tu misma cuenta. Escribe tu contraseña para confirmarlo.",
+        )
+    who = f"{signer} te invitó" if signer else "Te invitamos"
     return f"{who} a Qualify para que abras la cuenta de ", business, "."
 
 
@@ -205,11 +213,13 @@ def _fine_print(email: str, expires: str) -> str:
 
 def _text(invite: CreatedInvite, link: str, signer: str, expires: str, can_reply: bool) -> str:
     before, bold, after = _lead_text(invite, signer)
-    lines = [_greeting(invite), "", f"{before}{bold}{after} {_EASY}", ""]
+    easy = "" if invite.is_add_business else f" {_EASY}"
+    lines = [_greeting(invite), "", f"{before}{bold}{after}{easy}", ""]
     if invite.note:
         lines += [f"«{invite.note}»", *([f"— {signer}"] if signer else []), ""]
+    action_prompt = "Agrega tu negocio aquí:" if invite.is_add_business else "Crea tu cuenta aquí:"
     lines += [
-        "Crea tu cuenta aquí:",
+        action_prompt,
         link,
         "",
         f"{_SCENE_TITLE}:",
@@ -379,7 +389,9 @@ def _html(
 ) -> str:
     esc = html.escape
     before, bold, after = _lead_text(invite, signer)
-    lead = f'{esc(before)}<strong class="q-ink">{esc(bold)}</strong>{esc(after)} {esc(_EASY)}'
+    easy = "" if invite.is_add_business else f" {esc(_EASY)}"
+    lead = f'{esc(before)}<strong class="q-ink">{esc(bold)}</strong>{esc(after)}{easy}'
+    action = "Agregar negocio" if invite.is_add_business else "Crear mi cuenta"
     reply = _p(esc(_REPLY), size=13, role="muted") if can_reply else ""
     header = _lockup(base_url, icon=36, word=24)
     attitude = (
@@ -436,7 +448,7 @@ def _html(
  font-weight:600;letter-spacing:-0.012em;color:{_INK};">{esc(_greeting(invite))}</h1>
 {_p(lead, size=16, margin="0 0 20px 0")}
 {_note_block(invite.note, signer) if invite.note else ""}
-{_button(link, "Crear mi cuenta")}
+{_button(link, action)}
 {_scenes(base_url)}
 {sign_off}
 <div class="q-line" style="border-top:1px solid {_LINE};margin:0 0 16px 0;"></div>
