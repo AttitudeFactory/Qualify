@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import gc
+import html
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -162,11 +164,12 @@ def fake_r2() -> tuple[ThreadingHTTPServer, dict[str, object]]:
 
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
-            request = ET.fromstring(self.rfile.read(length))
+            # Only consume boto3's controlled synthetic DeleteObjects shape. Avoid a general
+            # XML parser on request bytes received by this local HTTP fixture.
+            request_body = self.rfile.read(length)
             keys = [
-                node.text or ""
-                for node in request.iter()
-                if node.tag.endswith("}Key") or node.tag == "Key"
+                html.unescape(key.decode("utf-8"))
+                for key in re.findall(rb"<Key>(.*?)</Key>", request_body)
             ]
             state["delete_attempts"] = int(state["delete_attempts"]) + 1
             if not state["failed_once"]:
