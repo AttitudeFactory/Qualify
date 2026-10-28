@@ -172,6 +172,45 @@ def _requested_by(parsed: MeegleEvent) -> str:
     return f"meegle:{who or parsed.actor}"
 
 
+def _sync_consumption(work_item_id: int) -> str:
+    """m-24823681: post the consumption summary to the «Alta de cliente» item.
+    Guarded so a ledger/Meegle failure never turns the node event into a retry."""
+    try:
+        from qualify_api.consumption import sync_consumption_to_meegle  # noqa: PLC0415
+
+        return sync_consumption_to_meegle(work_item_id)
+    except Exception:  # noqa: BLE001 — the node is done; the ledger is not load-bearing
+        logger.warning("consumption sync for work_item=%s failed", work_item_id, exc_info=True)
+        return "failed"
+
+
+def post_consumption_comment(work_item_id: int, markdown: str) -> str:
+    """m-24823681: post a consumption summary comment to a Meegle work item.
+
+    The meegle package owns the client (the plugin secret lives here); the
+    consumption package owns the ledger read and the summary text. This is the
+    one door between them so the consumption module never imports the raw
+    client (the `meegle.client` sanctity guard). Returns `synced` on success,
+    `meegle_off` when the engine is not configured, and `meegle_failed` on any
+    refusal or transport failure (never raises — the ledger rows are the record).
+    """
+    from qualify_api.meegle.client import MeegleClient  # noqa: PLC0415
+    from qualify_api.meegle.settings import (  # noqa: PLC0415
+        MeegleSettings,
+        meegle_configured,
+    )
+
+    if not meegle_configured():
+        return "meegle_off"
+    settings = MeegleSettings.from_env()
+    client = MeegleClient(settings)
+    try:
+        client.comment(work_item_id, markdown)
+    finally:
+        client.close()
+    return "synced"
+
+
 async def _plan_update(
     engine: OnboardingEngine, work_item_id: int, event_key: str, actor: str
 ) -> Outcome:
@@ -209,6 +248,13 @@ def _onboarding_handlers(
         if names.node_data.casefold() not in folded:
             if names.node_plan.casefold() in folded:
                 return await _plan_update(engine, work_item_id, event_key, actor)
+            # m-24823681: «Kit de marca listo» → post the consumption summary.
+            # Best-effort (a `processed` outcome with `consumption=<label>`); a
+            # retry of the event is safe — Meegle accepts a repeated comment, and
+            # the ledger rows are the record, so `empty` just means "nothing yet".
+            if names.node_brand_kit_ready.casefold() in folded:
+                label = await asyncio.to_thread(_sync_consumption, work_item_id)
+                return Outcome(STATUS_PROCESSED, f"consumption={label}")
             label = ",".join(completed) or ",".join(keys) or "?"
             return Outcome(STATUS_PROCESSED, f"ignored:node={label}"[:200])
         try:

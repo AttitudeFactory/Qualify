@@ -49,8 +49,20 @@ def test_v7_is_v6_plus_only_the_three_with_video_units() -> None:
     v7 = json.loads((data / "v7.json").read_text(encoding="utf-8"))
     assert v7["version"] == "v7"
     added = {f"per_mtok_video_{res}_with_video" for res in ("480p", "720p", "1080p")}
-    assert v7["entries"].keys() == v6["entries"].keys()
+    new_models = {
+        "claude-haiku-5-5",
+        "claude-haiku-4-5",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "scrapecreators",
+    }
+    assert v7["entries"].keys() == v6["entries"].keys() | new_models
     for model_id, units in v7["entries"].items():
+        if model_id in new_models:
+            continue
         extra = units.keys() - v6["entries"][model_id].keys()
         assert extra == (added if model_id == MODEL else set()), model_id
         for unit, price in v6["entries"][model_id].items():
