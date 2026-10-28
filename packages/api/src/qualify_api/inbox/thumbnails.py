@@ -239,7 +239,9 @@ class R2ThumbnailStore:
         key = thumbnail_key(tenant_id, connection_id, media.id)
         body, content_type = await self._fetcher.fetch(url)
         gate = self._gate_factory()
-        await asyncio.to_thread(gate.put_media, tenant_id, key, io.BytesIO(body), content_type)
+        await asyncio.to_thread(
+            gate.put_connection_media, tenant_id, connection_id, key, io.BytesIO(body), content_type
+        )
         return StoredThumbnail(key=key, content_type=content_type, source=source)
 
 

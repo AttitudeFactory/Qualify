@@ -101,6 +101,9 @@ x-app-env: &app-env
   QUALIFY_DB_WEBHOOK_PASSWORD: ""
   QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ""
   QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ""
+  QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ""
+  # Dedicated DELETE authority is operator-only, never inherited by serving processes.
+  QUALIFY_CONNECTION_PURGE_DSN: ""
 
 x-app-env-file: &app-env-file
   env_file:
@@ -175,6 +178,7 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
+      QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
     command:
       - sh
       - -c
@@ -435,6 +439,23 @@ services:
   # mem_limit 512m (platform-engineer verdict, 2026-10-24): at most
   # QUALIFY_CREATIVE_WORKER_DOWNLOADS (2, max 3) vendor videos download at once, streamed
   # to a temporary file, apart from the 10 vendor slots.
+  # Explicit operator command only: never part of a bare `up`, no automatic execution.
+  # dc run --rm -T connection-purge --tenant UUID [--connection UUID] [--request] --execute
+  connection-purge:
+    <<: [*app-image, *app-env-file, *logging]
+    profiles: ["connection-purge"]
+    restart: "no"
+    mem_limit: 256m
+    memswap_limit: 256m
+    environment:
+      <<: *app-env
+      QUALIFY_CONNECTION_PURGE_DSN: postgresql+psycopg://qualify_connection_purge:${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}@postgres:5432/qualify
+    entrypoint: ["python", "-m", "qualify_api.connections.purge_cli"]
+    command: ["--help"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   creative-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped

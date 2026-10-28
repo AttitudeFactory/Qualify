@@ -45,6 +45,7 @@ ROLE_PASSWORD_ENVS: dict[str, str] = {
 # Roles whose password may be absent: NOLOGIN until it is set (never the dev password).
 OPTIONAL_ROLE_PASSWORD_ENVS: dict[str, str] = {
     "qualify_creative_worker": "QUALIFY_DB_CREATIVE_WORKER_PASSWORD",
+    "qualify_connection_purge": "QUALIFY_DB_CONNECTION_PURGE_PASSWORD",
 }
 DEV_PASSWORDS = frozenset(
     {
@@ -54,6 +55,7 @@ DEV_PASSWORDS = frozenset(
         "webhook_dev",
         "webhook_worker_dev",
         "creative_worker_dev",
+        "connection_purge_dev",
         "dev_only",
     }
 )

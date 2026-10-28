@@ -42,6 +42,7 @@ from qualify_api.connections.page_subscription import (
     PageSubscriptions,
     PostgresPageSubscriptionRecorder,
 )
+from qualify_api.connections.read import list_connections
 from qualify_api.connections.repository import PostgresConnectionRepository
 from qualify_api.connections.revoke import (
     PostgresRevocationRepository,
@@ -157,9 +158,22 @@ def revoke_connection(*, tenant_id: UUID, connection_id: UUID, actor: str = "use
     `InvalidTransition` when the FSM has no `revoke` edge out of the current status.
     Blocking — call it off the event loop.
     """
-    return production_revoke_service().revoke(
+    result = production_revoke_service().revoke(
         tenant_id=tenant_id, connection_id=connection_id, actor=actor
     )
+    if actor == "user" and not result.changed:
+        # Retrying a pre-existing explicit disconnect still records durable intent.
+        # Runtime/system revocations deliberately never enter this path.
+        from qualify_api.connections.purge import request_connection_purge
+
+        connection = next(
+            (row for row in list_connections(tenant_id) if row.connection_id == connection_id), None
+        )
+        if connection is not None and connection.platform in {"instagram", "facebook"}:
+            request_connection_purge(
+                tenant_id=tenant_id, connection_id=connection_id, reason="disconnect"
+            )
+    return result
 
 
 def degrade_connection_on_auth_error(

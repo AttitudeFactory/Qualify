@@ -18,7 +18,10 @@ losing an unprocessed event is worse than keeping it. A delivery goes once it is
 than the cutoff and no change still references it. `purge_by_entry_id` deletes one
 account's changes in ANY state, and every delivery whose body mentions it, at once — the
 hook QUA-127 will call on disconnection. Changes of OTHER accounts that shared such a
-delivery survive (the FK is `ON DELETE SET NULL`). Both purges are dry-run unless
+delivery survive (the FK is `ON DELETE SET NULL`). Tenant consent deletion instead
+uses `webhooks.purge` and frozen ownership, with an explicit legacy-expiry override;
+the account-wide helper must never be used for tenant deletion. Both administrative
+purges are dry-run unless
 `execute=True`, and refuse a retention shorter than `MIN_RETENTION`.
 """
 
@@ -93,6 +96,8 @@ class ClaimedEvent:
     value: Any
     attempts: int  # including this claim
     entry_time: int | None = None  # Meta's `entry[].time` for the change, as recorded
+    # None is for other products/fakes. Empty means unproven legacy or revoked consent.
+    owners: tuple[tuple[UUID, UUID], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +150,9 @@ class WebhookQueue:
                          LIMIT :limit
                          FOR UPDATE SKIP LOCKED)
                     RETURNING id, delivery_id, object, entry_id, field, value, attempts,
-                              entry_time, received_at, change_index
+                              entry_time, received_at, change_index,
+                              CASE WHEN object IN ('instagram','page','facebook')
+                                THEN meta_webhook_frozen_owners(id) ELSE NULL END AS owners
                     """
                 ),
                 {"now": now, "worker": worker_id, "stale": stale_cutoff, "limit": limit},
@@ -161,6 +168,11 @@ class WebhookQueue:
                 value=r.value,
                 attempts=r.attempts,
                 entry_time=r.entry_time,
+                owners=tuple(
+                    (UUID(owner["tenant_id"]), UUID(owner["connection_id"])) for owner in r.owners
+                )
+                if r.owners is not None
+                else None,
             )
             for r in rows
         ]
