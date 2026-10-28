@@ -228,11 +228,21 @@ class OnboardingEngine:
         note = self._field_text(item, names.note)
         business = item.name.strip()
         instagram = self.instagram_handle(item)
+        existing_login_raw = self._optional_field_text(item, names.existing_login)
+        is_add_business = existing_login_raw.lower() in (
+            "sí",
+            "si",
+            "true",
+            "1",
+            "yes",
+            "verdadero",
+        )
         try:
             choice = self.plan_choice(item, event_key=event_key, actor=actor)
         except InvalidPlanRequest as exc:
             return self._fail(work_item_id, "invalid_plan", exc.message, None, instagram)
         extra: dict[str, Any] = {} if choice.empty else {"alta_plan": choice}
+        extra["is_add_business"] = is_add_business
 
         invite: CreatedInvite | None = None
         try:

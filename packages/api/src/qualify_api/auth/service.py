@@ -36,7 +36,6 @@ from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
     EmailAlreadyRegistered,
-    InvalidCredentials,
 )
 from qualify_api.tenancy.models import Brand, BrandKitDraft, Tenant, TenantMember, User
 
@@ -105,22 +104,10 @@ def _resolve_identity_for_signup(
     try:
         return provider.admin_create_user(email, password, new_tenant_id), new_tenant_id
     except EmailAlreadyRegistered:
-        try:
-            session = provider.sign_in(email, password)
-        except InvalidCredentials:
-            raise RegistrationInvalid(
-                "Ese email ya está registrado. Inicia sesión, o si el registro quedó a "
-                "medias, reintenta con la misma contraseña."
-            ) from None
-        if session.tenant_id is None:
-            # An identity user created outside this flow (e.g. by hand in the
-            # dashboard) has no stamp; adopting it silently would let an unstamped
-            # credential mint a tenant on login. Refuse loudly instead.
-            raise RegistrationInvalid(
-                "Ese email ya existe en el proveedor de identidad sin negocio asociado. "
-                "Contacta al administrador."
-            ) from None
-        return session.auth_user_id, session.tenant_id
+        raise RegistrationInvalid(
+            "Ese email ya tiene cuenta en Qualify. Para agregarle otro negocio, "
+            "la invitación debe ser de tipo 'Inicio de sesión existente'."
+        ) from None
 
 
 def _upsert_local_half(

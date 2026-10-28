@@ -250,6 +250,7 @@ def test_datos_creates_the_invite_mails_it_and_writes_back(
         "business_name": "Arepera La Nona",
         "note": "Como hablamos hoy.",
         "meegle_work_item_id": ITEM,
+        "is_add_business": False,
     }
     ((invite, base_url, signer),) = invites.sent
     assert base_url == "https://app.qualify.la" and signer == "Herwin Rey"
@@ -389,3 +390,14 @@ def test_text_value_tolerates_every_shape_meegle_uses(value: Any, expected: str)
 
 def test_uuid_ids_are_fresh_per_invite() -> None:
     assert uuid4() != uuid4()
+
+
+def test_datos_reads_existing_login_flag(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    meegle.items[ITEM].fields["f_existing"] = "Sí"
+    result = engine.start_invitation(ITEM)
+    assert result.ok
+    (created,) = invites.created
+    assert created["is_add_business"] is True

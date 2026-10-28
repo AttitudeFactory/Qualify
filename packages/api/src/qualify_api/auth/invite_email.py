@@ -155,6 +155,8 @@ def _first_name(full: str) -> str:
 def subject_for(invite: CreatedInvite, signer: str) -> str:
     """Name first, like a message from someone you know (founder, 2026-10-21: "que se
     sienta como hablar con un vecino")."""
+    if invite.is_add_business:
+        return "Agrega otro negocio a tu cuenta"
     first = _first_name(signer)
     name = _first_name(invite.recipient_name)
     if name and first:
@@ -175,8 +177,14 @@ def _greeting(invite: CreatedInvite) -> str:
 
 def _lead_text(invite: CreatedInvite, signer: str) -> tuple[str, str, str]:
     """(before, bold, after) of the opening sentence, unescaped."""
-    who = f"{signer} te invitó" if signer else "Te invitamos"
     business = invite.business_name or "tu negocio"
+    if invite.is_add_business:
+        return (
+            "Te invitaron a manejar ",
+            business,
+            " con tu misma cuenta. Escribe tu contraseña para confirmarlo.",
+        )
+    who = f"{signer} te invitó" if signer else "Te invitamos"
     return f"{who} a Qualify para que abras la cuenta de ", business, "."
 
 
@@ -205,11 +213,13 @@ def _fine_print(email: str, expires: str) -> str:
 
 def _text(invite: CreatedInvite, link: str, signer: str, expires: str, can_reply: bool) -> str:
     before, bold, after = _lead_text(invite, signer)
-    lines = [_greeting(invite), "", f"{before}{bold}{after} {_EASY}", ""]
+    easy = "" if invite.is_add_business else f" {_EASY}"
+    lines = [_greeting(invite), "", f"{before}{bold}{after}{easy}", ""]
     if invite.note:
         lines += [f"«{invite.note}»", *([f"— {signer}"] if signer else []), ""]
+    action_prompt = "Agrega tu negocio aquí:" if invite.is_add_business else "Crea tu cuenta aquí:"
     lines += [
-        "Crea tu cuenta aquí:",
+        action_prompt,
         link,
         "",
         f"{_SCENE_TITLE}:",

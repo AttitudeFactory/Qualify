@@ -81,6 +81,7 @@ class CreatedInvite:
     business_name: str = ""
     note: str = ""
     id: UUID | None = None  # the row's id (`signup_invites.id`), minted on create
+    is_add_business: bool = False
 
     def link(self, base_url: str) -> str:
         return f"{base_url.rstrip('/')}{SIGNUP_ROUTE}?{INVITE_PARAM}={self.token}"
@@ -97,6 +98,7 @@ class InviteView:
     #: The «Alta de cliente» item it came from (0064); opens that Alta's reserved Brand
     #: Kit draft (`auth.drafts`, PB-0). Never shown to the screen.
     meegle_work_item_id: int | None = None
+    is_add_business: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,7 @@ def create_invite(
     note: str | None = None,
     meegle_work_item_id: int | None = None,
     alta_plan: AltaPlanChoice | None = None,
+    is_add_business: bool = False,
 ) -> CreatedInvite:
     """Store a new invite for `email` (literal, like every login email — the `+alias`
     is the business). Earlier unused invites for the same email stay valid.
@@ -196,6 +199,7 @@ def create_invite(
                 note=note or None,
                 expires_at=expires_at,
                 meegle_work_item_id=meegle_work_item_id,
+                is_add_business=is_add_business,
                 **_alta_columns(alta_plan),
             )
         )
@@ -207,6 +211,7 @@ def create_invite(
         business_name=business_name,
         note=note,
         id=invite_id,
+        is_add_business=is_add_business,
     )
 
 
@@ -294,6 +299,7 @@ def lookup_invite(token: str) -> InviteView | None:
             expires_at=invite.expires_at,
             business_name=invite.business_name or "",
             meegle_work_item_id=invite.meegle_work_item_id,
+            is_add_business=invite.is_add_business,
         )
 
 
@@ -317,6 +323,14 @@ def authorize_signup(email: str, invite_token: str | None) -> UUID | None:
 
 def _same_email(a: str, b: str) -> bool:
     return a.strip().casefold() == b.strip().casefold()
+
+
+def email_exists(email: str) -> bool:
+    """True iff a user with this email (case-insensitive) already exists."""
+    from qualify_api.tenancy.models import User
+
+    with admin_session() as session:
+        return session.scalar(select(User).where(User.email.ilike(email.strip()))) is not None
 
 
 def lock_invite(session: Session, invite_id: UUID, email: str) -> SignupInvite:
