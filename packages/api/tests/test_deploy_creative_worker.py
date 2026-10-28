@@ -49,7 +49,7 @@ def test_only_creative_worker_holds_the_queue_door() -> None:
         if name == "creative-worker":
             continue
         env = service.get("environment") or {}
-        assert "QUALIFY_CREATIVE_WORKER_DSN" not in env, name
+        assert not env.get("QUALIFY_CREATIVE_WORKER_DSN"), name
 
 
 def test_the_recovery_pass_runs_in_creative_worker_only() -> None:
