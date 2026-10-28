@@ -217,8 +217,20 @@ jobs:
           TARGET: ${{ secrets.QUALIFY_DEPLOY_SSH_TARGET }}
           ACTION: ${{ inputs.skip_migrate && 'rollback' || 'deploy' }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes "$TARGET" "$ACTION" "$SHA" </dev/null
+          # Pulls are quiet. Keep the SSH connection active while the server works;
+          # the existing 20-minute job timeout still bounds the whole deployment.
+          if ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes \
+            "$TARGET" "$ACTION" "$SHA" </dev/null; then
+            exit 0
+          else
+            result=$?
+          fi
+          if [ "$result" -eq 255 ]; then
+            echo "::error::SSH failed; the remote deployment outcome is unknown. The server process may still be running. Before retrying, use trusted deploy-status access to verify the running release, container images and health (docs/despliegue-hetzner.md, Recuperación tras un corte SSH)."
+          fi
+          exit "$result"
       - name: External smoke test
         run: |
           for probe in '/ping 200' '/login 200' '/api/connections/callback?code=x&state=x 303|403'; do
