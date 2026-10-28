@@ -9,7 +9,11 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_shared.db.admin import admin_session
-from qualify_shared.db.connection_purge import connection_purge_session
+from qualify_shared.db.connection_purge import (
+    connection_purge_lock,
+    connection_purge_session,
+    discover_due_purge_tenants,
+)
 from qualify_shared.db.session import tenant_session
 from qualify_shared.db.webhook import webhook_worker_session
 from qualify_shared.objects.gate import ObjectGate, StoredObject
@@ -19,6 +23,7 @@ from sqlalchemy.exc import DBAPIError
 from qualify_api.connections import purge_cli
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.connections.purge import (
+    ConnectionPurgeBusy,
     ConnectionPurgeInProgress,
     UnsupportedConnectionPlatform,
     cancel_disconnect_purge,
@@ -26,6 +31,7 @@ from qualify_api.connections.purge import (
     purge_connection,
     request_connection_purge,
 )
+from qualify_api.connections.purge_worker import PurgeRepository, PurgeRunner
 from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.planner.composition import PostgresConnectionGate
 from qualify_api.planner.draft_post_reader import DraftPostReader
@@ -166,6 +172,115 @@ def test_manual_purge_manifest_survives_r2_failure_and_retries_without_credentia
             {"cid": cid},
         ).one()
         assert audit.object_keys == [] and audit.counts["oauth_credentials"] == 1
+    assert (
+        purge_connection(tenant_id=tenant, connection_id=cid, objects=ObjectGate(store)).status
+        == "completed"
+    )
+
+
+def test_scheduler_discovers_only_due_tenants_without_relaxing_rls_or_public_execute(world) -> None:
+    tenant, other, cid, _ = world
+    now = datetime.now(UTC)
+    request_connection_purge(tenant_id=tenant, connection_id=cid, reason="disconnect", now=now)
+
+    def discover(moment: datetime) -> list[UUID]:
+        found: list[UUID] = []
+        after = None
+        while page := discover_due_purge_tenants(now=moment, after=after, limit=1):
+            assert len(page) == 1
+            found.extend(page)
+            after = page[-1]
+        return found
+
+    assert tenant not in discover(now)
+    assert tenant in discover(now + timedelta(days=29))
+    # Discovery exposes IDs only. The role still cannot read the other tenant's rows.
+    with connection_purge_session(other) as session:
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM connection_purge_requests WHERE tenant_id=:tid"),
+                {"tid": tenant},
+            )
+            == 0
+        )
+    for door in (lambda: tenant_session(other), admin_session, webhook_worker_session):
+        with pytest.raises(DBAPIError, match="permission denied"), door() as session:
+            session.execute(
+                text("SELECT * FROM public.connection_purge_due_tenants(:now,NULL,100)"),
+                {"now": now},
+            )
+    with tenant_session(tenant) as session:
+        cancel_disconnect_purge(session, session.get(SocialConnection, cid))
+    assert tenant not in discover(now + timedelta(days=29))
+    request_connection_purge(tenant_id=tenant, connection_id=cid, reason="manual", now=now)
+    assert tenant in discover(now)
+
+
+def test_scheduler_rotates_persistent_failures_and_executes_without_other_database_doors(
+    world, monkeypatch
+) -> None:
+    tenant, _, failed_id, store = world
+    now = datetime.now(UTC)
+    with tenant_session(tenant) as session:
+        source = session.get(SocialConnection, failed_id)
+        second = SocialConnection(
+            tenant_id=tenant,
+            platform_app_id=source.platform_app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"fairness-{uuid4()}",
+            linked_page_id="fairness-page",
+            granted_scopes=[],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=source.connected_by_user_id,
+        )
+        session.add(second)
+        session.flush()
+        second_id = second.id
+    request_connection_purge(tenant_id=tenant, connection_id=failed_id, now=now - timedelta(days=1))
+    request_connection_purge(tenant_id=tenant, connection_id=second_id, now=now)
+    calls: list[UUID] = []
+
+    def purge(**kwargs: object) -> object:
+        calls.append(kwargs["connection_id"])
+        if kwargs["connection_id"] == failed_id:
+            raise RuntimeError("blocked first request")
+        return purge_connection(**kwargs)
+
+    # The real runner and engine must not read through app/admin/credential doors.
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("scheduler used serving/admin database authority")
+
+    monkeypatch.setattr("qualify_api.connections.purge.tenant_session", forbidden)
+    runner = PurgeRunner(
+        tenants=[tenant], execute=True, limit=1, objects=ObjectGate(store), purge=purge
+    )
+    assert runner.run_once(now=now).failed == 1
+    assert runner.run_once(now=now + timedelta(minutes=15)).completed == 1
+    assert calls == [failed_id, second_id]
+    with connection_purge_session(tenant) as session:
+        assert (
+            session.scalar(
+                text("SELECT status FROM connection_purge_requests WHERE connection_id=:cid"),
+                {"cid": second_id},
+            )
+            == "completed"
+        )
+    assert (
+        PurgeRepository().due(tenant, now + timedelta(minutes=15), 1)[0].connection_id == failed_id
+    )
+
+
+def test_whole_engine_lock_prevents_overlapping_cli_or_worker_erasure_and_releases(world) -> None:
+    tenant, _, cid, store = world
+    request_connection_purge(tenant_id=tenant, connection_id=cid)
+    with connection_purge_lock(tenant, cid) as acquired:
+        assert acquired
+        with pytest.raises(ConnectionPurgeBusy):
+            purge_connection(tenant_id=tenant, connection_id=cid, objects=ObjectGate(store))
+        assert _count(tenant, cid, "oauth_credentials") == 1
     assert (
         purge_connection(tenant_id=tenant, connection_id=cid, objects=ObjectGate(store)).status
         == "completed"

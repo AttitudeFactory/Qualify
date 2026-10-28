@@ -570,6 +570,14 @@ creative-queue *args:
 
 # m-24789547: scoped IG/FB deletion; dry run unless --execute. Always --tenant UUID.
 # Manual support request: --tenant UUID --connection UUID --request --execute.
-# Due-job scheduler: run every 15 minutes per tenant with --tenant UUID --execute.
+# Automatic production scheduling lives in connection-purge-worker (no cron setup).
 connection-purge *args:
     uv run --no-sync python -m qualify_api.connections.purge_cli {{args}}
+
+# Local scheduler loop, dry-run unless --execute. Scope is mandatory in the recipe.
+connection-purge-worker tenant *args:
+    uv run --no-sync python -m qualify_api.connections.purge_worker --tenant {{tenant}} {{args}}
+
+# Isolated real loop, throwaway PostgreSQL + fake R2, no egress or production credentials.
+mem-connection-purge-worker image="qualify-memtest:deps" *args:
+    bash deploy/measure/connection-purge-worker-memory.sh {{image}} {{args}}
