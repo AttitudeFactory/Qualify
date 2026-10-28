@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from urllib.parse import parse_qs, urlencode
 
 import reflex as rx
@@ -46,6 +46,7 @@ from qualify_api.auth import (
     PasswordChangeInvalid,
     PasswordRejected,
     RateLimited,
+    RegisteredBusiness,
     RegistrationInvalid,
     SessionExpired,
     SignupNotAllowed,
@@ -117,6 +118,13 @@ def _signup_blocking(
     # The gate decides BEFORE the identity user exists; the invite is spent inside
     # register_business's transaction (`invites` module docstring).
     invite_id = authorize_signup(email, invite_token or None)
+    if invite_token:
+        invite = lookup_invite(invite_token)
+        if invite is not None and invite.is_add_business:
+            raise SignupNotAllowed(
+                "Abre de nuevo el enlace del correo y confirma tu contraseña actual "
+                "para agregar este negocio."
+            )
     return register_business(
         default_auth_provider(),
         business_name=business_name,
@@ -139,11 +147,58 @@ def invite_token_from_query(params: Mapping[str, object]) -> str:
     return ""
 
 
-def _invite_blocking(token: str) -> tuple[str, str]:
-    """(email, business) of a still-usable invite; ("", "") when the link is
+def _invite_blocking(token: str) -> tuple[str, str, bool]:
+    """(email, business, add-business mode) of a still-usable invite; empty when
     unknown, used or expired."""
     invite = lookup_invite(token)
-    return (invite.email, invite.business_name) if invite is not None else ("", "")
+    return (
+        (invite.email, invite.business_name, invite.is_add_business)
+        if invite is not None
+        else ("", "", False)
+    )
+
+
+def _add_business_blocking(
+    password: str, token: str, access_token: str, has_session: bool
+) -> tuple[RegisteredBusiness, LoginResult | None]:
+    """Resolve the invitation again on the server; form fields never choose its account.
+
+    A live session may keep its tenant only after the provider confirms that its token
+    belongs to the invited account. Changing identities requires the normal logout,
+    which clears every business substate.
+    """
+    invite = lookup_invite(token)
+    if invite is None or not invite.is_add_business:
+        raise SignupNotAllowed(
+            "Esta invitación venció o ya se usó. Pide una nueva a quien te invitó."
+        )
+    provider = default_auth_provider()
+    if has_session:
+        try:
+            session_email = provider.user_email(access_token) if access_token else ""
+        except SessionExpired:
+            session_email = ""
+        if session_email.strip().casefold() != invite.email.strip().casefold():
+            raise SignupNotAllowed(
+                "Esta invitación es para otra cuenta o tu sesión venció. "
+                "Cierra sesión y vuelve a abrir el enlace del correo."
+            )
+    invite_id = authorize_signup(invite.email, token)
+    # Resolve the anonymous login before consuming the invite: an IdP failure after
+    # commit must not leave a successful registration displayed as an unusable link.
+    try:
+        login = None if has_session else resolve_login(provider, invite.email, password)
+    except InvalidCredentials:
+        raise RegistrationInvalid("Esa contraseña no coincide. Inténtalo otra vez.") from None
+    registered = register_business(
+        provider,
+        business_name=invite.business_name,
+        email=invite.email,
+        password=password,
+        **_SIGNUP_DEFAULTS,
+        invite_id=invite_id,
+    )
+    return registered, login
 
 
 def _sign_out_blocking(access_token: str) -> None:
@@ -261,6 +316,8 @@ class AuthState(rx.State):
     invite_state: str = ""
     invite_email: str = ""
     invite_business: str = ""
+    invite_is_add_business: bool = False
+    added_business_name: str = ""
     #: MARCA-5 (m-24842968): the code typed on the access gate did not open anything.
     invite_code_error: str = ""
 
@@ -288,6 +345,9 @@ class AuthState(rx.State):
     _recovery_token: str = ""
     # The invite link's token while the signup page is open. Backend-only: it is a credential.
     _invite_token: str = ""
+    # The rate-limit key must come from the server lookup, never a display var's setter.
+    _invite_email: str = ""
+    _invite_add_business: bool = False
 
     @rx.var
     def is_authenticated(self) -> bool:
@@ -376,26 +436,39 @@ class AuthState(rx.State):
         """`on_load` of the signup (/registro and its old alias /signup): bounce a
         session and read the invite link. Without a valid invite the page says Qualify
         is invite-only (unless dev opened signup). The token leaves the URL right away."""
-        if self.session_tenant_id:
-            return rx.redirect("/")
         self.auth_error = ""
         self.show_password = False
         self.signup_open = signup_open()
         token = invite_token_from_query(self.router.url.query_parameters)
         if not token:
+            if self.added_business_name:
+                return None
+            if self.session_tenant_id and not (
+                self._invite_token and self.invite_is_add_business and self.invite_state == "ok"
+            ):
+                return rx.redirect("/")
             if not self._invite_token:  # a reload after the URL was cleaned keeps it
                 self.invite_state = ""
                 self.invite_email = ""
+                self._invite_email = ""
                 self.invite_business = ""
+                self.invite_is_add_business = False
+                self._invite_add_business = False
             return None
+        self.added_business_name = ""
         try:
-            email, business = await asyncio.to_thread(_invite_blocking, token)
+            email, business, is_add_business = await asyncio.to_thread(_invite_blocking, token)
         except SQLAlchemyError as exc:
             logger.error("invite lookup failed: %s", type(exc).__name__)
-            email, business = "", ""
+            email, business, is_add_business = "", "", False
+        if self.session_tenant_id and email and not is_add_business:
+            return rx.redirect("/")
         self._invite_token = token if email else ""
         self.invite_email = email
+        self._invite_email = email
         self.invite_business = business
+        self.invite_is_add_business = is_add_business
+        self._invite_add_business = is_add_business
         self.invite_state = "ok" if email else "invalid"
         return rx.call_script("history.replaceState(null, '', window.location.pathname)")
 
@@ -432,7 +505,7 @@ class AuthState(rx.State):
             self.is_authenticating = True
             self.invite_code_error = ""
         try:
-            email, business = await asyncio.to_thread(_invite_blocking, token)
+            email, business, is_add_business = await asyncio.to_thread(_invite_blocking, token)
         except SQLAlchemyError as exc:
             logger.error("invite code lookup failed: %s", type(exc).__name__)
             async with self:
@@ -446,9 +519,15 @@ class AuthState(rx.State):
                 return
             self._invite_token = token
             self.invite_email = email
+            self._invite_email = email
             self.invite_business = business
+            self.invite_is_add_business = is_add_business
+            self._invite_add_business = is_add_business
+            self.added_business_name = ""
             self.invite_state = "ok"
-        if not to_signup:
+        if is_add_business and not to_signup:
+            yield rx.redirect(SIGNUP_ROUTE)
+        elif not to_signup:
             yield AuthState.start_brand_kit({"email": email})
 
     @rx.event(background=True)
@@ -613,6 +692,10 @@ class AuthState(rx.State):
     async def handle_signup(self, form_data: dict):
         """Register a business — a fresh `tenant_id` is assigned automatically — then
         sign straight in as it (founder ruling 2026-08-18)."""
+        if self._invite_add_business:
+            async for event in self._handle_add_business(str(form_data.get("password", ""))):
+                yield event
+            return
         business_name = str(form_data.get("business_name", ""))
         email = str(form_data.get("email", ""))
         password = str(form_data.get("password", ""))
@@ -670,6 +753,7 @@ class AuthState(rx.State):
             self._invite_token = ""
             self.invite_state = ""
             self.invite_email = ""
+            self._invite_email = ""
             self.invite_business = ""
             # Literal comparison (criterion 6): the field comes prefilled with it.
             adopted = bool(self.guest_email) and self.guest_email == email
@@ -680,6 +764,67 @@ class AuthState(rx.State):
         }
         async for event in AuthState.handle_login.fn(self, credentials):
             yield event
+
+    async def _handle_add_business(self, password: str) -> AsyncIterator[rx.event.EventSpec]:
+        """Confirm the current password without changing an existing session's tenant."""
+        async with self:
+            if self.is_authenticating or self.added_business_name:
+                return
+            self.is_authenticating = True
+            self.auth_error = ""
+            token = self._invite_token
+            access_token = self._access_token
+            has_session = bool(self.session_tenant_id)
+            key = throttle_key(self._invite_email)
+        wait = login_throttle.try_acquire(key)
+        if wait:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _wait_message(wait)
+            return
+        try:
+            registered, login = await asyncio.to_thread(
+                _add_business_blocking, password, token, access_token, has_session
+            )
+        except (SignupNotAllowed, RegistrationInvalid) as exc:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = exc.message
+            return
+        except RateLimited:
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _RATE_LIMITED
+            return
+        except IncompleteRegistration:
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _INCOMPLETE
+            return
+        except (AuthProviderError, AuthNotConfigured, SQLAlchemyError) as exc:
+            logger.error("add business failed: %s", type(exc).__name__)
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _AUTH_DOWN
+            return
+        login_throttle.clear(key)
+        if login is not None:
+            await self._open_session(login, "/")
+        async with self:
+            self.is_authenticating = False
+            self.added_business_name = registered.business_name
+            self._invite_token = ""
+            self.invite_state = ""
+            self.invite_email = ""
+            self._invite_email = ""
+            self.invite_business = ""
+            self.invite_is_add_business = False
+            self._invite_add_business = False
+            self.show_password = False
+        yield rx.call_script("document.getElementById('q-add-business-form')?.reset()")
 
     # ----------------------------------------------------------------------------------
     # Forgotten password (2026-10-06): /forgot asks for the email, the provider mails a

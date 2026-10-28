@@ -389,7 +389,9 @@ def _html(
 ) -> str:
     esc = html.escape
     before, bold, after = _lead_text(invite, signer)
-    lead = f'{esc(before)}<strong class="q-ink">{esc(bold)}</strong>{esc(after)} {esc(_EASY)}'
+    easy = "" if invite.is_add_business else f" {esc(_EASY)}"
+    lead = f'{esc(before)}<strong class="q-ink">{esc(bold)}</strong>{esc(after)}{easy}'
+    action = "Agregar negocio" if invite.is_add_business else "Crear mi cuenta"
     reply = _p(esc(_REPLY), size=13, role="muted") if can_reply else ""
     header = _lockup(base_url, icon=36, word=24)
     attitude = (
@@ -446,7 +448,7 @@ def _html(
  font-weight:600;letter-spacing:-0.012em;color:{_INK};">{esc(_greeting(invite))}</h1>
 {_p(lead, size=16, margin="0 0 20px 0")}
 {_note_block(invite.note, signer) if invite.note else ""}
-{_button(link, "Crear mi cuenta")}
+{_button(link, action)}
 {_scenes(base_url)}
 {sign_off}
 <div class="q-line" style="border-top:1px solid {_LINE};margin:0 0 16px 0;"></div>

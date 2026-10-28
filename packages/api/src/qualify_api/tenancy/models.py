@@ -189,9 +189,6 @@ class SignupInvite(Base):
     is_add_business: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
-    is_add_business: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false"), default=False
-    )
 
 
 class Brand(Base):

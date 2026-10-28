@@ -118,6 +118,17 @@ def test_invite_email_is_personal_when_it_knows_who() -> None:
     assert 'src="https://qualify.example/qualify-icon-email.png"' in mail.html
 
 
+def test_add_business_email_uses_current_account_copy_in_both_formats() -> None:
+    mail = invite_email(_full_invite(is_add_business=True), "https://qualify.example/")
+    assert mail.subject == "Agrega otro negocio a tu cuenta"
+    assert "con tu misma cuenta. Escribe tu contraseña para confirmarlo." in mail.text
+    assert "con tu misma cuenta. Escribe tu contraseña para confirmarlo." in mail.html
+    assert "Agrega tu negocio aquí:" in mail.text
+    assert "Agregar negocio" in mail.html
+    assert "Crear mi cuenta" not in mail.html
+    assert "Crea tu cuenta aquí:" not in mail.text
+
+
 def test_invite_email_speaks_the_design_system() -> None:
     """Light inline (the theme every client keeps), dark re-mapped by role in `<style>`
     for the clients that honour it, one solid action, identifiers in Plex Mono."""

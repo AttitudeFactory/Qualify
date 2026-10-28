@@ -41,7 +41,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from qualify_shared.db.admin import admin_session
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.invite_email import invite_email
@@ -330,7 +330,16 @@ def email_exists(email: str) -> bool:
     from qualify_api.tenancy.models import User
 
     with admin_session() as session:
-        return session.scalar(select(User).where(User.email.ilike(email.strip()))) is not None
+        return (
+            session.scalar(
+                select(User.id)
+                .where(
+                    func.lower(User.email) == email.strip().lower(), User.auth_user_id.is_not(None)
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
 
 def lock_invite(session: Session, invite_id: UUID, email: str) -> SignupInvite:

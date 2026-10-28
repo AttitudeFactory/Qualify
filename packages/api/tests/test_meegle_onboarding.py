@@ -163,6 +163,7 @@ def engine(meegle: FakeMeegle, invites: Invites) -> OnboardingEngine:
         base_url="https://app.qualify.la",
         signer="Herwin Rey",
         clock=lambda: NOW,
+        account_exists=lambda email: False,
     )
 
 
@@ -392,12 +393,47 @@ def test_uuid_ids_are_fresh_per_invite() -> None:
     assert uuid4() != uuid4()
 
 
+@pytest.mark.parametrize("flag", [True, "Sí", "true", 1])
 def test_datos_reads_existing_login_flag(
-    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, flag: Any
 ) -> None:
     meegle.keys["Inicio de sesión existente"] = "f_existing"
-    meegle.items[ITEM].fields["f_existing"] = "Sí"
+    meegle.items[ITEM].fields["f_existing"] = flag
     result = engine.start_invitation(ITEM)
     assert result.ok
     (created,) = invites.created
     assert created["is_add_business"] is True
+
+
+@pytest.mark.parametrize("flag", [None, "No", False])
+def test_existing_account_without_add_business_fails_before_inviting(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, flag: Any
+) -> None:
+    if flag is not None:
+        meegle.keys["Inicio de sesión existente"] = "f_existing"
+        meegle.items[ITEM].fields["f_existing"] = flag
+    engine._account_exists = lambda email: True
+
+    result = engine.start_invitation(ITEM)
+
+    message = (
+        "Ese correo ya tiene cuenta en Qualify. Marca «Inicio de sesión existente» "
+        "para agregarle este negocio y completa «Datos» otra vez."
+    )
+    assert not result.ok and result.reason == "existing_login_required"
+    assert invites.created == [] and invites.sent == []
+    assert meegle.updates == [(ITEM, {"f_status": {"value": "opt_error", "label": "error"}})]
+    assert message == meegle.comments[0][1]
+    assert meegle.operations == [(ITEM, "started", "rollback", message)]
+
+
+def test_existing_account_can_receive_add_business_invitation(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    meegle.items[ITEM].fields["f_existing"] = "Sí"
+    engine._account_exists = lambda email: True
+
+    assert engine.start_invitation(ITEM).ok
+    assert invites.created[0]["is_add_business"] is True
+    assert len(invites.sent) == 1 and meegle.operations == []
