@@ -15,6 +15,7 @@ import io
 import json
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -26,7 +27,7 @@ from PIL import Image, ImageDraw
 from qualify_api.claude_tools import CallStats, MissingAPIKey
 from qualify_api.creative import brand_prefill, brand_prefill_review, kept_pictures
 from qualify_api.creative.account_claims import AccountTaken
-from qualify_api.creative.brand_kit_store import BrandKitDetails, carry_reserved
+from qualify_api.creative.brand_kit_store import BrandKitDetails, carry_reserved, visible_connect
 from qualify_api.creative.brand_prefill import (
     CallCaps,
     PrefillOutcome,
@@ -142,7 +143,19 @@ class Store:
 
     def load_details(self, *, tenant_id: UUID, brand_id: UUID) -> BrandKitDetails:
         self.tenants.append(tenant_id)
-        return self.rows.get((tenant_id, brand_id), BrandKitDetails())
+        row = self.rows.get((tenant_id, brand_id), BrandKitDetails())
+        return BrandKitDetails(row.logo_brief, visible_connect(row.connect), row.profile)
+
+    def capture_whatsapp_contact(self, *, tenant_id: UUID, brand_id: UUID, number: str) -> bool:
+        self.tenants.append(tenant_id)
+        row = self.rows.get((tenant_id, brand_id), BrandKitDetails())
+        contact = dict(row.connect.get("contact") or {})
+        if "whatsapp" in contact:
+            return False
+        self.rows[(tenant_id, brand_id)] = BrandKitDetails(
+            row.logo_brief, {**row.connect, "contact": {**contact, "whatsapp": number}}, row.profile
+        )
+        return True
 
     def save_details(
         self, *, tenant_id: UUID, brand_id: UUID, user_id: UUID | None, documents: dict
@@ -252,6 +265,138 @@ def world() -> World:
     return World()
 
 
+def _contact_profile(**overrides: Any) -> dict[str, Any]:
+    return {
+        "username": "heladeria.demo",
+        "bio": "Pedidos +57 300 123 4548",
+        "isProfessionalAccount": True,
+        "isPrivate": False,
+        "bioLinks": [{"url": "https://wa.me/573001234548", "kind": "whatsapp"}],
+        **overrides,
+    }
+
+
+def test_full_contact_is_kept_only_in_private_storage_not_any_outward_result(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    result = world.run(ports=world.ports(read_profile=lambda *_: _contact_profile()))
+    assert result.outcome == PrefillOutcome.OK
+    raw = world.store.rows[(TENANT, BRAND)].connect
+    assert raw["contact"]["whatsapp"] == "573001234548"
+    outward = {
+        "result": asdict(result),
+        "cache": list(world.cache.entries.values()),
+        "proposal": world.prefill(),
+        "claude": repr(world.claude.calls),
+        "details": asdict(world.store.load_details(tenant_id=TENANT, brand_id=BRAND)),
+        "logs": caplog.text,
+    }
+    text = json.dumps(outward, default=str)
+    assert "573001234548" not in text and "300 123 4548" not in text
+    first_requests = list(world.vendor.requests)
+    # The retry uses only the masked cache; no new reads and no replacement.
+    world.run(ports=world.ports(read_profile=lambda *_: pytest.fail("unexpected paid reread")))
+    assert world.store.rows[(TENANT, BRAND)].connect["contact"]["whatsapp"] == "573001234548"
+    assert world.vendor.requests == first_requests
+
+
+@pytest.mark.parametrize(
+    "profile,propose",
+    [
+        (_contact_profile(isProfessionalAccount=False), True),
+        (_contact_profile(isProfessionalAccount=None), True),
+        (_contact_profile(isPrivate=True), True),
+        (_contact_profile(), False),
+        (_contact_profile(bioLinks=[{"url": "https://wa.me/1234567", "kind": "whatsapp"}]), True),
+        (
+            _contact_profile(
+                bioLinks=[
+                    {
+                        "url": "https://example.com/?next=https://wa.me/573001234548",
+                        "kind": "whatsapp",
+                    }
+                ]
+            ),
+            True,
+        ),
+    ],
+)
+def test_contact_capture_requires_a_valid_live_professional_public_account(
+    world: World, profile: dict, propose: bool
+) -> None:
+    world.run(ports=world.ports(read_profile=lambda *_: profile), propose=propose)
+    assert "contact" not in world.store.rows.get((TENANT, BRAND), BrandKitDetails()).connect
+
+
+def test_contact_persistence_failure_is_sanitized_and_retryable_before_masked_cache_write(
+    world: World, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture = world.store.capture_whatsapp_contact
+
+    def fail(**_kw: Any) -> None:
+        raise RuntimeError("private parameters 573001234548")
+
+    monkeypatch.setattr(world.store, "capture_whatsapp_contact", fail)
+    result = world.run(ports=world.ports(read_profile=lambda *_: _contact_profile()))
+    assert result.outcome == PrefillOutcome.READ_FAILED
+    assert world.cache.entries == {}
+    assert world.claude.calls == []
+    assert world.prefill()["proposal"] is None
+    assert "contact not kept (RuntimeError)" in caplog.text
+    assert "573001234548" not in caplog.text
+    assert "573001234548" not in repr(result)
+    monkeypatch.setattr(world.store, "capture_whatsapp_contact", capture)
+    retry = world.run(ports=world.ports(read_profile=lambda *_: _contact_profile()))
+    assert retry.outcome == PrefillOutcome.OK
+    assert world.store.rows[(TENANT, BRAND)].connect["contact"]["whatsapp"] == "573001234548"
+
+
+def test_a_failed_profile_read_never_attempts_to_capture_a_contact(world: World) -> None:
+    def fail(*_a: Any) -> dict:
+        raise OSError("read failed")
+
+    result = world.run(ports=world.ports(read_profile=fail))
+    assert result.outcome == PrefillOutcome.READ_FAILED
+    assert "contact" not in world.store.rows[(TENANT, BRAND)].connect
+
+
+def test_observed_evidence_is_not_sent_to_claude_and_stays_in_its_tenant(world: World) -> None:
+    snapshot = {
+        "username": "heladeria.demo",
+        "stable_id": "573001234548",
+        "isProfessionalAccount": True,
+        "bio": "Helados en Cúcuta",
+        "category": "Ice Cream Shop",
+        "fetchedAt": time.time(),
+        "postsCount": 1,
+        "recentMedia": [
+            {
+                "postId": "evidence-only",
+                "kind": "image",
+                "takenAt": time.time(),
+                "caption": "evidence-only-caption",
+                "likes": 987654321,
+                "comments": 3,
+                "isOwner": True,
+            }
+        ],
+        "bioLinks": [{"url": "https://wa.me/573001234548", "kind": "whatsapp"}],
+    }
+    result = world.run(ports=world.ports(read_profile=lambda *_a: snapshot))
+    assert result.outcome == PrefillOutcome.OK
+    observed = world.prefill()["proposal"]["observed"]
+    assert observed["stable_id"] == "573001234548"
+    assert observed["recent_media"][0]["id"] == "evidence-only"
+    assert "573001234548" not in observed["links"][0]["url"]
+    assert "evidence-only" not in repr(world.claude.calls)
+    assert "987654321" not in repr(world.claude.calls)
+    assert "observed" not in world.store.rows[(TENANT, BRAND)].profile
+    other = world.store.load_details(tenant_id=uuid4(), brand_id=BRAND)
+    assert other.connect == {}
+    assert set(world.store.tenants[:-1]) == {TENANT}
+    assert world.prefill()["version"] == 3
+
+
 # --------------------------------------------------------------------------------------
 # ok: what is proposed, and where
 # --------------------------------------------------------------------------------------
@@ -322,7 +467,7 @@ def test_the_provenance_and_the_usage_ride_with_the_proposal(world: World) -> No
     read = provenance["read"]
     assert read["provider"] == "scrapecreators"
     assert read["client"] == "qualify_api.referentes.scrapecreators_client"
-    assert read["snapshot_schema"] == 5 and read["from_cache"] is False
+    assert read["snapshot_schema"] == 6 and read["from_cache"] is False
     assert read["endpoints"] == ["/v1/instagram/profile", "/v2/instagram/user/posts"]
     assert isinstance(read["fetched_at"], float)
     [rubro] = provenance["claude"]

@@ -183,7 +183,9 @@ def test_twelve_posts_spanning_the_window_cost_one_credit_and_fill_snapshot_5() 
     )
 
     assert [path for path, _ in vendor.requests] == ["/v1/instagram/profile"]
-    assert sc.SNAPSHOT_SCHEMA == 5
+    assert sc.SNAPSHOT_SCHEMA == 6
+    assert snap["stable_id"] == "9001"
+    assert snap["isProfessionalAccount"] is False  # unknown never implies professional
     assert snap["bioLinks"] == [
         {"title": "Pedir por WhatsApp", "url": "https://wa.me/580000000000", "kind": "whatsapp"},
         {"title": "", "url": "https://panaderia-demo.example", "kind": "web"},
@@ -441,16 +443,16 @@ def test_web_wizard_keys_keep_their_shape() -> None:
     ]
 
 
-def test_a_cached_schema_4_snapshot_is_read_again_once() -> None:
+def test_a_cached_schema_5_snapshot_is_read_again_once() -> None:
     tenant = uuid4()
     repo = MemoryProfileCacheRepository()
     cache = RepositoryProfileCache(repository=repo)
-    repo.put(tenant, "instagram", _HANDLE, "snapshot", {"schema": 4, "profile": {"username": "x"}})
+    repo.put(tenant, "instagram", _HANDLE, "snapshot", {"schema": 5, "profile": {"username": "x"}})
 
     assert cache.get(tenant, "instagram", _HANDLE) is None  # a miss: one paid re-read
 
     cache.put(tenant, "instagram", _HANDLE, {"username": "x", "fetchedAt": float(_NOW)})
-    assert repo.get(tenant, "instagram", _HANDLE, "snapshot", now=_NOW).document["schema"] == 5
+    assert repo.get(tenant, "instagram", _HANDLE, "snapshot", now=_NOW).document["schema"] == 6
     assert cache.get(tenant, "instagram", _HANDLE) == {"username": "x", "fetchedAt": float(_NOW)}
 
 

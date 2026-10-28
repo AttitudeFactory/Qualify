@@ -184,6 +184,10 @@ def _proposal(document: Mapping[str, Any]) -> dict[str, Any] | None:
         "connect": dict(connect),
         "profile": dict(profile),
         "palette": dict(palette) if isinstance(palette, Mapping) else None,
+        # Evidence is available to the review screen, never promoted by `_decide`.
+        "observed": mask_phones_in(dict(raw["observed"]))
+        if isinstance(raw.get("observed"), Mapping)
+        else {},
     }
 
 

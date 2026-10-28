@@ -39,6 +39,10 @@ NOW = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 
 def _proposal(*, palette: bool = True) -> dict[str, Any]:
     return {
+        "observed": {
+            "recent_media": [{"id": "evidence-only", "views": 987654321}],
+            "links": [{"url": "https://evidence-only.example"}],
+        },
         "connect": {
             "network": "instagram",
             "username": "heladeria.polar",
@@ -160,6 +164,10 @@ def test_generation_reads_the_proposal_once_approved() -> None:
     assert context.sector == "Heladería de yogur"
     assert context.hashtags == ("helados",)
     assert context.account_bio == "Helados de yogur hechos aquí"
+    assert "evidence-only" not in repr(context)
+    assert "987654321" not in repr(context)
+    assert "observed" not in approved
+    assert approved[PREFILL_KEY]["proposal"]["observed"] == proposal["observed"]
 
 
 def test_approving_keeps_the_owners_other_answers_and_the_provenance() -> None:
@@ -548,6 +556,12 @@ def test_approving_writes_only_the_own_tenants_brand_kit(fresh_brands: Any) -> N
     assert mine.connect["rubro_text"] == "Heladería de yogur"
     assert mine.connect[PREFILL_KEY]["state"] == "approved"
     assert mine.profile["username"] == "heladeria.polar"
+    assert "observed" not in mine.profile
+    assert "evidence-only" not in repr(mine.profile)
+    assert (
+        mine.connect[PREFILL_KEY]["proposal"]["observed"]["recent_media"][0]["id"]
+        == "evidence-only"
+    )
     kit = BrandKitService().get_kit(tenant_id=tenant_a, brand_id=brand_a)
     assert kit is not None and kit.palette_rgb == ("#0f766e", "#f8fafc")
 

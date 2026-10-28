@@ -43,6 +43,8 @@ def test_fetch_profile_instagram_normalizes_the_documented_shape() -> None:
                 "data": {
                     "user": {
                         "username": "adrianhorning",
+                        "id": "573001234548",
+                        "is_professional_account": True,
                         "full_name": "Adrian Horning",
                         "biography": "Scraping the web",
                         "category_name": "Entrepreneur",
@@ -67,6 +69,8 @@ def test_fetch_profile_instagram_normalizes_the_documented_shape() -> None:
     assert seen["api_key"] == API_KEY
     assert profile == {
         "username": "adrianhorning",
+        "stable_id": "573001234548",
+        "isProfessionalAccount": True,
         "fullName": "Adrian Horning",
         "bio": "Scraping the web",
         "category": "Entrepreneur",
