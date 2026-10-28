@@ -163,7 +163,9 @@ def production_staging_service() -> MediaStagingService:
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
-    return MediaStagingService(ObjectGate(R2ObjectStore(R2Settings.from_env())))
+    return MediaStagingService(
+        ObjectGate(R2ObjectStore(R2Settings.from_env())), guard_connection_uploads=True
+    )
 
 
 async def stage_and_start_publish(

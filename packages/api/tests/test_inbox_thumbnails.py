@@ -288,7 +288,12 @@ class FakePublished:
         return self._found
 
 
-async def test_r2_store_downloads_once_into_the_tenant_prefix() -> None:
+async def test_r2_store_downloads_once_into_the_tenant_prefix(monkeypatch) -> None:
+    def guarded_upload(gate, tenant_id, connection_id, key, stream, content_type):
+        assert (tenant_id, connection_id) == (TENANT, CONNECTION)
+        gate.put_media(tenant_id, key, stream, content_type)
+
+    monkeypatch.setattr(ObjectGate, "put_connection_media", guarded_upload)
     objects, fetcher = MemoryObjects(), FakeFetcher()
     store = R2ThumbnailStore(
         gate_factory=lambda: ObjectGate(objects), fetcher=fetcher, published=FakePublished(None)

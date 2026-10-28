@@ -85,12 +85,18 @@ from qualify_api.claude_tools import (
     api_key_from_env,
 )
 from qualify_api.creative import account_claims, kept_pictures, logo_palette
-from qualify_api.creative.brand_kit_store import PREFILL_DOCUMENT, PREFILL_KEY, BrandKitStore
+from qualify_api.creative.brand_kit_store import (
+    PREFILL_DOCUMENT,
+    PREFILL_KEY,
+    BrandKitStore,
+    valid_whatsapp_contact,
+)
+from qualify_api.creative.brand_observed import observed_from
 from qualify_api.creative.brand_prefill_review import is_decided
 from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
-from qualify_api.privacy import mask_phones, mask_phones_in
+from qualify_api.privacy import mask_phones, mask_phones_in, whatsapp_numbers
 from qualify_api.referentes import discovery_seed, scrapecreators_client
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 from qualify_api.referentes.profile_cache import (
@@ -101,7 +107,7 @@ from qualify_api.referentes.profile_cache import (
 logger = logging.getLogger(__name__)
 
 #: The pipeline's own version, bumped when what a run proposes changes shape or meaning.
-PREFILL_VERSION = 2  # 2: the profile picture kept in R2 (m-24852537)
+PREFILL_VERSION = 3  # 3: review-only observed evidence (m-24854325)
 #: The proposal's review state. PB-5 writes the others ("approved", "discarded").
 STATE_PROPOSED = "proposed"
 #: The pills Tu rubro holds — the referentes search's own cap.
@@ -977,6 +983,44 @@ def prefill_brand_kit(
         )
 
 
+def _capture_contact(
+    tenant_id: UUID, brand_id: UUID, profile: Mapping[str, Any], ports: PrefillPorts
+) -> None:
+    """Full WhatsApp numbers never escape this path into returned or traced data."""
+    if profile.get("isProfessionalAccount") is not True:
+        return
+    links = profile.get("bioLinks")
+    for link in links if isinstance(links, list) else []:
+        if not isinstance(link, Mapping) or link.get("kind") != "whatsapp":
+            continue
+        url = link.get("url")
+        if not isinstance(url, str):
+            continue
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not (
+            host in {"wa.me", "www.wa.me", "whatsapp.com"} or host.endswith(".whatsapp.com")
+        ):
+            continue
+        for number in whatsapp_numbers(url):
+            if not valid_whatsapp_contact(number):
+                continue
+            try:
+                ports.store.capture_whatsapp_contact(
+                    tenant_id=tenant_id, brand_id=brand_id, number=number
+                )
+            except Exception as exc:  # noqa: BLE001 - private params must never escape to logs
+                # A DB exception can contain bound parameters: never interpolate it.
+                logger.warning("brand prefill: contact not kept (%s)", type(exc).__name__)
+                # Do not cache the masked read: a worker retry must be able to read
+                # and capture the contact again after a transient storage failure.
+                raise OSError("private contact could not be kept") from None
+            return  # one contact; subsequent reads cannot replace it
+
+
 def _run(
     tenant_id: UUID,
     brand_id: UUID,
@@ -1022,6 +1066,10 @@ def _run(
                 profile = ports.read_profile(network, clean, client)
             if budget.exhausted:
                 raise _ScrapeCreatorsCapReached("a post page was over the cap")
+            # Capture only to the private tenant document, before the number is lost
+            # to masking. Cached retries never reconstruct or fetch it a second time.
+            if propose and network == "instagram" and not profile.get("isPrivate"):
+                _capture_contact(tenant_id, brand_id, profile, ports)
             # m-24854323: masked before anything keeps or sends it — the cache, Claude,
             # the proposal, the wizard's screen and what generation later reads
             profile = mask_phones_in(profile)
@@ -1153,6 +1201,7 @@ def _propose(
         "profile": account_doc,
         "palette": palette,
         "picture": picture,
+        "observed": observed_from(profile, network=network),
     }
 
 

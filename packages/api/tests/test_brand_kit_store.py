@@ -6,12 +6,15 @@ The pure part (which file is the main logo) runs offline; the rest is `db`-marke
 from __future__ import annotations
 
 import io
+import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from qualify_creative.schemas import BrandKit, ToneAxes
 from qualify_shared.db.admin import admin_session
+from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.keys import TenantPrefixViolation
 
 from qualify_api.creative.brand_kit_store import (
@@ -25,6 +28,7 @@ from qualify_api.creative.brand_kit_store import (
 )
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
+from qualify_api.creative.models import BrandKitDetails as DetailsRow
 from qualify_api.tenancy.models import Brand, Tenant, User
 
 TENANT = UUID("c0000000-0000-4000-8000-0000000000a7")
@@ -183,3 +187,60 @@ def test_details_save_only_the_documents_given(seeded: tuple[UUID, UUID]) -> Non
     assert store.load_details(tenant_id=OTHER, brand_id=brand).connect == {}
     with pytest.raises(ValueError):
         store.save_details(tenant_id=TENANT, brand_id=brand, user_id=user, documents={"x": {}})
+
+
+@pytest.mark.db
+def test_private_whatsapp_contact_is_atomic_hidden_and_preserved_across_wizard_saves(
+    seeded: tuple[UUID, UUID],
+) -> None:
+    brand, user = seeded
+    store = BrandKitStore()
+    # Concurrent first writers meet on the unique brand row before its FOR UPDATE lock.
+    assert store.capture_whatsapp_contact(tenant_id=TENANT, brand_id=brand, number="573001234548")
+    assert not store.capture_whatsapp_contact(
+        tenant_id=TENANT, brand_id=brand, number="59899123456"
+    )
+    assert not store.capture_whatsapp_contact(tenant_id=OTHER, brand_id=brand, number="59899123456")
+    assert store.load_details(tenant_id=OTHER, brand_id=brand).connect == {}
+    visible = store.load_details(tenant_id=TENANT, brand_id=brand)
+    assert "573001234548" not in json.dumps(visible.connect)
+    store.save_details(
+        tenant_id=TENANT,
+        brand_id=brand,
+        user_id=user,
+        documents={"connect": visible.connect | {"city": "Cúcuta"}},
+    )
+    with tenant_session(TENANT) as session:
+        row = session.get(DetailsRow, brand)
+        assert row.connect["contact"]["whatsapp"] == "573001234548"
+        assert row.connect["city"] == "Cúcuta"
+        row.connect = {**row.connect, "contact": {"whatsapp": "", "label": "Solo mensajes"}}
+    assert not store.capture_whatsapp_contact(
+        tenant_id=TENANT, brand_id=brand, number="573001234548"
+    )
+    store.save_details(
+        tenant_id=TENANT, brand_id=brand, user_id=user, documents={"connect": {"city": "Bogotá"}}
+    )
+    with tenant_session(TENANT) as session:
+        row = session.get(DetailsRow, brand)
+        assert row.connect["contact"] == {"whatsapp": "", "label": "Solo mensajes"}
+
+
+@pytest.mark.db
+def test_two_first_contact_captures_cannot_replace_each_other(seeded: tuple[UUID, UUID]) -> None:
+    brand, _ = seeded
+    store = BrandKitStore()
+    numbers = ("573001234548", "59899123456")
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(
+            workers.map(
+                lambda number: store.capture_whatsapp_contact(
+                    tenant_id=TENANT, brand_id=brand, number=number
+                ),
+                numbers,
+            )
+        )
+    assert sorted(results) == [False, True]
+    with tenant_session(TENANT) as session:
+        row = session.get(DetailsRow, brand)
+        assert row.connect["contact"]["whatsapp"] == numbers[results.index(True)]

@@ -173,3 +173,26 @@ def test_invalid_cold_step_without_a_product_returns_guarded_entry_ack() -> None
     assert "__qStepEntry" in str(event)
     assert "99" in str(event)
     assert state.create_entered
+
+
+@pytest.mark.parametrize("saved_step", [1, 3])
+def test_remount_restores_generator_readiness_and_keeps_saved_steps(saved_step: int) -> None:
+    """A frame cleanup after route entry must not leave a returning visit loading forever."""
+    from .content_generator import _generator_frame
+
+    state = _chosen() if saved_step > 1 else CreativeState()
+    state.router = RouterData(url=ReflexURL("http://localhost:3000/create"))
+    state._show_create_step(saved_step)
+    topic, product = state.brief_topic, state.selected_product_id
+    state.enter_create_step()
+
+    # Replay the frame's real lifecycle bindings, including StrictMode's effect replay.
+    frame = _generator_frame()
+    for trigger in ("on_unmount", "on_mount"):
+        for event in frame.event_triggers[trigger].events:
+            event.handler.fn(state)
+
+    assert state.create_entered
+    assert not state.create_loading
+    assert state.create_step_n == saved_step
+    assert (state.brief_topic, state.selected_product_id) == (topic, product)

@@ -19,8 +19,8 @@ STATUS_LABELS: dict[str, tuple[str, str, str]] = {
 }
 
 DISCONNECTED_NOTICE = (
-    "Esta cuenta está desconectada. Lo que ya tenías guardado sigue aquí. "
-    "Pulsa «Volver a conectar» para recibir comentarios y mensajes nuevos."
+    "Esta cuenta está desconectada. Para recibir comentarios y mensajes nuevos, "
+    "pulsa «Volver a conectar»."
 )
 PERMISSION_MISSING_NOTICE = (
     "Esta cuenta no tiene el permiso necesario. Lo que ya tenías guardado sigue aquí. "

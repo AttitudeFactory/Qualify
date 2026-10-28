@@ -296,6 +296,7 @@ def _post_option(
         )
     vm = build_post_option(
         post_id=str(post.post_id),
+        content_kind=post.content_kind,
         title=post.title,
         caption_excerpt=post.caption_excerpt,
         thumbnail_url=(thumbnails or {}).get(str(post.post_id), post.thumbnail_url),

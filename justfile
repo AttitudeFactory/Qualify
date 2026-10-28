@@ -567,3 +567,9 @@ e2e *ARGS:
 # m-24852167: team-only, read-only queue/slots/waits report; no generation or messages.
 creative-queue *args:
     uv run --no-sync python -m qualify_api.creative.worker.queue_cli {{args}}
+
+# m-24789547: scoped IG/FB deletion; dry run unless --execute. Always --tenant UUID.
+# Manual support request: --tenant UUID --connection UUID --request --execute.
+# Due-job scheduler: run every 15 minutes per tenant with --tenant UUID --execute.
+connection-purge *args:
+    uv run --no-sync python -m qualify_api.connections.purge_cli {{args}}

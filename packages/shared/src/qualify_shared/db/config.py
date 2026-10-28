@@ -60,3 +60,10 @@ def webhook_worker_dsn() -> str:
 
 def creative_worker_dsn() -> str:
     return os.environ.get("QUALIFY_CREATIVE_WORKER_DSN", DEFAULT_CREATIVE_WORKER_DSN)
+
+
+def connection_purge_dsn() -> str:
+    return os.environ.get(
+        "QUALIFY_CONNECTION_PURGE_DSN",
+        "postgresql+psycopg://qualify_connection_purge:connection_purge_dev@localhost:5432/qualify",
+    )

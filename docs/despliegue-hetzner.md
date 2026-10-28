@@ -298,6 +298,39 @@ Límites:
 - **Perfil `render`:** desde m-24803289 el workflow publica `qualify-render:<sha>` (arm64) en cada deploy. Si `COMPOSE_PROFILES` incluye `render`, `server-deploy.sh` también la baja y, después del `up`, espera hasta ~2,5 min a que el contenedor quede `healthy` (bundle de Remotion listo); si no, el deploy sale en rojo con el release ya vivo, como cualquier chequeo. Un sha anterior a ese PR no se puede desplegar con el perfil activo (no tiene imagen de render): el script lo dice antes de tocar nada. Activarlo son dos pasos del fundador: agrandar el servidor (abajo) y agregar `COMPOSE_PROFILES=render` a `/opt/qualify/.env.prod`.
 - **`calendar-worker`:** siempre activo desde 2026-10-21 (m-24828928); cada despliegue lo recrea como a los demás workers. Los perfiles (hoy sólo `render`) salen sólo de `.env.prod`.
 
+### Recuperación tras un corte SSH
+
+El 2026-10-28, las corridas `40736452537`, `40703787353` y `40698758681` perdieron
+la conexión SSH con salida 255 entre 4,5 y 5 minutos después de anunciar `Pulling`.
+Las imágenes ya se habían construido y publicado; el log no mostró migraciones ni
+arranque de servicios. Los pulls silenciosos y ese intervalo son compatibles con un
+corte por inactividad, pero no confirman su causa ni qué terminó ejecutándose en el servidor.
+
+El workflow envía keepalives SSH cada 15 segundos y tolera seis respuestas ausentes,
+limita la conexión inicial a 15 segundos y hace un solo intento. Mantiene la comprobación
+estricta de la clave del servidor y el límite de 20 minutos del job completo. No necesita
+reinstalar `server-deploy.sh`, cambiar secretos ni preparar el servidor.
+
+Una salida 255 deja el despliegue en rojo con **resultado remoto desconocido**: el proceso
+puede haber seguido trabajando tras perderse la conexión. No se repite automáticamente.
+Antes de decidir un reintento:
+
+1. Desde un equipo con el alias y la clave del servidor ya verificados, ejecutar
+   `just deploy-status qualify-prod`. Si falta ese acceso, recuperar su configuración
+   confiable; no desactivar la verificación de claves.
+2. Verificar el SHA real con `/opt/qualify/current/deploy/release.env` y las imágenes de
+   los contenedores que muestra `deploy-status`, además de su salud. El enlace `current`
+   puede seguir en el release anterior mientras continúa el pull o la migración;
+   un HTTP 200 por sí solo tampoco identifica el release.
+3. Confirmar por el acceso operativo confiable si el despliegue sigue activo, usando
+   estado y logs antes de intervenir. El comando del servidor toma `.deploy.lock`,
+   pero un corte SSH no demuestra que haya liberado ese bloqueo ni detenido sus hijos.
+   Con el estado reconciliado, decidir si hace falta un nuevo despliegue por la ruta documentada.
+
+Los errores del comando remoto conservan su salida y también detienen el workflow.
+Los keepalives reducen el riesgo de un corte por inactividad; no garantizan recuperar
+una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
+
 ## 8. Respaldos de Postgres
 
 `bootstrap-server.sh` deja un cron diario (03:15 UTC) que corre `deploy/backup-db.sh` como `deploy`:

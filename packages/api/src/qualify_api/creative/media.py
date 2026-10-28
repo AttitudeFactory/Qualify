@@ -390,9 +390,7 @@ def _attempt_tag(block: Mapping[str, Any]) -> str:
 
 
 def _reference_task(model: str) -> dict[str, str]:
-    """The generator only CREATES videos from references (never edits or extends one):
-    on a model that takes the hint (2.5) it is said, so a reference video is not taken
-    for a video to edit and the task's constraints are checked at creation."""
+    """Ordinary clips borrow references; explicit reel edits override this task hint."""
     if seedance_family(model).omni_task_types:
         return {"omni_reference_task_type": "reference"}
     return {}
@@ -747,6 +745,10 @@ PRESENTER_SLOW_TEXT = (
 )
 RATE_LIMITED_TEXT = "Hay muchas generaciones en curso. Inténtalo en unos minutos."
 GENERIC_FAILURE_TEXT = "No se pudo generar la pieza. Inténtalo de nuevo."
+REFERENCE_DOWNLOAD_TEXT = (
+    "El generador no pudo descargar una referencia. "
+    "Comprueba que el servidor público de medios esté disponible y vuelve a intentarlo."
+)
 #: m-24852154: a video recovered after a long wait that the vendor failed or expired.
 RESUMED_VIDEO_FAILED_TEXT = "No se pudo terminar el video. Inténtalo de nuevo."
 BUDGET_TEXT = "Se alcanzó el límite de gasto de la marca."
@@ -786,6 +788,7 @@ def avatar_failure_text(raw: str) -> str:
 #: The generated image / video vendor's failures (error codes from its docs, read
 #: 2026-10-07), by meaning. A moderated or failed generation is not billed.
 _ARK_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("resource download failed", "public media server"), REFERENCE_DOWNLOAD_TEXT),
     (("QUALIFY_BYTEPLUS_ARK_API_KEY", "MissingPlatformKey"), UNAVAILABLE_TEXT),
     (("AuthenticationError", "HTTP 401"), UNAVAILABLE_TEXT),
     (("ModelNotOpen",), MODEL_NOT_OPEN_TEXT),
@@ -838,6 +841,18 @@ def props_failure_text(problems: list[PropsProblem]) -> str:
     """The template validation problems in Spanish, distinct messages joined by a space."""
     texts = list(dict.fromkeys(_props_problem_text(p) for p in problems))
     return " ".join(texts)
+
+
+def _video_dimensions(data: bytes) -> tuple[int, int] | None:
+    """The actual canvas: an edit preserves its source, including nonstandard ratios."""
+    try:
+        import av  # noqa: PLC0415
+
+        with av.open(io.BytesIO(data)) as container:
+            video = container.streams.video[0]
+            return video.codec_context.width, video.codec_context.height
+    except Exception:  # noqa: BLE001 — preserve paid media even if metadata is unreadable
+        return None
 
 
 def _media_seconds(data: bytes) -> float | None:
@@ -1222,9 +1237,9 @@ _REFERENCE_TYPES = {
 }
 
 CLIP_NO_PUBLIC_URL = (
-    "Para usar videos o audios de referencia, el servidor necesita una dirección pública "
-    "desde la que el generador pueda descargarlos, y no está configurada. Quita esas "
-    "referencias o pide que la configuren."
+    "El generador no puede descargar los videos o audios de referencia. "
+    "La dirección pública de medios no está disponible o no está configurada. "
+    "Restablece el servidor de medios y vuelve a intentarlo."
 )
 #: The talking presenter needs the same public URL: OmniHuman fetches the photo and the
 #: voice from it, and takes no Base64.
@@ -1621,7 +1636,11 @@ class MediaProducer:
             # a slide is silent unless its draft was made with sound (§ 2026-10-23)
             keep_audio = bool(block.get("audio"))
         else:
-            size = output_dimensions(model, resolution, ratio)
+            size = (
+                _video_dimensions(video)
+                if finish == FINISH_CLIP and brief.media.clip_reference_mode == "edit"
+                else None
+            ) or output_dimensions(model, resolution, ratio)
             keep_audio = True
             if logo is not None:
                 overlay = text_layer(size=size, palette=kit.palette_rgb, logo=logo)
@@ -2480,6 +2499,22 @@ class MediaProducer:
         one; with neither, from the words alone."""
         media = brief.media
         ratio = SEEDANCE_RATIOS[brief.format]
+        editing = media.clip_reference_mode == "edit"
+        if editing:
+            if (
+                not self._seedance_reference_model
+                or not seedance_family(self._seedance_reference_model).omni_task_types
+            ):
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    "La réplica fiel necesita Seedance 2.5 con edición de video.",
+                )
+            reference_seconds = self._reference_seconds(media.clip_video_keys)
+            if reference_seconds is None or abs(reference_seconds - media.duration_seconds) > 0.5:
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    "La réplica conserva la duración del original. Prepara de nuevo la referencia.",
+                )
         first = self._clip_frame(media.clip_first_frame_key, last=False)
         last = self._clip_frame(media.clip_last_frame_key, last=True)
         images = [self._store.read(key) for key in media.clip_image_keys]
@@ -2518,6 +2553,12 @@ class MediaProducer:
                     )
                 params["reference_audios"] = self._reference_urls(tenant_id, media.clip_audio_keys)
                 params.update(_reference_task(model))
+                if editing:
+                    # ModelArk edits the source in place; it inherits its duration
+                    # and canvas rather than inventing a new shot sequence.
+                    params.update(
+                        omni_reference_task_type="edit", ratio="adaptive", duration_seconds=-1
+                    )
             else:
                 # 2.5 keeps the opening frame's own aspect (`ratio: adaptive`): an
                 # operator's frame is cropped to the piece's ratio, so the clip is too
@@ -2618,7 +2659,9 @@ class MediaProducer:
         tokens = int(result.usage.output_tokens)
         cost = self._seedance_usage(result, out_resolution, usage)
         video = self._download(str(result.media_url))
-        width, height = output_dimensions(result.model_id, out_resolution, ratio)
+        width, height = (_video_dimensions(video) if editing else None) or output_dimensions(
+            result.model_id, out_resolution, ratio
+        )
         thumbnail = first
         logo_laid = False
         if fitter is not None:
@@ -2655,6 +2698,7 @@ class MediaProducer:
                         "task_id": payload.get("task_id"),
                         "duration_seconds": payload.get("duration_seconds"),
                         "resolution": out_resolution,
+                        "reference_mode": media.clip_reference_mode,
                         "tokens": tokens,
                         "spoken": bool(payload.get("generate_audio")),
                         # the middle images left out on an account without 2.x (§ 2026-10-20)
@@ -4420,6 +4464,8 @@ def clip_prompt(
     it and told its role (the product, the place, a style), the «Datos clave», the
     palette. With references, the frames are the first reference images and the prompt
     says so (ModelArk's documented way: «the opening frame is Image 1»)."""
+    if brief.media.clip_reference_mode == "edit":
+        return reel_edit_prompt(brief=brief, kit=kit, images=images)
     ratio = SEEDANCE_RATIOS[brief.format]
     seconds = brief.media.duration_seconds
     lines: list[str | _Flex] = [
@@ -4470,6 +4516,55 @@ def clip_prompt(
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append("No text on screen.")
+    return _budgeted(lines)
+
+
+def reel_edit_prompt(*, brief: ContentBrief, kit: BrandKit, images: int) -> str:
+    """Edit the source reel with the client's brand identity foreground and the reel's
+    structure as a base, applying the operator's merged production instructions.
+
+    m-24820836: the merged ``brief.topic`` (the operator's foreground — brand identity,
+    colors, typography, texts, CTA and scene additions/changes — over the «copiar»
+    reel-reference background) reaches the video as production instructions. The reel's
+    shot structure stays the second-plane base; brand identity and explicit operator
+    requests may restyle the scene. The visual sequence is still the original video
+    @Video1, not a VLM analysis."""
+    product = _quoted(brief.product_ref or "the client's product", 120)
+    names = ", ".join(f"@Image{n}" for n in range(1, images + 1))
+    lines: list[str | _Flex] = [
+        "Edit video @Video1. Replace its product with the client's product shown in "
+        f"{names}: {product}. This is an in-place video edit, not a new advertising video.",
+        "Keep the original shot count, shot order, cut timings, framing, camera angle, "
+        "camera trajectory, gestures, hand positions, actions, motion and pacing — this "
+        "is the reel's structure, the second-plane base for the edit.",
+        "The brand identity and the operator's explicit instructions (below) may restyle "
+        "the scene: background tone, lighting, accents, and elements the operator asked "
+        "for. Use product photos only for product appearance. Do not transfer their "
+        "background, layout or pose.",
+        "The replacement product must match the supplied photos: ingredients, layers, "
+        "shape, colors, proportions and packaging, consistently throughout the actions. "
+        "Preserve every stage of assembly; do not show the fully assembled product early. "
+        "Replace packaging only where it exists in the original.",
+        "Apply the operator's explicit scene requests from the instructions below: add "
+        "or change shots, actions or elements they asked for. Do not cut to a catalog "
+        "still or a new final hero shot.",
+        "Replace any visible source-brand names, logos and packaging with the client's "
+        "identity. Do not add new promotional text or retain the source brand.",
+        _Flex(
+            "Client brand identity (for replacement branding and the scene's styling): ",
+            kit.positioning,
+        ),
+        "Brand colors apply to the scene's styling and accents where the operator asks, "
+        "not only replacement branding: " + ", ".join(kit.palette_rgb),
+        "Keep the original video's duration and aspect ratio. "
+        "Do not recreate its original music or speech.",
+        _Flex(
+            "Client additional production instructions (in Spanish — the operator's brand "
+            'identity, colors, typography, texts, CTA and scene additions/changes): "',
+            brief.topic,
+            rank=3,
+        ),
+    ]
     return _budgeted(lines)
 
 

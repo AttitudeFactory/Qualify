@@ -68,8 +68,11 @@ class UnsupportedImageFormat(Exception):
 class MediaStagingService:
     """Stages one media asset behind the gate. One instance wraps one gate."""
 
-    def __init__(self, gate: ObjectGate) -> None:
+    def __init__(self, gate: ObjectGate, *, guard_connection_uploads: bool = False) -> None:
         self._gate = gate
+        # Production composition always enables the DB consent fence. Offline
+        # staging tests exercise format/size checks without constructing a DB door.
+        self._guard_connection_uploads = guard_connection_uploads
 
     def stage_media(
         self,
@@ -108,7 +111,10 @@ class MediaStagingService:
             _reject_oversized_image(fileobj)
             _reject_non_jpeg_bytes(fileobj)
         key = media_key(tenant_id, connection_id, media_id)
-        self._gate.put_media(tenant_id, key, fileobj, content_type)
+        if self._guard_connection_uploads:
+            self._gate.put_connection_media(tenant_id, connection_id, key, fileobj, content_type)
+        else:
+            self._gate.put_media(tenant_id, key, fileobj, content_type)
         return StagedMedia(
             media_object_key=key,
             media_product_type=media_product_type,

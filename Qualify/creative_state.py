@@ -172,6 +172,7 @@ from .gallery_state import schedule_readiness
 from .pending_state import PendingState
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
+from .reel_replication import replication_context
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -855,6 +856,11 @@ class CreativeState(rx.State):
     brief_objective: str = "consideration"
     brief_content_type: str = "product"
     brief_topic: str = ""
+    #: The «copiar» background layer (m-24820836): the reel's structure as a sequence
+    #: guide, applied under the operator's own context. Set by ``_apply_reel_reference``
+    #: and merged into ``_effective_topic`` at submit; the foreground ``brief_topic`` is
+    #: never overwritten by it.
+    replication_context: str = ""
     brief_product_ref: str = ""
     brief_intent: str = "organic"
     brief_must_mention: str = ""
@@ -958,6 +964,7 @@ class CreativeState(rx.State):
     # piece is about
     catalog_items: list[dict[str, str]] = []
     catalog_loading: bool = False
+    catalog_loaded: bool = False
     catalog_error: str = ""
     selected_product_id: str = ""
     selected_product_photo_key: str = ""
@@ -2993,6 +3000,38 @@ class CreativeState(rx.State):
         self.gen_mode = "variations"
         return _scroll_to_view()
 
+    def _apply_reel_reference(self, card: dict[str, str], imported: dict[str, str]) -> None:
+        """Open a fresh Clip while keeping the selected product and its key facts."""
+        self._back_to_form()
+        self.gen_category = "clip"
+        self.gen_mode = "create"
+        self.create_options_open = False
+        self.clip_images = []
+        self.clip_videos = [{"key": imported["key"], "name": imported["name"], "source": "reel"}]
+        self.clip_audios = []
+        self.clip_sequence = []
+        self.clip_first_frame_key = self.clip_first_frame_name = ""
+        self.clip_last_frame_key = self.clip_last_frame_name = ""
+        self._set_kind("clip")
+        self._sync_clip_frames()
+        # m-24820836: the copiar guidance is a BACKGROUND layer merged under the
+        # operator's own context at submit, never an overwrite of ``brief_topic``.
+        # ``brief_topic`` is left untouched so the operator's Brand Kit context
+        # (colours, typography, texts) stays as the foreground.
+        self.replication_context = replication_context(card, self.brief_product_ref)
+        self.brief_format = "reels_9_16"
+        self.clip_duration = "5"
+        self.clip_audio = True
+        if not self.brand_logo_key:
+            self.brand_logo_key = next(
+                (asset["key"] for asset in self.brand_media_items if asset.get("kind") == "logo"),
+                "",
+            )
+        self.own_script_on = False
+        self.own_script = ""
+        self.gen_direction = DIR_NEXT
+        self._reset_gen_campaign()
+
     # -- a stock video as the product: where it fits (§ request 2026-10-16) -------------
 
     def _video_product_conflict(self, category: str) -> bool:
@@ -3515,8 +3554,12 @@ class CreativeState(rx.State):
             ordered = sorted(items, key=lambda item: keys.index(item["key"]))
             if [i["key"] for i in ordered] != [i["key"] for i in items]:
                 setattr(self, name, ordered)
-        first = strip[0] if strip else None
-        last = strip[-1] if len(strip) > 1 else None
+        # A replica keeps the original video's frames. Product images are appearance
+        # references, never a replacement opening/closing shot from the catalog.
+        editing = any(item.get("source") == "reel" for item in self.clip_videos)
+        frames = [] if editing else strip
+        first = frames[0] if frames else None
+        last = frames[-1] if len(frames) > 1 else None
         self._set_clip_frame("first", *((first["key"], first["name"]) if first else ("", "")))
         self._set_clip_frame("last", *((last["key"], last["name"]) if last else ("", "")))
 
@@ -3605,6 +3648,11 @@ class CreativeState(rx.State):
             # a video is a motion reference even when it also lends the opening or
             # closing frame; without Seedance 2.x the producer falls back to the frames
             "clip_video_keys": [item["key"] for item in self.clip_videos],
+            "clip_reference_mode": (
+                "edit"
+                if any(item.get("source") == "reel" for item in self.clip_videos)
+                else "motion"
+            ),
             "clip_audio_keys": [item["key"] for item in self.clip_audios],
             "product_source": self.product_source,
             # § request 2026-10-20: the logo laid over every frame (no other element: a
@@ -3940,6 +3988,7 @@ class CreativeState(rx.State):
         if ids is None:
             async with self:
                 self.catalog_loading = False
+                self.catalog_error = _NO_SESSION
             return
         tenant_id, brand_id, _ = ids
         try:
@@ -3951,6 +4000,7 @@ class CreativeState(rx.State):
                 self.catalog_error = _CATALOG_ERROR
             return
         async with self:
+            self.catalog_loaded = True
             self.catalog_items = [dict(item) for item in items]
             self.catalog_loading = False
             self._apply_product_from_query()
@@ -4764,6 +4814,7 @@ class CreativeState(rx.State):
         draft_id = self.gen_draft_id
         self._back_to_form()
         self.brief_topic = ""
+        self.replication_context = ""
         self._reset_media_inputs()
         self._reset_gen_campaign()
         self.product_confirmed = False
@@ -4851,7 +4902,7 @@ class CreativeState(rx.State):
     @rx.event
     def set_clip_duration(self, value: str | list[str]) -> None:
         value = value if isinstance(value, str) else (value[0] if value else "")
-        if value in CLIP_DURATIONS:
+        if value in self._clip_duration_choices():
             self.clip_duration = value
 
     @rx.event
@@ -4974,6 +5025,13 @@ class CreativeState(rx.State):
         return self._presenter_problem() or self._details_problem()
 
     def _clip_problem(self) -> str:
+        if any(item.get("source") == "reel" for item in self.clip_videos):
+            if len(self.clip_videos) != 1:
+                return "Una réplica usa un solo video original. Quita los otros videos."
+            if not self.clip_images:
+                return "Elige una foto de tu producto para sustituir el del video original."
+            if self.clip_audios:
+                return "Quita los audios de referencia para conservar la edición del original."
         if len(self.clip_images) > CLIP_MAX_IMAGES:
             return f"Un clip admite hasta {CLIP_MAX_IMAGES} imágenes. Quita alguna."
         if self.clip_last_frame_key and not self.clip_first_frame_key:
@@ -5010,7 +5068,28 @@ class CreativeState(rx.State):
 
     def _effective_topic(self) -> str:
         """What the piece is about: the ad image's scene is its whole brief (§ request
-        2026-10-08), every other kind says it in «¿Qué quieres…?»."""
+        2026-10-08), every other kind says it in «¿Qué quieres…?».
+
+        m-24820836: the «copiar» reel reference is a BACKGROUND layer merged under the
+        operator's foreground. The brand identity (the operator's context) takes priority
+        over mimicking the reel's look, so the foreground is sent first and the replication
+        guidance second."""
+        if self.brief_kind == "static_flyer":
+            return self.ad_scene_prompt.strip()
+        user = self.brief_topic.strip()
+        base = self.replication_context.strip()
+        if not base:
+            return user
+        if not user:
+            # fallback so the form still validates if the operator types nothing
+            return base
+        # foreground (brand identity) + background (reel structure) merged into one topic
+        return f"{user}\n\n— Contexto de replicación (segundo plano) —\n{base}"
+
+    def _user_topic_text(self) -> str:
+        """The operator's own words — the FOREGROUND only, never the «copiar» background
+        layer. «Potenciar con IA» rewrites only this, so the reel-reference structure stays
+        intact and the merge in ``_effective_topic`` keeps the background underneath."""
         if self.brief_kind == "static_flyer":
             return self.ad_scene_prompt.strip()
         return self.brief_topic.strip()
@@ -5097,7 +5176,10 @@ class CreativeState(rx.State):
         async with self:
             if self.context_enhancing:
                 return
-            text = self._effective_topic()
+            # m-24820836: enhance rewrites the FOREGROUND only — the operator's own
+            # context — never the «copiar» reel-reference background layer. The merge in
+            # ``_effective_topic`` puts the background back underneath at submit.
+            text = self._user_topic_text()
             self.context_enhance_note = ""
             if len(text) < _ENHANCE_MIN_CHARS:
                 self.context_enhance_error = _ENHANCE_TOO_SHORT
@@ -5132,10 +5214,11 @@ class CreativeState(rx.State):
             return
         async with self:
             self.context_enhancing = False
-            if self._effective_topic() != text:
+            if self._user_topic_text() != text:
                 # typed over meanwhile: the operator's newer words win
                 self.context_enhance_error = _ENHANCE_STALE
                 return
+            # store the foreground only; the background layer is never part of undo
             self.context_before_enhance = text
             self._set_context_text(proposal.text)
             if proposal.added_facts:
@@ -5387,6 +5470,8 @@ class CreativeState(rx.State):
         return self._clip_duration_choices()
 
     def _clip_duration_choices(self) -> list[str]:
+        if any(item.get("source") == "reel" for item in self.clip_videos):
+            return ["5"]
         return list(CLIP_DURATIONS)
 
     @rx.event
@@ -5790,6 +5875,7 @@ class CreativeState(rx.State):
         if draft_id is not None:
             async with self:
                 self.brief_topic = ""
+                self.replication_context = ""
                 self.staged_media_key = ""
                 self.staged_media_name = ""
             yield rx.redirect(f"/drafts/{draft_id}")

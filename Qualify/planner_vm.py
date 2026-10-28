@@ -36,7 +36,7 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import FINAL_PREPARING_LABEL, REVIEW_PORT_LABELS
+from .creative_vm import FINAL_PREPARING_LABEL, KIND_LABELS, REVIEW_PORT_LABELS
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
@@ -962,6 +962,8 @@ class PostOptionVM:
     used_count: int = 0
     in_calendar: bool = False
     media_label: str = ""  # "Video · Reel 9:16"
+    content_kind: str = ""
+    content_kind_label: str = ""
     # QUA-118 v2: the format the grid tile shows («Reel», «Historia», «Carrusel», «Feed»,
     # «Multiformato», key in `KIND_ICONS`), and the POST's temperature (`temperature`).
     kind: str = "image"
@@ -1310,6 +1312,7 @@ def build_post_option(
     preview_expired: bool = False,
     recreate_note: str = "",
     expires_at: float = 0.0,
+    content_kind: str = "",
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1350,6 +1353,8 @@ def build_post_option(
         used_count=times_published,
         in_calendar=has_live_event,
         media_label=f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}"),
+        content_kind=content_kind,
+        content_kind_label=KIND_LABELS.get(content_kind, ""),
         **_kind_fields(media_types, category or "", has_outputs=bool(chips)),
         **_temperature_fields(times_published),
         destinations=(choices := destinations_for(media_types, image_size)),
@@ -1377,7 +1382,9 @@ def build_post_option(
     )
 
 
-def filter_posts(posts: Iterable[PostOptionVM], *, state: str, category: str) -> list[PostOptionVM]:
+def filter_posts(
+    posts: Iterable[PostOptionVM], *, state: str, category: str, content_kind: str = "all"
+) -> list[PostOptionVM]:
     """The gallery's filters: by the card's state (`CARD_STATES`, m-24842981) and by raw
     category; `GALLERY_FILTER_ALL` (or "") means no filter on that axis."""
     return [
@@ -1385,6 +1392,7 @@ def filter_posts(posts: Iterable[PostOptionVM], *, state: str, category: str) ->
         for post in posts
         if (state in ("", GALLERY_FILTER_ALL) or post.card_state == state)
         and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
+        and (content_kind in ("", GALLERY_FILTER_ALL) or post.content_kind == content_kind)
     ]
 
 

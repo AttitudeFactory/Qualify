@@ -13,6 +13,7 @@ so `render_prompt` can rely on byte-identical output for the cacheable prefix.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -527,6 +528,8 @@ class MediaInputs(BaseModel):
     #: means every one is the product (a brief from before the roles).
     clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
+    #: Ordinary clips borrow motion; a reel replica edits one original video in place.
+    clip_reference_mode: Literal["motion", "edit"] = "motion"
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
     #: Clip (§ request 2026-10-23): the sound Seedance makes with the video. On by
     #: default — what every clip had before the switch; a model without audio (1.0)
@@ -598,11 +601,21 @@ class ContentBrief(BaseModel):
         if media.template_video and self.kind is not ContentKind.TEMPLATE:
             raise ValueError("only a template renders a template video")
         clip_inputs = (
-            media.clip_first_frame_key or media.clip_last_frame_key or media.clip_has_references
+            media.clip_first_frame_key
+            or media.clip_last_frame_key
+            or media.clip_has_references
+            or media.clip_reference_mode == "edit"
         )
         if clip_inputs and self.kind is not ContentKind.CLIP:
             raise ValueError("frames and references are for a clip")
         if self.kind is ContentKind.CLIP:
+            if media.clip_reference_mode == "edit":
+                if len(media.clip_video_keys) != 1 or not media.clip_image_keys:
+                    raise ValueError("a reel edit needs one original video and product images")
+                if media.clip_first_frame_key or media.clip_last_frame_key:
+                    raise ValueError("a reel edit keeps the original video's frames")
+                if media.clip_audio_keys:
+                    raise ValueError("a reel edit does not borrow a reference soundtrack")
             if media.clip_last_frame_key and not media.clip_first_frame_key:
                 raise ValueError("a clip's closing frame needs its opening frame")
             if media.clip_image_roles and len(media.clip_image_roles) != len(media.clip_image_keys):

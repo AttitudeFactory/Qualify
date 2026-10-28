@@ -82,3 +82,16 @@ tanto a 360 px como a 1.280 px. El correo largo ya no produce desbordamiento hor
   desplazamiento horizontal en móvil.
 - **Pendiente:** el mensaje de éxito exige que exista el selector superior de negocios.
   Integrarlo con S3/S4 antes de entregar la experiencia completa al cliente.
+
+## Integración de migraciones con main
+
+La comprobación de CI detectó que main ya tenía las revisiones `0106_connection_purge`
+y `0107_webhook_consent_privacy`. La revisión `0106` de este PR colisionaba con esa cadena.
+Se integró main en la rama del PR y se renumeró únicamente la migración de este trabajo a
+`0108_signup_invites_is_add_business`, con predecesora `0107`. Las revisiones publicadas
+permanecen intactas.
+
+La validación en un Postgres 16 temporal reprodujo el fallo anterior y comprobó una sola
+cabecera `0108`, el ciclo `upgrade head → downgrade base → upgrade head` y la columna
+booleana no nula con valor predeterminado falso. No se modificó la base local de pruebas
+existente.

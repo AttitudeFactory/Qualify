@@ -317,6 +317,24 @@ Tests con respuestas grabadas; `just eval-precarga` antes y después (créditos,
 
 ### 7.4 OL2-1b ([m-24854325](https://project.larksuite.com/5h2wsx/issue/detail/24854325)) — Brand Kit: «lo que vimos» en la propuesta, aparte de lo que se aprueba
 
+**Implementación:** `proposal.observed` guarda solo evidencia para revisar, aparte del perfil que
+se aprueba. La instantánea 6 conserva el identificador estable y si la cuenta es profesional;
+`PREFILL_VERSION = 3`. Cada cuenta con una instantánea anterior se vuelve a leer una vez al
+vencer esa versión de caché (consume los créditos de la lectura habitual). No se agregan llamadas
+a la precarga. La frecuencia estima los intervalos entre publicaciones propias observadas en los
+últimos 30 días; queda desconocida si no hay dos fechas distintas. Los conteos ocultos impiden
+elegir «La que más gustó»: no se reemplazan por cero.
+
+El teléfono de WhatsApp se conserva solo en `connect.contact.whatsapp`, dentro del tenant,
+cuando una lectura nueva de una cuenta profesional pública trae un enlace válido. La escritura
+es atómica y no reemplaza un valor existente, ni siquiera uno vacío. Los guardados del asistente
+conservan ese contacto; `load_details` lo excluye de los datos que pueden llegar a una pantalla.
+El número completo no pasa al perfil, caché, propuesta, procedencia ni proveedores. Un reintento
+con el perfil enmascarado en caché mantiene el contacto existente sin volver a leer la cuenta.
+Si falla la escritura del contacto, la precarga termina con un error sin datos privados antes
+de guardar la caché o llamar a la IA. El siguiente intento puede volver a leer la cuenta y
+conservar el teléfono; la invitación sigue su flujo independiente.
+
 Feature/mejora · Improvement · **P1 · M** · creative-engineer · depende de OL2-1a
 
 **Contexto**

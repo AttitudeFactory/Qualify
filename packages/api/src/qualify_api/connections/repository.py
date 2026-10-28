@@ -133,11 +133,13 @@ class PostgresConnectionRepository:
     def persist_grant(self, grant: GrantInput) -> ConnectionRecord:
         with tenant_session(grant.tenant_id) as session:
             existing = session.scalar(
-                select(SocialConnection).where(
+                select(SocialConnection)
+                .where(
                     SocialConnection.tenant_id == grant.tenant_id,
                     SocialConnection.platform == grant.platform,
                     SocialConnection.external_account_id == grant.external_account_id,
                 )
+                .with_for_update()
             )
             previous_status = existing.status if existing is not None else None
 
@@ -161,6 +163,9 @@ class PostgresConnectionRepository:
                 session.flush()
             else:
                 connection = existing
+                from qualify_api.connections.purge import cancel_disconnect_purge
+
+                cancel_disconnect_purge(session, connection)
                 # A reconnect refreshes what the platform now reports, including a
                 # re-consent that granted a DIFFERENT scope set than last time.
                 connection.brand_id = grant.brand_id or connection.brand_id

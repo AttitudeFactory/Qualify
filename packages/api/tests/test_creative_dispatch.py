@@ -431,6 +431,9 @@ def _wire_reference_links(monkeypatch: pytest.MonkeyPatch, gate: _FakeGate) -> l
     monkeypatch.setattr(gate_module, "ObjectGate", lambda store: gate)
     monkeypatch.setattr(redis.Redis, "from_url", lambda *a, **k: None)
     monkeypatch.setattr(media_token, "MediaTokenStore", _Tokens)
+    monkeypatch.setattr(
+        "qualify_api.creative.composition._check_reference_url", lambda *a, **kw: None
+    )
     return issued
 
 

@@ -354,3 +354,21 @@ async def test_start_over_clears_the_product_and_the_set(monkeypatch: pytest.Mon
     VariationsState.start_over.fn(state)
     assert not state.product_chosen and not state.has_set
     assert state.angles == [] and state.presets == [] and state.preset_key == ""
+
+
+async def test_catalog_failure_is_not_a_loaded_empty_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    assert not state.products_loaded
+
+    def fail(*_args: object) -> None:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(module, "catalog_products", fail)
+    await VariationsState.load.fn(state)
+    assert state.error and not state.products_loading
+    assert not state.products_loaded
+    monkeypatch.setattr(module, "catalog_products", lambda *_: ())
+    await VariationsState.load.fn(state)
+    assert state.products_loaded and not state.has_products
