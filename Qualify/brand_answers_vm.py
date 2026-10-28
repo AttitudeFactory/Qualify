@@ -27,6 +27,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from qualify_api.privacy import mask_phones
+
 # -- copy (literal, docs/epica-prellenado-brand-kit-alta.md §7.10) ----------------------
 
 #: T16 — the screen after «Aprobar».
@@ -280,7 +282,23 @@ def _draft_text(raw: Any) -> str:
     """One draft: `{"texto": str, "fuente": str}` (the contract), or a bare string."""
     if isinstance(raw, Mapping):
         raw = raw.get("texto")
-    return raw.strip() if isinstance(raw, str) else ""
+    return mask_phones(raw.strip()) if isinstance(raw, str) else ""
+
+
+def tone_draft_from(connect: Mapping[str, Any] | None) -> dict[str, int]:
+    """A sourced proposal's four axes; never the owner's voice before confirmation."""
+    document = (connect or {}).get("prefill")
+    if not isinstance(document, Mapping) or document.get("state") != PREFILL_APPROVED:
+        return {}
+    proposal = document.get("proposal")
+    drafts = proposal.get(DRAFTS_KEY) if isinstance(proposal, Mapping) else None
+    tone = drafts.get("tono") if isinstance(drafts, Mapping) else None
+    if not isinstance(tone, Mapping) or not str(tone.get("fuente") or "").strip():
+        return {}
+    fields = ("formal_casual", "sober_enthusiastic", "technical_plain", "brief_elaborate")
+    if not all(type(tone.get(key)) is int and 0 <= tone[key] <= 100 for key in fields):
+        return {}
+    return {key: tone[key] for key in fields}
 
 
 def drafts_from(connect: Mapping[str, Any] | None, key: str = "prefill") -> dict[str, str]:

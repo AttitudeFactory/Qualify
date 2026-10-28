@@ -44,3 +44,18 @@ Esto **no** es la política de `docs/backlog-retencion-datos-r2.md` (RET-01…08
 - Una pieza usada como insumo de otra (fondo, producto o referencia elegidos en la pestaña «Piezas» del generador) deja de estar disponible cuando se borra: la pieza que la usó se ve igual, pero no se podrá **regenerar** con ese insumo (el error ya existe, `media.py`). Las diapositivas de carrusel no se ven afectadas: se copian a la carpeta de la pieza nueva.
 - Una pieza borrada no es publicable (`UnpublishableReason.MEDIA_PURGED`), no muestra miniatura, no se ofrece en el selector «Piezas» y su descarga deja de existir.
 - Revisión de la política: si un cliente pide recuperar piezas borradas más de una vez, o si el costo de R2 deja de importar, se revisan los 90 días.
+
+## Apéndice — imágenes de revisión del Alta (m-24854328, 2026-10-28)
+
+La foto propuesta como logo y las miniaturas comparten la raíz existente
+`t/{tenant}/brand/{brand}/kept/{profile|post}/`. Las miniaturas se reducen a 480 px,
+se guardan por hash de contenido y nunca requieren descargar media con el proveedor.
+
+El borrado usa `ObjectGate.delete_brand_prefill_objects`: un manifiesto explícito,
+validado por tenant, marca, tipo y hash antes de borrar el primer objeto. No se
+amplía `PURGEABLE_ROOTS` ni se autoriza borrar prefijos generales del kit. Al aprobar
+se conserva la foto que se promueve como logo y se borran las miniaturas; al empezar
+de cero se incluyen ambas. Un fallo conserva el manifiesto en el documento para el
+reintento diario. Una propuesta de más de 30 días cuyo borrador aún no fue adoptado
+por registro también se limpia, bajo el mismo bloqueo que la aprobación. Los
+archivos ya adoptados como logo no se borran por esta limpieza.

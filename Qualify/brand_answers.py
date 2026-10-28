@@ -62,6 +62,8 @@ class BrandAnswersState(rx.State):
     hints: dict[str, str] = {}
     #: B1 drafts by question key ("" none) — the tenant's own proposal, shown to its owner.
     drafts: dict[str, str] = {}
+    tone_draft: dict[str, int] = {}
+    tone_decided: bool = False
     #: «Tus etiquetas (hecho)» only when the approval brought tags.
     has_tags: bool = False
     #: Which of the three questions hold an answer — refreshed whenever the checklist
@@ -93,6 +95,10 @@ class BrandAnswersState(rx.State):
         return self.drafts.get(self.step, "")
 
     @rx.var
+    def has_tone_draft(self) -> bool:
+        return bool(self.tone_draft)
+
+    @rx.var
     def progress_value(self) -> int:
         """The bar under «{n} de 3» (decorative: the counter says it)."""
         if self.step not in vm.QUESTION_KEYS:
@@ -107,6 +113,7 @@ class BrandAnswersState(rx.State):
         hints: dict[str, str],
         drafts: dict[str, str],
         has_tags: bool,
+        tone_draft: dict[str, int] | None = None,
     ) -> None:
         """What `BrandMinimalState.enter` read (caller holds the lock): the checklist
         right after «Aprobar»; a returning owner on the first question still empty."""
@@ -115,6 +122,8 @@ class BrandAnswersState(rx.State):
         self.hints = dict(hints) if active else {}
         self.drafts = dict(drafts) if active else {}
         self.has_tags = has_tags and active
+        self.tone_draft = dict(tone_draft or {}) if active else {}
+        self.tone_decided = False
         self.answered = list(answers.answered())
         self._clear_screen()
 
@@ -208,6 +217,17 @@ class BrandAnswersState(rx.State):
 
     @rx.event
     def open_tone(self) -> None:
+        self.tone_decided = True
+        self.show_tone = True
+
+    @rx.event
+    async def confirm_tone(self) -> None:
+        if self.step != vm.Q_PHRASE or not self.tone_draft or self.tone_decided:
+            return
+        creative = await self.get_state(CreativeState)
+        for key, value in self.tone_draft.items():
+            setattr(creative, f"tone_{key}", value)
+        self.tone_decided = True
         self.show_tone = True
 
     # -- saving --------------------------------------------------------------------------
@@ -474,7 +494,7 @@ def _draft_card() -> rx.Component:
 
 def _tone() -> rx.Component:
     """T21: the four sliders, behind a soft button — optional."""
-    return rx.cond(
+    manual = rx.cond(
         BrandAnswersState.show_tone,
         rx.vstack(*_tone_sliders(), spacing="4", width="100%"),
         _button(
@@ -484,6 +504,53 @@ def _tone() -> rx.Component:
             color_scheme="gray",
             width="100%",
         ),
+    )
+    axes = (
+        ("formal_casual", "Formal", "Coloquial"),
+        ("sober_enthusiastic", "Sobrio", "Entusiasta"),
+        ("technical_plain", "Técnico", "Llano"),
+        ("brief_elaborate", "Breve", "Elaborado"),
+    )
+    return rx.cond(
+        BrandAnswersState.has_tone_draft & ~BrandAnswersState.tone_decided,
+        card(
+            rx.vstack(
+                rx.text(vm.TONE_LABEL, size="3", weight="medium"),
+                rx.text(vm.DRAFT_HINT, size="2", color=T.TEXT_MUTED),
+                *[
+                    rx.vstack(
+                        rx.text(
+                            left,
+                            " → ",
+                            right,
+                            ": ",
+                            BrandAnswersState.tone_draft[key],
+                            " de 100",
+                            size="2",
+                        ),
+                        width="100%",
+                        spacing="1",
+                    )
+                    for key, left, right in axes
+                ],
+                _button(
+                    vm.DRAFT_CONFIRM_LABEL,
+                    BrandAnswersState.confirm_tone,
+                    variant="soft",
+                    width="100%",
+                ),
+                _button(
+                    vm.DRAFT_CORRECT_LABEL,
+                    BrandAnswersState.open_tone,
+                    variant="ghost",
+                    width="100%",
+                ),
+                width="100%",
+                spacing="3",
+            ),
+            width="100%",
+        ),
+        manual,
     )
 
 

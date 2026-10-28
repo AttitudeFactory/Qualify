@@ -1,6 +1,21 @@
 # Épica — Identidad de marca precargada desde el Alta de cliente
 
-**Fecha:** 2026-10-24 · **Estado:** `[HISTORIAS · implementada · diseño aprobado 2026-10-24 · tope fijado 2026-10-25 (US$0,15 por Alta) · precarga ENCENDIDA en producción desde 2026-10-25 (piloto), sin el límite duro de tokens]` · **Meegle:** épica [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192) (mapa de tickets en §4)
+**Fecha:** 2026-10-24 · **Actualización:** 2026-10-28 · **Estado:** `[IMPLEMENTACIÓN EN CURSO · precarga encendida en producción · protección operativa US$5 por Alta · tope de negocio sin decidir · B1 apagado hasta evaluación]` · **Meegle:** épica [m-24852192](https://project.larksuite.com/5h2wsx/story/detail/24852192) (mapa de tickets en §4)
+
+**Aclaración del fundador — 2026-10-28 (prevalece sobre las notas históricas de costos).**
+US$0,15 es una referencia para experimentar y medir mientras se leen cuentas; no es un tope
+comercial aprobado ni un criterio de calidad. La medición del gasto real sigue siendo informativa.
+La protección operativa configurable de producción pasa a `QUALIFY_ALTA_PREFILL_MAX_USD=5`;
+la precarga sigue encendida. El tope de negocio queda sin decidir. Los resultados medidos y los
+presupuestos de experimentos anteriores se conservan como evidencia histórica.
+
+El flujo prioritario comienza en Meegle: Canal + Cuenta completos, y solo la finalización
+humana de «Datos» inicia la precarga del Alta. No se infiere Instagram si falta el canal.
+El registro directo sin invitación se implementará después, documentado en m-24887988:
+creará su Alta sin canal; el scraping normal de la aplicación al ingresar la cuenta actualizará
+canal e identificador en ese mismo ticket. **Esa sincronización nunca dispara otra precarga ni
+otro scraping.** La administración del cliente continúa siempre desde Meegle en ambos flujos.
+
 **Decisión del fundador (Herwin, 2026-10-24):** cuando un cliente se da de alta con el ítem «Alta de cliente» de Meegle, Qualify genera su identidad de marca (Brand Kit) antes de que entre, para que la encuentre precargada en su primer ingreso. Origen: ticket [m-24823674](https://project.larksuite.com/5h2wsx/issue/detail/24823674) (2026-10-21, «precargar el kit de marca y el nicho desde el handle del ticket»), que esta épica reemplaza (cerrado el 2026-10-24). Pertenece a la épica de altas [m-24786482](https://project.larksuite.com/5h2wsx/story/detail/24786482).
 **Revisión técnica:** principal-architect, 2026-10-24, contra el código en disco. Talla total: **M**. El fundador aprobó el diseño de §2 el 2026-10-24 (§5).
 **Restricciones firmadas que aplican:** asistido, nunca autónomo (la propuesta se aprueba en el primer ingreso); compra lo genérico (ScrapeCreators, Claude), construye el núcleo; un solo Postgres; procedencia en todo dato derivado; idempotencia en todo worker; única puerta de entrada = el ítem «Alta de cliente» (2026-10-23).
@@ -614,10 +629,10 @@ revisión técnica no agregó ni quitó textos.
 |---|---|---|---|
 | T1 | OL2-5 | Título | Esto es lo que vimos en tu Instagram |
 | T2 | OL2-5 | Cifras | {n} seguidores · {n} publicaciones |
-| T3 | OL2-5 | Cuadrícula · fuente | Tus últimas publicaciones · De tu perfil, hoy. |
+| T3 | OL2-5 | Cuadrícula · fuente | Tus últimas publicaciones · De tu perfil al preparar esta propuesta. |
 | T4 | OL2-5 | Marca en miniatura · fuente | La que más gustó · {n} me gusta. De tus últimas 12. |
 | T5 | OL2-5 | Bio · enlaces | Así te presentas · Tus enlaces |
-| T6 | OL2-5 | WhatsApp | Pedir por WhatsApp · {número enmascarado: código de país + dos últimas cifras} |
+| T6 | OL2-5 | WhatsApp | WhatsApp de tu perfil · {número enmascarado: código de país + dos últimas cifras}; texto sin enlace ni acción |
 | T7 | OL2-5 | Fuente del rubro | Lo leímos en tu descripción y tus publicaciones. |
 | T8 | OL2-5 | Fuente del lugar | Lo leímos en tu descripción. / Lo marcaste en {n} publicaciones. |
 | T9 | OL2-5 | Logo · fuente | Tu logo: tu foto de perfil · Salen de tu foto de perfil. |
