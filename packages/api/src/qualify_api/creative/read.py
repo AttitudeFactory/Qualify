@@ -90,6 +90,9 @@ def _artifact_from_rows(
         return None
     image = images[0] if images else None
     copy = CopyPayload.model_validate(variant.edited_copy or variant.copy)
+    # m-24820837: a replica names the reel it was made from — read from the brief's own
+    # JSONB, so it outlives the discovery card and the original reel. None otherwise.
+    source_reel = (brief.media or {}).get("source_reel")
     provenance: Mapping[str, object] = MappingProxyType(
         {
             "pipeline_version": draft.pipeline_version,
@@ -99,6 +102,7 @@ def _artifact_from_rows(
             "copy_model_id": variant.model_id,
             "copy_model_revision": variant.model_revision,
             "copy_was_edited": variant.edited_copy is not None,
+            "source_reel": source_reel,
         }
     )
     artifact = ApprovedCreative(

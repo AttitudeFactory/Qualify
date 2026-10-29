@@ -7,11 +7,14 @@ from uuid import UUID
 
 import pytest
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
+from qualify_api.referentes.reels_ai import REPLICATION_ANALYSIS_VERSION
+from qualify_creative.schemas import MediaInputs
 
 from . import discover_reels as module
 from .creative_state import CreativeState
+from .creative_vm import build_draft_vm, source_reel_note
 from .discover_reels import DiscoverReelsState
-from .reel_replication import replication_context
+from .reel_replication import replication_context, source_reel_provenance
 
 TENANT = "a0000000-0000-4000-8000-000000000001"
 CARD = {
@@ -103,6 +106,121 @@ def test_metadata_is_reference_material_not_a_claim_of_visual_analysis() -> None
     # the old "mimic the reel" phrasing is gone
     assert "mismos planos" not in text and "Sustituye únicamente" not in text
     assert '"id": "A"' in text and CARD["url"] in text
+
+
+# -- m-24820837: the replica keeps the reel it was made from ------------------------------
+
+
+def _reel_state() -> CreativeState:
+    """A state opened by «copiar» on the fixture card."""
+    state = creative()
+    state._apply_reel_reference(CARD, IMPORTED)
+    state.clip_sequence = [IMPORTED["key"], "uploads/product.jpg"]
+    state._sync_clip_frames()
+    return state
+
+
+def test_the_card_lands_as_a_structured_source_reel() -> None:
+    provenance = source_reel_provenance(CARD)
+    assert provenance == {
+        "platform": "instagram",
+        "post_id": "A",
+        "url": "https://www.instagram.com/reel/A/",
+        "handle": "@inspiracion",
+        "analysis_version": str(REPLICATION_ANALYSIS_VERSION),
+    }
+
+
+def test_a_replica_stores_its_source_reel_and_sends_it_on_the_brief() -> None:
+    """The operator's clip carries the reel's origin structured — the card is gone by the
+    time the piece is read, the brief is what stays."""
+    state = _reel_state()
+    assert state.source_reel == source_reel_provenance(CARD)
+    media = state._media_inputs()
+    assert media["source_reel"] == source_reel_provenance(CARD)
+    # the payload is a valid MediaInputs: the UI dict parses to the model the brief stores
+    inputs = MediaInputs.model_validate(media)
+    assert inputs.source_reel is not None
+    assert inputs.source_reel.platform == "instagram"
+    assert inputs.source_reel.post_id == "A"
+    assert inputs.source_reel.analysis_version == REPLICATION_ANALYSIS_VERSION
+
+
+def test_an_ordinary_clip_carries_no_source_reel() -> None:
+    """A motion clip that borrows a reference never drags a stranger's reel: without a
+    reel-sourced video the payload says nothing, even with the state left over."""
+    state = creative()
+    state._set_kind("clip")
+    state.clip_videos = [{"key": "mi-video.mp4", "name": "Mi video", "source": "upload"}]
+    assert state._media_inputs()["source_reel"] is None
+    state.source_reel = source_reel_provenance(CARD)
+    media = state._media_inputs()
+    assert media["clip_reference_mode"] == "motion"
+    assert media["source_reel"] is None
+
+
+def test_removing_the_reel_drops_its_origin() -> None:
+    """Without the original video the piece is no longer a replica: the origin goes with
+    it from the state and from the payload."""
+    state = _reel_state()
+    state.remove_clip_video(IMPORTED["key"])
+    assert state.source_reel == {}
+    assert state._media_inputs()["source_reel"] is None
+
+
+def test_the_resets_clear_the_source_reel_with_the_reference() -> None:
+    """Every form reset that forgets the reference also forgets the reel it came from:
+    starting over never leaves the next piece with a foreign origin."""
+    state = _reel_state()
+    state._reset_media_inputs()
+    assert state.source_reel == {}
+    assert state._media_inputs()["source_reel"] is None
+
+    state = _reel_state()
+    state.gen_draft_id = "d-1"
+    CreativeState.review_in_drafts.fn(state)
+    assert state.source_reel == {} and state.replication_context == ""
+
+
+def test_the_detail_names_the_reel_a_replica_came_from() -> None:
+    """The stored dict becomes the line of the piece's detail, with the link to the
+    original reel; a piece without one shows nothing."""
+    stored = {
+        "platform": "instagram",
+        "post_id": "A",
+        "url": "https://www.instagram.com/reel/A/",
+        "handle": "@inspiracion",
+        "analysis_version": 1,
+    }
+    assert source_reel_note(stored) == "Hecha a partir de un reel de @inspiracion en Instagram"
+    vm = build_draft_vm(
+        draft_id="d-1",
+        status="approved",
+        failure_reason=None,
+        variants=(),
+        image_url=None,
+        total_cost_usd=None,
+        voice_profile_version=None,
+        model_ids=(),
+        requires_ai_disclosure=False,
+        created_label="",
+        source_reel=stored,
+    )
+    assert vm.source_reel_note == "Hecha a partir de un reel de @inspiracion en Instagram"
+    assert vm.source_reel_url == "https://www.instagram.com/reel/A/"
+    plain = build_draft_vm(
+        draft_id="d-2",
+        status="approved",
+        failure_reason=None,
+        variants=(),
+        image_url=None,
+        total_cost_usd=None,
+        voice_profile_version=None,
+        model_ids=(),
+        requires_ai_disclosure=False,
+        created_label="",
+    )
+    assert plain.source_reel_note == "" and plain.source_reel_url == ""
 
 
 class Proxy:
