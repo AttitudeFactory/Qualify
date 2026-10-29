@@ -1769,9 +1769,22 @@ def _edit_actions() -> rx.Component:
     )
 
 
-def _field_head(icon: str, title: str, hint: str, counter: rx.Var | None = None) -> rx.Component:
+def _field_head(
+    icon: str,
+    title: str,
+    hint: str,
+    counter: rx.Var | None = None,
+    *,
+    glyph_title: str | None = None,
+) -> rx.Component:
+    # m-24820837: provenance head keeps its hover hint on the glyph; other heads pass
+    # nothing and render exactly as before.
+    glyph_kwargs: dict[str, str] = {"class_name": "q-rv-glyph"}
+    if glyph_title is not None:
+        glyph_kwargs["title"] = glyph_title
+        glyph_kwargs["cursor"] = "help"
     return rx.hstack(
-        rx.center(rx.icon(icon, size=14), class_name="q-rv-glyph"),
+        rx.center(rx.icon(icon, size=14), **glyph_kwargs),
         rx.vstack(
             rx.text(title, class_name="q-rv-title"),
             rx.text(hint, class_name="q-rv-hint"),
@@ -2210,6 +2223,15 @@ def _variant_editor() -> rx.Component:
                 ),
                 _blocking_list(CreativeState.other_blocking),
                 _edit_actions(),
+                # m-24820837: a replicated piece names the reel it was made from; the
+                # line opens the original when the brief kept its URL (read from the
+                # brief, not from the discovery card, so it stays after the reel is
+                # gone). Placed below «Editar texto» so the origin reads as provenance
+                # of the piece, not as a header pill.
+                rx.cond(
+                    CreativeState.draft.source_reel_note != "",
+                    _source_reel_section(CreativeState.draft),
+                ),
                 spacing="3",
                 width="100%",
             ),
@@ -2220,21 +2242,35 @@ def _variant_editor() -> rx.Component:
     )
 
 
-def _source_reel_pill(draft: rx.Component) -> rx.Component:
-    """m-24820837: the pill naming the reel a replica was made from. The brief kept the
-    original's URL, so the line opens it in the browser; without a URL it stays plain
-    text. Same look as the other review pills."""
-    pill = rx.box(
-        rx.icon("film", size=14),
-        rx.text(draft.source_reel_note, as_="span"),
-        class_name="q-rv-pill",
-        title=SOURCE_REEL_HINT,
-        cursor="help",
+def _source_reel_section(draft: rx.Component) -> rx.Component:
+    """m-24820837: the provenance line naming the reel a replica was made from. Same
+    card/section look as the other review fields (hook, caption, hashtags, ...), but the
+    body is muted provenance, not a saved field to act on. The note opens the original
+    reel in a new tab when the brief kept its URL; without a URL it stays plain text.
+    The film glyph keeps the fuller provenance hover hint."""
+    # Provenance, not a saved field: `q-rv-provenance` (muted, no accent border) instead
+    # of `q-rv-read`, which marks content the operator can edit; the link keeps the
+    # accent + underline so it still reads as a link.
+    note = rx.text(
+        draft.source_reel_note,
+        class_name=rx.cond(
+            draft.source_reel_url != "",
+            "q-rv-provenance q-rv-provenance--link",
+            "q-rv-provenance",
+        ),
     )
-    return rx.cond(
-        draft.source_reel_url != "",
-        rx.link(pill, href=draft.source_reel_url, is_external=True),
-        pill,
+    return _rv_section(
+        _field_head(
+            "film",
+            "Reel de referencia",
+            "El reel en el que nos basamos para armar este video.",
+            glyph_title=SOURCE_REEL_HINT,
+        ),
+        rx.cond(
+            draft.source_reel_url != "",
+            rx.link(note, href=draft.source_reel_url, is_external=True),
+            note,
+        ),
     )
 
 
@@ -2264,13 +2300,6 @@ def _review_panel() -> rx.Component:
                     title=AI_LABEL_HINT,
                     cursor="help",
                 ),
-            ),
-            # m-24820837: a replicated piece names the reel it was made from; the line
-            # opens the original when the brief kept its URL (read from the brief, not
-            # from the discovery card, so it stays after the reel is gone).
-            rx.cond(
-                draft.source_reel_note != "",
-                _source_reel_pill(draft),
             ),
             # CREAR-5 (decision 8): the owner never reads money here — what a new version
             # uses is said in creations where it is asked for; the team reads the dollars

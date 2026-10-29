@@ -511,7 +511,7 @@ AI_LABEL_HINT = (
     "La imagen se generó con IA. Instagram y TikTok piden avisarlo al publicar; el "
     "aviso va con la publicación, no hay que colocarlo a mano."
 )
-#: m-24820837: what the source-reel pill says on its hover: why the video names a reel.
+#: m-24820837: what the source-reel glyph says on its hover: why the video names a reel.
 SOURCE_REEL_HINT = (
     "Este video se hizo siguiendo la estructura de ese reel. El origen queda guardado "
     "aunque el reel original ya no aparezca en Descubrir."

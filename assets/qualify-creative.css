@@ -105,6 +105,13 @@
 }
 .q-rv-read--multi { white-space: pre-line; }
 .q-rv-read--empty { color: var(--gray-9); font-style: italic; border-left-color: var(--gray-a5); }
+/* m-24820837: provenance is information, not a saved field the operator edits — muted,
+   no field fill, no accent left-border (which `q-rv-read` uses to mark "content exists"). */
+.q-rv-provenance { font-size: 0.88rem; line-height: 1.5; color: var(--gray-10); }
+/* The link class lands on the inner <span>; only a clickable provenance changes on hover —
+   plain provenance must not pretend to be touchable. */
+.q-rv-provenance.q-rv-provenance--link { color: var(--accent-11); text-decoration: underline; }
+.q-rv-provenance.q-rv-provenance--link:hover { color: var(--accent-12); }
 .q-rv-chip {
   display: inline-flex; align-items: center; gap: 0.3rem;
   min-height: 1.75rem;
