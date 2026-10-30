@@ -1603,20 +1603,7 @@ def _clip_references_view() -> rx.Component:
                 ),
             ),
         ),
-        # § request 2026-10-20: «poner mis logos en mis clips» — laid over every frame
-        rx.cond(
-            CreativeState.brand_logo_choices.length() > 0,
-            _clip_block(
-                "Tu logo (opcional)",
-                "Va en una esquina de todo el clip, encima del video. Elige uno.",
-                _brand_media_picker(
-                    CreativeState.brand_logo_choices,
-                    "chosen",
-                    CreativeState.toggle_brand_logo,
-                    "Logo",
-                ),
-            ),
-        ),
+        _brand_resources(),
         _upload_error(),
         spacing="5",
         width="100%",
@@ -2346,16 +2333,20 @@ def _brand_element_notes() -> rx.Component:
 
 def _brand_resources() -> rx.Component:
     """«Recursos de tu marca» (§ request 2026-10-06): the Brand Kit's files as a resource
-    of their own, apart from the background and the products. The logo takes the brand
-    mark's place in the piece; every other element is used as its usage note (written in
-    the Brand Kit) says — and the copy is told both."""
+    of their own, apart from the background and products. The selected logo can be a
+    signature or a scene reference; elements carry their Brand Kit usage notes."""
     return rx.cond(
-        CreativeState.brand_media_items.length() > 0,
+        (CreativeState.brand_media_items.length() > 0)
+        | (CreativeState.brand_resources_notice != ""),
         rx.vstack(
             _field_label(
                 "Recursos de tu marca (opcional)",
-                "Lo que ya subiste a tu marca. El logo va donde va tu marca; cada "
-                "elemento se usa según su nota de uso.",
+                "Elige lo que quieres incluir de tu marca. Cada elemento se usa según "
+                "su nota de uso.",
+            ),
+            rx.cond(
+                CreativeState.brand_resources_notice != "",
+                callout(CreativeState.brand_resources_notice, "warn"),
             ),
             _brand_media_picker(
                 CreativeState.brand_logo_choices,
@@ -2363,6 +2354,41 @@ def _brand_resources() -> rx.Component:
                 CreativeState.toggle_brand_logo,
                 "Logo",
                 "Elige uno.",
+            ),
+            rx.cond(
+                (CreativeState.brand_logo_key != "") & (CreativeState.brief_kind != "template"),
+                rx.vstack(
+                    rx.text("Cómo usar el logo", size="1", weight="medium"),
+                    rx.segmented_control.root(
+                        rx.segmented_control.item("Como firma", value="signature"),
+                        rx.segmented_control.item("Dentro de la escena", value="scene"),
+                        value=CreativeState.brand_logo_usage,
+                        on_change=CreativeState.set_brand_logo_usage,
+                        size="3",
+                        aria_label="Cómo usar el logo",
+                        class_name="q-seg-fit",
+                    ),
+                    rx.text(
+                        rx.cond(
+                            CreativeState.brand_logo_in_scene,
+                            "Aparece dentro de la imagen o del video, según su nota de uso.",
+                            "Se coloca sobre la publicación, como firma de tu marca.",
+                        ),
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.cond(
+                        CreativeState.brand_logo_scene_note != "",
+                        rx.text(
+                            CreativeState.brand_logo_scene_note,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
             ),
             _brand_media_picker(
                 CreativeState.brand_element_choices,
@@ -3902,8 +3928,7 @@ def _section_details() -> rx.Component:
         ),
         # a real creator's script takes no brand resources (§ request 2026-10-08): they
         # record with whatever they have
-        # nor does a clip here: it takes only a logo, in its own «Referencias» view
-        # (§ request 2026-10-20)
+        # A clip has the same resources in its own «Referencias» view.
         # an avatar's are behind its «Más opciones», above
         rx.cond(
             (CreativeState.brief_kind != "creator_script")

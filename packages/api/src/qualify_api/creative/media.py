@@ -73,6 +73,7 @@ from uuid import UUID, uuid4
 from qualify_creative.adapters.byteplus_ark import (
     DEFAULT_SEEDANCE_MODEL,
     DRAFT_RESOLUTION,
+    MAX_REFERENCE_IMAGES,
     RESUME_TASK_PARAM,
     output_dimensions,
     seedance_family,
@@ -152,6 +153,18 @@ from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
 
+from qualify_api.creative.brand_references import (
+    BrandAssetReader,
+    BrandReference,
+    BrandReferenceError,
+    BrandReferenceImage,
+    BrandReferencesSet,
+    brand_reference_block,
+    read_brand_reference_images,
+    resolve_brand_references,
+    snapshot_brand_references,
+)
+from qualify_api.creative.pipeline import frozen_brand_references
 from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
 from qualify_api.stock.guard import stock_problems
 from qualify_api.stock.keys import is_stock_key
@@ -1285,6 +1298,13 @@ class MediaProducer:
         seedance_reference_model: str | None = None,
         reference_links: ReferenceLinks | None = None,
         seedance_model: str = DEFAULT_SEEDANCE_MODEL,
+        #: m-24820842: the LIVE assets of a brand (RLS-scoped through `tenant_session`),
+        #: read to resolve and revalidate the chosen Brand Kit resources (mascot,
+        #: elementos) as reference images. None = no brand references (the tests' default
+        #: and a producer without the Brand Kit wired); a NEW generation revalidates the
+        #: chosen `brand_logo_key` + `brand_element_keys` against them before any R2 read
+        #: or paid call. Wired in `composition.py` with `BrandKitStore().list_assets`.
+        brand_assets: BrandAssetReader | None = None,
     ) -> None:
         self._store = store
         self._router = router
@@ -1325,6 +1345,7 @@ class MediaProducer:
         #: The Seedance adapter's own model (`QUALIFY_SEEDANCE_MODEL`): what a video with
         #: no `model` param is made with — whether it has a draft mode depends on it.
         self._seedance_model = seedance_model
+        self._brand_assets = brand_assets
 
     def _seedance_output(self, model: str | None) -> tuple[str, bool]:
         """The resolution a Seedance task on `model` (None: the adapter's) is asked for,
@@ -1350,6 +1371,7 @@ class MediaProducer:
         revision: int = 1,
         heartbeat: Callable[[], None] | None = None,
         vendor_tasks: VendorTaskBinding | None = None,
+        brand_references: BrandReferencesSet | None = None,
     ) -> MediaOutcome:
         """Never raises for a vendor or file problem: the outcome carries the failure,
         and the usage of whatever was already paid for. `revision` is the draft's — what
@@ -1359,7 +1381,9 @@ class MediaProducer:
         already created; a task that outlives the wait makes the outcome `pending`."""
         token = _TASK_RUN.set(_TaskRun(vendor_tasks) if vendor_tasks is not None else None)
         try:
-            return self._produce(tenant_id, draft_id, brief, kit, copy, budget, revision, heartbeat)
+            return self._produce(
+                tenant_id, draft_id, brief, kit, copy, budget, revision, heartbeat, brand_references
+            )
         finally:
             _TASK_RUN.reset(token)
 
@@ -1373,6 +1397,7 @@ class MediaProducer:
         budget: BudgetContext,
         revision: int,
         heartbeat: Callable[[], None] | None,
+        brand_references: BrandReferencesSet | None,
     ) -> MediaOutcome:
         usage: list[MediaUsage] = []
         malformed, foreign = _key_problems(tenant_id, brief, kit)
@@ -1400,6 +1425,38 @@ class MediaProducer:
             return MediaOutcome(
                 failure=FailureReason.ROUTE_BLOCKED_BY_POLICY.value, detail=misplaced_stock
             )
+        # m-24820842: the chosen Brand Kit resources (mascot, elementos) are resolved and
+        # revalidated against the LIVE Brand Kit on a NEW generation (a substituted or
+        # deleted resource is rejected before any R2 read or paid call), then frozen per
+        # execution attempt — a retry/resume reuses the frozen snapshot, so a later Brand
+        # Kit update never mutates an in-flight/paid job. No chosen resource -> empty,
+        # zero reads, and the request is unchanged.
+        try:
+            brand_refs = brand_references or self.prepare_brand_references(
+                tenant_id=tenant_id, draft_id=draft_id, brief=brief, kit=kit, revision=revision
+            )
+            if brief.media.brand_logo_in_scene:
+                kit = kit.model_copy(update={"logo_asset_key": None})
+                brief = brief.model_copy(
+                    update={"media": brief.media.model_copy(update={"brand_logo_key": None})}
+                )
+            elif brand_refs.overlay is not None:
+                overlay = brand_refs.overlay
+                read_brand_reference_images(self._store.read, (overlay,))
+                brief = brief.model_copy(
+                    update={
+                        "media": brief.media.model_copy(
+                            update={"brand_logo_key": overlay.snapshot_key}
+                        )
+                    }
+                )
+        except BrandReferenceError as exc:
+            logger.warning(
+                "creative media for draft %s refused: invalid brand reference: %s",
+                draft_id,
+                exc.detail,
+            )
+            return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=exc.detail)
         if _fetched_references(brief) and not _links_ready(self._reference_links):
             # before any spend: a reference video/audio reaches ModelArk only as a public
             # URL — a gallery found it out on its last slide, its scenes already paid for
@@ -1422,17 +1479,27 @@ class MediaProducer:
         try:
             if brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images:
                 media = self._ad_image(
-                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, style
+                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, style, brand_refs
                 )
             elif brief.kind is ContentKind.STATIC_FLYER:
                 media = self._flyer(save, brief, kit, copy, style)
             elif brief.kind.is_video and brief.media.video_engine is VideoEngine.SEEDANCE:
                 media = self._seedance_video(
-                    tenant_id, draft_id, brief, kit, copy, budget, usage, save
+                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, brand_refs
                 )
             elif brief.kind.is_video and brief.media.video_engine is VideoEngine.OMNIHUMAN:
                 media = self._omnihuman_video(
-                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, style, warnings
+                    tenant_id,
+                    draft_id,
+                    brief,
+                    kit,
+                    copy,
+                    budget,
+                    usage,
+                    save,
+                    style,
+                    warnings,
+                    brand_refs,
                 )
             elif brief.kind.is_video:
                 # HeyGen, retired 2026-10-16: nothing is rendered nor paid
@@ -1448,10 +1515,12 @@ class MediaProducer:
                 return replace(outcome, warnings=tuple(warnings))
             elif brief.kind is ContentKind.CAROUSEL:
                 media = self._carousel(
-                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, style
+                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, style, brand_refs
                 )
             elif brief.kind is ContentKind.CLIP:
-                media = self._clip(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
+                media = self._clip(
+                    tenant_id, draft_id, brief, kit, copy, budget, usage, save, brand_refs
+                )
             else:
                 media = ()
         except (_MediaPending, GenerationDeferred) as exc:
@@ -1480,6 +1549,12 @@ class MediaProducer:
                 detail=avatar_failure_text(raw) if presenter else ark_failure_text(raw),
                 warnings=tuple(warnings),
             )
+        if brand_refs.refs or brand_refs.overlay:
+            metadata = brand_refs.model_dump(mode="json")
+            media = [
+                replace(item, params={**item.params, "brand_references": metadata})
+                for item in media
+            ]
         return MediaOutcome(media=tuple(media), usage=tuple(usage), warnings=tuple(warnings))
 
     def finalize(
@@ -1601,8 +1676,20 @@ class MediaProducer:
                     "video final. Vuelve a generar la pieza.",
                 )
             overlay = self._store.read(key)
-        elif finish == FINISH_CLIP and brief.media.brand_logo_key:
-            logo = self._logo(kit, brief.media.brand_logo_key)
+        elif finish == FINISH_CLIP:
+            metadata = (asset.params or {}).get("brand_references")
+            if metadata is not None:
+                # Finalization continues the paid preview, not today's Brand Kit.
+                # In-scene mode has no overlay; signature mode uses its immutable copy.
+                selected = BrandReferencesSet.model_validate(metadata)
+                if selected.overlay is not None:
+                    frozen = selected.overlay
+                    if not owned_by(tenant_id, frozen.snapshot_key):
+                        raise BrandReferenceError(_FOREIGN_FILE)
+                    logo = read_brand_reference_images(self._store.read, (frozen,))[0].image
+            elif brief.media.brand_logo_key and not brief.media.brand_logo_in_scene:
+                # Old drafts without reference metadata retain their legacy behavior.
+                logo = self._logo(kit, brief.media.brand_logo_key)
 
         save = _Saver(self._store, tenant_id, draft_id, revision)
         stem = Path(str(asset.object_key or "video.mp4")).stem
@@ -1859,6 +1946,206 @@ class MediaProducer:
 
     def _products(self, brief: ContentBrief) -> list[bytes]:
         return [self._store.read(key) for key in brief.media.product_keys]
+
+    def prepare_brand_references(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        revision: int = 1,
+    ) -> BrandReferencesSet:
+        """Called before copy too: new revisions validate LIVE, replay restores step -2."""
+        malformed, foreign = _key_problems(tenant_id, brief, kit)
+        problem = _BAD_KEY if malformed else _FOREIGN_FILE if foreign else stock_problems(brief)
+        if problem:
+            raise BrandReferenceError(problem)
+
+        def capture() -> BrandReferencesSet:
+            selected = resolve_brand_references(
+                self._brand_assets,
+                tenant_id=tenant_id,
+                brand_id=brief.brand_id,
+                brand_logo_key=brief.media.brand_logo_key,
+                brand_element_keys=brief.media.brand_element_keys,
+                logo_in_scene=brief.media.brand_logo_in_scene,
+            )
+            self._preflight_brand_references(brief, kit, selected)
+            save = _Saver(self._store, tenant_id, draft_id, revision)
+            return snapshot_brand_references(
+                selected,
+                read=self._store.read,
+                keep=lambda digest, data: save(f"brand-reference-{digest}.img", data, "image/png"),
+                owned=lambda key: owned_by(tenant_id, key),
+            )
+
+        if not (brief.media.brand_logo_key or brief.media.brand_element_keys):
+            return BrandReferencesSet()
+        try:
+            return frozen_brand_references(capture)
+        except _MediaFailed as exc:
+            raise BrandReferenceError(exc.detail) from exc
+        except OSError as exc:
+            raise BrandReferenceError(
+                "No pudimos guardar tus recursos. Inténtalo de nuevo."
+            ) from exc
+
+    def _direct_avatar_references(self, brief: ContentBrief) -> bool:
+        # Nonhuman animated characters may use image references on 2.x. Real human
+        # portraits keep the existing first-frame path (BytePlus portrait restrictions).
+        return (
+            brief.kind is ContentKind.ANIMATED_AVATAR_VIDEO
+            and seedance_family(self._seedance_model).references
+        )
+
+    def _preflight_brand_references(
+        self,
+        brief: ContentBrief,
+        kit: BrandKit,
+        selected: BrandReferencesSet,
+    ) -> None:
+        """Validate ALL scene capacities/prompts before any read or paid copy/frame."""
+        refs = selected.refs
+        if not refs:
+            return
+        media = brief.media
+        n = len(refs)
+        products = len(media.product_keys)
+        background = int(bool(media.background_key))
+
+        def image_limit(count: int) -> None:
+            if count > MAX_REFERENCE_IMAGES:
+                raise BrandReferenceError(
+                    "La escena admite hasta 14 imágenes de referencia. "
+                    "Quita algunas fotos o recursos."
+                )
+
+        def video_limit(model: str | None, images: int, videos: int = 0, audios: int = 0) -> None:
+            if model is None or not seedance_family(model).references:
+                raise BrandReferenceError(
+                    "Estos recursos necesitan un modelo de video que acepte referencias. "
+                    "Avisa al equipo o quítalos antes de generar."
+                )
+            limits = seedance_family(model).max_references
+            if any(count > limit for count, limit in zip((images, videos, audios), limits)):
+                raise BrandReferenceError(
+                    "Hay demasiadas referencias para este video. "
+                    "Quita algunas imágenes, videos o audios."
+                )
+
+        try:
+            if brief.kind is ContentKind.STATIC_FLYER:
+                if not self._generated_ad_images:
+                    raise BrandReferenceError(
+                        "Los recursos en escena necesitan el generador de imágenes."
+                    )
+                mode = media.ad_mode or (
+                    AdImageMode.BOTH
+                    if products and background
+                    else AdImageMode.BACKGROUND
+                    if background
+                    else AdImageMode.PRODUCT
+                    if products
+                    else AdImageMode.SCENE
+                )
+                count = (
+                    (min(products, 1) if media.carousel else products) if mode.needs_product else 0
+                )
+                bg = background if mode.needs_background else 0
+                image_limit(count + bg + n)
+                ad_scene_prompt(
+                    brief=brief,
+                    kit=kit,
+                    brand="",
+                    mode=mode,
+                    products=count,
+                    has_background=bool(bg),
+                    background_index=count + 1,
+                    brand_refs=refs,
+                )
+            elif brief.kind.is_video:
+                character = int(
+                    media.avatar_source is AvatarSource.IMAGE and bool(media.avatar_image_key)
+                )
+                image_limit(character + products + background + n)
+                first_frame_prompt(
+                    brief=brief,
+                    kit=kit,
+                    has_character_image=bool(character),
+                    products=products,
+                    has_background=bool(background),
+                    background_index=character + products + 1,
+                    brand_refs=refs,
+                )
+                if media.video_engine is VideoEngine.SEEDANCE:
+                    if self._direct_avatar_references(brief):
+                        video_limit(self._seedance_model, 1 + n)
+                    motion_prompt(
+                        brief=brief,
+                        products=products,
+                        brand_refs=refs,
+                        budget=_TALKING_MOTION_BUDGET,
+                        reference_mode=self._direct_avatar_references(brief),
+                    )
+            elif brief.kind is ContentKind.CAROUSEL:
+                for slide in media.slides:
+                    if slide.source not in (SlideSource.GENERATED, SlideSource.ANIMATED):
+                        continue
+                    count = int(slide.product_index is not None)
+                    bg = int(slide.use_background and bool(background))
+                    image_limit(count + bg + n)
+                    carousel_scene_prompt(
+                        brief=brief,
+                        kit=kit,
+                        brand="",
+                        scene=slide.scene_prompt,
+                        ratio=brief.format.aspect_ratio,
+                        has_product=bool(count),
+                        has_background=bool(bg),
+                        has_text=True,
+                        brand_refs=refs,
+                    )
+                    if slide.source is SlideSource.ANIMATED:
+                        if slide.reference_video_key:
+                            video_limit(self._seedance_reference_model, 1 + n, 1)
+                        motion = carousel_motion_prompt(
+                            brief, refs, numbered=bool(slide.reference_video_key)
+                        )
+                        if slide.reference_video_key:
+                            _carousel_reference_motion(motion, strict=True)
+            elif brief.kind is ContentKind.CLIP:
+                frames = int(bool(media.clip_first_frame_key)) + int(
+                    bool(media.clip_last_frame_key)
+                )
+                video_limit(
+                    self._seedance_reference_model,
+                    frames + len(media.clip_image_keys) + n,
+                    len(media.clip_video_keys),
+                    len(media.clip_audio_keys),
+                )
+                clip_prompt(
+                    brief=brief,
+                    kit=kit,
+                    first_frame=bool(media.clip_first_frame_key),
+                    last_frame=bool(media.clip_last_frame_key),
+                    images=len(media.clip_image_keys),
+                    videos=len(media.clip_video_keys),
+                    audios=len(media.clip_audio_keys),
+                    image_roles=media.clip_image_roles,
+                    brand_refs=refs,
+                )
+            else:
+                raise BrandReferenceError(
+                    "Este tipo de pieza todavía no admite recursos en la escena."
+                )
+        except _MediaFailed as exc:
+            raise BrandReferenceError(exc.detail) from exc
+
+    def _brand_reference_images(self, brand_refs: BrandReferencesSet) -> list[BrandReferenceImage]:
+        """The frozen brand references paired with their bytes, read from the frozen
+        `asset_key` (R2 keeps the object even after the asset is replaced or deleted)."""
+        return read_brand_reference_images(self._store.read, brand_refs.refs)
 
     def _logo(self, kit: BrandKit, key: str | None = None) -> bytes | None:
         key = key or kit.logo_asset_key
@@ -2211,6 +2498,7 @@ class MediaProducer:
         usage: list[MediaUsage],
         save: _Saver,
         style: TextStyle,
+        brand_refs: BrandReferencesSet,
     ) -> list[MediaWrite]:
         """The advertising image: Seedream generates the photograph with the operator's
         own product and/or background as references (one per carousel slide) — or from
@@ -2230,10 +2518,18 @@ class MediaProducer:
         background = self._read(media.background_key) if mode.needs_background else None
         ratio = brief.format.aspect_ratio
         brand = self._brand_name(tenant_id, brief.brand_id)
+        brand_images = self._brand_reference_images(brand_refs)
         # one scene with every product, or — a carousel — one scene per product
         groups = [[p] for p in products[:9]] if media.carousel and products else [products]
         scenes: list[bytes] = []
         for index, group in enumerate(groups):
+            # brand references come AFTER the existing references, preserving their indices
+            references = [
+                *group,
+                *([background] if background is not None else []),
+                *(img.image for img in brand_images),
+            ]
+            background_index = len(group) + 1 if background is not None else None
             prompt = ad_scene_prompt(
                 brief=brief,
                 kit=kit,
@@ -2241,8 +2537,9 @@ class MediaProducer:
                 mode=mode,
                 products=len(group),
                 has_background=background is not None,
+                background_index=background_index if brand_refs.refs else None,
+                brand_refs=brand_refs.refs,
             )
-            references = [*group, *([background] if background is not None else [])]
             scenes.append(
                 self._scene_image(
                     tenant_id=tenant_id,
@@ -2358,10 +2655,15 @@ class MediaProducer:
         budget: BudgetContext,
         usage: list[MediaUsage],
         save: _Saver,
+        brand_refs: BrandReferencesSet,
     ) -> list[MediaWrite]:
-        """Seedream composes the presenter, the products and the background into the
-        first frame; Seedance animates it. The script rides along: Seedance 1.0 is silent
-        (the script stays in the post's copy), the 2.x models speak it."""
+        """Compose selected elements into the scene and preserve their role in motion.
+
+        Animated characters on reference-capable families use the composed scene as
+        reference 1 plus the selected elements. Other avatars animate the composed
+        first frame; their elements are conditioned by that frame and continuity text,
+        not additional direct image references. Neither path promises visual fidelity.
+        """
         media = brief.media
         script = (
             media.own_script.strip() or copy.script or f"{copy.hook} {copy.caption} {copy.cta}"
@@ -2374,15 +2676,28 @@ class MediaProducer:
             if media.avatar_source is AvatarSource.IMAGE and media.avatar_image_key
             else None
         )
+        brand_images = self._brand_reference_images(brand_refs)
         references = [
             *([character] if character is not None else []),
             *products,
             *([background] if background is not None else []),
+            *(img.image for img in brand_images),
         ]
+        background_index = (
+            (1 if character is not None else 0) + len(products) + 1
+            if background is not None
+            else None
+        )
         # the motion prompt leaves room for the line Seedance speaks (`_SPOKEN_MIN`), and
         # the line is bounded like `own_script` and by that room, so what the adapter
         # sends stays within `MEDIA_PROMPT_BUDGET` — both settled BEFORE anything is paid
-        motion = motion_prompt(brief=brief, products=len(products), budget=_TALKING_MOTION_BUDGET)
+        motion = motion_prompt(
+            brief=brief,
+            products=len(products),
+            budget=_TALKING_MOTION_BUDGET,
+            brand_refs=brand_refs.refs,
+            reference_mode=self._direct_avatar_references(brief),
+        )
         script = _spoken_line(script, motion)
         frame = self._scene_image(
             tenant_id=tenant_id,
@@ -2394,6 +2709,8 @@ class MediaProducer:
                 has_character_image=character is not None,
                 products=len(products),
                 has_background=background is not None,
+                background_index=background_index if brand_refs.refs else None,
+                brand_refs=brand_refs.refs,
             ),
             references=references,
             ratio=ratio,
@@ -2407,18 +2724,26 @@ class MediaProducer:
         frame_key = save("first-frame.jpg", to_meta_jpeg(frame), JPEG)
 
         requested, draft = self._seedance_output(None)
+        video_params: dict[str, Any] = {
+            "prompt": motion,
+            "ratio": ratio,
+            "resolution": requested,
+            "duration_seconds": media.duration_seconds,
+            "dialogue": script,
+            **({"draft": True} if draft else {}),
+        }
+        if self._direct_avatar_references(brief) and brand_refs.refs:
+            video_params["reference_images"] = [
+                _jpeg_url(frame),
+                *(_data_url(image.image) for image in brand_images),
+            ]
+            video_params.update(_reference_task(self._seedance_model))
+        else:
+            video_params["first_frame"] = _jpeg_url(frame)
         request = GenerationRequest(
             task=GenerationTask.SCENE_VIDEO,
             rendered_prompt=RenderedPrompt("", "", ""),
-            params={
-                "prompt": motion,
-                "first_frame": _jpeg_url(frame),
-                "ratio": ratio,
-                "resolution": requested,
-                "duration_seconds": media.duration_seconds,
-                "dialogue": script,
-                **({"draft": True} if draft else {}),
-            },
+            params=video_params,
         )
         trace.media_request(
             draft_id=draft_id,
@@ -2491,6 +2816,7 @@ class MediaProducer:
         budget: BudgetContext,
         usage: list[MediaUsage],
         save: _Saver,
+        brand_refs: BrandReferencesSet,
     ) -> list[MediaWrite]:
         """A generated video with no presenter. With references, a Seedance 2.x model
         follows them — the frames go first among the reference images and the prompt
@@ -2499,6 +2825,7 @@ class MediaProducer:
         one; with neither, from the words alone."""
         media = brief.media
         ratio = SEEDANCE_RATIOS[brief.format]
+        brand_images = self._brand_reference_images(brand_refs)
         editing = media.clip_reference_mode == "edit"
         if editing:
             if (
@@ -2544,7 +2871,10 @@ class MediaProducer:
                     )
                 frames = [frame for frame in (first, last) if frame is not None]
                 params["model"] = model
-                params["reference_images"] = [_data_url(image) for image in (*frames, *images)]
+                params["reference_images"] = [
+                    _data_url(image)
+                    for image in (*frames, *images, *(image.image for image in brand_images))
+                ]
                 params["reference_videos"] = self._reference_urls(tenant_id, media.clip_video_keys)
                 if media.clip_video_keys:
                     # the input video is billed too: its length goes into the estimate
@@ -2580,6 +2910,7 @@ class MediaProducer:
                 images=len(images) if references else 0,
                 videos=len(media.clip_video_keys) if references else 0,
                 audios=len(media.clip_audio_keys) if references else 0,
+                brand_refs=brand_refs.refs,
             )
             params["prompt"] = prompt
             trace.media_request(
@@ -2610,7 +2941,7 @@ class MediaProducer:
             )
             return request, params, resolution
 
-        references = media.clip_has_references
+        references = media.clip_has_references or bool(brand_refs.refs)
         dropped_images = dropped_videos = 0
         try:
             request, params, resolution = request_for(references)
@@ -2634,7 +2965,7 @@ class MediaProducer:
                 any(code in (exc.raw or "") for code in ("ModelNotOpen", "AccessDenied"))
                 or exc.detail == CLIP_NO_PUBLIC_URL
             )
-            if not (references and unavailable and _clip_frames_suffice(brief)):
+            if brand_refs.refs or not (references and unavailable and _clip_frames_suffice(brief)):
                 raise
             logger.warning(
                 "clip %s: references unavailable, made from its frames (%s images, %s videos"
@@ -2788,6 +3119,7 @@ class MediaProducer:
         usage: list[MediaUsage],
         save: _Saver,
         style: TextStyle,
+        brand_refs: BrandReferencesSet,
     ) -> list[MediaWrite]:
         """The operator's slides in order, then the closing slide when asked for. Every
         slide is fitted to the format's exact size: Instagram crops a carousel to its
@@ -2804,6 +3136,7 @@ class MediaProducer:
         pieces = self._existing_pieces(tenant_id, brief)
         # the same for every stock video: read up front, before anything is paid
         stock_videos = self._stock_videos(brief)
+        brand_images = self._brand_reference_images(brand_refs)
         out: list[MediaWrite] = []
         deferred = False
         scene_failure = None
@@ -2826,6 +3159,15 @@ class MediaProducer:
             animated = slide.source is SlideSource.ANIMATED
             # a video's first frame is drawn at the ratio Seedance renders (it has no 4:5)
             ratio = SEEDANCE_RATIOS[brief.format] if animated else brief.format.aspect_ratio
+            base = [image for image in (product, place) if image is not None]
+            # m-24820842: brand references appended AFTER the existing references
+            references = [*base, *(img.image for img in brand_images)]
+            if place is not None and product is not None:
+                background_index = 2
+            elif place is not None:
+                background_index = 1
+            else:
+                background_index = None
             scene = self._scene_image(
                 tenant_id=tenant_id,
                 draft_id=draft_id,
@@ -2839,8 +3181,10 @@ class MediaProducer:
                     has_product=product is not None,
                     has_background=place is not None,
                     has_text=bool(hook or cta),
+                    background_index=background_index if brand_refs.refs else None,
+                    brand_refs=brand_refs.refs,
                 ),
-                references=[image for image in (product, place) if image is not None],
+                references=references,
                 ratio=ratio,
                 budget=budget,
                 usage=usage,
@@ -2911,6 +3255,7 @@ class MediaProducer:
                         budget=budget,
                         usage=usage,
                         save=save,
+                        brand_refs=brand_refs,
                     )
                 )
             except GenerationDeferred:
@@ -2975,17 +3320,22 @@ class MediaProducer:
         save: _Saver,
         reference_video_key: str | None = None,
         audio: bool = False,
+        brand_refs: BrandReferencesSet | None = None,
     ) -> MediaWrite:
         """Seedance animates the slide's scene (silent unless the operator asked for its
         sound, § request 2026-10-23), then the clip is fitted to the feed with the slide's
         words over every frame — the soundtrack, when there is one, carried through. With
         a reference video (§ request 2026-10-19) a Seedance 2.x model follows its camera
         and rhythm — the scene goes as reference image 1, since ModelArk does not mix a
-        first frame with references."""
+        first frame with references. m-24820842: chosen Brand Kit resources are appended
+        after the scene (in the reference-video mode) and named in the continuity
+        instructions; their indices/role stay separate from the scene."""
         fitter = self._require_fitter()
         number = position + 1
         ratio = SEEDANCE_RATIOS[brief.format]
-        motion = carousel_motion_prompt(brief)
+        refs = brand_refs.refs if brand_refs is not None else ()
+        brand_images = [img.image for img in read_brand_reference_images(self._store.read, refs)]
+        motion = carousel_motion_prompt(brief, refs, numbered=bool(reference_video_key))
         request_params: dict[str, Any] = {
             "ratio": ratio,
             "duration_seconds": seconds,
@@ -3000,17 +3350,10 @@ class MediaProducer:
                     "El video de referencia necesita un modelo de video que lo acepte, y no "
                     "hay uno configurado.",
                 )
-            motion = _budgeted(
-                [
-                    motion,
-                    "Image 1 is the scene: keep its content, product and look. Follow the "
-                    "camera movement, pacing and rhythm of the reference video, not its "
-                    "content.",
-                ]
-            )
+            motion = _carousel_reference_motion(motion, strict=bool(refs))
             request_params.update(
                 model=model,
-                reference_images=[_data_url(scene)],
+                reference_images=[_data_url(scene), *(_data_url(img) for img in brand_images)],
                 reference_videos=self._reference_urls(tenant_id, (reference_video_key,)),
                 # the input video is billed too: its length goes into the estimate
                 reference_video_seconds=self._reference_seconds((reference_video_key,)),
@@ -3628,6 +3971,7 @@ class MediaProducer:
         save: _Saver,
         style: TextStyle,
         warnings: list[MediaWarning],
+        brand_refs: BrandReferencesSet,
     ) -> list[MediaWrite]:
         """Seedream composes the presenter (described, or the operator's image) with the
         products and the background; Seed Speech reads the exact script in the chosen
@@ -3679,11 +4023,18 @@ class MediaProducer:
             if media.avatar_source is AvatarSource.IMAGE and media.avatar_image_key
             else None
         )
+        brand_images = self._brand_reference_images(brand_refs)
         references = [
             *([character] if character is not None else []),
             *products,
             *([background] if background is not None else []),
+            *(img.image for img in brand_images),
         ]
+        background_index = (
+            (1 if character is not None else 0) + len(products) + 1
+            if background is not None
+            else None
+        )
         frame = self._scene_image(
             tenant_id=tenant_id,
             draft_id=draft_id,
@@ -3694,6 +4045,8 @@ class MediaProducer:
                 has_character_image=character is not None,
                 products=len(products),
                 has_background=background is not None,
+                background_index=background_index if brand_refs.refs else None,
+                brand_refs=brand_refs.refs,
             ),
             references=references,
             ratio=ratio,
@@ -4143,7 +4496,9 @@ class _Flex:
     floor: int = _FLEX_FLOOR
 
 
-def _budgeted(lines: list[str | _Flex], budget: int = MEDIA_PROMPT_BUDGET) -> str:
+def _budgeted(
+    lines: list[str | _Flex], budget: int = MEDIA_PROMPT_BUDGET, *, strict: bool = False
+) -> str:
     """The prompt's lines joined, never longer than `budget`. Fixed lines go whole (empty
     ones are dropped); every `_Flex` text gets what the rest leaves. Over the budget the
     flexible texts are trimmed by rank — the topic first, then a scene or the presenter,
@@ -4178,6 +4533,11 @@ def _budgeted(lines: list[str | _Flex], budget: int = MEDIA_PROMPT_BUDGET) -> st
                 for i in open_:
                     texts[i] = _cut(texts[i], max(low[i], len(texts[i]) - share))
                 prompt = render()
+    if strict and len(prompt) > budget:
+        raise _MediaFailed(
+            FailureReason.INVALID_PARAMETERS.value,
+            "Las indicaciones de tus recursos son demasiado largas. Acórtalas antes de generar.",
+        )
     return prompt if len(prompt) <= budget else _cut(prompt, budget)
 
 
@@ -4208,10 +4568,14 @@ def ad_scene_prompt(
     mode: AdImageMode,
     products: int,
     has_background: bool,
+    background_index: int | None = None,
+    brand_refs: Sequence[BrandReference] = (),
 ) -> str:
     """The advertising photograph Seedream is asked for. Reference images come in this
-    order: the product photos first, the background (the operator's place) last. With
-    no photo at all (`AdImageMode.SCENE`) the scene is invented from the words."""
+    order: the product photos first, the background (the operator's place), then the
+    chosen Brand Kit resources (m-24820842). With no photo at all (`AdImageMode.SCENE`)
+    the scene is invented from the words. When brand references are present the
+    background is named by its explicit index, not as "the last image"."""
     ratio = brief.format.aspect_ratio
     lines: list[str | _Flex] = [
         f"Professional advertising photograph for a social media ad"
@@ -4219,6 +4583,9 @@ def ad_scene_prompt(
         "composition, photorealistic, appetizing and premium, natural light, sharp focus.",
     ]
     product_refs = "image 1" if products == 1 else f"images 1 to {products}"
+    background_ref = (
+        f"image {background_index}" if background_index is not None else "the last image"
+    )
     if mode is AdImageMode.PRODUCT and products:
         lines.append(
             f"The product in {product_refs} is the client's real product: keep it exactly as "
@@ -4227,14 +4594,18 @@ def ad_scene_prompt(
         )
     elif mode is AdImageMode.BACKGROUND and has_background:
         lines.append(
-            "The reference image is the client's real place: keep it recognisable as the "
-            "setting, and invent an attractive moment in front of it."
+            (
+                f"The reference image ({background_ref}) is the client's real place: keep it "
+                if brand_refs
+                else "The reference image is the client's real place: keep it "
+            )
+            + "recognisable as the setting, and invent an attractive moment in front of it."
         )
     elif products and has_background:
         lines.append(
             f"Place the client's real product ({product_refs}, keep it exactly as it is: "
-            "shape, colors, label) naturally inside the client's real place (the last "
-            "image, keep it recognisable), as if photographed there."
+            f"shape, colors, label) naturally inside the client's real place ({background_ref}, "
+            "keep it recognisable), as if photographed there."
         )
     elif not products and not has_background:
         lines.append(
@@ -4251,10 +4622,21 @@ def ad_scene_prompt(
         "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: the "
         "headline and a button are laid over them afterwards."
     )
+    _append_brand_reference_lines(lines, brand_refs, products + int(has_background))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
-    return _budgeted(lines)
+    return _budgeted(lines, strict=bool(brand_refs))
+
+
+def _append_brand_reference_lines(
+    lines: list[str | _Flex], brand_refs: Sequence[BrandReference], base_index: int
+) -> None:
+    """Append the brand-reference block (m-24820842) that links each chosen Brand Kit
+    resource to its explicit index, role and usage note. No-ops when there are none."""
+    block = brand_reference_block(brand_refs, base_index=base_index + 1)
+    if block:
+        lines.append(block)
 
 
 def carousel_scene_prompt(
@@ -4267,9 +4649,13 @@ def carousel_scene_prompt(
     has_product: bool,
     has_background: bool,
     has_text: bool,
+    background_index: int | None = None,
+    brand_refs: Sequence[BrandReference] = (),
 ) -> str:
     """One carousel slide's photograph (§ 2026-10-09). References in this order: the
-    product photo first, the background (the operator's place) last."""
+    product photo first, the background (the operator's place), then the chosen Brand Kit
+    resources (m-24820842). When brand references are present the background is named by
+    its explicit index, not as "the last image"."""
     lines: list[str | _Flex] = [
         f"Professional advertising photograph for a social media carousel"
         f"{f' of the brand {brand}' if brand else ''}, {_ORIENTATION.get(ratio, ratio)} "
@@ -4299,15 +4685,23 @@ def carousel_scene_prompt(
             "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: "
             "a headline or a button is laid over them afterwards."
         )
+    _append_brand_reference_lines(lines, brand_refs, int(has_product) + int(has_background))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
     lines.append(_NO_TEXT)
-    return _budgeted(lines)
+    return _budgeted(lines, strict=bool(brand_refs))
 
 
-def carousel_motion_prompt(brief: ContentBrief | None = None) -> str:
+def carousel_motion_prompt(
+    brief: ContentBrief | None = None,
+    brand_refs: Sequence[BrandReference] = (),
+    numbered: bool = False,
+) -> str:
     """What Seedance does with a carousel slide's scene: a short, silent, product-led
-    shot — nobody talks, nothing is written. The «Datos clave» ride along (2026-10-14)."""
+    shot — nobody talks, nothing is written. The «Datos clave» ride along (2026-10-14).
+    m-24820842: a chosen Brand Kit resource keeps its identity and presence throughout the
+    motion (continuity instructions), in its own role — never recast as product or
+    presenter."""
     lines: list[str | _Flex] = [
         "Bring this photograph to life as a short cinematic product shot: a slow, smooth "
         "camera move (gentle push-in or slight orbit), subtle natural motion in the scene "
@@ -4315,7 +4709,21 @@ def carousel_motion_prompt(brief: ContentBrief | None = None) -> str:
         "label. Nobody talks to the camera. No text on screen.",
         _facts_line(brief, _FACTS_IN_CLIP) if brief is not None else "",
     ]
-    return _budgeted(lines)
+    if brand_refs:
+        lines.append(brand_reference_block(brand_refs, base_index=2, video=True, numbered=numbered))
+    return _budgeted(lines, strict=bool(brand_refs))
+
+
+def _carousel_reference_motion(motion: str, *, strict: bool) -> str:
+    """Budget the complete motion identically in preflight and execution."""
+    return _budgeted(
+        [
+            motion,
+            "Image 1 is the scene: keep its content, product and look. Follow the "
+            "camera movement, pacing and rhythm of the reference video, not its content.",
+        ],
+        strict=strict,
+    )
 
 
 def _cover_png(data: bytes, size: tuple[int, int]) -> bytes:
@@ -4355,6 +4763,8 @@ def first_frame_prompt(
     has_character_image: bool,
     products: int,
     has_background: bool,
+    background_index: int | None = None,
+    brand_refs: Sequence[BrandReference] = (),
 ) -> str:
     """The video's opening frame. Reference images: the character's image first (when
     the operator uploaded one), then the products, then the background."""
@@ -4375,13 +4785,17 @@ def first_frame_prompt(
             "on the table in front of them — exactly as it is: shape, colors, label."
         )
     if has_background:
-        lines.append("The scene takes place in the client's real place (the last image).")
+        place = f"image {background_index}" if brand_refs and background_index else "the last image"
+        lines.append(f"The scene takes place in the client's real place ({place}).")
     lines.append(_Flex('The video is about (in Spanish): "', brief.topic))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
+    _append_brand_reference_lines(
+        lines, brand_refs, int(has_character_image) + products + int(has_background)
+    )
     lines.append(_NO_TEXT)
-    return _budgeted(lines)
+    return _budgeted(lines, strict=bool(brand_refs))
 
 
 #: What each clip reference image is told to be (§ request 2026-10-14), by its role.
@@ -4458,6 +4872,7 @@ def clip_prompt(
     audios: int,
     copy: CopyPayload | None = None,
     image_roles: tuple[str, ...] = (),
+    brand_refs: Sequence[BrandReference] = (),
 ) -> str:
     """What a clip is asked for (§ 2026-10-14): an advertising video that tells a story
     in three shots on the copy's hook, each reference named by the number the API gives
@@ -4465,7 +4880,7 @@ def clip_prompt(
     palette. With references, the frames are the first reference images and the prompt
     says so (ModelArk's documented way: «the opening frame is Image 1»)."""
     if brief.media.clip_reference_mode == "edit":
-        return reel_edit_prompt(brief=brief, kit=kit, images=images)
+        return reel_edit_prompt(brief=brief, kit=kit, images=images, brand_refs=brand_refs)
     ratio = SEEDANCE_RATIOS[brief.format]
     seconds = brief.media.duration_seconds
     lines: list[str | _Flex] = [
@@ -4479,7 +4894,7 @@ def clip_prompt(
             "exactly as it is: shape, colors, label."
         )
     lines.extend(_story_lines(copy, seconds))
-    references = images or videos or audios
+    references = images or videos or audios or bool(brand_refs)
     if references:
         index = 1
         if first_frame:
@@ -4515,11 +4930,19 @@ def clip_prompt(
     lines.append(_facts_line(brief, _FACTS_IN_CLIP))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
+    if brand_refs:
+        lines.append(
+            brand_reference_block(
+                brand_refs, base_index=1 + int(first_frame) + int(last_frame) + images, video=True
+            )
+        )
     lines.append("No text on screen.")
-    return _budgeted(lines)
+    return _budgeted(lines, strict=bool(brand_refs))
 
 
-def reel_edit_prompt(*, brief: ContentBrief, kit: BrandKit, images: int) -> str:
+def reel_edit_prompt(
+    *, brief: ContentBrief, kit: BrandKit, images: int, brand_refs: Sequence[BrandReference] = ()
+) -> str:
     """Edit the source reel with the client's brand identity foreground and the reel's
     structure as a base, applying the operator's merged production instructions.
 
@@ -4531,6 +4954,8 @@ def reel_edit_prompt(*, brief: ContentBrief, kit: BrandKit, images: int) -> str:
     @Video1, not a VLM analysis."""
     product = _quoted(brief.product_ref or "the client's product", 120)
     names = ", ".join(f"@Image{n}" for n in range(1, images + 1))
+    if brand_refs and not images:
+        names = "the scene instructions (no product reference image was supplied)"
     lines: list[str | _Flex] = [
         "Edit video @Video1. Replace its product with the client's product shown in "
         f"{names}: {product}. This is an in-place video edit, not a new advertising video.",
@@ -4565,10 +4990,19 @@ def reel_edit_prompt(*, brief: ContentBrief, kit: BrandKit, images: int) -> str:
             rank=3,
         ),
     ]
-    return _budgeted(lines)
+    if brand_refs:
+        lines.append(brand_reference_block(brand_refs, base_index=images + 1, video=True))
+    return _budgeted(lines, strict=bool(brand_refs))
 
 
-def motion_prompt(*, brief: ContentBrief, products: int, budget: int = MEDIA_PROMPT_BUDGET) -> str:
+def motion_prompt(
+    *,
+    brief: ContentBrief,
+    products: int,
+    budget: int = MEDIA_PROMPT_BUDGET,
+    brand_refs: Sequence[BrandReference] = (),
+    reference_mode: bool = False,
+) -> str:
     """What Seedance animates from the first frame. The script is passed apart
     (`dialogue`): the 2.x models speak it, 1.0 ignores it — a talking video builds this
     within `_TALKING_MOTION_BUDGET`, the room the line needs set aside."""
@@ -4587,7 +5021,15 @@ def motion_prompt(*, brief: ContentBrief, products: int, budget: int = MEDIA_PRO
         )
     lines.append("Smooth, slight handheld camera movement, natural light. No text on screen.")
     lines.append(_facts_line(brief, _FACTS_IN_MOTION))
-    return _budgeted(lines, budget)
+    if brand_refs:
+        if reference_mode:
+            lines.append(
+                "Image 1 is the composed opening scene: preserve the presenter, products and place."
+            )
+        lines.append(
+            brand_reference_block(brand_refs, base_index=2, video=True, numbered=reference_mode)
+        )
+    return _budgeted(lines, budget, strict=bool(brand_refs))
 
 
 # ---------------------------------------------------------------------------

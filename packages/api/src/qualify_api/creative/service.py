@@ -2097,6 +2097,38 @@ class ContentService:
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
         )
+        # Validate the LIVE selection and snapshot its bytes before even paying copy.
+        # Preparation step -2 reuses the same snapshot on worker replay; a new revision
+        # captures today's resources instead. Older media doubles need no new method.
+        references = None
+        prepare_references = getattr(self._media, "prepare_brand_references", None)
+        if prepare_references is not None:
+            from qualify_api.creative.brand_references import BrandReferenceError
+
+            try:
+                references = prepare_references(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    brief=brief,
+                    kit=kit,
+                    revision=draft.revision,
+                )
+            except BrandReferenceError as exc:
+                self._finish_brief(
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    brief=brief,
+                    kit=kit,
+                    budget=budget,
+                    variant_writes=[],
+                    usage_writes=[],
+                    spent=Decimal(0),
+                    any_passed=False,
+                    media_failure=FailureReason.INVALID_PARAMETERS.value,
+                    media_detail=exc.detail,
+                    vendor_tasks=None,
+                )
+                return
         media_failure: str | None = None
         media_detail = ""
         tasks = self._tasks_of(tenant_id, draft)
@@ -2151,6 +2183,7 @@ class ContentService:
             media_failure=media_failure,
             media_detail=media_detail,
             vendor_tasks=self._binding(tenant_id, draft, tasks, copy_snapshot),
+            brand_references=references,
         )
 
     def _copy_stage(
@@ -2303,6 +2336,7 @@ class ContentService:
         media_failure: str | None,
         media_detail: str,
         vendor_tasks: DraftVendorTasks | None,
+        brand_references: Any = None,
     ) -> None:
         """The media from the winning copy, then the draft settled in one write."""
         media_writes: tuple[MediaWrite, ...] = ()
@@ -2335,6 +2369,7 @@ class ContentService:
                 heartbeat=self._heartbeat(tenant_id, draft.id),
                 # every Seedance task kept by id, resumed when it already exists
                 vendor_tasks=vendor_tasks,
+                **({"brand_references": brand_references} if brand_references is not None else {}),
             )
             if outcome.pending:
                 # m-24852154: the video is still in BytePlus's hands. The draft stays

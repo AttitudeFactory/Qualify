@@ -896,7 +896,9 @@ class CreativeState(rx.State):
     #: The piece's chosen resources: one logo (the brand mark's place) and the elements
     #: it uses as each one's usage note says (`MediaInputs.brand_logo_key` / `…_keys`).
     brand_logo_key: str = ""
+    brand_logo_in_scene: bool = False
     brand_element_keys: list[str] = []
+    brand_resources_notice: str = ""
     media_carousel: bool = False
     #: The carousel kind (§ request 2026-10-09): its slides in order, as editor rows —
     #: `{source, scene, photo_key, photo_name, background, text, seconds, key, label,
@@ -2204,6 +2206,22 @@ class CreativeState(rx.State):
         return self._choices("logo")
 
     @rx.var
+    def brand_logo_usage(self) -> str:
+        """The selected logo is either a local signature or part of the scene."""
+        return "scene" if self.brand_logo_in_scene else "signature"
+
+    @rx.var
+    def brand_logo_scene_note(self) -> str:
+        """The selected scene logo's actual usage instruction, ready to review."""
+        if not self.brand_logo_in_scene or self.brief_kind in ("creator_script", "template"):
+            return ""
+        logo = self._brand_asset(self.brand_logo_key)
+        if logo is None:
+            return ""
+        usage = logo.get("usage", "").strip() or "Sin nota de uso: se integrará donde encaje"
+        return f"{logo.get('label') or 'Logo'}: {usage}"
+
+    @rx.var
     def brand_element_choices(self) -> list[dict[str, str]]:
         """«Recursos de tu marca» → the other elements, each with its usage note."""
         return self._choices("element")
@@ -2868,7 +2886,7 @@ class CreativeState(rx.State):
             if not (returning and self.selected_route in enabled):
                 self._select_default_route()
             self.kit_voice_missing = voice_missing
-            self.brand_media_items = assets
+            self._set_brand_media(assets)
             if campaigns is not None:
                 self._set_gen_campaigns(campaigns)
             self.create_loading = False
@@ -3505,7 +3523,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_has_references(self) -> bool:
-        return bool(self.clip_images or self.clip_videos or self.clip_audios)
+        return bool(
+            self.clip_images
+            or self.clip_videos
+            or self.clip_audios
+            or self.brand_element_keys
+            or (self.brand_logo_key and self.brand_logo_in_scene)
+        )
 
     def _set_clip_frame(self, which: str, key: str, name: str) -> None:
         if which == "first":
@@ -3647,7 +3671,7 @@ class CreativeState(rx.State):
         return [item for item in self.clip_images if item["key"] not in frames]
 
     def _clip_media(self) -> dict[str, object]:
-        """A clip's brief media: its frames and references, nothing else."""
+        """A clip's frames, references and selected resources from its own brand."""
         is_reel_edit = any(item.get("source") == "reel" for item in self.clip_videos)
         return {
             "duration_seconds": int(self.clip_duration),
@@ -3670,9 +3694,9 @@ class CreativeState(rx.State):
             "source_reel": dict(self.source_reel) if is_reel_edit and self.source_reel else None,
             "clip_audio_keys": [item["key"] for item in self.clip_audios],
             "product_source": self.product_source,
-            # § request 2026-10-20: the logo laid over every frame (no other element: a
-            # clip has no place to put one)
             "brand_logo_key": self.brand_logo_key or None,
+            "brand_logo_in_scene": bool(self.brand_logo_key) and self.brand_logo_in_scene,
+            "brand_element_keys": list(self.brand_element_keys),
         }
 
     @rx.event
@@ -4975,6 +4999,24 @@ class CreativeState(rx.State):
         never place a key the session's own Brand Kit did not list."""
         return next((item for item in self.brand_media_items if item.get("key") == key), None)
 
+    def _set_brand_media(self, assets: list[dict[str, str]]) -> None:
+        """Refreshing the picker removes selections deleted from the current brand."""
+        previous_logo = self.brand_logo_key
+        previous_elements = list(self.brand_element_keys)
+        self.brand_media_items = assets
+        logos = {item["key"] for item in assets if item.get("kind") == "logo"}
+        elements = {item["key"] for item in assets if item.get("kind") == "element"}
+        if self.brand_logo_key not in logos:
+            self.brand_logo_key = ""
+            self.brand_logo_in_scene = False
+        self.brand_element_keys = [key for key in self.brand_element_keys if key in elements]
+        self.brand_resources_notice = (
+            "Algunos recursos de tu marca cambiaron o fueron eliminados. "
+            "Revisa tu selección antes de generar."
+            if previous_logo != self.brand_logo_key or previous_elements != self.brand_element_keys
+            else ""
+        )
+
     @rx.event
     def toggle_brand_logo(self, key: str) -> None:
         """«Recursos de tu marca»: the ONE logo of the piece — it takes the brand mark's
@@ -4984,6 +5026,20 @@ class CreativeState(rx.State):
         if asset is None or asset.get("kind") != "logo":
             return
         self.brand_logo_key = "" if self.brand_logo_key == key else key
+        if not self.brand_logo_key:
+            self.brand_logo_in_scene = False
+
+    @rx.event
+    def set_brand_logo_usage(self, value: str | list[str]) -> None:
+        """Choose how this piece uses the logo, without adding a second copy."""
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value not in ("signature", "scene"):
+            return
+        self.brand_logo_in_scene = (
+            value == "scene"
+            and bool(self.brand_logo_key)
+            and self.brief_kind not in ("creator_script", "template")
+        )
 
     @rx.event
     def toggle_brand_element(self, key: str) -> None:
@@ -5629,7 +5685,13 @@ class CreativeState(rx.State):
             "carousel",
             "clip",
         ):
-            logo = "Sí" if self.brand_logo_key else "No"
+            logo = (
+                "Dentro de la escena"
+                if self.brand_logo_key and self.brand_logo_in_scene and kind != "template"
+                else "Como firma"
+                if self.brand_logo_key
+                else "No"
+            )
             elements = len(self.brand_element_keys)
             row(
                 "Recursos de tu marca",
@@ -5751,6 +5813,11 @@ class CreativeState(rx.State):
             # «Recursos de tu marca» (§ 2026-10-06): apart from the background/products;
             # never for a real creator's script, which does not offer them (2026-10-08)
             "brand_logo_key": (self.brand_logo_key or None) if takes_images else None,
+            "brand_logo_in_scene": (
+                bool(self.brand_logo_key) and self.brand_logo_in_scene
+                if takes_images and not is_template
+                else False
+            ),
             "brand_element_keys": list(self.brand_element_keys) if takes_images else [],
         }
         if is_ad:
@@ -5793,7 +5860,9 @@ class CreativeState(rx.State):
     def _reset_media_inputs(self) -> None:
         self.clear_product()
         self.brand_logo_key = ""
+        self.brand_logo_in_scene = False
         self.brand_element_keys = []
+        self.brand_resources_notice = ""
         self.media_background_key = ""
         self.media_background_name = ""
         self.media_product_keys = []

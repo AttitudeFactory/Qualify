@@ -79,6 +79,7 @@ from qualify_api.catalog.read import DbProductCatalog
 from qualify_api.claude_tools import CallStats
 from qualify_api.creative.brand_context import DbBrandContextReader
 from qualify_api.creative.brand_fonts import DbBrandFontFiles
+from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.creations import PostgresCreationsLedger
@@ -401,6 +402,9 @@ def production_content_service() -> ContentService:
         vendor_tasks=PostgresVendorTaskStore(),
         media=MediaProducer(
             store=store,
+            brand_assets=lambda tenant, brand: BrandKitStore().list_assets(
+                tenant_id=tenant, brand_id=brand
+            ),
             router=checkpoint_router,
             download=checkpoint_router.download,
             credentials=credentials,
