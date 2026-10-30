@@ -616,6 +616,168 @@ def test_a_brand_image_can_still_be_the_animated_character() -> None:
     assert state.avatar_image_key == ""
 
 
+@pytest.mark.parametrize(
+    "kind", ["static_flyer", "carousel", "clip", "avatar_video", "animated_avatar_video"]
+)
+def test_the_selected_logo_role_and_resources_reach_every_generated_kind(kind: str) -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = kind
+    logo, _, element = (item["key"] for item in state.brand_media_items)
+    state.toggle_brand_logo(logo)
+    state.toggle_brand_element(element)
+    assert state.brand_logo_usage == "signature"
+    assert state._media_inputs()["brand_logo_in_scene"] is False
+
+    state.set_brand_logo_usage("scene")
+    media = state._media_inputs()
+    assert media["brand_logo_key"] == logo
+    assert media["brand_logo_in_scene"] is True
+    assert media["brand_element_keys"] == [element]
+    assert state.media_product_keys == [] and state.media_background_key == ""
+
+    state.set_brand_logo_usage("signature")
+    assert state._media_inputs()["brand_logo_in_scene"] is False
+    assert state._media_inputs()["brand_element_keys"] == [element]
+
+
+def test_logo_scene_mode_needs_a_logo_and_clears_when_it_is_unselected() -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = "static_flyer"
+    state.set_brand_logo_usage("scene")
+    assert state.brand_logo_in_scene is False
+    logo = state.brand_media_items[0]["key"]
+    state.toggle_brand_logo(logo)
+    state.set_brand_logo_usage("scene")
+    state.set_brand_logo_usage("other")
+    assert state.brand_logo_in_scene is True
+    state.toggle_brand_logo(logo)
+    assert state.brand_logo_in_scene is False
+    assert state._media_inputs()["brand_logo_in_scene"] is False
+
+
+def test_script_and_template_do_not_inherit_a_logo_scene_choice() -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = "static_flyer"
+    logo = state.brand_media_items[0]["key"]
+    state.toggle_brand_logo(logo)
+    state.set_brand_logo_usage("scene")
+    for kind in ("creator_script", "template"):
+        state.brief_kind = kind
+        assert state._media_inputs()["brand_logo_in_scene"] is False
+        state.set_brand_logo_usage("scene")
+        assert state.brand_logo_in_scene is False
+
+
+def test_refreshing_brand_resources_removes_deleted_and_replaced_selections() -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = "clip"
+    logo, iso, element = (item["key"] for item in state.brand_media_items)
+    state.toggle_brand_logo(logo)
+    state.toggle_brand_element(element)
+    state.set_brand_logo_usage("scene")
+    current_logo = {**state.brand_media_items[0], "key": f"{logo}.updated"}
+    state._set_brand_media([current_logo, state.brand_media_items[1]])
+    assert [item["key"] for item in state.brand_logo_choices] == [current_logo["key"], iso]
+    assert state.brand_logo_key == ""
+    assert state.brand_logo_in_scene is False
+    assert state.brand_element_keys == []
+    assert state._media_inputs()["brand_element_keys"] == []
+    state.toggle_brand_logo(current_logo["key"])
+    assert state._media_inputs()["brand_logo_key"] == current_logo["key"]
+
+
+@pytest.mark.parametrize("removed_kind", ["logo", "element"])
+def test_refresh_notifies_only_about_affected_selections_and_keeps_other_inputs(
+    removed_kind: str,
+) -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = "clip"
+    state.brief_topic = "Mi idea de video"
+    state.clip_duration = "10"
+    logo, _, element = (item["key"] for item in state.brand_media_items)
+    state.toggle_brand_logo(logo)
+    state.toggle_brand_element(element)
+    removed_key = logo if removed_kind == "logo" else element
+    state._set_brand_media([item for item in state.brand_media_items if item["key"] != removed_key])
+    assert state.brand_resources_notice == (
+        "Algunos recursos de tu marca cambiaron o fueron eliminados. "
+        "Revisa tu selección antes de generar."
+    )
+    assert state.brief_topic == "Mi idea de video"
+    assert state.clip_duration == "10"
+    if removed_kind == "logo":
+        assert state.brand_logo_key == "" and state.brand_element_keys == [element]
+    else:
+        assert state.brand_logo_key == logo and state.brand_element_keys == []
+
+
+def test_resource_refresh_does_not_warn_on_first_load_or_unaffected_selections() -> None:
+    state = _state_with_brand_media()
+    state._set_brand_media(list(state.brand_media_items))
+    assert state.brand_resources_notice == ""
+    logo = state.brand_media_items[0]["key"]
+    state.toggle_brand_logo(logo)
+    state._set_brand_media(list(state.brand_media_items[:2]))  # unused element removed
+    assert state.brand_resources_notice == ""
+    assert state.brand_logo_key == logo
+
+
+def test_resource_notice_is_visible_even_when_all_resources_were_removed() -> None:
+    from .content_generator import _brand_resources
+
+    state = _state_with_brand_media()
+    state.toggle_brand_element(state.brand_media_items[2]["key"])
+    state._set_brand_media([])
+    assert state.brand_media_items == []
+    assert state.brand_resources_notice != ""
+    assert "brand_resources_notice" in str(_brand_resources())
+    state._reset_media_inputs()
+    assert state.brand_resources_notice == ""
+
+
+def test_scene_logo_shows_its_name_and_usage_note_with_a_neutral_fallback() -> None:
+    from .content_generator import _brand_resources
+
+    state = _state_with_brand_media()
+    state.brief_kind = "static_flyer"
+    logo = state.brand_media_items[1]["key"]
+    state.brand_media_items[1]["usage"] = "En un letrero sobre fondo oscuro"
+    state.toggle_brand_logo(logo)
+    assert state.brand_logo_scene_note == ""
+    state.set_brand_logo_usage("scene")
+    assert state.brand_logo_scene_note == "Isologo: En un letrero sobre fondo oscuro"
+    state.brand_media_items[1]["usage"] = " "
+    assert state.brand_logo_scene_note == "Isologo: Sin nota de uso: se integrará donde encaje"
+    assert "brand_logo_scene_note" in str(_brand_resources())
+    state.set_brand_logo_usage("signature")
+    assert state.brand_logo_scene_note == ""
+
+
+def test_a_clip_can_use_only_brand_resources_as_references() -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = "clip"
+    logo, _, element = (item["key"] for item in state.brand_media_items)
+    assert state.clip_has_references is False
+    state.toggle_brand_logo(logo)
+    assert state.clip_has_references is False  # a signature is composed after generation
+    state.set_brand_logo_usage("scene")
+    assert state.clip_has_references is True
+    state.toggle_brand_logo(logo)
+    state.toggle_brand_element(element)
+    assert state.clip_has_references is True
+    assert state._media_inputs()["clip_image_keys"] == []
+
+
+def test_resetting_the_form_clears_the_logo_scene_choice() -> None:
+    state = _state_with_brand_media()
+    state.brief_kind = "static_flyer"
+    state.toggle_brand_logo(state.brand_media_items[0]["key"])
+    state.set_brand_logo_usage("scene")
+    state._reset_media_inputs()
+    assert state.brand_logo_key == ""
+    assert state.brand_logo_in_scene is False
+
+
 def test_only_a_key_the_brand_kit_listed_is_accepted() -> None:
     state = _state_with_brand_media()
     foreign = "t/00000000-0000-4000-8000-000000000999/brand/secret.png"
@@ -642,6 +804,19 @@ def test_the_resources_are_their_own_section_not_the_uploads() -> None:
     assert "brand_element_choices" in resources and "toggle_brand_element" in resources
     assert "Recursos de tu marca" in str(_section_details())
     assert "use_brand_avatar_image" in str(_avatar_section())
+
+
+def test_clip_and_avatar_offer_the_same_brand_resources_and_logo_roles() -> None:
+    from .content_generator import _brand_resources, _clip_references_view, _section_details
+
+    for section in (_brand_resources(), _clip_references_view(), _section_details()):
+        rendered = str(section)
+        assert "brand_element_choices" in rendered
+        assert "toggle_brand_element" in rendered
+        assert "set_brand_logo_usage" in rendered
+        assert "Como firma" in rendered
+        assert r"Dentro de la escena" in rendered
+        assert r"C\u00f3mo usar el logo" in rendered
 
 
 def _kit(**overrides: Any) -> Any:

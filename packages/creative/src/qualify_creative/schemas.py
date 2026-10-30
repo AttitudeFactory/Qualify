@@ -527,6 +527,9 @@ class MediaInputs(BaseModel):
     #: template's and the flyer's logo slot, a corner of the avatar's scene), and each
     #: element is used as its own usage note says. R2 keys of the brand's assets.
     brand_logo_key: str | None = None
+    #: False: local signature as before. True: the selected logo is part of the
+    #: generated scene, without a second local signature of the same mark.
+    brand_logo_in_scene: bool = False
     brand_element_keys: tuple[str, ...] = Field(default=(), max_length=MAX_BRAND_ELEMENTS)
     #: Clip and Ad (§ request 2026-10-14): a video the operator gives as the piece's
     #: reference — its pace, framing and structure to follow. An upload-store key; kept
@@ -569,6 +572,8 @@ class MediaInputs(BaseModel):
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
+        if self.brand_logo_in_scene and not self.brand_logo_key:
+            raise ValueError("a logo inside the scene requires brand_logo_key")
         if self.product_source not in PRODUCT_SOURCES:
             raise ValueError(f"product_source must be one of {PRODUCT_SOURCES}")
         if self.duration_seconds not in DURATIONS_SECONDS:

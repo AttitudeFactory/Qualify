@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import wraps
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from qualify_creative.enums import GenerationTask
@@ -29,6 +29,9 @@ from sqlalchemy import text
 
 from qualify_api.creative import job_queue as q
 from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
+
+if TYPE_CHECKING:
+    from qualify_api.creative.brand_references import BrandReferencesSet
 
 LEASE = timedelta(minutes=10)
 
@@ -269,6 +272,64 @@ def frozen_inputs(**values: Any) -> tuple[Any, ...]:
             run, -1, {name: obj.model_dump(mode="json") for name, obj in values.items()}, None
         )
     return tuple(type(obj).model_validate(row["request"][name]) for name, obj in values.items())
+
+
+#: A distinct preparation step for the brand-reference descriptor set (m-24820842). It is
+#: kept apart from `frozen_inputs`' step -1 on purpose: the descriptors are rebuilt and
+#: revalidated against the LIVE Brand Kit only on a NEW generation (first capture), and a
+#: retry/resume reuses the frozen snapshot verbatim — `builder` is NOT called again, so a
+#: later Brand Kit update (a substituted or deleted resource) never mutates or rejects an
+#: in-flight/paid job.
+_BRAND_REFERENCES_STEP = -2
+
+
+def frozen_brand_references(builder: Callable[[], BrandReferencesSet]) -> BrandReferencesSet:
+    """Freeze the brand-reference descriptor set per execution attempt. `builder` reads
+    the LIVE Brand Kit and revalidates the selection, and runs ONLY on first capture (a
+    new generation); a replay returns the frozen snapshot without re-reading or
+    revalidating, so the freeze boundary is one execution attempt. Outside a worker
+    preparation (`_preparation` is None — the inline dispatcher, local dev) `builder` is
+    called every time and nothing is frozen."""
+    from qualify_api.creative.brand_references import (
+        BRAND_REFERENCE_BLOCK_VERSION,
+        BrandReferenceError,
+        BrandReferencesSet,
+    )
+
+    run = _preparation.get()
+    if run is None:
+        return builder()
+    store = PipelineStore()
+    row = store.load_step(run, _BRAND_REFERENCES_STEP)
+    if row is None:
+        # A request prepared before this feature must replay its existing paid inputs;
+        # never introduce today's live resources half way through an old preparation.
+        if store.load_step(run, 0) is not None:
+            return BrandReferencesSet()
+        built = builder()
+        row = store.save_step(
+            run,
+            _BRAND_REFERENCES_STEP,
+            {"brand_refs": built.model_dump(mode="json")},
+            None,
+        )
+    data = row["request"]["brand_refs"]
+    selected = BrandReferencesSet.model_validate(data)
+    if selected.block_version not in {1, BRAND_REFERENCE_BLOCK_VERSION}:
+        raise BrandReferenceError(
+            "Las instrucciones de esta generación cambiaron. Vuelve a generar."
+        )
+    if selected.block_version == 1:
+        # Old runs keep their original compiler semantics even for an unprepared later
+        # stage. Never upgrade them from live Brand Kit metadata or selector flags.
+        legacy = {"asset_kind": "", "asset_slot": "", "selected_logo": False}
+        selected = selected.model_copy(
+            update={
+                "refs": tuple(ref.model_copy(update=legacy) for ref in selected.refs),
+                "overlay": selected.overlay.model_copy(update=legacy) if selected.overlay else None,
+            }
+        )
+    return selected
 
 
 def request_data(request: GenerationRequest, provider: str, brand_id: UUID) -> dict[str, Any]:

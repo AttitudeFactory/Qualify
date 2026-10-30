@@ -416,7 +416,12 @@ def _chosen_resources(brief: ContentBrief, context: BrandContext | None) -> tupl
     logo = by_key.get(media.brand_logo_key or "")
     if logo is not None:
         note = f" Usage note: {logo.context}." if logo.context else ""
-        lines.append(f"- Logo «{logo.name}»: {_LOGO_PLACEMENT[brief.kind]}.{note}")
+        placement = (
+            "integrated inside the scene as its usage note specifies, without a second signature"
+            if media.brand_logo_in_scene
+            else _LOGO_PLACEMENT[brief.kind]
+        )
+        lines.append(f"- Logo «{logo.name}»: {placement}.{note}")
     for key in media.brand_element_keys:
         element = by_key.get(key)
         if element is None:
