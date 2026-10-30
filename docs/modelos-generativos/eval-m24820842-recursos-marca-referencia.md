@@ -1,9 +1,11 @@
 # Evaluación m-24820842 — recursos de marca como imágenes de referencia (imagen y video)
 
 Rúbrica y especificación del conjunto de prueba, preparada el 2026-10-29. El envío de recursos
-está implementado y cuenta con pruebas offline; **la calidad visual no se ha medido y no se
-ejecutaron llamadas pagadas**. El usuario fijó un máximo de USD 3 para la primera prueba;
-su ejecución sigue pendiente de las condiciones del §8.
+está implementado y cuenta con pruebas offline. El 29–30 de octubre se ejecutó una prueba
+exploratoria autorizada en Nibbles Burger, con máximo de USD 3 y costo registrado de
+**USD 1,968750**. Su alcance, incidencias y resultados están en
+[Prueba Nibbles](prueba-m24820842-nibbles.md). No constituye una medición de fiabilidad general
+ni reemplaza el conjunto y la rúbrica descritos aquí.
 
 La implementación está en `qualify_api.creative.brand_references` (selección validada y copia
 inmutable por revisión), `MediaProducer.prepare_brand_references` (comprobaciones antes del
@@ -23,8 +25,8 @@ requieren comprobar la presencia e identidad a lo largo del video, no solo en la
 
 Documentación oficial consultada: [Seedance 2.5](https://docs.byteplus.com/en/docs/ModelArk/seedance-2-5)
 (referencias multimodales y restricciones de retratos) y [generación de imágenes](https://docs.byteplus.com/en/docs/modelark/image-generation-tutorial)
-(hasta 14 referencias para Seedream 4/4.5/5 lite). No se verificó el endpoint desplegado ni se
-ejecutó una prueba de fidelidad. El personaje humano F4 no se enviará directamente al modo de
+(hasta 14 referencias para Seedream 4/4.5/5 lite). No se verificó el endpoint de producción;
+la prueba local de Nibbles no cubre el personaje humano F4. Este no se enviará directamente al modo de
 referencias de Seedance sin cumplir primero el mecanismo de retratos autorizado del proveedor;
 su contrato actual se comprueba por fotograma condicionado u OmniHuman.
 
@@ -338,6 +340,7 @@ fecha, quién, ticket, configuración real usada, costo observado y veredicto po
 
 - Rúbrica y conjunto de prueba: **listos** (este documento).
 - Implementación del envío de recursos y pruebas offline: **incluidas en esta PR**.
-- Presencia/identidad visual y temporal: **sin medir**, pendiente de ejecución de esta rúbrica.
-- Primera prueba: estimación de tabla v7 USD 2,196028; **máximo acordado USD 3**, ejecución pendiente.
+- Contratos genéricos y categorías: 53 pruebas nuevas y 39 existentes aprobadas; son controles técnicos, no resultados visuales de otras marcas.
+- Presencia/identidad visual y temporal: muestra exploratoria de Nibbles revisada en fotogramas; la rúbrica completa y la fiabilidad general siguen sin medir.
+- Primera prueba real solicitada: galería con dos imágenes y video, volante y réplica de reel; **USD 1,968750**, dentro del máximo acordado de USD 3. El informe registra también los intentos y la corrección del imagotipo.
 - Cobertura adicional de voz/OmniHuman/videos de entrada/1080p: pendiente de presupuesto específico.

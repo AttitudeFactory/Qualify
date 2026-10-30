@@ -315,9 +315,19 @@ def frozen_brand_references(builder: Callable[[], BrandReferencesSet]) -> BrandR
         )
     data = row["request"]["brand_refs"]
     selected = BrandReferencesSet.model_validate(data)
-    if selected.block_version != BRAND_REFERENCE_BLOCK_VERSION:
+    if selected.block_version not in {1, BRAND_REFERENCE_BLOCK_VERSION}:
         raise BrandReferenceError(
             "Las instrucciones de esta generación cambiaron. Vuelve a generar."
+        )
+    if selected.block_version == 1:
+        # Old runs keep their original compiler semantics even for an unprepared later
+        # stage. Never upgrade them from live Brand Kit metadata or selector flags.
+        legacy = {"asset_kind": "", "asset_slot": "", "selected_logo": False}
+        selected = selected.model_copy(
+            update={
+                "refs": tuple(ref.model_copy(update=legacy) for ref in selected.refs),
+                "overlay": selected.overlay.model_copy(update=legacy) if selected.overlay else None,
+            }
         )
     return selected
 

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from qualify_api.creative.brand_kit_store import BrandAsset
 from qualify_api.privacy import strip_phones
 
-BRAND_REFERENCE_BLOCK_VERSION = 1
+BRAND_REFERENCE_BLOCK_VERSION = 2
 NEUTRAL_NOTE = "integrate naturally, preserving its identity, colors and proportions"
 BrandAssetReader = Callable[[UUID, UUID], list[BrandAsset]]
 
@@ -40,6 +40,9 @@ class BrandReference(BaseModel):
     label: str = ""
     note: str = ""
     content_type: str = ""
+    asset_kind: str = ""
+    asset_slot: str = ""
+    selected_logo: bool = False
 
     @property
     def effective_note(self) -> str:
@@ -51,7 +54,8 @@ class BrandReferencesSet(BaseModel):
 
     refs: tuple[BrandReference, ...] = ()
     overlay: BrandReference | None = None
-    block_version: int = BRAND_REFERENCE_BLOCK_VERSION
+    # Missing version/asset metadata identifies a legacy frozen snapshot.
+    block_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -96,7 +100,22 @@ def resolve_brand_references(
         if brand_element_keys or logo_in_scene:
             raise BrandReferenceError("No pudimos leer tus recursos de marca. Inténtalo de nuevo.")
         return BrandReferencesSet()
-    assets = {asset.object_key: asset for asset in reader(tenant_id, brand_id)}
+    selected_keys = set(brand_element_keys)
+    if brand_logo_key:
+        selected_keys.add(brand_logo_key)
+    assets: dict[str, BrandAsset] = {}
+    for asset in reader(tenant_id, brand_id):
+        previous = assets.get(asset.object_key)
+        if (
+            asset.object_key in selected_keys
+            and previous is not None
+            and (previous.kind, previous.slot) != (asset.kind, asset.slot)
+        ):
+            raise BrandReferenceError(
+                "Este recurso tiene más de una categoría. "
+                "Guárdalo en una sola categoría y vuelve a elegirlo."
+            )
+        assets[asset.object_key] = asset
 
     def descriptor(key: str, role: BrandReferenceRole) -> BrandReference:
         asset = assets.get(key)
@@ -125,6 +144,8 @@ def resolve_brand_references(
             label=_clean(asset.label or asset.filename or "Recurso de marca"),
             note=_clean(asset.context or ""),
             content_type=mime,
+            asset_kind=asset.kind,
+            asset_slot=asset.slot,
         )
 
     refs = [
@@ -133,6 +154,9 @@ def resolve_brand_references(
     ]
     overlay = None
     if brand_logo_key:
+        logo_asset = assets.get(brand_logo_key)
+        if logo_asset is not None and logo_asset.kind not in {"logo", "logo_version"}:
+            raise BrandReferenceError("Elige un logo guardado en la identidad de tu marca.")
         logo = descriptor(
             brand_logo_key,
             BrandReferenceRole.ELEMENTO_DE_MARCA
@@ -140,11 +164,19 @@ def resolve_brand_references(
             else BrandReferenceRole.FIRMA_OVERLAY,
         )
         if logo_in_scene:
-            if not any(ref.asset_key == logo.asset_key for ref in refs):
+            logo = logo.model_copy(update={"selected_logo": True})
+            existing = next(
+                (index for index, ref in enumerate(refs) if ref.asset_key == logo.asset_key), None
+            )
+            if existing is not None:
+                refs[existing] = logo
+            else:
                 refs.append(logo)
         else:
             overlay = logo
-    return BrandReferencesSet(refs=tuple(refs), overlay=overlay)
+    return BrandReferencesSet(
+        refs=tuple(refs), overlay=overlay, block_version=BRAND_REFERENCE_BLOCK_VERSION
+    )
 
 
 def snapshot_brand_references(
@@ -203,10 +235,36 @@ def brand_reference_block(
     lines = []
     for offset, ref in enumerate(refs):
         name = f"Image {base_index + offset}" if numbered else "The element in the scene"
-        lines.append(
-            f"{name}: {ref.label} ({ref.rol.value}). Usage: {ref.effective_note}. "
+        preservation = (
             "Preserve identity, colors and proportions; do not recast as product, "
             "presenter or printed instructions."
+        )
+        if ref.rol is BrandReferenceRole.PERSONAJE_PRESENTADOR and ref.asset_kind:
+            preservation = (
+                "Preserve the presenter's identity and instructed actions; do not recast "
+                "as product or decorative brand element."
+            )
+        elif ref.asset_kind in {"logo", "logo_version"}:
+            category = ref.asset_slot if ref.asset_kind == "logo_version" else ""
+            rules = {
+                "logotipo": "Keep the exact wordmark and lettering; do not add a symbol.",
+                "isotipo": "Keep only the selected symbol; do not invent or add lettering.",
+                "imagotipo": (
+                    "Keep the chosen symbol-and-wordmark lockup; separate only if the usage "
+                    "note explicitly allows it."
+                ),
+                "isologo": (
+                    "Keep the inseparable symbol-and-wordmark unit and its proportions; "
+                    "never split or rearrange it."
+                ),
+            }
+            rule = rules.get(category, "Keep the whole selected logo; do not guess its category.")
+            preservation = (
+                f"Brand Kit category: {category or 'unspecified'}. {rule} "
+                "Preserve colors and proportions; do not turn it into a product or presenter."
+            )
+        lines.append(
+            f"{name}: {ref.label} ({ref.rol.value}). Usage: {ref.effective_note}. {preservation}"
         )
     if video and refs:
         lines.append(

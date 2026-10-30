@@ -2088,6 +2088,13 @@ class MediaProducer:
                         budget=_TALKING_MOTION_BUDGET,
                         reference_mode=self._direct_avatar_references(brief),
                     )
+                elif media.video_engine is VideoEngine.OMNIHUMAN and selected.block_version >= 2:
+                    motion_prompt(
+                        brief=brief,
+                        products=products,
+                        brand_refs=refs,
+                        budget=1000,
+                    )
             elif brief.kind is ContentKind.CAROUSEL:
                 for slide in media.slides:
                     if slide.source not in (SlideSource.GENERATED, SlideSource.ANIMATED):
@@ -4155,7 +4162,16 @@ class MediaProducer:
             params={
                 "image_url": image_url,
                 "audio_url": audio_url,
-                "prompt": motion_prompt(brief=brief, products=len(products)),
+                "prompt": motion_prompt(
+                    brief=brief,
+                    products=len(products),
+                    brand_refs=brand_refs.refs if brand_refs.block_version >= 2 else (),
+                    budget=(
+                        1000
+                        if brand_refs.refs and brand_refs.block_version >= 2
+                        else MEDIA_PROMPT_BUDGET
+                    ),
+                ),
             },
             # m-24852495: what a resumed run needs to land this render without paying
             # the presenter and the voice again — kept with the task's id
@@ -4374,6 +4390,17 @@ class MediaProducer:
 _NO_TEXT = (
     "Do not draw any text, letters, numbers, captions, logos or watermarks anywhere in the image."
 )
+
+
+def _media_text_rule(brand_refs: Sequence[BrandReference], *, video: bool = False) -> str:
+    if not any(ref.asset_kind in {"logo", "logo_version"} for ref in brand_refs):
+        return "No text on screen." if video else _NO_TEXT
+    return (
+        "Keep the referenced logo's exact existing lettering and symbols and legitimate product "
+        "labels. Do not add captions, instructions, invented lettering or watermarks."
+    )
+
+
 _ORIENTATION = {
     "4:5": "vertical 4:5",
     "3:4": "vertical 3:4",
@@ -4609,7 +4636,10 @@ def ad_scene_prompt(
         )
     elif not products and not has_background:
         lines.append(
-            "There are no reference images: compose the product and the setting from the "
+            "The reference images are brand resources, not product or setting photos: "
+            "compose the product and setting from the scene below."
+            if any(ref.asset_kind for ref in brand_refs)
+            else "There are no reference images: compose the product and the setting from the "
             "scene described below, plausible for this brand."
         )
     if brief.media.scene_prompt.strip():
@@ -4625,7 +4655,7 @@ def ad_scene_prompt(
     _append_brand_reference_lines(lines, brand_refs, products + int(has_background))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
-    lines.append(_NO_TEXT)
+    lines.append(_media_text_rule(brand_refs))
     return _budgeted(lines, strict=bool(brand_refs))
 
 
@@ -4688,7 +4718,7 @@ def carousel_scene_prompt(
     _append_brand_reference_lines(lines, brand_refs, int(has_product) + int(has_background))
     lines.append(_palette_line(kit))
     lines.append(_typography_line(kit))
-    lines.append(_NO_TEXT)
+    lines.append(_media_text_rule(brand_refs))
     return _budgeted(lines, strict=bool(brand_refs))
 
 
@@ -4706,7 +4736,7 @@ def carousel_motion_prompt(
         "Bring this photograph to life as a short cinematic product shot: a slow, smooth "
         "camera move (gentle push-in or slight orbit), subtle natural motion in the scene "
         "(steam, light, a hand, the background), the product keeps its exact look and "
-        "label. Nobody talks to the camera. No text on screen.",
+        "label. Nobody talks to the camera. " + _media_text_rule(brand_refs, video=True),
         _facts_line(brief, _FACTS_IN_CLIP) if brief is not None else "",
     ]
     if brand_refs:
@@ -4794,7 +4824,7 @@ def first_frame_prompt(
     _append_brand_reference_lines(
         lines, brand_refs, int(has_character_image) + products + int(has_background)
     )
-    lines.append(_NO_TEXT)
+    lines.append(_media_text_rule(brand_refs))
     return _budgeted(lines, strict=bool(brand_refs))
 
 
@@ -4936,7 +4966,7 @@ def clip_prompt(
                 brand_refs, base_index=1 + int(first_frame) + int(last_frame) + images, video=True
             )
         )
-    lines.append("No text on screen.")
+    lines.append(_media_text_rule(brand_refs, video=True))
     return _budgeted(lines, strict=bool(brand_refs))
 
 
@@ -4956,25 +4986,50 @@ def reel_edit_prompt(
     names = ", ".join(f"@Image{n}" for n in range(1, images + 1))
     if brand_refs and not images:
         names = "the scene instructions (no product reference image was supplied)"
+    logo_index = next(
+        (images + index + 1 for index, ref in enumerate(brand_refs) if ref.selected_logo),
+        None,
+    )
+    replacement_branding = (
+        "Replace any visible source-brand names, logos and packaging with the client's "
+        "identity. Do not add new promotional text or retain the source brand."
+    )
+    if logo_index is not None:
+        replacement_branding = (
+            f"Replace source-video-owner marks on existing packaging with the complete selected "
+            f"client logo @Image{logo_index}, in every shot. Preserve box geometry and "
+            "perspective, "
+            "not its graphics. No source-video-owner text or logo may remain; a corner watermark "
+            "is not a replacement. Preserve product identity and manufacturer labels from the "
+            "product references, unrelated labels and mandatory text. Do not add promotional text."
+        )
     lines: list[str | _Flex] = [
         "Edit video @Video1. Replace its product with the client's product shown in "
         f"{names}: {product}. This is an in-place video edit, not a new advertising video.",
         "Keep the original shot count, shot order, cut timings, framing, camera angle, "
         "camera trajectory, gestures, hand positions, actions, motion and pacing — this "
         "is the reel's structure, the second-plane base for the edit.",
-        "The brand identity and the operator's explicit instructions (below) may restyle "
-        "the scene: background tone, lighting, accents, and elements the operator asked "
-        "for. Use product photos only for product appearance. Do not transfer their "
-        "background, layout or pose.",
+        (
+            "Follow the operator's scene instructions. Product photos define product appearance, "
+            "not their background, layout or pose."
+            if logo_index is not None
+            else "The brand identity and the operator's explicit instructions (below) may restyle "
+            "the scene: background tone, lighting, accents, and elements the operator asked "
+            "for. Use product photos only for product appearance. Do not transfer their "
+            "background, layout or pose."
+        ),
         "The replacement product must match the supplied photos: ingredients, layers, "
         "shape, colors, proportions and packaging, consistently throughout the actions. "
         "Preserve every stage of assembly; do not show the fully assembled product early. "
         "Replace packaging only where it exists in the original.",
-        "Apply the operator's explicit scene requests from the instructions below: add "
-        "or change shots, actions or elements they asked for. Do not cut to a catalog "
-        "still or a new final hero shot.",
-        "Replace any visible source-brand names, logos and packaging with the client's "
-        "identity. Do not add new promotional text or retain the source brand.",
+        (
+            "Do not cut to a catalog still or a new final hero shot."
+            if logo_index is not None
+            else "Apply the operator's explicit scene requests from the instructions below: add "
+            "or change shots, actions or elements they asked for. Do not cut to a catalog "
+            "still or a new final hero shot."
+        ),
+        replacement_branding,
         _Flex(
             "Client brand identity (for replacement branding and the scene's styling): ",
             kit.positioning,
@@ -5019,7 +5074,10 @@ def motion_prompt(
         lines.append(
             "They show the product to the camera; the product keeps its exact look and label."
         )
-    lines.append("Smooth, slight handheld camera movement, natural light. No text on screen.")
+    lines.append(
+        "Smooth, slight handheld camera movement, natural light. "
+        + _media_text_rule(brand_refs, video=True)
+    )
     lines.append(_facts_line(brief, _FACTS_IN_MOTION))
     if brand_refs:
         if reference_mode:
