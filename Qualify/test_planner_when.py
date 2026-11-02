@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import inspect
 from datetime import UTC, datetime
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from . import planner_drawer
+import pytest
+
+from . import planner_drawer, planner_state
 from .planner_state import MODE_RESCHEDULE, PlannerState, rows_for_submit
 from .planner_vm import (
     ASSIGN_STEPS,
@@ -63,6 +66,99 @@ def _state(*post_ids: str) -> PlannerState:
     state.tz_name = _CARACAS
     state.schedulable = [_post(p) for p in (post_ids or ("p1",))]
     return state
+
+
+@pytest.mark.parametrize("step", [1, 2, 3, 2, 1])
+def test_step_navigation_keeps_the_drawer_open_without_reloading_the_week(
+    monkeypatch: pytest.MonkeyPatch, step: int
+) -> None:
+    state = _state()
+    state.open_assign_for_post("p1")
+    state.set_item_date("p1", "2026-10-29")
+    state.set_item_time("p1", "19:35")
+    state.form_step = step - 1
+    original_items = list(state.plan_items)
+    params = {"flujo": "programar", "paso": str(step), "semana": state.monday_iso}
+    monkeypatch.setattr(PlannerState, "_url_param", lambda self, name: params.get(name, ""))
+    monkeypatch.setattr(planner_state, "flow_param", lambda *_args: step)
+
+    # React Router can run on_load for an in-place history step. A close here
+    # unmounts the dialog and its next restore replays the entrance animation.
+    follow_up = state.load_current_week()
+    assert state.form_open
+    assert follow_up.fn.__name__ == "restore_flow"
+    state.restore_flow()
+    assert state.form_open and state.form_step == step - 1
+    assert list(state.plan_items) == original_items
+    assert state.plan_items[0].time == "19:35"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"flujo": ""}, {"semana": "2026-11-02"}, {"vista": "lista"}, {"post": "p2"}],
+)
+def test_new_planner_context_still_closes_the_form_and_loads_the_week(
+    monkeypatch: pytest.MonkeyPatch, changes: dict[str, str]
+) -> None:
+    state = _state()
+    state.open_assign_for_post("p1")
+    params = {"flujo": "programar", "semana": state.monday_iso, **changes}
+    monkeypatch.setattr(PlannerState, "_url_param", lambda self, name: params.get(name, ""))
+    follow_up = state.load_current_week()
+    assert not state.form_open
+    assert follow_up.fn.__name__ == "load"
+
+
+def test_returning_after_leaving_the_planner_loads_fresh_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state()
+    state.open_assign_for_post("p1")
+    state.leave_flow()
+    monkeypatch.setattr(
+        PlannerState, "_url_param", lambda self, name: "programar" if name == "flujo" else ""
+    )
+    assert state.load_current_week().fn.__name__ == "load"
+    assert not state.form_open
+
+
+@pytest.mark.parametrize("same_event", [True, False])
+def test_reschedule_step_only_reuses_the_open_event(
+    monkeypatch: pytest.MonkeyPatch, same_event: bool
+) -> None:
+    state = _state()
+    state.form_open = True
+    state.form_mode = MODE_RESCHEDULE
+    state.form_event_id = str(uuid4())
+    params = {
+        "flujo": "reprogramar",
+        "semana": state.monday_iso,
+        "objeto": state.form_event_id if same_event else str(uuid4()),
+    }
+    monkeypatch.setattr(PlannerState, "_url_param", lambda self, name: params.get(name, ""))
+    follow_up = state.load_current_week()
+    assert state.form_open is same_event
+    assert follow_up.fn.__name__ == ("restore_flow" if same_event else "load")
+
+
+def test_sequential_next_and_back_history_restoration_keeps_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state()
+    state.open_assign_for_post("p1")
+    state.set_item_date("p1", "2026-10-29")
+    state.set_item_time("p1", "19:35")
+    params = {"flujo": "programar", "semana": state.monday_iso}
+    monkeypatch.setattr(PlannerState, "_url_param", lambda self, name: params.get(name, ""))
+    monkeypatch.setattr(planner_state, "flow_param", lambda *_args: int(params["paso"]))
+    for requested in (1, 2, 3, 2, 1, 2, 3):
+        params["paso"] = str(requested)
+        assert state.load_current_week().fn.__name__ == "restore_flow"
+        assert state.form_open
+        state.restore_flow()
+        assert state.form_open and state.form_step == requested - 1
+        assert state.plan_items[0].date == "2026-10-29"
+        assert state.plan_items[0].time == "19:35"
 
 
 # -- the sentences ---------------------------------------------------------------------

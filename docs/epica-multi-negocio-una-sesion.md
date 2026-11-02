@@ -148,3 +148,33 @@ Sin fase manual de 60 días (F3).
 - Vista unificada de varios negocios (cartera). **La facturación compartida entró al alcance el 2026-10-25** (S10, ADR 43 §2.8); sigue fuera el cobro automático con un proveedor de pago (D19).
 - Superadmin del equipo (staff): épica aparte.
 - Que el dueño invite a otras personas a su negocio.
+
+## 8. Contrato del backend para la UI (S1, m-24849188 · 2026-11-02)
+
+Lo que la pantalla «¿Con qué negocio quieres trabajar?» (S3) y el cambio de negocio (S4) llaman. Todo se importa de `qualify_api.auth`; todas son funciones bloqueantes (la UI las llama con `asyncio.to_thread`, como el resto de `AuthState`).
+
+| Función / tipo | Firma | Qué hace |
+|---|---|---|
+| `resolve_login` | `(provider, email, password) -> LoginResult` | Igual que antes; ahora `LoginResult.memberships: tuple[UserMembership, ...]` trae **todos** los negocios del login, ordenados por nombre, y `LoginResult.needs_business_choice: bool` es `True` con 2 o más. `tenant_id` es el negocio por defecto (`app_metadata.tenant_id` de Supabase, el del primer Alta, mientras siga siendo una membresía; si no, la primera) y solo sirve para ordenar o marcar. Sin ninguna membresía lanza `NoBusinessAccess` |
+| `UserMembership` | `tenant_id, tenant_name, name, role, user_id, email, display_name` | Una fila por negocio; `name` = `tenant_name` |
+| `memberships_for` | `(auth_user_id: UUID) -> list[UserMembership]` | Lo mismo que `memberships`, para releer la lista (por ejemplo, el menú «Cambiar de negocio» de S4). Única lectura cruzada, por `admin_session` |
+| `open_business` | `(auth_user_id: UUID, tenant_id: UUID) -> ActiveBusiness` | Comprueba **sin caché**, por `tenant_session(tenant_id)`, que el login es miembro (`users` + `tenant_members`) y devuelve `ActiveBusiness(tenant_id, business_name, user_id, email, display_name, role)`. Si no lo es: `NotAMember` |
+| `NotAMember` / `NoBusinessAccess` | `.message == NOT_A_MEMBER_MESSAGE` | «Ya no tienes acceso a este negocio. Vuelve a entrar para elegir otro.» Es el mismo texto de «S5 · acceso retirado» de la tabla de textos: no se escribe una segunda versión. La UI lo muestra y manda a `/login` |
+
+**Dónde vive el negocio activo.** En el servidor, en `AuthState.session_tenant_id` (estado de Reflex de esa pestaña), como hoy. No hay cookie, `localStorage` ni columna de «negocio activo» en la base (ADR 43 §3). Cada página llega a `tenant_session(UUID(session_tenant_id))` exactamente como ahora; nada cambia en los módulos.
+
+**Cómo lo usa la UI (S3):**
+
+1. Al entrar, `resolve_login` como siempre. Guardar `result.auth_user_id` en una variable **solo del servidor** (`_auth_user_id`, con guion bajo, como `_access_token`): hoy `AuthState` guarda `_session_user_id` (el `users.id` local, que cambia por negocio) pero no el `auth_user_id`, y S3/S4/S5 lo necesitan.
+2. Si `needs_business_choice` es `False`: abrir la sesión como hoy (`_open_session`).
+3. Si es `True`: mostrar el selector con `memberships` (**solo el nombre del negocio**; `role` viene en inglés, `owner`/`admin`/`agent`/`viewer`, y no se muestra tal cual), **sin escribir `session_tenant_id` todavía**. Al elegir, `open_business(self._auth_user_id, UUID(elegido))` y escribir en `session_tenant_id`, `_session_user_id`, `business_name` y `user_email` lo que devuelve `ActiveBusiness`. El `tenant_id` del clic es justo lo que se verifica; el `auth_user_id` nunca sale del navegador.
+4. S4 (cambiar sin salir) usa la misma `open_business` al canjear el pase en `/cambiar`, en el estado nuevo (ADR 43 §2.2). El pase de un solo uso y su revisión de seguridad son de S4.
+
+Las revisiones de S5 (al cargar con 60 s de caché y fresca antes de publicar o enviar) y la auditoría de cada cambio se agregan en m-24849192 sobre estas mismas funciones.
+
+**Casos que S3 tiene que cubrir** (revisión de UX del 2026-11-02, sugerencias, no bloquean):
+
+- Elegir es **un toque**: cada negocio es un botón de ancho completo (al menos 44 px) que abre ese negocio; sin lista de opciones más «Continuar». Mientras corre `open_business`, «Abriendo {negocio}…».
+- Con un toque por fila no hay nada que preseleccionar: el negocio por defecto, si se usa, solo ordena la lista o se marca con texto, nunca solo con color. Recordar el último negocio usado no existe hoy (ADR 43 §3): pregunta abierta para el fundador.
+- La pantalla del selector todavía no tiene negocio: título de la pestaña «Elige tu negocio · Qualify», el título del selector como `h1`, un enlace «Salir» a `/login`, y el botón atrás del teléfono vuelve a `/login`.
+- `app_metadata.tenant_id` vale solo mientras sea una de las membresías: si se quitó el asiento en ese negocio, `resolve_login` toma como defecto la primera membresía que queda. Sin ningún asiento, `resolve_login` lanza `NoBusinessAccess` (subclase de `IncompleteRegistration`, así la pantalla de entrada de hoy ya la rechaza; S3 la atrapa antes y muestra su `message`, el mismo texto de «S5 · acceso retirado»). La UI nunca muestra un selector vacío.

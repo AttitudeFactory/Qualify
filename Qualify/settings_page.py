@@ -121,7 +121,8 @@ def _plan_card() -> rx.Component:
                 rx.text(SettingsState.plan_text, size="3", weight="medium"),
                 rx.cond(SettingsState.plan_error == "", skeleton_rows(1)),
             ),
-            ask_more_block("settings"),
+            # an unlimited plan has nothing to ask more of
+            rx.cond(~SettingsState.plan_unlimited, ask_more_block("settings")),
             spacing="3",
             align_items="start",
             width="100%",
