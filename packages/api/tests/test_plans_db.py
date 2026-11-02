@@ -329,7 +329,7 @@ def test_the_report_charges_plus_75_then_149_against_the_real_cost() -> None:
 
 
 def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:
-    """m-24921124: the internal plan through the real tables (0109 widens the CHECKs)."""
+    """m-24921124: the internal plan through the real tables (0110 widens the CHECKs)."""
     tenant, brand = _tenant()
     with tenant_session(tenant) as session:
         session.execute(
@@ -340,6 +340,8 @@ def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:
             {"t": tenant, "b": brand},
         )
     _set(tenant, "basico", _now(1))
+    pack = {"tenant_id": tenant, "pack": "+2 videos", "reason": "r", "granted_by": "e"}
+    first = add_pack(**pack, idempotency_key="k1", now=_now(2), notifier=RecordingTeamNotifier())
     result = _set(tenant, "ilimitado", _now(10), reason="Negocio del fundador")
     assert (result.changed, result.previous_plan_code, result.effective_month) == (
         True,
@@ -379,9 +381,12 @@ def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:
     assert (check.plan_code, check.cap_usd, check.crossed) == ("ilimitado", Decimal(480), True)
     (october,) = report.fetch(OCT, tenant)
     # Básico's first month is billed; moving to Ilimitado charges no difference
-    assert october.charged_usd == Decimal(39) and october.cost_usd == Decimal(500)
+    assert october.charged_usd == Decimal(39 + 29) and october.cost_usd == Decimal(500)
     (november,) = report.fetch(NOV, tenant)
     assert november.charged_usd == Decimal(0) and not november.plan_sellable
+    # a replay of the pack granted before the move still answers with it
+    again = add_pack(**pack, idempotency_key="k1", now=_now(20), notifier=RecordingTeamNotifier())
+    assert (again.pack_id, again.changed) == (first.pack_id, False)
     with pytest.raises(PackRefused, match="sin límite"):
         add_pack(
             tenant_id=tenant,

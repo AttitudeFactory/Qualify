@@ -52,7 +52,7 @@ límites. Es **interno**: `"sellable": false` en `planes-v2.json`.
 - **Tope de aviso USD 480** (el de Pro): avisa en Lark una vez al mes si el negocio cuesta más que
   el plan pagado más grande; nunca pausa. `creative_engine_config` queda con ese tope y
   `hard_stop_on_cap = false`.
-- **Migración `0109_plan_ilimitado`:** amplía los CHECK de `plan_code` de 0093. Su `downgrade`
+- **Migración `0110_plan_ilimitado`:** amplía los CHECK de `plan_code` de 0093. Su `downgrade`
   falla a propósito mientras alguna fila diga `ilimitado` (el historial no se reescribe).
 - **Precios:** no cambiaron, así que `precios-planes-v1` sigue vigente y precia los tres planes
   vendibles, idénticos en v1 y v2.

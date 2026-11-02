@@ -1,6 +1,6 @@
 """plan_ilimitado: the plan-code CHECKs accept the internal plan `ilimitado` (m-24921124)
 
-Revision ID: 0109
+Revision ID: 0110
 Revises: 0108
 Create Date: 2026-11-02
 
@@ -14,13 +14,17 @@ table, column, grant or policy changes, so no RLS work: the tables keep 0093's i
 **Downgrade** narrows the constraints back. It fails, on purpose, while any row still names
 `ilimitado` (the plan history is append-only and is never rewritten to make a downgrade
 pass): move those subscriptions to a sellable plan with `just set-plan` first.
+
+**Numbering:** `0110` on purpose, chained on `main`'s head `0108`, because two open PRs
+(#404, #420) already claim `0109`. Whichever lands first, the other re-chains its
+`down_revision` before merging so the history stays one line.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0109"
+revision = "0110"
 down_revision = "0108"
 branch_labels = None
 depends_on = None
