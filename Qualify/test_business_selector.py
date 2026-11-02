@@ -320,6 +320,17 @@ async def test_a_dead_pass_goes_to_login(backend, passes, fragment: str) -> None
     assert fresh.auth_error == SWITCH_PASS_DEAD
 
 
+async def test_going_back_onto_cambiar_from_the_opened_business_stays_in_it(
+    monkeypatch, backend, passes
+) -> None:
+    """«Atrás» after a switch lands on /cambiar again, without a pass: the session that
+    pass opened is already there, so it goes home without an error."""
+    state = await _in_bianki(monkeypatch)
+    events = await _run(AuthState.redeem_switch.fn(state, ""))
+    assert '"/"' in str(events[-1]) and state.session_tenant_id == str(BIANKI)
+    assert state._login_notice == ""
+
+
 async def test_a_used_pass_cannot_open_a_second_tab(backend, passes) -> None:
     passes["p1"] = SwitchPass(LOGIN, POLETTE, "tok-supabase")
     first, second = AuthState(), AuthState()

@@ -236,10 +236,9 @@ def login_index() -> rx.Component:
                 color=T.TEXT_MUTED,
             ),
         ),
-        # §6.1 (1 login = 1 negocio) said once, as a tip, not as a rule to obey.
+        # ADR 43 replaced §6.1 (1 login = 1 negocio): one login, then choose the business.
         rx.text(
-            "¿Llevas varios negocios? Cada uno entra con su propio correo, y tu navegador "
-            "puede recordarlos todos.",
+            "¿Llevas varios negocios? Entra con tu correo y elige con cuál quieres trabajar.",
             size="1",
             color=T.TEXT_MUTED,
         ),

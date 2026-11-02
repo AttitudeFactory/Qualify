@@ -1174,8 +1174,12 @@ class AuthState(rx.State):
                 logger.error("switch pass unreadable: %s", type(exc).__name__)
         if target is None:
             async with self:
-                self._login_notice = SWITCH_PASS_DEAD
-            yield rx.redirect("/login")
+                in_session = bool(self.session_tenant_id)
+                if not in_session:
+                    self._login_notice = SWITCH_PASS_DEAD
+            # «Atrás» onto /cambiar from the business it opened: nothing to redeem, the
+            # session is already there — back to it, without an error.
+            yield rx.redirect("/" if in_session else "/login")
             return
         auth_user_id, tenant_id = str(target.auth_user_id), str(target.tenant_id)
         try:
