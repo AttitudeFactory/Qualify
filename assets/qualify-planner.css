@@ -883,9 +883,24 @@
 
 
 /* ── Phone widths (QUA-118 v2): what the new screens need below 640px ───────── */
-/* A piece's head: the date pill takes its own line instead of squeezing the title. */
-.q-plan-head { flex-wrap: wrap; }
-.q-plan-head > .q-when-pill { margin-left: auto; }
+/* Give metadata a real column: a wrapping flex row could squeeze it down to zero
+   beside a long date pill, making the nowrap badges paint over one another. */
+.q-plan-head {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.5rem 0.75rem;
+}
+.q-plan-meta { min-width: 0; }
+.q-plan-badges { min-width: 0; }
+.q-plan-badges > * { flex-shrink: 0; max-width: 100%; }
+.q-plan-head > .q-when-pill {
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 /* The destination picker keeps its three buttons on one line in a narrow card. */
 .q-dest-seg { grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr)); }
 @media (max-width: 640px) {
