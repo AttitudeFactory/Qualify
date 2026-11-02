@@ -179,6 +179,11 @@ _TITLE_JS = """window.__qBusiness = %(business)s;
 })(%(total)d);"""
 
 
+#: Run on logout: the observer above outlives client-side navigations, so the business
+#: name it puts in the title is forgotten before the next screen (/login, /brand/start).
+FORGET_TITLE_BUSINESS_JS = "window.__qBusiness = '';"
+
+
 def title_script(total: int, business: str = "") -> str:
     """The script that writes «(N) » at the start of the tab title (or removes it) and,
     with a session, puts the business first (`titled`). `total` is formatted as an int
@@ -192,6 +197,7 @@ def title_script(total: int, business: str = "") -> str:
 
 __all__ = [
     "BADGE_CAP",
+    "FORGET_TITLE_BUSINESS_JS",
     "MenuCounts",
     "badge_text",
     "clamp",

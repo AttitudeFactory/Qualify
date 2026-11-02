@@ -115,7 +115,12 @@ def _store() -> SwitchPassStore:
     import redis  # noqa: PLC0415
     from qualify_api.config import redis_url  # noqa: PLC0415
 
-    return SwitchPassStore(redis.Redis.from_url(redis_url(), decode_responses=True))
+    # Short timeouts: a hung Redis must end in «No pudimos cambiar de negocio…», not
+    # leave the chip on «Abriendo…» for good.
+    client = redis.Redis.from_url(
+        redis_url(), decode_responses=True, socket_timeout=2, socket_connect_timeout=2
+    )
+    return SwitchPassStore(client)
 
 
 def issue_switch_pass(auth_user_id: UUID, tenant_id: UUID, access_token: str) -> str:

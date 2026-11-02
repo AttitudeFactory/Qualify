@@ -24,10 +24,12 @@ LEAVE_LABEL = "Salir"
 #: When the switch cannot reach the pass store or the database: nothing changed, the
 #: owner stays where they were and can retry.
 SWITCH_DOWN = (
-    "No pudimos cambiar de negocio. Sigues en {business}; inténtalo de nuevo en un momento."
+    "No pudimos cambiar de negocio. Sigues en {business}. Inténtalo de nuevo en un momento."
 )
+#: The seat in the business picked from the menu is gone; the current session stays.
+SWITCH_NO_ACCESS = "Ya no tienes acceso a {target}. Sigues en {business}."
 #: A switch pass that expired, was used already or was never ours (`/cambiar`).
-SWITCH_PASS_DEAD = "Ese cambio de negocio ya no es válido. Vuelve a entrar para elegir tu negocio."
+SWITCH_PASS_DEAD = "No alcanzamos a abrir el otro negocio. Entra de nuevo y elígelo."
 #: The selector was opened without a login waiting for a choice (a reload long after,
 #: another tab): back to the login, saying why.
 CHOICE_EXPIRED = "Vuelve a entrar para elegir con qué negocio quieres trabajar."
@@ -75,6 +77,7 @@ __all__ = [
     "LEAVE_LABEL",
     "SWITCH_DOWN",
     "SWITCH_MENU_LABEL",
+    "SWITCH_NO_ACCESS",
     "SWITCH_PASS_DEAD",
     "chip_label",
     "opening_label",

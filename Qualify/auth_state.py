@@ -95,12 +95,14 @@ from .business_vm import (
     CHOICE_EXPIRED,
     CHOOSE_ROUTE,
     SWITCH_DOWN,
+    SWITCH_NO_ACCESS,
     SWITCH_PASS_DEAD,
     chip_label,
     opening_label,
     parse_choice_index,
     switch_choices,
 )
+from .pending_vm import FORGET_TITLE_BUSINESS_JS
 from .review_links import review_destination
 
 logger = logging.getLogger(__name__)
@@ -564,6 +566,9 @@ class AuthState(rx.State):
     _choice_next: str = ""
     # A notice the next /login shows once (its on_load clears every other error).
     _login_notice: str = ""
+    #: That notice, on screen: not an error (a reload, a pass that ran out), so /login
+    #: shows it in the informative tone, apart from `auth_error`.
+    login_notice: str = ""
 
     @rx.var
     def is_authenticated(self) -> bool:
@@ -662,7 +667,8 @@ class AuthState(rx.State):
 
         A login that was still waiting on the business selector (the owner pressed «atrás»
         on it) is dropped here: entering again starts over."""
-        self.auth_error = self._login_notice
+        self.auth_error = ""
+        self.login_notice = self._login_notice
         self._login_notice = ""
         self.show_password = False
         self.reset_sent_to = ""
@@ -846,7 +852,9 @@ class AuthState(rx.State):
     async def _reset_brand_kit_states(self) -> None:
         """Drop the Brand Kit's in-memory draft (cached brand id, wizard cursor, staged
         files) when the tenant behind it changes without a logout."""
+        from .brand_answers import BrandAnswersState
         from .brand_documents import BrandDocumentState
+        from .brand_kit_editor import BrandEditState
         from .brand_minimal import BrandMinimalState
         from .brand_proposal import BrandProposalState
         from .creative_state import CreativeState
@@ -855,6 +863,10 @@ class AuthState(rx.State):
 
         for state_cls in (
             CreativeState,
+            # found by the A13 enumeration (2026-11-02): the answers path's drafts and
+            # the kit editor's «Cancelar» snapshot are the draft brand's data too
+            BrandAnswersState,
+            BrandEditState,
             BrandWizardState,
             BrandConnectState,
             BrandMinimalState,
@@ -874,6 +886,7 @@ class AuthState(rx.State):
         async with self:
             self.is_authenticating = True
             self.auth_error = ""
+            self.login_notice = ""
         # The attempt is reserved BEFORE the provider is called (check + count under one
         # lock), keyed case-insensitively: parallel guesses, or the same email in other
         # capitalisations, share the one window. Only a wrong password keeps the count.
@@ -935,6 +948,16 @@ class AuthState(rx.State):
         destination = review_destination(next_route) or (
             next_route if next_route in _POST_LOGIN_ROUTES else "/"
         )
+        # A password reset can complete inside a tab that is already in session (`/reset`
+        # is not bounced), possibly for another login: nothing of that session — its
+        # business, its login, its businesses' data — may survive into the new one.
+        async with self:
+            stale_token = self._access_token if self.session_tenant_id else ""
+            if self.session_tenant_id:
+                await self._reset_business_states()
+                self.reset()
+        if stale_token and stale_token != result.access_token:
+            await asyncio.to_thread(_sign_out_blocking, stale_token)
         memberships = result.memberships
         if result.needs_business_choice:
             async with self:
@@ -1085,6 +1108,7 @@ class AuthState(rx.State):
         async with self:
             await self._reset_business_states()
             self.reset()
+        yield rx.call_script(FORGET_TITLE_BUSINESS_JS)
         yield rx.redirect("/login")
 
     # ----------------------------------------------------------------------------------
@@ -1117,13 +1141,15 @@ class AuthState(rx.State):
             pass_value = await asyncio.to_thread(
                 issue_switch_pass, UUID(auth_user_id), UUID(tenant_id), access_token
             )
-        except NotAMember as exc:
+        except NotAMember:
             # The current session stays; the list is read again so the business that
-            # is no longer reachable leaves the menu.
+            # is no longer reachable leaves the menu. Not the signed «Vuelve a entrar…»
+            # text: the owner is still in, and must not log out to fix anything.
             await self._refresh_businesses(auth_user_id)
             async with self:
+                target = self.opening_business
                 self.opening_business = ""
-            yield rx.toast.error(exc.message)
+            yield rx.toast.error(SWITCH_NO_ACCESS.format(target=target, business=current))
             return
         except (SQLAlchemyError, ValueError, *_SWITCH_STORE_ERRORS) as exc:
             logger.error("business switch failed: %s", type(exc).__name__)
@@ -1589,5 +1615,8 @@ class AuthState(rx.State):
             self.reset()
         # A toast still on screen (e.g. a sync result) must not follow the person out.
         yield rx.toast.dismiss()
+        # The redirect is a client-side navigation: the tab title script keeps the
+        # business name in the document, and it must not title the next screens.
+        yield rx.call_script(FORGET_TITLE_BUSINESS_JS)
         # § 2026-10-02: the first view after a logout is the Brand Kit, as on arrival
         yield rx.redirect(BRAND_START_ROUTE)

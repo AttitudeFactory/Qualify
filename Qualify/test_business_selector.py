@@ -172,16 +172,16 @@ async def test_a_seat_removed_before_the_tap_starts_over_at_login(monkeypatch, b
     assert state.session_tenant_id == ""
     assert state.awaiting_business_choice is False and state._auth_user_id == ""
     AuthState.redirect_if_authenticated.fn(state)  # /login's on_load shows it once
-    assert state.auth_error == NotAMember.message
+    assert state.login_notice == NotAMember.message
     AuthState.redirect_if_authenticated.fn(state)
-    assert state.auth_error == ""
+    assert state.login_notice == ""
 
 
 def test_the_selector_without_a_waiting_login_sends_to_login() -> None:
     state = AuthState()
     assert "/login" in str(AuthState.enter_business_choice.fn(state))
     AuthState.redirect_if_authenticated.fn(state)
-    assert state.auth_error == CHOICE_EXPIRED
+    assert state.login_notice == CHOICE_EXPIRED
 
 
 async def test_going_back_to_login_drops_the_waiting_choice(monkeypatch, backend) -> None:
@@ -266,7 +266,9 @@ async def test_switching_to_a_business_without_a_seat_keeps_the_current_session(
     assert passes == {}
     assert state.session_tenant_id == str(BIANKI)
     assert state.business_name == "Bianki" and state.opening_business == ""
-    assert "Ya no tienes acceso" in str(events[-1])
+    # not the login's «Vuelve a entrar…»: the owner is still in
+    assert "Ya no tienes acceso a Polette. Sigues en Bianki." in str(events[-1])
+    assert "Vuelve a entrar" not in str(events[-1])
     assert state.business_names == ["Bianki"]  # the menu no longer offers it
     assert state.can_switch_business is False
 
@@ -317,7 +319,7 @@ async def test_a_dead_pass_goes_to_login(backend, passes, fragment: str) -> None
     assert "/login" in str(events[-1])
     assert fresh.session_tenant_id == ""
     AuthState.redirect_if_authenticated.fn(fresh)
-    assert fresh.auth_error == SWITCH_PASS_DEAD
+    assert fresh.login_notice == SWITCH_PASS_DEAD
 
 
 async def test_going_back_onto_cambiar_from_the_opened_business_stays_in_it(
@@ -371,3 +373,31 @@ def test_switching_never_resets_the_state_it_leaves() -> None:
     be using it, and a background event of the old business writes only there."""
     source = inspect.getsource(AuthState.switch_business.fn)
     assert "reset" not in source.replace("_SWITCH_STORE_ERRORS", "")
+
+
+def test_leaving_forgets_the_business_in_the_tab_title() -> None:
+    """The title observer outlives client-side redirects: logout and the selector's
+    «Salir» clear the business name before the next screen is titled."""
+    for handler in (AuthState.logout, AuthState.leave_business_choice):
+        source = inspect.getsource(handler.fn)
+        assert source.index("FORGET_TITLE_BUSINESS_JS") < source.index("rx.redirect(")
+
+
+async def test_a_reset_inside_an_open_session_starts_clean(monkeypatch, backend) -> None:
+    """`/reset` is not bounced for a session: completing it for another login with two
+    businesses must not keep the first login's business, token or data."""
+    state = await _in_bianki(monkeypatch)
+    state._access_token = "tok-of-the-other-login"
+    resets: list[bool] = []
+    revoked: list[str] = []
+
+    async def fake_reset(self) -> None:
+        resets.append(True)
+
+    monkeypatch.setattr(AuthState, "_reset_business_states", fake_reset)
+    monkeypatch.setattr(auth_state_module, "_sign_out_blocking", revoked.append)
+    destination = await state._open_session(_result(BIANKI, POLETTE), "/")
+    assert destination == CHOOSE_ROUTE
+    assert resets == [True] and revoked == ["tok-of-the-other-login"]
+    assert state.session_tenant_id == "" and state.awaiting_business_choice is True
+    assert state._access_token == "tok-supabase"

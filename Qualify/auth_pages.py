@@ -187,6 +187,8 @@ def login_index() -> rx.Component:
             AuthState.login_email_hint != "",
             callout("Ese correo ya tiene una cuenta: inicia sesión para ver tu marca.", "info"),
         ),
+        # ADR 43: why the selector or a business switch sent the owner back here.
+        rx.cond(AuthState.login_notice != "", callout(AuthState.login_notice, "info")),
         _error_banner(),
         rx.form(
             rx.vstack(
