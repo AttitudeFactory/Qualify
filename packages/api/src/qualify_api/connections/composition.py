@@ -56,7 +56,7 @@ from qualify_api.connections.runtime_health import (
     mark_connection_unavailable,
 )
 from qualify_api.connections.service import ConnectService
-from qualify_api.connections.state_token import JtiStore
+from qualify_api.connections.state_token import JtiStore, StartedConnect
 from qualify_api.connections.tiktok_credentials import (
     REFRESH_LOCK_TTL_SECONDS,
     PostgresTikTokCredentialRotator,
@@ -138,8 +138,9 @@ def start_connect(
     connection_id: UUID | None = None,
     return_to: str = "",
     cause: str = "",
-) -> str:
-    """Register a one-shot `state` and return the Meta authorization URL to redirect to.
+) -> StartedConnect:
+    """Register a one-shot `state` and return the Meta authorization URL to redirect to,
+    plus the browser-binding cookie the UI must set before redirecting (m-24921205).
 
     Keyword-only on purpose: three same-typed UUIDs in a row is precisely the signature
     where a positional swap compiles, type-checks, and silently connects the wrong tenant.
@@ -329,9 +330,10 @@ def start_tiktok_connect(
     connection_id: UUID | None = None,
     return_to: str = "",
     cause: str = "",
-) -> str:
-    """Published seam for the UI: the TikTok consent URL. Needs `TIKTOK_*` configured
-    (`TikTokSettings.is_configured()`); blocking (Redis) — call it off the event loop."""
+) -> StartedConnect:
+    """Published seam for the UI: the TikTok consent URL and its browser-binding cookie.
+    Needs `TIKTOK_*` configured (`TikTokSettings.is_configured()`); blocking (Redis) — call
+    it off the event loop."""
     return production_tiktok_connect_service().start_connect(
         tenant_id=tenant_id,
         brand_id=brand_id,
