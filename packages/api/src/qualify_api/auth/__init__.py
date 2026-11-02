@@ -55,6 +55,7 @@ from qualify_api.auth.registry import default_auth_provider, reset_default_auth_
 from qualify_api.auth.service import (
     IncompleteRegistration,
     LoginResult,
+    NoBusinessAccess,
     RegisteredBusiness,
     RegistrationInvalid,
     UserMembership,
@@ -92,6 +93,7 @@ __all__ = [
     "IncompleteRegistration",
     "InviteView",
     "InvalidCredentials",
+    "NoBusinessAccess",
     "NotAMember",
     "LoginResult",
     "PasswordChangeInvalid",

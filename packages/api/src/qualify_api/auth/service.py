@@ -14,9 +14,12 @@ credentials completes the missing half instead of duplicating — every local wr
 upsert-by-existence, the same discipline as `qualify_api.seed`.
 
 `resolve_login` is the deterministic credential→tenant resolution (hygiene criterion
-6): the tenant comes from the provider's `app_metadata` stamp, never from guessing
-across tenants by email — no cross-tenant read happens on the login path at all. The
-local `users` row is then loaded through `tenant_session(tenant_id)`, RLS-scoped.
+6): the default tenant comes from the provider's `app_metadata` stamp, never from
+guessing across tenants by email. Since ADR 43 (S1, m-24849188) a login may belong to
+several tenants: the ONE sanctioned cross-tenant read on the login path is
+`memberships_for(auth_user_id)` (by the verified provider id, never by email), and the
+stamp is honoured only while it is one of those memberships. The local `users` row is
+then loaded through `tenant_session(tenant_id)`, RLS-scoped.
 """
 
 from __future__ import annotations
@@ -65,6 +68,15 @@ class RegisteredBusiness:
     auth_user_id: UUID
     email: str
     business_name: str
+
+
+class NoBusinessAccess(IncompleteRegistration):
+    """The credentials are right but the login has no seat (`tenant_members`) in any
+    business any more — e.g. its access was removed (ADR 43 A15). A subclass of
+    `IncompleteRegistration` so today's login screen already refuses it; the selector
+    (S3) catches it first and shows `message`."""
+
+    message = "Ya no tienes acceso a este negocio. Vuelve a entrar para elegir otro."
 
 
 @dataclass(frozen=True)
@@ -470,21 +482,27 @@ def memberships_for(auth_user_id: UUID) -> list[UserMembership]:
 
 def resolve_login(provider: AuthProvider, email: str, password: str) -> LoginResult:
     """Sign in and resolve the session to a verified local user. Raises
-    `InvalidCredentials` (generic, on purpose) or `IncompleteRegistration`."""
+    `InvalidCredentials` (generic, on purpose), `IncompleteRegistration`, or its
+    subclass `NoBusinessAccess` when the login has no seat in any business."""
     session_dto: AuthSession = provider.sign_in(email, password)
     if session_dto.tenant_id is None:
         raise IncompleteRegistration()
-    with tenant_session(session_dto.tenant_id) as db:
+    # ADR 43 §2.1: `app_metadata.tenant_id` is only the DEFAULT business; which
+    # businesses the login may open is `users` + `tenant_members`. The stamp is used
+    # only while it is one of them; otherwise the first membership is the default.
+    memberships = tuple(memberships_for(session_dto.auth_user_id))
+    if not memberships:
+        raise NoBusinessAccess()
+    tenant_id = session_dto.tenant_id
+    if tenant_id not in {m.tenant_id for m in memberships}:
+        tenant_id = memberships[0].tenant_id
+    with tenant_session(tenant_id) as db:
         user = db.scalar(select(User).where(User.auth_user_id == session_dto.auth_user_id))
         if user is None:
             raise IncompleteRegistration()
         user_id, display_name = user.id, user.display_name
-    # ADR 43 §2.1: `app_metadata.tenant_id` is only the DEFAULT business; which
-    # businesses the login may open is `users` + `tenant_members`. The default keeps
-    # the check above unchanged, so single-business logins notice nothing.
-    memberships = tuple(memberships_for(session_dto.auth_user_id))
     return LoginResult(
-        tenant_id=session_dto.tenant_id,
+        tenant_id=tenant_id,
         auth_user_id=session_dto.auth_user_id,
         user_id=user_id,
         email=session_dto.email,

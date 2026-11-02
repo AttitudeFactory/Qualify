@@ -25,10 +25,12 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
+from qualify_api.auth.service import NoBusinessAccess
 from qualify_api.tenancy.models import Tenant, TenantMember, User
 
-#: Shown when the login is no longer (or never was) a member of the business.
-NOT_A_MEMBER_MESSAGE = "Ya no tienes acceso a este negocio. Vuelve a entrar para elegir otro."
+#: Shown when the login is no longer (or never was) a member of the business. The
+#: same text as `NoBusinessAccess` (epic copy table, «S5 · acceso retirado»).
+NOT_A_MEMBER_MESSAGE = NoBusinessAccess.message
 
 
 class NotAMember(Exception):

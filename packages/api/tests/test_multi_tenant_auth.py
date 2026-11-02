@@ -18,6 +18,8 @@ from sqlalchemy import select
 from qualify_api.auth import (
     NOT_A_MEMBER_MESSAGE,
     FakeAuthProvider,
+    IncompleteRegistration,
+    NoBusinessAccess,
     NotAMember,
     memberships_for,
     open_business,
@@ -272,3 +274,41 @@ def test_open_business_refuses_once_the_membership_is_removed() -> None:
     with pytest.raises(NotAMember):
         open_business(bianki.auth_user_id, polette_id)
     assert [m.tenant_id for m in memberships_for(bianki.auth_user_id)] == [bianki.tenant_id]
+
+
+def test_login_does_not_open_a_default_business_whose_seat_was_removed() -> None:
+    """The provider stamp is only a default: with its seat gone, the login opens the
+    business it still belongs to (review finding, 2026-11-02)."""
+    provider, email, bianki, polette_id = _two_business_owner()
+    with admin_session() as session:
+        session.execute(
+            TenantMember.__table__.delete().where(TenantMember.tenant_id == bianki.tenant_id)
+        )
+    login = resolve_login(provider, email, "correct-horse-9")
+    assert login.tenant_id == polette_id
+    assert login.needs_business_choice is False
+    with tenant_session(polette_id) as db:
+        polette_user = db.scalar(select(User).where(User.auth_user_id == bianki.auth_user_id))
+    assert polette_user is not None and login.user_id == polette_user.id
+
+
+def test_login_without_any_seat_is_refused() -> None:
+    provider = FakeAuthProvider()
+    email = f"sinasiento-{uuid4().hex[:6]}@attitudefactory.co"
+    res = register_business(
+        provider,
+        business_name="Sin asiento",
+        email=email,
+        password="correct-horse-9",
+        country="CO",
+        timezone="America/Bogota",
+        currency="COP",
+    )
+    with admin_session() as session:
+        session.execute(
+            TenantMember.__table__.delete().where(TenantMember.tenant_id == res.tenant_id)
+        )
+    with pytest.raises(NoBusinessAccess) as exc:
+        resolve_login(provider, email, "correct-horse-9")
+    assert isinstance(exc.value, IncompleteRegistration)  # today's login screen refuses it
+    assert exc.value.message == NOT_A_MEMBER_MESSAGE
