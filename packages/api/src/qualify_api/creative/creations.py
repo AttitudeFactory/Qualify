@@ -28,6 +28,10 @@ Three counters per month (founder, 2026-10-24), none of them money:
   120/16/80, `qualify_api.plans`; no plan = Básico), read from `business_plans` inside
   the same locked transaction; `QUALIFY_CREATIONS_QUOTA=off` stays the
   installation-wide emergency switch.
+- An unlimited plan (`ilimitado`, founder 2026-11-02, m-24921124) never refuses for
+  quota: `MonthlyQuota.unlimited` / `CreationsBalance.unlimited`. Unlike the switch, the
+  charges and their allocations are still written (source `plan`, `plan_code`
+  `ilimitado`), so the month's use stays on record; the dollar cap keeps alerting.
 - On top of it, the brand's live 90-day packs (m-24852129, `qualify_api.plans.packs`):
   spent only once the plan's month is used up, the one that expires first first (D17).
   Which source paid each unit is written with the charge (`creation_allocations`) and
@@ -127,6 +131,9 @@ class MonthlyQuota:
     creations: int
     videos: int
     previews: int
+    #: The plan sets no monthly limit (`Plan.unlimited`): the counts above are 0 and mean
+    #: nothing; nothing is refused for quota.
+    unlimited: bool = False
 
 
 def quota_for(
@@ -151,10 +158,12 @@ def quota_for(
             videos=weights.monthly_video_quota,
             previews=weights.monthly_preview_quota,
         )
+    if plan.unlimited:
+        return MonthlyQuota(creations=0, videos=0, previews=0, unlimited=True)
     return MonthlyQuota(
-        creations=plan.creations,
-        videos=plan.videos if weights.monthly_video_quota > 0 else 0,
-        previews=plan.previews if weights.monthly_preview_quota > 0 else 0,
+        creations=plan.creations or 0,
+        videos=(plan.videos or 0) if weights.monthly_video_quota > 0 else 0,
+        previews=(plan.previews or 0) if weights.monthly_preview_quota > 0 else 0,
     )
 
 
@@ -191,6 +200,9 @@ class CreationsBalance:
     extra_videos_expires_on: date | None = None
     extra_previews_left: int = 0
     extra_previews_expires_on: date | None = None
+    #: The plan sets no monthly limit (`ilimitado`): every check passes and the quota
+    #: fields are 0. The screens read such a balance as «no quota» and say nothing.
+    unlimited: bool = False
 
     @property
     def left(self) -> int:
@@ -206,6 +218,8 @@ class CreationsBalance:
 
     def can_pay(self, weight: int, previews: int = 0) -> bool:
         """At creation: the creations and the vistas previas (videos wait for approval)."""
+        if self.unlimited:
+            return True
         previews_ok = self.preview_quota <= 0 or previews <= self.previews_left
         return weight <= self.left and previews_ok
 
@@ -222,7 +236,7 @@ class CreationsBalance:
 
     def video_shortfall(self, videos: int) -> NotEnoughCreations | None:
         """Why the month cannot pay `videos` AT APPROVAL — all or nothing — or None."""
-        if self.video_quota <= 0 or videos <= self.videos_left:
+        if self.unlimited or self.video_quota <= 0 or videos <= self.videos_left:
             return None
         return NotEnoughCreations(videos=videos, videos_left=self.videos_left)
 
@@ -633,12 +647,17 @@ def compose_state(
         extra_videos_expires_on=local_day(dims[VIDEOS].extra_expires_at, zone),
         extra_previews_left=dims[PREVIEWS].extra_left,
         extra_previews_expires_on=local_day(dims[PREVIEWS].extra_expires_at, zone),
+        unlimited=quota.unlimited,
     )
     return _State(
         balance=balance,
         quota=quota,
         plan=plan,
-        plan_left={d: (dims[d].plan_left if plan_quota[d] > 0 else None) for d in plan_quota},
+        # None = the plan pays every unit of that counter (no cap, or no limit at all)
+        plan_left={
+            d: (dims[d].plan_left if plan_quota[d] > 0 and not quota.unlimited else None)
+            for d in plan_quota
+        },
         packs=packs,
     )
 
@@ -865,7 +884,10 @@ class InMemoryCreationsLedger:
             weights=self._weights,
             plan=self.plan,
         )
-        previews = quota.previews > 0
+        # as `_row`: an unlimited plan still counts vistas previas when the table has them
+        previews = quota.previews > 0 or (
+            quota.unlimited and self._weights.monthly_preview_quota > 0
+        )
         used = {
             CREATIONS: self._opening + sum(row.price.weight for row in rows),
             VIDEOS: self._opening_videos + sum(row.counted_videos for row in rows),
@@ -901,7 +923,10 @@ class InMemoryCreationsLedger:
         if short is not None:
             raise short
         row = _MemoryRow(brand_id=brand_id, price=price)
-        previews = price.videos if state.quota.previews > 0 else 0
+        counted = state.quota.previews > 0 or (
+            state.quota.unlimited and self._weights.monthly_preview_quota > 0
+        )
+        previews = price.videos if counted else 0
         row.add(state.split(CREATIONS, price.weight) + state.split(PREVIEWS, previews))
         self.rows[(draft_id, revision)] = row
         return row.id
