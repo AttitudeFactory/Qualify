@@ -1262,9 +1262,9 @@ class AngleSetService:
         if self._creations is None:
             return
         needed = pieces * weight_for_request(ContentKind.STATIC_FLYER.value).weight
-        left = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id).left
-        if needed > left:
-            raise AngleNotActionable(not_enough_text(needed - left))
+        balance = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+        if not balance.can_pay(needed):
+            raise AngleNotActionable(not_enough_text(needed - balance.left))
 
     def _angle_view(self, tenant_id: UUID, angle_id: UUID) -> tuple[AngleSetRecord, AngleView]:
         """One angle with its draft's status — what the per-angle actions decide on."""

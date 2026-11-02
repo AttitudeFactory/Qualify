@@ -136,14 +136,16 @@ def _optional(resolver: SchemaResolver, item: WorkItem, name: str) -> Any:
 
 
 def plan_code_for(label: str, catalog: PlansCatalog) -> str | None:
-    """«Básico» / «basico» / «Plus» / «PRO» → its code; "" → None; else refused."""
+    """«Básico» / «basico» / «Plus» / «PRO» → its code; "" → None; else refused. Only
+    the sellable plans: an internal one («Ilimitado», founder 2026-11-02) is assigned by
+    the team with `just set-plan`, never through a client's Alta."""
     if not label.strip():
         return None
     wanted = _fold(label)
-    for code in catalog.codes():
+    for code in catalog.sellable_codes():
         if wanted in (_fold(catalog.get(code).name), _fold(code)):
             return code
-    names = ", ".join(catalog.get(c).name for c in catalog.codes())
+    names = ", ".join(catalog.get(c).name for c in catalog.sellable_codes())
     raise InvalidPlanRequest(f"«{label}» no es un plan. Los planes son: {names}.")
 
 

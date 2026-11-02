@@ -3,6 +3,7 @@ database, in production through the `qualify-prod` session.
 
     just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@...
     just set-plan --tenant <uuid> --plan basico --from 2026-12 --reason "..." --by ...
+    just set-plan --tenant <uuid> --plan ilimitado --reason "Negocio del fundador" --by ...
     just plans --tenant <uuid>     # the subscription's plan history, oldest first
     just plans                     # the plans catalog in force (no prices)
 
@@ -138,9 +139,10 @@ def _catalog_text() -> str:
     lines = [f"Catálogo {plans.version} (sin precios; el cobro es a mano):"]
     for code in plans.codes():
         plan = plans.get(code)
+        internal = "" if plan.sellable else " · INTERNO: no se vende ni se cobra"
         lines.append(
-            f"  {code:<7} {owner_plan_text(plan)} · tope de aviso USD {plan.usd_alert_cap} · "
-            f"{plan.included_businesses} negocios incluidos"
+            f"  {code:<9} {owner_plan_text(plan)} · tope de aviso USD {plan.usd_alert_cap} · "
+            f"{plan.included_businesses} negocios incluidos{internal}"
         )
     lines.append(f"  techo de negocios por suscripción: {plans.businesses_ceiling}")
     return "\n".join(lines)
