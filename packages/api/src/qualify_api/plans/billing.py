@@ -14,8 +14,9 @@ The founder's rules (comments of m-24852145, 2026-10-24/25):
 4. Packs are always full price, the first month included.
 5. An internal plan (`sellable: false`, `ilimitado` — founder, 2026-11-02) is never
    billed: a month that starts on it has no plan line, moving into it mid-month charges
-   no difference, and a later upgrade out of it is charged as if the month had paid 0.
-   It has no price in any prices file, so it is never looked up there.
+   no difference, and leaving it (always a downgrade: it ranks highest) bills the paid
+   plan from the next month at `monthly`. It has no price in any prices file, so it is
+   never looked up there. A pack cannot be added on it (`pack_service.add_pack`).
 
 Each line names the prices version it was computed with: the one recorded on the
 assignment (or the pack purchase) that produced it, so a later `precios-planes-v2` never

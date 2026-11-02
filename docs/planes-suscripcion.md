@@ -44,7 +44,7 @@ límites. Es **interno**: `"sellable": false` en `planes-v2.json`.
   El informe no cobra nada por un mes en Ilimitado («plan interno Ilimitado, sin cobro») pero sí
   muestra su costo real; pasar a Ilimitado a mitad de mes no cobra diferencia; salir a un plan
   pagado cobra ese plan desde su mes (sin la mitad del primer mes, que es del plan con el que
-  empezó la suscripción). Un paquete sumado a un negocio en Ilimitado sí es una línea.
+  empezó la suscripción). A un negocio en Ilimitado no se le puede sumar un paquete (`just add-pack` lo rechaza: no le daría nada).
 - **Nunca se ofrece:** `PlansCatalog.sellable_codes()` (Básico, Plus, Pro) es la lista de todo lo
   que ve o pide un cliente; el Alta de Meegle rechaza «Ilimitado». Solo `just set-plan` lo asigna.
 - **Rango 4:** pasar a Ilimitado vale desde el mes en curso; dejarlo (a cualquier plan) vale desde

@@ -95,7 +95,7 @@ def render(months: Sequence[SubscriptionMonth]) -> str:
         out.append(
             f"{m.period_month:%Y-%m}  {m.name}  [{str(m.subscription_id)[:8]}]  plan {m.plan_code}"
         )
-        if not m.lines and not m.plan_sellable:
+        if not m.plan_sellable:
             out.append(f"    cobro: plan interno {m.plan_name}, sin cobro (decisión del fundador)")
         elif not m.lines:
             out.append("    cobro: sin plan asignado todavía (Básico, sin cobro registrado)")

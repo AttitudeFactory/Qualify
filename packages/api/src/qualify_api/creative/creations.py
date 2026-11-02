@@ -884,7 +884,10 @@ class InMemoryCreationsLedger:
             weights=self._weights,
             plan=self.plan,
         )
-        previews = quota.previews > 0 or quota.unlimited
+        # as `_row`: an unlimited plan still counts vistas previas when the table has them
+        previews = quota.previews > 0 or (
+            quota.unlimited and self._weights.monthly_preview_quota > 0
+        )
         used = {
             CREATIONS: self._opening + sum(row.price.weight for row in rows),
             VIDEOS: self._opening_videos + sum(row.counted_videos for row in rows),
@@ -920,7 +923,9 @@ class InMemoryCreationsLedger:
         if short is not None:
             raise short
         row = _MemoryRow(brand_id=brand_id, price=price)
-        counted = state.quota.previews > 0 or state.quota.unlimited
+        counted = state.quota.previews > 0 or (
+            state.quota.unlimited and self._weights.monthly_preview_quota > 0
+        )
         previews = price.videos if counted else 0
         row.add(state.split(CREATIONS, price.weight) + state.split(PREVIEWS, previews))
         self.rows[(draft_id, revision)] = row

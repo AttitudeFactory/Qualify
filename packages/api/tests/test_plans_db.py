@@ -24,6 +24,7 @@ from qualify_api.plans import report
 from qualify_api.plans.cost_alerts import run_cost_alerts
 from qualify_api.plans.models import BusinessPlan
 from qualify_api.plans.notify import RecordingTeamNotifier
+from qualify_api.plans.pack_service import PackRefused, add_pack
 from qualify_api.plans.read import business_plan
 from qualify_api.plans.schedule import PlanChangeRefused
 from qualify_api.plans.service import plan_history, set_plan
@@ -381,6 +382,15 @@ def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:
     assert october.charged_usd == Decimal(39) and october.cost_usd == Decimal(500)
     (november,) = report.fetch(NOV, tenant)
     assert november.charged_usd == Decimal(0) and not november.plan_sellable
+    with pytest.raises(PackRefused, match="no limit"):
+        add_pack(
+            tenant_id=tenant,
+            pack="+2 videos",
+            reason="r",
+            granted_by="e",
+            now=_now(20),
+            notifier=RecordingTeamNotifier(),
+        )
 
 
 def test_more_creations_is_a_support_topic() -> None:

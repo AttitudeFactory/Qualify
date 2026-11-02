@@ -156,7 +156,8 @@ def test_leaving_ilimitado_bills_the_paid_plan_from_its_month() -> None:
     assert _usd(charges_for_month(history, DEC)) == [(billing.LINE_MONTHLY, "plus", Decimal(149))]
 
 
-def test_a_pack_on_ilimitado_is_still_a_line_at_what_was_paid() -> None:
+def test_a_pack_granted_before_moving_to_ilimitado_is_still_a_line() -> None:
+    # add_pack refuses on Ilimitado; a pack granted in the month before the move stays billed
     history = [Assignment("ilimitado", NOV, _at(3))]
     pack = PackPurchase("videos_2", _at(10), usd=Decimal("29"))
     lines = charges_for_month(history, NOV, packs=[pack])
