@@ -5,12 +5,14 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 
+from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.read import ConnectionSummary
 from qualify_api.connections.resolver import build_authenticated_client
 from qualify_api.planner.post_reader import (
@@ -28,6 +30,7 @@ from qualify_api.publishing.tiktok_client import (
     plan_chunks,
 )
 from qualify_api.publishing.tiktok_drafts import (
+    STALE_PENDING_AFTER,
     DraftRecord,
     DraftRefused,
     TikTokDraftService,
@@ -150,6 +153,7 @@ class FakeRepo:
             "publish_id": None,
             "code": None,
             "caption": kw["caption"],
+            "started_at": datetime.now(UTC),
             **kw,
         }
         self.by_id[rid] = idempotency_key
@@ -164,6 +168,7 @@ class FakeRepo:
             r["code"],
             r["caption"],
             r["status"] in ("in_inbox", "failed"),
+            r["started_at"],
         )
 
     def get(self, *, tenant_id, draft_id):
@@ -216,7 +221,13 @@ class FakeGate:
 
 
 class FakeTikTok:
-    def __init__(self, status="SEND_TO_USER_INBOX", init_error: TikTokPublishError | None = None):
+    def __init__(
+        self,
+        status="SEND_TO_USER_INBOX",
+        init_error: Exception | None = None,
+        upload_error: Exception | None = None,
+    ):
+        self.upload_error = upload_error
         self.status = status
         self.init_error = init_error
         self.inits = 0
@@ -230,6 +241,8 @@ class FakeTikTok:
 
     async def upload_file(self, **_):
         self.uploads += 1
+        if self.upload_error:
+            raise self.upload_error
 
     async def fetch_status(self, *, publish_id: str):
         return RemoteState(status=RemoteStatus(self.status), fail_reason="file_format_check_failed")
@@ -255,7 +268,7 @@ def summary(**kw) -> ConnectionSummary:
 
 
 def service(
-    verdict, tiktok=None, conns=None, repo=None, degraded=None
+    verdict, tiktok=None, conns=None, repo=None, degraded=None, factory_error=None, clock=None
 ) -> tuple[TikTokDraftService, FakeRepo, FakeTikTok, FakePosts]:
     repo = repo or FakeRepo()
     tiktok = tiktok or FakeTikTok()
@@ -263,6 +276,8 @@ def service(
 
     class Factory:
         async def client_for(self, *, tenant_id, connection_id):
+            if factory_error is not None:
+                raise factory_error
             return tiktok
 
     svc = TikTokDraftService(
@@ -272,6 +287,7 @@ def service(
         gate=FakeGate(),  # type: ignore[arg-type]
         client_factory=Factory(),  # type: ignore[arg-type]
         connection_degrader=(lambda **kw: degraded.append(kw)) if degraded is not None else None,
+        **({"clock": clock} if clock is not None else {}),
     )
     return svc, repo, tiktok, posts
 
@@ -370,3 +386,66 @@ async def test_tiktok_side_failure_is_terminal() -> None:
     svc, _, _, _ = service(approved(), tiktok=FakeTikTok(status="FAILED"))
     state = await send(svc)
     assert state.status == "failed" and "formato" in state.message
+
+
+@pytest.mark.parametrize("error", [httpx.ConnectError("boom"), RuntimeError("bug"), KeyError("x")])
+async def test_unexpected_error_before_publish_id_settles_the_row_failed(error) -> None:
+    svc, repo, tiktok, _ = service(approved(), factory_error=error)
+    state = await send(svc)
+    assert (state.status, state.settled, state.publish_id) == ("failed", True, None)
+    assert "Inténtalo de nuevo" in state.message and tiktok.inits == 0
+    # Same attempt: the settled row comes back, nothing is sent.
+    again = await send(svc)
+    assert (again.status, again.created, tiktok.inits) == ("failed", False, 0)
+    # The explicit retry (attempt + 1) is a fresh draft and goes through.
+    svc._clients = type(  # noqa: SLF001 — swap the factory for a working one
+        "F", (), {"client_for": lambda self, **_: _ready(tiktok)}
+    )()
+    retry = await send(svc, attempt=2)
+    assert (retry.status, retry.created, tiktok.inits) == ("in_inbox", True, 1)
+    assert len(repo.rows) == 2
+
+
+async def _ready(client):
+    return client
+
+
+async def test_init_crash_settles_failed_but_upload_crash_after_publish_id_is_reconciled() -> None:
+    svc, _, _, _ = service(approved(), tiktok=FakeTikTok(init_error=ValueError("bad json")))
+    assert (await send(svc)).status == "failed"
+    tiktok = FakeTikTok(status="PROCESSING_UPLOAD", upload_error=httpx.ReadTimeout("slow"))
+    svc, _, _, _ = service(approved(), tiktok=tiktok)
+    state = await send(svc)
+    # The publish_id is stored before the bytes go up: TikTok owns the outcome now.
+    assert (state.status, state.settled, state.publish_id) == (
+        "uploading",
+        False,
+        "v_inbox_file~v2.9",
+    )
+    tiktok.status = "FAILED"
+    done = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=state.draft_id)
+    assert done.status == "failed" and done.settled
+
+
+async def test_missing_credential_asks_to_reconnect_and_settles_the_row() -> None:
+    svc, repo, _, _ = service(approved(), factory_error=CredentialNotFound("none"))
+    with pytest.raises(DraftRefused) as err:
+        await send(svc)
+    assert err.value.code == "needs_reconnect"
+    row = next(iter(repo.rows.values()))
+    assert (row["status"], row["code"]) == ("failed", "access_token_invalid")
+
+
+async def test_refresh_settles_a_pending_row_without_publish_id_after_the_timeout() -> None:
+    now = [datetime.now(UTC)]
+    svc, repo, tiktok, _ = service(approved(), clock=lambda: now[0])
+    record, _ = repo.create_or_get(  # a request that crashed right after the write-ahead
+        idempotency_key="k", caption=None, tenant_id=TENANT, connection_id=CONN
+    )
+    fresh = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=record.id)
+    assert (fresh.status, fresh.settled) == ("pending", False)  # maybe still in flight
+    now[0] += STALE_PENDING_AFTER + timedelta(seconds=1)
+    stale = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=record.id)
+    assert (stale.status, stale.settled) == ("failed", True)
+    assert "Inténtalo de nuevo" in stale.message and tiktok.inits == 0
+    assert repo.rows["k"]["code"] == "stale_pending"

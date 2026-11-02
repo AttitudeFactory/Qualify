@@ -21,6 +21,11 @@ the same row and never puts a second draft in the inbox. The `publish_id` is sto
 as `init` answers (before the bytes go up), so an interrupted upload stays reconcilable by
 `refresh`. A failed row is final (settle-once trigger): trying again is a new `attempt`.
 
+No row is left `pending` forever: ANY failure before a `publish_id` exists (a missing
+credential, a network error, a bug) settles the row as failed with a generic Spanish text, and
+`refresh` settles a row still without `publish_id` after `STALE_PENDING_AFTER` (a crashed or
+cancelled request) the same way. Once a `publish_id` exists, TikTok's status is the truth.
+
 ## Tokens
 
 This service never sees one: the TikTok client arrives from a factory that goes through
@@ -32,7 +37,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -41,6 +46,7 @@ from qualify_shared.objects.gate import ObjectGate
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
+from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.read import ConnectionSummary
 from qualify_api.connections.tiktok_credentials import TikTokReconnectRequired
 from qualify_api.planner.post_reader import NotPublishable, PostReader
@@ -66,6 +72,13 @@ STATUS_PROCESSING = "processing"
 STATUS_IN_INBOX = "in_inbox"
 STATUS_FAILED = "failed"
 TERMINAL = frozenset({STATUS_IN_INBOX, STATUS_FAILED})
+
+#: Our own failure codes (never TikTok's): they fall to the generic Spanish failure text.
+CODE_SEND_ERROR = "send_error"
+CODE_STALE_PENDING = "stale_pending"
+#: A row with no `publish_id` this long after it was written is a dead request, not a slow one
+#: (the init call answers in seconds; the bytes only go up after the `publish_id` is stored).
+STALE_PENDING_AFTER = timedelta(minutes=15)
 
 _RECONNECT_SCOPE_TEXT = "Hay que volver a conectar tu cuenta de TikTok y aceptar el permiso."
 # Client-facing (Spanish, plain; qualify-copy-es). Keyed by TikTok error code.
@@ -135,6 +148,7 @@ class DraftRecord:
     platform_error_code: str | None
     caption: str | None
     settled: bool
+    started_at: datetime | None = None
 
 
 class TikTokDraftRepository(Protocol):
@@ -175,6 +189,7 @@ def _record(row: TikTokDraft) -> DraftRecord:
         platform_error_code=row.platform_error_code,
         caption=row.caption,
         settled=row.settled_at is not None,
+        started_at=row.started_at,
     )
 
 
@@ -269,6 +284,7 @@ class TikTokDraftService:
         upload_mode: str = FILE_UPLOAD,
         media_linker: PublicVideoLinker | None = None,
         connection_degrader: Callable[..., object] | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._posts = posts
         self._connections = connections
@@ -278,6 +294,7 @@ class TikTokDraftService:
         self._mode = upload_mode
         self._linker = media_linker
         self._degrader = connection_degrader
+        self._clock = clock
 
     def _target(self, tenant_id: UUID, connection_id: UUID) -> ConnectionSummary:
         found = next(
@@ -346,11 +363,19 @@ class TikTokDraftService:
             publish_id = await self._init_and_upload(
                 client=client, tenant_id=tenant_id, draft_id=record.id, media=media
             )
-        except TikTokReconnectRequired:
+        except (TikTokReconnectRequired, CredentialNotFound):
             self._fail(tenant_id, record.id, "access_token_invalid")
             raise DraftRefused("needs_reconnect", NEEDS_RECONNECT_TEXT) from None
         except TikTokPublishError as exc:
             self._on_publish_error(tenant_id, connection_id, record.id, exc)
+            return self._state(tenant_id, record.id)
+        except Exception as exc:  # noqa: BLE001 — never leave the write-ahead row pending
+            # Type only: an httpx/driver message may carry a URL with a token in it.
+            _LOGGER.warning("tiktok draft send crashed: %s", type(exc).__name__)
+            current = self._repo.get(tenant_id=tenant_id, draft_id=record.id)
+            if current is not None and current.publish_id is None:
+                self._fail(tenant_id, record.id, CODE_SEND_ERROR)
+            # With a publish_id TikTok owns the outcome: `refresh` reconciles it.
             return self._state(tenant_id, record.id)
         self._repo.update(
             tenant_id=tenant_id, draft_id=record.id, status=STATUS_PROCESSING, publish_id=publish_id
@@ -400,7 +425,14 @@ class TikTokDraftService:
         record = self._repo.get(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
             raise DraftRefused("not_found", "No encontramos ese borrador.")
-        if record.settled or record.publish_id is None:
+        if record.settled:
+            return self._to_state(record, created=created)
+        if record.publish_id is None:
+            if record.started_at is not None and (
+                self._clock() - record.started_at >= STALE_PENDING_AFTER
+            ):
+                self._fail(tenant_id, draft_id, CODE_STALE_PENDING)
+                return self._state(tenant_id, draft_id, created=created)
             return self._to_state(record, created=created)
         try:
             client = await self._clients.client_for(
