@@ -156,11 +156,9 @@ def subject_for(invite: CreatedInvite, signer: str) -> str:
     """Name first, like a message from someone you know (founder, 2026-10-21: "que se
     sienta como hablar con un vecino")."""
     if invite.is_add_business:
-        # The business and the product by name: a bare «agrega a tu cuenta» that asks
-        # for a password reads like phishing (UX review, PR #404, 2026-11-02).
-        if invite.business_name:
-            return f"Agrega {invite.business_name} a tu cuenta de Qualify"
-        return "Agrega otro negocio a tu cuenta de Qualify"
+        # Exact text of the ticket (m-24849194). The UX review of 2026-11-02 suggested
+        # naming the business and Qualify; pending the founder's call.
+        return "Agrega otro negocio a tu cuenta"
     first = _first_name(signer)
     name = _first_name(invite.recipient_name)
     if name and first:

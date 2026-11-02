@@ -882,12 +882,12 @@ def _added_business() -> rx.Component:
         rx.heading("Negocio agregado", size="4"),
         callout(
             rx.fragment(
-                # Only what is true today: the business selector (S3/S4) is not built
-                # yet, so the copy must not point at it (UX review, PR #404, 2026-11-02).
-                "Listo. ",
+                # Exact text of the ticket (m-24849194). It points at the business
+                # selector of S3/S4: the Alta flag must not be used with clients before
+                # that selector ships (UX review, PR #404, 2026-11-02).
+                "Listo. Ya puedes elegir ",
                 rx.text.strong(AuthState.added_business_name),
-                " ya quedó en tu cuenta, separado de tus otros negocios. Pronto podrás "
-                "pasar de uno a otro sin cerrar sesión.",
+                " desde la parte de arriba.",
             ),
             "ok",
             icon="check",

@@ -1153,7 +1153,5 @@ def test_add_business_form_has_only_current_password() -> None:
         and json.dumps("Escribe tu contraseña para confirmarlo.")[1:-1] in form
     )
     success = str(_added_business())
-    assert json.dumps(" ya quedó en tu cuenta, separado de tus otros negocios")[1:-1] in success
-    # No selector exists yet (S3/S4): the copy must not point at one.
-    assert "parte de arriba" not in success
+    assert "Listo. Ya puedes elegir" in success and "desde la parte de arriba." in success
     assert "Continuar" in success

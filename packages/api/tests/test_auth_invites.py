@@ -120,7 +120,7 @@ def test_invite_email_is_personal_when_it_knows_who() -> None:
 
 def test_add_business_email_uses_current_account_copy_in_both_formats() -> None:
     mail = invite_email(_full_invite(is_add_business=True), "https://qualify.example/")
-    assert mail.subject == "Agrega Arepera La Nona a tu cuenta de Qualify"
+    assert mail.subject == "Agrega otro negocio a tu cuenta"
     lead = "con tu misma cuenta de Qualify. Toca el botón y confirma en Qualify"
     assert "Te invitamos a manejar Arepera La Nona " + lead in mail.text
     assert lead in mail.html
