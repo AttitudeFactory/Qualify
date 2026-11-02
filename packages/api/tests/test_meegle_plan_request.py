@@ -203,6 +203,7 @@ def engine(meegle: PlanMeegle, invites: Invites) -> OnboardingEngine:
         mailer=lambda: mailer,
         base_url="https://app.qualify.la",
         clock=lambda: NOW,
+        account_exists=lambda email: False,
     )
 
 

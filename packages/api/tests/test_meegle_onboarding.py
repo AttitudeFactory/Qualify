@@ -163,6 +163,7 @@ def engine(meegle: FakeMeegle, invites: Invites) -> OnboardingEngine:
         base_url="https://app.qualify.la",
         signer="Herwin Rey",
         clock=lambda: NOW,
+        account_exists=lambda email: False,
     )
 
 
@@ -252,6 +253,7 @@ def test_datos_creates_the_invite_mails_it_and_writes_back(
         "business_name": "Arepera La Nona",
         "note": "Como hablamos hoy.",
         "meegle_work_item_id": ITEM,
+        "is_add_business": False,
     }
     ((invite, base_url, signer),) = invites.sent
     assert base_url == "https://app.qualify.la" and signer == "Herwin Rey"
@@ -391,6 +393,105 @@ def test_text_value_tolerates_every_shape_meegle_uses(value: Any, expected: str)
 
 def test_uuid_ids_are_fresh_per_invite() -> None:
     assert uuid4() != uuid4()
+
+
+@pytest.mark.parametrize("flag", [True, "Sí", "true", 1])
+def test_datos_reads_existing_login_flag(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, flag: Any
+) -> None:
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    meegle.items[ITEM].fields["f_existing"] = flag
+    engine._account_exists = lambda email: True
+    result = engine.start_invitation(ITEM)
+    assert result.ok
+    (created,) = invites.created
+    assert created["is_add_business"] is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("opt_yes", True),
+        ({"value": "opt_yes", "label": "Sí"}, True),
+        ({"value": "opt_no", "label": "No"}, False),
+        ("opt_no", False),
+        (None, False),
+    ],
+)
+def test_existing_login_flag_resolves_select_options(
+    engine: OnboardingEngine,
+    meegle: FakeMeegle,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: Any,
+    expected: bool,
+) -> None:
+    """If the field is created as a select, its opaque option id maps to the label."""
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    plain = meegle.fields_meta()
+    monkeypatch.setattr(
+        meegle,
+        "fields_meta",
+        lambda: [
+            FieldMeta(m.key, m.name, "select", (("Sí", "opt_yes"), ("No", "opt_no")))
+            if m.key == "f_existing"
+            else m
+            for m in plain
+        ],
+    )
+    meegle.items[ITEM].fields["f_existing"] = raw
+    assert engine.existing_login_flag(meegle.items[ITEM]) is expected
+
+
+def test_add_business_without_an_account_fails_before_inviting(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    meegle.items[ITEM].fields["f_existing"] = True
+
+    result = engine.start_invitation(ITEM)
+
+    message = (
+        "Ese correo no tiene cuenta en Qualify. Desmarca «Inicio de sesión existente» "
+        "o revisa el correo, y completa «Datos» otra vez."
+    )
+    assert not result.ok and result.reason == "existing_login_missing"
+    assert invites.created == [] and invites.sent == []
+    assert message == meegle.comments[0][1]
+    assert meegle.operations == [(ITEM, "started", "rollback", message)]
+
+
+@pytest.mark.parametrize("flag", [None, "No", False])
+def test_existing_account_without_add_business_fails_before_inviting(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites, flag: Any
+) -> None:
+    if flag is not None:
+        meegle.keys["Inicio de sesión existente"] = "f_existing"
+        meegle.items[ITEM].fields["f_existing"] = flag
+    engine._account_exists = lambda email: True
+
+    result = engine.start_invitation(ITEM)
+
+    message = (
+        "Ese correo ya tiene cuenta en Qualify. Marca «Inicio de sesión existente» "
+        "para agregarle este negocio y completa «Datos» otra vez."
+    )
+    assert not result.ok and result.reason == "existing_login_required"
+    assert invites.created == [] and invites.sent == []
+    assert meegle.updates == [(ITEM, {"f_status": {"value": "opt_error", "label": "error"}})]
+    assert message == meegle.comments[0][1]
+    assert meegle.operations == [(ITEM, "started", "rollback", message)]
+
+
+def test_existing_account_can_receive_add_business_invitation(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    meegle.items[ITEM].fields["f_existing"] = "Sí"
+    engine._account_exists = lambda email: True
+
+    assert engine.start_invitation(ITEM).ok
+    assert invites.created[0]["is_add_business"] is True
+    assert len(invites.sent) == 1 and meegle.operations == []
 
 
 @pytest.mark.parametrize("channel", [None, "", "Facebook"])
