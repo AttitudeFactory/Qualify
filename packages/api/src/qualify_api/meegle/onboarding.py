@@ -119,6 +119,10 @@ class PlanUpdateResult:
     applied: PlanApplied | None = None
 
 
+#: What «Inicio de sesión existente» may read as when it is on (casefolded).
+_TRUE_FLAG_TEXT = frozenset({"sí", "si", "true", "1", "yes", "verdadero"})
+
+
 def text_value(value: Any) -> str:
     """The plain text of a field value, whatever shape Meegle used for it."""
     if value is None:
@@ -232,6 +236,27 @@ class OnboardingEngine:
         handle = normalize_handle(network, account)
         return network, handle, "" if handle else ("invalid_handle" if account else "no_handle")
 
+    def existing_login_flag(self, item: WorkItem) -> bool:
+        """«Inicio de sesión existente», whatever shape the field takes.
+
+        Meant to be a Switch (boolean), but a select is tolerated: the Open API may
+        hand back an opaque option id or a `{value, label}` object, so the option id is
+        mapped to its label through the field metadata, the way `social_account` does.
+        A type without the field (yet) reads as False."""
+        try:
+            meta = self._resolver.field(self._names.existing_login)
+        except MeegleSchemaError:
+            return False
+        raw = item.fields.get(meta.key)
+        if isinstance(raw, bool):
+            return raw
+        candidates = {text_value(raw)}
+        if isinstance(raw, dict) and isinstance(raw.get("label"), str):
+            candidates.add(raw["label"].strip())
+        labels = {option_value: label for label, option_value in meta.options}
+        candidates |= {labels[c] for c in list(candidates) if c in labels}
+        return any(c.casefold() in _TRUE_FLAG_TEXT for c in candidates)
+
     def _status_pair(self, label: str) -> tuple[str, str | dict[str, str]]:
         names = self._names
         return self._resolver.field_key(names.status), self._resolver.select_field_value(
@@ -263,16 +288,18 @@ class OnboardingEngine:
         business = item.name.strip()
         network, handle, account_reason = self.social_account(item)
         instagram = handle if network == "instagram" else None
-        existing_login_raw = self._optional_field_text(item, names.existing_login)
-        is_add_business = existing_login_raw.lower() in (
-            "sí",
-            "si",
-            "true",
-            "1",
-            "yes",
-            "verdadero",
-        )
-        if not is_add_business and self._account_exists(email):
+        is_add_business = self.existing_login_flag(item)
+        account_exists = self._account_exists(email)
+        if is_add_business and not account_exists:
+            return self._fail(
+                work_item_id,
+                "existing_login_missing",
+                "Ese correo no tiene cuenta en Qualify. Desmarca «Inicio de sesión existente» "
+                "o revisa el correo, y completa «Datos» otra vez.",
+                None,
+                instagram,
+            )
+        if not is_add_business and account_exists:
             return self._fail(
                 work_item_id,
                 "existing_login_required",
@@ -360,7 +387,10 @@ class OnboardingEngine:
         lines.append(f"Corrige los datos y vuelve a completar «{names.node_data}».")
         self._client.update_fields(work_item_id, pairs)
         self._client.comment(
-            work_item_id, detail if reason == "existing_login_required" else "\n".join(lines)
+            work_item_id,
+            detail
+            if reason in ("existing_login_required", "existing_login_missing")
+            else "\n".join(lines),
         )
         self._rollback_data_node(work_item_id, detail)
         logger.warning(

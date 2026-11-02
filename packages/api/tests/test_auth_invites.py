@@ -120,9 +120,15 @@ def test_invite_email_is_personal_when_it_knows_who() -> None:
 
 def test_add_business_email_uses_current_account_copy_in_both_formats() -> None:
     mail = invite_email(_full_invite(is_add_business=True), "https://qualify.example/")
-    assert mail.subject == "Agrega otro negocio a tu cuenta"
-    assert "con tu misma cuenta. Escribe tu contraseña para confirmarlo." in mail.text
-    assert "con tu misma cuenta. Escribe tu contraseña para confirmarlo." in mail.html
+    assert mail.subject == "Agrega Arepera La Nona a tu cuenta de Qualify"
+    lead = "con tu misma cuenta de Qualify. Toca el botón y confirma en Qualify"
+    assert "Te invitamos a manejar Arepera La Nona " + lead in mail.text
+    assert lead in mail.html
+    # Neither the preheader nor the body asks for a NEW password in this mode.
+    assert "Confirma con tu contraseña de Qualify." in mail.html
+    assert "pones una contraseña" not in mail.text and "pones una contraseña" not in mail.html
+    assert "nadie puede agregar negocios a tu cuenta" in mail.text
+    assert "crear una cuenta con tu correo" not in mail.html
     assert "Agrega tu negocio aquí:" in mail.text
     assert "Agregar negocio" in mail.html
     assert "Crear mi cuenta" not in mail.html

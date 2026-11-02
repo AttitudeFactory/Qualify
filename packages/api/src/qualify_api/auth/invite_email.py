@@ -156,7 +156,11 @@ def subject_for(invite: CreatedInvite, signer: str) -> str:
     """Name first, like a message from someone you know (founder, 2026-10-21: "que se
     sienta como hablar con un vecino")."""
     if invite.is_add_business:
-        return "Agrega otro negocio a tu cuenta"
+        # The business and the product by name: a bare «agrega a tu cuenta» that asks
+        # for a password reads like phishing (UX review, PR #404, 2026-11-02).
+        if invite.business_name:
+            return f"Agrega {invite.business_name} a tu cuenta de Qualify"
+        return "Agrega otro negocio a tu cuenta de Qualify"
     first = _first_name(signer)
     name = _first_name(invite.recipient_name)
     if name and first:
@@ -178,13 +182,14 @@ def _greeting(invite: CreatedInvite) -> str:
 def _lead_text(invite: CreatedInvite, signer: str) -> tuple[str, str, str]:
     """(before, bold, after) of the opening sentence, unescaped."""
     business = invite.business_name or "tu negocio"
+    who = f"{signer} te invitó" if signer else "Te invitamos"
     if invite.is_add_business:
         return (
-            "Te invitaron a manejar ",
+            f"{who} a manejar ",
             business,
-            " con tu misma cuenta. Escribe tu contraseña para confirmarlo.",
+            " con tu misma cuenta de Qualify. Toca el botón y confirma en Qualify con tu "
+            "contraseña de siempre.",
         )
-    who = f"{signer} te invitó" if signer else "Te invitamos"
     return f"{who} a Qualify para que abras la cuenta de ", business, "."
 
 
@@ -196,6 +201,14 @@ _DISCLAIMER = (
     "¿No esperabas este correo? No pasa nada, puedes ignorarlo: sin este enlace nadie puede "
     "crear una cuenta con tu correo."
 )
+_ADD_BUSINESS_DISCLAIMER = (
+    "¿No esperabas este correo? Puedes ignorarlo: sin este enlace y tu contraseña nadie "
+    "puede agregar negocios a tu cuenta."
+)
+
+
+def _disclaimer(invite: CreatedInvite) -> str:
+    return _ADD_BUSINESS_DISCLAIMER if invite.is_add_business else _DISCLAIMER
 
 
 def _fine_print(email: str, expires: str) -> str:
@@ -233,7 +246,7 @@ def _text(invite: CreatedInvite, link: str, signer: str, expires: str, can_reply
     ]
     if can_reply:
         lines += [_REPLY, ""]
-    lines += [_DISCLAIMER]
+    lines += [_disclaimer(invite)]
     return "\n".join(lines)
 
 
@@ -399,7 +412,7 @@ def _html(
         f'<a class="q-muted" href="{_ATTITUDE_SITE}" target="_blank" '
         f'style="color:{_MUTED};text-decoration:underline;">Attitude Factory</a>'
     )
-    disclaimer = _p(esc(_DISCLAIMER), size=12, role="muted", margin="0 0 14px 0")
+    disclaimer = _p(esc(_disclaimer(invite)), size=12, role="muted", margin="0 0 14px 0")
     sign_off = _p("<br>".join(esc(line) for line in _SIGN_OFF), size=15, margin="0 0 24px 0")
     fallback = (
         f'<a class="q-accent" href="{esc(link, quote=True)}" style="color:{_ACCENT};'
@@ -477,7 +490,11 @@ def invite_email(
     signer = signer.strip()
     link = invite.link(base_url)
     expires = _date_es(invite.expires_at)
-    preheader = f"{_EASY} El enlace es solo para ti y vence el {expires}."
+    preheader = (
+        f"Confirma con tu contraseña de Qualify. El enlace es solo para ti y vence el {expires}."
+        if invite.is_add_business
+        else f"{_EASY} El enlace es solo para ti y vence el {expires}."
+    )
     return OutgoingMail(
         to=invite.email,
         subject=subject_for(invite, signer),

@@ -120,6 +120,11 @@ def test_existing_login_invite_creates_separate_owner_business_and_is_consumed_o
         )
     assert notifications == [(item_id, added.tenant_id)]
     assert provider.sign_in(original.email, PASSWORD).tenant_id == original.tenant_id
+    # S1 contract (m-24849188): the next login still opens the original business by
+    # default and now offers the choice between both.
+    login = service.resolve_login(provider, original.email, PASSWORD)
+    assert login.tenant_id == original.tenant_id and login.needs_business_choice
+    assert {m.tenant_id for m in login.memberships} == {original.tenant_id, added.tenant_id}
 
     # Replaying the event with the previously authorized id loses at the row lock.
     with pytest.raises(SignupNotAllowed):

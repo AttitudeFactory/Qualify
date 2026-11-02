@@ -401,10 +401,63 @@ def test_datos_reads_existing_login_flag(
 ) -> None:
     meegle.keys["Inicio de sesión existente"] = "f_existing"
     meegle.items[ITEM].fields["f_existing"] = flag
+    engine._account_exists = lambda email: True
     result = engine.start_invitation(ITEM)
     assert result.ok
     (created,) = invites.created
     assert created["is_add_business"] is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("opt_yes", True),
+        ({"value": "opt_yes", "label": "Sí"}, True),
+        ({"value": "opt_no", "label": "No"}, False),
+        ("opt_no", False),
+        (None, False),
+    ],
+)
+def test_existing_login_flag_resolves_select_options(
+    engine: OnboardingEngine,
+    meegle: FakeMeegle,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: Any,
+    expected: bool,
+) -> None:
+    """If the field is created as a select, its opaque option id maps to the label."""
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    plain = meegle.fields_meta()
+    monkeypatch.setattr(
+        meegle,
+        "fields_meta",
+        lambda: [
+            FieldMeta(m.key, m.name, "select", (("Sí", "opt_yes"), ("No", "opt_no")))
+            if m.key == "f_existing"
+            else m
+            for m in plain
+        ],
+    )
+    meegle.items[ITEM].fields["f_existing"] = raw
+    assert engine.existing_login_flag(meegle.items[ITEM]) is expected
+
+
+def test_add_business_without_an_account_fails_before_inviting(
+    engine: OnboardingEngine, meegle: FakeMeegle, invites: Invites
+) -> None:
+    meegle.keys["Inicio de sesión existente"] = "f_existing"
+    meegle.items[ITEM].fields["f_existing"] = True
+
+    result = engine.start_invitation(ITEM)
+
+    message = (
+        "Ese correo no tiene cuenta en Qualify. Desmarca «Inicio de sesión existente» "
+        "o revisa el correo, y completa «Datos» otra vez."
+    )
+    assert not result.ok and result.reason == "existing_login_missing"
+    assert invites.created == [] and invites.sent == []
+    assert message == meegle.comments[0][1]
+    assert meegle.operations == [(ITEM, "started", "rollback", message)]
 
 
 @pytest.mark.parametrize("flag", [None, "No", False])

@@ -837,6 +837,7 @@ def _add_business_form() -> rx.Component:
             icon="mail-check",
         ),
         rx.text(
+            "Entrarás con: ",
             AuthState.invite_email,
             size="2",
             color=T.TEXT_MUTED,
@@ -881,9 +882,12 @@ def _added_business() -> rx.Component:
         rx.heading("Negocio agregado", size="4"),
         callout(
             rx.fragment(
-                "Listo. Ya puedes elegir ",
+                # Only what is true today: the business selector (S3/S4) is not built
+                # yet, so the copy must not point at it (UX review, PR #404, 2026-11-02).
+                "Listo. ",
                 rx.text.strong(AuthState.added_business_name),
-                " desde la parte de arriba.",
+                " ya quedó en tu cuenta, separado de tus otros negocios. Pronto podrás "
+                "pasar de uno a otro sin cerrar sesión.",
             ),
             "ok",
             icon="check",
