@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -261,3 +262,26 @@ def test_unconfigured_mail_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
             default_mailer()
     finally:
         reset_default_mailer()
+
+
+def test_only_the_alta_engine_can_issue_add_business_invitations() -> None:
+    """Founder, 2026-10-23 (m-24849194): adding a business to an existing login is
+    triggered ONLY from the Meegle «Alta de cliente» item. No other app code may pass
+    `is_add_business` to `create_invite` (static guard over the shipped sources)."""
+    repo = Path(__file__).resolve().parents[3]
+    allowed = {
+        repo / "packages/api/src/qualify_api/auth/invites.py",  # the definition
+        repo / "packages/api/src/qualify_api/meegle/onboarding.py",  # the Alta engine
+    }
+    sources = [
+        *(repo / "packages/api/src").rglob("*.py"),
+        *(p for p in (repo / "Qualify").rglob("*.py") if not p.name.startswith("test_")),
+    ]
+    offenders = []
+    for path in sources:
+        if path in allowed:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "create_invite" in text and "is_add_business" in text:
+            offenders.append(str(path.relative_to(repo)))
+    assert offenders == []
