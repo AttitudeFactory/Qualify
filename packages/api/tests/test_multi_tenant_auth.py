@@ -16,8 +16,11 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from qualify_api.auth import (
+    NOT_A_MEMBER_MESSAGE,
     FakeAuthProvider,
+    NotAMember,
     memberships_for,
+    open_business,
     register_business,
     resolve_login,
 )
@@ -165,3 +168,107 @@ def test_backward_compatibility_single_business() -> None:
     assert mems[0].tenant_id == res.tenant_id
     assert mems[0].name == "Single Biz"
     assert mems[0].role == "owner"
+
+
+def _two_business_owner() -> tuple[FakeAuthProvider, str, object, object]:
+    """One login owning Bianki (signed up) and Polette (linked by hand, as S7 does)."""
+    provider = FakeAuthProvider()
+    email = f"duo-{uuid4().hex[:6]}@attitudefactory.co"
+    bianki = register_business(
+        provider,
+        business_name="Bianki",
+        email=email,
+        password="correct-horse-9",
+        country="VE",
+        timezone="America/Caracas",
+        currency="USD",
+    )
+    polette_id = uuid4()
+    with admin_session() as session:
+        session.add(
+            Tenant(
+                id=polette_id,
+                name="Polette",
+                country="VE",
+                timezone="America/Caracas",
+                currency="USD",
+            )
+        )
+        session.flush()
+        user = User(
+            tenant_id=polette_id,
+            email=email,
+            display_name="Polette",
+            auth_user_id=bianki.auth_user_id,
+        )
+        session.add(user)
+        session.flush()
+        session.add(TenantMember(tenant_id=polette_id, user_id=user.id, role="owner"))
+    return provider, email, bianki, polette_id
+
+
+def test_resolve_login_lists_every_business_and_asks_to_choose() -> None:
+    provider, email, bianki, polette_id = _two_business_owner()
+    login = resolve_login(provider, email, "correct-horse-9")
+    # The default stays the provider stamp (the first Alta), unchanged.
+    assert login.tenant_id == bianki.tenant_id
+    assert login.needs_business_choice is True
+    assert [m.name for m in login.memberships] == ["Bianki", "Polette"]
+    assert {m.tenant_id for m in login.memberships} == {bianki.tenant_id, polette_id}
+
+
+def test_single_business_login_needs_no_choice() -> None:
+    provider = FakeAuthProvider()
+    email = f"solo-{uuid4().hex[:6]}@attitudefactory.co"
+    res = register_business(
+        provider,
+        business_name="Solo",
+        email=email,
+        password="correct-horse-9",
+        country="CO",
+        timezone="America/Bogota",
+        currency="COP",
+    )
+    login = resolve_login(provider, email, "correct-horse-9")
+    assert login.needs_business_choice is False
+    assert [m.tenant_id for m in login.memberships] == [res.tenant_id]
+
+
+def test_open_business_returns_the_local_user_of_that_business() -> None:
+    _, email, bianki, polette_id = _two_business_owner()
+    opened = open_business(bianki.auth_user_id, polette_id)
+    assert opened.tenant_id == polette_id
+    assert opened.business_name == "Polette"
+    assert opened.role == "owner"
+    assert opened.email == email
+    with tenant_session(polette_id) as db:
+        polette_user = db.scalar(select(User).where(User.auth_user_id == bianki.auth_user_id))
+    assert polette_user is not None and opened.user_id == polette_user.id
+
+
+def test_open_business_refuses_a_business_the_login_does_not_belong_to() -> None:
+    _, _, bianki, _ = _two_business_owner()
+    stranger = register_business(
+        FakeAuthProvider(),
+        business_name="Ajeno",
+        email=f"ajeno-{uuid4().hex[:6]}@attitudefactory.co",
+        password="correct-horse-9",
+        country="CO",
+        timezone="America/Bogota",
+        currency="COP",
+    )
+    with pytest.raises(NotAMember) as exc:
+        open_business(bianki.auth_user_id, stranger.tenant_id)
+    assert exc.value.message == NOT_A_MEMBER_MESSAGE
+    with pytest.raises(NotAMember):
+        open_business(uuid4(), bianki.tenant_id)
+
+
+def test_open_business_refuses_once_the_membership_is_removed() -> None:
+    """A user row alone is not a membership: removing the seat closes the door."""
+    _, _, bianki, polette_id = _two_business_owner()
+    with admin_session() as session:
+        session.execute(TenantMember.__table__.delete().where(TenantMember.tenant_id == polette_id))
+    with pytest.raises(NotAMember):
+        open_business(bianki.auth_user_id, polette_id)
+    assert [m.tenant_id for m in memberships_for(bianki.auth_user_id)] == [bianki.tenant_id]

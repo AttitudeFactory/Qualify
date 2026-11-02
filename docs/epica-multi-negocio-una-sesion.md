@@ -148,3 +148,26 @@ Sin fase manual de 60 días (F3).
 - Vista unificada de varios negocios (cartera). **La facturación compartida entró al alcance el 2026-10-25** (S10, ADR 43 §2.8); sigue fuera el cobro automático con un proveedor de pago (D19).
 - Superadmin del equipo (staff): épica aparte.
 - Que el dueño invite a otras personas a su negocio.
+
+## 8. Contrato del backend para la UI (S1, m-24849188 · 2026-11-02)
+
+Lo que la pantalla «¿Con qué negocio quieres trabajar?» (S3) y el cambio de negocio (S4) llaman. Todo se importa de `qualify_api.auth`; todas son funciones bloqueantes (la UI las llama con `asyncio.to_thread`, como el resto de `AuthState`).
+
+| Función / tipo | Firma | Qué hace |
+|---|---|---|
+| `resolve_login` | `(provider, email, password) -> LoginResult` | Igual que antes; ahora `LoginResult.memberships: tuple[UserMembership, ...]` trae **todos** los negocios del login, ordenados por nombre, y `LoginResult.needs_business_choice: bool` es `True` con 2 o más. `tenant_id` sigue siendo el negocio por defecto (`app_metadata.tenant_id` de Supabase, el del primer Alta) y solo sirve para preseleccionar |
+| `UserMembership` | `tenant_id, tenant_name, name, role, user_id, email, display_name` | Una fila por negocio; `name` = `tenant_name` |
+| `memberships_for` | `(auth_user_id: UUID) -> list[UserMembership]` | Lo mismo que `memberships`, para releer la lista (por ejemplo, el menú «Cambiar de negocio» de S4). Única lectura cruzada, por `admin_session` |
+| `open_business` | `(auth_user_id: UUID, tenant_id: UUID) -> ActiveBusiness` | Comprueba **sin caché**, por `tenant_session(tenant_id)`, que el login es miembro (`users` + `tenant_members`) y devuelve `ActiveBusiness(tenant_id, business_name, user_id, email, display_name, role)`. Si no lo es: `NotAMember` |
+| `NotAMember` | `.message == NOT_A_MEMBER_MESSAGE` | «Ya no tienes acceso a este negocio. Vuelve a entrar para elegir otro.» La UI lo muestra y manda a `/login` |
+
+**Dónde vive el negocio activo.** En el servidor, en `AuthState.session_tenant_id` (estado de Reflex de esa pestaña), como hoy. No hay cookie, `localStorage` ni columna de «negocio activo» en la base (ADR 43 §3). Cada página llega a `tenant_session(UUID(session_tenant_id))` exactamente como ahora; nada cambia en los módulos.
+
+**Cómo lo usa la UI (S3):**
+
+1. Al entrar, `resolve_login` como siempre. Guardar `result.auth_user_id` en una variable **solo del servidor** (`_auth_user_id`, con guion bajo, como `_access_token`): hoy `AuthState` guarda `_session_user_id` (el `users.id` local, que cambia por negocio) pero no el `auth_user_id`, y S3/S4/S5 lo necesitan.
+2. Si `needs_business_choice` es `False`: abrir la sesión como hoy (`_open_session`).
+3. Si es `True`: mostrar el selector con `memberships` (nombre y rol), **sin escribir `session_tenant_id` todavía**. Al elegir, `open_business(self._auth_user_id, UUID(elegido))` y escribir en `session_tenant_id`, `_session_user_id`, `business_name` y `user_email` lo que devuelve `ActiveBusiness`. El `tenant_id` del clic es justo lo que se verifica; el `auth_user_id` nunca sale del navegador.
+4. S4 (cambiar sin salir) usa la misma `open_business` al canjear el pase en `/cambiar`, en el estado nuevo (ADR 43 §2.2). El pase de un solo uso y su revisión de seguridad son de S4.
+
+Las revisiones de S5 (al cargar con 60 s de caché y fresca antes de publicar o enviar) y la auditoría de cada cambio se agregan en m-24849192 sobre estas mismas funciones.

@@ -77,6 +77,17 @@ class LoginResult:
     email: str
     display_name: str
     access_token: str
+    #: Every business this login may open (ADR 43 §2.1), ordered by business name.
+    #: Empty only for callers that build a `LoginResult` by hand (tests, password
+    #: reset fakes); `resolve_login` always fills it.
+    memberships: tuple[UserMembership, ...] = ()
+
+    @property
+    def needs_business_choice(self) -> bool:
+        """True when the login belongs to 2+ businesses: the UI must show the
+        selector (S3) and open the chosen one with `open_business` before writing
+        `session_tenant_id`. `tenant_id` is then only the default to preselect."""
+        return len(self.memberships) > 1
 
 
 def _validate_signup(business_name: str, email: str, password: str) -> None:
@@ -420,6 +431,12 @@ class UserMembership:
 def memberships_for(auth_user_id: UUID) -> list[UserMembership]:
     """Return all tenant memberships for a given Supabase auth user id,
     queried via admin_session across tenants (ADR 43 §2.1).
+
+    The ONLY cross-tenant read on the login path. It returns the caller's own
+    `users`/`tenant_members` rows plus each business's name — nothing else of any
+    business. `auth_user_id` must come from a verified provider session (login) or
+    from the server-side session state, never from a browser argument.
+    Ordered by business name, so the selector is stable.
     """
     with admin_session() as session:
         stmt = (
@@ -434,6 +451,7 @@ def memberships_for(auth_user_id: UUID) -> list[UserMembership]:
             .join(User, User.tenant_id == Tenant.id)
             .join(TenantMember, TenantMember.user_id == User.id)
             .where(User.auth_user_id == auth_user_id)
+            .order_by(Tenant.name, Tenant.id)
         )
         rows = session.execute(stmt).all()
         return [
@@ -461,6 +479,10 @@ def resolve_login(provider: AuthProvider, email: str, password: str) -> LoginRes
         if user is None:
             raise IncompleteRegistration()
         user_id, display_name = user.id, user.display_name
+    # ADR 43 §2.1: `app_metadata.tenant_id` is only the DEFAULT business; which
+    # businesses the login may open is `users` + `tenant_members`. The default keeps
+    # the check above unchanged, so single-business logins notice nothing.
+    memberships = tuple(memberships_for(session_dto.auth_user_id))
     return LoginResult(
         tenant_id=session_dto.tenant_id,
         auth_user_id=session_dto.auth_user_id,
@@ -468,4 +490,5 @@ def resolve_login(provider: AuthProvider, email: str, password: str) -> LoginRes
         email=session_dto.email,
         display_name=display_name,
         access_token=session_dto.access_token,
+        memberships=memberships,
     )
