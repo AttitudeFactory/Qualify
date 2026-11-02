@@ -1,7 +1,7 @@
 """signup_invites: add is_add_business flag for adding a business to an existing login (m-24849194)
 
-Revision ID: 0109
-Revises: 0108
+Revision ID: 0111
+Revises: 0110
 Create Date: 2026-10-28
 
 Adds `is_add_business` boolean column to `signup_invites` so an Alta with
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0109"
-down_revision = "0108"
+revision = "0111"
+down_revision = "0110"
 branch_labels = None
 depends_on = None
 

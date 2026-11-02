@@ -98,3 +98,13 @@ La validación final en un Postgres 16 temporal comprobó una sola cabecera `010
 `upgrade head → downgrade base → upgrade head` y la columna booleana no nula con valor
 predeterminado falso. También pasaron 119 pruebas focalizadas de autenticación y Altas.
 La base local de pruebas existente se conservó intacta.
+
+**2026-11-02, segunda integración.** Main recibió el PR #423 (`0110_plan_ilimitado`, con
+predecesora `0108`) y el PR #421 (contrato S1 del negocio activo: `memberships_for`
+ordenado, `open_business`, `NoBusinessAccess`; sin migración). La migración de este trabajo
+pasó a `0111_signup_invites_is_add_business`, con predecesora `0110`, y queda una sola
+cabecera `0111`. El PR #420 también reclama `0109`: si llega después, debe encadenarse tras
+`0111`. La fusión de `auth/service.py` no tuvo conflictos: `resolve_login` de S1 ya toma el
+negocio por defecto de la marca del proveedor solo si es una de las membresías, y el negocio
+agregado por S7 aparece en esas membresías sin cambiar la marca. El ciclo
+`upgrade head → downgrade base → upgrade head` pasó en un Postgres 16 vacío y dedicado.
