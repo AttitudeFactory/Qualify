@@ -333,7 +333,10 @@ async def test_save_and_close_stays_open_on_a_refusal_and_discard_drops() -> Non
 
 
 def test_logout_resets_this_state() -> None:
-    assert "IceBreakersState" in inspect.getsource(AuthState.logout.fn)
+    from .auth_state import business_state_classes
+
+    assert "_reset_business_states" in inspect.getsource(AuthState.logout.fn)
+    assert "IceBreakersState" in {cls.__name__ for cls in business_state_classes()}
 
 
 def test_the_panel_uses_the_design_system_and_talks_to_the_state_only() -> None:

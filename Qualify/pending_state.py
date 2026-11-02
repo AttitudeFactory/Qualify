@@ -151,6 +151,8 @@ class PendingState(rx.State):
                 auth = await self.get_state(AuthState)
                 # A guest (pre-login brand draft) has no session tenant: nothing to count.
                 tenant_id = tenant_uuid(auth.session_tenant_id)
+                # ADR 43 A9: the tab title names the business this tab works in.
+                business = auth.business_name if tenant_id is not None else ""
                 read_attention_now = due(self._attention_at, ATTENTION_TTL_S, now, force=force)
                 read_publications_now = due(
                     self._publications_at, PUBLICATIONS_TTL_S, now, force=force
@@ -188,5 +190,5 @@ class PendingState(rx.State):
                 if again:
                     force = True
                     continue
-            yield rx.call_script(title_script(total))
+            yield rx.call_script(title_script(total, business))
             return
