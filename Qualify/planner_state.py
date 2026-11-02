@@ -926,8 +926,25 @@ class PlannerState(rx.State):
 
         State outlives the route: leaving through «Ver POST» with the detail open used to
         bring the same (stale) dialog back on the next visit."""
-        self.monday_iso = parse_week_param(self._url_param(URL_WEEK))
+        requested_week = parse_week_param(self._url_param(URL_WEEK))
         view = parse_view_param(self._url_param(URL_VIEW))
+        # A step's history entry is still the same open form, not a new visit.
+        # Browser Back invokes the page's on_load as well as restore_address.
+        # Closing here used to unmount the drawer, fetch the week and reopen it,
+        # replaying its entrance animation while the owner pressed Atrás.
+        if (
+            self.form_open
+            and self._url_param("flujo") == self.form_flow_name
+            and (not requested_week or requested_week == self.monday_iso)
+            and (not view or view == self.view_mode)
+            and (not self._url_post() or self._url_post() in self.form_selected_ids)
+            and (
+                self.form_mode != MODE_RESCHEDULE
+                or uuid_param({"objeto": self._url_param("objeto")}, "objeto") == self.form_event_id
+            )
+        ):
+            return PlannerState.restore_flow
+        self.monday_iso = requested_week
         if view:
             self.view_mode = view
         self.form_open = False
