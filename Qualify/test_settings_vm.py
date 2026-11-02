@@ -52,6 +52,6 @@ def test_the_signup_form_asks_four_labelled_fields_and_no_zone_or_currency() -> 
 
 
 def test_settings_state_is_reset_on_logout() -> None:
-    source = (_QUALIFY_DIR / "auth_state.py").read_text(encoding="utf-8")
-    logout = source[source.index("async def logout") :]
-    assert "SettingsState," in logout
+    from .auth_state import business_state_classes
+
+    assert "SettingsState" in {cls.__name__ for cls in business_state_classes()}

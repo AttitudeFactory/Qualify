@@ -8,15 +8,19 @@ from qualify_api.planner.embedded import calendar_worker
 
 from .auth_pages import (
     brand_start_index,
+    choose_business_index,
     forgot_index,
     login_index,
     reset_index,
     signup_index,
+    switch_business_index,
 )
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
 from .brand_minimal import BrandMinimalState, brand_minimal_index
+from .business_switch import SWITCH_ROUTE
+from .business_vm import CHOOSE_ROUTE, CHOOSE_TAB_TITLE
 from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
@@ -181,6 +185,20 @@ app.add_page(
     route="/login",
     on_load=AuthState.redirect_if_authenticated,
     title="Qualify · Entrar",
+)
+# ADR 43 · S3 (m-24849190): a login with 2+ businesses chooses one here before any page
+# opens; S4 (m-24849191): «Cambiar de negocio» lands on /cambiar in a NEW Reflex state.
+app.add_page(
+    choose_business_index,
+    route=CHOOSE_ROUTE,
+    on_load=AuthState.enter_business_choice,
+    title=CHOOSE_TAB_TITLE,
+)
+app.add_page(
+    switch_business_index,
+    route=SWITCH_ROUTE,
+    on_load=AuthState.enter_switch,
+    title="Qualify · Cambiando de negocio",
 )
 # The signup lives at /registro (founder rule 2026-10-21: no English a client sees, and the
 # invite link shows this path). /signup stays as an alias of the same page: invite links

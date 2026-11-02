@@ -506,8 +506,8 @@ def _zen_toggle() -> rx.Component:
 
 
 def logout_action() -> rx.Component:
-    """Bottom of the sidebar. There is no tenant switch (`1 login = 1 tenant`): changing
-    business = logout + login, so this is the only session control in the app."""
+    """Bottom of the sidebar: ends the login (every business of it). Changing business
+    without leaving is the header chip's «Cambiar de negocio» (ADR 43, `business_chip`)."""
     return rx.el.button(
         _nav_row("log-out", "Salir"),
         on_click=AuthState.logout,
@@ -624,6 +624,85 @@ def sidebar() -> rx.Component:
     )
 
 
+_CHIP_TEXT_STYLE = {
+    "overflow": "hidden",
+    "textOverflow": "ellipsis",
+    "whiteSpace": "nowrap",
+    "minWidth": "0",
+}
+
+
+def _chip_body(icon_after: str | None = None) -> list[rx.Component]:
+    parts: list[rx.Component] = [
+        rx.icon("store", size=T.ICON_SM, flex_shrink="0"),
+        rx.el.span(AuthState.business_chip_label, style=_CHIP_TEXT_STYLE),
+    ]
+    if icon_after:
+        parts.append(rx.icon(icon_after, size=T.ICON_SM, flex_shrink="0"))
+    return parts
+
+
+def _switch_item(option: rx.Var) -> rx.Component:
+    """One other business of the login. The browser sends back its position only."""
+    return rx.menu.item(
+        rx.icon("store", size=T.ICON_SM),
+        option["name"].to(str),
+        on_click=AuthState.switch_business(option["index"].to(str)),
+        min_height="2.75rem",
+        gap="0.5rem",
+    )
+
+
+def business_chip() -> rx.Component:
+    """ADR 43 (S3, A9): «Estás en {negocio}» at the top of every page with a session,
+    phone included — the sidebar's name is behind «Más» there. For a login with 2+
+    businesses the chip opens «Cambiar de negocio» (S4) with the other ones; with one
+    business it is a plain label. While a switch is on its way it reads «Abriendo
+    {negocio}…». Neutral and monochrome on purpose: no second hue (§2.3)."""
+    common = {
+        "max_width": "100%",
+        "min_width": "0",
+        "class_name": "q-business-chip",
+    }
+    switchable = rx.menu.root(
+        rx.menu.trigger(
+            rx.button(
+                *_chip_body("chevron-down"),
+                variant="soft",
+                color_scheme="gray",
+                radius="full",
+                size="2",
+                min_height="2.75rem",
+                disabled=AuthState.opening_business != "",
+                aria_label=AuthState.business_chip_label + ". Cambiar de negocio",
+                **common,
+            ),
+        ),
+        rx.menu.content(
+            rx.text(
+                "Cambiar de negocio",
+                size="1",
+                weight="medium",
+                color=T.TEXT_MUTED,
+                padding="0.35rem 0.75rem",
+            ),
+            rx.foreach(AuthState.switch_options, _switch_item),
+            align="start",
+        ),
+    )
+    # One business: the design system's neutral badge, clipped to the header's width.
+    plain = rx.box(
+        tone_badge(AuthState.business_chip_label, "neutral", icon="store", size="2"),
+        overflow="hidden",
+        style={"textOverflow": "ellipsis", "whiteSpace": "nowrap"},
+        **common,
+    )
+    return rx.cond(
+        AuthState.is_authenticated,
+        rx.cond(AuthState.can_switch_business, switchable, plain),
+    )
+
+
 def session_badge() -> rx.Component:
     """Kept for import compatibility; the session now lives in the sidebar
     (`tenant_block` on top, `logout_action` at the bottom). Renders nothing."""
@@ -664,6 +743,8 @@ def page_header(
         spacing="2",
     )
     title_block = rx.vstack(
+        # ADR 43 A9: the active business, on top of every page with a session.
+        business_chip(),
         *([kicker] if kicker is not None else []),
         title_row,
         *([rx.text(subtitle, size="2", color=T.TEXT_MUTED)] if subtitle is not None else []),

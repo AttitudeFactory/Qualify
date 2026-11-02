@@ -344,67 +344,74 @@ async def test_unstamped_identity_is_refused_never_guessed(monkeypatch) -> None:
 def test_logout_revokes_server_side_before_destroying_state() -> None:
     source = inspect.getsource(AuthState.logout.fn)
     revoke_at = source.index("_sign_out_blocking")
-    reset_at = source.index("substate.reset()")
+    reset_at = source.index("self._reset_business_states()")
     redirect_at = source.index("rx.redirect(BRAND_START_ROUTE)")
     assert revoke_at < reset_at < redirect_at, (
         "criterion 1 ordering: revoke the session token server-side first, then destroy "
         "Reflex state, then leave via redirect — never 'clean the UI in place'"
     )
     assert "self.reset()" in source
+    helper = inspect.getsource(AuthState._reset_business_states)
+    assert "business_state_classes()" in helper and "substate.reset()" in helper
 
 
-def test_logout_resets_every_business_state() -> None:
-    """Every state module that reads the tenant must be reset on logout. Enumerated
-    here so ADDING a new tenant-reading state without wiring its reset fails a test
-    instead of leaking stale data into the next login."""
-    source = inspect.getsource(AuthState.logout.fn)
-    for state_name in (
-        "ConnectionsState",
-        "ReconnectState",
-        "LeadsState",
-        "ClarityState",
-        "InboxState",
-        "PublishState",
-        "DashboardState",
-        "CreativeState",
-        # The Brand Kit wizard's own draft (request 2026-09-08): step, chosen plan,
-        # staged logo, the connect flow's read profile — none of it lives in
-        # CreativeState, so it needs its own line here. See
-        # `creative_state.py`'s `_kit_draft_loaded` for the other half of the
-        # draft/finalized split this closes: CreativeState's kit_* fields are the
-        # in-session draft too, but that half survives a plain page reload/nav on
-        # purpose — only logout (this list) clears it.
-        "BrandWizardState",
-        "BrandConnectState",
-        # m-24852199: the Alta's proposed Brand Kit under review
-        "BrandProposalState",
-        "CatalogState",
-        # m-24789472: «Preguntas iniciales» (draft questions per Instagram account)
-        "IceBreakersState",
-    ):
-        assert state_name in source, f"logout does not reset {state_name}"
+#: ADR 43 A13: the `rx.State` subclasses that hold NOTHING of a business — reviewed one
+#: by one. Every other state of the app must be in `business_state_classes()`.
+_STATES_WITHOUT_BUSINESS_DATA = {
+    # itself: `self.reset()` on logout; a switch lands in a NEW state anyway
+    "AuthState",
+    # the pre-login «quiero acceso» form (mode, consent, error)
+    "AccessInterestState",
+    # the menu's zen / drawer flags
+    "NavState",
+    # the living style guide's demos (/design), no session
+    "DrawerDemoState",
+    "StepsDemoState",
+}
 
 
-def test_every_tenant_reading_state_is_covered_by_logout() -> None:
-    """The inverse direction: scan the whole UI package (not just `*_state.py` — that
-    narrower glob is exactly what let `BrandWizardState`/`BrandConnectState` go
-    unnoticed: both live in `creative_wizard_pages.py`, a page module, and reset
-    coverage for them was missing until request 2026-09-08 caught it manually) for
-    `rx.State` subclasses that read AuthState, and assert each one appears in
-    logout's reset list."""
-    logout_source = inspect.getsource(AuthState.logout.fn)
-    for path in _QUALIFY_DIR.glob("*.py"):
-        if path.name == "auth_state.py" or path.name.startswith("test_"):
-            continue
-        source = path.read_text(encoding="utf-8")
-        if "get_state(AuthState)" not in source:
-            continue
-        class_names = re.findall(r"class (\w+)\(rx\.State\)", source)
-        for name in class_names:
-            assert name in logout_source, (
-                f"{path.name} defines {name}, which reads AuthState but is not reset "
-                "by AuthState.logout — stale tenant data would survive a logout"
-            )
+def _all_app_states() -> list[type]:
+    import reflex as rx
+
+    from . import Qualify as _app  # noqa: F401 — registers every page and its states
+
+    found: list[type] = []
+    pending = list(rx.State.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        parts = cls.__module__.split(".")
+        # Test modules define throwaway states of their own; they are not the app.
+        if parts[0] == "Qualify" and not parts[-1].startswith(("test_", "conftest")):
+            found.append(cls)
+    return found
+
+
+def test_every_app_state_is_reset_or_reviewed_as_holding_no_business_data() -> None:
+    """ADR 43 A13: enumerate, at runtime, EVERY `rx.State` subclass of the app (not a
+    regex over source files — that is what let `BrandAnswersState` and three others go
+    unreset until 2026-11-02). Each one is either reset on logout and on a redeemed
+    business switch (`business_state_classes`) or explicitly reviewed above. A new
+    state that is neither fails here instead of leaking one business into another."""
+    covered = set(auth_state_module.business_state_classes())
+    states = _all_app_states()
+    assert len(states) > 40  # the enumeration really saw the app
+    missing = sorted(
+        f"{cls.__module__}.{cls.__name__}"
+        for cls in states
+        if cls not in covered and cls.__name__ not in _STATES_WITHOUT_BUSINESS_DATA
+    )
+    assert not missing, (
+        "these states are neither reset by logout / a business switch "
+        f"(auth_state.business_state_classes) nor reviewed as business-free: {missing}"
+    )
+
+
+def test_the_reviewed_list_has_no_stale_names() -> None:
+    names = {cls.__name__ for cls in _all_app_states()}
+    assert _STATES_WITHOUT_BUSINESS_DATA <= names
+    covered = {cls.__name__ for cls in auth_state_module.business_state_classes()}
+    assert not (covered & _STATES_WITHOUT_BUSINESS_DATA)
 
 
 # --------------------------------------------------------------------------------------
