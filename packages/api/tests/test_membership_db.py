@@ -210,11 +210,18 @@ def test_a_refused_opening_writes_no_audit_row(
     assert count == 0
 
 
-def test_audit_table_is_append_only_for_the_app_role(
-    two_businesses: tuple[UUID, UUID, UUID],
+@pytest.mark.parametrize(
+    "statement",
+    ["DELETE FROM business_open_audit", "UPDATE business_open_audit SET via = 'login'"],
+)
+def test_audit_table_is_append_only(
+    two_businesses: tuple[UUID, UUID, UUID], statement: str
 ) -> None:
     login, original, _added = two_businesses
     membership.open_business_audited(login, original, via="login")
     with pytest.raises(Exception, match="permission denied"):
         with tenant_session(original) as db:
-            db.execute(text("DELETE FROM business_open_audit"))
+            db.execute(text(statement))
+    with pytest.raises(Exception, match="permission denied"):
+        with admin_session() as session:
+            session.execute(text(statement))

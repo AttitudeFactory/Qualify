@@ -36,9 +36,13 @@ _ACTING: ContextVar[UUID | None] = ContextVar("qualify_acting_login", default=No
 @contextmanager
 def acting_login(auth_user_id: UUID | None) -> Iterator[None]:
     """Mark `auth_user_id` as the login acting inside the block. `None` is allowed and
-    leaves nothing acting (a session without an id yet), so callers need no branch."""
+    leaves nothing acting (a session without an id yet), so callers need no branch —
+    but never inside a block where a login is already acting: that would silently turn
+    the gate off for the inner call."""
     if auth_user_id is not None and not isinstance(auth_user_id, UUID):
         raise TypeError("auth_user_id must be a UUID")
+    if auth_user_id is None and _ACTING.get() is not None:
+        raise RuntimeError("acting_login(None) cannot clear a login that is acting")
     token = _ACTING.set(auth_user_id)
     try:
         yield

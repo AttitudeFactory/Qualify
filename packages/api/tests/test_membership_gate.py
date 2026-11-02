@@ -154,6 +154,15 @@ def test_acting_login_rejects_a_non_uuid() -> None:
         pass
 
 
+def test_a_nested_none_cannot_switch_the_gate_off(directory: FakeDirectory) -> None:
+    with acting_login(LOGIN):
+        with pytest.raises(RuntimeError), acting_login(None):
+            pass
+        assert current_acting_login() == LOGIN
+    with acting_login(None):  # nothing acting: allowed, stays a no-op
+        assert current_acting_login() is None
+
+
 def test_whatsapp_send_by_a_removed_login_writes_nothing(directory: FakeDirectory) -> None:
     repo = MemoryChatRepository()
     outbox = MemoryOutboxRepository(clock=lambda: NOW)
@@ -171,6 +180,7 @@ def test_whatsapp_send_by_a_removed_login_writes_nothing(directory: FakeDirector
 def _gated() -> list[object]:
     from qualify_api.conversations.ice_breakers import IceBreakerService
     from qualify_api.conversations.outbox import PostgresConversationOutboxRepository
+    from qualify_api.followups.service import FollowupService
     from qualify_api.planner.service import PlannerService
     from qualify_api.publishing import composition
     from qualify_api.replies.service import ReplyService
@@ -186,6 +196,7 @@ def _gated() -> list[object]:
         PlannerService._plan,
         PlannerService.reschedule,
         ReplyService.send,
+        FollowupService.approve_and_queue,
         PostgresConversationOutboxRepository.enqueue,
         PostgresOutboxRepository.enqueue,
         ChatService.send,

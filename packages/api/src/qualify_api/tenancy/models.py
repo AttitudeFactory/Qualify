@@ -226,8 +226,9 @@ class BusinessOpenAudit(Base):
         PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
     )
     auth_user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    user_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    # ON DELETE SET NULL in 0114: the trail outlives a deleted local user.
+    user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     from_tenant_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     via: Mapped[str] = mapped_column(String, nullable=False)

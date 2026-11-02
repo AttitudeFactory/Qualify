@@ -198,7 +198,14 @@ Con `NotAMember` (cualquiera de las anteriores) la UI muestra `exc.message` («Y
 **Lo que no cubre este backend y queda para quien lo tiene** (los lugares publican o envían sin pasar por una puerta del backend):
 
 - Llamadas a Graph que viven en proveedores de Reflex: perfil, foto y QR de WhatsApp (`Qualify/whatsapp_provider.py`) y el `set_conversational_automation` del menú (`Qualify/whatsapp_menu_provider.py`). reflex-ui-engineer: llamar `require_membership_now` antes, o mover la llamada a un servicio.
-- Aprobaciones del generador (`creative`: `ContentService.approve`, `approve_version`, `AngleSetService.approve_angle`, `confirm_final`) y el envío a Canva (`canva`): son de creative-engineer. Programar en el planificador ya revisa, así que una pieza aprobada por alguien sin acceso no se publica sin otra acción de un miembro.
-- Hoy la UI no guarda `auth_user_id` ni marca `acting_login`: hasta que S3/S4 lo hagan, la revisión no se dispara (las puertas no rompen nada mientras tanto).
+- Aprobaciones del generador (`creative`: `ContentService.approve`, `approve_version`, `AngleSetService.approve_angle`, `confirm_final`) y el envío a Canva (`canva`): son de creative-engineer. **Hueco abierto:** el planificador permite programar una pieza todavía sin aprobar (el evento queda «Pendiente») y el worker la publica en cuanto se aprueba; así, un login sin acceso que pulse «Aprobar» en el panel del evento (`Qualify/planner_provider.py` `approve_post` → `ContentService.approve`) haría publicar una pieza ya programada. Cerrarlo: `require_acting_member(tenant_id)` al principio de `ContentService.approve` y `approve_version` (creative-engineer), o en el proveedor del planificador (reflex-ui-engineer).
+- **La revisión se activa cuando la UI marca el login.** Hoy la UI no guarda `auth_user_id` ni usa `acting_login`: hasta que S3/S4 lo hagan, ninguna puerta revisa nada (no rompen nada mientras tanto) y el criterio del ticket «publicar y enviar se rechazan al instante» queda cumplido solo del lado del backend. Un manejador que olvide `acting_login` deja su puerta sin revisión: el test estático comprueba las puertas, no a quien las llama.
+
+**Lo que la UI tiene que cuidar al conectar el gancho** (revisión de UX del 2026-11-02, sugerencias):
+
+- Cuando la negativa llega al publicar o enviar, anteponer una línea fija: «No se publicó ni se envió nada.» y luego `exc.message`. Al cargar una página, solo `exc.message`.
+- Mostrar el mensaje **en `/login`** (un aviso que queda hasta entrar, con el primitivo de `Qualify/ui/`), no como aviso flotante en la página que se abandona; llevar el motivo en el estado del servidor, nunca en la URL, y reemplazar la entrada del historial para que «atrás» no vuelva a la página prohibida.
+- No conservar el texto a medio escribir: pertenece al negocio perdido y el estado se destruye al salir.
+- Los `except Exception` de los manejadores actuales (por ejemplo `Qualify/planner_state.py`) convertirían `NotAMember` en un error genérico: atraparlo antes y mandar a `/login`.
 
 **Auditoría.** Tabla `business_open_audit` (migración `0114`): `tenant_id` (destino), `auth_user_id`, `user_id` local, `from_tenant_id` (sin FK; `NULL` al entrar), `via`, `opened_at`. RLS como todas; el rol de la app solo `SELECT` e `INSERT`. No hay pantalla para verla (fuera de alcance).

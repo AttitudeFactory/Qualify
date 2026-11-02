@@ -19,7 +19,11 @@ one of them must take effect with their session still open.
 The cache is per process (a dict behind a lock): each Reflex backend process re-checks
 at most once a minute per (login, business). A failed fresh check also evicts the cached
 entry, so the next page load agrees with the refusal at once. Only positive results are
-cached; a refusal is never remembered as access.
+cached; a refusal is never remembered as access. Accepted, bounded race: a positive
+check that read the database just before the seat was removed may re-cache after a
+concurrent refusal evicted it — page loads then pass for at most one more TTL, and
+publish/send (never cached) is unaffected. Expired entries are dropped when read; the
+dict holds at most one entry per (login, business) this process has seen.
 
 Hook for the UI (Reflex, owned by reflex-ui-engineer — S3/S4 in `Qualify/auth_state.py`):
 

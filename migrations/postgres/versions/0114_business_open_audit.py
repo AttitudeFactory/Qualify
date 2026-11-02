@@ -47,11 +47,13 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("auth_user_id", PGUUID(as_uuid=True), nullable=False),
+        # SET NULL, not CASCADE: if a seat's local user is ever deleted, its trail stays
+        # (`auth_user_id` still names the login).
         sa.Column(
             "user_id",
             PGUUID(as_uuid=True),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=False,
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
         ),
         sa.Column("from_tenant_id", PGUUID(as_uuid=True), nullable=True),
         sa.Column("via", sa.Text(), nullable=False),
@@ -69,7 +71,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_business_open_audit_tenant", _TABLE, ["tenant_id", "opened_at"])
     op.execute(f"GRANT SELECT, INSERT ON {_TABLE} TO qualify_app;")
-    op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {_TABLE} TO qualify_admin;")
+    # Append-only for everyone: the tenant FK cascade needs no DELETE grant.
+    op.execute(f"GRANT SELECT ON {_TABLE} TO qualify_admin;")
     op.execute(f"ALTER TABLE {_TABLE} ENABLE ROW LEVEL SECURITY;")
     op.execute(f"ALTER TABLE {_TABLE} FORCE ROW LEVEL SECURITY;")
     op.execute(
