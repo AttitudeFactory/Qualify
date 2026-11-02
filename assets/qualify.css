@@ -620,6 +620,13 @@ body {
     position: fixed !important;
     top: 0 !important;
     left: 0 !important;
+    /* Mobile `vh` includes space behind the browser bars. Keep the scrollport
+       inside the visible viewport so its last row (Salir) can be reached. */
+    height: 100% !important; /* fallback for browsers without dynamic units */
+    height: 100dvh !important;
+    box-sizing: border-box;
+    padding-bottom: calc(var(--q-gap) + env(safe-area-inset-bottom, 0px)) !important;
+    overscroll-behavior-y: contain;
     z-index: 60;
     transform: translateX(-100%);
     transition: transform var(--q-dur) var(--q-ease);

@@ -13,6 +13,8 @@ import os
 import re
 from pathlib import Path
 
+import pytest
+
 from .conftest import expect
 
 _SHOTS = os.environ.get("QUALIFY_E2E_SHOTS", "")
@@ -170,3 +172,29 @@ def test_the_phone_bar_marks_its_cell_or_more(
     page.locator(".q-bottom-more").click()
     _expect_sidebar_lit(page, "/drafts")
     _shot(page, "barra-mas-por-aprobar")
+
+
+@pytest.mark.parametrize("viewport", [(360, 640), (390, 844), (640, 360)])
+def test_phone_menu_can_scroll_to_logout(
+    signed_up_page, app_server: str, viewport: tuple[int, int]
+) -> None:
+    page = signed_up_page
+    width, height = viewport
+    page.set_viewport_size({"width": width, "height": height})
+    page.goto(f"{app_server}/")
+    page.locator(".q-bottom-more").click()
+    menu = page.locator("#q-sidebar")
+    expect(menu).to_have_class(re.compile(r"q-mobile-open"))
+    # Model the old 100vh extending beneath mobile browser chrome. The dynamic
+    # viewport rule must override the component's desktop height declaration.
+    menu.evaluate("el => { el.style.height = 'calc(100vh + 100px)'; }")
+    menu.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    logout = menu.get_by_role("button", name="Salir", exact=True)
+    expect(logout).to_be_in_viewport(ratio=1)
+    # A visible row must also receive the tap, rather than a bottom-bar overlay.
+    assert logout.evaluate("""el => {
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return el.contains(hit);
+    }""")
+    _shot(page, f"menu-salir-{width}x{height}")
