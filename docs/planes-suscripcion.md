@@ -10,7 +10,7 @@ no de cada negocio.
 
 | Pieza | Dónde | Qué hace |
 |---|---|---|
-| Catálogo de planes | `packages/api/src/qualify_api/plans/data/planes-v1.json` | Básico 30/4/20 (aviso USD 120, 2 negocios), Plus 60/8/40 (USD 240, 3), Pro 120/16/80 (USD 480, 5); techo 8 negocios |
+| Catálogo de planes | `packages/api/src/qualify_api/plans/data/planes-v2.json` (vigente; `planes-v1.json` queda para la procedencia) | Básico 30/4/20 (aviso USD 120, 2 negocios), Plus 60/8/40 (USD 240, 3), Pro 120/16/80 (USD 480, 5); techo 8 negocios. v2 = v1 + el plan interno **Ilimitado** (ver abajo) |
 | Precios | `…/plans/data/precios-planes-v1.json` | 79 / 149 / 279 al mes; primer mes 39 / 75 / 139; paquetes +2 videos 29, +20 creaciones 12, +10 vistas previas 19. Un cambio de precio es un archivo nuevo (`precios-planes-v2`) |
 | `subscriptions` | 0093 | Quien paga. Sin `tenant_id`, aislada por GRANT (RLS forzada sin política, solo `qualify_admin`). Relleno 1:1 con los negocios que ya existen |
 | `tenants.subscription_id` | 0093 | Nullable por ahora; el negocio no puede cambiarlo (`qualify_app` solo actualiza nombre, país, zona y moneda) |
@@ -29,11 +29,40 @@ no de cada negocio.
 - **Tope en USD:** el trabajo diario del `calendar-worker` (o `just plan-cost-alerts`) suma el costo real de proveedor del mes (UTC) de todos los negocios de la suscripción y, al cruzar el tope del plan, avisa una vez en el canal de `QUALIFY_SUPPORT_WEBHOOK_URL`. **Nunca pausa ni bloquea nada.**
 - Asignar un plan pone `creative_engine_config.monthly_budget_cap_usd` = tope del plan y `hard_stop_on_cap = false` en los negocios de la suscripción.
 
+## Plan interno «Ilimitado» (m-24921124, D28)
+
+Decisión del fundador del 2026-11-02: sus propios negocios (Bianki, Polette) van en un plan sin
+límites. Es **interno**: `"sellable": false` en `planes-v2.json`.
+
+- **Sin límite:** `creations`/`videos`/`previews` son `null` (`Plan.unlimited`), no un número
+  enorme. El libro de creaciones nunca rechaza por cupo (`MonthlyQuota.unlimited`,
+  `CreationsBalance.unlimited`), pero **sigue registrando** cada cargo y su asignación (fuente
+  `plan`, `plan_code = ilimitado`): el uso del mes queda en la base. Las pantallas de Crear no
+  muestran contadores (igual que con `QUALIFY_CREATIONS_QUOTA=off`) y Configuración dice «Tu plan:
+  Ilimitado · creaciones, videos y vistas previas sin límite», sin «Pedir más a Qualify».
+- **Sin cobro:** no tiene precio en ningún `precios-planes-v<n>` (cargar uno que lo precie falla).
+  El informe no cobra nada por un mes en Ilimitado («plan interno Ilimitado, sin cobro») pero sí
+  muestra su costo real; pasar a Ilimitado a mitad de mes no cobra diferencia; salir a un plan
+  pagado cobra ese plan desde su mes (sin la mitad del primer mes, que es del plan con el que
+  empezó la suscripción). Un paquete sumado a un negocio en Ilimitado sí es una línea.
+- **Nunca se ofrece:** `PlansCatalog.sellable_codes()` (Básico, Plus, Pro) es la lista de todo lo
+  que ve o pide un cliente; el Alta de Meegle rechaza «Ilimitado». Solo `just set-plan` lo asigna.
+- **Rango 4:** pasar a Ilimitado vale desde el mes en curso; dejarlo (a cualquier plan) vale desde
+  el mes siguiente.
+- **Tope de aviso USD 480** (el de Pro): avisa en Lark una vez al mes si el negocio cuesta más que
+  el plan pagado más grande; nunca pausa. `creative_engine_config` queda con ese tope y
+  `hard_stop_on_cap = false`.
+- **Migración `0109_plan_ilimitado`:** amplía los CHECK de `plan_code` de 0093. Su `downgrade`
+  falla a propósito mientras alguna fila diga `ilimitado` (el historial no se reescribe).
+- **Precios:** no cambiaron, así que `precios-planes-v1` sigue vigente y precia los tres planes
+  vendibles, idénticos en v1 y v2.
+
 ## Comandos (solo equipo, `admin_session`)
 
 ```bash
 just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@attitudefactory.co
 just set-plan --tenant <uuid> --plan basico --from 2026-12 --reason "…" --by …
+just set-plan --tenant <uuid> --plan ilimitado --reason "Negocio del fundador (D28)" --by herwin@attitudefactory.co
 just plans                      # catálogo vigente (sin precios)
 just plans --tenant <uuid>      # historial de la suscripción de ese negocio
 just plan-report [--month 2026-10] [--tenant <uuid>]   # costo contra cobro

@@ -44,20 +44,66 @@ def _at(day: int, month: int = 10, hour: int = 12) -> datetime:
 # --- the catalogs -----------------------------------------------------------------------
 
 
-def test_planes_v1_is_pinned() -> None:
-    assert catalog.PLANS_VERSION == "planes-v1"
-    assert PLANS.default_code == "basico"
-    got = {
+def _limits(plans: catalog.PlansCatalog) -> dict[str, tuple[object, ...]]:
+    return {
         c: (p.creations, p.videos, p.previews, p.usd_alert_cap, p.included_businesses)
-        for c, p in PLANS.plans.items()
+        for c, p in plans.plans.items()
     }
-    assert got == {
-        "basico": (30, 4, 20, Decimal(120), 2),
-        "plus": (60, 8, 40, Decimal(240), 3),
-        "pro": (120, 16, 80, Decimal(480), 5),
-    }
-    assert PLANS.businesses_ceiling == 8
-    assert PLANS.codes() == ("basico", "plus", "pro")
+
+
+SELLABLE_V1 = {
+    "basico": (30, 4, 20, Decimal(120), 2),
+    "plus": (60, 8, 40, Decimal(240), 3),
+    "pro": (120, 16, 80, Decimal(480), 5),
+}
+
+
+def test_planes_v1_is_pinned() -> None:
+    v1 = load_plans("planes-v1")
+    assert v1.default_code == "basico"
+    assert _limits(v1) == SELLABLE_V1
+    assert v1.businesses_ceiling == 8
+    assert v1.codes() == v1.sellable_codes() == ("basico", "plus", "pro")
+
+
+def test_planes_v2_is_v1_plus_the_internal_ilimitado() -> None:
+    """Founder, 2026-11-02 (m-24921124): the sellable plans are untouched; `ilimitado` is
+    internal — no limits, not sellable, the USD cap still an alert."""
+    assert catalog.PLANS_VERSION == "planes-v2" == PLANS.version
+    assert PLANS.default_code == "basico" and PLANS.businesses_ceiling == 8
+    got = _limits(PLANS)
+    assert got.pop("ilimitado") == (None, None, None, Decimal(480), 8)
+    assert got == SELLABLE_V1
+    assert PLANS.codes() == ("basico", "plus", "pro", "ilimitado")
+    assert PLANS.sellable_codes() == ("basico", "plus", "pro")
+    unlimited = PLANS.get("ilimitado")
+    assert unlimited.name == "Ilimitado" and unlimited.unlimited and not unlimited.sellable
+    assert unlimited.rank > PRO.rank  # going to it applies at once; leaving it, next month
+    assert not any(PLANS.get(c).unlimited for c in PLANS.sellable_codes())
+
+
+def test_the_prices_in_force_price_every_sellable_plan_and_never_ilimitado() -> None:
+    prices = load_prices()
+    assert set(prices.plans) == set(PLANS.sellable_codes())
+    with pytest.raises(catalog.UnknownPlan):
+        prices.plan("ilimitado")
+
+
+def test_an_unlimited_plan_for_sale_is_refused(tmp_path, monkeypatch) -> None:
+    import json
+
+    raw = json.loads((catalog._DATA_DIR / "planes-v2.json").read_text(encoding="utf-8"))
+    raw["version"] = "planes-test"
+    raw["plans"]["ilimitado"]["sellable"] = True
+    (tmp_path / "planes-test.json").write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setattr(catalog, "_DATA_DIR", tmp_path)
+    with pytest.raises(ValueError, match="cannot be sellable"):
+        catalog.load_plans.__wrapped__("planes-test")
+    raw["plans"]["ilimitado"]["sellable"] = False
+    raw["plans"]["plus"]["videos"] = None
+    (tmp_path / "planes-test.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="all counters or none"):
+        catalog.load_plans.__wrapped__("planes-test")
 
 
 def test_precios_planes_v1_is_pinned() -> None:

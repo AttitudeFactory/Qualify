@@ -12,6 +12,10 @@ The founder's rules (comments of m-24852145, 2026-10-24/25):
 3. A downgrade applies from the next month (`schedule.effective_month_for`), so it never
    produces a line inside a month.
 4. Packs are always full price, the first month included.
+5. An internal plan (`sellable: false`, `ilimitado` — founder, 2026-11-02) is never
+   billed: a month that starts on it has no plan line, moving into it mid-month charges
+   no difference, and a later upgrade out of it is charged as if the month had paid 0.
+   It has no price in any prices file, so it is never looked up there.
 
 Each line names the prices version it was computed with: the one recorded on the
 assignment (or the pack purchase) that produced it, so a later `precios-planes-v2` never
@@ -110,17 +114,24 @@ def _plan_lines(
         ]
         base = before[-1] if before else opening
         mid = [a for a in ordered if a.effective_month == period and a.assigned_at >= starts]
-    if period == first_month:
+    current = plans.get(base.plan_code)
+    lines: list[ChargeLine] = []
+    paid = Decimal(0)
+    if not current.sellable:
+        pass  # an internal plan: nothing to charge for the month
+    elif period == first_month:
         paid = prices(base.prices_version).plan(base.plan_code).first_month
-        lines = [ChargeLine(LINE_FIRST_MONTH, base.plan_code, paid, base.prices_version)]
+        lines.append(ChargeLine(LINE_FIRST_MONTH, base.plan_code, paid, base.prices_version))
     else:
         paid = prices(base.prices_version).plan(base.plan_code).monthly
-        lines = [ChargeLine(LINE_MONTHLY, base.plan_code, paid, base.prices_version)]
-    current = plans.get(base.plan_code)
+        lines.append(ChargeLine(LINE_MONTHLY, base.plan_code, paid, base.prices_version))
     for change in mid:
         new = plans.get(change.plan_code)
         if new.rank <= current.rank:
             continue  # a downgrade never applies mid-month; nothing to charge
+        if not new.sellable:
+            current = new  # into an internal plan: no difference is charged
+            continue
         full = prices(change.prices_version).plan(change.plan_code).monthly
         difference = max(full - paid, Decimal(0))
         lines.append(ChargeLine(LINE_UPGRADE, change.plan_code, difference, change.prices_version))

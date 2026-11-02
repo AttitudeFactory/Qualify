@@ -660,6 +660,7 @@ Estados: **main** = fusionado; **PR #299** = en el PR abierto (`feat/m-24848531-
 | D25 | Precios de planes y paquetes tras un estudio de market-analyst | 2026-10-24 | Fundador | — | — | Pendiente |
 | D26 | Final 1080p medido: USD 2,87 frente a 2,85 calculados; H2 confirmada | 2026-10-24 | Medición | Tarea `cgt-20261024004332-yguur` | Confirma los techos de §6 | Medido |
 | D27 | Arreglos P0 #325 y #316 en producción; quedan huecos (recuperación al abrir la app, OmniHuman) | 2026-10-24 | Equipo | PR #325, PR #316 | Evita pagar videos que se pierden | main (#325, #316); huecos con tickets en preparación |
+| D28 | Plan interno «Ilimitado» para los negocios del fundador (Bianki, Polette): sin límite de creaciones, videos ni vistas previas, no se vende ni se cobra, nunca se ofrece a un cliente; el tope de USD 480 (el de Pro) sigue avisando, nunca bloquea | 2026-11-02 | Fundador | m-24921124; `planes-v2.json`; `docs/planes-suscripcion.md` | Costo real visible en `just plan-report` (cobro 0); aviso en Lark al pasar USD 480 al mes | Construido (m-24921124) |
 
 ---
 

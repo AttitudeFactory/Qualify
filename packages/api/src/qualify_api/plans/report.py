@@ -43,6 +43,9 @@ class SubscriptionMonth:
     lines: list[ChargeLine]
     #: Vendor cost per business of the subscription (name → USD).
     cost_by_business: dict[str, Decimal] = field(default_factory=dict)
+    #: False for an internal plan (`ilimitado`): no charge by design, cost still shown.
+    plan_sellable: bool = True
+    plan_name: str = ""
 
     @property
     def charged_usd(self) -> Decimal:
@@ -72,13 +75,17 @@ def build_month(
     catalog: PlansCatalog | None = None,
 ) -> SubscriptionMonth:
     plans = catalog or load_plans()
+    code = plan_code_at(assignments, period, plans.default_code)
+    plan = plans.get(code)
     return SubscriptionMonth(
         subscription_id=subscription_id,
         name=name,
         period_month=period,
-        plan_code=plan_code_at(assignments, period, plans.default_code),
+        plan_code=code,
         lines=charges_for_month(assignments, period, packs=packs, catalog=plans),
         cost_by_business=dict(cost_by_business or {}),
+        plan_sellable=plan.sellable,
+        plan_name=plan.name,
     )
 
 
@@ -88,7 +95,9 @@ def render(months: Sequence[SubscriptionMonth]) -> str:
         out.append(
             f"{m.period_month:%Y-%m}  {m.name}  [{str(m.subscription_id)[:8]}]  plan {m.plan_code}"
         )
-        if not m.lines:
+        if not m.lines and not m.plan_sellable:
+            out.append(f"    cobro: plan interno {m.plan_name}, sin cobro (decisión del fundador)")
+        elif not m.lines:
             out.append("    cobro: sin plan asignado todavía (Básico, sin cobro registrado)")
         for line in m.lines:
             out.append(

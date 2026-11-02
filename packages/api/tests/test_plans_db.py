@@ -95,7 +95,7 @@ def test_set_plan_records_history_and_the_ledger_reads_it() -> None:
     assert [(r.previous_plan_code, r.plan_code, r.reason, r.assigned_by) for r in rows] == [
         (None, "plus", "Pidió más videos", "herwin@attitudefactory.co")
     ]
-    assert rows[0].plans_version == "planes-v1" and rows[0].prices_version == "precios-planes-v1"
+    assert rows[0].plans_version == "planes-v2" and rows[0].prices_version == "precios-planes-v1"
 
 
 def test_the_charge_records_the_plans_quota_as_provenance() -> None:
@@ -325,6 +325,62 @@ def test_the_report_charges_plus_75_then_149_against_the_real_cost() -> None:
     assert october.prices_versions == "precios-planes-v1"
     (november,) = report.fetch(NOV, tenant)
     assert november.charged_usd == Decimal(149) and november.cost_usd == Decimal(0)
+
+
+def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:
+    """m-24921124: the internal plan through the real tables (0109 widens the CHECKs)."""
+    tenant, brand = _tenant()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "INSERT INTO creative_engine_config (tenant_id, brand_id, monthly_budget_cap_usd,"
+                " hard_stop_on_cap) VALUES (:t, :b, 10, true)"
+            ),
+            {"t": tenant, "b": brand},
+        )
+    _set(tenant, "basico", _now(1))
+    result = _set(tenant, "ilimitado", _now(10), reason="Negocio del fundador")
+    assert (result.changed, result.previous_plan_code, result.effective_month) == (
+        True,
+        "basico",
+        OCT,
+    )
+    assert business_plan(tenant, OCT).code == "ilimitado"
+    ledger = PostgresCreationsLedger(clock=lambda: _now(12))
+    for revision in range(1, 36):  # more than Básico's 30
+        assert ledger.charge(
+            tenant_id=tenant,
+            brand_id=brand,
+            draft_id=uuid4(),
+            revision=revision,
+            price=CreationPrice("image", 1),
+        )
+    balance = ledger.balance(tenant_id=tenant, brand_id=brand)
+    assert balance.unlimited and balance.used == 35
+    with admin_session() as session:
+        cap, hard = session.execute(
+            text(
+                "SELECT monthly_budget_cap_usd, hard_stop_on_cap FROM creative_engine_config "
+                "WHERE tenant_id = :t"
+            ),
+            {"t": tenant},
+        ).one()
+        codes = set(
+            session.scalars(
+                text("SELECT DISTINCT plan_code FROM creation_allocations WHERE tenant_id = :t"),
+                {"t": tenant},
+            )
+        )
+    assert (Decimal(cap), hard) == (Decimal(480), False)
+    assert codes == {"ilimitado"}
+    _spend(tenant, brand, "500", _now(13))
+    (check,) = run_cost_alerts(now=_now(14), tenant_ids=[tenant], notifier=RecordingTeamNotifier())
+    assert (check.plan_code, check.cap_usd, check.crossed) == ("ilimitado", Decimal(480), True)
+    (october,) = report.fetch(OCT, tenant)
+    # Básico's first month is billed; moving to Ilimitado charges no difference
+    assert october.charged_usd == Decimal(39) and october.cost_usd == Decimal(500)
+    (november,) = report.fetch(NOV, tenant)
+    assert november.charged_usd == Decimal(0) and not november.plan_sellable
 
 
 def test_more_creations_is_a_support_topic() -> None:
