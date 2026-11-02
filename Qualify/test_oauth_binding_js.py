@@ -85,13 +85,13 @@ def test_bound_redirect_uses_the_apps_public_origin(monkeypatch: pytest.MonkeyPa
     )
 
 
-def test_invalid_state_copy_names_the_other_browser_case() -> None:
+def test_invalid_state_copy_names_the_other_app_case() -> None:
     from . import connections_vm, tiktok_vm
 
     meta = connections_vm.CONNECT_RESULT_NOTICES["invalid_state"][0]
     tiktok = tiktok_vm.CONNECT_RESULT_NOTICES["invalid_state"][0]
-    for text, button in ((meta, "«Conectar cuenta»"), (tiktok, "«Conectar TikTok»")):
-        assert "otro navegador" in text and button in text and "este mismo navegador" in text
+    for text, button in ((meta, "«Conectar cuenta»"), (tiktok, "el botón de TikTok")):
+        assert "otra aplicación" in text and button in text and "termina desde aquí" in text
 
 
 def _run(script: str, page_url: str) -> dict[str, object]:
