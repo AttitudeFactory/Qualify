@@ -44,7 +44,7 @@ from sqlalchemy.dialects.postgresql import insert
 from qualify_api.connections.read import ConnectionSummary
 from qualify_api.connections.tiktok_credentials import TikTokReconnectRequired
 from qualify_api.planner.post_reader import NotPublishable, PostReader
-from qualify_api.planner.publishable import DESTINATION_REEL, REASON_TEXT
+from qualify_api.planner.publishable import DESTINATION_TIKTOK, REASON_TEXT
 from qualify_api.publishing.client import MEDIA_TYPE_REELS
 from qualify_api.publishing.models import TikTokDraft
 from qualify_api.publishing.tiktok_client import (
@@ -305,7 +305,7 @@ class TikTokDraftService:
             tenant_id=tenant_id,
             post_id=post_id,
             output_port=output_port,
-            destination=DESTINATION_REEL,
+            destination=DESTINATION_TIKTOK,
         )
         if isinstance(verdict, NotPublishable):
             raise DraftRefused(

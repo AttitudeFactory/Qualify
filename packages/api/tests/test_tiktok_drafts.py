@@ -287,7 +287,7 @@ async def test_approved_piece_lands_in_the_inbox_once() -> None:
     state = await send(svc)
     assert (state.status, state.settled, state.created) == ("in_inbox", True, True)
     assert "Borradores" in state.message
-    assert posts.destinations == ["reel"]
+    assert posts.destinations == ["tiktok"]
     assert (tiktok.inits, tiktok.uploads) == (1, 1)
     row = next(iter(repo.rows.values()))
     assert row["approved_revision"] == 3 and row["upload_mode"] == "FILE_UPLOAD"

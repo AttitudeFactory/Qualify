@@ -162,6 +162,34 @@ def test_a_null_category_is_not_publishable() -> None:
 
 def test_tiktok_video_is_not_publishable() -> None:
     assert _reason(_post(_video(), category="tiktok_video")) is R.CATEGORY_NOT_PUBLISHABLE
+    # m-24921091: not even through an Instagram destination
+    for destination in ("reel", "story", "post"):
+        tiktok = _post(_video(), category="tiktok_video", destination=destination)
+        assert _reason(tiktok) is R.CATEGORY_NOT_PUBLISHABLE
+
+
+def test_tiktok_destination_takes_one_video_whatever_its_category() -> None:
+    """m-24921091: the TikTok draft accepts the «Video TikTok» category Instagram never
+    publishes, as one video — never an image or a carousel."""
+    for category in ("tiktok_video", "reel", "story"):
+        verdict = evaluate(_post(_video(), category=category, destination="tiktok"))
+        assert isinstance(verdict, PublishablePost)
+        assert verdict.media_product_type == MEDIA_TYPE_REELS
+    assert _reason(_post(_image(), category="tiktok_video", destination="tiktok")) is (
+        R.DESTINATION_NOT_SUPPORTED
+    )
+    assert _reason(_post(_video(0), _video(1), category="galeria", destination="tiktok")) is (
+        R.DESTINATION_NOT_SUPPORTED
+    )
+    assert destination_product_type("tiktok", ("VIDEO",)) == MEDIA_TYPE_REELS
+    assert destination_product_type("tiktok", ("IMAGE",)) is None
+
+
+def test_tiktok_is_never_a_planner_destination() -> None:
+    from qualify_api.planner.publishable import DESTINATION_TIKTOK, DESTINATIONS
+
+    assert DESTINATION_TIKTOK not in DESTINATIONS
+    assert all(o.destination != "tiktok" for o in destination_options(("VIDEO",), None))
 
 
 def test_story_with_an_image_is_publishable_as_stories() -> None:
