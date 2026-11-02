@@ -36,7 +36,7 @@ def test_a_working_account_can_send_and_shows_no_problem() -> None:
 
 def test_the_account_vm_carries_no_credential_field() -> None:
     names = {f.name for f in dataclasses.fields(vm.TikTokAccountVM)}
-    assert names == {"id", "name", "status", "problem", "notice", "can_send"}
+    assert names == {"id", "name", "status", "problem", "notice", "can_send", "permission_missing"}
     assert not any(word in " ".join(names) for word in ("token", "secret", "cipher", "key"))
 
 
@@ -45,6 +45,8 @@ def test_without_the_upload_permission_it_cannot_send_and_says_why() -> None:
     assert not account.can_send and account.problem == vm.PERMISSION_PROBLEM
     degraded = _account(status="degraded", reconnect_reason="permission_missing")
     assert not degraded.can_send and degraded.problem == vm.PERMISSION_PROBLEM
+    assert account.permission_missing and degraded.permission_missing
+    assert not _account(status="degraded").permission_missing
 
 
 @pytest.mark.parametrize(

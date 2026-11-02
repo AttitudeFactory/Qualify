@@ -198,10 +198,10 @@ def tiktok_account_card(account: TikTokAccountVM) -> rx.Component:
                     align="center",
                     min_width="0",
                 ),
-                # A missing permission on a live account is «Sin acceso» (§7.3), like the
-                # Instagram card; otherwise the shared «Conectada / Desconectada».
+                # A missing permission is «Sin acceso» (§7.3), like the Instagram card;
+                # otherwise the shared «Conectada / Desconectada».
                 rx.cond(
-                    (account.status == "active") & (account.problem != ""),
+                    account.permission_missing,
                     tone_badge(NO_ACCESS, "warn", icon="lock-keyhole", size="2"),
                     status_badge(account.status),
                 ),

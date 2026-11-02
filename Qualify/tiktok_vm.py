@@ -24,7 +24,7 @@ SECTION_TITLE = "TikTok"
 #: The benefit, said before the owner connects anything (qualify-ux §2).
 INVITE_TITLE = "Lleva tus videos también a TikTok"
 INVITE_BODY = (
-    "Conecta tu TikTok y envía tus videos aprobados a tus borradores con un toque. "
+    "Conecta tu TikTok y envía tus videos aprobados directo a tus borradores. "
     "Tú les das el último toque y los publicas desde la aplicación de TikTok."
 )
 CONNECT_ACTION = "Conectar TikTok"
@@ -116,6 +116,8 @@ class TikTokAccountVM:
     notice: str = ""
     #: Whether an approved video can be sent to this account's drafts right now.
     can_send: bool = False
+    #: The fix is to accept a permission again — the card says «Sin acceso» (§7.3).
+    permission_missing: bool = False
 
 
 def build_account_vm(
@@ -144,6 +146,7 @@ def build_account_vm(
         problem=problem,
         notice=access_notice if status == "active" else "",
         can_send=status == "active" and has_upload,
+        permission_missing=problem == PERMISSION_PROBLEM,
     )
 
 
