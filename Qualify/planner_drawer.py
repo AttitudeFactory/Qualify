@@ -939,7 +939,7 @@ def _more_options(row) -> rx.Component:
 
 def _plan_card(row) -> rx.Component:
     return rx.box(
-        rx.hstack(
+        rx.box(
             rx.box(
                 media_fill(row.thumbnail_url, row.video_url, row.kind),
                 class_name="q-plan-thumb",
@@ -956,11 +956,13 @@ def _plan_card(row) -> rx.Component:
                     spacing="1",
                     align="center",
                     wrap="wrap",
+                    class_name="q-plan-badges",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
                 spacing="1",
                 min_width="0",
                 flex="1",
+                class_name="q-plan-meta",
             ),
             rx.cond(
                 row.error == "",
@@ -970,8 +972,6 @@ def _plan_card(row) -> rx.Component:
                     class_name="q-when-pill",
                 ),
             ),
-            align="start",
-            spacing="3",
             width="100%",
             class_name="q-plan-head",
         ),

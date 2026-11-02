@@ -804,6 +804,8 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         failure_detail=detail.failure_detail,
         warnings=tuple(warning.detail for warning in detail.warnings),
         waiting_vendor=bool(getattr(detail, "waiting_vendor", False)),
+        # m-24820837: a replica names the reel it was made from (the brief's own data).
+        source_reel=getattr(detail, "source_reel", None),
     )
     active_id = str(getattr(detail, "active_version_id", None) or "")
     viewed_id = str(getattr(detail, "viewed_version_id", None) or active_id)

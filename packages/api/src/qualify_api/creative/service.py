@@ -324,6 +324,9 @@ class DraftDetail:
     media: tuple[ImageRecord, ...] = ()
     #: The brief's `ContentKind` value.
     kind: str = "static_flyer"
+    #: m-24820837: the reel this replica was made from (the brief's JSONB `source_reel`);
+    #: None for every other piece. The detail screen names the reel from it.
+    source_reel: Mapping[str, object] | None = None
     # the POST fields (0027, QUA-109)
     title: str = ""
     category: str | None = None
@@ -495,6 +498,9 @@ class DraftBundle:
     image: ImageRecord | None
     media: tuple[ImageRecord, ...]
     kind: str | None
+    #: m-24820837: the reel a replica was made from (the brief's JSONB `source_reel`);
+    #: None for every other piece, and for the list read, which does not need it.
+    source_reel: Mapping[str, object] | None = None
     #: m-24828906: every version of this draft (ordered by revision) and the one the
     #: screen shows. Empty for drafts created before 0098 backfill touched them.
     versions: tuple[VersionSummary, ...] = ()
@@ -602,6 +608,10 @@ class ContentRepository(Protocol):
         ...
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
+
+    def brief_source_reel(
+        self, *, tenant_id: UUID, brief_id: UUID
+    ) -> Mapping[str, object] | None: ...
 
     def details_for(
         self, *, tenant_id: UUID, draft_ids: Sequence[UUID]
@@ -726,6 +736,7 @@ def _detail(bundle: DraftBundle) -> DraftDetail:
         image=bundle.image,
         media=bundle.media,
         kind=bundle.kind or ContentKind.STATIC_FLYER.value,
+        source_reel=bundle.source_reel,
         title=record.title,
         category=record.category,
         reuse_type=record.reuse_type,
@@ -884,6 +895,17 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentBrief, brief_id)
             return None if row is None else row.kind
+
+    def brief_source_reel(self, *, tenant_id: UUID, brief_id: UUID) -> Mapping[str, object] | None:
+        """m-24820837: the reel a replica was made from, read from the brief's JSONB
+        (`media.source_reel`) — the piece keeps its origin even after the discovery card
+        and the original reel are gone. None for any other piece."""
+        with tenant_session(tenant_id) as session:
+            row = session.get(orm.ContentBrief, brief_id)
+            if row is None or row.media is None:
+                return None
+            reel = row.media.get("source_reel")
+            return reel if isinstance(reel, dict) else None
 
     def details_for(self, *, tenant_id: UUID, draft_ids: Sequence[UUID]) -> dict[UUID, DraftBundle]:
         """The drafts of `draft_ids` (those visible in this tenant) with their variants,
@@ -2583,6 +2605,10 @@ class ContentService:
                 image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
                 media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
                 kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id),
+                # m-24820837: the detail screen names the reel a replica was made from.
+                source_reel=self._repo.brief_source_reel(
+                    tenant_id=tenant_id, brief_id=record.brief_id
+                ),
                 versions=(
                     self._repo.versions_for(tenant_id=tenant_id, draft_id=draft_id)
                     if isinstance(self._repo, PostgresContentRepository)

@@ -511,6 +511,11 @@ AI_LABEL_HINT = (
     "La imagen se generó con IA. Instagram y TikTok piden avisarlo al publicar; el "
     "aviso va con la publicación, no hay que colocarlo a mano."
 )
+#: m-24820837: what the source-reel glyph says on its hover: why the video names a reel.
+SOURCE_REEL_HINT = (
+    "Este video se hizo siguiendo la estructura de ese reel. El origen queda guardado "
+    "aunque el reel original ya no aparezca en Descubrir."
+)
 
 
 def format_cost_label(
@@ -1027,6 +1032,11 @@ class DraftVM:
     #: eliminado» instead of the media, and offers no download.
     media_purged: bool = False
     purged_label: str = ""
+    #: m-24820837: a replica names the reel it was made from — «Hecha a partir de un reel
+    #: de @cuenta en Instagram», linked to the original ("" when the piece is not a
+    #: replica, or has no URL to open).
+    source_reel_note: str = ""
+    source_reel_url: str = ""
     #: m-24820142: the piece's Seedance 2.5 videos as one draft state — "" (no draft
     #: video), `draft`, `rendering`, `final`, `failed` or `expired` — and what the
     #: screen says about it.
@@ -1366,6 +1376,27 @@ EDITABLE_DRAFT_STATUSES: frozenset[str] = frozenset(
 )
 
 
+#: m-24820837: the networks a reel replica can come from, as the operator reads them.
+_SOURCE_REEL_NETWORKS = {"instagram": "Instagram", "tiktok": "TikTok", "facebook": "Facebook"}
+
+
+def source_reel_note(source_reel: Mapping[str, object] | None) -> str:
+    """The line naming the reel a replica was made from — «Hecha a partir de un reel de
+    @cuenta en Instagram». The handle arrives with its `@` from discovery. "" when the
+    piece replicates no reel."""
+    if not source_reel:
+        return ""
+    handle = str(source_reel.get("handle") or "").strip()
+    network = _SOURCE_REEL_NETWORKS.get(str(source_reel.get("platform") or "").strip().lower())
+    if handle and network:
+        return f"Hecha a partir de un reel de {handle} en {network}"
+    if handle:
+        return f"Hecha a partir de un reel de {handle}"
+    if network:
+        return f"Hecha a partir de un reel en {network}"
+    return "Hecha a partir de un reel"
+
+
 def build_draft_vm(
     *,
     draft_id: str,
@@ -1383,11 +1414,14 @@ def build_draft_vm(
     failure_detail: str | None = None,
     warnings: Sequence[str] = (),
     waiting_vendor: bool = False,
+    source_reel: Mapping[str, object] | None = None,
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
     the state combines both with the operator's selection."""
     passing = sum(1 for v in variants if v.passed)
+    source_note = source_reel_note(source_reel)
+    source_url = str((source_reel or {}).get("url") or "").strip() if source_note else ""
     # said as an operator reads it (request 2026-10-22: «reglas duras» meant nothing);
     # what the rules are is the pill's hover (`HARD_RULES_HINT`)
     if not variants:
@@ -1432,6 +1466,8 @@ def build_draft_vm(
         warnings=tuple(warnings),
         can_edit=status in EDITABLE_DRAFT_STATUSES,
         waiting_vendor=waiting_vendor and status == DraftStatus.DRAFTING.value,
+        source_reel_note=source_note,
+        source_reel_url=source_url,
     )
 
 

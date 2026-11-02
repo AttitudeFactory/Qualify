@@ -406,6 +406,14 @@ class InMemoryRepository:
         brief = self.briefs.get(brief_id)
         return None if brief is None else brief.kind.value
 
+    def brief_source_reel(self, *, tenant_id, brief_id):  # noqa: ANN001, ANN201
+        reel = None
+        brief = self.briefs.get(brief_id)
+        if brief is not None:
+            source = brief.media.source_reel
+            reel = source.model_dump() if source is not None else None
+        return reel
+
     def get_variant(self, *, tenant_id, variant_id):  # noqa: ANN001, ANN201
         return self.variants.get(variant_id)
 
@@ -961,6 +969,126 @@ def test_full_happy_path_create_run_approve_and_read_seam(
 
     listed = list_approved(tenant_id=tenant_id, brand_id=brand_id, since=None, intent=None)
     assert draft_id in {a.draft_id for a in listed}
+    # m-24820837: a brief stored before the field exists reads provenance with no reel
+    assert artifact.provenance["source_reel"] is None
+
+
+def test_the_detail_hands_the_replica_s_reel_to_the_screen() -> None:
+    """m-24820837: the draft detail carries the reel the piece was replicated from, read
+    off the brief — the discovery card died with the browser session; the brief is what
+    the detail screen has."""
+    service, _repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    reel = {
+        "platform": "instagram",
+        "post_id": "C8x",
+        "url": "https://www.instagram.com/reel/C8x/",
+        "handle": "@panaderia",
+        "analysis_version": 1,
+    }
+    draft_id = service.create_draft(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        user_id=USER_ID,
+        brief=make_brief(
+            variants=1,
+            kind=ContentKind.CLIP,
+            format=ContentFormat.REELS_9_16,
+            media={
+                "duration_seconds": 5,
+                "clip_reference_mode": "edit",
+                "clip_video_keys": ["uploads/t/referencia-reel.mp4"],
+                "clip_image_keys": ["uploads/t/pan.jpg"],
+                "source_reel": reel,
+            },
+        ),
+    )
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None
+    assert detail.kind == "clip"
+    assert detail.source_reel == reel
+
+
+@pytest.mark.db
+def test_a_replica_names_its_reel_from_the_stored_brief_alone(
+    db_seeded: tuple[UUID, UUID, UUID],
+) -> None:
+    """m-24820837 (AC 2): the origin lives in `content_briefs.media` — with no discovery
+    card and no browser session anywhere near the read, the artifact's provenance names
+    the reel and the detail door reads it back."""
+    from qualify_shared.db.session import tenant_session
+
+    from qualify_api.creative import models as orm
+    from qualify_api.creative.read import approved_creative
+    from qualify_api.creative.service import PostgresContentRepository
+
+    tenant_id, brand_id, user_id = db_seeded
+    reel = {
+        "platform": "instagram",
+        "post_id": "C8x",
+        "url": "https://www.instagram.com/reel/C8x/",
+        "handle": "@panaderia",
+        "analysis_version": 1,
+    }
+    with tenant_session(tenant_id) as session:
+        brief_row = orm.ContentBrief(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            objective="sale",
+            topic="arepa de chócolo nueva",
+            platform="instagram",
+            format="reels_9_16",
+            intent="organic",
+            content_type="menu",
+            image_route="template_only",
+            kind="clip",
+            created_by=user_id,
+            media={
+                "duration_seconds": 5,
+                "clip_reference_mode": "edit",
+                "clip_video_keys": ["uploads/t/referencia-reel.mp4"],
+                "clip_image_keys": ["uploads/t/pan.jpg"],
+                "source_reel": reel,
+            },
+        )
+        session.add(brief_row)
+        session.flush()
+        draft = orm.ContentDraft(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            brief_id=brief_row.id,
+            status="generated",
+            pipeline_version="creative-v1",
+            voice_profile_version=1,
+        )
+        session.add(draft)
+        session.flush()
+        variant = orm.CopyVariant(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            ordinal=0,
+            copy=copy_dict(),
+            fidelity={"passed": True, "hard_failures": []},
+            model_id="claude-opus-5",
+            model_revision="rev-1",
+        )
+        session.add(variant)
+        session.flush()
+        draft.status = "approved"
+        draft.selected_variant_id = variant.id
+        draft.approved_at = datetime.now(UTC)
+        draft.approved_revision = draft.revision
+        draft_id, brief_id = draft.id, brief_row.id
+
+    # the read seam (GET /drafts/{id}): the stored JSONB alone answers
+    artifact = approved_creative(tenant_id=tenant_id, draft_id=draft_id)
+    assert artifact is not None
+    assert artifact.provenance["source_reel"] == reel
+
+    # the door the detail screen reads goes through the schema: the brief re-validates
+    repo = PostgresContentRepository()
+    assert repo.brief_source_reel(tenant_id=tenant_id, brief_id=brief_id) == reel
+    parsed = repo.get_brief(tenant_id=tenant_id, brief_id=brief_id)
+    assert parsed is not None and parsed.media.source_reel.model_dump() == reel
 
 
 def test_regenerating_an_already_rejected_draft_skips_the_second_reject() -> None:

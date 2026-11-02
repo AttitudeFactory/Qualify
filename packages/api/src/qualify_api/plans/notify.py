@@ -13,8 +13,9 @@ from typing import Protocol
 
 import httpx
 
+from qualify_api.support.webhook import TextWebhook
+
 _LOGGER = logging.getLogger(__name__)
-_TIMEOUT_SECONDS = 5.0
 
 
 class TeamNotifier(Protocol):
@@ -30,23 +31,17 @@ class NullTeamNotifier:
 
 
 class WebhookTeamNotifier:
-    def __init__(self, url: str, *, transport: httpx.BaseTransport | None = None) -> None:
-        self._url = url
-        self._transport = transport
+    def __init__(
+        self,
+        url: str,
+        *,
+        secret: str = "",
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._webhook = TextWebhook(url, secret=secret, transport=transport)
 
     def notify(self, text: str) -> bool:
-        payload = {"text": text, "msg_type": "text", "content": {"text": text}}
-        try:
-            with httpx.Client(transport=self._transport, timeout=_TIMEOUT_SECONDS) as client:
-                response = client.post(self._url, json=payload)
-        except httpx.HTTPError as exc:
-            # type only: a transport error's text can carry the webhook URL (a secret)
-            _LOGGER.error("plans: team channel unreachable (%s)", type(exc).__name__)
-            return False
-        if response.status_code >= 400:
-            _LOGGER.error("plans: team channel answered HTTP %d", response.status_code)
-            return False
-        return True
+        return self._webhook.send(text)
 
 
 class RecordingTeamNotifier:
@@ -63,7 +58,8 @@ class RecordingTeamNotifier:
 
 def production_team_notifier() -> TeamNotifier:
     url = os.environ.get("QUALIFY_SUPPORT_WEBHOOK_URL", "").strip()
-    return WebhookTeamNotifier(url) if url else NullTeamNotifier()
+    secret = os.environ.get("QUALIFY_SUPPORT_WEBHOOK_SECRET", "").strip()
+    return WebhookTeamNotifier(url, secret=secret) if url else NullTeamNotifier()
 
 
 __all__ = [

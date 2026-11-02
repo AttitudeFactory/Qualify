@@ -43,6 +43,7 @@ from qualify_creative.schemas import (
     CopyPayload,
     MediaInputs,
     ScriptShot,
+    SourceReelProvenance,
 )
 
 from .test_render_prompt import make_kit, make_voice
@@ -439,6 +440,79 @@ def test_an_own_script_is_for_videos_and_is_copied_verbatim_by_the_prompt() -> N
     ).volatile_suffix
     assert "EXACTLY the operator's script below, word for word" in suffix
     assert "Operator's script: «Hola, soy Doña Rosa.»" in suffix
+
+
+# --------------------------------------------------------------------------------------
+# m-24820837: the source reel a replica was made from
+# --------------------------------------------------------------------------------------
+
+
+_REPLICA_MEDIA: dict[str, object] = {
+    "duration_seconds": 5,
+    "clip_reference_mode": "edit",
+    "clip_video_keys": ("uploads/t/referencia-reel.mp4",),
+    "clip_image_keys": ("uploads/t/pan.jpg",),
+}
+
+_SOURCE_REEL = {
+    "platform": "instagram",
+    "post_id": "C8x",
+    "url": "https://www.instagram.com/reel/C8x/",
+    "handle": "@panaderia",
+    "analysis_version": 1,
+}
+
+
+def _reel_replica(**media: object) -> ContentBrief:
+    merged = {**_REPLICA_MEDIA, **media}
+    brief = _brief(ContentKind.CLIP, **merged)
+    return brief.model_copy(update={"format": ContentFormat.REELS_9_16})
+
+
+def test_a_replica_round_trips_its_source_reel_with_the_brief() -> None:
+    """The structured origin rides on `content_briefs.media` (JSONB): what was stored is
+    what a later read re-parses, long after the discovery card is gone."""
+    brief = _reel_replica(source_reel=_SOURCE_REEL)
+    assert brief.media.source_reel is not None
+    assert brief.media.source_reel.handle == "@panaderia"
+    stored = brief.media.model_dump(mode="json")
+    assert stored["source_reel"] == {**_SOURCE_REEL}
+    again = MediaInputs.model_validate(stored)
+    assert again.source_reel == brief.media.source_reel
+
+
+def test_a_brief_from_before_the_source_reel_still_parses() -> None:
+    """Old stored briefs have no `source_reel` key: they must read as None, not fail."""
+    assert MediaInputs.model_validate({"duration_seconds": 5}).source_reel is None
+    assert (
+        _brief(
+            ContentKind.CLIP,
+            duration_seconds=5,
+            clip_video_keys=("uploads/t/a.mp4",),
+        ).media.source_reel
+        is None
+    )
+
+
+def test_a_source_reel_needs_a_reel_replica() -> None:
+    """A source reel only belongs to an edit-mode Clip: the schema refuses it elsewhere
+    so a normal piece can never store a stranger's reel."""
+    with pytest.raises(ValidationError, match="a source reel belongs to a reel replica"):
+        _reel_replica(source_reel=_SOURCE_REEL, clip_reference_mode="motion")
+    with pytest.raises(ValidationError, match="a source reel belongs to a reel replica"):
+        _brief(
+            ContentKind.STATIC_FLYER,
+            product_keys=("uploads/t/a.jpg",),
+            source_reel=_SOURCE_REEL,
+        )
+
+
+def test_the_analysis_version_of_a_replica_reads_from_the_constant() -> None:
+    """The version counts from 1; a reel stored without it reads 1, and any later bump is
+    just a number the detail shows — never a parse failure."""
+    stored = {k: v for k, v in _SOURCE_REEL.items() if k != "analysis_version"}
+    assert SourceReelProvenance.model_validate(stored).analysis_version == 1
+    assert SourceReelProvenance.model_validate(dict(_SOURCE_REEL)).analysis_version == 1
 
 
 # --------------------------------------------------------------------------------------
