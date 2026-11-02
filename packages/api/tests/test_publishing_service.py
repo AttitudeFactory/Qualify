@@ -2263,10 +2263,20 @@ def test_nothing_in_publishing_sleeps() -> None:
         assert "time.sleep" not in source, source_file.name
 
 
+def text_has_no_bearer(source: str) -> bool:
+    return "Bearer" not in source and "Authorization" not in source
+
+
 def test_nothing_in_publishing_builds_its_own_http_client() -> None:
     """Clients arrive through the credential resolver seam; a second `httpx.AsyncClient(`
     construction would be a second door past the credential gate."""
     for source_file in PUBLISHING_SRC.glob("*.py"):
+        if source_file.name == "tiktok_client.py":
+            # m-24921091: the ONLY exemption. It builds a client for TikTok's pre-signed
+            # `upload_url` (bytes PUT), which by design carries NO credential — so it is not a
+            # door past the gate. Every authenticated TikTok call uses the injected client.
+            assert text_has_no_bearer(source_file.read_text())
+            continue
         assert "AsyncClient(" not in source_file.read_text(), source_file.name
 
 

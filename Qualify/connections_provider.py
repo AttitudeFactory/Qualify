@@ -184,13 +184,19 @@ class NoActingUser(RuntimeError):
 
 
 def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
-    """The tenant's connections, newest first, as client-safe view-models.
+    """The tenant's Meta and WhatsApp connections, newest first, as client-safe view-models.
+
+    m-24921091: TikTok accounts are left out on purpose. Every caller here works with Meta
+    (publish, comments, Direct, the Meta cards and their Facebook reconnect); a TikTok row
+    would show up as an Instagram-style account and offer the wrong flows. TikTok has its
+    own read: `tiktok_provider.tiktok_accounts`.
 
     Blocking DB call — callers on the event loop must run it off-thread.
     """
     with tenant_session(tenant_id) as session:
         rows = session.execute(
             select(SocialConnection, Brand.name, WhatsAppPhoneNumber.verified_name)
+            .where(SocialConnection.platform != "tiktok")
             .outerjoin(Brand, SocialConnection.brand_id == Brand.id)
             # WA-05: the verified name lives on the phone row, one per connection at most
             # (`phone_number_id` is UNIQUE and equals `external_account_id`). RLS on

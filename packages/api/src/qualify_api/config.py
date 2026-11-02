@@ -101,6 +101,60 @@ class MetaOAuthSettings:
         )
 
 
+@dataclass(frozen=True)
+class TikTokSettings:
+    """Everything the TikTok connect flow and draft upload need, as data.
+
+    Env vars (never hardcoded, never logged): `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`,
+    `TIKTOK_REDIRECT_URI`. Optional: `TIKTOK_SCOPES` (default `user.info.basic,video.upload`;
+    `video.publish` is deliberately NOT a default — drafts only, founder 2026-11-02),
+    `TIKTOK_ACCESS_POSTURE` (`development` until TikTok audits the client, then `live`),
+    `TIKTOK_UPLOAD_MODE` (`FILE_UPLOAD` | `PULL_FROM_URL`).
+
+    The state-signing secret is the shared `QUALIFY_OAUTH_STATE_SECRET`; the TikTok flow
+    derives a domain-separated key from it so a Meta `state` is never valid here.
+    """
+
+    client_key: str
+    client_secret: str
+    redirect_uri: str
+    state_secret: str
+    requested_scopes: tuple[str, ...] = ("user.info.basic", "video.upload")
+    authorize_url: str = "https://www.tiktok.com/v2/auth/authorize/"
+    api_base_url: str = "https://open.tiktokapis.com"
+    access_posture: str = "development"
+    upload_mode: str = "FILE_UPLOAD"
+    state_ttl_seconds: int = _DEFAULT_STATE_TTL_SECONDS
+
+    def __repr__(self) -> str:  # the secret must never reach a traceback
+        return f"<TikTokSettings client_key={self.client_key!r} client_secret=redacted>"
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        return all(
+            os.environ.get(name, "").strip()
+            for name in ("TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET", "TIKTOK_REDIRECT_URI")
+        )
+
+    @classmethod
+    def from_env(cls) -> TikTokSettings:
+        """Raises `KeyError` naming the missing variable (never a value)."""
+        scopes = tuple(
+            s.strip()
+            for s in os.environ.get("TIKTOK_SCOPES", "user.info.basic,video.upload").split(",")
+            if s.strip()
+        )
+        return cls(
+            client_key=os.environ["TIKTOK_CLIENT_KEY"],
+            client_secret=os.environ["TIKTOK_CLIENT_SECRET"],
+            redirect_uri=os.environ["TIKTOK_REDIRECT_URI"],
+            state_secret=os.environ.get("QUALIFY_OAUTH_STATE_SECRET", _DEV_STATE_SECRET),
+            requested_scopes=scopes,
+            access_posture=os.environ.get("TIKTOK_ACCESS_POSTURE", "development"),
+            upload_mode=os.environ.get("TIKTOK_UPLOAD_MODE", "FILE_UPLOAD"),
+        )
+
+
 def redis_url() -> str:
     """Redis for the one-shot `state` jti (C-04.2), the refresh lock (C-03.4), and — since
     QUA-68 — the public-media token store (`publishing/media_token.py`)."""

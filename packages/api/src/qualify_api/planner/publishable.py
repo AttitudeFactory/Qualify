@@ -88,6 +88,8 @@ _ALLOWED_CONTENT_TYPES: dict[str, frozenset[str]] = {
 }
 
 # Categories that exist in QUA-109's vocabulary but are never published by this executor.
+# The one exception is the TikTok draft (`DESTINATION_TIKTOK`, m-24921091): a piece the owner
+# filed as «Video TikTok» is exactly what may go to their TikTok drafts — never to Instagram.
 _NEVER_PUBLISHED: frozenset[str] = frozenset({PostCategory.TIKTOK_VIDEO.value})
 
 # Template output ports (`packages/render/CONTRACT.md` §1, `image_assets.output_port`) →
@@ -151,6 +153,10 @@ DESTINATION_POST = "post"  # «Publicación»: a feed image or a carousel
 DESTINATION_REEL = "reel"
 DESTINATION_STORY = "story"
 DESTINATIONS: tuple[str, ...] = (DESTINATION_POST, DESTINATION_REEL, DESTINATION_STORY)
+#: m-24921091: one video sent to the creator's TikTok drafts by a human click
+#: (`publishing.tiktok_drafts`). Deliberately NOT in `DESTINATIONS`: the Planificador never
+#: offers it and `PlannerService` refuses it (no TikTok scheduling, ADR 23c).
+DESTINATION_TIKTOK = "tiktok"
 
 # Meta's feed image range (IG User Media, "Image Specifications"): 4:5 to 1.91:1.
 FEED_RATIO_MIN = 4 / 5
@@ -248,7 +254,7 @@ def destination_product_type(destination: str, media_types: tuple[str, ...]) -> 
     shape = _shape(media_types)
     if destination == DESTINATION_POST:
         return {"image": MEDIA_TYPE_IMAGE, "carousel": MEDIA_TYPE_CAROUSEL}.get(shape)
-    if destination == DESTINATION_REEL:
+    if destination in (DESTINATION_REEL, DESTINATION_TIKTOK):
         return MEDIA_TYPE_REELS if shape == "video" else None
     if destination == DESTINATION_STORY:
         return MEDIA_TYPE_STORIES if shape in ("image", "video") else None
@@ -433,7 +439,8 @@ def evaluate(
     category = candidate.category
     if not category:
         return _refuse(candidate, R.CATEGORY_MISSING)
-    if category in _NEVER_PUBLISHED or category not in {c.value for c in PostCategory}:
+    never = category in _NEVER_PUBLISHED and candidate.destination != DESTINATION_TIKTOK
+    if never or category not in {c.value for c in PostCategory}:
         return _refuse(candidate, R.CATEGORY_NOT_PUBLISHABLE, category)
 
     port = candidate.output_port

@@ -2434,6 +2434,11 @@ APPROVED_NOT_READY_BODY = "Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_SCHEDULE = "Elegir día y hora"
 APPROVED_PUBLISH_NOW = "Publicar ahora"
 APPROVED_CREATE_ANOTHER = "Crear otra publicación"
+#: m-24921091: a piece made for TikTok (`tiktok_video`) never gets a day and time here — the
+#: owner finishes it in TikTok — so the card points to the TikTok card instead of saying
+#: something is missing.
+APPROVED_TIKTOK_TITLE = "Aprobada. Envíala a TikTok para terminarla allá."
+APPROVED_TIKTOK_GO = "Ir a enviar a TikTok"
 
 # N12: every tap target at least 44 px tall on a phone.
 _TAP_MIN_HEIGHT = "2.75rem"
@@ -2443,7 +2448,52 @@ def _approved_next() -> rx.Component:
     """After approving (m-24842978, N3): say plainly that it is not out yet and take the
     owner straight to choosing when it goes out — Tu semana opens on this publication.
     If it cannot go out yet, say what is missing instead of offering that way — its
-    1080p final still being made or failed included (m-24820142)."""
+    1080p final still being made or failed included (m-24820142). A piece made for TikTok
+    (m-24921091) points to the TikTok card instead: nothing is missing, it goes there."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    tiktok = TikTokDraftState.tiktok_only & TikTokDraftState.show_card
+    return rx.cond(tiktok, _approved_tiktok_next(), _approved_schedule_next())
+
+
+def _approved_tiktok_next() -> rx.Component:
+    """«Aprobada. Envíala a TikTok para terminarla allá.» and a soft way down to the TikTok
+    card (`#tiktok-borrador`), whose send is the one solid button."""
+    return _card(
+        rx.hstack(
+            rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
+            rx.text(APPROVED_TIKTOK_TITLE, class_name="q-rv-title"),
+            align="center",
+            spacing="2",
+        ),
+        rx.flex(
+            rx.link(
+                rx.button(
+                    rx.icon("arrow-down", size=16),
+                    APPROVED_TIKTOK_GO,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN_HEIGHT,
+                ),
+                href="#tiktok-borrador",
+            ),
+            rx.button(
+                rx.icon("sparkles", size=16),
+                APPROVED_CREATE_ANOTHER,
+                variant="soft",
+                size="3",
+                min_height=_TAP_MIN_HEIGHT,
+                on_click=CreativeState.go_create_another,
+            ),
+            gap="0.75rem",
+            wrap="wrap",
+            width="100%",
+        ),
+        id="approved-next",
+    )
+
+
+def _approved_schedule_next() -> rx.Component:
     ready = CreativeState.approved_can_schedule
     return _card(
         rx.hstack(
@@ -2821,6 +2871,7 @@ def _version_selector() -> rx.Component:
 
 def draft_detail_index() -> rx.Component:
     from .queue_notice import queue_notice  # noqa: PLC0415
+    from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
 
     return app_shell(
         page_header(
@@ -2905,6 +2956,9 @@ def draft_detail_index() -> rx.Component:
                                     ),
                                     _review_panel(),
                                     _decision_bar(),
+                                    # m-24921091: an approved video can also go to the
+                                    # owner's TikTok (never published from here).
+                                    tiktok_draft_card(),
                                     spacing="4",
                                     width="100%",
                                 ),

@@ -69,6 +69,11 @@ x-app-env: &app-env
   # One public origin for everything (Caddy routes by path).
   QUALIFY_PUBLIC_MEDIA_BASE_URL: ${QUALIFY_PUBLIC_URL:?set in .env.prod}
   QUALIFY_META_REDIRECT_URI: ${QUALIFY_META_REDIRECT_URI:-${QUALIFY_PUBLIC_URL}/api/connections/callback}
+  # TikTok (optional; empty key = off). Secret never has a default.
+  TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+  TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+  TIKTOK_REDIRECT_URI: ${TIKTOK_REDIRECT_URI:-${QUALIFY_PUBLIC_URL}/api/connections/tiktok/callback}
+  TIKTOK_ACCESS_POSTURE: ${TIKTOK_ACCESS_POSTURE:-development}
   QUALIFY_RENDER_URL: http://render:3200
   REFLEX_API_URL: ${QUALIFY_PUBLIC_URL}
   REFLEX_DEPLOY_URL: ${QUALIFY_PUBLIC_URL}
