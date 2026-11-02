@@ -970,10 +970,19 @@ async def test_add_business_signs_an_anonymous_owner_into_the_verified_default_t
     state._invite_token = "add-token"
     monkeypatch.setattr(auth_state_module, "_add_business_blocking", lambda *a: (registered, login))
     monkeypatch.setattr(auth_state_module, "_kit_complete_blocking", lambda t: True)
+    # ADR 43: after the Alta the login's businesses are read again (now two)
+    monkeypatch.setattr(
+        auth_state_module,
+        "_memberships_blocking",
+        lambda auth_user_id: [(str(tenant), "Bianki"), (str(UUID(int=4)), "Polette")],
+    )
     events = [e async for e in AuthState.handle_signup.fn(state, {"password": "current"})]
     assert state.session_tenant_id == str(tenant)
     assert state.added_business_name == "Polette" and state.auth_error == ""
     assert len(events) == 1 and "redirect" not in str(events[0])
+    # the business just added is offered by «Cambiar de negocio» right away
+    assert state.switch_options == [{"index": "1", "name": "Polette"}]
+    assert state.added_business_next == "/"
 
 
 async def test_add_business_wrong_password_keeps_invite_and_session(

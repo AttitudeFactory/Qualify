@@ -580,6 +580,12 @@ class AuthState(rx.State):
         return bool(self.session_tenant_id) and len(self.business_names) > 1
 
     @rx.var
+    def added_business_next(self) -> str:
+        """Where «Continuar» goes after an add-business Alta (S7): the selector when the
+        login is waiting to choose a business, else the app."""
+        return CHOOSE_ROUTE if self.awaiting_business_choice else "/"
+
+    @rx.var
     def business_chip_label(self) -> str:
         """The header chip: «Estás en {negocio}», or «Abriendo {negocio}…» while a
         switch is on its way."""
@@ -1377,7 +1383,16 @@ class AuthState(rx.State):
             return
         login_throttle.clear(key)
         if login is not None:
+            # ADR 43 S3: a login that already had 2+ businesses is parked for the
+            # selector (no session yet); «Continuar» then leads there
+            # (`added_business_next`).
             await self._open_session(login, "/")
+        # The login was resolved before the new business existed: read its businesses
+        # again so the selector and «Cambiar de negocio» offer the one just added.
+        async with self:
+            auth_user_id = self._auth_user_id
+        if auth_user_id:
+            await self._refresh_businesses(auth_user_id)
         async with self:
             self.is_authenticating = False
             self.added_business_name = registered.business_name

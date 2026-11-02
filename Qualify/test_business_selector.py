@@ -402,3 +402,34 @@ async def test_a_reset_inside_an_open_session_starts_clean(monkeypatch, backend)
     assert resets == [True] and revoked == ["tok-of-the-other-login"]
     assert state.session_tenant_id == "" and state.awaiting_business_choice is True
     assert state._access_token == "tok-supabase"
+
+
+async def test_an_add_business_alta_for_a_login_with_two_businesses_leads_to_the_selector(
+    monkeypatch, backend
+) -> None:
+    """S7 × S3: the Alta resolves the login before the new business exists. A login that
+    already had two is parked for the selector, which then lists all three."""
+    from qualify_api.auth import RegisteredBusiness
+
+    korner = UUID("a0000000-0000-4000-8000-00000000000d")
+    registered = RegisteredBusiness(korner, LOGIN, "dueno@b.co", "Korner")
+    state = AuthState()
+    state.invite_is_add_business = True
+    state._invite_add_business = True
+    state._invite_email = "dueno@b.co"
+    state._invite_token = "add-token"
+    monkeypatch.setattr(
+        auth_state_module,
+        "_add_business_blocking",
+        lambda *a: (registered, _result(BIANKI, POLETTE)),
+    )
+    monkeypatch.setattr(
+        auth_state_module,
+        "_memberships_blocking",
+        lambda a: [(str(BIANKI), "Bianki"), (str(korner), "Korner"), (str(POLETTE), "Polette")],
+    )
+    await _run(AuthState.handle_signup.fn(state, {"password": "x" * 8}))
+    assert state.added_business_name == "Korner"
+    assert state.session_tenant_id == "" and state.awaiting_business_choice is True
+    assert state.added_business_next == CHOOSE_ROUTE
+    assert [c["name"] for c in state.business_choices] == ["Bianki", "Korner", "Polette"]

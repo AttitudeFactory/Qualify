@@ -896,7 +896,8 @@ def _added_business() -> rx.Component:
         ),
         rx.link(
             rx.button("Continuar", width="100%", size="3", height=_TAP),
-            href="/",
+            # ADR 43 S3: a login with 2+ businesses chooses one first
+            href=AuthState.added_business_next,
             width="100%",
         ),
         spacing="4",
