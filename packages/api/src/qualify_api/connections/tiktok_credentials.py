@@ -51,6 +51,10 @@ _LOGGER = logging.getLogger(__name__)
 REFRESH_MARGIN = timedelta(minutes=10)
 _LOCK_WAIT_STEPS = 5
 _LOCK_WAIT_SECONDS = 1.0
+#: The refresh lock must outlive the whole critical section — the refresh call (httpx
+#: timeout 30 s per phase) plus the DB rotation — or a second worker could take the lock and
+#: refresh with a token TikTok has just invalidated. Meta's lock keeps its own (shorter) TTL.
+REFRESH_LOCK_TTL_SECONDS = 90
 
 
 class TikTokReconnectRequired(Exception):
@@ -148,7 +152,7 @@ class TikTokCredentialResolver:
         oauth: TikTokOAuthClient,
         rotator: TikTokCredentialRotator,
         lock: RefreshLock | None,
-        degrader: Callable[[UUID], None] | None = None,
+        degrader: Callable[[UUID, int | None], None] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -162,40 +166,58 @@ class TikTokCredentialResolver:
         self._now = now
         self._transport = transport
 
-    def _load(self, connection_id: UUID) -> TikTokTokens:
+    def _load(self, connection_id: UUID) -> tuple[TikTokTokens, int | None]:
+        """The current blob AND its version, from one read: a version read in a separate
+        session could belong to a different blob than the one decrypted."""
         credential = self._reader.read_current(connection_id)
         blob = self._encryptor.decrypt(credential.ciphertext, key_id=credential.key_id)
-        return TikTokTokens.from_blob(blob)
+        version = credential.version
+        if version is None:  # a reader that does not report it (older fakes)
+            version = self._rotator.current_version(
+                tenant_id=self._tenant_id, connection_id=connection_id
+            )
+        return TikTokTokens.from_blob(blob), version
 
     def _fresh(self, tokens: TikTokTokens) -> bool:
         return tokens.access_expires_at - REFRESH_MARGIN > self._now()
 
-    def _reconnect(self, connection_id: UUID) -> TikTokReconnectRequired:
+    def _reconnect(self, connection_id: UUID, version: int | None) -> TikTokReconnectRequired:
         if self._degrader is not None:
-            self._degrader(connection_id)
+            # The version the failure belongs to: a reconnect that landed meanwhile has a
+            # higher one and is left alone by `mark_connection_unavailable`.
+            self._degrader(connection_id, version)
         return TikTokReconnectRequired("tiktok grant expired or revoked")
 
     async def client_for(
         self, connection_id: UUID, *, scheme: str = "Bearer"
     ) -> AuthenticatedClient:
-        tokens = await self._usable_tokens(connection_id)
-        return build_authenticated_client(
+        client, _ = await self.client_and_version(connection_id, scheme=scheme)
+        return client
+
+    async def client_and_version(
+        self, connection_id: UUID, *, scheme: str = "Bearer"
+    ) -> tuple[AuthenticatedClient, int | None]:
+        """The client plus the credential version it carries, so a caller can pass that
+        version to the degrader when the provider rejects the token."""
+        tokens, version = await self._usable_tokens(connection_id)
+        client = build_authenticated_client(
             tokens.access_token, scheme=scheme, transport=self._transport
         )
+        return client, version
 
     async def revoke_at_provider(self, connection_id: UUID) -> None:
         """Best effort on disconnect: ask TikTok to invalidate the access token."""
         try:
-            await self._oauth.revoke(self._load(connection_id).access_token)
+            await self._oauth.revoke(self._load(connection_id)[0].access_token)
         except Exception as exc:  # noqa: BLE001 — the local revocation already happened
             _LOGGER.warning("tiktok provider revoke failed: %s", type(exc).__name__)
 
-    async def _usable_tokens(self, connection_id: UUID) -> TikTokTokens:
-        tokens = self._load(connection_id)
+    async def _usable_tokens(self, connection_id: UUID) -> tuple[TikTokTokens, int | None]:
+        tokens, version = self._load(connection_id)
         if self._fresh(tokens):
-            return tokens
+            return tokens, version
         if tokens.refresh_expires_at <= self._now():
-            raise self._reconnect(connection_id)
+            raise self._reconnect(connection_id, version)
         if self._lock is None:
             return await self._refresh(connection_id)
         for _ in range(_LOCK_WAIT_STEPS):
@@ -203,41 +225,53 @@ class TikTokCredentialResolver:
                 if got:
                     # Double check INSIDE the lock: a winner may have refreshed already.
                     current = self._load(connection_id)
-                    if self._fresh(current):
+                    if self._fresh(current[0]):
                         return current
                     return await self._refresh(connection_id)
             await asyncio.sleep(_LOCK_WAIT_SECONDS)
             current = self._load(connection_id)
-            if self._fresh(current):
+            if self._fresh(current[0]):
                 return current
         raise TikTokRefreshBusy("another refresh is in flight")
 
-    async def _refresh(self, connection_id: UUID) -> TikTokTokens:
-        version = self._rotator.current_version(
-            tenant_id=self._tenant_id, connection_id=connection_id
-        )
+    async def _refresh(self, connection_id: UUID) -> tuple[TikTokTokens, int | None]:
+        old, version = self._load(connection_id)
         if version is None:
-            raise self._reconnect(connection_id)
-        old = self._load(connection_id)
+            raise self._reconnect(connection_id, None)
         try:
             new = await self._oauth.refresh(old.refresh_token)
         except TikTokOAuthError as exc:
             if exc.is_permanent_auth_failure:
-                raise self._reconnect(connection_id) from None
+                # A reconnect (or a winner whose lock outlived ours) may have replaced the
+                # grant while we called TikTok: that credential is not the dead one.
+                current, current_version = self._load(connection_id)
+                if current_version != version:
+                    return current, current_version
+                raise self._reconnect(connection_id, version) from None
             raise
-        rotated = self._rotator.rotate(
-            tenant_id=self._tenant_id,
-            connection_id=connection_id,
-            expected_version=version,
-            ciphertext=self._encryptor.encrypt(new.to_blob()),
-            key_id=self._encryptor.key_id,
-            issued_at=self._now(),
-            expires_at=new.access_expires_at,
-        )
+        try:
+            rotated = self._rotator.rotate(
+                tenant_id=self._tenant_id,
+                connection_id=connection_id,
+                expected_version=version,
+                ciphertext=self._encryptor.encrypt(new.to_blob()),
+                key_id=self._encryptor.key_id,
+                issued_at=self._now(),
+                expires_at=new.access_expires_at,
+            )
+        except Exception as exc:
+            # TikTok already rotated: the stored refresh token is now invalid, so the
+            # connection will need a reconnect once this access token expires. Type only.
+            _LOGGER.error(
+                "tiktok refresh rotated at provider but storing the new credential failed "
+                "(connection will need a reconnect): %s",
+                type(exc).__name__,
+            )
+            raise
         if rotated is None:
             # A reconnect landed while we refreshed: its grant wins; use it.
             return self._load(connection_id)
-        return new
+        return new, rotated
 
 
 class TikTokConnectionVerifier:

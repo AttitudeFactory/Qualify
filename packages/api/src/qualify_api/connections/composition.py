@@ -58,6 +58,7 @@ from qualify_api.connections.runtime_health import (
 from qualify_api.connections.service import ConnectService
 from qualify_api.connections.state_token import JtiStore
 from qualify_api.connections.tiktok_credentials import (
+    REFRESH_LOCK_TTL_SECONDS,
     PostgresTikTokCredentialRotator,
     TikTokConnectionVerifier,
     TikTokCredentialResolver,
@@ -279,11 +280,12 @@ def production_tiktok_resolver(tenant_id: UUID) -> TikTokCredentialResolver:
 
     settings = TikTokSettings.from_env()
 
-    def degrade(connection_id: UUID) -> None:
+    def degrade(connection_id: UUID, expected_credential_version: int | None) -> None:
         mark_connection_unavailable(
             tenant_id=tenant_id,
             connection_id=connection_id,
             cause=ReconnectCause.AUTH_EXPIRED,
+            expected_credential_version=expected_credential_version,
             publisher=production_event_publisher(),
         )
 
@@ -293,7 +295,10 @@ def production_tiktok_resolver(tenant_id: UUID) -> TikTokCredentialResolver:
         encryptor=DevEncryptor(),
         oauth=HttpTikTokOAuthClient(settings),
         rotator=PostgresTikTokCredentialRotator(),
-        lock=RefreshLock(redis.Redis.from_url(redis_url(), decode_responses=True)),
+        lock=RefreshLock(
+            redis.Redis.from_url(redis_url(), decode_responses=True),
+            ttl_seconds=REFRESH_LOCK_TTL_SECONDS,
+        ),
         degrader=degrade,
     )
 

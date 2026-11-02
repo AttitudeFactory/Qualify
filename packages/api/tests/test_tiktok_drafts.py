@@ -31,6 +31,7 @@ from qualify_api.publishing.tiktok_client import (
 )
 from qualify_api.publishing.tiktok_drafts import (
     STALE_PENDING_AFTER,
+    STALE_UPLOADING_AFTER,
     DraftRecord,
     DraftRefused,
     TikTokDraftService,
@@ -230,6 +231,11 @@ class FakeTikTok:
         self.init_error = init_error
         self.inits = 0
         self.uploads = 0
+        self.closed = 0
+        self.credential_version = 7
+
+    async def aclose(self) -> None:
+        self.closed += 1
 
     async def init_file_upload(self, *, video_size: int):
         self.inits += 1
@@ -367,7 +373,50 @@ async def test_auth_failure_degrades_the_connection() -> None:
     degraded: list[dict] = []
     svc, _, _, _ = service(approved(), tiktok=FakeTikTok(init_error=err), degraded=degraded)
     state = await send(svc)
-    assert state.status == "failed" and degraded == [{"tenant_id": TENANT, "connection_id": CONN}]
+    # The version the rejected token belongs to, so a newer reconnect is never degraded.
+    assert state.status == "failed" and degraded == [
+        {"tenant_id": TENANT, "connection_id": CONN, "expected_credential_version": 7}
+    ]
+
+
+async def test_auth_failure_on_refresh_passes_the_credential_version() -> None:
+    tiktok = FakeTikTok(status="PROCESSING_UPLOAD")
+    degraded: list[dict] = []
+    svc, _, _, _ = service(approved(), tiktok=tiktok, degraded=degraded)
+    state = await send(svc)
+
+    async def rejected(**_):
+        raise TikTokPublishError("x", code="access_token_invalid", http_status=401)
+
+    tiktok.fetch_status = rejected  # type: ignore[method-assign]
+    await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=state.draft_id)
+    assert degraded == [
+        {"tenant_id": TENANT, "connection_id": CONN, "expected_credential_version": 7}
+    ]
+
+
+async def test_the_client_is_closed_after_send_and_refresh() -> None:
+    tiktok = FakeTikTok(status="PROCESSING_UPLOAD")
+    svc, _, _, _ = service(approved(), tiktok=tiktok)
+    state = await send(svc)  # send closes its client, then refresh opens and closes another
+    assert tiktok.closed == 2
+    await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=state.draft_id)
+    assert tiktok.closed == 3
+    failing = FakeTikTok(init_error=TikTokPublishError("x", code="rate_limit_exceeded"))
+    svc, _, _, _ = service(approved(), tiktok=failing)
+    await send(svc)
+    assert failing.closed == 1  # closed on the error path too
+
+
+async def test_http_post_client_aclose_closes_the_wrapped_client() -> None:
+    closed: list[bool] = []
+
+    class Wrapped:
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    await HttpTikTokPostClient(client=Wrapped()).aclose()  # type: ignore[arg-type]
+    assert closed == [True]
 
 
 async def test_still_processing_stays_open_until_refreshed() -> None:
@@ -408,21 +457,47 @@ async def _ready(client):
     return client
 
 
-async def test_init_crash_settles_failed_but_upload_crash_after_publish_id_is_reconciled() -> None:
+async def test_init_crash_settles_failed_and_upload_crash_fails_so_the_owner_can_retry() -> None:
     svc, _, _, _ = service(approved(), tiktok=FakeTikTok(init_error=ValueError("bad json")))
     assert (await send(svc)).status == "failed"
     tiktok = FakeTikTok(status="PROCESSING_UPLOAD", upload_error=httpx.ReadTimeout("slow"))
-    svc, _, _, _ = service(approved(), tiktok=tiktok)
+    svc, repo, _, _ = service(approved(), tiktok=tiktok)
     state = await send(svc)
-    # The publish_id is stored before the bytes go up: TikTok owns the outcome now.
+    # Our own PUT broke after the publish_id was stored: TikTok never got the whole file.
     assert (state.status, state.settled, state.publish_id) == (
-        "uploading",
-        False,
+        "failed",
+        True,
         "v_inbox_file~v2.9",
     )
-    tiktok.status = "FAILED"
-    done = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=state.draft_id)
-    assert done.status == "failed" and done.settled
+    assert repo.rows[next(iter(repo.rows))]["code"] == "upload_failed"
+    assert "Inténtalo de nuevo" in state.message
+    tiktok.upload_error = None
+    tiktok.status = "SEND_TO_USER_INBOX"
+    retry = await send(svc, attempt=2)  # failed is final; the next attempt goes through
+    assert (retry.status, retry.created, tiktok.inits) == ("in_inbox", True, 2)
+
+
+async def test_refresh_expires_a_row_stuck_uploading() -> None:
+    now = [datetime.now(UTC)]
+    tiktok = FakeTikTok(status="PROCESSING_UPLOAD")
+    svc, repo, _, _ = service(approved(), tiktok=tiktok, clock=lambda: now[0])
+    record, _ = repo.create_or_get(idempotency_key="k", caption=None)
+    repo.update(draft_id=record.id, status="uploading", publish_id="p1")  # request died
+    young = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=record.id)
+    assert (young.status, young.settled) == ("uploading", False)
+    now[0] += STALE_UPLOADING_AFTER + timedelta(seconds=1)
+    old = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=record.id)
+    assert (old.status, old.settled) == ("failed", True)
+    assert repo.rows["k"]["code"] == "upload_expired" and "Inténtalo de nuevo" in old.message
+
+
+async def test_a_stuck_upload_that_tiktok_delivered_is_not_expired() -> None:
+    now = [datetime.now(UTC) + STALE_UPLOADING_AFTER * 2]
+    svc, repo, _, _ = service(approved(), tiktok=FakeTikTok(), clock=lambda: now[0])
+    record, _ = repo.create_or_get(idempotency_key="k", caption=None)
+    repo.update(draft_id=record.id, status="uploading", publish_id="p1")
+    done = await svc.refresh(tenant_id=TENANT, connection_id=CONN, draft_id=record.id)
+    assert done.status == "in_inbox"
 
 
 async def test_missing_credential_asks_to_reconnect_and_settles_the_row() -> None:

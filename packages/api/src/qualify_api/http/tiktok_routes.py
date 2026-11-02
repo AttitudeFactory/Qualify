@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.config import TikTokSettings
 from qualify_api.connections.purge import ConnectionPurgeInProgress
+from qualify_api.connections.repository import PlatformAppMissing
 from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.connections.state_token import InvalidState, safe_return_path
 from qualify_api.connections.tiktok_oauth import TikTokOAuthError
@@ -99,7 +100,7 @@ async def tiktok_callback(
     if code is None:
         if state is not None:
             try:
-                payload = service.consume_callback_state(state)
+                payload = service.abandon_callback(state)
             except InvalidState:
                 return _back(page_url, INVALID_STATE)
             return _back(
@@ -116,7 +117,13 @@ async def tiktok_callback(
         result = await service.complete_connect(code=code, state=state)
     except InvalidState:
         return _back(page_url, INVALID_STATE)
-    except (TikTokOAuthError, httpx.HTTPError, SQLAlchemyError, ConnectionPurgeInProgress):
+    except (
+        TikTokOAuthError,
+        httpx.HTTPError,
+        SQLAlchemyError,
+        ConnectionPurgeInProgress,
+        PlatformAppMissing,  # TikTok's `platform_apps` row not seeded: a config gap, not a 500
+    ):
         # The jti is spent: retrying means a new consent. Never echo a provider error.
         return _back(
             page_url,

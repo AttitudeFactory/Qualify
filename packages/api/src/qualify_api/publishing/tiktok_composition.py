@@ -27,8 +27,12 @@ class ResolverTikTokClientFactory:
     async def client_for(self, *, tenant_id: UUID, connection_id: UUID) -> TikTokPostClient:
         from qualify_api.connections.composition import production_tiktok_resolver
 
-        client = await production_tiktok_resolver(tenant_id).client_for(connection_id)
-        return HttpTikTokPostClient(client=client, api_base_url=self._settings.api_base_url)
+        client, version = await production_tiktok_resolver(tenant_id).client_and_version(
+            connection_id
+        )
+        return HttpTikTokPostClient(
+            client=client, api_base_url=self._settings.api_base_url, credential_version=version
+        )
 
 
 @cache

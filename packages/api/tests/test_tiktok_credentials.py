@@ -11,6 +11,7 @@ from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.locks import RefreshLock
 from qualify_api.connections.resolver import EncryptedCredential
 from qualify_api.connections.tiktok_credentials import (
+    REFRESH_LOCK_TTL_SECONDS,
     TikTokCredentialResolver,
     TikTokReconnectRequired,
 )
@@ -40,7 +41,9 @@ class Store:
         self.versions: list[bytes] = [ENC.encrypt(first.to_blob())]
 
     def read_current(self, connection_id: UUID) -> EncryptedCredential:
-        return EncryptedCredential(ciphertext=self.versions[-1], key_id=ENC.key_id)
+        return EncryptedCredential(
+            ciphertext=self.versions[-1], key_id=ENC.key_id, version=len(self.versions)
+        )
 
     def current_version(self, *, tenant_id: UUID, connection_id: UUID) -> int | None:
         return len(self.versions)
@@ -80,16 +83,16 @@ class FakeRedis:
 
 
 def resolver(
-    store: Store, oauth: Oauth, degraded: list[UUID], redis=None
+    store: Store, oauth: Oauth, degraded: list, redis=None, rotator=None
 ) -> TikTokCredentialResolver:
     return TikTokCredentialResolver(
         tenant_id=TENANT,
         reader=store,
         encryptor=ENC,
         oauth=oauth,  # type: ignore[arg-type]
-        rotator=store,  # type: ignore[arg-type]
+        rotator=rotator or store,  # type: ignore[arg-type]
         lock=RefreshLock(redis or FakeRedis()),
-        degrader=degraded.append,
+        degrader=lambda connection_id, version: degraded.append((connection_id, version)),
         now=lambda: NOW,
     )
 
@@ -117,7 +120,49 @@ async def test_dead_refresh_token_degrades_and_asks_to_reconnect() -> None:
     oauth = Oauth(TikTokOAuthError("x", code="invalid_grant"))
     with pytest.raises(TikTokReconnectRequired):
         await resolver(store, oauth, degraded).client_for(CONN)
-    assert degraded == [CONN] and len(store.versions) == 1
+    # Degraded at the version that failed: a reconnect landing later is left alone.
+    assert degraded == [(CONN, 1)] and len(store.versions) == 1
+
+
+async def test_dead_refresh_after_a_concurrent_reconnect_uses_the_new_grant() -> None:
+    store = Store(tokens("A1", "R1", access_in=timedelta(minutes=-5)))
+
+    class ReconnectDuringRefresh(Oauth):
+        async def refresh(self, refresh_token: str) -> TikTokTokens:
+            # A reconnect (or a winner whose lock expired) rotated meanwhile, so TikTok now
+            # rejects the refresh token we read: that is not a dead grant.
+            store.versions.append(
+                ENC.encrypt(tokens("NEW", "NEWR", access_in=timedelta(hours=24)).to_blob())
+            )
+            return await super().refresh(refresh_token)
+
+    degraded: list = []
+    oauth = ReconnectDuringRefresh(TikTokOAuthError("x", code="invalid_grant"))
+    client, version = await resolver(store, oauth, degraded).client_and_version(CONN)
+    assert degraded == [] and version == 2
+
+
+async def test_rotation_storage_failure_is_logged_by_type_and_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = Store(tokens("A1", "R1", access_in=timedelta(minutes=2)))
+
+    class BrokenRotator:
+        def current_version(self, **_: object) -> int:
+            return 1
+
+        def rotate(self, **_: object) -> int | None:
+            raise RuntimeError("db down: secret-ish detail")
+
+    oauth = Oauth(tokens("A2", "R2", access_in=timedelta(hours=24)))
+    with pytest.raises(RuntimeError):
+        await resolver(store, oauth, [], rotator=BrokenRotator()).client_for(CONN)
+    assert "storing the new credential failed" in caplog.text and "RuntimeError" in caplog.text
+    assert "secret-ish" not in caplog.text
+
+
+def test_tiktok_refresh_lock_outlives_the_refresh_timeout() -> None:
+    assert REFRESH_LOCK_TTL_SECONDS >= 60  # refresh call (30 s per phase) + DB rotation
 
 
 async def test_expired_refresh_token_never_calls_tiktok() -> None:
@@ -128,7 +173,7 @@ async def test_expired_refresh_token_never_calls_tiktok() -> None:
     oauth = Oauth(tokens("A2", "R2", access_in=timedelta(hours=24)))
     with pytest.raises(TikTokReconnectRequired):
         await resolver(store, oauth, degraded).client_for(CONN)
-    assert oauth.refreshed_with == [] and degraded == [CONN]
+    assert oauth.refreshed_with == [] and degraded == [(CONN, 1)]
 
 
 async def test_reconnect_that_lands_during_refresh_is_not_overwritten() -> None:

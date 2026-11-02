@@ -1,4 +1,4 @@
-"""`db`-marked tests for migration 0109 (m-24921091): TikTok connections without a Page,
+"""`db`-marked tests for migration 0112 (m-24921091): TikTok connections without a Page,
 `tiktok_drafts` RLS / idempotency / settle-once, and append-only credential rotation."""
 
 from __future__ import annotations

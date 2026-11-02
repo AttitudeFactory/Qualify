@@ -24,7 +24,10 @@ as `init` answers (before the bytes go up), so an interrupted upload stays recon
 No row is left `pending` forever: ANY failure before a `publish_id` exists (a missing
 credential, a network error, a bug) settles the row as failed with a generic Spanish text, and
 `refresh` settles a row still without `publish_id` after `STALE_PENDING_AFTER` (a crashed or
-cancelled request) the same way. Once a `publish_id` exists, TikTok's status is the truth.
+cancelled request) the same way. Once a `publish_id` exists, TikTok's status is the truth —
+except for the upload itself: a chunk PUT that raised locally fails the row (`upload_failed`),
+and a row still `uploading` after `STALE_UPLOADING_AFTER` that TikTok does not report as done
+is failed by `refresh` (`upload_expired`), so the owner can always try again.
 
 ## Tokens
 
@@ -76,9 +79,15 @@ TERMINAL = frozenset({STATUS_IN_INBOX, STATUS_FAILED})
 #: Our own failure codes (never TikTok's): they fall to the generic Spanish failure text.
 CODE_SEND_ERROR = "send_error"
 CODE_STALE_PENDING = "stale_pending"
+#: The chunk upload raised locally (a network error mid-PUT) after the `publish_id` was stored.
+CODE_UPLOAD_FAILED = "upload_failed"
+#: A row still `uploading` this long after it was written: the request died mid-upload.
+CODE_UPLOAD_EXPIRED = "upload_expired"
 #: A row with no `publish_id` this long after it was written is a dead request, not a slow one
 #: (the init call answers in seconds; the bytes only go up after the `publish_id` is stored).
 STALE_PENDING_AFTER = timedelta(minutes=15)
+#: The object gate caps media at 300 MB: an upload still running after an hour is dead.
+STALE_UPLOADING_AFTER = timedelta(hours=1)
 
 _RECONNECT_SCOPE_TEXT = "Hay que volver a conectar tu cuenta de TikTok y aceptar el permiso."
 # Client-facing (Spanish, plain; qualify-copy-es). Keyed by TikTok error code.
@@ -359,6 +368,7 @@ class TikTokDraftService:
                 tenant_id=tenant_id, connection_id=connection_id, draft_id=record.id, created=False
             )
 
+        client: TikTokPostClient | None = None
         try:
             client = await self._clients.client_for(
                 tenant_id=tenant_id, connection_id=connection_id
@@ -370,7 +380,9 @@ class TikTokDraftService:
             self._fail(tenant_id, record.id, "access_token_invalid")
             raise DraftRefused("needs_reconnect", NEEDS_RECONNECT_TEXT) from None
         except TikTokPublishError as exc:
-            self._on_publish_error(tenant_id, connection_id, record.id, exc)
+            self._on_publish_error(
+                tenant_id, connection_id, record.id, exc, _credential_version(client)
+            )
             return self._state(tenant_id, record.id)
         except Exception as exc:  # noqa: BLE001 — never leave the write-ahead row pending
             # Type only: an httpx/driver message may carry a URL with a token in it.
@@ -378,8 +390,14 @@ class TikTokDraftService:
             current = self._repo.get(tenant_id=tenant_id, draft_id=record.id)
             if current is not None and current.publish_id is None:
                 self._fail(tenant_id, record.id, CODE_SEND_ERROR)
-            # With a publish_id TikTok owns the outcome: `refresh` reconciles it.
+            elif current is not None and current.status == STATUS_UPLOADING:
+                # Our own PUT broke: TikTok never got the whole file, so no draft will
+                # arrive. Fail it so the owner can retry (a new `attempt`).
+                self._fail(tenant_id, record.id, CODE_UPLOAD_FAILED)
+            # Otherwise (pull mode, bytes TikTok's to fetch) `refresh` reconciles it.
             return self._state(tenant_id, record.id)
+        finally:
+            await _close(client)
         self._repo.update(
             tenant_id=tenant_id, draft_id=record.id, status=STATUS_PROCESSING, publish_id=publish_id
         )
@@ -431,12 +449,14 @@ class TikTokDraftService:
         if record.settled:
             return self._to_state(record, created=created)
         if record.publish_id is None:
-            if record.started_at is not None and (
-                self._clock() - record.started_at >= STALE_PENDING_AFTER
-            ):
+            if self._older_than(record, STALE_PENDING_AFTER):
                 self._fail(tenant_id, draft_id, CODE_STALE_PENDING)
                 return self._state(tenant_id, draft_id, created=created)
             return self._to_state(record, created=created)
+        dead_upload = record.status == STATUS_UPLOADING and self._older_than(
+            record, STALE_UPLOADING_AFTER
+        )
+        client: TikTokPostClient | None = None
         try:
             client = await self._clients.client_for(
                 tenant_id=tenant_id, connection_id=connection_id
@@ -446,13 +466,26 @@ class TikTokDraftService:
             raise DraftRefused("needs_reconnect", NEEDS_RECONNECT_TEXT) from None
         except TikTokPublishError as exc:
             if exc.is_auth_failure:
-                self._on_publish_error(tenant_id, connection_id, draft_id, exc)
-            return self._to_state(record, created=created)  # transient: stay as we were
+                self._on_publish_error(
+                    tenant_id, connection_id, draft_id, exc, _credential_version(client)
+                )
+            elif dead_upload:
+                self._fail(tenant_id, draft_id, CODE_UPLOAD_EXPIRED)
+            else:
+                return self._to_state(record, created=created)  # transient: stay as we were
+            return self._state(tenant_id, draft_id, created=created)
+        finally:
+            await _close(client)
         if remote.status in (RemoteStatus.SEND_TO_USER_INBOX, RemoteStatus.PUBLISH_COMPLETE):
             self._repo.update(tenant_id=tenant_id, draft_id=draft_id, status=STATUS_IN_INBOX)
         elif remote.status is RemoteStatus.FAILED:
             self._fail(tenant_id, draft_id, remote.fail_reason or "failed")
+        elif dead_upload:
+            self._fail(tenant_id, draft_id, CODE_UPLOAD_EXPIRED)
         return self._state(tenant_id, draft_id, created=created)
+
+    def _older_than(self, record: DraftRecord, age: timedelta) -> bool:
+        return record.started_at is not None and self._clock() - record.started_at >= age
 
     def _fail(self, tenant_id: UUID, draft_id: UUID, code: str) -> None:
         self._repo.update(
@@ -460,13 +493,24 @@ class TikTokDraftService:
         )
 
     def _on_publish_error(
-        self, tenant_id: UUID, connection_id: UUID, draft_id: UUID, exc: TikTokPublishError
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        draft_id: UUID,
+        exc: TikTokPublishError,
+        expected_credential_version: int | None = None,
     ) -> None:
         # Codes and statuses only — never the response body.
         _LOGGER.warning("tiktok draft failed: code=%s http=%s", exc.code, exc.http_status)
         self._fail(tenant_id, draft_id, exc.code or f"http_{exc.http_status or 'error'}")
         if exc.is_auth_failure and self._degrader is not None:
-            self._degrader(tenant_id=tenant_id, connection_id=connection_id)
+            # The version the rejected token belongs to: a reconnect that landed meanwhile is
+            # not degraded by this late failure.
+            self._degrader(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                expected_credential_version=expected_credential_version,
+            )
 
     def _state(self, tenant_id: UUID, draft_id: UUID, *, created: bool = True) -> DraftState:
         record = self._repo.get(tenant_id=tenant_id, draft_id=draft_id)
@@ -490,6 +534,23 @@ class TikTokDraftService:
             caption=record.caption,
             created=created,
         )
+
+
+def _credential_version(client: object | None) -> int | None:
+    """The credential version a client was built with (None for clients that do not say)."""
+    version = getattr(client, "credential_version", None)
+    return version if isinstance(version, int) else None
+
+
+async def _close(client: object | None) -> None:
+    """Release the client's connection pool; a close failure never masks the outcome."""
+    aclose = getattr(client, "aclose", None)
+    if aclose is None:
+        return
+    try:
+        await aclose()
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("tiktok client close failed: %s", type(exc).__name__)
 
 
 def _length(fileobj: object) -> int:

@@ -344,6 +344,33 @@ def test_callback_denied_and_forged_states() -> None:
     )
 
 
+def test_denied_consent_with_state_spends_the_jti_and_drops_the_pkce_verifier() -> None:
+    service, _, redis, _ = build()
+    state = _state_of(service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER))
+    assert any(k.startswith("oauth:pkce:") for k in redis.store)
+    query = _landing(
+        _client(service).get(f"/api/connections/tiktok/callback?error=access_denied&state={state}")
+    )
+    assert query["connect"] == "denied"
+    assert not any(k.startswith("oauth:pkce:") for k in redis.store)
+
+
+def test_missing_platform_app_row_redirects_degraded_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.connections.repository import PlatformAppMissing
+
+    service, repo, _, _ = build()
+
+    def missing(app_id: str, *, tenant_id: UUID) -> UUID:
+        raise PlatformAppMissing("no platform_apps row")
+
+    monkeypatch.setattr(repo, "platform_app_id", missing)
+    state = _state_of(service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER))
+    query = _landing(_client(service).get(f"/api/connections/tiktok/callback?code=c&state={state}"))
+    assert query == {"connect": "degraded", "platform": "tiktok"}
+
+
 def test_start_route_refuses_when_tiktok_is_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

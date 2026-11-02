@@ -161,7 +161,7 @@ class ScheduledPost(Base):
 
 
 class TikTokDraft(Base):
-    """One draft sent to a creator's TikTok inbox (migration 0109, m-24921091). Drafts only:
+    """One draft sent to a creator's TikTok inbox (migration 0112, m-24921091). Drafts only:
     there is no scheduled/direct-post state. `settled_at` non-null is terminal, one-way by
     the `tiktok_drafts_settle_once` trigger."""
 

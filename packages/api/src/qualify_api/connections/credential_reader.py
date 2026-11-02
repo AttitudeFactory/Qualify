@@ -45,14 +45,16 @@ class DbCredentialReader:
         with credential_session(self._tenant_id) as session:
             # Raw SQL, not the ORM: the ORM model maps columns `qualify_credential` is not
             # granted (e.g. token_type), and a `SELECT *` would fail on privilege. This
-            # selects exactly the two columns the role holds.
+            # selects only columns the role holds (0002 grants `version` too).
             row = session.execute(
                 text(
-                    "SELECT ciphertext, key_id FROM oauth_credentials "
+                    "SELECT ciphertext, key_id, version FROM oauth_credentials "
                     "WHERE connection_id = :cid ORDER BY version DESC LIMIT 1"
                 ),
                 {"cid": str(connection_id)},
             ).first()
         if row is None:
             raise CredentialNotFound(f"no credential for connection {connection_id}")
-        return EncryptedCredential(ciphertext=bytes(row.ciphertext), key_id=str(row.key_id))
+        return EncryptedCredential(
+            ciphertext=bytes(row.ciphertext), key_id=str(row.key_id), version=int(row.version)
+        )

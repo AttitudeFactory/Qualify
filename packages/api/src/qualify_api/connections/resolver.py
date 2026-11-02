@@ -28,6 +28,9 @@ class EncryptedCredential:
 
     ciphertext: bytes
     key_id: str
+    #: The `oauth_credentials.version` of this ciphertext, read in the same statement, so a
+    #: caller that rotates (TikTok) can guard on exactly the version it decrypted.
+    version: int | None = None
 
 
 class CredentialReader(Protocol):

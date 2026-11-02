@@ -177,6 +177,13 @@ class TikTokConnectService:
             raise InvalidState("state already consumed")
         return payload
 
+    def abandon_callback(self, state: str) -> StatePayload:
+        """The owner declined consent (no `code`): spend the jti AND drop the PKCE verifier,
+        so nothing of the abandoned attempt lingers in Redis until its TTL."""
+        payload = self.consume_callback_state(state)
+        self._pkce.take(payload.jti)
+        return payload
+
     async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
         payload = self.consume_callback_state(state)
         code_verifier = self._pkce.take(payload.jti)
@@ -208,7 +215,7 @@ class TikTokConnectService:
                 account_type=ACCOUNT_TYPE,
                 external_account_id=user.open_id,
                 external_username=user.display_name,
-                linked_page_id=None,  # a TikTok account has no Page (migration 0109)
+                linked_page_id=None,  # a TikTok account has no Page (migration 0112)
                 granted_scopes=tokens.scopes,
                 access_posture=self._settings.access_posture,
                 ciphertext=self._encryptor.encrypt(tokens.to_blob()),

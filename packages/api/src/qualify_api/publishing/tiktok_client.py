@@ -152,10 +152,19 @@ class HttpTikTokPostClient:
         client: AuthenticatedClient,
         api_base_url: str = "https://open.tiktokapis.com",
         upload_transport: httpx.AsyncBaseTransport | None = None,
+        credential_version: int | None = None,
     ) -> None:
         self._client = client
         self._base = api_base_url.rstrip("/")
         self._upload_transport = upload_transport
+        #: The credential version behind `client`, for the degrader's stale-response guard.
+        self.credential_version = credential_version
+
+    async def aclose(self) -> None:
+        """Close the wrapped authenticated client (its connection pool). Idempotent."""
+        aclose = getattr(self._client, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
     async def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         response = await self._client.post(
